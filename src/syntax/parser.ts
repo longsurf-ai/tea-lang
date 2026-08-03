@@ -24,6 +24,7 @@ import type {
   TypeAnnotation,
   TypeName,
 } from './nodes';
+import {NodeKind} from './nodes';
 import {Scanner} from './scanner';
 import {Tok, type Op, type TokenKind} from './tokens';
 
@@ -170,7 +171,7 @@ export class Parser {
       this.stmtEnd();
     }
     return {
-      kind: 'File',
+      kind: NodeKind.File,
       pos,
       version: this.scanner.version,
       stmtList,
@@ -187,9 +188,9 @@ export class Parser {
       stmtList.push(stmt);
       const chains =
         !this.blockEnded &&
-        (stmt.kind === 'DeclStmt' ||
-          stmt.kind === 'AssignStmt' ||
-          stmt.kind === 'ExprStmt');
+        (stmt.kind === NodeKind.DeclStmt ||
+          stmt.kind === NodeKind.AssignStmt ||
+          stmt.kind === NodeKind.ExprStmt);
       if (!chains || !this.got(Tok.Comma)) {
         return;
       }
@@ -250,11 +251,11 @@ export class Parser {
   }
 
   private badStmt(pos: Pos): BadStmt {
-    return {kind: 'BadStmt', pos};
+    return {kind: NodeKind.BadStmt, pos};
   }
 
   private badExpr(pos: Pos): BadExpr {
-    return {kind: 'BadExpr', pos};
+    return {kind: NodeKind.BadExpr, pos};
   }
 
   // ---- statements -----------------------------------------------------------
@@ -272,10 +273,10 @@ export class Parser {
       }
       case Tok.Break:
         this.next();
-        return {kind: 'BreakStmt', pos};
+        return {kind: NodeKind.BreakStmt, pos};
       case Tok.Continue:
         this.next();
-        return {kind: 'ContinueStmt', pos};
+        return {kind: NodeKind.ContinueStmt, pos};
       case Tok.Lbrack:
         // `[a, b] = f()` declares; a bare `[a, b]` (a block's tuple value)
         // is an expression statement.
@@ -287,7 +288,7 @@ export class Parser {
       case Tok.For:
       case Tok.While:
       case Tok.Switch:
-        return {kind: 'ExprStmt', pos, x: this.controlExpr()};
+        return {kind: NodeKind.ExprStmt, pos, x: this.controlExpr()};
       // Contextual keywords: these begin declarations only when the
       // declaration shape actually follows; otherwise they are ordinary
       // names and fall through to the expression path.
@@ -370,7 +371,7 @@ export class Parser {
       if (typed !== null) {
         const init = this.expr();
         return {
-          kind: 'DeclStmt',
+          kind: NodeKind.DeclStmt,
           pos,
           mode: 'none',
           declType: typed.declType,
@@ -388,12 +389,12 @@ export class Parser {
     const x = this.expr();
     if (this.got(Tok.Assign)) {
       const init = this.expr();
-      if (x.kind !== 'Name') {
+      if (x.kind !== NodeKind.Name) {
         this.error('cannot declare this expression as a variable', x.pos);
         return this.badStmt(pos);
       }
       return {
-        kind: 'DeclStmt',
+        kind: NodeKind.DeclStmt,
         pos,
         mode: 'none',
         declType: null,
@@ -404,9 +405,9 @@ export class Parser {
     if (this.tok() === Tok.Define || this.tok() === Tok.AssignOp) {
       const op = this.assignOp();
       const value = this.expr();
-      return {kind: 'AssignStmt', pos, op, target: x, value};
+      return {kind: NodeKind.AssignStmt, pos, op, target: x, value};
     }
-    return {kind: 'ExprStmt', pos, x};
+    return {kind: NodeKind.ExprStmt, pos, x};
   }
 
   private assignOp(): AssignOp {
@@ -432,7 +433,7 @@ export class Parser {
     if (typed !== null) {
       const init = this.expr();
       return {
-        kind: 'DeclStmt',
+        kind: NodeKind.DeclStmt,
         pos,
         mode,
         declType: typed.declType,
@@ -443,7 +444,7 @@ export class Parser {
     const target = this.name();
     this.want(Tok.Assign);
     const init = this.expr();
-    return {kind: 'DeclStmt', pos, mode, declType: null, target, init};
+    return {kind: NodeKind.DeclStmt, pos, mode, declType: null, target, init};
   }
 
   // Speculative: type name '=' — consumes through the '='.
@@ -462,7 +463,12 @@ export class Parser {
     }
     this.next();
     return {
-      declType: {kind: 'TypeAnnotation', pos, qualifier: null, name: typeName},
+      declType: {
+        kind: NodeKind.TypeAnnotation,
+        pos,
+        qualifier: null,
+        name: typeName,
+      },
       target,
     };
   }
@@ -471,7 +477,7 @@ export class Parser {
     const target = this.tuplePattern();
     this.want(Tok.Assign);
     const init = this.expr();
-    return {kind: 'DeclStmt', pos, mode, declType: null, target, init};
+    return {kind: NodeKind.DeclStmt, pos, mode, declType: null, target, init};
   }
 
   private tuplePattern(): TuplePattern {
@@ -482,7 +488,7 @@ export class Parser {
       elems.push(this.name());
     } while (this.got(Tok.Comma));
     this.want(Tok.Rbrack);
-    return {kind: 'TuplePattern', pos, elems};
+    return {kind: NodeKind.TuplePattern, pos, elems};
   }
 
   // ---- types ----------------------------------------------------------------
@@ -498,7 +504,7 @@ export class Parser {
         return null;
       }
       const sel: SelectorExpr = {
-        kind: 'SelectorExpr',
+        kind: NodeKind.SelectorExpr,
         pos: t.pos,
         x: t,
         sel: this.name(),
@@ -507,7 +513,7 @@ export class Parser {
     }
     if (this.tok() === Tok.Operator && this.op() === '<') {
       const head = t;
-      if (head.kind !== 'Name' && head.kind !== 'SelectorExpr') {
+      if (head.kind !== NodeKind.Name && head.kind !== NodeKind.SelectorExpr) {
         return null;
       }
       this.next();
@@ -523,7 +529,7 @@ export class Parser {
         return null;
       }
       this.next();
-      t = {kind: 'GenericType', pos: head.pos, name: head, args};
+      t = {kind: NodeKind.GenericType, pos: head.pos, name: head, args};
     }
     while (this.tok() === Tok.Lbrack) {
       this.next();
@@ -531,7 +537,7 @@ export class Parser {
         return null;
       }
       this.next();
-      t = {kind: 'ArrayType', pos: t.pos, elem: t};
+      t = {kind: NodeKind.ArrayType, pos: t.pos, elem: t};
     }
     return t;
   }
@@ -546,7 +552,7 @@ export class Parser {
     const then = this.expr();
     this.want(Tok.Colon);
     const orelse = this.expr();
-    return {kind: 'CondExpr', pos: cond.pos, cond, then, else: orelse};
+    return {kind: NodeKind.CondExpr, pos: cond.pos, cond, then, else: orelse};
   }
 
   private binary(minPrec: number): Expr {
@@ -562,7 +568,7 @@ export class Parser {
       }
       this.next();
       const y = this.binary(prec + 1);
-      x = {kind: 'BinaryExpr', pos: x.pos, op, x, y};
+      x = {kind: NodeKind.BinaryExpr, pos: x.pos, op, x, y};
     }
     return x;
   }
@@ -573,7 +579,7 @@ export class Parser {
       if (op === '-' || op === '+' || op === 'not') {
         const pos = this.pos();
         this.next();
-        return {kind: 'UnaryExpr', pos, op, x: this.unary()};
+        return {kind: NodeKind.UnaryExpr, pos, op, x: this.unary()};
       }
     }
     return this.postfix();
@@ -583,7 +589,7 @@ export class Parser {
     let x = this.primary();
     for (;;) {
       if (this.got(Tok.Dot)) {
-        x = {kind: 'SelectorExpr', pos: x.pos, x, sel: this.name()};
+        x = {kind: NodeKind.SelectorExpr, pos: x.pos, x, sel: this.name()};
         continue;
       }
       if (this.tok() === Tok.Lparen) {
@@ -594,7 +600,7 @@ export class Parser {
         this.next();
         const offset = this.expr();
         this.want(Tok.Rbrack);
-        x = {kind: 'HistoryExpr', pos: x.pos, x, offset};
+        x = {kind: NodeKind.HistoryExpr, pos: x.pos, x, offset};
         continue;
       }
       if (this.tok() === Tok.Operator && this.op() === '<') {
@@ -641,16 +647,16 @@ export class Parser {
       } while (this.got(Tok.Comma));
     }
     this.want(Tok.Rparen);
-    return {kind: 'CallExpr', pos: fun.pos, fun, typeArgs, args};
+    return {kind: NodeKind.CallExpr, pos: fun.pos, fun, typeArgs, args};
   }
 
   private arg(): Arg {
     const pos = this.pos();
     const value = this.expr();
-    if (value.kind === 'Name' && this.got(Tok.Assign)) {
-      return {kind: 'Arg', pos, name: value, value: this.expr()};
+    if (value.kind === NodeKind.Name && this.got(Tok.Assign)) {
+      return {kind: NodeKind.Arg, pos, name: value, value: this.expr()};
     }
-    return {kind: 'Arg', pos, name: null, value};
+    return {kind: NodeKind.Arg, pos, name: null, value};
   }
 
   private primary(): Expr {
@@ -674,7 +680,7 @@ export class Parser {
         return this.name();
       case Tok.Literal: {
         const lit: Expr = {
-          kind: 'BasicLit',
+          kind: NodeKind.BasicLit,
           pos,
           litKind: this.scanner.kind ?? 'int',
           value: this.scanner.lit,
@@ -687,7 +693,7 @@ export class Parser {
         this.next();
         const x = this.expr();
         this.want(Tok.Rparen);
-        return {kind: 'ParenExpr', pos, x};
+        return {kind: NodeKind.ParenExpr, pos, x};
       }
       case Tok.Lbrack: {
         this.next();
@@ -696,7 +702,7 @@ export class Parser {
           elems.push(this.expr());
         } while (this.got(Tok.Comma));
         this.want(Tok.Rbrack);
-        return {kind: 'TupleExpr', pos, elems};
+        return {kind: NodeKind.TupleExpr, pos, elems};
       }
       default:
         this.error(`expected expression, found '${this.tok()}'`);
@@ -727,7 +733,7 @@ export class Parser {
     }
     this.want(Tok.Dedent);
     this.blockEnded = true;
-    return {kind: 'Block', pos, stmtList};
+    return {kind: NodeKind.Block, pos, stmtList};
   }
 
   // Control structures are expressions; at statement position they ride in
@@ -757,7 +763,7 @@ export class Parser {
     if (this.got(Tok.Else)) {
       orelse = this.tok() === Tok.If ? this.ifExpr() : this.block();
     }
-    return {kind: 'IfExpr', pos, cond, then, else: orelse};
+    return {kind: NodeKind.IfExpr, pos, cond, then, else: orelse};
   }
 
   private whileExpr(): Expr {
@@ -765,7 +771,7 @@ export class Parser {
     this.next(); // 'while'
     const cond = this.expr();
     const body = this.block();
-    return {kind: 'WhileExpr', pos, cond, body};
+    return {kind: NodeKind.WhileExpr, pos, cond, body};
   }
 
   // `for i = a to b [by s]` | `for x in xs` | `for [i, v] in xs`.
@@ -776,19 +782,33 @@ export class Parser {
       const target = this.tuplePattern();
       this.want(Tok.In);
       const x = this.expr();
-      return {kind: 'ForInExpr', pos, target, x, body: this.block()};
+      return {kind: NodeKind.ForInExpr, pos, target, x, body: this.block()};
     }
     const index = this.name();
     if (this.got(Tok.In)) {
       const x = this.expr();
-      return {kind: 'ForInExpr', pos, target: index, x, body: this.block()};
+      return {
+        kind: NodeKind.ForInExpr,
+        pos,
+        target: index,
+        x,
+        body: this.block(),
+      };
     }
     this.want(Tok.Assign);
     const from = this.expr();
     this.want(Tok.To);
     const to = this.expr();
     const step = this.got(Tok.By) ? this.expr() : null;
-    return {kind: 'ForExpr', pos, index, from, to, step, body: this.block()};
+    return {
+      kind: NodeKind.ForExpr,
+      pos,
+      index,
+      from,
+      to,
+      step,
+      body: this.block(),
+    };
   }
 
   // `switch [subject]` with `pattern => body` arms; a bare `=>` arm is the
@@ -814,11 +834,11 @@ export class Parser {
         body = this.expr();
         this.stmtEnd();
       }
-      arms.push({kind: 'SwitchArm', pos: armPos, pattern, body});
+      arms.push({kind: NodeKind.SwitchArm, pos: armPos, pattern, body});
     }
     this.want(Tok.Dedent);
     this.blockEnded = true;
-    return {kind: 'SwitchExpr', pos, subject, arms};
+    return {kind: NodeKind.SwitchExpr, pos, subject, arms};
   }
 
   // ---- function declarations -----------------------------------------------
@@ -858,7 +878,7 @@ export class Parser {
     const params = this.params();
     this.want(Tok.Arrow);
     const body = this.tok() === Tok.Newline ? this.block() : this.expr();
-    return {kind: 'FuncDecl', pos, exported, method, name, params, body};
+    return {kind: NodeKind.FuncDecl, pos, exported, method, name, params, body};
   }
 
   private params(): Param[] {
@@ -892,7 +912,7 @@ export class Parser {
       return this.finishParam(
         pos,
         {
-          kind: 'TypeAnnotation',
+          kind: NodeKind.TypeAnnotation,
           pos,
           qualifier: qualified.qualifier,
           name: qualified.typeName,
@@ -910,7 +930,12 @@ export class Parser {
     if (typed !== null) {
       return this.finishParam(
         pos,
-        {kind: 'TypeAnnotation', pos, qualifier: null, name: typed.typeName},
+        {
+          kind: NodeKind.TypeAnnotation,
+          pos,
+          qualifier: null,
+          name: typed.typeName,
+        },
         typed.name,
       );
     }
@@ -923,7 +948,7 @@ export class Parser {
     name: Name,
   ): Param {
     const defaultValue = this.got(Tok.Assign) ? this.expr() : null;
-    return {kind: 'Param', pos, paramType, name, defaultValue};
+    return {kind: NodeKind.Param, pos, paramType, name, defaultValue};
   }
 
   // ---- top-level declarations ----------------------------------------------
@@ -939,7 +964,7 @@ export class Parser {
     }
     this.scanner.rescanImportPath();
     const path: Expr = {
-      kind: 'BasicLit',
+      kind: NodeKind.BasicLit,
       pos: this.pos(),
       litKind: this.scanner.kind ?? 'path',
       value: this.scanner.lit,
@@ -947,10 +972,10 @@ export class Parser {
     };
     this.next();
     const alias = this.got(Tok.As) ? this.name() : null;
-    if (path.kind !== 'BasicLit') {
+    if (path.kind !== NodeKind.BasicLit) {
       return this.badStmt(pos);
     }
-    return {kind: 'ImportStmt', pos, path, alias};
+    return {kind: NodeKind.ImportStmt, pos, path, alias};
   }
 
   // `type Name` with indented `[qualifier] type name [= default]` lines.
@@ -968,7 +993,7 @@ export class Parser {
     }
     this.want(Tok.Dedent);
     this.blockEnded = true;
-    return {kind: 'TypeDecl', pos, exported, name, fields};
+    return {kind: NodeKind.TypeDecl, pos, exported, name, fields};
   }
 
   private fieldDecl(): FieldDecl {
@@ -988,7 +1013,7 @@ export class Parser {
       return this.finishFieldDecl(
         pos,
         {
-          kind: 'TypeAnnotation',
+          kind: NodeKind.TypeAnnotation,
           pos,
           qualifier: qualified.qualifier,
           name: qualified.typeName,
@@ -1006,7 +1031,12 @@ export class Parser {
     if (typed !== null) {
       return this.finishFieldDecl(
         pos,
-        {kind: 'TypeAnnotation', pos, qualifier: null, name: typed.typeName},
+        {
+          kind: NodeKind.TypeAnnotation,
+          pos,
+          qualifier: null,
+          name: typed.typeName,
+        },
         typed.name,
       );
     }
@@ -1017,10 +1047,10 @@ export class Parser {
     return this.finishFieldDecl(
       pos,
       {
-        kind: 'TypeAnnotation',
+        kind: NodeKind.TypeAnnotation,
         pos,
         qualifier: null,
-        name: {kind: 'Name', pos, value: ''},
+        name: {kind: NodeKind.Name, pos, value: ''},
       },
       fieldName,
     );
@@ -1032,7 +1062,7 @@ export class Parser {
     name: Name,
   ): FieldDecl {
     const defaultValue = this.got(Tok.Assign) ? this.expr() : null;
-    return {kind: 'FieldDecl', pos, fieldType, name, defaultValue};
+    return {kind: NodeKind.FieldDecl, pos, fieldType, name, defaultValue};
   }
 
   // `enum Name` with indented `member [= title]` lines.
@@ -1049,7 +1079,7 @@ export class Parser {
       const memberName = this.name();
       const title = this.got(Tok.Assign) ? this.expr() : null;
       members.push({
-        kind: 'EnumMember',
+        kind: NodeKind.EnumMember,
         pos: memberPos,
         name: memberName,
         title,
@@ -1058,13 +1088,13 @@ export class Parser {
     }
     this.want(Tok.Dedent);
     this.blockEnded = true;
-    return {kind: 'EnumDecl', pos, exported, name, members};
+    return {kind: NodeKind.EnumDecl, pos, exported, name, members};
   }
 
   private name(): Name {
     if (this.tok() === Tok.Name) {
       const name: Name = {
-        kind: 'Name',
+        kind: NodeKind.Name,
         pos: this.pos(),
         value: this.scanner.lit,
       };
@@ -1072,11 +1102,15 @@ export class Parser {
       return name;
     }
     if (SOFT_KEYWORDS.includes(this.tok())) {
-      const name: Name = {kind: 'Name', pos: this.pos(), value: this.tok()};
+      const name: Name = {
+        kind: NodeKind.Name,
+        pos: this.pos(),
+        value: this.tok(),
+      };
       this.next();
       return name;
     }
     this.error(`expected name, found '${this.tok()}'`);
-    return {kind: 'Name', pos: this.pos(), value: ''};
+    return {kind: NodeKind.Name, pos: this.pos(), value: ''};
   }
 }
