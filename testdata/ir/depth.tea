@@ -1,0 +1,10 @@
+//@version=1
+indicator("Depth", max_bars_back=300)
+
+lookback = input.int(20, "Lookback")
+
+a = close[3]
+b = close[lookback]
+c = open[bar_index % 5]
+d = (high + low)[2]
+plot(a + b + c + d, "Sum")

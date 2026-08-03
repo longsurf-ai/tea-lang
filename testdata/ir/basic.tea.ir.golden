@@ -1,0 +1,35 @@
+Program version=1
+param len: int title="Length" default=14 {min=1} depth=none
+param src: float title="Source" default=series(close) depth=const(1)
+series close: series float depth=none
+series open: series float depth=none
+output[0] indicator static{title="Basic" overlay=true}
+output[1] plot static{title="Delta" color="#2196F3"} channels{series: float}
+name prev: perBar series float depth=none
+name up: perBar series bool depth=none
+name count: var series int depth=none
+  init: Const 0: const int
+name delta: perBar series float depth=none
+body:
+  WriteName prev
+    HistRead param:src: series float
+      offset: Const 1: const int
+  WriteName up
+    Binary Gt: series bool
+      HistRead series:close: series float
+      HistRead series:open: series float
+  ExprStmt
+    IfExpr: series int
+      cond: HistRead name:up: series bool
+      then: BlockExpr: series int
+        WriteName count
+          Binary Add: series int
+            HistRead name:count: series int
+            Const 1: const int
+        value: HistRead name:count: series int
+  WriteName delta
+    Binary Sub: series float
+      HistRead series:close: series float
+      HistRead name:prev: series float
+  Emit output[1]
+    HistRead name:delta: series float

@@ -16,10 +16,15 @@ import {
   type Type,
 } from '../ir/type';
 
-// 'num' accepts anything assignable to float (int, float, na); overloads
-// express result-type differences. 'any' accepts every value type (na(),
-// str.tostring()).
-export type NativeTypeRef = Type | 'num' | 'any';
+// TypeRef.Num accepts anything assignable to float (int, float, na);
+// overloads express result-type differences. TypeRef.Any accepts every value
+// type (na(), str.tostring()).
+export const TypeRef = {
+  Num: 'num',
+  Any: 'any',
+} as const;
+
+export type NativeTypeRef = Type | typeof TypeRef.Num | typeof TypeRef.Any;
 
 export interface NativeParam {
   readonly name: string;
@@ -41,23 +46,31 @@ export interface NativeParam {
 // Emit (plot family); handle = per-bar host drawing-object ops (line.*);
 // host = host service with next-bar feedback (strategy.*); async = awaited
 // host call (llm); request = compiles a child Program (request.*).
-export type NativeEffect =
-  | 'none'
-  | 'param'
-  | 'declaration'
-  | 'output'
-  | 'handle'
-  | 'host'
-  | 'async'
-  | 'request';
+export const Effect = {
+  None: 'none',
+  Param: 'param',
+  Declaration: 'declaration',
+  Output: 'output',
+  Handle: 'handle',
+  Host: 'host',
+  Async: 'async',
+  Request: 'request',
+} as const;
 
-// One overload of a native function. resultQualifier 'join' means the
-// later-known qualifier of the actual arguments (const when there are none).
+export type NativeEffect = (typeof Effect)[keyof typeof Effect];
+
+// JoinResult marks a result qualifier computed as the later-known qualifier
+// of the actual arguments (const when there are none).
+export const JoinResult = 'join';
+
+export type ResultQualifier = Qualifier | typeof JoinResult;
+
+// One overload of a native function.
 export interface NativeFunc {
   readonly name: string;
   readonly params: readonly NativeParam[];
   readonly result: Type;
-  readonly resultQualifier: Qualifier | 'join';
+  readonly resultQualifier: ResultQualifier;
   readonly effect: NativeEffect;
   // Mints a per-call-site SlotId (a sub-frame in the caller's frame). None of
   // the seed natives carry slot state; ta.* is prelude and gets its state
@@ -111,8 +124,8 @@ function func(
   name: string,
   params: readonly NativeParam[],
   result: Type,
-  resultQualifier: Qualifier | 'join',
-  effect: NativeEffect = 'none',
+  resultQualifier: ResultQualifier,
+  effect: NativeEffect = Effect.None,
 ): NativeFunc {
   return {name, params, result, resultQualifier, effect, stateful: false};
 }
@@ -293,7 +306,7 @@ function numericInput(name: string, type: Type): NativeFunc {
     ],
     type,
     Qualifier.Input,
-    'param',
+    Effect.Param,
   );
 }
 
@@ -303,17 +316,22 @@ function simpleInput(name: string, type: Type): NativeFunc {
     [req('defval', type, Qualifier.Const, {literal: true}), ...inputTail()],
     type,
     Qualifier.Input,
-    'param',
+    Effect.Param,
   );
 }
 
 // Numeric math native where int and float overloads share one result rule.
-function mathNum(name: string, arity: number, result: 'same' | Type): NativeFunc[] {
+// result null = the overload's own numeric type (abs: int stays int).
+function mathNum(
+  name: string,
+  arity: number,
+  result: Type | null,
+): NativeFunc[] {
   return [IntType, FloatType].map(t => {
     const params = Array.from({length: arity}, (_, i) =>
       req(i === 0 ? 'number' : `number${i}`, t, Qualifier.Series),
     );
-    return func(`math.${name}`, params, result === 'same' ? t : result, 'join');
+    return func(`math.${name}`, params, result ?? t, JoinResult);
   });
 }
 
@@ -336,7 +354,7 @@ function buildFuncs(): NativeFunc[] {
       ],
       VoidType,
       Qualifier.Const,
-      'declaration',
+      Effect.Declaration,
     ),
   );
 
@@ -356,7 +374,7 @@ function buildFuncs(): NativeFunc[] {
       [req('defval', FloatType, Qualifier.Series), ...inputTail()],
       FloatType,
       Qualifier.Series,
-      'param',
+      Effect.Param,
     ),
   );
   for (const t of [IntType, FloatType, BoolType, StringType, ColorType]) {
@@ -366,7 +384,7 @@ function buildFuncs(): NativeFunc[] {
         [req('defval', t, Qualifier.Const, {literal: true}), ...inputTail()],
         t,
         Qualifier.Input,
-        'param',
+        Effect.Param,
       ),
     );
   }
@@ -376,7 +394,7 @@ function buildFuncs(): NativeFunc[] {
     func(
       'plot',
       [
-        req('series', 'num', Qualifier.Series),
+        req('series', TypeRef.Num, Qualifier.Series),
         opt('title', StringType, Qualifier.Const, {literal: true}),
         opt('color', ColorType, Qualifier.Series),
         opt('linewidth', IntType, Qualifier.Input),
@@ -392,7 +410,7 @@ function buildFuncs(): NativeFunc[] {
       ],
       PlotType,
       Qualifier.Const,
-      'output',
+      Effect.Output,
     ),
     func(
       'hline',
@@ -407,7 +425,7 @@ function buildFuncs(): NativeFunc[] {
       ],
       HlineType,
       Qualifier.Const,
-      'output',
+      Effect.Output,
     ),
     func(
       'plotshape',
@@ -427,7 +445,7 @@ function buildFuncs(): NativeFunc[] {
       ],
       VoidType,
       Qualifier.Const,
-      'output',
+      Effect.Output,
     ),
     func(
       'plotchar',
@@ -447,7 +465,7 @@ function buildFuncs(): NativeFunc[] {
       ],
       VoidType,
       Qualifier.Const,
-      'output',
+      Effect.Output,
     ),
     func(
       'bgcolor',
@@ -461,7 +479,7 @@ function buildFuncs(): NativeFunc[] {
       ],
       VoidType,
       Qualifier.Const,
-      'output',
+      Effect.Output,
     ),
     func(
       'barcolor',
@@ -475,7 +493,7 @@ function buildFuncs(): NativeFunc[] {
       ],
       VoidType,
       Qualifier.Const,
-      'output',
+      Effect.Output,
     ),
     func(
       'alertcondition',
@@ -486,7 +504,7 @@ function buildFuncs(): NativeFunc[] {
       ],
       VoidType,
       Qualifier.Const,
-      'output',
+      Effect.Output,
     ),
   );
   for (const refType of [PlotType, HlineType]) {
@@ -503,55 +521,80 @@ function buildFuncs(): NativeFunc[] {
         ],
         VoidType,
         Qualifier.Const,
-        'output',
+        Effect.Output,
       ),
     );
   }
 
   // math.* — intrinsics only; aggregations over time (ta.*) are prelude.
   funcs.push(
-    ...mathNum('abs', 1, 'same'),
-    ...mathNum('sign', 1, 'same'),
-    func('math.floor', [req('number', 'num', Qualifier.Series)], IntType, 'join'),
-    func('math.ceil', [req('number', 'num', Qualifier.Series)], IntType, 'join'),
-    func('math.round', [req('number', 'num', Qualifier.Series)], IntType, 'join'),
+    ...mathNum('abs', 1, null),
+    ...mathNum('sign', 1, null),
+    func(
+      'math.floor',
+      [req('number', TypeRef.Num, Qualifier.Series)],
+      IntType,
+      JoinResult,
+    ),
+    func(
+      'math.ceil',
+      [req('number', TypeRef.Num, Qualifier.Series)],
+      IntType,
+      JoinResult,
+    ),
+    func(
+      'math.round',
+      [req('number', TypeRef.Num, Qualifier.Series)],
+      IntType,
+      JoinResult,
+    ),
     func(
       'math.round',
       [
-        req('number', 'num', Qualifier.Series),
+        req('number', TypeRef.Num, Qualifier.Series),
         req('precision', IntType, Qualifier.Series),
       ],
       FloatType,
-      'join',
+      JoinResult,
     ),
     func(
       'math.sqrt',
-      [req('number', 'num', Qualifier.Series)],
+      [req('number', TypeRef.Num, Qualifier.Series)],
       FloatType,
-      'join',
+      JoinResult,
     ),
     func(
       'math.pow',
       [
-        req('base', 'num', Qualifier.Series),
-        req('exponent', 'num', Qualifier.Series),
+        req('base', TypeRef.Num, Qualifier.Series),
+        req('exponent', TypeRef.Num, Qualifier.Series),
       ],
       FloatType,
-      'join',
+      JoinResult,
     ),
-    func('math.log', [req('number', 'num', Qualifier.Series)], FloatType, 'join'),
+    func(
+      'math.log',
+      [req('number', TypeRef.Num, Qualifier.Series)],
+      FloatType,
+      JoinResult,
+    ),
     func(
       'math.log10',
-      [req('number', 'num', Qualifier.Series)],
+      [req('number', TypeRef.Num, Qualifier.Series)],
       FloatType,
-      'join',
+      JoinResult,
     ),
-    func('math.exp', [req('number', 'num', Qualifier.Series)], FloatType, 'join'),
+    func(
+      'math.exp',
+      [req('number', TypeRef.Num, Qualifier.Series)],
+      FloatType,
+      JoinResult,
+    ),
     func(
       'math.avg',
-      [req('number', 'num', Qualifier.Series, {variadic: true})],
+      [req('number', TypeRef.Num, Qualifier.Series, {variadic: true})],
       FloatType,
-      'join',
+      JoinResult,
     ),
   );
   for (const name of ['math.max', 'math.min']) {
@@ -563,61 +606,76 @@ function buildFuncs(): NativeFunc[] {
           req('number1', IntType, Qualifier.Series, {variadic: true}),
         ],
         IntType,
-        'join',
+        JoinResult,
       ),
       func(
         name,
         [
-          req('number', 'num', Qualifier.Series),
-          req('number1', 'num', Qualifier.Series, {variadic: true}),
+          req('number', TypeRef.Num, Qualifier.Series),
+          req('number1', TypeRef.Num, Qualifier.Series, {variadic: true}),
         ],
         FloatType,
-        'join',
+        JoinResult,
       ),
     );
   }
 
   // na handling and conversions.
-  funcs.push(func('na', [req('x', 'any', Qualifier.Series)], BoolType, 'join'));
+  funcs.push(
+    func('na', [req('x', TypeRef.Any, Qualifier.Series)], BoolType, JoinResult),
+  );
   for (const t of [IntType, FloatType, ColorType, StringType]) {
     funcs.push(
       func(
         'nz',
-        [req('source', t, Qualifier.Series), opt('replacement', t, Qualifier.Series)],
+        [
+          req('source', t, Qualifier.Series),
+          opt('replacement', t, Qualifier.Series),
+        ],
         t,
-        'join',
+        JoinResult,
       ),
     );
   }
   funcs.push(
-    func('fixnan', [req('source', FloatType, Qualifier.Series)], FloatType, 'join'),
-    func('int', [req('x', 'num', Qualifier.Series)], IntType, 'join'),
-    func('float', [req('x', 'num', Qualifier.Series)], FloatType, 'join'),
+    func(
+      'fixnan',
+      [req('source', FloatType, Qualifier.Series)],
+      FloatType,
+      JoinResult,
+    ),
+    func('int', [req('x', TypeRef.Num, Qualifier.Series)], IntType, JoinResult),
+    func(
+      'float',
+      [req('x', TypeRef.Num, Qualifier.Series)],
+      FloatType,
+      JoinResult,
+    ),
     func(
       'str.tostring',
-      [req('value', 'any', Qualifier.Series)],
+      [req('value', TypeRef.Any, Qualifier.Series)],
       StringType,
-      'join',
+      JoinResult,
     ),
     func(
       'color.new',
       [
         req('color', ColorType, Qualifier.Series),
-        req('transp', 'num', Qualifier.Series),
+        req('transp', TypeRef.Num, Qualifier.Series),
       ],
       ColorType,
-      'join',
+      JoinResult,
     ),
     func(
       'color.rgb',
       [
-        req('red', 'num', Qualifier.Series),
-        req('green', 'num', Qualifier.Series),
-        req('blue', 'num', Qualifier.Series),
-        opt('transp', 'num', Qualifier.Series),
+        req('red', TypeRef.Num, Qualifier.Series),
+        req('green', TypeRef.Num, Qualifier.Series),
+        req('blue', TypeRef.Num, Qualifier.Series),
+        opt('transp', TypeRef.Num, Qualifier.Series),
       ],
       ColorType,
-      'join',
+      JoinResult,
     ),
   );
 

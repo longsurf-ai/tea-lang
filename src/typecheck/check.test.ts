@@ -8,9 +8,13 @@ import {checkText, declaredName, initTvOf} from './testing';
 describe('inference and folding', () => {
   test('literal arithmetic folds with Pine integer semantics', () => {
     const r = checkText(
-      ['x = 2 * 3 + 1', 'q = 7 / 2', 'f = 2.5 / 2', 's = "a" + "b"', 'b = true and not false'].join(
-        '\n',
-      ),
+      [
+        'x = 2 * 3 + 1',
+        'q = 7 / 2',
+        'f = 2.5 / 2',
+        's = "a" + "b"',
+        'b = true and not false',
+      ].join('\n'),
     );
     expect(r.errors).toEqual([]);
     expect(initTvOf(r, 'x')).toEqual({
@@ -25,7 +29,9 @@ describe('inference and folding', () => {
   });
 
   test('fold values travel only through never-reassigned names', () => {
-    const r = checkText(['a = 2', 'b = a * 3', 'c = 1', 'c := 2', 'd = c * 3'].join('\n'));
+    const r = checkText(
+      ['a = 2', 'b = a * 3', 'c = 1', 'c := 2', 'd = c * 3'].join('\n'),
+    );
     expect(r.errors).toEqual([]);
     expect(initTvOf(r, 'b').value).toBe(6);
     expect(initTvOf(r, 'd').value).toBeNull();
@@ -64,7 +70,9 @@ describe('qualifier propagation', () => {
 
   test('history reads are series and control structures yield series', () => {
     const r = checkText(
-      ['prev = close[1]', 'm = if close > 0', '\tclose', 'else', '\topen'].join('\n'),
+      ['prev = close[1]', 'm = if close > 0', '\tclose', 'else', '\topen'].join(
+        '\n',
+      ),
     );
     expect(r.errors).toEqual([]);
     expect(declaredName(r, 'prev').qualifier).toBe(Qualifier.Series);
@@ -107,7 +115,9 @@ describe('native calls', () => {
   });
 
   test('overload selection: int stays int, mixing widens to float', () => {
-    const r = checkText('a = math.max(1, 2, 3)\nb = math.max(1, 2.5)\nc = math.round(1.234, 2)');
+    const r = checkText(
+      'a = math.max(1, 2, 3)\nb = math.max(1, 2.5)\nc = math.round(1.234, 2)',
+    );
     expect(r.errors).toEqual([]);
     expect(initTvOf(r, 'a')).toMatchObject({
       type: {kind: TypeKind.Int},

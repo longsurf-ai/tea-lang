@@ -1,0 +1,29 @@
+Program version=1
+series high: series float depth=none
+series low: series float depth=none
+series close: series float depth=none
+output[0] indicator static{title="Outputs"}
+output[1] plot static{title="High"} channels{series: float}
+output[2] plot static{title="Low"} channels{series: float}
+output[3] fill
+  bind plot1: OutputRef output[1]: const plot
+  bind plot2: OutputRef output[2]: const plot
+  bind color: CallNative color.new: const color
+    Const "#2196F3": const color
+    Const 90: const int
+output[4] hline static{price=0 title="Zero" linestyle="dashed"}
+output[5] plotshape static{style="triangleup" location="abovebar"} channels{series: bool}
+name mid: perBar series float depth=none
+body:
+  Emit output[1]
+    HistRead series:high: series float
+  Emit output[2]
+    HistRead series:low: series float
+  WriteName mid
+    CallNative math.avg: series float
+      HistRead series:high: series float
+      HistRead series:low: series float
+  Emit output[5]
+    Binary Gt: series bool
+      HistRead series:close: series float
+      HistRead name:mid: series float

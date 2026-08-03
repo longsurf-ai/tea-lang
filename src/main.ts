@@ -8,6 +8,7 @@ import {formatPos, newFileBase} from './base/pos';
 import {Errors, type ErrorMsg} from './base/print';
 import {UnimplementedError, unimplemented} from './base/unimplemented';
 import {compile, compileToAst, compileToIr} from './compile';
+import {dumpProgram} from './ir/dumper';
 import {dumpFile, dumpTokens} from './syntax/dumper';
 import {tokenize} from './syntax/syntax';
 
@@ -100,7 +101,10 @@ tea
           console.log(dumpFile(compileToAst(file, errors)));
         }
         if (wantIr) {
-          console.log(JSON.stringify(compileToIr(file, errors), null, 2));
+          const program = compileToIr(file, errors);
+          if (program !== null) {
+            console.log(dumpProgram(program));
+          }
         }
       });
       if (errors.count > 0) {

@@ -22,19 +22,32 @@ export type SlotId = number;
 // Persistence, orthogonal to qualifiers: perBar re-initializes each
 // iteration, var carries the previous iteration's value forward (rolled back
 // on provisional re-execution), varip persists across ticks without rollback.
-export type NameStorage = 'perBar' | 'var' | 'varip';
+export const Storage = {
+  PerBar: 'perBar',
+  Var: 'var',
+  Varip: 'varip',
+} as const;
+
+export type NameStorage = (typeof Storage)[keyof typeof Storage];
 
 // How deep a place's history must reach, resolvable no later than bind time:
-// 'none' = never read historically (no buffer materializes); 'const' = known
-// at compile time; 'bound' = an input/simple-qualified expression evaluated
-// at bind; 'capped' = dynamic (series) offsets bounded by an explicit
+// None = never read historically (no buffer materializes); Const = known
+// at compile time; Bound = an input/simple-qualified expression evaluated
+// at bind; Capped = dynamic (series) offsets bounded by an explicit
 // max_bars_back-style cap — itself bind-resolvable, sourced by the noder from
 // max_bars_back(x, n), the indicator declaration, or the engine default.
+export const DepthKind = {
+  None: 'none',
+  Const: 'const',
+  Bound: 'bound',
+  Capped: 'capped',
+} as const;
+
 export type HistoryDepth =
-  | {readonly kind: 'none'}
-  | {readonly kind: 'const'; readonly bars: number}
-  | {readonly kind: 'bound'; readonly expr: IrExpr}
-  | {readonly kind: 'capped'; readonly bars: IrExpr};
+  | {readonly kind: typeof DepthKind.None}
+  | {readonly kind: typeof DepthKind.Const; readonly bars: number}
+  | {readonly kind: typeof DepthKind.Bound; readonly expr: IrExpr}
+  | {readonly kind: typeof DepthKind.Capped; readonly bars: IrExpr};
 
 // A declared variable. One object per declaration; every use references it —
 // identity is the object, there is no id and no table. The binder creates
@@ -57,6 +70,7 @@ export interface Name {
 
 export const IrKind = {
   Const: 'Const',
+  OutputRef: 'OutputRef',
   HistRead: 'HistRead',
   Binary: 'Binary',
   Unary: 'Unary',
@@ -129,11 +143,18 @@ export type IrUnaryOp = (typeof UNARY_OPS)[number];
 // are script/function variables; params are bind-time inputs; series are
 // runtime-provided per-bar sources; requests are merged child-Program
 // results. Only names are writable.
+export const PlaceKind = {
+  Name: 'name',
+  Param: 'param',
+  Series: 'series',
+  Request: 'request',
+} as const;
+
 export type Place =
-  | {readonly kind: 'name'; readonly name: Name}
-  | {readonly kind: 'param'; readonly param: ParamInput}
-  | {readonly kind: 'series'; readonly series: SeriesInput}
-  | {readonly kind: 'request'; readonly request: RequestEdge};
+  | {readonly kind: typeof PlaceKind.Name; readonly name: Name}
+  | {readonly kind: typeof PlaceKind.Param; readonly param: ParamInput}
+  | {readonly kind: typeof PlaceKind.Series; readonly series: SeriesInput}
+  | {readonly kind: typeof PlaceKind.Request; readonly request: RequestEdge};
 
 // @agent invariant: the IR is built only from checked, error-free syntax —
 // there are no Bad nodes here; recovery ends at the checker's phase barrier.
@@ -150,6 +171,7 @@ export interface IrExprBase extends IrNode {
 
 export type IrExpr =
   | ConstExpr
+  | OutputRefExpr
   | HistReadExpr
   | BinaryExpr
   | UnaryExpr
@@ -170,6 +192,14 @@ export type IrExpr =
 export interface ConstExpr extends IrExprBase {
   readonly kind: typeof IrKind.Const;
   readonly value: ConstValue;
+}
+
+// A compile-time reference to a declarative output channel (type Plot or
+// Hline, always const-qualified): `x = plot(...)` binds x to this, and
+// fill(x, y) consumes it in bindArgs. Never a runtime heap handle.
+export interface OutputRefExpr extends IrExprBase {
+  readonly kind: typeof IrKind.OutputRef;
+  readonly output: OutputDecl;
 }
 
 // A read through the time machine: offset null means the current bar

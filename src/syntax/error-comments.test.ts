@@ -18,7 +18,11 @@ describe('testdata error comments', () => {
       const expectations = collectExpectations(src);
       const {errors} = parseText(src, name);
 
-      const {missing, unexpected} = diffExpectations(name, expectations, errors);
+      const {missing, unexpected} = diffExpectations(
+        name,
+        expectations,
+        errors,
+      );
       expect(missing).toEqual([]);
       expect(unexpected).toEqual([]);
     });

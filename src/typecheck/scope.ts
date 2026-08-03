@@ -4,21 +4,28 @@ import type {Name as IrName} from '../ir/node';
 import type {ConstValue, EnumType, UdtType} from '../ir/type';
 import type {FuncDecl} from '../syntax/nodes';
 
-// What an identifier resolves to. 'name' is a variable backed by an ir Name;
+// What an identifier resolves to. Name is a variable backed by an ir Name;
 // constDecl marks Tea's `const` declaration mode (reassignment forbidden,
-// folded value recorded). 'func' is an uninstantiated user-function template
-// (stenciled per signature when calls are checked). 'udt'/'enum' are type
+// folded value recorded). Func is an uninstantiated user-function template
+// (stenciled per signature when calls are checked). Udt/Enum are type
 // declarations.
+export const EntryKind = {
+  Name: 'name',
+  Func: 'func',
+  Udt: 'udt',
+  Enum: 'enum',
+} as const;
+
 export type ScopeEntry =
   | {
-      readonly kind: 'name';
+      readonly kind: typeof EntryKind.Name;
       readonly name: IrName;
       readonly constDecl: boolean;
       readonly constValue: ConstValue | null;
     }
-  | {readonly kind: 'func'; readonly decl: FuncDecl}
-  | {readonly kind: 'udt'; readonly type: UdtType}
-  | {readonly kind: 'enum'; readonly type: EnumType};
+  | {readonly kind: typeof EntryKind.Func; readonly decl: FuncDecl}
+  | {readonly kind: typeof EntryKind.Udt; readonly type: UdtType}
+  | {readonly kind: typeof EntryKind.Enum; readonly type: EnumType};
 
 export class Scope {
   private readonly entries = new Map<string, ScopeEntry>();

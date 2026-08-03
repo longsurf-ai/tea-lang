@@ -100,7 +100,7 @@ owning:
 - **requests**: the recursive edge. Each `request.*` call site compiles the
   dependency closure of its expression argument into a **child Program** with
   its own context, axis, slots, and rollback. The child designates a
-  **result slot** (`RequestEdge.resultSlot`, written each child bar; its type
+  **result name** (`RequestEdge.resultName`, written each child bar; its type
   is the edge's `resultType`) whose committed values the runtime merges onto
   the parent axis (sample or collect, gaps/lookahead, ignore-invalid-symbol,
   currency, calc-bars-count). One Program ↔ one context; composition is by
@@ -190,11 +190,13 @@ depth-annotated ambient usage set, for buffer sizing) and `requestsOf`
 unreachable never enter `requests` — dead-request elimination by
 construction.
 
-## Noding policies (locked, implemented when the noder lands)
+## Noding policies
 
 - History on a non-place expression (`f(x)[k]`) desugars to a synthetic
   perBar slot written **unconditionally every bar** before the read — the
-  unconditional write is what keeps its history well-defined.
+  unconditional write is what keeps its history well-defined. That is why
+  the desugaring exists only at top level; inside a block it is a clean
+  error for now.
 - A value-position loop yields the last completed iteration's block value,
   `na` if no iteration completed; `break` skips the current iteration's
   value.
@@ -202,6 +204,23 @@ construction.
   sources and instantiate into the importer's Program. The Program is always
   a closed script; a distributable compiled-library artifact, if ever
   needed, is a separate contract — never a bent Program.
+- Reference bindings are compile-time only: a never-reassigned declaration
+  initialized by an input call binds the name to its `ParamInput` (reads
+  become param reads; no per-bar write), and one initialized by an output
+  call (or an alias of one) binds to its `OutputDecl` via `OutputRef` — so
+  `fill(p1, p2)` resolves refs at init, never per bar. Tea `const`
+  declarations vanish entirely (every read folded).
+- `indicator()`/`strategy()` node as OutputDecls whose `effect` is the
+  native's name: script metadata is an emission to the host, hoisted like
+  every other declarative output.
+- A native call's omitted trailing optionals are dropped (the runtime
+  applies defaults); omitted middles node as `na` constants.
+- `Program.init` stays empty for now — hoisting const/input/simple work out
+  of the bar loop is a later optimization, not a correctness requirement.
+- Depth resolution, first cut: all-const offsets take their maximum; a
+  single bind-time offset stays `bound`; dynamic or mixed demands fall back
+  to `capped` with the `indicator(max_bars_back=…)` value or the engine
+  default (500). Interval analysis over loop bounds refines this later.
 
 ## Open items
 

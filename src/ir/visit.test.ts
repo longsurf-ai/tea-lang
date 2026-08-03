@@ -2,8 +2,22 @@
 
 import {describe, expect, test} from 'bun:test';
 import {newFileBase, type Pos} from '../base/pos';
-import {IrKind, type IrExpr, type Name} from './node';
-import type {IrFunc, Program, RequestEdge, SeriesInput} from './program';
+import {
+  DepthKind,
+  IrKind,
+  IrOp,
+  PlaceKind,
+  Storage,
+  type IrExpr,
+  type Name,
+} from './node';
+import {
+  MergeMode,
+  type IrFunc,
+  type Program,
+  type RequestEdge,
+  type SeriesInput,
+} from './program';
 import {FloatType, Qualifier, StringType} from './type';
 import {
   funcsOf,
@@ -27,24 +41,24 @@ const close: SeriesInput = {
   id: 'close',
   type: FloatType,
   qualifier: Qualifier.Series,
-  depth: {kind: 'const', bars: 2},
+  depth: {kind: DepthKind.Const, bars: 2},
 };
 
 const x: Name = {
   name: 'x',
-  storage: 'perBar',
+  storage: Storage.PerBar,
   type: FloatType,
   qualifier: Qualifier.Series,
-  depth: {kind: 'none'},
+  depth: {kind: DepthKind.None},
   init: null,
 };
 
 const p: Name = {
   name: 'p',
-  storage: 'perBar',
+  storage: Storage.PerBar,
   type: FloatType,
   qualifier: Qualifier.Series,
-  depth: {kind: 'none'},
+  depth: {kind: DepthKind.None},
   init: null,
 };
 
@@ -58,13 +72,13 @@ const inc: IrFunc = {
     pos,
     type: FloatType,
     qualifier: Qualifier.Series,
-    op: 'Add',
+    op: IrOp.Add,
     x: {
       kind: IrKind.HistRead,
       pos,
       type: FloatType,
       qualifier: Qualifier.Series,
-      place: {kind: 'name', name: p},
+      place: {kind: PlaceKind.Name, name: p},
       offset: null,
     },
     y: num(1),
@@ -73,10 +87,10 @@ const inc: IrFunc = {
 
 const childResult: Name = {
   name: 'r',
-  storage: 'perBar',
+  storage: Storage.PerBar,
   type: FloatType,
   qualifier: Qualifier.Series,
-  depth: {kind: 'none'},
+  depth: {kind: DepthKind.None},
   init: null,
 };
 
@@ -105,7 +119,7 @@ const edge: RequestEdge = {
     value: 'D',
   },
   merge: {
-    mode: 'sample',
+    mode: MergeMode.Sample,
     gaps: false,
     lookahead: false,
     ignoreInvalidSymbol: false,
@@ -114,7 +128,7 @@ const edge: RequestEdge = {
   },
   resultName: childResult,
   resultType: FloatType,
-  depth: {kind: 'none'},
+  depth: {kind: DepthKind.None},
   child,
 };
 
@@ -142,7 +156,7 @@ const program: Program = {
             pos,
             type: FloatType,
             qualifier: Qualifier.Series,
-            place: {kind: 'series', series: close},
+            place: {kind: PlaceKind.Series, series: close},
             offset: num(1),
           },
         ],
@@ -156,7 +170,7 @@ const program: Program = {
         pos,
         type: FloatType,
         qualifier: Qualifier.Series,
-        place: {kind: 'request', request: edge},
+        place: {kind: PlaceKind.Request, request: edge},
         offset: null,
       },
     },

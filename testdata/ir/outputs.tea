@@ -1,0 +1,11 @@
+//@version=1
+indicator("Outputs")
+
+p1 = plot(high, "High")
+p2 = plot(low, "Low")
+fill(p1, p2, color=color.new(color.blue, 90))
+
+hline(0, "Zero", linestyle=hline.style_dashed)
+
+mid = math.avg(high, low)
+plotshape(close > mid, style=shape.triangleup, location=location.abovebar)

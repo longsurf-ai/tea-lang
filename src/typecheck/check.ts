@@ -7,7 +7,13 @@
 
 import type {Errors} from '../base/print';
 import type {Pos} from '../base/pos';
-import type {Name as IrName, NameStorage} from '../ir/node';
+import {unimplemented} from '../base/unimplemented';
+import {
+  DepthKind,
+  Storage,
+  type Name as IrName,
+  type NameStorage,
+} from '../ir/node';
 import type {SeriesInput} from '../ir/program';
 import {
   assignable,
@@ -41,18 +47,21 @@ import {
   type UdtField,
   type UdtType,
 } from '../ir/type';
-import {NodeKind} from '../syntax/nodes';
+import {Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
 import type {Op} from '../syntax/tokens';
 import {
+  Effect,
   isNativeRoot,
+  JoinResult,
   nativeFuncs,
   nativeVar,
+  TypeRef,
   type NativeFunc,
   type NativeTypeRef,
   type NativeVar,
 } from './catalog';
-import {Scope, type ScopeEntry} from './scope';
+import {EntryKind, Scope, type ScopeEntry} from './scope';
 
 // ---- results ----------------------------------------------------------------
 
@@ -86,11 +95,27 @@ export interface Info {
   readonly series: Map<string, SeriesInput>;
   // Which ambient series a Name/Selector expression resolved to.
   readonly ambient: Map<syntax.Expr, SeriesInput>;
+  // Names that appear as assignment targets anywhere in the file (by name
+  // string, conservative) — the noder binds param/plot references through a
+  // declaration only when its name is not in this set.
+  readonly reassigned: ReadonlySet<string>;
 }
 
 export function check(file: syntax.File, errors: Errors): Info {
   const checker = new Checker(errors);
   return checker.checkFile(file);
+}
+
+// The pipeline's check stage: one script per compilation for now (library
+// imports link at check time when the function slice lands).
+export function checkPackage(
+  files: readonly syntax.File[],
+  errors: Errors,
+): Info {
+  if (files.length !== 1) {
+    return unimplemented('typecheck: multi-file packages', files.length);
+  }
+  return check(files[0], errors);
 }
 
 const INVALID_TV: TypeAndValue = {
@@ -123,6 +148,11 @@ const TYPE_NAMES: ReadonlyMap<string, Type> = new Map([
 // ---- checker ----------------------------------------------------------------
 
 class Checker {
+  // Names that appear as := / compound-assignment targets anywhere in the
+  // file (by string, whole-file — conservative). Their declarations never
+  // carry fold values, and plain declarations join series.
+  private reassigned = new Set<string>();
+
   private readonly info: Info = {
     types: new Map(),
     uses: new Map(),
@@ -132,6 +162,7 @@ class Checker {
     udtDefaults: new Map(),
     series: new Map(),
     ambient: new Map(),
+    reassigned: this.reassigned,
   };
 
   private scope = new Scope(null);
@@ -141,10 +172,6 @@ class Checker {
   // condition is input-qualified produce values known no earlier than input;
   // loop bodies join series (iteration-dependent values).
   private flow: Qualifier = Qualifier.Const;
-  // Names that appear as := / compound-assignment targets anywhere in the
-  // file (by string, whole-file — conservative). Their declarations never
-  // carry fold values, and plain declarations join series.
-  private reassigned = new Set<string>();
 
   constructor(private readonly errors: Errors) {}
 
@@ -210,21 +237,30 @@ class Checker {
     }
 
     const nameNode = d.target;
-    const {type, qualifier, constValue} = this.declInfo(d, nameNode, initTv, declared);
+    const {type, qualifier, constValue} = this.declInfo(
+      d,
+      nameNode,
+      initTv,
+      declared,
+    );
     const storage: NameStorage =
-      d.mode === 'var' ? 'var' : d.mode === 'varip' ? 'varip' : 'perBar';
+      d.mode === Mode.Var
+        ? Storage.Var
+        : d.mode === Mode.Varip
+          ? Storage.Varip
+          : Storage.PerBar;
     const irName: IrName = {
       name: nameNode.value,
       storage,
       type,
       qualifier,
-      depth: {kind: 'none'},
+      depth: {kind: DepthKind.None},
       init: null,
     };
     this.declare(nameNode, {
-      kind: 'name',
+      kind: EntryKind.Name,
       name: irName,
-      constDecl: d.mode === 'const',
+      constDecl: d.mode === Mode.Const,
       constValue,
     });
     return initTv;
@@ -261,7 +297,7 @@ class Checker {
     }
 
     let qualifier: Qualifier;
-    if (d.mode === 'const') {
+    if (d.mode === Mode.Const) {
       if (initTv.qualifier !== Qualifier.Const || initTv.value === null) {
         this.error(
           d.init.pos,
@@ -269,7 +305,7 @@ class Checker {
         );
       }
       qualifier = Qualifier.Const;
-    } else if (d.mode === 'var' || d.mode === 'varip') {
+    } else if (d.mode === Mode.Var || d.mode === Mode.Varip) {
       // Persistent storage: the value carries across bars, so reads are
       // series regardless of the initializer's qualifier.
       qualifier = Qualifier.Series;
@@ -291,8 +327,8 @@ class Checker {
 
     // Fold values travel through names only when reassignment is impossible.
     const foldable =
-      d.mode === 'const' ||
-      (d.mode === 'none' && !this.reassigned.has(nameNode.value));
+      d.mode === Mode.Const ||
+      (d.mode === Mode.None && !this.reassigned.has(nameNode.value));
     const constValue =
       foldable && initTv.qualifier === Qualifier.Const ? initTv.value : null;
     return {type, qualifier, constValue};
@@ -321,9 +357,13 @@ class Checker {
       );
     }
     const storage: NameStorage =
-      d.mode === 'var' ? 'var' : d.mode === 'varip' ? 'varip' : 'perBar';
+      d.mode === Mode.Var
+        ? Storage.Var
+        : d.mode === Mode.Varip
+          ? Storage.Varip
+          : Storage.PerBar;
     const qualifier =
-      d.mode === 'var' || d.mode === 'varip'
+      d.mode === Mode.Var || d.mode === Mode.Varip
         ? Qualifier.Series
         : initTv.qualifier;
     pattern.elems.forEach((elemName, i) => {
@@ -332,13 +372,13 @@ class Checker {
         storage,
         type: elems !== null ? elems[i] : InvalidType,
         qualifier,
-        depth: {kind: 'none'},
+        depth: {kind: DepthKind.None},
         init: null,
       };
       this.declare(elemName, {
-        kind: 'name',
+        kind: EntryKind.Name,
         name: irName,
-        constDecl: d.mode === 'const',
+        constDecl: d.mode === Mode.Const,
         constValue: null,
       });
     });
@@ -346,10 +386,7 @@ class Checker {
 
   private declare(nameNode: syntax.Name, entry: ScopeEntry): void {
     if (isNativeRoot(nameNode.value)) {
-      this.error(
-        nameNode.pos,
-        `cannot redeclare built-in '${nameNode.value}'`,
-      );
+      this.error(nameNode.pos, `cannot redeclare built-in '${nameNode.value}'`);
       return;
     }
     if (!this.scope.declare(nameNode.value, entry)) {
@@ -359,7 +396,7 @@ class Checker {
       );
       return;
     }
-    if (entry.kind === 'name') {
+    if (entry.kind === EntryKind.Name) {
       this.info.defs.set(nameNode, entry.name);
     }
   }
@@ -391,7 +428,7 @@ class Checker {
       this.checkExpr(a.value);
       return null;
     }
-    if (entry.kind !== 'name') {
+    if (entry.kind !== EntryKind.Name) {
       this.error(target.pos, `cannot assign to '${target.value}'`);
       this.checkExpr(a.value);
       return null;
@@ -401,6 +438,14 @@ class Checker {
         target.pos,
         `cannot reassign '${target.value}' declared with const`,
       );
+    }
+    if (
+      entry.name.type.kind === TypeKind.Plot ||
+      entry.name.type.kind === TypeKind.Hline
+    ) {
+      // Output references are compile-time ids consumed at init (fill);
+      // a reassignable ref could not be resolved before the first bar.
+      this.error(target.pos, 'cannot reassign a plot reference');
     }
     const name = entry.name;
     this.info.uses.set(target, name);
@@ -479,7 +524,7 @@ class Checker {
     }
     // The template is bound now; bodies are checked per concrete argument
     // signature when calls are stenciled (the function slice).
-    this.declare(d.name, {kind: 'func', decl: d});
+    this.declare(d.name, {kind: EntryKind.Func, decl: d});
   }
 
   private checkTypeDecl(d: syntax.TypeDecl): void {
@@ -512,7 +557,7 @@ class Checker {
     }
     const udt: UdtType = {kind: TypeKind.Udt, name: d.name.value, fields};
     this.info.udtDefaults.set(udt, defaults);
-    this.declare(d.name, {kind: 'udt', type: udt});
+    this.declare(d.name, {kind: EntryKind.Udt, type: udt});
   }
 
   private checkEnumDecl(d: syntax.EnumDecl): void {
@@ -532,19 +577,23 @@ class Checker {
       let title = member.name.value;
       if (member.title !== null) {
         const titleTv = this.checkExpr(member.title);
-        if (
-          titleTv.value !== null &&
-          typeof titleTv.value === 'string'
-        ) {
+        if (titleTv.value !== null && typeof titleTv.value === 'string') {
           title = titleTv.value;
         } else {
-          this.error(member.title.pos, 'enum member title must be a constant string');
+          this.error(
+            member.title.pos,
+            'enum member title must be a constant string',
+          );
         }
       }
       members.push({name: member.name.value, title});
     }
-    const enumType: EnumType = {kind: TypeKind.Enum, name: d.name.value, members};
-    this.declare(d.name, {kind: 'enum', type: enumType});
+    const enumType: EnumType = {
+      kind: TypeKind.Enum,
+      name: d.name.value,
+      members,
+    };
+    this.declare(d.name, {kind: EntryKind.Enum, type: enumType});
   }
 
   // ---- annotations ----------------------------------------------------------
@@ -555,9 +604,9 @@ class Checker {
   } {
     let qualifier: Qualifier | null = null;
     if (a.qualifier !== null) {
-      if (a.qualifier.value === 'simple') {
+      if (a.qualifier.value === Qualifier.Simple) {
         qualifier = Qualifier.Simple;
-      } else if (a.qualifier.value === 'series') {
+      } else if (a.qualifier.value === Qualifier.Series) {
         qualifier = Qualifier.Series;
       } else {
         this.error(a.qualifier.pos, `unknown qualifier '${a.qualifier.value}'`);
@@ -574,7 +623,7 @@ class Checker {
           return builtin;
         }
         const entry = this.scope.lookup(t.value);
-        if (entry?.kind === 'udt' || entry?.kind === 'enum') {
+        if (entry?.kind === EntryKind.Udt || entry?.kind === EntryKind.Enum) {
           return entry.type;
         }
         this.error(t.pos, `unknown type '${t.value}'`);
@@ -611,7 +660,12 @@ class Checker {
       case NodeKind.UnaryExpr:
         return this.unaryTv(e);
       case NodeKind.BinaryExpr:
-        return this.binaryTv(e.op, this.checkExpr(e.x), this.checkExpr(e.y), e.pos);
+        return this.binaryTv(
+          e.op,
+          this.checkExpr(e.x),
+          this.checkExpr(e.y),
+          e.pos,
+        );
       case NodeKind.CondExpr:
         return this.condTv(e);
       case NodeKind.CallExpr:
@@ -643,18 +697,18 @@ class Checker {
     const entry = this.scope.lookup(n.value);
     if (entry !== null) {
       switch (entry.kind) {
-        case 'name':
+        case EntryKind.Name:
           this.info.uses.set(n, entry.name);
           return {
             type: entry.name.type,
             qualifier: entry.name.qualifier,
             value: entry.constValue,
           };
-        case 'func':
+        case EntryKind.Func:
           this.error(n.pos, `'${n.value}' is a function; call it`);
           return INVALID_TV;
-        case 'udt':
-        case 'enum':
+        case EntryKind.Udt:
+        case EntryKind.Enum:
           this.error(n.pos, `'${n.value}' is a type, not a value`);
           return INVALID_TV;
       }
@@ -681,7 +735,7 @@ class Checker {
           id: nv.name,
           type: nv.type,
           qualifier: nv.qualifier,
-          depth: {kind: 'none'},
+          depth: {kind: DepthKind.None},
         };
         this.info.series.set(nv.name, series);
       }
@@ -706,7 +760,7 @@ class Checker {
     }
     if (s.x.kind === NodeKind.Name) {
       const entry = this.scope.lookup(s.x.value);
-      if (entry?.kind === 'enum') {
+      if (entry?.kind === EntryKind.Enum) {
         const member = entry.type.members.find(m => m.name === s.sel.value);
         if (member === undefined) {
           this.error(
@@ -715,13 +769,17 @@ class Checker {
           );
           return INVALID_TV;
         }
-        return {type: entry.type, qualifier: Qualifier.Const, value: member.name};
+        return {
+          type: entry.type,
+          qualifier: Qualifier.Const,
+          value: member.name,
+        };
       }
-      if (entry?.kind === 'udt') {
+      if (entry?.kind === EntryKind.Udt) {
         this.error(s.pos, `'${s.x.value}' is a type, not a value`);
         return INVALID_TV;
       }
-      if (entry?.kind === 'func') {
+      if (entry?.kind === EntryKind.Func) {
         this.error(s.pos, `'${s.x.value}' is a function, not a value`);
         return INVALID_TV;
       }
@@ -756,7 +814,11 @@ class Checker {
     }
     switch (lit.litKind) {
       case 'int':
-        return {type: IntType, qualifier: Qualifier.Const, value: Number(lit.value)};
+        return {
+          type: IntType,
+          qualifier: Qualifier.Const,
+          value: Number(lit.value),
+        };
       case 'float':
         return {
           type: FloatType,
@@ -787,7 +849,10 @@ class Checker {
     }
     if (e.op === 'not') {
       if (tv.type.kind !== TypeKind.Bool) {
-        this.error(e.pos, `'not' requires a bool operand, got ${formatType(tv.type)}`);
+        this.error(
+          e.pos,
+          `'not' requires a bool operand, got ${formatType(tv.type)}`,
+        );
         return INVALID_TV;
       }
       const value =
@@ -819,10 +884,7 @@ class Checker {
     y: TypeAndValue,
     pos: Pos,
   ): TypeAndValue {
-    if (
-      x.type.kind === TypeKind.Invalid ||
-      y.type.kind === TypeKind.Invalid
-    ) {
+    if (x.type.kind === TypeKind.Invalid || y.type.kind === TypeKind.Invalid) {
       return INVALID_TV;
     }
     const qualifier = joinQualifiers(x.qualifier, y.qualifier);
@@ -980,7 +1042,8 @@ class Checker {
     this.flow = savedFlow;
     // Mismatched branch types are legal in statement position; the structure
     // then simply has no value, and value-position consumers report that.
-    const type = elseType === null ? thenTv.type : unifyOrVoid(thenTv.type, elseType);
+    const type =
+      elseType === null ? thenTv.type : unifyOrVoid(thenTv.type, elseType);
     return {type, qualifier: Qualifier.Series, value: null};
   }
 
@@ -991,7 +1054,9 @@ class Checker {
     for (const [tv, node] of [
       [fromTv, e.from],
       [toTv, e.to],
-      ...(stepTv !== null && e.step !== null ? [[stepTv, e.step] as const] : []),
+      ...(stepTv !== null && e.step !== null
+        ? [[stepTv, e.step] as const]
+        : []),
     ] as const) {
       if (tv.type.kind !== TypeKind.Invalid && !isNumericType(tv.type)) {
         this.error(
@@ -1009,14 +1074,14 @@ class Checker {
     this.scope = new Scope(savedScope);
     const indexName: IrName = {
       name: e.index.value,
-      storage: 'perBar',
+      storage: Storage.PerBar,
       type: indexType,
       qualifier: Qualifier.Series,
-      depth: {kind: 'none'},
+      depth: {kind: DepthKind.None},
       init: null,
     };
     this.declare(e.index, {
-      kind: 'name',
+      kind: EntryKind.Name,
       name: indexName,
       constDecl: false,
       constValue: null,
@@ -1041,13 +1106,13 @@ class Checker {
     this.scope = new Scope(savedScope);
     const declareTarget = (nameNode: syntax.Name, type: Type): void => {
       this.declare(nameNode, {
-        kind: 'name',
+        kind: EntryKind.Name,
         name: {
           name: nameNode.value,
-          storage: 'perBar',
+          storage: Storage.PerBar,
           type,
           qualifier: Qualifier.Series,
-          depth: {kind: 'none'},
+          depth: {kind: DepthKind.None},
           init: null,
         },
         constDecl: false,
@@ -1171,9 +1236,9 @@ class Checker {
     if (fun.kind === NodeKind.Name) {
       const entry = this.scope.lookup(fun.value);
       if (entry !== null) {
-        if (entry.kind === 'func') {
+        if (entry.kind === EntryKind.Func) {
           this.error(c.pos, 'user function calls are not supported yet');
-        } else if (entry.kind === 'udt') {
+        } else if (entry.kind === EntryKind.Udt) {
           this.error(
             c.pos,
             `'${fun.value}' is a type; construct it with '${fun.value}.new(...)'`,
@@ -1188,7 +1253,7 @@ class Checker {
     if (fun.kind === NodeKind.SelectorExpr) {
       if (fun.x.kind === NodeKind.Name && fun.sel.value === 'new') {
         const entry = this.scope.lookup(fun.x.value);
-        if (entry?.kind === 'udt') {
+        if (entry?.kind === EntryKind.Udt) {
           return this.checkNew(c, entry.type);
         }
       }
@@ -1270,7 +1335,10 @@ class Checker {
         } else if (variadic !== null) {
           tail.push(arg.value);
         } else {
-          return fail(arg.pos, `too many arguments in call to '${native.name}'`);
+          return fail(
+            arg.pos,
+            `too many arguments in call to '${native.name}'`,
+          );
         }
         continue;
       }
@@ -1340,9 +1408,9 @@ class Checker {
 
   private checkPlacement(native: NativeFunc, pos: Pos): void {
     const topLevelOnly =
-      native.effect === 'param' ||
-      native.effect === 'output' ||
-      native.effect === 'declaration';
+      native.effect === Effect.Param ||
+      native.effect === Effect.Output ||
+      native.effect === Effect.Declaration;
     if (topLevelOnly && this.blockDepth > 0) {
       this.error(
         pos,
@@ -1359,14 +1427,14 @@ class Checker {
       .filter((a): a is syntax.Expr => a !== null)
       .map(a => this.tvOf(a));
     const qualifier =
-      native.resultQualifier === 'join'
+      native.resultQualifier === JoinResult
         ? tvs.reduce<Qualifier>(
             (q, tv) => joinQualifiers(q, tv.qualifier),
             Qualifier.Const,
           )
         : native.resultQualifier;
     let value: ConstValue | null = null;
-    if (qualifier === Qualifier.Const && native.effect === 'none') {
+    if (qualifier === Qualifier.Const && native.effect === Effect.None) {
       value = foldNativeCall(native.name, tvs);
     }
     return {type: native.result, qualifier, value};
@@ -1379,7 +1447,10 @@ class Checker {
     for (const arg of c.args) {
       if (arg.name === null) {
         if (position >= fields.length) {
-          this.error(arg.pos, `too many arguments in call to '${udt.name}.new'`);
+          this.error(
+            arg.pos,
+            `too many arguments in call to '${udt.name}.new'`,
+          );
           return INVALID_TV;
         }
         aligned[position] = arg.value;
@@ -1457,20 +1528,20 @@ function unifyOrVoid(a: Type, b: Type): Type {
 }
 
 function refAssignable(from: Type, to: NativeTypeRef): boolean {
-  if (to === 'num') {
+  if (to === TypeRef.Num) {
     return assignable(from, FloatType);
   }
-  if (to === 'any') {
+  if (to === TypeRef.Any) {
     return from.kind !== TypeKind.Void;
   }
   return assignable(from, to);
 }
 
 function formatRef(ref: NativeTypeRef): string {
-  if (ref === 'num') {
+  if (ref === TypeRef.Num) {
     return 'a numeric value';
   }
-  if (ref === 'any') {
+  if (ref === TypeRef.Any) {
     return 'a value';
   }
   return formatType(ref);

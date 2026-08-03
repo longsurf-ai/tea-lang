@@ -1,0 +1,43 @@
+Program version=1
+param lookback: int title="Lookback" default=20 depth=none
+series close: series float depth=capped
+  depth.cap: Const 300: const int
+series open: series float depth=capped
+  depth.cap: Const 300: const int
+series bar_index: series int depth=none
+series high: series float depth=none
+series low: series float depth=none
+output[0] indicator static{title="Depth" max_bars_back=300}
+output[1] plot static{title="Sum"} channels{series: float}
+name a: perBar series float depth=none
+name b: perBar series float depth=none
+name c: perBar series float depth=none
+name $hist@9:5: perBar series float depth=const(2)
+name d: perBar series float depth=none
+body:
+  WriteName a
+    HistRead series:close: series float
+      offset: Const 3: const int
+  WriteName b
+    HistRead series:close: series float
+      offset: HistRead param:lookback: input int
+  WriteName c
+    HistRead series:open: series float
+      offset: Binary Mod: series int
+        HistRead series:bar_index: series int
+        Const 5: const int
+  WriteName $hist@9:5
+    Binary Add: series float
+      HistRead series:high: series float
+      HistRead series:low: series float
+  WriteName d
+    HistRead name:$hist@9:5: series float
+      offset: Const 2: const int
+  Emit output[1]
+    Binary Add: series float
+      Binary Add: series float
+        Binary Add: series float
+          HistRead name:a: series float
+          HistRead name:b: series float
+        HistRead name:c: series float
+      HistRead name:d: series float

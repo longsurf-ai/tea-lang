@@ -24,7 +24,7 @@ import type {
   TypeAnnotation,
   TypeName,
 } from './nodes';
-import {NodeKind} from './nodes';
+import {Mode, NodeKind} from './nodes';
 import {Scanner} from './scanner';
 import {Tok, type Op, type TokenKind} from './tokens';
 
@@ -281,7 +281,7 @@ export class Parser {
         // `[a, b] = f()` declares; a bare `[a, b]` (a block's tuple value)
         // is an expression statement.
         if (this.assignFollowsBrackets()) {
-          return this.tupleDecl(pos, 'none');
+          return this.tupleDecl(pos, Mode.None);
         }
         break;
       case Tok.If:
@@ -373,7 +373,7 @@ export class Parser {
         return {
           kind: NodeKind.DeclStmt,
           pos,
-          mode: 'none',
+          mode: Mode.None,
           declType: typed.declType,
           target: typed.target,
           init,
@@ -396,7 +396,7 @@ export class Parser {
       return {
         kind: NodeKind.DeclStmt,
         pos,
-        mode: 'none',
+        mode: Mode.None,
         declType: null,
         target: x,
         init,

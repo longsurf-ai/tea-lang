@@ -31,5 +31,10 @@ expressions.
 - Ambient series resolve to one pooled `SeriesInput` object per host id
   (`Info.series`), shared by every use — the depth pass annotates these
   objects in place.
-- Not wired into `compile()` yet: the check phase barrier lands with the
-  noder slice, and `src/compile.ts` is the only place that ordering changes.
+- `checkPackage` is the pipeline's check stage, wired between loadPackage
+  and buildProgram behind a phase barrier in `src/compile.ts` — the only
+  module that owns stage ordering.
+- Semantic vocabularies are named constants, never bare string literals at
+  use sites: `EntryKind.*` (scope entries), `Effect.*` (native effect
+  classes), `TypeRef.*` / `JoinResult` (catalog signature markers) — the
+  Tok/NodeKind/IrOp pattern applied to the checker's domains.

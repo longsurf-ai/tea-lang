@@ -7,15 +7,31 @@ import type {ConstValue, Qualifier, Type} from './type';
 // VALUE arrives from the runtime at bind time. input.source defaults are
 // references to a series input (close), not constants — the param records
 // the default CHOICE; the bound value is the runtime's series selection.
+export const ParamDefaultKind = {
+  Const: 'const',
+  Series: 'series',
+} as const;
+
 export type ParamDefault =
-  | {readonly kind: 'const'; readonly value: ConstValue}
-  | {readonly kind: 'series'; readonly series: SeriesInput};
+  | {readonly kind: typeof ParamDefaultKind.Const; readonly value: ConstValue}
+  | {
+      readonly kind: typeof ParamDefaultKind.Series;
+      readonly series: SeriesInput;
+    };
 
 export interface ParamInput {
+  // Identity: the binding name when the input call initializes a
+  // declaration (`len = input.int(...)`), else `input@line:col`.
   readonly name: string;
+  // Settings-UI label; null renders the name.
+  readonly title: string | null;
   readonly type: Type;
   readonly defaultValue: ParamDefault | null;
   readonly constraints: ParamConstraints | null;
+  // History demanded on the bound value by the body (src[1] on an
+  // input.source param reaches the runtime's chosen series). Annotated by
+  // the depth pass; meaningful only for series-resulting params.
+  depth: HistoryDepth;
 }
 
 export interface ParamConstraints {
@@ -62,8 +78,15 @@ export interface OutputDecl {
 }
 
 // How a child Program's bars project onto the parent axis.
+export const MergeMode = {
+  Sample: 'sample',
+  Collect: 'collect', // lower-timeframe array-per-bar
+} as const;
+
+export type MergeModeName = (typeof MergeMode)[keyof typeof MergeMode];
+
 export interface MergePolicy {
-  readonly mode: 'sample' | 'collect'; // collect = lower-timeframe array-per-bar
+  readonly mode: MergeModeName;
   readonly gaps: boolean;
   readonly lookahead: boolean;
   // Invalid symbols yield na instead of a runtime error.

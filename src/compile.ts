@@ -1,4 +1,4 @@
-// Purpose: Pipeline driver — sole owner of stage order, phase barriers, and the per-compilation Errors instance: loadPackage (parse) → [typecheck reserved] → buildProgram → generate (lowering).
+// Purpose: Pipeline driver — sole owner of stage order, phase barriers, and the per-compilation Errors instance: loadPackage (parse) → checkPackage (typecheck) → buildProgram (noding) → generate (lowering).
 
 import type {CompileConfig} from './base/config';
 import {Errors, type ErrorMsg} from './base/print';
@@ -6,6 +6,7 @@ import {generate} from './codegen/codegen';
 import type {Program} from './ir/program';
 import {buildProgram, loadPackage} from './noder/noder';
 import type {File} from './syntax/nodes';
+import {checkPackage} from './typecheck/check';
 
 // Compilation either emits JavaScript or fails with the flushed, ordered
 // error batch — never both, never a partial emit.
@@ -21,8 +22,20 @@ export function compileToAst(filename: string, errors: Errors): File {
   return loadPackage([filename], errors)[0];
 }
 
-export function compileToIr(filename: string, errors: Errors): Program {
-  return buildProgram(loadPackage([filename], errors), errors);
+// Null when an earlier phase failed: the IR exists only for error-free
+// compilations, so there is no Program to return — the caller reports the
+// queued errors.
+export function compileToIr(filename: string, errors: Errors): Program | null {
+  const files = loadPackage([filename], errors);
+  if (errors.count > 0) {
+    return null;
+  }
+  const info = checkPackage(files, errors);
+  if (errors.count > 0) {
+    return null;
+  }
+  const program = buildProgram(files[0], info, errors);
+  return errors.count > 0 ? null : program;
 }
 
 export function compile(
@@ -37,7 +50,11 @@ export function compile(
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};
   }
-  const program = buildProgram(files, errors);
+  const info = checkPackage(files, errors);
+  if (errors.count > 0) {
+    return {ok: false, errors: errors.flushErrors()};
+  }
+  const program = buildProgram(files[0], info, errors);
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};
   }

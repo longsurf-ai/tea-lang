@@ -73,7 +73,9 @@ export function diffExpectations(
     .filter(expectation => !errors.some(error => matches(expectation, error)))
     .map(e => `${name}:${e.line}: missing ${e.rx}`);
   const unexpected = errors
-    .filter(error => !expectations.some(expectation => matches(expectation, error)))
+    .filter(
+      error => !expectations.some(expectation => matches(expectation, error)),
+    )
     .map(e => `${name}:${e.pos.line}:${e.pos.col}: unexpected "${e.msg}"`);
   return {missing, unexpected};
 }

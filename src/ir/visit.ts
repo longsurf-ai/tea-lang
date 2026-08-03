@@ -2,13 +2,22 @@
 
 import {fatal} from '../base/print';
 import {
+  DepthKind,
   IrKind,
+  PlaceKind,
   type HistoryDepth,
+  type HistReadExpr,
   type IrExpr,
   type IrStmt,
   type Name,
 } from './node';
-import type {IrFunc, Program, RequestEdge, SeriesInput} from './program';
+import {
+  ParamDefaultKind,
+  type IrFunc,
+  type Program,
+  type RequestEdge,
+  type SeriesInput,
+} from './program';
 
 // One traversal, deterministic first-reachable order. Visited sets make
 // shared declaration objects (Names, funcs, edges) count once; request
@@ -19,6 +28,7 @@ interface Reach {
   readonly funcs: Set<IrFunc>;
   readonly requests: Set<RequestEdge>;
   readonly series: Set<SeriesInput>;
+  readonly reads: HistReadExpr[];
   maxSlot: number;
 }
 
@@ -28,12 +38,14 @@ function reachProgram(program: Program): Reach {
     funcs: new Set(),
     requests: new Set(),
     series: new Set(),
+    reads: [],
     maxSlot: -1,
   };
   for (const param of program.params) {
-    if (param.defaultValue?.kind === 'series') {
+    if (param.defaultValue?.kind === ParamDefaultKind.Series) {
       reach.series.add(param.defaultValue.series);
     }
+    visitDepth(param.depth, reach);
   }
   for (const output of program.outputs) {
     for (const arg of output.bindArgs) {
@@ -86,9 +98,9 @@ function noteRequest(request: RequestEdge, reach: Reach): void {
 }
 
 function visitDepth(depth: HistoryDepth, reach: Reach): void {
-  if (depth.kind === 'bound') {
+  if (depth.kind === DepthKind.Bound) {
     visitExpr(depth.expr, reach);
-  } else if (depth.kind === 'capped') {
+  } else if (depth.kind === DepthKind.Capped) {
     visitExpr(depth.bars, reach);
   }
 }
@@ -122,14 +134,17 @@ function visitStmt(stmt: IrStmt, reach: Reach): void {
 function visitExpr(expr: IrExpr, reach: Reach): void {
   switch (expr.kind) {
     case IrKind.Const:
+    case IrKind.OutputRef:
+      // Output declarations live on Program.outputs; a ref has no children.
       return;
     case IrKind.HistRead: {
+      reach.reads.push(expr);
       const place = expr.place;
-      if (place.kind === 'name') {
+      if (place.kind === PlaceKind.Name) {
         noteName(place.name, reach);
-      } else if (place.kind === 'series') {
+      } else if (place.kind === PlaceKind.Series) {
         visitSeries(place.series, reach);
-      } else if (place.kind === 'request') {
+      } else if (place.kind === PlaceKind.Request) {
         noteRequest(place.request, reach);
       }
       // params are host-contract declarations already listed on the Program
@@ -263,4 +278,10 @@ export function seriesInputsOf(program: Program): readonly SeriesInput[] {
 
 export function slotCountOf(program: Program): number {
   return reachProgram(program).maxSlot + 1;
+}
+
+// Every HistRead in the program, in traversal order — the depth pass's
+// input: each read's place accumulates the history the offsets demand.
+export function histReadsOf(program: Program): readonly HistReadExpr[] {
+  return reachProgram(program).reads;
 }

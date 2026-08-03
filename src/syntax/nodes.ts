@@ -90,8 +90,15 @@ export interface ExprStmt extends Node {
 
 // Persistence axis, orthogonal to qualifiers: plain re-evaluates its
 // initializer each bar, var carries the previous iteration's value forward,
-// varip carries it across ticks without rollback. 'const' is a Tea extension.
-export type DeclMode = 'none' | 'var' | 'varip' | 'const';
+// varip carries it across ticks without rollback. Const is a Tea extension.
+export const Mode = {
+  None: 'none',
+  Var: 'var',
+  Varip: 'varip',
+  Const: 'const',
+} as const;
+
+export type DeclMode = (typeof Mode)[keyof typeof Mode];
 
 // `=` declares: `var float b = 1.4`, `[macd, signal] = ta.macd(...)`.
 export interface DeclStmt extends Node {
