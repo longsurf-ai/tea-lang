@@ -26,13 +26,16 @@ import {
   type SwitchArm,
 } from '../ir/node';
 import {
+  MergeMode,
   ParamDefaultKind,
   type IrFunc,
+  type MergePolicy,
   type OutputDecl,
   type ParamConstraints,
   type ParamDefault,
   type ParamInput,
   type Program,
+  type RequestEdge,
 } from '../ir/program';
 import {
   NaType,
@@ -106,6 +109,11 @@ class Noder {
   // per-bar write (only when the name is never reassigned).
   private readonly paramRefs = new Map<IrName, ParamInput>();
   private readonly outputRefs = new Map<IrName, OutputDecl>();
+  // Alias bindings: a never-reassigned declaration whose initializer is a
+  // current-bar read of a STABLE place (series, param, request — never a
+  // Name, whose later writes would leak through) binds the name to that
+  // place, so history offsets land on the place itself.
+  private readonly aliasRefs = new Map<IrName, Place>();
   // Per-top-statement queues: synthetic history writes go before the
   // statement, output Emits after it.
   private hoisted: IrStmt[] = [];
@@ -118,6 +126,12 @@ class Noder {
   // per IrFunc body being noded. Every call site mints the next slot of the
   // frame it sits in — the sub-frame selector within that frame.
   private readonly slots: number[] = [0];
+  // Request edges per Program level: the parent's list at the bottom, one
+  // pushed per child capture being noded (nested requests belong to the
+  // child).
+  private readonly requestLevels: RequestEdge[][] = [[]];
+  private readonly requestOf = new Map<syntax.CallExpr, RequestEdge>();
+  private version = 1;
 
   // The side-table view for the context being noded: the Info itself for
   // the main body, a FuncInstance's tables inside its body.
@@ -146,10 +160,11 @@ class Noder {
       body.push(...this.hoisted, ...stmts, ...this.emitted);
     }
     const versionNumber = Number(file.version ?? '1');
+    this.version = Number.isFinite(versionNumber) ? versionNumber : 1;
     const program: Program = {
-      version: Number.isFinite(versionNumber) ? versionNumber : 1,
+      version: this.version,
       params: this.params,
-      requests: [],
+      requests: this.requestLevels[0],
       outputs: this.outputs,
       // Hoisting const/input/simple work out of the bar loop is a later
       // optimization; everything runs in the per-bar body for now.
@@ -277,6 +292,17 @@ class Noder {
     // declaration: refs resolve at init time, never per bar.
     if (init.kind === IrKind.OutputRef && rebindable && d.mode === Mode.None) {
       this.outputRefs.set(name, init.output);
+      return [];
+    }
+
+    if (
+      init.kind === IrKind.HistRead &&
+      init.offset === null &&
+      init.place.kind !== PlaceKind.Name &&
+      rebindable &&
+      d.mode === Mode.None
+    ) {
+      this.aliasRefs.set(name, init.place);
       return [];
     }
 
@@ -557,6 +583,17 @@ class Noder {
           output,
         };
       }
+      const alias = this.aliasRefs.get(name);
+      if (alias !== undefined) {
+        return {
+          kind: IrKind.HistRead,
+          pos: e.pos,
+          type: tv.type,
+          qualifier: tv.qualifier,
+          place: alias,
+          offset: null,
+        };
+      }
       return this.read(name, e.pos);
     }
     // A selector that is not ambient and not folded is a UDT field read.
@@ -632,6 +669,8 @@ class Noder {
       }
       case Effect.Output:
         return this.nodeOutputCall(c, resolved);
+      case Effect.Request:
+        return this.nodeRequest(c, resolved, tv);
       case Effect.Declaration:
         return fatal(
           'declaration call in expression position reached the noder',
@@ -798,6 +837,125 @@ class Noder {
       return name !== undefined ? this.read(name, stmt.pos) : null;
     }
     return null;
+  }
+
+  // ---- requests -------------------------------------------------------------
+
+  // A request.* call site: the captured expression compiles into a CHILD
+  // Program — its own context, frame, slots, and request list — whose
+  // designated result the runtime merges onto the parent axis. The call
+  // itself becomes a read of the request place.
+  private nodeRequest(
+    c: syntax.CallExpr,
+    resolved: ResolvedCall,
+    tv: TypeAndValue,
+  ): IrExpr {
+    const existing = this.requestOf.get(c);
+    if (existing !== undefined) {
+      return this.requestRead(c, existing, tv);
+    }
+    const capture = this.info.captures.get(c);
+    if (capture === undefined) {
+      return fatal('request call reached the noder without a capture');
+    }
+    const argExpr = (paramName: string): syntax.Expr | null => {
+      const index = resolved.native.params.findIndex(p => p.name === paramName);
+      return index === -1 ? null : (resolved.args[index] ?? null);
+    };
+    const argValue = (paramName: string): ConstValue | null => {
+      const expr = argExpr(paramName);
+      return expr !== null ? this.tvOf(expr).value : null;
+    };
+    const captureIndex = resolved.native.params.findIndex(p => p.capture);
+    const captureExpr = resolved.args[captureIndex];
+    const symbolExpr = argExpr('symbol');
+    const timeframeExpr = argExpr('timeframe');
+    if (captureExpr == null || symbolExpr === null || timeframeExpr === null) {
+      return fatal('request call matched without its required arguments');
+    }
+
+    // Parent-context pieces first.
+    const symbol = this.nodeExpr(symbolExpr);
+    const timeframe = this.nodeExpr(timeframeExpr);
+    const calcBars = argExpr('calc_bars_count');
+    const currency = argValue('currency');
+    const merge: MergePolicy = {
+      mode: MergeMode.Sample,
+      gaps: argValue('gaps') === true,
+      lookahead: argValue('lookahead') === true,
+      ignoreInvalidSymbol: argValue('ignore_invalid_symbol') === true,
+      currency: typeof currency === 'string' ? currency : null,
+      calcBarsCount: calcBars !== null ? this.nodeExpr(calcBars) : null,
+    };
+
+    // The child context: the capture's side tables, a fresh frame and
+    // request level. History-on-expression synthesis stays disabled inside
+    // (nesting), exactly as in function bodies.
+    const resultName: IrName = {
+      name: '$result',
+      storage: Storage.PerBar,
+      type: capture.resultType,
+      qualifier: Qualifier.Series,
+      depth: {kind: DepthKind.None},
+      init: null,
+    };
+    const savedTables = this.tables;
+    this.tables = capture.tables;
+    this.slots.push(0);
+    this.requestLevels.push([]);
+    this.nesting += 1;
+    const childValue = this.nodeExpr(captureExpr);
+    this.nesting -= 1;
+    const childRequests = this.requestLevels.pop();
+    this.slots.pop();
+    this.tables = savedTables;
+
+    const child: Program = {
+      version: this.version,
+      // Bind-time params are compilation-global: a child references the
+      // parent's ParamInput objects directly and declares none of its own.
+      params: [],
+      requests: childRequests ?? [],
+      outputs: [],
+      init: [],
+      body: [
+        {
+          kind: IrKind.WriteName,
+          pos: captureExpr.pos,
+          name: resultName,
+          value: childValue,
+        },
+      ],
+    };
+    resolveDepths(child);
+
+    const edge: RequestEdge = {
+      symbol,
+      timeframe,
+      merge,
+      resultName,
+      resultType: capture.resultType,
+      depth: {kind: DepthKind.None},
+      child,
+    };
+    this.requestLevels[this.requestLevels.length - 1].push(edge);
+    this.requestOf.set(c, edge);
+    return this.requestRead(c, edge, tv);
+  }
+
+  private requestRead(
+    c: syntax.CallExpr,
+    edge: RequestEdge,
+    tv: TypeAndValue,
+  ): HistReadExpr {
+    return {
+      kind: IrKind.HistRead,
+      pos: c.pos,
+      type: tv.type,
+      qualifier: tv.qualifier,
+      place: {kind: PlaceKind.Request, request: edge},
+      offset: null,
+    };
   }
 
   // ---- function stencils ----------------------------------------------------

@@ -10,7 +10,7 @@ import {
   type HistReadExpr,
   type WriteNameStmt,
 } from '../ir/node';
-import {ParamDefaultKind} from '../ir/program';
+import {MergeMode, ParamDefaultKind} from '../ir/program';
 import {funcsOf, namesOf, seriesInputsOf, slotCountOf} from '../ir/visit';
 import {buildText, mustBuild} from './testing';
 import {DEFAULT_MAX_BARS_BACK} from './depth';
@@ -216,6 +216,56 @@ describe('function stencils', () => {
       expect(write.value.args.length).toBe(3);
       expect(write.value.args[1].kind).toBe(IrKind.Const);
     }
+  });
+});
+
+describe('requests', () => {
+  test('a request compiles its expression into a child Program', () => {
+    const program = mustBuild(
+      'd = request.security("AAPL", "D", close)\nplot(d)',
+    );
+    expect(program.requests.length).toBe(1);
+    const edge = program.requests[0];
+    expect(edge.merge.mode).toBe(MergeMode.Sample);
+    expect(edge.resultName.name).toBe('$result');
+    expect(edge.child.body.length).toBe(1);
+    expect(edge.child.body[0].kind).toBe(IrKind.WriteName);
+    // Context isolation: the child owns its close; the parent never reads
+    // close directly here.
+    expect(seriesInputsOf(edge.child).map(s => s.id)).toEqual(['close']);
+    expect(seriesInputsOf(program)).toEqual([]);
+  });
+
+  test('parent history on the request result annotates the edge depth', () => {
+    const program = mustBuild(
+      'd = request.security("AAPL", "D", close)\np = d[2]\nplot(p)',
+    );
+    expect(program.requests[0].depth).toEqual({kind: DepthKind.Const, bars: 2});
+  });
+
+  test('bind-time inputs cross into captures; prelude state nests', () => {
+    const program = mustBuild(
+      [
+        'len = input.int(9)',
+        'd = request.security("AAPL", "D", ta.ema(close, len))',
+        'plot(d)',
+      ].join('\n'),
+    );
+    expect(program.params.map(p => p.name)).toEqual(['len']);
+    const child = program.requests[0].child;
+    // The ema stencil lives in the child's call graph, not the parent's.
+    expect(funcsOf(child).map(f => f.name)).toEqual(['ta.ema']);
+    expect(funcsOf(program)).toEqual([]);
+  });
+
+  test('script series variables cannot cross into captures', () => {
+    const {program, errors} = buildText(
+      'x = close * 2\nd = request.security("A", "D", x)\nplot(d)',
+    );
+    expect(program).toBeNull();
+    expect(
+      errors.some(e => e.msg.includes('cannot reference script variable')),
+    ).toBe(true);
   });
 });
 

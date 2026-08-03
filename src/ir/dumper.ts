@@ -122,6 +122,31 @@ export function dumpProgram(program: Program): string {
     }
   });
 
+  requestsOf(program).forEach((edge, i) => {
+    const m = edge.merge;
+    const flags = [
+      `mode=${m.mode}`,
+      m.gaps ? 'gaps' : null,
+      m.lookahead ? 'lookahead' : null,
+      m.ignoreInvalidSymbol ? 'ignore_invalid' : null,
+      m.currency !== null ? `currency=${m.currency}` : null,
+      `result=${formatType(edge.resultType)}`,
+    ]
+      .filter(part => part !== null)
+      .join(' ');
+    dumpDepthLine(`request[${i}] ${flags}`, edge.depth, '', out, labels);
+    dumpExpr(edge.symbol, 'symbol: ', '  ', out, labels);
+    dumpExpr(edge.timeframe, 'timeframe: ', '  ', out, labels);
+    if (m.calcBarsCount !== null) {
+      dumpExpr(m.calcBarsCount, 'calc_bars_count: ', '  ', out, labels);
+    }
+    // The child is a full Program with its own label space.
+    out.push('  child:');
+    for (const line of dumpProgram(edge.child).split('\n')) {
+      out.push(`    ${line}`);
+    }
+  });
+
   for (const name of namesOf(program)) {
     const line =
       `name ${labels.name(name)}: ${name.storage} ${name.qualifier} ` +

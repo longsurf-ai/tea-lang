@@ -127,6 +127,10 @@ export interface FuncInstance {
   // Annotated once the body has been checked.
   resultType: Type;
   resultQualifier: Qualifier;
+  // True when the body reads ambient series or outer-scope variables
+  // directly (not through params). Such instances are checked against ONE
+  // context and cannot be shared into a request's child context.
+  touchesContext: boolean;
 }
 
 export interface ResolvedUserCall {
@@ -135,9 +139,19 @@ export interface ResolvedUserCall {
   readonly args: readonly (syntax.Expr | null)[];
 }
 
+// A request.* call site's captured expression, checked in a CHILD context:
+// its own side tables and its own ambient series pool (close inside the
+// expression is the child symbol's close). The noder compiles these tables
+// into the child Program.
+export interface RequestCapture {
+  readonly tables: SideTables;
+  readonly resultType: Type;
+}
+
 // The checker's results (types2 Info): the noder consumes these and never
 // re-checks.
 export interface Info extends SideTables {
+  readonly captures: Map<syntax.CallExpr, RequestCapture>;
   readonly udtDefaults: Map<UdtType, ReadonlyMap<string, syntax.Expr>>;
   // Ambient context series touched by the script, one object per host id;
   // noded Places reference these objects and the depth pass annotates them.
@@ -202,6 +216,7 @@ class Checker {
 
   private readonly info: Info = {
     ...newSideTables(),
+    captures: new Map(),
     udtDefaults: new Map(),
     series: new Map(),
     reassigned: this.reassigned,
@@ -231,6 +246,11 @@ class Checker {
   private readonly reassignedCollected = new Set<syntax.FuncDecl>();
   private funcBoundary: Scope | null = null;
   private preludeScopeCache: Scope | null = null;
+  // The ambient pool reads resolve into: the Info's pool for the script's
+  // own context, a fresh pool inside a request capture (child context).
+  private seriesPool: Map<string, SeriesInput> = this.info.series;
+  private captureDepth = 0;
+  private readonly instanceStack: FuncInstance[] = [];
 
   constructor(private readonly errors: Errors) {}
 
@@ -779,13 +799,37 @@ class Checker {
     const entry = this.scope.lookup(n.value);
     if (entry !== null) {
       switch (entry.kind) {
-        case EntryKind.Name:
+        case EntryKind.Name: {
+          if (
+            this.funcBoundary !== null &&
+            !this.scope.resolvesWithin(n.value, this.funcBoundary)
+          ) {
+            // Reading an outer-scope variable pins the instance to the
+            // context it was checked in.
+            const top = this.instanceStack[this.instanceStack.length - 1];
+            if (top !== undefined) {
+              top.touchesContext = true;
+            }
+          } else if (
+            this.captureDepth > 0 &&
+            this.funcBoundary === null &&
+            !qualifierLE(entry.name.qualifier, Qualifier.Input)
+          ) {
+            // Only bind-time values cross contexts; per-context state must
+            // be recomputed inside the expression.
+            this.error(
+              n.pos,
+              `request expressions cannot reference script variable '${n.value}'; only bind-time (input) values cross contexts`,
+            );
+            return INVALID_TV;
+          }
           this.tables.uses.set(n, entry.name);
           return {
             type: entry.name.type,
             qualifier: entry.name.qualifier,
             value: entry.constValue,
           };
+        }
         case EntryKind.Func:
           this.error(n.pos, `'${n.value}' is a function; call it`);
           return INVALID_TV;
@@ -811,7 +855,7 @@ class Checker {
   // pool: one SeriesInput object per host id, shared by every use.
   private nativeVarTv(nv: NativeVar, node: syntax.Expr): TypeAndValue {
     if (nv.qualifier !== Qualifier.Const) {
-      let series = this.info.series.get(nv.name);
+      let series = this.seriesPool.get(nv.name);
       if (series === undefined) {
         series = {
           id: nv.name,
@@ -819,9 +863,15 @@ class Checker {
           qualifier: nv.qualifier,
           depth: {kind: DepthKind.None},
         };
-        this.info.series.set(nv.name, series);
+        this.seriesPool.set(nv.name, series);
       }
       this.tables.ambient.set(node, series);
+      // An ambient read inside a function body pins that instance to the
+      // context it was checked in.
+      const top = this.instanceStack[this.instanceStack.length - 1];
+      if (top !== undefined) {
+        top.touchesContext = true;
+      }
     }
     return {type: nv.type, qualifier: nv.qualifier, value: nv.value};
   }
@@ -1439,6 +1489,17 @@ class Checker {
       instance = this.instantiate(template, displayName, base, aligned, argTvs);
       bySig.set(sigKey, instance);
     }
+    const top = this.instanceStack[this.instanceStack.length - 1];
+    if (top !== undefined && instance.touchesContext) {
+      top.touchesContext = true;
+    }
+    if (this.captureDepth > 0 && instance.touchesContext) {
+      this.error(
+        c.pos,
+        `'${displayName}' reads the script's context directly and cannot be used in a request expression; pass its inputs as parameters`,
+      );
+      return INVALID_TV;
+    }
     this.tables.userCalls.set(c, {instance, args: aligned});
     return {
       type: instance.resultType,
@@ -1547,11 +1608,14 @@ class Checker {
       tables,
       resultType: InvalidType,
       resultQualifier: Qualifier.Const,
+      touchesContext: false,
     };
+    this.instanceStack.push(instance);
     const bodyTv =
       template.body.kind === NodeKind.Block
         ? this.checkBlock(template.body)
         : this.checkExpr(template.body);
+    this.instanceStack.pop();
     instance.resultType = bodyTv.type;
     instance.resultQualifier = bodyTv.qualifier;
 
@@ -1586,6 +1650,9 @@ class Checker {
       if (outcome.ok) {
         this.tables.calls.set(c, {native: candidate, args: outcome.args});
         this.checkPlacement(candidate, c.pos);
+        if (candidate.effect === Effect.Request) {
+          return this.checkRequest(c, candidate, outcome.args);
+        }
         return this.callResultTv(candidate, outcome.args);
       }
       if (firstReason === null) {
@@ -1703,12 +1770,49 @@ class Checker {
     return {ok: true, args: aligned};
   }
 
+  // A request call: the captured expression re-checks in a CHILD context —
+  // fresh side tables and a fresh ambient pool, so `close` inside it is the
+  // child symbol's close. The call's result takes the capture's type and is
+  // always series (merged per parent bar).
+  private checkRequest(
+    c: syntax.CallExpr,
+    native: NativeFunc,
+    args: readonly (syntax.Expr | null)[],
+  ): TypeAndValue {
+    const captureIndex = native.params.findIndex(p => p.capture);
+    const expr = args[captureIndex];
+    if (expr === null || expr === undefined) {
+      return fatal(`request native '${native.name}' matched without a capture`);
+    }
+    const savedTables = this.tables;
+    const savedPool = this.seriesPool;
+    const tables = newSideTables();
+    this.tables = tables;
+    this.seriesPool = new Map();
+    this.captureDepth += 1;
+    const captureTv = this.checkExpr(expr);
+    this.captureDepth -= 1;
+    this.seriesPool = savedPool;
+    this.tables = savedTables;
+    if (captureTv.type.kind === TypeKind.Void) {
+      this.error(expr.pos, 'request expression has no value');
+      return INVALID_TV;
+    }
+    this.info.captures.set(c, {tables, resultType: captureTv.type});
+    return {type: captureTv.type, qualifier: Qualifier.Series, value: null};
+  }
+
   private checkPlacement(native: NativeFunc, pos: Pos): void {
     const topLevelOnly =
       native.effect === Effect.Param ||
       native.effect === Effect.Output ||
       native.effect === Effect.Declaration;
-    if (topLevelOnly && (this.blockDepth > 0 || this.funcBoundary !== null)) {
+    if (
+      topLevelOnly &&
+      (this.blockDepth > 0 ||
+        this.funcBoundary !== null ||
+        this.captureDepth > 0)
+    ) {
       this.error(
         pos,
         `'${native.name}' can only be called at the top level of the script`,

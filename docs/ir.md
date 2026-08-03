@@ -203,6 +203,14 @@ construction.
 - A value-position loop yields the last completed iteration's block value,
   `na` if no iteration completed; `break` skips the current iteration's
   value.
+- Request captures: the expression re-checks and nodes in a child context.
+  Only bind-time (input) script values cross contexts; series/simple script
+  variables must be recomputed inside the expression, and functions that
+  read the context directly (ambient series, outer-scope variables) are
+  rejected — pass context through parameters. Bind-time params are
+  compilation-global: the child references the parent's ParamInputs and
+  declares none of its own. Extracting the dependency closure of script
+  variables into the child automatically is a possible later extension.
 - Libraries link at check time: imports resolve against checked library
   sources and instantiate into the importer's Program. The Program is always
   a closed script; a distributable compiled-library artifact, if ever

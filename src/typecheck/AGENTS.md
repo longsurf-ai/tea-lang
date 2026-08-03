@@ -37,6 +37,12 @@ expressions.
 - Ambient series resolve to one pooled `SeriesInput` object per host id
   (`Info.series`), shared by every use — the depth pass annotates these
   objects in place.
+- Request captures re-check in a CHILD context (fresh side tables and a
+  fresh ambient pool): only bind-time (⊑ input) script values cross
+  contexts; series/simple script variables and functions that read the
+  context directly (ambient series or outer-scope variables, tracked by
+  `FuncInstance.touchesContext`) are rejected with clean errors. Placement
+  rules treat captures like function bodies.
 - `checkPackage` is the pipeline's check stage, wired between loadPackage
   and buildProgram behind a phase barrier in `src/compile.ts` — the only
   module that owns stage ordering.

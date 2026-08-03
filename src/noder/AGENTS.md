@@ -32,6 +32,17 @@ checker's `Info` side tables; `depth.ts` is the depth resolution pass.
   bind-time offset stays `bound`; anything dynamic or mixed falls back to
   `capped` with the `indicator(max_bars_back=…)` cap or the engine default.
   Depths annotate the shared place objects (Names, series, params) in place.
+- Alias bindings: a never-reassigned plain declaration whose initializer is
+  a current-bar read of a STABLE place (series, param, request — never a
+  Name, whose later writes would leak through) binds the name to the place,
+  so history offsets land on the place itself (`prev = daily[1]` reaches
+  the request edge's depth).
+- A request.* call site nodes into a `RequestEdge`: symbol/timeframe/merge
+  evaluate in the parent context; the captured expression nodes against the
+  checker's child tables into a child Program with its own frame, slot
+  counter, request list, and `$result` name. Bind-time params stay
+  compilation-global — a child references the parent's ParamInput objects
+  and declares none of its own.
 - One IrFunc per checker FuncInstance, its body noded against the
   instance's side tables under its own frame-local slot counter: every
   CallFunc site mints the next slot of the frame it sits in — the sub-frame

@@ -1,0 +1,61 @@
+Program version=1
+param len: int title="Length" default=9 depth=none
+series close: series float depth=none
+series syminfo.tickerid: simple string depth=none
+output[0] indicator static{title="Request"}
+output[1] plot static{title="Gap"} channels{series: float}
+output[2] plot static{title="PrevDaily"} channels{series: float}
+request[0] mode=sample result=float depth=const(1)
+  symbol: HistRead series:syminfo.tickerid: simple string
+  timeframe: Const "D": const string
+  child:
+    Program version=1 slots=1
+    series close: series float depth=none
+    name $result: perBar series float depth=none
+    name source: perBar series float depth=none
+    name length: perBar input int depth=none
+    name alpha: perBar input float depth=none
+    name e: var series float depth=none
+      init: Const na: const na
+    func ta.ema(source: series float, length: input int): series float
+      body: BlockExpr: series float
+        WriteName alpha
+          Binary Div: input float
+            Const 2: const float
+            Binary Add: input int
+              HistRead name:length: input int
+              Const 1: const int
+        WriteName e
+          Cond: series float
+            cond: CallNative na: series bool
+              HistRead name:e: series float
+            then: HistRead name:source: series float
+            else: Binary Add: series float
+              Binary Mul: series float
+                HistRead name:alpha: input float
+                HistRead name:source: series float
+              Binary Mul: series float
+                Binary Sub: input float
+                  Const 1: const int
+                  HistRead name:alpha: input float
+                HistRead name:e: series float
+        value: HistRead name:e: series float
+    body:
+      WriteName $result
+        CallFunc ta.ema slot=0: series float
+          HistRead series:close: series float
+          HistRead param:len: input int
+name gap: perBar series float depth=none
+name prev: perBar series float depth=none
+body:
+  WriteName gap
+    Binary Sub: series float
+      HistRead series:close: series float
+      HistRead request[0]: series float
+  WriteName prev
+    HistRead request[0]: series float
+      offset: Const 1: const int
+  Emit output[1]
+    HistRead name:gap: series float
+  Emit output[2]
+    HistRead name:prev: series float

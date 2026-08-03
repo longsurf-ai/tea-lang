@@ -38,6 +38,10 @@ export interface NativeParam {
   readonly constLiteral: boolean;
   // Collects all remaining arguments (math.max(a, b, ...)); last param only.
   readonly variadic: boolean;
+  // Expression capture (request's expression argument): the checker checks
+  // this argument in a child context and the noder compiles it into a child
+  // Program instead of evaluating it in place.
+  readonly capture: boolean;
 }
 
 // The effect class selects the compilation and runtime protocol of a call:
@@ -99,7 +103,7 @@ function req(
   name: string,
   type: NativeTypeRef,
   qualifierCap: Qualifier,
-  opts: {literal?: boolean; variadic?: boolean} = {},
+  opts: {literal?: boolean; variadic?: boolean; capture?: boolean} = {},
 ): NativeParam {
   return {
     name,
@@ -108,6 +112,7 @@ function req(
     required: true,
     constLiteral: opts.literal ?? false,
     variadic: opts.variadic ?? false,
+    capture: opts.capture ?? false,
   };
 }
 
@@ -115,7 +120,7 @@ function opt(
   name: string,
   type: NativeTypeRef,
   qualifierCap: Qualifier,
-  opts: {literal?: boolean; variadic?: boolean} = {},
+  opts: {literal?: boolean; variadic?: boolean; capture?: boolean} = {},
 ): NativeParam {
   return {...req(name, type, qualifierCap, opts), required: false};
 }
@@ -235,6 +240,10 @@ function buildVars(): NativeVar[] {
     variable('last_bar_index', IntType, Qualifier.Series),
     variable('time', IntType, Qualifier.Series),
     variable('timenow', IntType, Qualifier.Series),
+    variable('barmerge.gaps_on', BoolType, Qualifier.Const, true),
+    variable('barmerge.gaps_off', BoolType, Qualifier.Const, false),
+    variable('barmerge.lookahead_on', BoolType, Qualifier.Const, true),
+    variable('barmerge.lookahead_off', BoolType, Qualifier.Const, false),
     variable('math.pi', FloatType, Qualifier.Const, Math.PI),
     variable('math.e', FloatType, Qualifier.Const, Math.E),
     variable('syminfo.tickerid', StringType, Qualifier.Simple),
@@ -619,6 +628,28 @@ function buildFuncs(): NativeFunc[] {
       ),
     );
   }
+
+  // Context capture. The declared result type is a placeholder: a request's
+  // result takes the captured expression's type, resolved per call site by
+  // the checker; the result qualifier is always series.
+  funcs.push(
+    func(
+      'request.security',
+      [
+        req('symbol', StringType, Qualifier.Series),
+        req('timeframe', StringType, Qualifier.Series),
+        req('expression', TypeRef.Any, Qualifier.Series, {capture: true}),
+        opt('gaps', BoolType, Qualifier.Simple),
+        opt('lookahead', BoolType, Qualifier.Simple),
+        opt('ignore_invalid_symbol', BoolType, Qualifier.Const),
+        opt('currency', StringType, Qualifier.Const),
+        opt('calc_bars_count', IntType, Qualifier.Const),
+      ],
+      FloatType,
+      Qualifier.Series,
+      Effect.Request,
+    ),
+  );
 
   // na handling and conversions.
   funcs.push(
