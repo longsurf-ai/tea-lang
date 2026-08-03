@@ -25,7 +25,13 @@ export function tokenize(
   const tokens: Token[] = [];
   do {
     scanner.next();
-    tokens.push({tok: scanner.tok, lit: scanner.lit, pos: scanner.pos});
+    tokens.push({
+      tok: scanner.tok,
+      lit: scanner.lit,
+      kind: scanner.kind,
+      op: scanner.op,
+      pos: scanner.pos,
+    });
   } while (scanner.tok !== 'eof');
   return tokens;
 }
