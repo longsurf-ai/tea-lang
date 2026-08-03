@@ -32,5 +32,10 @@ checker's `Info` side tables; `depth.ts` is the depth resolution pass.
   bind-time offset stays `bound`; anything dynamic or mixed falls back to
   `capped` with the `indicator(max_bars_back=…)` cap or the engine default.
   Depths annotate the shared place objects (Names, series, params) in place.
+- One IrFunc per checker FuncInstance, its body noded against the
+  instance's side tables under its own frame-local slot counter: every
+  CallFunc site mints the next slot of the frame it sits in — the sub-frame
+  selector. Omitted arguments node the instance's default expression at the
+  call site; defaults must not reference sibling params.
 - Program.init stays empty for now: hoisting const/input/simple work out of
   the bar loop is a later optimization, not a correctness requirement.

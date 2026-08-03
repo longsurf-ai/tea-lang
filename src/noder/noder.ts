@@ -27,6 +27,7 @@ import {
 } from '../ir/node';
 import {
   ParamDefaultKind,
+  type IrFunc,
   type OutputDecl,
   type ParamConstraints,
   type ParamDefault,
@@ -49,7 +50,12 @@ import type * as syntax from '../syntax/nodes';
 import {parse} from '../syntax/syntax';
 import type {Op} from '../syntax/tokens';
 import {Effect} from '../typecheck/catalog';
-import type {Info, ResolvedCall} from '../typecheck/check';
+import type {
+  FuncInstance,
+  Info,
+  ResolvedCall,
+  SideTables,
+} from '../typecheck/check';
 import {resolveDepths} from './depth';
 
 // Frontend orchestrator: one parse per file.
@@ -105,11 +111,31 @@ class Noder {
   private hoisted: IrStmt[] = [];
   private emitted: IrStmt[] = [];
   private nesting = 0;
+  // One IrFunc per checker instance (per-signature stencil); bodies node
+  // against the instance's own side tables.
+  private readonly instanceFuncs = new Map<FuncInstance, IrFunc>();
+  // Frame-local slot counters: the program frame at the bottom, one counter
+  // per IrFunc body being noded. Every call site mints the next slot of the
+  // frame it sits in — the sub-frame selector within that frame.
+  private readonly slots: number[] = [0];
+
+  // The side-table view for the context being noded: the Info itself for
+  // the main body, a FuncInstance's tables inside its body.
+  private tables: SideTables;
 
   constructor(
     private readonly info: Info,
     private readonly errors: Errors,
-  ) {}
+  ) {
+    this.tables = info;
+  }
+
+  private mintSlot(): number {
+    const top = this.slots.length - 1;
+    const id = this.slots[top];
+    this.slots[top] += 1;
+    return id;
+  }
 
   build(file: syntax.File): Program {
     const body: IrStmt[] = [];
@@ -135,7 +161,7 @@ class Noder {
   }
 
   private tvOf(e: syntax.Expr): TypeAndValue {
-    const tv = this.info.types.get(e);
+    const tv = this.tables.types.get(e);
     if (tv === undefined) {
       return fatal(`unchecked expression reached the noder: ${e.kind}`);
     }
@@ -192,7 +218,7 @@ class Noder {
   private nodeExprStmt(stmt: syntax.ExprStmt): IrStmt[] {
     const call = unwrapCall(stmt.x);
     if (call !== null) {
-      const resolved = this.info.calls.get(call);
+      const resolved = this.tables.calls.get(call);
       if (resolved !== undefined) {
         if (resolved.native.effect === Effect.Declaration) {
           this.nodeDeclarationCall(resolved);
@@ -220,7 +246,7 @@ class Noder {
     if (d.target.kind === NodeKind.TuplePattern) {
       return this.nodeTupleDecl(d, d.target);
     }
-    const name = this.info.defs.get(d.target);
+    const name = this.tables.defs.get(d.target);
     if (name === undefined) {
       return fatal(
         `undeclared decl target reached the noder: ${d.target.value}`,
@@ -232,7 +258,7 @@ class Noder {
     // param reads, no per-bar write exists.
     const call = unwrapCall(d.init);
     if (call !== null && rebindable && d.mode === Mode.None) {
-      const resolved = this.info.calls.get(call);
+      const resolved = this.tables.calls.get(call);
       if (resolved !== undefined && resolved.native.effect === Effect.Param) {
         const param = this.ensureParam(call, resolved, name.name);
         this.paramRefs.set(name, param);
@@ -291,7 +317,7 @@ class Noder {
       },
     ];
     pattern.elems.forEach((elem, i) => {
-      const name = this.info.defs.get(elem);
+      const name = this.tables.defs.get(elem);
       if (name === undefined) {
         return fatal(
           `undeclared tuple element reached the noder: ${elem.value}`,
@@ -317,7 +343,7 @@ class Noder {
   private nodeAssign(a: syntax.AssignStmt): IrStmt[] {
     const value = this.nodeExpr(a.value);
     if (a.target.kind === NodeKind.Name) {
-      const name = this.info.uses.get(a.target);
+      const name = this.tables.uses.get(a.target);
       if (name === undefined) {
         return fatal(
           `unresolved assign target reached the noder: ${a.target.value}`,
@@ -423,7 +449,7 @@ class Noder {
       case NodeKind.IfExpr:
         return this.nodeIf(e, tv);
       case NodeKind.ForExpr: {
-        const index = this.info.defs.get(e.index);
+        const index = this.tables.defs.get(e.index);
         if (index === undefined) {
           return fatal('unresolved loop index reached the noder');
         }
@@ -443,7 +469,7 @@ class Noder {
         const targetNames =
           e.target.kind === NodeKind.Name ? [e.target] : e.target.elems;
         const targets = targetNames.map(n => {
-          const name = this.info.defs.get(n);
+          const name = this.tables.defs.get(n);
           if (name === undefined) {
             return fatal('unresolved for-in target reached the noder');
           }
@@ -493,7 +519,7 @@ class Noder {
     e: syntax.Name | syntax.SelectorExpr,
     tv: TypeAndValue,
   ): IrExpr {
-    const series = this.info.ambient.get(e);
+    const series = this.tables.ambient.get(e);
     if (series !== undefined) {
       const place: Place = {kind: PlaceKind.Series, series};
       return {
@@ -506,7 +532,7 @@ class Noder {
       };
     }
     if (e.kind === NodeKind.Name) {
-      const name = this.info.uses.get(e);
+      const name = this.tables.uses.get(e);
       if (name === undefined) {
         return fatal(`unresolved name reached the noder: ${e.value}`);
       }
@@ -545,7 +571,7 @@ class Noder {
   }
 
   private nodeCall(c: syntax.CallExpr, tv: TypeAndValue): IrExpr {
-    const constructed = this.info.news.get(c);
+    const constructed = this.tables.news.get(c);
     if (constructed !== undefined) {
       const defaults = this.info.udtDefaults.get(constructed.udt);
       const args = constructed.udt.fields.map((field, i) => {
@@ -568,7 +594,27 @@ class Noder {
         args,
       };
     }
-    const resolved = this.info.calls.get(c);
+    const userCall = this.tables.userCalls.get(c);
+    if (userCall !== undefined) {
+      const func = this.funcOf(userCall.instance);
+      const args = userCall.instance.params.map((_, i) => {
+        const provided = userCall.args[i];
+        if (provided !== null) {
+          return this.nodeExpr(provided);
+        }
+        return this.nodeInstanceDefault(userCall.instance, i);
+      });
+      return {
+        kind: IrKind.CallFunc,
+        pos: c.pos,
+        type: tv.type,
+        qualifier: tv.qualifier,
+        func,
+        slot: this.mintSlot(),
+        args,
+      };
+    }
+    const resolved = this.tables.calls.get(c);
     if (resolved === undefined) {
       return fatal('unresolved call reached the noder');
     }
@@ -741,17 +787,68 @@ class Noder {
           value: tv.value,
         };
       }
-      const name = this.info.defs.get(stmt.target);
+      const name = this.tables.defs.get(stmt.target);
       return name !== undefined ? this.read(name, stmt.pos) : null;
     }
     if (
       stmt.kind === NodeKind.AssignStmt &&
       stmt.target.kind === NodeKind.Name
     ) {
-      const name = this.info.uses.get(stmt.target);
+      const name = this.tables.uses.get(stmt.target);
       return name !== undefined ? this.read(name, stmt.pos) : null;
     }
     return null;
+  }
+
+  // ---- function stencils ----------------------------------------------------
+
+  // One IrFunc per checker instance: the body nodes once against the
+  // instance's side tables, under its own frame-local slot counter (each
+  // CallFunc inside selects a sub-frame of THIS func's frame). Recursion
+  // cannot occur — the checker rejected cyclic call graphs.
+  private funcOf(instance: FuncInstance): IrFunc {
+    const existing = this.instanceFuncs.get(instance);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const savedTables = this.tables;
+    const savedNesting = this.nesting;
+    this.tables = instance.tables;
+    this.nesting += 1;
+    this.slots.push(0);
+    const body =
+      instance.template.body.kind === NodeKind.Block
+        ? this.nodeBlock(instance.template.body)
+        : this.nodeExpr(instance.template.body);
+    this.slots.pop();
+    this.nesting = savedNesting;
+    this.tables = savedTables;
+    const func: IrFunc = {
+      name: instance.name,
+      params: instance.params,
+      resultType: instance.resultType,
+      resultQualifier: instance.resultQualifier,
+      body,
+    };
+    this.instanceFuncs.set(instance, func);
+    return func;
+  }
+
+  // An omitted argument nodes the instance's default expression — checked in
+  // the instance's tables — at the call site. Defaults must not reference
+  // sibling params (see AGENTS.md).
+  private nodeInstanceDefault(instance: FuncInstance, index: number): IrExpr {
+    const dflt = instance.defaults.get(index);
+    if (dflt === undefined) {
+      return fatal(
+        `no default for omitted argument ${index} of '${instance.name}'`,
+      );
+    }
+    const saved = this.tables;
+    this.tables = instance.tables;
+    const expr = this.nodeExpr(dflt);
+    this.tables = saved;
+    return expr;
   }
 
   // ---- params and outputs ---------------------------------------------------
@@ -781,7 +878,7 @@ class Noder {
       if (tv.value !== null) {
         defaultValue = {kind: ParamDefaultKind.Const, value: tv.value};
       } else {
-        const series = this.info.ambient.get(defval);
+        const series = this.tables.ambient.get(defval);
         if (series !== undefined) {
           defaultValue = {kind: ParamDefaultKind.Series, series};
         } else {

@@ -22,8 +22,14 @@ expressions.
   Tea `const` declarations, or plain declarations that never appear as an
   assignment target (the whole-file prepass is conservative, by name
   string).
-- User-function declarations bind as templates; bodies are checked per
-  concrete argument signature when calls are stenciled (the function slice).
+- User-function declarations bind as templates; calls stencil one
+  instantiation per concrete argument signature (memoized), each with its
+  own `SideTables` and a scope rooted at the template's base — the user
+  global scope, or the prelude scope for `ta.*` (`prelude.ts` loads
+  `src/prelude/ta.tea`; natives win the dotted namespace). Recursion is
+  rejected (the static call graph must stay acyclic for frame
+  pre-allocation), and function bodies read but never write outer-scope
+  variables.
 - Checker errors queue into the compilation's `Errors` and poison with
   `TypeKind.Invalid` (assignable both ways, unify-absorbed) so one error
   never cascades; the checker never throws on user input and silently

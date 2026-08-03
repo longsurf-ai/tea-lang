@@ -5,7 +5,7 @@
 // reassigned-name prepass is by name string (whole file), deliberately
 // conservative.
 
-import type {Errors} from '../base/print';
+import {fatal, type Errors} from '../base/print';
 import type {Pos} from '../base/pos';
 import {unimplemented} from '../base/unimplemented';
 import {
@@ -61,6 +61,7 @@ import {
   type NativeTypeRef,
   type NativeVar,
 } from './catalog';
+import {isPreludeRoot, preludeLocalTemplates, preludeTemplate} from './prelude';
 import {EntryKind, Scope, type ScopeEntry} from './scope';
 
 // ---- results ----------------------------------------------------------------
@@ -78,10 +79,11 @@ export interface ResolvedNew {
   readonly args: readonly (syntax.Expr | null)[];
 }
 
-// The checker's side tables (types2 Info): the noder consumes these and never
-// re-checks. Keys are syntax nodes; values reference the binder's ir objects
-// directly.
-export interface Info {
+// Per-context side tables, keyed by syntax nodes. The main script writes
+// into the Info's own tables; each function instantiation gets a fresh set
+// (the same body syntax carries different types per signature — Go's
+// unified-IR shape), stored on its FuncInstance for the noder.
+export interface SideTables {
   readonly types: Map<syntax.Expr, TypeAndValue>;
   // Use sites of script variables → the shared ir Name object.
   readonly uses: Map<syntax.Name, IrName>;
@@ -89,12 +91,57 @@ export interface Info {
   readonly defs: Map<syntax.Name, IrName>;
   readonly calls: Map<syntax.CallExpr, ResolvedCall>;
   readonly news: Map<syntax.CallExpr, ResolvedNew>;
+  readonly userCalls: Map<syntax.CallExpr, ResolvedUserCall>;
+  // Which ambient series a Name/Selector expression resolved to.
+  readonly ambient: Map<syntax.Expr, SeriesInput>;
+}
+
+export function newSideTables(): SideTables {
+  return {
+    types: new Map(),
+    uses: new Map(),
+    defs: new Map(),
+    calls: new Map(),
+    news: new Map(),
+    userCalls: new Map(),
+    ambient: new Map(),
+  };
+}
+
+// One per-signature instantiation of a user or prelude function template —
+// a Go-style stencil: after checking, everything is concrete (untyped
+// params adopted the argument types), so no dictionaries exist. Shared by
+// every call site with the same signature; state stays per call site via
+// SlotIds minted at noding.
+export interface FuncInstance {
+  readonly template: syntax.FuncDecl;
+  // Display name: the template name, namespace-qualified for prelude
+  // functions ('ta.ema').
+  readonly name: string;
+  readonly params: readonly IrName[];
+  // Param index → default expression for omitted arguments, checked in
+  // this instance's tables. Defaults node caller-side and must not
+  // reference sibling params.
+  readonly defaults: ReadonlyMap<number, syntax.Expr>;
+  readonly tables: SideTables;
+  // Annotated once the body has been checked.
+  resultType: Type;
+  resultQualifier: Qualifier;
+}
+
+export interface ResolvedUserCall {
+  readonly instance: FuncInstance;
+  // Param-aligned argument exprs; null = omitted (instance default).
+  readonly args: readonly (syntax.Expr | null)[];
+}
+
+// The checker's results (types2 Info): the noder consumes these and never
+// re-checks.
+export interface Info extends SideTables {
   readonly udtDefaults: Map<UdtType, ReadonlyMap<string, syntax.Expr>>;
   // Ambient context series touched by the script, one object per host id;
   // noded Places reference these objects and the depth pass annotates them.
   readonly series: Map<string, SeriesInput>;
-  // Which ambient series a Name/Selector expression resolved to.
-  readonly ambient: Map<syntax.Expr, SeriesInput>;
   // Names that appear as assignment targets anywhere in the file (by name
   // string, conservative) — the noder binds param/plot references through a
   // declaration only when its name is not in this set.
@@ -154,16 +201,15 @@ class Checker {
   private reassigned = new Set<string>();
 
   private readonly info: Info = {
-    types: new Map(),
-    uses: new Map(),
-    defs: new Map(),
-    calls: new Map(),
-    news: new Map(),
+    ...newSideTables(),
     udtDefaults: new Map(),
     series: new Map(),
-    ambient: new Map(),
     reassigned: this.reassigned,
   };
+
+  // The side-table target for the context being checked: the Info itself
+  // for the main script, a FuncInstance's tables during instantiation.
+  private tables: SideTables = this.info;
 
   private scope = new Scope(null);
   private loopDepth = 0;
@@ -173,7 +219,33 @@ class Checker {
   // loop bodies join series (iteration-dependent values).
   private flow: Qualifier = Qualifier.Const;
 
+  // Function stenciling state: one instantiation per (template, signature),
+  // a recursion guard (the static call graph must stay acyclic so frames
+  // pre-allocate), and the instantiation root scope — non-null exactly when
+  // checking inside a function, where outer-scope writes are forbidden.
+  private readonly instances = new Map<
+    syntax.FuncDecl,
+    Map<string, FuncInstance>
+  >();
+  private readonly instantiating = new Set<syntax.FuncDecl>();
+  private readonly reassignedCollected = new Set<syntax.FuncDecl>();
+  private funcBoundary: Scope | null = null;
+  private preludeScopeCache: Scope | null = null;
+
   constructor(private readonly errors: Errors) {}
+
+  // The scope prelude bodies resolve against: every prelude template under
+  // its plain name (rsi calls rma), natives via the ordinary catalog path.
+  private preludeScope(): Scope {
+    if (this.preludeScopeCache === null) {
+      const scope = new Scope(null);
+      for (const [name, decl] of preludeLocalTemplates()) {
+        scope.declare(name, {kind: EntryKind.Func, decl, base: scope});
+      }
+      this.preludeScopeCache = scope;
+    }
+    return this.preludeScopeCache;
+  }
 
   checkFile(file: syntax.File): Info {
     collectReassignedStmts(file.stmtList, this.reassigned);
@@ -385,7 +457,7 @@ class Checker {
   }
 
   private declare(nameNode: syntax.Name, entry: ScopeEntry): void {
-    if (isNativeRoot(nameNode.value)) {
+    if (isNativeRoot(nameNode.value) || isPreludeRoot(nameNode.value)) {
       this.error(nameNode.pos, `cannot redeclare built-in '${nameNode.value}'`);
       return;
     }
@@ -397,7 +469,7 @@ class Checker {
       return;
     }
     if (entry.kind === EntryKind.Name) {
-      this.info.defs.set(nameNode, entry.name);
+      this.tables.defs.set(nameNode, entry.name);
     }
   }
 
@@ -440,6 +512,16 @@ class Checker {
       );
     }
     if (
+      this.funcBoundary !== null &&
+      !this.scope.resolvesWithin(target.value, this.funcBoundary)
+    ) {
+      // Pine semantics: functions read the global scope but never write it.
+      this.error(
+        target.pos,
+        `cannot modify global variable '${target.value}' inside a function`,
+      );
+    }
+    if (
       entry.name.type.kind === TypeKind.Plot ||
       entry.name.type.kind === TypeKind.Hline
     ) {
@@ -448,7 +530,7 @@ class Checker {
       this.error(target.pos, 'cannot reassign a plot reference');
     }
     const name = entry.name;
-    this.info.uses.set(target, name);
+    this.tables.uses.set(target, name);
 
     const valueTv = this.checkExpr(a.value);
     // Compound forms type-check as the underlying binary operation on the
@@ -523,8 +605,8 @@ class Checker {
       return;
     }
     // The template is bound now; bodies are checked per concrete argument
-    // signature when calls are stenciled (the function slice).
-    this.declare(d.name, {kind: EntryKind.Func, decl: d});
+    // signature when calls are stenciled.
+    this.declare(d.name, {kind: EntryKind.Func, decl: d, base: this.scope});
   }
 
   private checkTypeDecl(d: syntax.TypeDecl): void {
@@ -643,12 +725,12 @@ class Checker {
 
   private checkExpr(e: syntax.Expr): TypeAndValue {
     const tv = this.exprTv(e);
-    this.info.types.set(e, tv);
+    this.tables.types.set(e, tv);
     return tv;
   }
 
   private tvOf(e: syntax.Expr): TypeAndValue {
-    return this.info.types.get(e) ?? INVALID_TV;
+    return this.tables.types.get(e) ?? INVALID_TV;
   }
 
   private exprTv(e: syntax.Expr): TypeAndValue {
@@ -698,7 +780,7 @@ class Checker {
     if (entry !== null) {
       switch (entry.kind) {
         case EntryKind.Name:
-          this.info.uses.set(n, entry.name);
+          this.tables.uses.set(n, entry.name);
           return {
             type: entry.name.type,
             qualifier: entry.name.qualifier,
@@ -739,7 +821,7 @@ class Checker {
         };
         this.info.series.set(nv.name, series);
       }
-      this.info.ambient.set(node, series);
+      this.tables.ambient.set(node, series);
     }
     return {type: nv.type, qualifier: nv.qualifier, value: nv.value};
   }
@@ -1237,8 +1319,9 @@ class Checker {
       const entry = this.scope.lookup(fun.value);
       if (entry !== null) {
         if (entry.kind === EntryKind.Func) {
-          this.error(c.pos, 'user function calls are not supported yet');
-        } else if (entry.kind === EntryKind.Udt) {
+          return this.checkUserCall(c, entry.decl, fun.value, entry.base);
+        }
+        if (entry.kind === EntryKind.Udt) {
           this.error(
             c.pos,
             `'${fun.value}' is a type; construct it with '${fun.value}.new(...)'`,
@@ -1259,6 +1342,18 @@ class Checker {
       }
       const path = dottedPath(fun);
       if (path !== null && this.scope.lookup(path.root) === null) {
+        // Natives win the dotted namespace; the prelude fills the rest.
+        if (nativeFuncs(path.path) === null && nativeVar(path.path) === null) {
+          const template = preludeTemplate(path.path);
+          if (template !== null) {
+            return this.checkUserCall(
+              c,
+              template,
+              path.path,
+              this.preludeScope(),
+            );
+          }
+        }
         return this.resolveNativeCall(c, path.path, fun.pos);
       }
       this.error(fun.sel.pos, 'method calls are not supported yet');
@@ -1266,6 +1361,208 @@ class Checker {
     }
     this.error(fun.pos, 'expression is not callable');
     return INVALID_TV;
+  }
+
+  // ---- user-function stenciling ---------------------------------------------
+
+  // A call to a user or prelude template: align arguments, memoize one
+  // instantiation per concrete signature, and type the call from the
+  // instance. Instantiations are real functions sharing one checked body per
+  // signature; call-site state separates later via SlotIds.
+  private checkUserCall(
+    c: syntax.CallExpr,
+    template: syntax.FuncDecl,
+    displayName: string,
+    base: Scope,
+  ): TypeAndValue {
+    const params = template.params;
+    const aligned: (syntax.Expr | null)[] = Array<syntax.Expr | null>(
+      params.length,
+    ).fill(null);
+    let position = 0;
+    for (const arg of c.args) {
+      if (arg.name === null) {
+        if (position >= params.length) {
+          this.error(arg.pos, `too many arguments in call to '${displayName}'`);
+          return INVALID_TV;
+        }
+        aligned[position] = arg.value;
+        position += 1;
+        continue;
+      }
+      const index = params.findIndex(p => p.name.value === arg.name!.value);
+      if (index === -1) {
+        this.error(
+          arg.pos,
+          `unknown argument '${arg.name.value}' in call to '${displayName}'`,
+        );
+        return INVALID_TV;
+      }
+      if (aligned[index] !== null) {
+        this.error(arg.pos, `duplicate argument '${arg.name.value}'`);
+        return INVALID_TV;
+      }
+      aligned[index] = arg.value;
+    }
+    for (const [i, p] of params.entries()) {
+      if (aligned[i] === null && p.defaultValue === null) {
+        this.error(
+          c.pos,
+          `missing argument '${p.name.value}' in call to '${displayName}'`,
+        );
+        return INVALID_TV;
+      }
+    }
+    if (this.instantiating.has(template)) {
+      // The static call graph must stay acyclic: frames pre-allocate along
+      // it at bind time.
+      this.error(c.pos, `recursive call to '${displayName}'`);
+      return INVALID_TV;
+    }
+
+    const argTvs = aligned.map(e => (e !== null ? this.tvOf(e) : null));
+    if (argTvs.some(tv => tv !== null && tv.type.kind === TypeKind.Invalid)) {
+      return INVALID_TV;
+    }
+    const sigKey = argTvs
+      .map(tv =>
+        tv === null ? 'default' : `${formatType(tv.type)}|${tv.qualifier}`,
+      )
+      .join(',');
+    let bySig = this.instances.get(template);
+    if (bySig === undefined) {
+      bySig = new Map();
+      this.instances.set(template, bySig);
+    }
+    let instance = bySig.get(sigKey);
+    if (instance === undefined) {
+      instance = this.instantiate(template, displayName, base, aligned, argTvs);
+      bySig.set(sigKey, instance);
+    }
+    this.tables.userCalls.set(c, {instance, args: aligned});
+    return {
+      type: instance.resultType,
+      qualifier: instance.resultQualifier,
+      value: null,
+    };
+  }
+
+  // Stencil the template for one concrete signature: fresh side tables and a
+  // scope rooted at the template's base, params adopting the argument types
+  // and qualifiers (capped by annotations), body checked once.
+  private instantiate(
+    template: syntax.FuncDecl,
+    displayName: string,
+    base: Scope,
+    aligned: readonly (syntax.Expr | null)[],
+    argTvs: readonly (TypeAndValue | null)[],
+  ): FuncInstance {
+    // Template locals join the conservative reassignment set once, so
+    // accumulator declarations inside bodies never carry fold values.
+    if (!this.reassignedCollected.has(template)) {
+      this.reassignedCollected.add(template);
+      if (template.body.kind === NodeKind.Block) {
+        collectReassignedStmts(template.body.stmtList, this.reassigned);
+      } else {
+        collectReassignedExpr(template.body, this.reassigned);
+      }
+    }
+
+    const saved = {
+      scope: this.scope,
+      tables: this.tables,
+      flow: this.flow,
+      loopDepth: this.loopDepth,
+      blockDepth: this.blockDepth,
+      boundary: this.funcBoundary,
+    };
+    const tables = newSideTables();
+    const scope = new Scope(base);
+    this.scope = scope;
+    this.tables = tables;
+    this.flow = Qualifier.Const;
+    this.loopDepth = 0;
+    this.blockDepth = 0;
+    this.funcBoundary = scope;
+    this.instantiating.add(template);
+
+    const irParams: IrName[] = [];
+    const defaults = new Map<number, syntax.Expr>();
+    template.params.forEach((p, i) => {
+      const annotated =
+        p.paramType !== null ? this.resolveAnnotation(p.paramType) : null;
+      let tv = argTvs[i];
+      if (tv === null) {
+        const dflt = p.defaultValue;
+        if (dflt === null) {
+          // checkUserCall already rejected calls missing a required param.
+          return fatal(
+            `instantiating '${displayName}' without argument '${p.name.value}'`,
+          );
+        }
+        defaults.set(i, dflt);
+        tv = this.checkExpr(dflt);
+      } else {
+        const argExpr = aligned[i];
+        if (annotated !== null && argExpr !== null) {
+          if (!assignable(tv.type, annotated.type)) {
+            this.error(
+              argExpr.pos,
+              `argument '${p.name.value}' to '${displayName}': cannot use ${formatType(tv.type)} as ${formatType(annotated.type)}`,
+            );
+          }
+          if (
+            annotated.qualifier !== null &&
+            !qualifierLE(tv.qualifier, annotated.qualifier)
+          ) {
+            this.error(
+              argExpr.pos,
+              `argument '${p.name.value}' to '${displayName}' accepts at most ${annotated.qualifier}, got ${tv.qualifier}`,
+            );
+          }
+        }
+      }
+      const irName: IrName = {
+        name: p.name.value,
+        storage: Storage.PerBar,
+        type: annotated !== null ? annotated.type : tv.type,
+        qualifier: tv.qualifier,
+        depth: {kind: DepthKind.None},
+        init: null,
+      };
+      irParams.push(irName);
+      this.declare(p.name, {
+        kind: EntryKind.Name,
+        name: irName,
+        constDecl: false,
+        constValue: null,
+      });
+    });
+
+    const instance: FuncInstance = {
+      template,
+      name: displayName,
+      params: irParams,
+      defaults,
+      tables,
+      resultType: InvalidType,
+      resultQualifier: Qualifier.Const,
+    };
+    const bodyTv =
+      template.body.kind === NodeKind.Block
+        ? this.checkBlock(template.body)
+        : this.checkExpr(template.body);
+    instance.resultType = bodyTv.type;
+    instance.resultQualifier = bodyTv.qualifier;
+
+    this.instantiating.delete(template);
+    this.scope = saved.scope;
+    this.tables = saved.tables;
+    this.flow = saved.flow;
+    this.loopDepth = saved.loopDepth;
+    this.blockDepth = saved.blockDepth;
+    this.funcBoundary = saved.boundary;
+    return instance;
   }
 
   private resolveNativeCall(
@@ -1287,7 +1584,7 @@ class Checker {
     for (const candidate of candidates) {
       const outcome = this.matchOverload(c, candidate);
       if (outcome.ok) {
-        this.info.calls.set(c, {native: candidate, args: outcome.args});
+        this.tables.calls.set(c, {native: candidate, args: outcome.args});
         this.checkPlacement(candidate, c.pos);
         return this.callResultTv(candidate, outcome.args);
       }
@@ -1411,7 +1708,7 @@ class Checker {
       native.effect === Effect.Param ||
       native.effect === Effect.Output ||
       native.effect === Effect.Declaration;
-    if (topLevelOnly && this.blockDepth > 0) {
+    if (topLevelOnly && (this.blockDepth > 0 || this.funcBoundary !== null)) {
       this.error(
         pos,
         `'${native.name}' can only be called at the top level of the script`,
@@ -1493,7 +1790,7 @@ class Checker {
       }
       qualifier = joinQualifiers(qualifier, tv.qualifier);
     }
-    this.info.news.set(c, {udt, args: aligned});
+    this.tables.news.set(c, {udt, args: aligned});
     return {type: udt, qualifier, value: null};
   }
 }

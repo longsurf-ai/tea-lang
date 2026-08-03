@@ -1,0 +1,41 @@
+// ta: Tea-authored technical-analysis prelude. Ordinary Tea functions
+// compiled by the ordinary pipeline — nothing here is native, and per-call-
+// site state falls out of function semantics (var locals, param history).
+
+export sma(source, length) =>
+	sum = 0.0
+	for i = 0 to length - 1
+		sum += source[i]
+	sum / length
+
+export ema(source, length) =>
+	alpha = 2.0 / (length + 1)
+	var float e = na
+	e := na(e) ? source : alpha * source + (1 - alpha) * e
+	e
+
+export rma(source, length) =>
+	alpha = 1.0 / length
+	var float r = na
+	r := na(r) ? source : alpha * source + (1 - alpha) * r
+	r
+
+export change(source) =>
+	source - source[1]
+
+export highest(source, length) =>
+	h = source
+	for i = 1 to length - 1
+		h := math.max(h, source[i])
+	h
+
+export lowest(source, length) =>
+	l = source
+	for i = 1 to length - 1
+		l := math.min(l, source[i])
+	l
+
+export rsi(source, length) =>
+	up = rma(math.max(change(source), 0), length)
+	down = rma(math.max(-change(source), 0), length)
+	down == 0 ? 100.0 : up == 0 ? 0.0 : 100.0 - 100.0 / (1 + up / down)

@@ -18,7 +18,13 @@ import {
   type RequestEdge,
 } from './program';
 import {formatType, isNaValue, type ConstValue} from './type';
-import {namesOf, requestsOf, seriesInputsOf, slotCountOf} from './visit';
+import {
+  funcsOf,
+  namesOf,
+  requestsOf,
+  seriesInputsOf,
+  slotCountOf,
+} from './visit';
 
 // Labels: names keep their source spelling, suffixed #i only on collision;
 // outputs and requests are indexed by their Program order.
@@ -124,6 +130,16 @@ export function dumpProgram(program: Program): string {
     if (name.init !== null) {
       dumpExpr(name.init, 'init: ', '  ', out, labels);
     }
+  }
+
+  for (const func of funcsOf(program)) {
+    const params = func.params
+      .map(p => `${labels.name(p)}: ${p.qualifier} ${formatType(p.type)}`)
+      .join(', ');
+    out.push(
+      `func ${func.name}(${params}): ${func.resultQualifier} ${formatType(func.resultType)}`,
+    );
+    dumpExpr(func.body, 'body: ', '  ', out, labels);
   }
 
   if (program.body.length > 0) {

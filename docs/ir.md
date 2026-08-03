@@ -149,9 +149,12 @@ barriers.
 A builtin is native **only if it is inexpressible in Tea**: data sources
 (`close`, `bar_index`), host effects (`plot`, `line.new`), context capture
 (`request.*`), heap primitives (`array.*`), math intrinsics. Everything
-else — all of `ta.*` — is library code: a prelude written in Tea, compiled by
-the ordinary pipeline, with per-call-site state falling out of ordinary
-function semantics. The native catalog (typecheck round) declares, per
+else — all of `ta.*` — is library code: a prelude written in Tea
+(`src/prelude/ta.tea`, loaded by `typecheck/prelude.ts` as namespaced
+templates), compiled by the ordinary pipeline, with per-call-site state
+falling out of ordinary function semantics. Stencils are per-signature, not
+per-value: a const-qualified param (`length`) is known per call site at bind
+time but carries no fold value into the shared body. The native catalog (typecheck round) declares, per
 primitive: value signature, per-param qualifier caps, const-required and
 **expression-capture** markers (what makes `request`'s third argument a
 subgraph), and an **effect class** — the tag that selects the compilation and

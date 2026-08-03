@@ -1,0 +1,42 @@
+//@version=1
+indicator("funcs")
+
+double(x) =>
+	x * 2
+
+clamp(float value, float lo = 0.0, float hi = 100.0) =>
+	math.min(math.max(value, lo), hi)
+
+d = double(close)
+c = clamp(close)
+c2 = clamp(close, hi=50.0)
+
+r = ta.rsi(close, 14)
+s = ta.sma(close, 20)
+
+g = 1.0
+
+bump() =>
+	g := g + 1 // ERROR cannot modify global variable 'g' inside a function
+
+b = bump()
+
+loop(x) =>
+	loop(x) // ERROR recursive call to 'loop'
+
+l = loop(1)
+
+d2 = double() // ERROR missing argument 'x' in call to 'double'
+
+d3 = double(1, 2) // ERROR too many arguments in call to 'double'
+
+d4 = double(y=1) // ERROR unknown argument 'y' in call to 'double'
+
+c3 = clamp("s") // ERROR argument 'value' to 'clamp': cannot use string as float
+
+inside() =>
+	input.int(5) // ERROR 'input\.int' can only be called at the top level of the script
+
+i = inside()
+
+ta = 1 // ERROR cannot redeclare built-in 'ta'

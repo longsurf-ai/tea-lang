@@ -11,7 +11,7 @@ import {
   type WriteNameStmt,
 } from '../ir/node';
 import {ParamDefaultKind} from '../ir/program';
-import {namesOf, seriesInputsOf} from '../ir/visit';
+import {funcsOf, namesOf, seriesInputsOf, slotCountOf} from '../ir/visit';
 import {buildText, mustBuild} from './testing';
 import {DEFAULT_MAX_BARS_BACK} from './depth';
 
@@ -157,6 +157,65 @@ describe('depth resolution', () => {
       kind: DepthKind.Capped,
       bars: {value: DEFAULT_MAX_BARS_BACK},
     });
+  });
+});
+
+describe('function stencils', () => {
+  test('one func per signature; each call site mints its own slot', () => {
+    const program = mustBuild(
+      'fast = ta.ema(close, 9)\nslow = ta.ema(close, 21)\nplot(fast - slow)',
+    );
+    const funcs = funcsOf(program);
+    expect(funcs.map(f => f.name)).toEqual(['ta.ema']);
+    // Two ema call sites in the program frame → slots 0 and 1.
+    expect(slotCountOf(program)).toBe(2);
+  });
+
+  test('different signatures stencil separately', () => {
+    const program = mustBuild(
+      'a = ta.sma(close, 10)\nb = ta.sma(close, input.int(10))\nplot(a + b)',
+    );
+    // (series float, const int) and (series float, input int).
+    expect(funcsOf(program).map(f => f.name)).toEqual(['ta.sma', 'ta.sma']);
+  });
+
+  test('var locals and param history are frame state', () => {
+    const program = mustBuild(
+      'x = ta.ema(close, 9)\ny = ta.sma(close, 10)\nplot(x + y)',
+    );
+    const varLocals = namesOf(program).filter(n => n.storage === Storage.Var);
+    expect(varLocals.map(n => n.name)).toEqual(['e']);
+    const sma = funcsOf(program).find(f => f.name === 'ta.sma')!;
+    // sma reads source[i] with a loop-index offset → capped depth on the
+    // param Name.
+    expect(sma.params[0].depth.kind).toBe(DepthKind.Capped);
+  });
+
+  test('prelude functions call each other through the prelude scope', () => {
+    const program = mustBuild('r = ta.rsi(close, 14)\nplot(r)');
+    const names = funcsOf(program)
+      .map(f => f.name)
+      .sort();
+    expect(names).toEqual(['change', 'rma', 'ta.rsi']);
+  });
+
+  test('user function defaults fill omitted arguments at the call site', () => {
+    const program = mustBuild(
+      [
+        'clamp(float value, float lo = 0.0, float hi = 100.0) =>',
+        '\tmath.min(math.max(value, lo), hi)',
+        'c = clamp(close)',
+        'plot(c)',
+      ].join('\n'),
+    );
+    const clamp = funcsOf(program)[0];
+    expect(clamp.params.map(p => p.name)).toEqual(['value', 'lo', 'hi']);
+    const write = program.body[0] as WriteNameStmt;
+    expect(write.value.kind).toBe(IrKind.CallFunc);
+    if (write.value.kind === IrKind.CallFunc) {
+      expect(write.value.args.length).toBe(3);
+      expect(write.value.args[1].kind).toBe(IrKind.Const);
+    }
   });
 });
 

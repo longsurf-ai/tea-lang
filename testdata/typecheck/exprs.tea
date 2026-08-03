@@ -38,4 +38,6 @@ h = close[1.5] // ERROR history offset must be an int
 
 u = unknownfn(1) // ERROR unknown function 'unknownfn'
 
-e = ta.ema(close, 9) // ERROR unknown function 'ta\.ema'
+e = ta.ema(close, 9)
+
+e2 = ta.nope(close) // ERROR unknown function 'ta\.nope'

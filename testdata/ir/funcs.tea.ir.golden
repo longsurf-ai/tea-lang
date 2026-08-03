@@ -1,0 +1,54 @@
+Program version=1 slots=3
+series close: series float depth=none
+output[0] indicator static{title="Funcs"}
+output[1] plot static{title="Delta"} channels{series: float}
+name fast: perBar series float depth=none
+name source: perBar series float depth=none
+name length: perBar const int depth=none
+name alpha: perBar const float depth=none
+name e: var series float depth=none
+  init: Const na: const na
+name slow: perBar series float depth=none
+name x: perBar series float depth=none
+func ta.ema(source: series float, length: const int): series float
+  body: BlockExpr: series float
+    WriteName alpha
+      Binary Div: const float
+        Const 2: const float
+        Binary Add: const int
+          HistRead name:length: const int
+          Const 1: const int
+    WriteName e
+      Cond: series float
+        cond: CallNative na: series bool
+          HistRead name:e: series float
+        then: HistRead name:source: series float
+        else: Binary Add: series float
+          Binary Mul: series float
+            HistRead name:alpha: const float
+            HistRead name:source: series float
+          Binary Mul: series float
+            Binary Sub: const float
+              Const 1: const int
+              HistRead name:alpha: const float
+            HistRead name:e: series float
+    value: HistRead name:e: series float
+func double(x: series float): series float
+  body: BlockExpr: series float
+    value: Binary Mul: series float
+      HistRead name:x: series float
+      Const 2: const int
+body:
+  WriteName fast
+    CallFunc ta.ema slot=0: series float
+      HistRead series:close: series float
+      Const 9: const int
+  WriteName slow
+    CallFunc ta.ema slot=1: series float
+      HistRead series:close: series float
+      Const 21: const int
+  Emit output[1]
+    CallFunc double slot=2: series float
+      Binary Sub: series float
+        HistRead name:fast: series float
+        HistRead name:slow: series float
