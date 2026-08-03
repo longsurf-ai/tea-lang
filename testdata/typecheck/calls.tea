@@ -1,0 +1,33 @@
+//@version=1
+indicator("calls", overlay=true)
+
+plot(close, "Close", color=color.blue, linewidth=2)
+hline(0, "Zero", linestyle=hline.style_dashed)
+
+p1 = plot(high, "High")
+p2 = plot(low, "Low")
+fill(p1, p2, color=color.new(color.blue, 90))
+
+plotshape(close > open, style=shape.triangleup, location=location.abovebar)
+
+alertcondition(close > open, "Up", "went up")
+
+mx = math.max(1, 2, 3)
+mn = math.min(1.5, 2)
+r = math.round(close)
+av = math.avg(close, open)
+
+plot() // ERROR missing argument 'series' in call to 'plot'
+
+plot(close, title=str.tostring(1)) // ERROR argument 'title' to 'plot' must be a constant literal
+
+plot(close, foo=1) // ERROR unknown argument 'foo' in call to 'plot'
+
+plot(close, "a", "b") // ERROR argument 'color' to 'plot': cannot use string as color
+
+na(close, 2) // ERROR too many arguments in call to 'na'
+
+lw = input.int(bar_index) // ERROR argument 'defval' to 'input\.int' accepts at most const, got series
+
+if close > 0
+	plot(open) // ERROR 'plot' can only be called at the top level of the script

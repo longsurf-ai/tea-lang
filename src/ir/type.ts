@@ -37,6 +37,11 @@ export function joinQualifiers(a: Qualifier, b: Qualifier): Qualifier {
 // ---- value types ------------------------------------------------------------
 
 export const TypeKind = {
+  // The checker's poison type: the result of an expression that already
+  // failed. It is assignable to and from everything so one error never
+  // cascades, and it never reaches a Program — compile()'s phase barrier
+  // stops noding when the checker reported errors.
+  Invalid: 'Invalid',
   Int: 'Int',
   Float: 'Float',
   Bool: 'Bool',
@@ -92,6 +97,10 @@ export type HandleKind =
   | typeof TypeKind.Table
   | typeof TypeKind.Polyline
   | typeof TypeKind.Linefill;
+
+export interface InvalidType {
+  readonly kind: typeof TypeKind.Invalid;
+}
 
 export interface PrimitiveType {
   readonly kind: PrimitiveKind;
@@ -171,6 +180,7 @@ export interface FuncType {
 }
 
 export type Type =
+  | InvalidType
   | PrimitiveType
   | HandleType
   | OutputRefType
@@ -184,6 +194,7 @@ export type Type =
 
 // Interned primitives and handles — compare by reference or kind, either
 // works.
+export const InvalidType: Type = {kind: TypeKind.Invalid};
 export const IntType: Type = {kind: TypeKind.Int};
 export const FloatType: Type = {kind: TypeKind.Float};
 export const BoolType: Type = {kind: TypeKind.Bool};
@@ -273,6 +284,9 @@ export function typesEqual(a: Type, b: Type): boolean {
 // Value-type assignability: equality, the sole implicit widening int → float,
 // and `na` into any nullable type. Collections are invariant.
 export function assignable(from: Type, to: Type): boolean {
+  if (from.kind === TypeKind.Invalid || to.kind === TypeKind.Invalid) {
+    return true;
+  }
   if (typesEqual(from, to)) {
     return true;
   }
@@ -292,6 +306,13 @@ export function assignable(from: Type, to: Type): boolean {
 // The type of a value join (if/switch branches, ?:): null when the branches
 // cannot unify.
 export function unifyTypes(a: Type, b: Type): Type | null {
+  // Poison absorbs: unifying with an already-failed side yields the good side.
+  if (a.kind === TypeKind.Invalid) {
+    return b;
+  }
+  if (b.kind === TypeKind.Invalid) {
+    return a;
+  }
   if (typesEqual(a, b)) {
     return a;
   }
@@ -338,6 +359,8 @@ const PRIMITIVE_NAMES: Record<
 
 export function formatType(t: Type): string {
   switch (t.kind) {
+    case TypeKind.Invalid:
+      return '<invalid>';
     case TypeKind.Array:
       return `array<${formatType(t.elem)}>`;
     case TypeKind.Matrix:

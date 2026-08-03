@@ -1,0 +1,38 @@
+//@version=1
+indicator("decls")
+
+x = 1
+y = 2.5
+s = "hi" + "there"
+b = true and not false
+c = #ff0000
+
+float widened = 1
+
+const myLen = 14
+len = input.int(myLen, "Length", minval=1)
+
+src = input.source(close, "Source")
+
+var counter = 0
+counter := counter + 1
+
+dup = 1
+dup = 2 // ERROR 'dup' is already declared in this scope
+
+close = 1 // ERROR cannot redeclare built-in 'close'
+
+undeclared := 5 // ERROR undeclared name 'undeclared'
+
+const k = close // ERROR const declaration requires a compile-time constant initializer
+
+k2 = na // ERROR na initializer requires a type annotation
+
+float k3 = na
+
+int narrow = 2.5 // ERROR cannot use float as int in declaration of 'narrow'
+
+s2 = "a" + 1 // ERROR operator '\+' requires numeric operands
+
+const cc = 2
+cc := 3 // ERROR cannot reassign 'cc' declared with const

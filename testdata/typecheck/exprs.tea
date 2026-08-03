@@ -1,0 +1,41 @@
+//@version=1
+indicator("exprs")
+
+cond = close > open
+
+m = if cond
+	close
+else
+	open
+
+sw = switch
+	cond => 1.0
+	=> 2.0
+
+acc = 0.0
+for i = 0 to 9
+	acc := acc + close[i]
+
+n = 0
+while n < 5
+	n := n + 1
+
+t = cond ? close : open
+
+bad = cond ? close : "s" // ERROR ternary branches have mismatched types
+
+badc = 1 ? close : open // ERROR ternary condition must be bool
+
+if close // ERROR 'if' condition must be bool, got float
+	x1 = 1
+
+while 5 // ERROR 'while' condition must be bool, got int
+	x2 = 1
+
+break // ERROR 'break' outside a loop
+
+h = close[1.5] // ERROR history offset must be an int
+
+u = unknownfn(1) // ERROR unknown function 'unknownfn'
+
+e = ta.ema(close, 9) // ERROR unknown function 'ta\.ema'

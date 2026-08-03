@@ -1,14 +1,14 @@
-// Purpose: ERROR-comment regression suite for the syntax layer — testdata files declare expected scan/parse diagnostics in place via the shared DSL.
+// Purpose: ERROR-comment regression suite for the checker — testdata/typecheck fixtures are syntactically valid Tea whose declared diagnostics come from check().
 
 import {readdirSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {describe, expect, test} from 'bun:test';
 import {collectExpectations, diffExpectations} from '../testing/error-comments';
-import {parseText} from './testing';
+import {checkText} from './testing';
 
-const TESTDATA = join(import.meta.dir, '../../testdata');
+const TESTDATA = join(import.meta.dir, '../../testdata/typecheck');
 
-describe('testdata error comments', () => {
+describe('typecheck error comments', () => {
   const files = readdirSync(TESTDATA).filter(name => name.endsWith('.tea'));
   expect(files.length).toBeGreaterThan(0);
 
@@ -16,7 +16,7 @@ describe('testdata error comments', () => {
     test(name, () => {
       const src = readFileSync(join(TESTDATA, name), 'utf8');
       const expectations = collectExpectations(src);
-      const {errors} = parseText(src, name);
+      const {errors} = checkText(src, name);
 
       const {missing, unexpected} = diffExpectations(name, expectations, errors);
       expect(missing).toEqual([]);

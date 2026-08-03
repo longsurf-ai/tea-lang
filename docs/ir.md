@@ -47,7 +47,10 @@ historical types2/types split). A Tea type is a point on two axes:
   dimension.
 
 `TypeAndValue {type, qualifier, value?}` is the checker's currency (types2's
-`TypeAndValue` with Tea's extra axis). The sole implicit conversions:
+`TypeAndValue` with Tea's extra axis). `TypeKind.Invalid` is the checker's
+poison (types2's `Typ[Invalid]`): assignable both ways and absorbed by
+unification so one error never cascades, and barred from Programs by the
+check phase barrier. The sole implicit conversions:
 int → float, and `na` → any nullable type — where, per Pine v6, **bool is
 never nullable** (na does not assign to or unify with bool), and neither are
 void and function types. `na` itself is a first-class constant (`NA_VALUE`, a
@@ -154,13 +157,16 @@ primitive: value signature, per-param qualifier caps, const-required and
 subgraph), and an **effect class** — the tag that selects the compilation and
 runtime protocol:
 
-| Effect class       | Examples                           | Protocol                                                                        |
-| ------------------ | ---------------------------------- | ------------------------------------------------------------------------------- |
-| none               | `math.*`                           | pure call                                                                       |
-| declarative-output | `plot*`, `hline`, `alertcondition` | hoisted to `Program.outputs`; per-bar `Emit`; top-level/unconditional placement |
-| handle-object      | `line.*`, `label.*`, `box.*`       | per-bar host object ops; handle values; rollback participation                  |
-| host-service       | `strategy.*`                       | effects with host feedback readable next bar                                    |
-| async-host-call    | `llm()` (Tea)                      | awaited/batched host call                                                       |
+| Effect class          | Examples                           | Protocol                                                                        |
+| --------------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
+| none                  | `math.*`                           | pure call                                                                       |
+| param                 | `input.*`                          | extracts a `ParamInput`; value arrives at bind time; top-level placement        |
+| declaration           | `indicator`, `strategy`            | script metadata; top-level placement                                            |
+| output (declarative)  | `plot*`, `hline`, `alertcondition` | hoisted to `Program.outputs`; per-bar `Emit`; top-level/unconditional placement |
+| handle-object         | `line.*`, `label.*`, `box.*`       | per-bar host object ops; handle values; rollback participation                  |
+| host-service          | `strategy.*` orders                | effects with host feedback readable next bar                                    |
+| async-host-call       | `llm()` (Tea)                      | awaited/batched host call                                                       |
+| request               | `request.*`                        | expression capture; compiles a child Program (`RequestEdge`)                    |
 
 New builtin families are catalog entries plus at most a new noding policy —
 never new checker or IR architecture. Future cross-sectional analysis
