@@ -57,8 +57,10 @@ export const TOKEN_KINDS = [
 ] as const;
 export type TokenKind = (typeof TOKEN_KINDS)[number];
 
-// Valid when tok === 'literal'.
-export type LitKind = 'int' | 'float' | 'string' | 'color';
+// Valid when tok === 'literal'. 'path' is produced only by the
+// parser-directed import-path rescan (`import owner/name/version`), never by
+// ordinary scanning.
+export type LitKind = 'int' | 'float' | 'string' | 'color' | 'path';
 
 // Valid when tok === 'operator' (binary/unary operators) or tok ===
 // 'assignop' (the base arithmetic op of a compound assignment).
