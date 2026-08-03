@@ -149,10 +149,11 @@ barriers.
 A builtin is native **only if it is inexpressible in Tea**: data sources
 (`close`, `bar_index`), host effects (`plot`, `line.new`), context capture
 (`request.*`), heap primitives (`array.*`), math intrinsics. Everything
-else — all of `ta.*` — is library code: a prelude written in Tea
-(`src/prelude/ta.tea`, loaded by `typecheck/prelude.ts` as namespaced
-templates), compiled by the ordinary pipeline, with per-call-site state
-falling out of ordinary function semantics. Stencils are per-signature, not
+else — all of `ta.*` — is library code: a builtin Tea library
+(`src/lib/ta.tea`, a real `library("ta")` with `export` functions, loaded by
+`checker/library.ts` and implicitly imported into every script), compiled by
+the ordinary pipeline, with per-call-site state falling out of ordinary
+function semantics. Stencils are per-signature, not
 per-value: a const-qualified param (`length`) is known per call site at bind
 time but carries no fold value into the shared body. The native catalog (typecheck round) declares, per
 primitive: value signature, per-param qualifier caps, const-required and
@@ -211,10 +212,13 @@ construction.
   compilation-global: the child references the parent's ParamInputs and
   declares none of its own. Extracting the dependency closure of script
   variables into the child automatically is a possible later extension.
-- Libraries link at check time: imports resolve against checked library
-  sources and instantiate into the importer's Program. The Program is always
-  a closed script; a distributable compiled-library artifact, if ever
-  needed, is a separate contract — never a bent Program.
+- Libraries link at check time: imports resolve against library sources and
+  instantiate into the importer's Program — implemented for builtin
+  libraries (implicitly imported; `import <lib> [as alias]` aliases them;
+  external `owner/name/version` paths error until a distribution story
+  exists). The Program is always a closed script; a distributable
+  compiled-library artifact, if ever needed, is a separate contract — never
+  a bent Program.
 - Reference bindings are compile-time only: a never-reassigned declaration
   initialized by an input call binds the name to its `ParamInput` (reads
   become param reads; no per-bar write), and one initialized by an output

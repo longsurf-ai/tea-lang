@@ -4,7 +4,7 @@ import {Errors, fatal, type ErrorMsg} from '../base/print';
 import {newFileBase} from '../base/pos';
 import type {Program} from '../ir/program';
 import {parse} from '../syntax/syntax';
-import {check} from '../typecheck/check';
+import {check} from '../checker/check';
 import {buildProgram} from './noder';
 
 export interface BuildResult {

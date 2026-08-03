@@ -1,0 +1,12 @@
+//@version=1
+indicator("imports")
+
+import ta as t
+
+s1 = t.sma(close, 3)
+s2 = ta.sma(close, 3)
+plot(s1 - s2)
+
+import nosuchlib // ERROR unknown library 'nosuchlib'
+
+import someone/lib/1 // ERROR external libraries are not supported yet

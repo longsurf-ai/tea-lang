@@ -6,7 +6,7 @@ import {generate} from './codegen/codegen';
 import type {Program} from './ir/program';
 import {buildProgram, loadPackage} from './noder/noder';
 import type {File} from './syntax/nodes';
-import {checkPackage} from './typecheck/check';
+import {checkPackage} from './checker/check';
 
 // Compilation either emits JavaScript or fails with the flushed, ordered
 // error batch — never both, never a partial emit.

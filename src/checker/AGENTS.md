@@ -1,9 +1,9 @@
-# typecheck
+# checker
 
 The Tea checker: an eager pass over syntax (the types2 shape) producing the
 `Info` side tables the noder consumes. `catalog.ts` declares every host
 primitive, `scope.ts` is the binder, `check.ts` walks statements and
-expressions.
+expressions, `library.ts` loads the builtin Tea-authored libraries.
 
 ## Invariants
 
@@ -25,11 +25,17 @@ expressions.
 - User-function declarations bind as templates; calls stencil one
   instantiation per concrete argument signature (memoized), each with its
   own `SideTables` and a scope rooted at the template's base — the user
-  global scope, or the prelude scope for `ta.*` (`prelude.ts` loads
-  `src/prelude/ta.tea`; natives win the dotted namespace). Recursion is
-  rejected (the static call graph must stay acyclic for frame
-  pre-allocation), and function bodies read but never write outer-scope
-  variables.
+  global scope, or the owning library's scope. Recursion is rejected (the
+  static call graph must stay acyclic for frame pre-allocation), and
+  function bodies read but never write outer-scope variables.
+- Standard libraries are ordinary Tea libraries under `src/lib`, loaded by
+  `library.ts`: each file's `library("...")` declaration names its
+  namespace, exported templates are the public surface, and every builtin
+  library is implicitly imported (a `Library` entry in the universe scope
+  above the file's global scope). `import <lib> [as alias]` re-binds or
+  aliases builtins; external `owner/name/version` paths are a clean error
+  until a distribution story exists. There is no separate prelude
+  mechanism.
 - Checker errors queue into the compilation's `Errors` and poison with
   `TypeKind.Invalid` (assignable both ways, unify-absorbed) so one error
   never cascades; the checker never throws on user input and silently

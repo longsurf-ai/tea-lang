@@ -52,13 +52,13 @@ import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
 import {parse} from '../syntax/syntax';
 import {Op} from '../syntax/tokens';
-import {Effect} from '../typecheck/catalog';
+import {Effect} from '../checker/catalog';
 import type {
   FuncInstance,
   Info,
   ResolvedCall,
   SideTables,
-} from '../typecheck/check';
+} from '../checker/check';
 import {resolveDepths} from './depth';
 
 // Frontend orchestrator: one parse per file.

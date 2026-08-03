@@ -358,8 +358,15 @@ function mathNum(
 function buildFuncs(): NativeFunc[] {
   const funcs: NativeFunc[] = [];
 
-  // Script declaration.
+  // Script declarations.
   funcs.push(
+    func(
+      'library',
+      [req('title', StringType, Qualifier.Const, {literal: true})],
+      VoidType,
+      Qualifier.Const,
+      Effect.Declaration,
+    ),
     func(
       'indicator',
       [

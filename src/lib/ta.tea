@@ -1,6 +1,9 @@
-// ta: Tea-authored technical-analysis prelude. Ordinary Tea functions
+//@version=1
+// ta: the Tea-authored technical-analysis library. Ordinary Tea functions
 // compiled by the ordinary pipeline — nothing here is native, and per-call-
 // site state falls out of function semantics (var locals, param history).
+// Implicitly imported into every script under its declared name.
+library("ta")
 
 export sma(source, length) =>
 	sum = 0.0

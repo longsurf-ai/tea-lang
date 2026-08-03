@@ -46,4 +46,4 @@ series`) are an orthogonal axis; combining values takes the later-known
   syminfo.\*) are never declared; composition internals (names, funcs,
   call-site slots) come from the visit projections.
 - `ir` imports only `base/`; it must never import from `syntax/`,
-  `typecheck/`, or `noder/` (dependencies point at `ir`, not out of it).
+  `checker/`, or `noder/` (dependencies point at `ir`, not out of it).

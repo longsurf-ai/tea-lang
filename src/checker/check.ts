@@ -61,7 +61,12 @@ import {
   type NativeTypeRef,
   type NativeVar,
 } from './catalog';
-import {isPreludeRoot, preludeLocalTemplates, preludeTemplate} from './prelude';
+import {
+  builtinLibraries,
+  builtinLibrary,
+  isBuiltinLibraryName,
+  type BuiltinLibrary,
+} from './library';
 import {EntryKind, Scope, type ScopeEntry} from './scope';
 
 // ---- results ----------------------------------------------------------------
@@ -226,7 +231,10 @@ class Checker {
   // for the main script, a FuncInstance's tables during instantiation.
   private tables: SideTables = this.info;
 
-  private scope = new Scope(null);
+  // The universe scope holds implicit bindings every script sees: one
+  // Library entry per builtin library. The global scope chains to it.
+  private readonly universe = new Scope(null);
+  private scope = new Scope(this.universe);
   private loopDepth = 0;
   private blockDepth = 0;
   // The qualifier of the enclosing control flow: writes under an `if` whose
@@ -245,26 +253,35 @@ class Checker {
   private readonly instantiating = new Set<syntax.FuncDecl>();
   private readonly reassignedCollected = new Set<syntax.FuncDecl>();
   private funcBoundary: Scope | null = null;
-  private preludeScopeCache: Scope | null = null;
+  private readonly libScopes = new Map<BuiltinLibrary, Scope>();
   // The ambient pool reads resolve into: the Info's pool for the script's
   // own context, a fresh pool inside a request capture (child context).
   private seriesPool: Map<string, SeriesInput> = this.info.series;
   private captureDepth = 0;
   private readonly instanceStack: FuncInstance[] = [];
 
-  constructor(private readonly errors: Errors) {}
+  constructor(private readonly errors: Errors) {
+    for (const library of builtinLibraries()) {
+      this.universe.declare(library.name, {
+        kind: EntryKind.Library,
+        library,
+      });
+    }
+  }
 
-  // The scope prelude bodies resolve against: every prelude template under
-  // its plain name (rsi calls rma), natives via the ordinary catalog path.
-  private preludeScope(): Scope {
-    if (this.preludeScopeCache === null) {
-      const scope = new Scope(null);
-      for (const [name, decl] of preludeLocalTemplates()) {
+  // The scope a library's bodies resolve against: every template of the
+  // library under its plain name (rsi calls rma), exported or not; natives
+  // via the ordinary catalog path.
+  private libScope(library: BuiltinLibrary): Scope {
+    let scope = this.libScopes.get(library);
+    if (scope === undefined) {
+      scope = new Scope(null);
+      for (const [name, decl] of library.locals) {
         scope.declare(name, {kind: EntryKind.Func, decl, base: scope});
       }
-      this.preludeScopeCache = scope;
+      this.libScopes.set(library, scope);
     }
-    return this.preludeScopeCache;
+    return scope;
   }
 
   checkFile(file: syntax.File): Info {
@@ -301,7 +318,7 @@ class Checker {
         this.checkEnumDecl(stmt);
         return null;
       case NodeKind.ImportStmt:
-        this.error(stmt.pos, 'imports are not supported yet');
+        this.checkImport(stmt);
         return null;
       case NodeKind.BreakStmt:
         if (this.loopDepth === 0) {
@@ -477,7 +494,7 @@ class Checker {
   }
 
   private declare(nameNode: syntax.Name, entry: ScopeEntry): void {
-    if (isNativeRoot(nameNode.value) || isPreludeRoot(nameNode.value)) {
+    if (isNativeRoot(nameNode.value) || isBuiltinLibraryName(nameNode.value)) {
       this.error(nameNode.pos, `cannot redeclare built-in '${nameNode.value}'`);
       return;
     }
@@ -618,6 +635,31 @@ class Checker {
       );
     }
     return valueTv;
+  }
+
+  private checkImport(stmt: syntax.ImportStmt): void {
+    if (this.blockDepth > 0 || this.funcBoundary !== null) {
+      this.error(stmt.pos, 'import must be at the top level of the script');
+      return;
+    }
+    const raw = stmt.path.value;
+    if (raw.includes('/')) {
+      this.error(
+        stmt.path.pos,
+        `external libraries are not supported yet ('${raw}')`,
+      );
+      return;
+    }
+    const library = builtinLibrary(raw);
+    if (library === null) {
+      this.error(stmt.path.pos, `unknown library '${raw}'`);
+      return;
+    }
+    // Builtins are already bound by the implicit import; an alias adds a
+    // second binding in the file's scope.
+    if (stmt.alias !== null) {
+      this.declare(stmt.alias, {kind: EntryKind.Library, library});
+    }
   }
 
   private checkFuncDecl(d: syntax.FuncDecl): void {
@@ -837,6 +879,9 @@ class Checker {
         case EntryKind.Udt:
         case EntryKind.Enum:
           this.error(n.pos, `'${n.value}' is a type, not a value`);
+          return INVALID_TV;
+        case EntryKind.Library:
+          this.error(n.pos, `'${n.value}' is a library, not a value`);
           return INVALID_TV;
       }
     }
@@ -1391,20 +1436,25 @@ class Checker {
           return this.checkNew(c, entry.type);
         }
       }
+      if (fun.x.kind === NodeKind.Name) {
+        const rootEntry = this.scope.lookup(fun.x.value);
+        if (rootEntry?.kind === EntryKind.Library) {
+          const written = `${fun.x.value}.${fun.sel.value}`;
+          const template = rootEntry.library.exports.get(fun.sel.value);
+          if (template === undefined) {
+            this.error(fun.pos, `unknown function '${written}'`);
+            return INVALID_TV;
+          }
+          return this.checkUserCall(
+            c,
+            template,
+            written,
+            this.libScope(rootEntry.library),
+          );
+        }
+      }
       const path = dottedPath(fun);
       if (path !== null && this.scope.lookup(path.root) === null) {
-        // Natives win the dotted namespace; the prelude fills the rest.
-        if (nativeFuncs(path.path) === null && nativeVar(path.path) === null) {
-          const template = preludeTemplate(path.path);
-          if (template !== null) {
-            return this.checkUserCall(
-              c,
-              template,
-              path.path,
-              this.preludeScope(),
-            );
-          }
-        }
         return this.resolveNativeCall(c, path.path, fun.pos);
       }
       this.error(fun.sel.pos, 'method calls are not supported yet');
