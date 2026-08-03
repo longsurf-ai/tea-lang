@@ -1051,9 +1051,21 @@ class Noder {
     const minval = argValue('minval');
     const maxval = argValue('maxval');
     const step = argValue('step');
+    // An options list is a tuple literal of constants (["EMA", "SMA"]).
+    let options: ConstValue[] | null = null;
+    let optionsExpr = argExpr('options');
+    while (optionsExpr !== null && optionsExpr.kind === NodeKind.ParenExpr) {
+      optionsExpr = optionsExpr.x;
+    }
+    if (optionsExpr !== null && optionsExpr.kind === NodeKind.TupleExpr) {
+      const values = optionsExpr.elems.map(elem => this.tvOf(elem).value);
+      if (values.every((v): v is ConstValue => v !== null)) {
+        options = values;
+      }
+    }
     const constraints: ParamConstraints | null =
-      minval !== null || maxval !== null || step !== null
-        ? {minval, maxval, step, options: null}
+      minval !== null || maxval !== null || step !== null || options !== null
+        ? {minval, maxval, step, options}
         : null;
 
     const title = argValue('title');

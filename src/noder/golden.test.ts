@@ -22,22 +22,28 @@ function checkGolden(goldenPath: string, dump: string): void {
   expect(dump).toBe(readFileSync(goldenPath, 'utf8'));
 }
 
+// Root-level testdata fixtures that must compile through check + noding —
+// grows toward the full corpus as catalog and language coverage lands.
+const CHECKABLE = ['macd.tea'];
+
+function testIrGolden(dir: string, name: string): void {
+  test(name, () => {
+    const src = readFileSync(join(dir, name), 'utf8');
+    const {program, errors} = buildText(src, name);
+    expect(errors.map(e => `${e.pos.line}:${e.pos.col}: ${e.msg}`)).toEqual([]);
+    expect(program).not.toBeNull();
+    checkGolden(join(dir, `${name}.ir.golden`), `${dumpProgram(program!)}\n`);
+  });
+}
+
 describe('ir dump goldens', () => {
   const files = readdirSync(TESTDATA).filter(name => name.endsWith('.tea'));
   expect(files.length).toBeGreaterThan(0);
 
   for (const name of files) {
-    test(name, () => {
-      const src = readFileSync(join(TESTDATA, name), 'utf8');
-      const {program, errors} = buildText(src, `testdata/ir/${name}`);
-      expect(errors.map(e => `${e.pos.line}:${e.pos.col}: ${e.msg}`)).toEqual(
-        [],
-      );
-      expect(program).not.toBeNull();
-      checkGolden(
-        join(TESTDATA, `${name}.ir.golden`),
-        `${dumpProgram(program!)}\n`,
-      );
-    });
+    testIrGolden(TESTDATA, name);
+  }
+  for (const name of CHECKABLE) {
+    testIrGolden(join(TESTDATA, '..'), name);
   }
 });

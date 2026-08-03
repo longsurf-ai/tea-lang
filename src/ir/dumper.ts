@@ -95,6 +95,9 @@ export function dumpProgram(program: Program): string {
       if (c.step !== null) {
         parts.push(`step=${formatValue(c.step)}`);
       }
+      if (c.options !== null) {
+        parts.push(`options=[${c.options.map(formatValue).join(', ')}]`);
+      }
       line += ` {${parts.join(' ')}}`;
     }
     dumpDepthLine(line, param.depth, '', out, labels);

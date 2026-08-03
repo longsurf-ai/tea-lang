@@ -1,0 +1,159 @@
+Program version=6 slots=3
+param sourceInput: float title="Source" default=series(close) depth=none
+param fastLenInput: int title="Fast length" default=12 {min=1} depth=none
+param slowLenInput: int title="Slow length" default=26 {min=1} depth=none
+param sigLenInput: int title="Signal length" default=9 {min=1} depth=none
+param oscTypeInput: string title="Oscillator MA type" default="EMA" {options=["EMA", "SMA"]} depth=none
+param sigTypeInput: string title="Signal MA type" default="EMA" {options=["EMA", "SMA"]} depth=none
+series close: series float depth=none
+output[0] indicator static{title="Moving Average Convergence Divergence" shorttitle="MACD" timeframe="" timeframe_gaps=true}
+output[1] hline static{price=0 title="Zero" color="#787B8680"}
+output[2] plot static{title="Histogram" style="columns"} channels{series: float, color: color}
+output[3] plot static{title="MACD"} channels{series: float}
+output[4] plot static{title="Signal line" color="#FF6D00"} channels{series: float}
+output[5] alertcondition static{title="Rising to falling" message="MACD histogram switched from a rising to falling state"} channels{condition: bool}
+output[6] alertcondition static{title="Falling to rising" message="MACD histogram switched from a falling to rising state"} channels{condition: bool}
+name maFast: perBar series float depth=none
+name source: perBar series float depth=none
+name length: perBar input int depth=none
+name maType: perBar input string depth=none
+name source#1: perBar series float depth=none
+name length#1: perBar input int depth=none
+name alpha: perBar input float depth=none
+name e: var series float depth=none
+  init: Const na: const na
+name source#2: perBar series float depth=capped
+  depth.cap: Const 500: const int
+name length#2: perBar input int depth=none
+name sum: perBar series float depth=none
+name i: perBar series int depth=none
+name maSlow: perBar series float depth=none
+name macd: perBar series float depth=none
+name signal: perBar series float depth=none
+name hist: perBar series float depth=const(1)
+name hColor: perBar series color depth=none
+func ma(source: series float, length: input int, maType: input string): series float
+  body: BlockExpr: series float
+    value: SwitchExpr: series float
+      subject: HistRead name:maType: input string
+      arm[0].pattern: Const "EMA": const string
+      arm[0].body: BlockExpr: series float
+        value: CallFunc ta.ema slot=0: series float
+          HistRead name:source: series float
+          HistRead name:length: input int
+      arm[1].pattern: Const "SMA": const string
+      arm[1].body: BlockExpr: series float
+        value: CallFunc ta.sma slot=1: series float
+          HistRead name:source: series float
+          HistRead name:length: input int
+func ta.ema(source#1: series float, length#1: input int): series float
+  body: BlockExpr: series float
+    WriteName alpha
+      Binary Div: input float
+        Const 2: const float
+        Binary Add: input int
+          HistRead name:length#1: input int
+          Const 1: const int
+    WriteName e
+      Cond: series float
+        cond: CallNative na: series bool
+          HistRead name:e: series float
+        then: HistRead name:source#1: series float
+        else: Binary Add: series float
+          Binary Mul: series float
+            HistRead name:alpha: input float
+            HistRead name:source#1: series float
+          Binary Mul: series float
+            Binary Sub: input float
+              Const 1: const int
+              HistRead name:alpha: input float
+            HistRead name:e: series float
+    value: HistRead name:e: series float
+func ta.sma(source#2: series float, length#2: input int): series float
+  body: BlockExpr: series float
+    WriteName sum
+      Const 0: const float
+    ExprStmt
+      ForExpr index=i: series float
+        from: Const 0: const int
+        to: Binary Sub: input int
+          HistRead name:length#2: input int
+          Const 1: const int
+        body: BlockExpr: series float
+          WriteName sum
+            Binary Add: series float
+              HistRead name:sum: series float
+              HistRead name:source#2: series float
+                offset: HistRead name:i: series int
+          value: HistRead name:sum: series float
+    value: Binary Div: series float
+      HistRead name:sum: series float
+      HistRead name:length#2: input int
+body:
+  WriteName maFast
+    CallFunc ma slot=0: series float
+      HistRead param:sourceInput: series float
+      HistRead param:fastLenInput: input int
+      HistRead param:oscTypeInput: input string
+  WriteName maSlow
+    CallFunc ma slot=1: series float
+      HistRead param:sourceInput: series float
+      HistRead param:slowLenInput: input int
+      HistRead param:oscTypeInput: input string
+  WriteName macd
+    Binary Sub: series float
+      HistRead name:maFast: series float
+      HistRead name:maSlow: series float
+  WriteName signal
+    CallFunc ma slot=2: series float
+      HistRead name:macd: series float
+      HistRead param:sigLenInput: input int
+      HistRead param:sigTypeInput: input string
+  WriteName hist
+    Binary Sub: series float
+      HistRead name:macd: series float
+      HistRead name:signal: series float
+  WriteName hColor
+    Cond: series color
+      cond: Binary Ge: series bool
+        HistRead name:hist: series float
+        Const 0: const int
+      then: Cond: series color
+        cond: Binary Gt: series bool
+          HistRead name:hist: series float
+          HistRead name:hist: series float
+            offset: Const 1: const int
+        then: Const "#26A69A": const color
+        else: Const "#B2DFDB": const color
+      else: Cond: series color
+        cond: Binary Gt: series bool
+          HistRead name:hist: series float
+          HistRead name:hist: series float
+            offset: Const 1: const int
+        then: Const "#FFCDD2": const color
+        else: Const "#FF5252": const color
+  Emit output[2]
+    HistRead name:hist: series float
+    HistRead name:hColor: series color
+  Emit output[3]
+    HistRead name:macd: series float
+  Emit output[4]
+    HistRead name:signal: series float
+  Emit output[5]
+    Binary And: series bool
+      Binary Ge: series bool
+        HistRead name:hist: series float
+          offset: Const 1: const int
+        Const 0: const int
+      Binary Lt: series bool
+        HistRead name:hist: series float
+        Const 0: const int
+  Emit output[6]
+    Binary And: series bool
+      Binary Le: series bool
+        HistRead name:hist: series float
+          offset: Const 1: const int
+        Const 0: const int
+      Binary Gt: series bool
+        HistRead name:hist: series float
+        Const 0: const int

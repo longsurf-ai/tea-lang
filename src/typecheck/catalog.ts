@@ -322,7 +322,18 @@ function numericInput(name: string, type: Type): NativeFunc {
 function simpleInput(name: string, type: Type): NativeFunc {
   return func(
     name,
-    [req('defval', type, Qualifier.Const, {literal: true}), ...inputTail()],
+    [
+      req('defval', type, Qualifier.Const, {literal: true}),
+      opt('title', StringType, Qualifier.Const, {literal: true}),
+      // A tuple literal of allowed values (["EMA", "SMA"]), third by
+      // position per Pine.
+      opt('options', TypeRef.Any, Qualifier.Const),
+      opt('tooltip', StringType, Qualifier.Const, {literal: true}),
+      opt('inline', StringType, Qualifier.Const, {literal: true}),
+      opt('group', StringType, Qualifier.Const, {literal: true}),
+      opt('confirm', BoolType, Qualifier.Const, {literal: true}),
+      opt('display', StringType, Qualifier.Const),
+    ],
     type,
     Qualifier.Input,
     Effect.Param,
