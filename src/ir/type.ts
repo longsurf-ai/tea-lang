@@ -1,11 +1,12 @@
-// Purpose: Tea type domain — the single type system shared by checker, IR, and Program: value types crossed with the qualifier lattice.
+// Purpose: Tea type domain — the single type system shared by checker, IR, and Program: value types crossed with the qualifier ordering.
 
 // ---- qualifiers -------------------------------------------------------------
 
-// The qualifier axis answers WHEN a value becomes known, as an ordered join
-// semilattice. It is orthogonal to the value type: `series color` is a color
-// knowable only per bar. History is a property of this axis — only
-// series-qualified values have a time dimension.
+// The qualifier axis answers WHEN a value becomes known, as an ordering:
+// combining values takes the later-known qualifier of the operands. It is
+// orthogonal to the value type: `series color` is a color knowable only per
+// bar. History is a property of this axis — only series-qualified values
+// have a time dimension.
 export const Qualifier = {
   Const: 'const', // known at compile time
   Input: 'input', // fixed when the runtime binds inputs
@@ -28,7 +29,7 @@ export function qualifierLE(a: Qualifier, b: Qualifier): boolean {
   return QUALIFIER_RANK[a] <= QUALIFIER_RANK[b];
 }
 
-// Lattice join: the qualifier of a combination of operands.
+// The later-known of two qualifiers — the qualifier of any combination.
 export function joinQualifiers(a: Qualifier, b: Qualifier): Qualifier {
   return QUALIFIER_RANK[a] >= QUALIFIER_RANK[b] ? a : b;
 }

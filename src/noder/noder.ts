@@ -20,8 +20,7 @@ export function loadPackage(
   );
 }
 
-// Build the Program from checked syntax ("noding"). "Lowering" is reserved
-// for Program → JS in codegen, per the pipeline vocabulary.
+// Build the Program from checked syntax ("noding").
 export function buildProgram(files: readonly File[], errors: Errors): Program {
   return unimplemented('noder: buildProgram', files, errors);
 }

@@ -14,9 +14,10 @@ import type {
 // compiler-internal objects which are identified by reference.
 export type DataSeriesId = string;
 
-// Distinguishes call sites of the same function instantiation; runtime state
-// identity is the dynamic chain of these ids (the call path).
-export type CallStateId = number;
+// Minted per stateful call site: the slot selects that call site's
+// sub-frame within the caller's frame. Frames nest along the static call
+// graph, so the runtime pre-allocates the whole frame tree at bind time.
+export type SlotId = number;
 
 // Persistence, orthogonal to qualifiers: perBar re-initializes each
 // iteration, var carries the previous iteration's value forward (rolled back
@@ -56,7 +57,7 @@ export interface Name {
 
 export const IrKind = {
   Const: 'Const',
-  Read: 'Read',
+  HistRead: 'HistRead',
   Binary: 'Binary',
   Unary: 'Unary',
   Cond: 'Cond',
@@ -149,7 +150,7 @@ export interface IrExprBase extends IrNode {
 
 export type IrExpr =
   | ConstExpr
-  | ReadExpr
+  | HistReadExpr
   | BinaryExpr
   | UnaryExpr
   | CondExpr
@@ -171,12 +172,12 @@ export interface ConstExpr extends IrExprBase {
   readonly value: ConstValue;
 }
 
-// Current value when offset is null; history read (`x[k]`) otherwise. The
-// use site keeps its own pos — unlike shared-node designs, per-use positions
-// survive for diagnostics. The checker guarantees offset qualifiers obey the
-// bind-time depth rule.
-export interface ReadExpr extends IrExprBase {
-  readonly kind: typeof IrKind.Read;
+// A read through the time machine: offset null means the current bar
+// (offset 0), a non-null offset is `x[k]`. The use site keeps its own pos —
+// unlike shared-node designs, per-use positions survive for diagnostics.
+// The checker guarantees offset qualifiers obey the bind-time depth rule.
+export interface HistReadExpr extends IrExprBase {
+  readonly kind: typeof IrKind.HistRead;
   readonly place: Place;
   readonly offset: IrExpr | null;
 }
@@ -204,16 +205,16 @@ export interface CondExpr extends IrExprBase {
 export interface CallFuncExpr extends IrExprBase {
   readonly kind: typeof IrKind.CallFunc;
   readonly func: IrFunc;
-  readonly state: CallStateId;
+  readonly slot: SlotId;
   readonly args: readonly IrExpr[];
 }
 
 // A native primitive call (data-source-, effect-, or intrinsic-classed per
-// the catalog). Stateful natives also carry a call-site state id.
+// the catalog). Stateful natives also carry a call-site slot.
 export interface CallNativeExpr extends IrExprBase {
   readonly kind: typeof IrKind.CallNative;
   readonly native: string;
-  readonly state: CallStateId | null;
+  readonly slot: SlotId | null;
   readonly args: readonly IrExpr[];
 }
 

@@ -1,13 +1,6 @@
 // Purpose: Tea Program contract — the compiler's complete static description of a script; the runtime implements the Time Machine (buffers, copy-on-write, rollback) from this description.
 
-import type {
-  CallStateId,
-  DataSeriesId,
-  HistoryDepth,
-  IrExpr,
-  IrStmt,
-  Name,
-} from './node';
+import type {DataSeriesId, HistoryDepth, IrExpr, IrStmt, Name} from './node';
 import type {ConstValue, Qualifier, Type} from './type';
 
 // A user-tunable input (input.*): compile time extracts the declaration; the
@@ -32,10 +25,12 @@ export interface ParamConstraints {
   readonly options: readonly ConstValue[] | null;
 }
 
-// A data source the runtime provides for this Program's context, bound by
-// host name: series-qualified per-bar streams (close, volume) or
-// simple-qualified context bindings provided once (syminfo.tickerid,
-// timeframe.period).
+// An ambient built-in series of the Program's context, provided by the
+// runtime unconditionally and bound by host name: series-qualified per-bar
+// streams (close, volume) or simple-qualified context bindings provided
+// once (syminfo.tickerid, timeframe.period). Availability is never declared
+// and usage is never mandatory; the depth-annotated usage set is projected
+// by seriesInputsOf for buffer sizing.
 export interface SeriesInput {
   readonly id: DataSeriesId;
   readonly type: Type;
@@ -99,11 +94,14 @@ export interface RequestEdge {
   readonly child: Program;
 }
 
-// One instantiation of a user (or prelude) function for a concrete argument
-// signature. Params are ordinary Names (per-call values); locals are
-// discovered by walking the body. Call sites reference the instantiation
-// object directly plus their own CallStateId; runtime state identity is the
-// dynamic chain of CallStateIds, so nested stateful calls multiply out.
+// One instantiation of a user (or prelude) function per concrete argument
+// signature — Go-style stenciling, and instantiations are REAL functions:
+// calls dispatch at runtime (inlining is at most a codegen optimization).
+// Params are ordinary Names (per-call values); locals are discovered by
+// walking the body. An IrFunc's frame layout is its local Names plus one
+// sub-frame per stateful call site in its body; each call site's slot
+// selects its sub-frame, so two ma(close, 10) call sites own two frames
+// (and two ema sub-frames within).
 export interface IrFunc {
   readonly name: string;
   readonly params: readonly Name[];
@@ -117,20 +115,23 @@ export interface IrFunc {
 // recursion — not multi-context Programs — is how requests compose. The
 // Program is a pure static description: it never encodes buffer layouts, COW
 // strategy, or any other Time Machine mechanics, which are runtime-owned.
-// There is no variable table: Names are shared declaration objects reachable
-// from the trees, and any enumeration (allocation plans, serialized indices)
-// is a projection derived by walking at the boundary that needs it.
+// Field criterion: a Program declares its EXTERNAL NEEDS — params
+// (bind-time values) and requests (child-Program contexts the runtime must
+// resolve) — and its emissions (outputs), explicitly, even where derivable:
+// binder, checker, and runtime read what the program needs from the world
+// here, never by walking trees. Ambient context builtins (close, volume,
+// syminfo.*) are NOT declared — they are simply available, and their
+// depth-annotated usage set is projected by seriesInputsOf for buffer
+// sizing. Composition internals (names, funcs, call-site slots) are
+// visit.ts projections; the noder fills requests from the same reach walk.
 export interface Program {
-  readonly teaVersion: string;
+  // Declared Tea language version.
+  readonly version: number;
   readonly params: readonly ParamInput[];
-  readonly seriesInputs: readonly SeriesInput[];
-  readonly outputs: readonly OutputDecl[];
   readonly requests: readonly RequestEdge[];
-  readonly funcs: readonly IrFunc[];
+  readonly outputs: readonly OutputDecl[];
   // Hoisted const/input/simple work, run once when bindings are known.
   readonly init: readonly IrStmt[];
   // The per-bar body — the inner loop of the bar-per-bar execution model.
   readonly body: readonly IrStmt[];
-  // Count of distinct call-site ids minted for this Program.
-  readonly callStateCount: CallStateId;
 }

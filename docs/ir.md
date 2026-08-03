@@ -38,11 +38,13 @@ historical types2/types split). A Tea type is a point on two axes:
   declaration), tuples, concrete function signatures, plus `void` (effect
   calls) and `na` (the polymorphic empty value; assignable to every nullable
   type).
-- **Qualifiers**: `const < input < simple < series` — an ordered join
-  semilattice answering _when the value becomes known_: compile time, bind
-  time, before the first bar, per bar. Expression qualifiers combine by
-  lattice join. History is a property of this axis: only series-qualified
-  values have a time dimension.
+- **Qualifiers**: `const < input < simple < series` — an ordering answering
+  _when the value becomes known_: compile time, bind time, before the first
+  bar, per bar. Combining expressions takes the later-known qualifier of the
+  operands; a native call's result qualifier is whatever the catalog
+  declares (`close` is series, `input.int(...)` is input). History is a
+  property of this axis: only series-qualified values have a time
+  dimension.
 
 `TypeAndValue {type, qualifier, value?}` is the checker's currency (types2's
 `TypeAndValue` with Tea's extra axis). The sole implicit conversions:
@@ -62,9 +64,11 @@ owning:
 - **params**: `input.*` declarations. Compile time extracts the declaration
   (name, type, default, const-required constraints); the **value arrives at
   bind time from the runtime**. That is what the `input` qualifier means.
-- **seriesInputs**: per-bar data the runtime provides for this Program's
-  context (`close`, `time`, `bar_index`, `syminfo.*` bindings — context-scoped,
-  not global).
+- **ambient series** (not a field): `close`, `time`, `bar_index`,
+  `syminfo.*` are built-ins of whatever context the Program runs in —
+  provided by the runtime unconditionally, context-scoped, never declared,
+  never mandatory. `seriesInputsOf` projects the depth-annotated usage set
+  for buffer sizing.
 - **names**: variables are `Name` objects — the `ir.Name` model. One object
   per declaration, referenced directly from every use; there is no id and no
   top-level variable table (enumerations for allocation or serialization are
@@ -104,12 +108,17 @@ owning:
   distinct (symbol, timeframe) pair it encounters. Non-security request kinds
   (financial/dividends/economic) map to edges whose child is a plain
   series-input projection; their extra context args ride the same shape.
-- **funcs**: per-signature instantiations of user/prelude functions. Call
-  sites carry a `CallStateId`, and runtime state identity is the **dynamic
-  chain of CallStateIds** (the call path): two outer `f()` sites calling one
-  inner `ta.sma` site yield two sma states keyed `[outerId, innerId]`. Two
-  `ma(close, 10)` calls own two independent states; the same mechanism
-  serves stateful natives.
+- **funcs** (a projection, not a field): per-signature instantiations of
+  user/prelude functions — Go-style stencils that remain **real functions
+  with runtime call dispatch**; inlining is at most a codegen optimization.
+  State is a **frame tree**: an IrFunc's frame layout is its local Names
+  plus one sub-frame per stateful call site (selected by that site's
+  `SlotId`); frames nest along the static call graph (acyclic — recursion
+  is rejected), so the runtime enumerates and pre-allocates every frame at
+  bind time. Two `ma(close, 10)` call sites share one compiled body but own
+  two frames — and two `ema` sub-frames within. `ta.*` rides this exact
+  path as prelude code; nothing is specialized for technical-analysis
+  builtins.
 - **init** vs **body**: const/input/simple work hoisted out of the loop vs
   the per-bar step.
 
@@ -117,9 +126,12 @@ owning:
 
 Typed and resolved: every expression carries `(type, qualifier)`; every use
 is a `Place` referencing its declaration object directly (Name | ParamInput |
-SeriesInput | RequestEdge — no ids), with `Read {place, offset?}` covering
-both current and history access, and each use keeping its own position
-(unlike shared-node designs, diagnostics never lose the use site). Operations
+SeriesInput | RequestEdge — no ids), with `HistRead {place, offset?}` — a
+read through the time machine, offset null meaning the current bar — and
+each use keeping its own position (unlike shared-node designs, diagnostics
+never lose the use site). `TupleGet` has no surface syntax: Pine tuples are
+destructured immediately, so it appears only in noder-generated lowerings of
+tuple patterns. Operations
 are a semantic vocabulary (`IrOp.Sub` vs `IrOp.Neg` are different operations
 even though both spell `-`; unary `+` is folded away) — the noder maps
 surface tokens to operations, and split `IrBinaryOp`/`IrUnaryOp` unions make
@@ -153,6 +165,24 @@ runtime protocol:
 New builtin families are catalog entries plus at most a new noding policy —
 never new checker or IR architecture. Future cross-sectional analysis
 generalizes the request edge (a universe of contexts instead of one).
+
+## Program fields vs projections
+
+A Program declares its external needs — `params` (bind-time values; an
+unused input still renders in the settings UI) and `requests`
+(child-Program contexts the runtime must resolve) — and its emissions
+(`outputs`; a static-only hline has no Emit), explicitly even where
+derivable: binder, checker, and runtime read what the program needs from
+the world here, never by walking trees. Ambient context builtins (close,
+volume, syminfo.\*) are NOT declared: they are simply available, usage
+optional, and the series list of a child context is a product of request
+resolution. Composition internals — names, funcs, call-site slots — are
+projections: `visit.ts` owns the exhaustive traversal and exposes
+`namesOf`, `funcsOf`, `slotCountOf`, plus `seriesInputsOf` (the
+depth-annotated ambient usage set, for buffer sizing) and `requestsOf`
+(how the noder fills the interface field). Request edges the noder finds
+unreachable never enter `requests` — dead-request elimination by
+construction.
 
 ## Noding policies (locked, implemented when the noder lands)
 

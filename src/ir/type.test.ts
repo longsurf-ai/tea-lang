@@ -1,4 +1,4 @@
-// Purpose: Type-domain tests — qualifier lattice laws, assignability and unification rules, and type formatting.
+// Purpose: Type-domain tests — qualifier ordering rules, assignability and unification rules, and type formatting.
 
 import {describe, expect, test} from 'bun:test';
 import {
@@ -30,7 +30,7 @@ const QUALIFIERS = [
   Qualifier.Series,
 ] as const;
 
-describe('qualifier lattice', () => {
+describe('qualifier ordering', () => {
   test('join is the later-known qualifier', () => {
     expect(joinQualifiers(Qualifier.Const, Qualifier.Series)).toBe(
       Qualifier.Series,
@@ -56,7 +56,7 @@ describe('qualifier lattice', () => {
     }
   });
 
-  test('ordering is total and join-consistent', () => {
+  test('ordering is total and consistent with the combine rule', () => {
     for (const a of QUALIFIERS) {
       for (const b of QUALIFIERS) {
         expect(qualifierLE(a, b) || qualifierLE(b, a)).toBeTrue();
