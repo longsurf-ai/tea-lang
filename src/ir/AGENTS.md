@@ -18,11 +18,20 @@ series`) are an orthogonal axis combined by lattice join; history is a
   timeframe axis) and owns its slots, bindings, and rollback. Requests
   compose by recursion — child Programs whose merged outputs are parent
   inputs — never by multi-context Programs.
-- Every slot's history depth is resolvable no later than bind time; dynamic
-  offsets exist only under a declared cap.
-- Every IR expression carries `(type, qualifier)`; names are resolved `Place`
-  references. There are no Bad nodes — the IR exists only for error-free
-  compilations (the checker's phase barrier gates noding).
+- Variables are `Name` objects: one shared declaration object per variable,
+  referenced directly from every use — no ids, no top-level variable table.
+  Enumerations (allocation plans, serialized indices) are projections derived
+  by walking, produced at the boundary that needs them. The binder's objects
+  ARE these Names — one object set from binding through codegen. Analysis
+  fields (type, qualifier, depth, init) are mutable working fields owned by
+  the annotating pass, read-only afterward.
+- Every history-readable place's depth is resolvable no later than bind time
+  (Names, series inputs, and request results all carry `HistoryDepth`);
+  dynamic offsets exist only under a declared cap.
+- Every IR expression carries `(type, qualifier)`; every use is a `Place`
+  referencing its declaration object and keeping its own position. There are
+  no Bad nodes — the IR exists only for error-free compilations (the
+  checker's phase barrier gates noding).
 - Call-site identity is the universal state mechanism: instantiations are
   per-signature, and runtime state identity is the dynamic chain of
   `CallStateId`s (the call path) — for user functions, the Tea prelude, and

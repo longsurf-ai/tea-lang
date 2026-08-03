@@ -65,16 +65,23 @@ owning:
 - **seriesInputs**: per-bar data the runtime provides for this Program's
   context (`close`, `time`, `bar_index`, `syminfo.*` bindings — context-scoped,
   not global).
-- **slots**: variables with storage (`perBar` | `var` | `varip` — the
-  persistence axis, orthogonal to qualifiers), type, qualifier, a first-bar
-  `init` expression for var/varip storage (evaluated once by the runtime; no
-  synthetic first-bar guards in the body), and a **history depth resolvable
-  no later than bind time** (non-negotiable): `none` (no buffer
-  materializes), `const`, `bound` (an input/simple expression evaluated at
-  bind), or `capped` (dynamic offsets under an explicit bind-resolvable
-  `max_bars_back` cap). Series inputs and request results carry the same
-  depth field — every history-readable place declares its demand, so the
-  runtime sizes all buffers from the description alone.
+- **names**: variables are `Name` objects — the `ir.Name` model. One object
+  per declaration, referenced directly from every use; there is no id and no
+  top-level variable table (enumerations for allocation or serialization are
+  projections derived by walking, produced at the boundary that needs them —
+  exactly how Go keeps a pointer graph in memory and lets the unified-IR
+  writer assign indices at the boundary). A Name carries storage (`perBar` |
+  `var` | `varip` — the persistence axis, orthogonal to qualifiers), a
+  first-bar `init` expression for var/varip storage (evaluated once by the
+  runtime; no synthetic first-bar guards in the body), and mutable analysis
+  fields — type, qualifier, and a **history depth resolvable no later than
+  bind time** (non-negotiable): `none` (no buffer materializes), `const`,
+  `bound` (an input/simple expression evaluated at bind), or `capped`
+  (dynamic offsets under an explicit bind-resolvable `max_bars_back` cap) —
+  annotated by the checker and depth pass rather than frozen at
+  construction. The binder's objects ARE these Names: one object set from
+  binding through codegen. Series inputs and request results carry the same
+  depth field, so the runtime sizes every buffer from the description alone.
 - **outputs**: statically-declared effect channels (plot/hline/
   alertcondition), hoisted so the host knows every channel before the first
   bar. Three argument buckets: `staticArgs` (compile-time constants),
@@ -108,9 +115,11 @@ owning:
 
 ## IR nodes (`src/ir/node.ts`)
 
-Typed and resolved: every expression carries `(type, qualifier)`; every name
-became a `Place` reference (slot | param | series | request), with
-`Read {place, offset?}` covering both current and history access. Operations
+Typed and resolved: every expression carries `(type, qualifier)`; every use
+is a `Place` referencing its declaration object directly (Name | ParamInput |
+SeriesInput | RequestEdge — no ids), with `Read {place, offset?}` covering
+both current and history access, and each use keeping its own position
+(unlike shared-node designs, diagnostics never lose the use site). Operations
 are a semantic vocabulary (`IrOp.Sub` vs `IrOp.Neg` are different operations
 even though both spell `-`; unary `+` is folded away) — the noder maps
 surface tokens to operations, and split `IrBinaryOp`/`IrUnaryOp` unions make

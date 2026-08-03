@@ -1,19 +1,58 @@
-// Purpose: Tea IR nodes — the noder's typed, resolved body vocabulary; every expression carries its type and qualifier, every name is a place reference.
+// Purpose: Tea IR nodes — the noder's typed, resolved body vocabulary; every expression carries its type and qualifier, and every use references its declaration object directly.
 
 import type {Pos} from '../base/pos';
 import type {ConstValue, Qualifier, Type, UdtType} from './type';
+import type {
+  IrFunc,
+  OutputDecl,
+  ParamInput,
+  RequestEdge,
+  SeriesInput,
+} from './program';
 
-// Identities minted by the noder. Plain aliases for now; the noder's
-// constructors are the only mint, and branding can harden them later.
-export type SlotId = number;
-export type ParamId = number;
-export type SeriesInputId = number;
-export type RequestId = number;
-export type FuncId = number;
-export type OutputId = number;
-// Distinguishes call sites of the same function instantiation so the runtime
-// allocates separate state (per-call-site history and var slots).
+// Data series are bound by host name ('close', 'syminfo.tickerid'), unlike
+// compiler-internal objects which are identified by reference.
+export type DataSeriesId = string;
+
+// Distinguishes call sites of the same function instantiation; runtime state
+// identity is the dynamic chain of these ids (the call path).
 export type CallStateId = number;
+
+// Persistence, orthogonal to qualifiers: perBar re-initializes each
+// iteration, var carries the previous iteration's value forward (rolled back
+// on provisional re-execution), varip persists across ticks without rollback.
+export type NameStorage = 'perBar' | 'var' | 'varip';
+
+// How deep a place's history must reach, resolvable no later than bind time:
+// 'none' = never read historically (no buffer materializes); 'const' = known
+// at compile time; 'bound' = an input/simple-qualified expression evaluated
+// at bind; 'capped' = dynamic (series) offsets bounded by an explicit
+// max_bars_back-style cap — itself bind-resolvable, sourced by the noder from
+// max_bars_back(x, n), the indicator declaration, or the engine default.
+export type HistoryDepth =
+  | {readonly kind: 'none'}
+  | {readonly kind: 'const'; readonly bars: number}
+  | {readonly kind: 'bound'; readonly expr: IrExpr}
+  | {readonly kind: 'capped'; readonly bars: IrExpr};
+
+// A declared variable. One object per declaration; every use references it —
+// identity is the object, there is no id and no table. The binder creates
+// it, the checker and depth pass annotate the mutable analysis fields, the
+// noder threads it into trees: one object set from binding to codegen.
+// Variable enumerations (allocation plans, serialized indices) are
+// projections derived by walking, produced at the boundary that needs them.
+export interface Name {
+  readonly name: string;
+  readonly storage: NameStorage;
+  // Annotated during checking and depth resolution — working fields, mutable
+  // by the owning pass (the scanner-field precedent), read-only after.
+  type: Type;
+  qualifier: Qualifier;
+  depth: HistoryDepth;
+  // First-bar initializer for var/varip storage, evaluated once by the
+  // runtime; null for perBar names, which the body writes every iteration.
+  init: IrExpr | null;
+}
 
 export const IrKind = {
   Const: 'Const',
@@ -34,7 +73,7 @@ export const IrKind = {
   WhileExpr: 'WhileExpr',
   BlockExpr: 'BlockExpr',
   ExprStmt: 'ExprStmt',
-  WriteSlot: 'WriteSlot',
+  WriteName: 'WriteName',
   WriteField: 'WriteField',
   Emit: 'Emit',
   Break: 'Break',
@@ -85,19 +124,20 @@ export type IrBinaryOp = (typeof BINARY_OPS)[number];
 export const UNARY_OPS = [IrOp.Neg, IrOp.Not] as const;
 export type IrUnaryOp = (typeof UNARY_OPS)[number];
 
-// A readable location. Slots are script/function variables; params are
-// bind-time inputs; series are lt only from checked, error-free syntax —
-// there are no Bad nodes here; reruntime-provided per-bar sources; requests are
-// merged child-Program results. Only slots are writable.
+// A readable location, referencing its declaration object directly. Names
+// are script/function variables; params are bind-time inputs; series are
+// runtime-provided per-bar sources; requests are merged child-Program
+// results. Only names are writable.
 export type Place =
-  | {readonly kind: 'slot'; readonly id: SlotId}
-  | {readonly kind: 'param'; readonly id: ParamId}
-  | {readonly kind: 'series'; readonly id: SeriesInputId}
-  | {readonly kind: 'request'; readonly id: RequestId};
+  | {readonly kind: 'name'; readonly name: Name}
+  | {readonly kind: 'param'; readonly param: ParamInput}
+  | {readonly kind: 'series'; readonly series: SeriesInput}
+  | {readonly kind: 'request'; readonly request: RequestEdge};
 
-// @agent invariant: the IR is buicovery ends at the checker's phase barrier.
+// @agent invariant: the IR is built only from checked, error-free syntax —
+// there are no Bad nodes here; recovery ends at the checker's phase barrier.
 // Every expression carries (type, qualifier); the compiler DESCRIBES history
-// (depths on slots, offsets on reads) and the runtime IMPLEMENTS it.
+// (depths on names, offsets on reads) and the runtime IMPLEMENTS it.
 export interface IrNode {
   readonly pos: Pos;
 }
@@ -132,7 +172,9 @@ export interface ConstExpr extends IrExprBase {
 }
 
 // Current value when offset is null; history read (`x[k]`) otherwise. The
-// checker guarantees offset qualifiers obey the bind-time depth rule.
+// use site keeps its own pos — unlike shared-node designs, per-use positions
+// survive for diagnostics. The checker guarantees offset qualifiers obey the
+// bind-time depth rule.
 export interface ReadExpr extends IrExprBase {
   readonly kind: typeof IrKind.Read;
   readonly place: Place;
@@ -161,7 +203,7 @@ export interface CondExpr extends IrExprBase {
 
 export interface CallFuncExpr extends IrExprBase {
   readonly kind: typeof IrKind.CallFunc;
-  readonly func: FuncId;
+  readonly func: IrFunc;
   readonly state: CallStateId;
   readonly args: readonly IrExpr[];
 }
@@ -221,7 +263,7 @@ export interface SwitchExpr extends IrExprBase {
 
 export interface ForExpr extends IrExprBase {
   readonly kind: typeof IrKind.ForExpr;
-  readonly indexSlot: SlotId;
+  readonly index: Name;
   readonly from: IrExpr;
   readonly to: IrExpr;
   readonly step: IrExpr | null;
@@ -230,7 +272,7 @@ export interface ForExpr extends IrExprBase {
 
 export interface ForInExpr extends IrExprBase {
   readonly kind: typeof IrKind.ForInExpr;
-  readonly targetSlots: readonly SlotId[];
+  readonly targets: readonly Name[];
   readonly x: IrExpr;
   readonly body: BlockExpr;
 }
@@ -253,7 +295,7 @@ export interface BlockExpr extends IrExprBase {
 
 export type IrStmt =
   | ExprStmt
-  | WriteSlotStmt
+  | WriteNameStmt
   | WriteFieldStmt
   | EmitStmt
   | BreakStmt
@@ -264,11 +306,11 @@ export interface ExprStmt extends IrNode {
   readonly x: IrExpr;
 }
 
-// Declarations, reassignments, and compound assignments all become slot
+// Declarations, reassignments, and compound assignments all become name
 // writes; the compound operator is desugared by the noder.
-export interface WriteSlotStmt extends IrNode {
-  readonly kind: typeof IrKind.WriteSlot;
-  readonly slot: SlotId;
+export interface WriteNameStmt extends IrNode {
+  readonly kind: typeof IrKind.WriteName;
+  readonly name: Name;
   readonly value: IrExpr;
 }
 
@@ -283,7 +325,7 @@ export interface WriteFieldStmt extends IrNode {
 // …). The output's static declaration lives in Program.outputs.
 export interface EmitStmt extends IrNode {
   readonly kind: typeof IrKind.Emit;
-  readonly output: OutputId;
+  readonly output: OutputDecl;
   readonly args: readonly IrExpr[];
 }
 
