@@ -4,7 +4,6 @@ import type {Pos, PosBase} from '../base/pos';
 import type {ErrorHandler} from '../base/print';
 import type {
   Arg,
-  AssignOp,
   BadExpr,
   BadStmt,
   Block,
@@ -24,17 +23,9 @@ import type {
   TypeAnnotation,
   TypeName,
 } from './nodes';
-import {Mode, NodeKind} from './nodes';
+import {AssignOp, COMPOUND_ASSIGN, Mode, NodeKind} from './nodes';
 import {Scanner} from './scanner';
-import {Tok, type Op, type TokenKind} from './tokens';
-
-const COMPOUND_ASSIGN: Readonly<Partial<Record<Op, AssignOp>>> = {
-  '+': '+=',
-  '-': '-=',
-  '*': '*=',
-  '/': '/=',
-  '%': '%=',
-};
+import {LitKind, Op, Tok, type TokenKind} from './tokens';
 
 // Keywords that real Pine treats contextually: they act as keywords only in
 // their governing production and as ordinary names anywhere else (corpus
@@ -412,14 +403,14 @@ export class Parser {
 
   private assignOp(): AssignOp {
     if (this.got(Tok.Define)) {
-      return ':=';
+      return AssignOp.Define;
     }
     const base = this.op();
     this.next();
     const op = base === null ? undefined : COMPOUND_ASSIGN[base];
     if (op === undefined) {
       this.error('malformed compound assignment');
-      return ':=';
+      return AssignOp.Define;
     }
     return op;
   }
@@ -511,7 +502,7 @@ export class Parser {
       };
       t = sel;
     }
-    if (this.tok() === Tok.Operator && this.op() === '<') {
+    if (this.tok() === Tok.Operator && this.op() === Op.Lt) {
       const head = t;
       if (head.kind !== NodeKind.Name && head.kind !== NodeKind.SelectorExpr) {
         return null;
@@ -576,7 +567,7 @@ export class Parser {
   private unary(): Expr {
     if (this.tok() === Tok.Operator) {
       const op = this.op();
-      if (op === '-' || op === '+' || op === 'not') {
+      if (op === Op.Minus || op === Op.Plus || op === Op.Not) {
         const pos = this.pos();
         this.next();
         return {kind: NodeKind.UnaryExpr, pos, op, x: this.unary()};
@@ -603,7 +594,7 @@ export class Parser {
         x = {kind: NodeKind.HistoryExpr, pos: x.pos, x, offset};
         continue;
       }
-      if (this.tok() === Tok.Operator && this.op() === '<') {
+      if (this.tok() === Tok.Operator && this.op() === Op.Lt) {
         const typeArgs = this.tryParse(() => this.typeArgsThenLparen());
         if (typeArgs !== null) {
           x = this.callExpr(x, typeArgs);
@@ -966,7 +957,7 @@ export class Parser {
     const path: Expr = {
       kind: NodeKind.BasicLit,
       pos: this.pos(),
-      litKind: this.scanner.kind ?? 'path',
+      litKind: this.scanner.kind ?? LitKind.Path,
       value: this.scanner.lit,
       bad: false,
     };

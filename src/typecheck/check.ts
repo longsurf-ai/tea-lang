@@ -47,9 +47,9 @@ import {
   type UdtField,
   type UdtType,
 } from '../ir/type';
-import {Mode, NodeKind} from '../syntax/nodes';
+import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
-import type {Op} from '../syntax/tokens';
+import {LitKind, Op} from '../syntax/tokens';
 import {
   Effect,
   isNativeRoot,
@@ -555,11 +555,12 @@ class Checker {
     const valueTv = this.checkExpr(a.value);
     // Compound forms type-check as the underlying binary operation on the
     // current value; the noder desugars them the same way.
+    const base = ASSIGN_BASE_OP[a.op];
     const written =
-      a.op === ':='
+      a.op === AssignOp.Define || base === undefined
         ? valueTv
         : this.binaryTv(
-            a.op[0] as Op,
+            base,
             {type: name.type, qualifier: name.qualifier, value: null},
             valueTv,
             a.pos,
@@ -606,7 +607,7 @@ class Checker {
       );
       return null;
     }
-    if (a.op !== ':=') {
+    if (a.op !== AssignOp.Define) {
       this.error(a.pos, 'compound assignment to a field is not supported');
       return null;
     }
@@ -945,31 +946,31 @@ class Checker {
       return INVALID_TV;
     }
     switch (lit.litKind) {
-      case 'int':
+      case LitKind.Int:
         return {
           type: IntType,
           qualifier: Qualifier.Const,
           value: Number(lit.value),
         };
-      case 'float':
+      case LitKind.Float:
         return {
           type: FloatType,
           qualifier: Qualifier.Const,
           value: Number(lit.value),
         };
-      case 'string':
+      case LitKind.String:
         return {
           type: StringType,
           qualifier: Qualifier.Const,
           value: unquoteString(lit.value),
         };
-      case 'color':
+      case LitKind.Color:
         return {
           type: ColorType,
           qualifier: Qualifier.Const,
           value: lit.value.toUpperCase(),
         };
-      case 'path':
+      case LitKind.Path:
         return INVALID_TV; // import paths never reach expression position
     }
   }
@@ -979,7 +980,7 @@ class Checker {
     if (tv.type.kind === TypeKind.Invalid) {
       return INVALID_TV;
     }
-    if (e.op === 'not') {
+    if (e.op === Op.Not) {
       if (tv.type.kind !== TypeKind.Bool) {
         this.error(
           e.pos,
@@ -991,7 +992,7 @@ class Checker {
         tv.value !== null && typeof tv.value === 'boolean' ? !tv.value : null;
       return {type: BoolType, qualifier: tv.qualifier, value};
     }
-    if (e.op === '-' || e.op === '+') {
+    if (e.op === Op.Minus || e.op === Op.Plus) {
       if (!isNumericType(tv.type)) {
         this.error(
           e.pos,
@@ -999,7 +1000,7 @@ class Checker {
         );
         return INVALID_TV;
       }
-      if (e.op === '+') {
+      if (e.op === Op.Plus) {
         return tv;
       }
       const value =
@@ -1021,7 +1022,7 @@ class Checker {
     }
     const qualifier = joinQualifiers(x.qualifier, y.qualifier);
 
-    if (op === 'and' || op === 'or') {
+    if (op === Op.And || op === Op.Or) {
       if (x.type.kind !== TypeKind.Bool || y.type.kind !== TypeKind.Bool) {
         this.error(
           pos,
@@ -1032,7 +1033,7 @@ class Checker {
       return {type: BoolType, qualifier, value: foldBinary(op, x, y, BoolType)};
     }
 
-    if (op === '==' || op === '!=') {
+    if (op === Op.EqEq || op === Op.NotEq) {
       if (unifyTypes(x.type, y.type) === null) {
         this.error(
           pos,
@@ -1043,7 +1044,7 @@ class Checker {
       return {type: BoolType, qualifier, value: foldBinary(op, x, y, BoolType)};
     }
 
-    if (op === '<' || op === '<=' || op === '>' || op === '>=') {
+    if (op === Op.Lt || op === Op.Le || op === Op.Gt || op === Op.Ge) {
       if (!isNumericType(x.type) || !isNumericType(y.type)) {
         this.error(
           pos,
@@ -1056,7 +1057,7 @@ class Checker {
 
     // Arithmetic; '+' additionally concatenates strings.
     if (
-      op === '+' &&
+      op === Op.Plus &&
       x.type.kind === TypeKind.String &&
       y.type.kind === TypeKind.String
     ) {
@@ -1980,46 +1981,46 @@ function foldBinary(
   if (a === null || b === null || isNaValue(a) || isNaValue(b)) {
     return null;
   }
-  if (op === 'and' || op === 'or') {
+  if (op === Op.And || op === Op.Or) {
     if (typeof a !== 'boolean' || typeof b !== 'boolean') {
       return null;
     }
-    return op === 'and' ? a && b : a || b;
+    return op === Op.And ? a && b : a || b;
   }
-  if (op === '==') {
+  if (op === Op.EqEq) {
     return a === b;
   }
-  if (op === '!=') {
+  if (op === Op.NotEq) {
     return a !== b;
   }
-  if (typeof a === 'string' && typeof b === 'string' && op === '+') {
+  if (typeof a === 'string' && typeof b === 'string' && op === Op.Plus) {
     return a + b;
   }
   if (typeof a !== 'number' || typeof b !== 'number') {
     return null;
   }
   switch (op) {
-    case '<':
+    case Op.Lt:
       return a < b;
-    case '<=':
+    case Op.Le:
       return a <= b;
-    case '>':
+    case Op.Gt:
       return a > b;
-    case '>=':
+    case Op.Ge:
       return a >= b;
-    case '+':
+    case Op.Plus:
       return a + b;
-    case '-':
+    case Op.Minus:
       return a - b;
-    case '*':
+    case Op.Star:
       return a * b;
-    case '/':
+    case Op.Slash:
       if (b === 0) {
         return null;
       }
       // Pine integer division truncates toward zero.
       return resultType.kind === TypeKind.Int ? Math.trunc(a / b) : a / b;
-    case '%':
+    case Op.Percent:
       return b === 0 ? null : a % b;
     default:
       return null;

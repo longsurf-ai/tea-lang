@@ -76,47 +76,59 @@ export const KEYWORDS = [
 ] as const;
 export type KeywordKind = (typeof KEYWORDS)[number];
 
-// Valid when tok === Tok.Literal. 'path' is produced only by the
+// Valid when tok === Tok.Literal. Path is produced only by the
 // parser-directed import-path rescan (`import owner/name/version`), never by
-// ordinary scanning.
-export type LitKind = 'int' | 'float' | 'string' | 'color' | 'path';
+// ordinary scanning. Named constants over lexeme-valued strings, like Tok.
+export const LitKind = {
+  Int: 'int',
+  Float: 'float',
+  String: 'string',
+  Color: 'color',
+  Path: 'path',
+} as const;
+
+export type LitKind = (typeof LitKind)[keyof typeof LitKind];
 
 // Valid when tok === Tok.Operator (binary/unary operators) or Tok.AssignOp
-// (the base arithmetic op of a compound assignment). Values are the operator
-// lexemes themselves.
-export type Op =
-  | 'or'
-  | 'and'
-  | 'not'
-  | '=='
-  | '!='
-  | '<'
-  | '<='
-  | '>'
-  | '>='
-  | '+'
-  | '-'
-  | '*'
-  | '/'
-  | '%';
+// (the base arithmetic op of a compound assignment). This is the SURFACE
+// vocabulary — constants are named by glyph, values are the lexemes; the
+// semantic operation vocabulary is ir's IrOp (the noder maps between them).
+export const Op = {
+  Or: 'or',
+  And: 'and',
+  Not: 'not',
+  EqEq: '==',
+  NotEq: '!=',
+  Lt: '<',
+  Le: '<=',
+  Gt: '>',
+  Ge: '>=',
+  Plus: '+',
+  Minus: '-',
+  Star: '*',
+  Slash: '/',
+  Percent: '%',
+} as const;
+
+export type Op = (typeof Op)[keyof typeof Op];
 
 // Binding powers for precedence climbing, tightest last. 0 marks unary-only
 // operators that never bind as binary.
 export const PRECEDENCE: Record<Op, number> = {
-  not: 0,
-  or: 1,
-  and: 2,
-  '==': 3,
-  '!=': 3,
-  '<': 4,
-  '<=': 4,
-  '>': 4,
-  '>=': 4,
-  '+': 5,
-  '-': 5,
-  '*': 6,
-  '/': 6,
-  '%': 6,
+  [Op.Not]: 0,
+  [Op.Or]: 1,
+  [Op.And]: 2,
+  [Op.EqEq]: 3,
+  [Op.NotEq]: 3,
+  [Op.Lt]: 4,
+  [Op.Le]: 4,
+  [Op.Gt]: 4,
+  [Op.Ge]: 4,
+  [Op.Plus]: 5,
+  [Op.Minus]: 5,
+  [Op.Star]: 6,
+  [Op.Slash]: 6,
+  [Op.Percent]: 6,
 };
 
 // Materialized token snapshot. Debug/test surface ONLY (tokenize(), dumper);

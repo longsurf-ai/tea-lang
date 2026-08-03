@@ -48,10 +48,10 @@ import {
   type ConstValue,
   type TypeAndValue,
 } from '../ir/type';
-import {Mode, NodeKind} from '../syntax/nodes';
+import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
 import {parse} from '../syntax/syntax';
-import type {Op} from '../syntax/tokens';
+import {Op} from '../syntax/tokens';
 import {Effect} from '../typecheck/catalog';
 import type {
   FuncInstance,
@@ -83,20 +83,21 @@ export function buildProgram(
   return new Noder(info, errors).build(file);
 }
 
-const BINARY_OP_MAP: Record<string, IrBinaryOp> = {
-  or: IrOp.Or,
-  and: IrOp.And,
-  '==': IrOp.Eq,
-  '!=': IrOp.Ne,
-  '<': IrOp.Lt,
-  '<=': IrOp.Le,
-  '>': IrOp.Gt,
-  '>=': IrOp.Ge,
-  '+': IrOp.Add,
-  '-': IrOp.Sub,
-  '*': IrOp.Mul,
-  '/': IrOp.Div,
-  '%': IrOp.Mod,
+// Surface lexeme vocabulary → semantic operation vocabulary.
+const BINARY_OP_MAP: Readonly<Partial<Record<Op, IrBinaryOp>>> = {
+  [Op.Or]: IrOp.Or,
+  [Op.And]: IrOp.And,
+  [Op.EqEq]: IrOp.Eq,
+  [Op.NotEq]: IrOp.Ne,
+  [Op.Lt]: IrOp.Lt,
+  [Op.Le]: IrOp.Le,
+  [Op.Gt]: IrOp.Gt,
+  [Op.Ge]: IrOp.Ge,
+  [Op.Plus]: IrOp.Add,
+  [Op.Minus]: IrOp.Sub,
+  [Op.Star]: IrOp.Mul,
+  [Op.Slash]: IrOp.Div,
+  [Op.Percent]: IrOp.Mod,
 };
 
 class Noder {
@@ -375,15 +376,16 @@ class Noder {
           `unresolved assign target reached the noder: ${a.target.value}`,
         );
       }
+      const base = ASSIGN_BASE_OP[a.op];
       const written =
-        a.op === ':='
+        a.op === AssignOp.Define || base === undefined
           ? value
           : ({
               kind: IrKind.Binary,
               pos: a.pos,
               type: name.type,
               qualifier: joinQualifiers(name.qualifier, value.qualifier),
-              op: BINARY_OP_MAP[a.op[0]],
+              op: mapBinaryOp(base),
               x: this.read(name, a.pos),
               y: value,
             } as const);
@@ -425,10 +427,10 @@ class Noder {
       case NodeKind.BasicLit:
         return fatal('unfolded literal reached the noder');
       case NodeKind.UnaryExpr: {
-        if (e.op === '+') {
+        if (e.op === Op.Plus) {
           return this.nodeExpr(e.x);
         }
-        const op: IrUnaryOp = e.op === '-' ? IrOp.Neg : IrOp.Not;
+        const op: IrUnaryOp = e.op === Op.Minus ? IrOp.Neg : IrOp.Not;
         return {
           kind: IrKind.Unary,
           pos: e.pos,

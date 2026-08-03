@@ -1,7 +1,7 @@
 // Purpose: Tea AST node definitions — plain immutable data discriminated on `kind`; every node carries the position of its leftmost defining token.
 
 import type {Pos} from '../base/pos';
-import type {LitKind, Op} from './tokens';
+import {Op, type LitKind} from './tokens';
 
 // Named constants for every node kind (the Tok pattern applied to the
 // AST): use sites say NodeKind.DeclStmt at construction and comparison
@@ -109,7 +109,35 @@ export interface DeclStmt extends Node {
   readonly init: Expr;
 }
 
-export type AssignOp = ':=' | '+=' | '-=' | '*=' | '/=' | '%=';
+export const AssignOp = {
+  Define: ':=',
+  Plus: '+=',
+  Minus: '-=',
+  Star: '*=',
+  Slash: '/=',
+  Percent: '%=',
+} as const;
+
+export type AssignOp = (typeof AssignOp)[keyof typeof AssignOp];
+
+// The two directions of the compound-assignment correspondence, owned here
+// next to the vocabulary: the parser folds `x <op>= v` from the scanned base
+// op, and the checker/noder desugar back to the base op.
+export const COMPOUND_ASSIGN: Readonly<Partial<Record<Op, AssignOp>>> = {
+  [Op.Plus]: AssignOp.Plus,
+  [Op.Minus]: AssignOp.Minus,
+  [Op.Star]: AssignOp.Star,
+  [Op.Slash]: AssignOp.Slash,
+  [Op.Percent]: AssignOp.Percent,
+};
+
+export const ASSIGN_BASE_OP: Readonly<Partial<Record<AssignOp, Op>>> = {
+  [AssignOp.Plus]: Op.Plus,
+  [AssignOp.Minus]: Op.Minus,
+  [AssignOp.Star]: Op.Star,
+  [AssignOp.Slash]: Op.Slash,
+  [AssignOp.Percent]: Op.Percent,
+};
 
 // `:=` and compound forms reassign an already-declared target (a Name or a
 // SelectorExpr like obj.field; validated semantically, not syntactically).

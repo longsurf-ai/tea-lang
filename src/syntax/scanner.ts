@@ -5,11 +5,11 @@ import type {ErrorHandler} from '../base/print';
 import {Source, type SourceState} from './source';
 import {
   KEYWORDS,
+  LitKind,
+  Op,
   PRECEDENCE,
   Tok,
   type KeywordKind,
-  type LitKind,
-  type Op,
   type TokenKind,
 } from './tokens';
 
@@ -170,7 +170,7 @@ export class Scanner {
       path = `${path}/${this.source.segment()}`;
     }
     this.tok = Tok.Literal;
-    this.kind = 'path';
+    this.kind = LitKind.Path;
     this.lit = path;
   }
 
@@ -504,8 +504,9 @@ export class Scanner {
       this.source.nextch();
     }
     const text = this.source.segment();
-    if (text === 'and' || text === 'or' || text === 'not') {
-      this.operator(text, pos);
+    const wordOp = WORD_OPS.get(text);
+    if (wordOp !== undefined) {
+      this.operator(wordOp, pos);
       return;
     }
     this.clearRefinements();
@@ -519,12 +520,12 @@ export class Scanner {
 
   private scanNumber(pos: Pos): void {
     this.source.startSegment();
-    let kind: LitKind = 'int';
+    let kind: LitKind = LitKind.Int;
     while (isDigit(this.source.ch)) {
       this.source.nextch();
     }
     if (this.source.ch === '.') {
-      kind = 'float';
+      kind = LitKind.Float;
       this.source.nextch();
       while (isDigit(this.source.ch)) {
         this.source.nextch();
@@ -532,7 +533,7 @@ export class Scanner {
     }
     const expo = this.source.ch;
     if (expo === 'e' || expo === 'E') {
-      kind = 'float';
+      kind = LitKind.Float;
       this.source.nextch();
       const sign = this.source.ch;
       if (sign === '+' || sign === '-') {
@@ -572,7 +573,7 @@ export class Scanner {
       }
       this.source.nextch();
     }
-    this.literal('string', this.source.segment(), pos);
+    this.literal(LitKind.String, this.source.segment(), pos);
   }
 
   private scanColor(pos: Pos): void {
@@ -586,7 +587,7 @@ export class Scanner {
     if (digits !== 6 && digits !== 8) {
       this.errh(pos, 'color literal must have 6 or 8 hexadecimal digits');
     }
-    this.literal('color', this.source.segment(), pos);
+    this.literal(LitKind.Color, this.source.segment(), pos);
   }
 
   // Returns false only for an invalid character, which is reported and
@@ -598,22 +599,27 @@ export class Scanner {
       case '-':
       case '*':
       case '/':
-      case '%':
+      case '%': {
+        const op = CHAR_OPS.get(ch);
+        if (op === undefined) {
+          return fatalChar(ch);
+        }
         this.source.nextch();
         if (this.source.ch === '=') {
           this.source.nextch();
           this.clearRefinements();
-          this.op = ch;
+          this.op = op;
           this.token(Tok.AssignOp, pos);
           return true;
         }
-        this.operator(ch, pos);
+        this.operator(op, pos);
         return true;
+      }
       case '=':
         this.source.nextch();
         if (this.source.ch === '=') {
           this.source.nextch();
-          this.operator('==', pos);
+          this.operator(Op.EqEq, pos);
           return true;
         }
         if (this.source.ch === '>') {
@@ -627,7 +633,7 @@ export class Scanner {
         this.source.nextch();
         if (this.source.ch === '=') {
           this.source.nextch();
-          this.operator('!=', pos);
+          this.operator(Op.NotEq, pos);
           return true;
         }
         this.errh(pos, "unexpected character '!'");
@@ -636,19 +642,19 @@ export class Scanner {
         this.source.nextch();
         if (this.source.ch === '=') {
           this.source.nextch();
-          this.operator('<=', pos);
+          this.operator(Op.Le, pos);
           return true;
         }
-        this.operator('<', pos);
+        this.operator(Op.Lt, pos);
         return true;
       case '>':
         this.source.nextch();
         if (this.source.ch === '=') {
           this.source.nextch();
-          this.operator('>=', pos);
+          this.operator(Op.Ge, pos);
           return true;
         }
-        this.operator('>', pos);
+        this.operator(Op.Gt, pos);
         return true;
       case ':':
         this.source.nextch();
@@ -713,4 +719,26 @@ function isDigit(ch: string): boolean {
 
 function isHexDigit(ch: string): boolean {
   return isDigit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+}
+
+// The character-stream → operator-vocabulary boundary: single-char operator
+// lexemes and the word operators, mapped once.
+const CHAR_OPS: ReadonlyMap<string, Op> = new Map([
+  ['+', Op.Plus],
+  ['-', Op.Minus],
+  ['*', Op.Star],
+  ['/', Op.Slash],
+  ['%', Op.Percent],
+]);
+
+const WORD_OPS: ReadonlyMap<string, Op> = new Map([
+  [Op.And, Op.And],
+  [Op.Or, Op.Or],
+  [Op.Not, Op.Not],
+]);
+
+function fatalChar(ch: string): never {
+  throw new Error(
+    `internal scanner error: unmapped operator character '${ch}'`,
+  );
 }
