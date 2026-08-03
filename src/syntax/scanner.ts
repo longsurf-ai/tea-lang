@@ -32,12 +32,16 @@ export interface ScannerState {
   readonly tokensOnStatement: boolean;
   readonly atLineStart: boolean;
   readonly eofDrained: boolean;
+  readonly groupDepth: number;
 }
 
 const KEYWORD_SET: ReadonlySet<string> = new Set(KEYWORDS);
 const INDENT_UNIT = 4; // one block level; a tab counts as one unit
 
 // Line-structure rules (Pine's; Tea is a syntax superset of Pine):
+// - Inside an unclosed ( or [ group, line breaks are insignificant and the
+//   indent machinery is bypassed entirely (bracket-aware joining — corpus
+//   scripts close wrapped calls at column 1).
 // - A line indented by a multiple of 4 starts a statement; its width is
 //   compared against the indent stack to synthesize indent/dedent tokens.
 // - A line indented by a NON-multiple of 4 continues the previous statement:
@@ -84,6 +88,9 @@ export class Scanner {
   private tokensOnStatement = false;
   private atLineStart = true;
   private eofDrained = false;
+  // Open ( and [ groups. While positive, line breaks are insignificant
+  // (bracket-aware joining); the indent machinery is bypassed entirely.
+  private groupDepth = 0;
 
   constructor(
     base: PosBase,
@@ -118,6 +125,7 @@ export class Scanner {
       tokensOnStatement: this.tokensOnStatement,
       atLineStart: this.atLineStart,
       eofDrained: this.eofDrained,
+      groupDepth: this.groupDepth,
     };
   }
 
@@ -140,6 +148,30 @@ export class Scanner {
     this.tokensOnStatement = state.tokensOnStatement;
     this.atLineStart = state.atLineStart;
     this.eofDrained = state.eofDrained;
+    this.groupDepth = state.groupDepth;
+  }
+
+  // Parser-directed rescan for `import owner/name/version`: extends the
+  // current Name token in place into one atomic path literal (litKind
+  // 'path'). Segments must be adjacent — the cursor sits immediately after
+  // the name, so any whitespace before '/' simply ends the path.
+  rescanImportPath(): void {
+    let path = this.lit;
+    while (this.source.ch === '/') {
+      this.source.nextch();
+      if (!isNamePart(this.source.ch)) {
+        this.errh(this.source.pos(), 'malformed import path');
+        break;
+      }
+      this.source.startSegment();
+      while (isNamePart(this.source.ch)) {
+        this.source.nextch();
+      }
+      path = `${path}/${this.source.segment()}`;
+    }
+    this.tok = Tok.Literal;
+    this.kind = 'path';
+    this.lit = path;
   }
 
   // Advance the scanner by one token, mutating the fields above. Lexical
@@ -238,6 +270,10 @@ export class Scanner {
       return;
     }
 
+    if (this.groupDepth > 0) {
+      this.atLineStart = false;
+      return;
+    }
     if (width % INDENT_UNIT !== 0) {
       // Continuation line: the previous statement keeps going.
       if (!this.breakPending && !this.tokensOnStatement) {
@@ -308,6 +344,11 @@ export class Scanner {
   }
 
   private endLine(): void {
+    if (this.groupDepth > 0) {
+      this.source.nextch();
+      this.atLineStart = true;
+      return;
+    }
     if (this.tokensOnStatement) {
       this.breakPending = true;
       this.breakPos = this.source.pos();
@@ -624,18 +665,22 @@ export class Scanner {
         return true;
       case '(':
         this.source.nextch();
+        this.groupDepth += 1;
         this.punct(Tok.Lparen, pos);
         return true;
       case ')':
         this.source.nextch();
+        this.groupDepth = Math.max(0, this.groupDepth - 1);
         this.punct(Tok.Rparen, pos);
         return true;
       case '[':
         this.source.nextch();
+        this.groupDepth += 1;
         this.punct(Tok.Lbrack, pos);
         return true;
       case ']':
         this.source.nextch();
+        this.groupDepth = Math.max(0, this.groupDepth - 1);
         this.punct(Tok.Rbrack, pos);
         return true;
       case ',':

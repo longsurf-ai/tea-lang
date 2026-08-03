@@ -1,0 +1,140 @@
+File @2:1 version="1" eof=@21:1
+  stmtList[0]: ImportStmt @2:1
+    path: BasicLit @2:8 litKind="path" value="seanzhang/talib/2" bad=false
+    alias: Name @2:29 value="tl"
+  stmtList[1]: TypeDecl @3:1 exported=true
+    name: Name @3:13 value="Bin"
+    fields[0]: FieldDecl @4:5
+      fieldType: TypeAnnotation @4:5
+        name: Name @4:5 value="float"
+      name: Name @4:11 value="lo"
+    fields[1]: FieldDecl @5:5
+      fieldType: TypeAnnotation @5:5
+        name: Name @5:5 value="float"
+      name: Name @5:11 value="hi"
+      defaultValue: BasicLit @5:16 litKind="float" value="0.0" bad=false
+    fields[2]: FieldDecl @6:5
+      fieldType: TypeAnnotation @6:5
+        name: GenericType @6:5
+          name: Name @6:5 value="array"
+          args[0]: Name @6:11 value="float"
+      name: Name @6:18 value="samples"
+  stmtList[2]: TypeDecl @7:1 exported=false
+    name: Name @7:6 value="Point"
+    fields[0]: FieldDecl @8:5
+      fieldType: TypeAnnotation @8:5
+        name: Name @8:5 value="int"
+      name: Name @8:9 value="x"
+    fields[1]: FieldDecl @9:5
+      fieldType: TypeAnnotation @9:5
+        name: Name @9:5 value="int"
+      name: Name @9:9 value="y"
+  stmtList[3]: EnumDecl @10:1 exported=false
+    name: Name @10:6 value="Side"
+    members[0]: EnumMember @11:5
+      name: Name @11:5 value="long"
+      title: BasicLit @11:12 litKind="string" value="\"Long\"" bad=false
+    members[1]: EnumMember @12:5
+      name: Name @12:5 value="short"
+  stmtList[4]: EnumDecl @13:1 exported=true
+    name: Name @13:13 value="Mode"
+    members[0]: EnumMember @14:5
+      name: Name @14:5 value="fast"
+  stmtList[5]: FuncDecl @15:1 exported=false method=true
+    name: Name @15:8 value="dist"
+    params[0]: Param @15:13
+      paramType: TypeAnnotation @15:13
+        name: Name @15:13 value="Point"
+      name: Name @15:19 value="p"
+    params[1]: Param @15:22
+      paramType: TypeAnnotation @15:22
+        name: Name @15:22 value="Point"
+      name: Name @15:28 value="q"
+    body: Block @16:5
+      stmtList[0]: ExprStmt @16:5
+        x: CallExpr @16:5
+          fun: SelectorExpr @16:5
+            x: Name @16:5 value="math"
+            sel: Name @16:10 value="sqrt"
+          args[0]: Arg @16:15
+            value: BinaryExpr @16:15 op="+"
+              x: BinaryExpr @16:15 op="*"
+                x: ParenExpr @16:15
+                  x: BinaryExpr @16:16 op="-"
+                    x: SelectorExpr @16:16
+                      x: Name @16:16 value="p"
+                      sel: Name @16:18 value="x"
+                    y: SelectorExpr @16:22
+                      x: Name @16:22 value="q"
+                      sel: Name @16:24 value="x"
+                y: ParenExpr @16:29
+                  x: BinaryExpr @16:30 op="-"
+                    x: SelectorExpr @16:30
+                      x: Name @16:30 value="p"
+                      sel: Name @16:32 value="x"
+                    y: SelectorExpr @16:36
+                      x: Name @16:36 value="q"
+                      sel: Name @16:38 value="x"
+              y: BinaryExpr @16:43 op="*"
+                x: ParenExpr @16:43
+                  x: BinaryExpr @16:44 op="-"
+                    x: SelectorExpr @16:44
+                      x: Name @16:44 value="p"
+                      sel: Name @16:46 value="y"
+                    y: SelectorExpr @16:50
+                      x: Name @16:50 value="q"
+                      sel: Name @16:52 value="y"
+                y: ParenExpr @16:57
+                  x: BinaryExpr @16:58 op="-"
+                    x: SelectorExpr @16:58
+                      x: Name @16:58 value="p"
+                      sel: Name @16:60 value="y"
+                    y: SelectorExpr @16:64
+                      x: Name @16:64 value="q"
+                      sel: Name @16:66 value="y"
+  stmtList[6]: FuncDecl @17:1 exported=true method=false
+    name: Name @17:8 value="ma"
+    params[0]: Param @17:11
+      paramType: TypeAnnotation @17:11
+        name: Name @17:11 value="float"
+      name: Name @17:17 value="source"
+    params[1]: Param @17:25
+      paramType: TypeAnnotation @17:25
+        name: Name @17:25 value="int"
+      name: Name @17:29 value="length"
+    body: Block @18:5
+      stmtList[0]: ExprStmt @18:5
+        x: CallExpr @18:5
+          fun: SelectorExpr @18:5
+            x: Name @18:5 value="ta"
+            sel: Name @18:8 value="sma"
+          args[0]: Arg @18:12
+            value: Name @18:12 value="source"
+          args[1]: Arg @18:20
+            value: Name @18:20 value="length"
+  stmtList[7]: DeclStmt @19:1 mode="none"
+    target: Name @19:1 value="b"
+    init: CallExpr @19:5
+      fun: SelectorExpr @19:5
+        x: Name @19:5 value="Bin"
+        sel: Name @19:9 value="new"
+      args[0]: Arg @19:13
+        value: BasicLit @19:13 litKind="float" value="1.0" bad=false
+      args[1]: Arg @19:18
+        value: BasicLit @19:18 litKind="float" value="2.0" bad=false
+      args[2]: Arg @19:23
+        value: CallExpr @19:23
+          fun: SelectorExpr @19:23
+            x: Name @19:23 value="array"
+            sel: Name @19:29 value="new"
+          typeArgs[0]: Name @19:33 value="float"
+          args[0]: Arg @19:40
+            value: BasicLit @19:40 litKind="int" value="0" bad=false
+  stmtList[8]: DeclStmt @20:1 mode="none"
+    target: Name @20:1 value="d"
+    init: CallExpr @20:5
+      fun: SelectorExpr @20:5
+        x: Name @20:5 value="tl"
+        sel: Name @20:8 value="helper"
+      args[0]: Arg @20:15
+        value: Name @20:15 value="b"

@@ -1,0 +1,20 @@
+//@version=1
+import seanzhang/talib/2 as tl
+export type Bin
+    float lo
+    float hi = 0.0
+    array<float> samples
+type Point
+    int x
+    int y
+enum Side
+    long = "Long"
+    short
+export enum Mode
+    fast
+method dist(Point p, Point q) =>
+    math.sqrt((p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y))
+export ma(float source, int length) =>
+    ta.sma(source, length)
+b = Bin.new(1.0, 2.0, array.new<float>(0))
+d = tl.helper(b)

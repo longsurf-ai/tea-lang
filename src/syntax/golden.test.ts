@@ -11,7 +11,13 @@ const TESTDATA = join(import.meta.dir, '../../testdata');
 const UPDATE = process.env['UPDATE_GOLDENS'] === '1';
 
 // Grows as parser slices land; every listed fixture must parse error-free.
-const AST_PARSEABLE = ['example.tea', 'exprs.tea', 'macd.tea', 'tokens.tea'];
+const AST_PARSEABLE = [
+  'example.tea',
+  'exprs.tea',
+  'macd.tea',
+  'tokens.tea',
+  'types.tea',
+];
 
 function checkGolden(goldenPath: string, dump: string): void {
   if (UPDATE) {
