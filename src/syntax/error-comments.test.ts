@@ -8,7 +8,7 @@
 import {readdirSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {describe, expect, test} from 'bun:test';
-import {scanText, type ScanError} from './testing';
+import {parseText, type ScanError} from './testing';
 
 const TESTDATA = join(import.meta.dir, '../../testdata');
 
@@ -67,7 +67,7 @@ describe('testdata error comments', () => {
     test(name, () => {
       const src = readFileSync(join(TESTDATA, name), 'utf8');
       const expectations = collectExpectations(src);
-      const {errors} = scanText(src, name);
+      const {errors} = parseText(src, name);
 
       const unmatchedExpectations = expectations.filter(
         expectation => !errors.some(error => matches(expectation, error)),

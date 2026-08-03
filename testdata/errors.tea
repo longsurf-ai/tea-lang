@@ -2,7 +2,8 @@
 bad = "unterminated // ERROR string literal not terminated
 c = #ff00 // ERROR color literal must have 6 or 8 hexadecimal digits
 n = 1e // ERROR exponent has no digits
-w = /* ERROR unexpected character */ @
+w = @ // ERROR (unexpected character|expected expression)
+p = ( /* ERROR expected expression */ )
 if b
         y = 1
     z = 2 // ERROR unindent does not match any outer indentation level

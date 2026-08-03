@@ -1,69 +1,89 @@
-// Purpose: Token vocabulary — small structural kind set with op/prec and literal-kind refinements; keywords via table.
+// Purpose: Token vocabulary — named token constants over a string-literal base, with op/prec and literal-kind refinements; keywords via table.
 
 import type {Pos} from '../base/pos';
 
-// Keywords each get their own token kind. `and`/`or`/`not` are scanned as
-// 'operator' (they participate in precedence climbing); `true`/`false`/`na`
-// are plain names resolved semantically. Builtins (plot, input) are names.
+// Named constants for every token kind (go/token's token.LPAREN, tsc's
+// SyntaxKind): use sites say Tok.Lparen and stay renamable/navigable, while
+// the underlying value stays a stable, self-describing string for dumps and
+// goldens. All binary operators collapse into Tok.Operator refined by
+// Scanner.op/Scanner.prec; Newline/Indent/Dedent are synthesized by the
+// scanner's indent stack and consumed like ';' and braces.
+export const Tok = {
+  Eof: 'eof',
+  Newline: 'newline',
+  Indent: 'indent',
+  Dedent: 'dedent',
+  Name: 'name',
+  Literal: 'literal',
+  Operator: 'operator', // refined by op/prec, includes 'and'/'or'/'not'
+  Assign: 'assign', // =
+  Define: 'define', // :=
+  AssignOp: 'assignop', // += -= *= /= %=, refined by op
+  Arrow: 'arrow', // =>
+  Question: 'question', // ?
+  Colon: 'colon', // :
+  Lparen: 'lparen',
+  Rparen: 'rparen',
+  Lbrack: 'lbrack',
+  Rbrack: 'rbrack',
+  Comma: 'comma',
+  Dot: 'dot',
+  // Keywords each get their own token kind; `and`/`or`/`not` are scanned as
+  // Operator, and `true`/`false`/`na` are plain names resolved semantically.
+  Var: 'var',
+  Varip: 'varip',
+  Const: 'const',
+  If: 'if',
+  Else: 'else',
+  For: 'for',
+  To: 'to',
+  By: 'by',
+  In: 'in',
+  While: 'while',
+  Switch: 'switch',
+  Import: 'import',
+  As: 'as',
+  Export: 'export',
+  Method: 'method',
+  Type: 'type',
+  Enum: 'enum',
+  Break: 'break',
+  Continue: 'continue',
+} as const;
+
+export type TokenKind = (typeof Tok)[keyof typeof Tok];
+
 export const KEYWORDS = [
-  'var',
-  'varip',
-  'const',
-  'if',
-  'else',
-  'for',
-  'to',
-  'by',
-  'in',
-  'while',
-  'switch',
-  'import',
-  'as',
-  'export',
-  'method',
-  'type',
-  'enum',
-  'break',
-  'continue',
+  Tok.Var,
+  Tok.Varip,
+  Tok.Const,
+  Tok.If,
+  Tok.Else,
+  Tok.For,
+  Tok.To,
+  Tok.By,
+  Tok.In,
+  Tok.While,
+  Tok.Switch,
+  Tok.Import,
+  Tok.As,
+  Tok.Export,
+  Tok.Method,
+  Tok.Type,
+  Tok.Enum,
+  Tok.Break,
+  Tok.Continue,
 ] as const;
 export type KeywordKind = (typeof KEYWORDS)[number];
 
-// Structural kinds. All binary operators collapse into 'operator' and are
-// refined by Scanner.op/Scanner.prec — the expression parser runs on
-// precedence climbing, not on per-operator token kinds.
-// 'newline' | 'indent' | 'dedent' are synthesized by the scanner's indent
-// stack; the parser consumes them like ';' and braces.
-export const TOKEN_KINDS = [
-  'eof',
-  'newline',
-  'indent',
-  'dedent',
-  'name',
-  'literal',
-  'operator', // refined by op/prec, includes 'and'/'or'/'not'
-  'assign', // =
-  'define', // :=
-  'assignop', // += -= *= /= %=, refined by op
-  'arrow', // =>
-  'question', // ?
-  'colon', // :
-  'lparen',
-  'rparen',
-  'lbrack',
-  'rbrack',
-  'comma',
-  'dot',
-  ...KEYWORDS,
-] as const;
-export type TokenKind = (typeof TOKEN_KINDS)[number];
-
-// Valid when tok === 'literal'. 'path' is produced only by the
+// Valid when tok === Tok.Literal. 'path' is produced only by the
 // parser-directed import-path rescan (`import owner/name/version`), never by
 // ordinary scanning.
 export type LitKind = 'int' | 'float' | 'string' | 'color' | 'path';
 
-// Valid when tok === 'operator' (binary/unary operators) or tok ===
-// 'assignop' (the base arithmetic op of a compound assignment).
+// Valid when tok === Tok.Operator (binary/unary operators) or Tok.AssignOp
+// (the base arithmetic op of a compound assignment). Values are the operator
+// lexemes themselves.
 export type Op =
   | 'or'
   | 'and'

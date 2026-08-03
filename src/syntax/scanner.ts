@@ -6,6 +6,7 @@ import {Source, type SourceState} from './source';
 import {
   KEYWORDS,
   PRECEDENCE,
+  Tok,
   type KeywordKind,
   type LitKind,
   type Op,
@@ -52,7 +53,7 @@ const INDENT_UNIT = 4; // one block level; a tab counts as one unit
 // next() call. The parser reads them directly.
 export class Scanner {
   // Current token, valid after next():
-  tok: TokenKind = 'eof';
+  tok: TokenKind = Tok.Eof;
   // Token start position.
   pos: Pos;
   // Valid if tok is 'name' or 'literal'.
@@ -169,7 +170,7 @@ export class Scanner {
           continue;
         }
         this.clearRefinements();
-        this.setTok('eof', this.source.pos());
+        this.setTok(Tok.Eof, this.source.pos());
         return;
       }
       if (this.scanToken()) {
@@ -184,19 +185,19 @@ export class Scanner {
     if (this.pendingNewline) {
       this.pendingNewline = false;
       this.clearRefinements();
-      this.setTok('newline', this.newlinePos);
+      this.setTok(Tok.Newline, this.newlinePos);
       return true;
     }
     if (this.pendingDedents > 0) {
       this.pendingDedents -= 1;
       this.clearRefinements();
-      this.setTok('dedent', this.lineStartPos());
+      this.setTok(Tok.Dedent, this.lineStartPos());
       return true;
     }
     if (this.pendingIndent) {
       this.pendingIndent = false;
       this.clearRefinements();
-      this.setTok('indent', this.lineStartPos());
+      this.setTok(Tok.Indent, this.lineStartPos());
       return true;
     }
     return false;
@@ -441,7 +442,7 @@ export class Scanner {
     this.clearRefinements();
     this.op = op;
     this.prec = PRECEDENCE[op];
-    this.token('operator', pos);
+    this.token(Tok.Operator, pos);
   }
 
   private punct(tok: TokenKind, pos: Pos): void {
@@ -453,7 +454,7 @@ export class Scanner {
     this.clearRefinements();
     this.kind = kind;
     this.lit = lit;
-    this.token('literal', pos);
+    this.token(Tok.Literal, pos);
   }
 
   private scanName(pos: Pos): void {
@@ -472,7 +473,7 @@ export class Scanner {
       return;
     }
     this.lit = text;
-    this.token('name', pos);
+    this.token(Tok.Name, pos);
   }
 
   private scanNumber(pos: Pos): void {
@@ -562,7 +563,7 @@ export class Scanner {
           this.source.nextch();
           this.clearRefinements();
           this.op = ch;
-          this.token('assignop', pos);
+          this.token(Tok.AssignOp, pos);
           return true;
         }
         this.operator(ch, pos);
@@ -576,10 +577,10 @@ export class Scanner {
         }
         if (this.source.ch === '>') {
           this.source.nextch();
-          this.punct('arrow', pos);
+          this.punct(Tok.Arrow, pos);
           return true;
         }
-        this.punct('assign', pos);
+        this.punct(Tok.Assign, pos);
         return true;
       case '!':
         this.source.nextch();
@@ -612,38 +613,38 @@ export class Scanner {
         this.source.nextch();
         if (this.source.ch === '=') {
           this.source.nextch();
-          this.punct('define', pos);
+          this.punct(Tok.Define, pos);
           return true;
         }
-        this.punct('colon', pos);
+        this.punct(Tok.Colon, pos);
         return true;
       case '?':
         this.source.nextch();
-        this.punct('question', pos);
+        this.punct(Tok.Question, pos);
         return true;
       case '(':
         this.source.nextch();
-        this.punct('lparen', pos);
+        this.punct(Tok.Lparen, pos);
         return true;
       case ')':
         this.source.nextch();
-        this.punct('rparen', pos);
+        this.punct(Tok.Rparen, pos);
         return true;
       case '[':
         this.source.nextch();
-        this.punct('lbrack', pos);
+        this.punct(Tok.Lbrack, pos);
         return true;
       case ']':
         this.source.nextch();
-        this.punct('rbrack', pos);
+        this.punct(Tok.Rbrack, pos);
         return true;
       case ',':
         this.source.nextch();
-        this.punct('comma', pos);
+        this.punct(Tok.Comma, pos);
         return true;
       case '.':
         this.source.nextch();
-        this.punct('dot', pos);
+        this.punct(Tok.Dot, pos);
         return true;
       default:
         this.errh(pos, `unexpected character ${JSON.stringify(ch)}`);

@@ -1,0 +1,113 @@
+File @2:1 version="1" eof=@26:1
+  stmtList[0]: DeclStmt @2:1 mode="var"
+    declType: TypeAnnotation @2:5
+      name: Name @2:5 value="float"
+    target: Name @2:11 value="b"
+    init: BasicLit @2:15 litKind="float" value="1.4" bad=false
+  stmtList[1]: DeclStmt @3:1 mode="none"
+    target: Name @3:1 value="x"
+    init: BinaryExpr @3:5 op="+"
+      x: Name @3:5 value="close"
+      y: BinaryExpr @3:13 op="*"
+        x: Name @3:13 value="open"
+        y: BasicLit @3:20 litKind="int" value="2" bad=false
+  stmtList[2]: DeclStmt @4:1 mode="none"
+    target: Name @4:1 value="s"
+    init: BinaryExpr @4:5 op="+"
+      x: BasicLit @4:5 litKind="string" value="\"hi\"" bad=false
+      y: BasicLit @4:12 litKind="string" value="'there'" bad=false
+  stmtList[3]: DeclStmt @5:1 mode="none"
+    target: Name @5:1 value="c1"
+    init: BasicLit @5:6 litKind="color" value="#ff0000" bad=false
+  stmtList[4]: DeclStmt @6:1 mode="none"
+    target: Name @6:1 value="c2"
+    init: BasicLit @6:6 litKind="color" value="#FF00AA80" bad=false
+  stmtList[5]: ExprStmt @7:1
+    x: IfExpr @7:1
+      cond: BinaryExpr @7:4 op="and"
+        x: BinaryExpr @7:4 op=">"
+          x: Name @7:4 value="x"
+          y: Name @7:8 value="b"
+        y: UnaryExpr @7:14 op="not"
+          x: CallExpr @7:18
+            fun: Name @7:18 value="na"
+            args[0]: Arg @7:21
+              value: Name @7:21 value="x"
+      then: Block @8:5
+        stmtList[0]: AssignStmt @8:5 op=":="
+          target: Name @8:5 value="y"
+          value: BinaryExpr @8:10 op="%"
+            x: Name @8:10 value="x"
+            y: BasicLit @8:14 litKind="int" value="3" bad=false
+        stmtList[1]: DeclStmt @9:5 mode="none"
+          target: Name @9:5 value="z"
+          init: CondExpr @9:9
+            cond: BinaryExpr @9:9 op=">="
+              x: Name @9:9 value="x"
+              y: BasicLit @9:14 litKind="int" value="2" bad=false
+            then: BasicLit @9:18 litKind="int" value="1" bad=false
+            else: BasicLit @9:22 litKind="int" value="0" bad=false
+      else: Block @11:5
+        stmtList[0]: DeclStmt @11:5 mode="none"
+          target: Name @11:5 value="w"
+          init: CallExpr @11:9
+            fun: Name @11:9 value="f"
+            args[0]: Arg @11:11
+              value: Name @11:11 value="a"
+            args[1]: Arg @11:14
+              name: Name @11:14 value="offset"
+              value: BasicLit @11:23 litKind="float" value=".5" bad=false
+  stmtList[6]: ExprStmt @12:1
+    x: CallExpr @12:1
+      fun: Name @12:1 value="plot"
+      args[0]: Arg @12:6
+        value: Name @12:6 value="x"
+      args[1]: Arg @13:3
+        name: Name @13:3 value="color"
+        value: Name @13:11 value="c1"
+  stmtList[7]: DeclStmt @14:1 mode="none"
+    target: Name @14:1 value="h"
+    init: HistoryExpr @14:5
+      x: Name @14:5 value="nums"
+      offset: BasicLit @14:10 litKind="int" value="1" bad=false
+  stmtList[8]: DeclStmt @15:1 mode="none"
+    target: Name @15:1 value="t"
+    init: BinaryExpr @15:5 op="or"
+      x: BinaryExpr @15:5 op="<="
+        x: Name @15:5 value="x"
+        y: BasicLit @15:10 litKind="int" value="2" bad=false
+      y: BinaryExpr @15:15 op="!="
+        x: Name @15:15 value="x"
+        y: BasicLit @15:20 litKind="int" value="3" bad=false
+  stmtList[9]: DeclStmt @16:1 mode="none"
+    target: Name @16:1 value="u"
+    init: BinaryExpr @16:5 op="-"
+      x: BinaryExpr @16:5 op="/"
+        x: Name @16:5 value="x"
+        y: BasicLit @16:9 litKind="int" value="2" bad=false
+      y: BasicLit @16:13 litKind="int" value="1" bad=false
+  stmtList[10]: DeclStmt @17:1 mode="none"
+    target: Name @17:1 value="v"
+    init: BinaryExpr @17:5 op="+"
+      x: BasicLit @17:5 litKind="float" value="1e10" bad=false
+      y: BasicLit @17:12 litKind="float" value="2.5e-3" bad=false
+  stmtList[11]: AssignStmt @18:1 op="+="
+    target: Name @18:1 value="m"
+    value: BasicLit @18:6 litKind="int" value="1" bad=false
+  stmtList[12]: FuncDecl @19:1 exported=false method=false
+    name: Name @19:1 value="g"
+    body: Block @20:5
+      stmtList[0]: ExprStmt @20:5
+        x: BasicLit @20:5 litKind="int" value="1" bad=false
+  stmtList[13]: DeclStmt @23:1 mode="none"
+    target: Name @23:1 value="w"
+    init: WhileExpr @23:5
+      cond: BinaryExpr @23:11 op="<"
+        x: Name @23:11 value="x"
+        y: BasicLit @23:15 litKind="int" value="9" bad=false
+      body: Block @24:5
+        stmtList[0]: AssignStmt @24:5 op="+="
+          target: Name @24:5 value="x"
+          value: BasicLit @24:10 litKind="int" value="3" bad=false
+        stmtList[1]: ExprStmt @25:5
+          x: Name @25:5 value="x"

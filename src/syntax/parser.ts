@@ -7,18 +7,23 @@ import type {
   AssignOp,
   BadExpr,
   BadStmt,
+  Block,
   DeclMode,
   Expr,
   File,
+  FuncDecl,
+  IfExpr,
   Name,
+  Param,
   SelectorExpr,
   Stmt,
+  SwitchArm,
   TuplePattern,
   TypeAnnotation,
   TypeName,
 } from './nodes';
 import {Scanner} from './scanner';
-import type {Op, TokenKind} from './tokens';
+import {Tok, type Op, type TokenKind} from './tokens';
 
 const COMPOUND_ASSIGN: Readonly<Partial<Record<Op, AssignOp>>> = {
   '+': '+=',
@@ -38,6 +43,9 @@ const COMPOUND_ASSIGN: Readonly<Partial<Record<Op, AssignOp>>> = {
 export class Parser {
   private readonly scanner: Scanner;
   private silent = 0;
+  // Set when the construct just parsed ended by closing an indented block;
+  // such statements are already terminated and need no trailing newline.
+  private blockEnded = false;
 
   constructor(
     base: PosBase,
@@ -89,7 +97,7 @@ export class Parser {
 
   // Skip tokens until one of follow (or EOF). Never reports.
   private advance(...follow: readonly TokenKind[]): void {
-    while (this.tok() !== 'eof' && !follow.includes(this.tok())) {
+    while (this.tok() !== Tok.Eof && !follow.includes(this.tok())) {
       this.next();
     }
   }
@@ -111,20 +119,32 @@ export class Parser {
     return result;
   }
 
+  // Pure lookahead: runs silent and ALWAYS restores, regardless of result.
+  private lookAhead<T>(production: () => T): T {
+    const state = this.scanner.checkpoint();
+    this.silent += 1;
+    try {
+      return production();
+    } finally {
+      this.silent -= 1;
+      this.scanner.restore(state);
+    }
+  }
+
   // ---- file -----------------------------------------------------------------
 
   parseFile(): File {
     this.next();
     const pos = this.pos();
     const stmtList: Stmt[] = [];
-    while (this.tok() !== 'eof') {
-      if (this.got('newline')) {
+    while (this.tok() !== Tok.Eof) {
+      if (this.got(Tok.Newline)) {
         continue;
       }
-      if (this.got('dedent')) {
+      if (this.got(Tok.Dedent)) {
         continue; // imbalance already reported by the scanner
       }
-      if (this.tok() === 'indent') {
+      if (this.tok() === Tok.Indent) {
         this.error('unexpected indentation');
         this.skipBlock();
         continue;
@@ -142,28 +162,31 @@ export class Parser {
   }
 
   private stmtEnd(): void {
-    if (this.got('newline')) {
+    if (this.blockEnded) {
       return;
     }
-    if (this.tok() === 'eof' || this.tok() === 'dedent') {
+    if (this.got(Tok.Newline)) {
+      return;
+    }
+    if (this.tok() === Tok.Eof || this.tok() === Tok.Dedent) {
       return;
     }
     this.error(`expected end of statement, found '${this.tok()}'`);
-    this.advance('newline', 'dedent');
-    this.got('newline');
+    this.advance(Tok.Newline, Tok.Dedent);
+    this.got(Tok.Newline);
   }
 
   // Consume a balanced indent…dedent region (recovery only).
   private skipBlock(): void {
     let depth = 0;
     do {
-      if (this.tok() === 'indent') {
+      if (this.tok() === Tok.Indent) {
         depth += 1;
-      } else if (this.tok() === 'dedent') {
+      } else if (this.tok() === Tok.Dedent) {
         depth -= 1;
       }
       this.next();
-    } while (depth > 0 && this.tok() !== 'eof');
+    } while (depth > 0 && this.tok() !== Tok.Eof);
   }
 
   private badStmt(pos: Pos): BadStmt {
@@ -178,33 +201,35 @@ export class Parser {
 
   private stmt(): Stmt {
     const pos = this.pos();
+    this.blockEnded = false;
     switch (this.tok()) {
-      case 'var':
-      case 'varip':
-      case 'const': {
+      case Tok.Var:
+      case Tok.Varip:
+      case Tok.Const: {
         const mode = this.tok() as DeclMode;
         this.next();
         return this.declRest(pos, mode);
       }
-      case 'break':
+      case Tok.Break:
         this.next();
         return {kind: 'BreakStmt', pos};
-      case 'continue':
+      case Tok.Continue:
         this.next();
         return {kind: 'ContinueStmt', pos};
-      case 'lbrack':
+      case Tok.Lbrack:
         return this.tupleDecl(pos, 'none');
-      case 'if':
-      case 'for':
-      case 'while':
-      case 'switch':
-      case 'import':
-      case 'type':
-      case 'enum':
-      case 'export':
-      case 'method':
+      case Tok.If:
+      case Tok.For:
+      case Tok.While:
+      case Tok.Switch:
+        return {kind: 'ExprStmt', pos, x: this.controlExpr()};
+      case Tok.Import:
+      case Tok.Type:
+      case Tok.Enum:
+      case Tok.Export:
+      case Tok.Method:
         this.error(`'${this.tok()}' statements are not implemented yet`);
-        this.advance('newline', 'dedent');
+        this.advance(Tok.Newline, Tok.Dedent);
         return this.badStmt(pos);
       default:
         break;
@@ -213,7 +238,7 @@ export class Parser {
     // `float x = …`, `array<float> xs = …`, `m.Type v = …` — commit to a
     // typed declaration only when the full head shape (type, name, '=') is
     // present; otherwise this is an expression-led statement.
-    if (this.tok() === 'name') {
+    if (this.tok() === Tok.Name) {
       const typed = this.tryParse(() => this.typedDeclHead());
       if (typed !== null) {
         const init = this.expr();
@@ -226,10 +251,15 @@ export class Parser {
           init,
         };
       }
+      // `f(x, y = 0) => …` — a function declaration looks like a call until
+      // the arrow; peek across the balanced parens for it.
+      if (this.arrowFollowsParens()) {
+        return this.funcDeclRest(pos, false, false);
+      }
     }
 
     const x = this.expr();
-    if (this.got('assign')) {
+    if (this.got(Tok.Assign)) {
       const init = this.expr();
       if (x.kind !== 'Name') {
         this.error('cannot declare this expression as a variable', x.pos);
@@ -244,7 +274,7 @@ export class Parser {
         init,
       };
     }
-    if (this.tok() === 'define' || this.tok() === 'assignop') {
+    if (this.tok() === Tok.Define || this.tok() === Tok.AssignOp) {
       const op = this.assignOp();
       const value = this.expr();
       return {kind: 'AssignStmt', pos, op, target: x, value};
@@ -253,7 +283,7 @@ export class Parser {
   }
 
   private assignOp(): AssignOp {
-    if (this.got('define')) {
+    if (this.got(Tok.Define)) {
       return ':=';
     }
     const base = this.op();
@@ -268,7 +298,7 @@ export class Parser {
 
   // After var/varip/const.
   private declRest(pos: Pos, mode: DeclMode): Stmt {
-    if (this.tok() === 'lbrack') {
+    if (this.tok() === Tok.Lbrack) {
       return this.tupleDecl(pos, mode);
     }
     const typed = this.tryParse(() => this.typedDeclHead());
@@ -284,7 +314,7 @@ export class Parser {
       };
     }
     const target = this.name();
-    this.want('assign');
+    this.want(Tok.Assign);
     const init = this.expr();
     return {kind: 'DeclStmt', pos, mode, declType: null, target, init};
   }
@@ -296,11 +326,11 @@ export class Parser {
   } | null {
     const pos = this.pos();
     const typeName = this.typeName();
-    if (typeName === null || this.tok() !== 'name') {
+    if (typeName === null || this.tok() !== Tok.Name) {
       return null;
     }
     const target = this.name();
-    if (this.tok() !== 'assign') {
+    if (this.tok() !== Tok.Assign) {
       return null;
     }
     this.next();
@@ -312,19 +342,19 @@ export class Parser {
 
   private tupleDecl(pos: Pos, mode: DeclMode): Stmt {
     const target = this.tuplePattern();
-    this.want('assign');
+    this.want(Tok.Assign);
     const init = this.expr();
     return {kind: 'DeclStmt', pos, mode, declType: null, target, init};
   }
 
   private tuplePattern(): TuplePattern {
     const pos = this.pos();
-    this.want('lbrack');
+    this.want(Tok.Lbrack);
     const elems: Name[] = [];
     do {
       elems.push(this.name());
-    } while (this.got('comma'));
-    this.want('rbrack');
+    } while (this.got(Tok.Comma));
+    this.want(Tok.Rbrack);
     return {kind: 'TuplePattern', pos, elems};
   }
 
@@ -332,12 +362,12 @@ export class Parser {
 
   // Speculation-friendly: returns null on any mismatch, reports nothing.
   private typeName(): TypeName | null {
-    if (this.tok() !== 'name') {
+    if (this.tok() !== Tok.Name) {
       return null;
     }
     let t: TypeName = this.name();
-    if (this.got('dot')) {
-      if (this.tok() !== 'name') {
+    if (this.got(Tok.Dot)) {
+      if (this.tok() !== Tok.Name) {
         return null;
       }
       const sel: SelectorExpr = {
@@ -348,7 +378,7 @@ export class Parser {
       };
       t = sel;
     }
-    if (this.tok() === 'operator' && this.op() === '<') {
+    if (this.tok() === Tok.Operator && this.op() === '<') {
       const head = t;
       if (head.kind !== 'Name' && head.kind !== 'SelectorExpr') {
         return null;
@@ -361,16 +391,16 @@ export class Parser {
           return null;
         }
         args.push(arg);
-      } while (this.got('comma'));
-      if (this.tok() !== 'operator' || this.op() !== '>') {
+      } while (this.got(Tok.Comma));
+      if (this.tok() !== Tok.Operator || this.op() !== '>') {
         return null;
       }
       this.next();
       t = {kind: 'GenericType', pos: head.pos, name: head, args};
     }
-    while (this.tok() === 'lbrack') {
+    while (this.tok() === Tok.Lbrack) {
       this.next();
-      if (this.tok() !== 'rbrack') {
+      if (this.tok() !== Tok.Rbrack) {
         return null;
       }
       this.next();
@@ -383,11 +413,11 @@ export class Parser {
 
   private expr(): Expr {
     const cond = this.binary(1);
-    if (!this.got('question')) {
+    if (!this.got(Tok.Question)) {
       return cond;
     }
     const then = this.expr();
-    this.want('colon');
+    this.want(Tok.Colon);
     const orelse = this.expr();
     return {kind: 'CondExpr', pos: cond.pos, cond, then, else: orelse};
   }
@@ -395,7 +425,7 @@ export class Parser {
   private binary(minPrec: number): Expr {
     let x = this.unary();
     for (;;) {
-      if (this.tok() !== 'operator') {
+      if (this.tok() !== Tok.Operator) {
         break;
       }
       const op = this.op();
@@ -411,7 +441,7 @@ export class Parser {
   }
 
   private unary(): Expr {
-    if (this.tok() === 'operator') {
+    if (this.tok() === Tok.Operator) {
       const op = this.op();
       if (op === '-' || op === '+' || op === 'not') {
         const pos = this.pos();
@@ -425,22 +455,22 @@ export class Parser {
   private postfix(): Expr {
     let x = this.primary();
     for (;;) {
-      if (this.got('dot')) {
+      if (this.got(Tok.Dot)) {
         x = {kind: 'SelectorExpr', pos: x.pos, x, sel: this.name()};
         continue;
       }
-      if (this.tok() === 'lparen') {
+      if (this.tok() === Tok.Lparen) {
         x = this.callExpr(x, null);
         continue;
       }
-      if (this.tok() === 'lbrack') {
+      if (this.tok() === Tok.Lbrack) {
         this.next();
         const offset = this.expr();
-        this.want('rbrack');
+        this.want(Tok.Rbrack);
         x = {kind: 'HistoryExpr', pos: x.pos, x, offset};
         continue;
       }
-      if (this.tok() === 'operator' && this.op() === '<') {
+      if (this.tok() === Tok.Operator && this.op() === '<') {
         const typeArgs = this.tryParse(() => this.typeArgsThenLparen());
         if (typeArgs !== null) {
           x = this.callExpr(x, typeArgs);
@@ -464,33 +494,33 @@ export class Parser {
         return null;
       }
       args.push(arg);
-    } while (this.got('comma'));
-    if (this.tok() !== 'operator' || this.op() !== '>') {
+    } while (this.got(Tok.Comma));
+    if (this.tok() !== Tok.Operator || this.op() !== '>') {
       return null;
     }
     this.next();
-    if (this.tok() !== 'lparen') {
+    if (this.tok() !== Tok.Lparen) {
       return null;
     }
     return args;
   }
 
   private callExpr(fun: Expr, typeArgs: readonly TypeName[] | null): Expr {
-    this.want('lparen');
+    this.want(Tok.Lparen);
     const args: Arg[] = [];
-    if (this.tok() !== 'rparen') {
+    if (this.tok() !== Tok.Rparen) {
       do {
         args.push(this.arg());
-      } while (this.got('comma'));
+      } while (this.got(Tok.Comma));
     }
-    this.want('rparen');
+    this.want(Tok.Rparen);
     return {kind: 'CallExpr', pos: fun.pos, fun, typeArgs, args};
   }
 
   private arg(): Arg {
     const pos = this.pos();
     const value = this.expr();
-    if (value.kind === 'Name' && this.got('assign')) {
+    if (value.kind === 'Name' && this.got(Tok.Assign)) {
       return {kind: 'Arg', pos, name: value, value: this.expr()};
     }
     return {kind: 'Arg', pos, name: null, value};
@@ -499,9 +529,14 @@ export class Parser {
   private primary(): Expr {
     const pos = this.pos();
     switch (this.tok()) {
-      case 'name':
+      case Tok.If:
+      case Tok.For:
+      case Tok.While:
+      case Tok.Switch:
+        return this.controlExpr();
+      case Tok.Name:
         return this.name();
-      case 'literal': {
+      case Tok.Literal: {
         const lit: Expr = {
           kind: 'BasicLit',
           pos,
@@ -512,19 +547,19 @@ export class Parser {
         this.next();
         return lit;
       }
-      case 'lparen': {
+      case Tok.Lparen: {
         this.next();
         const x = this.expr();
-        this.want('rparen');
+        this.want(Tok.Rparen);
         return {kind: 'ParenExpr', pos, x};
       }
-      case 'lbrack': {
+      case Tok.Lbrack: {
         this.next();
         const elems: Expr[] = [];
         do {
           elems.push(this.expr());
-        } while (this.got('comma'));
-        this.want('rbrack');
+        } while (this.got(Tok.Comma));
+        this.want(Tok.Rbrack);
         return {kind: 'TupleExpr', pos, elems};
       }
       default:
@@ -533,8 +568,230 @@ export class Parser {
     }
   }
 
+  // ---- blocks and control structures ---------------------------------------
+
+  // NEWLINE INDENT stmts DEDENT. Sets blockEnded so the enclosing statement
+  // needs no trailing newline of its own.
+  private block(): Block {
+    this.want(Tok.Newline);
+    this.want(Tok.Indent);
+    const pos = this.pos();
+    const stmtList: Stmt[] = [];
+    while (this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
+      if (this.got(Tok.Newline)) {
+        continue;
+      }
+      if (this.tok() === Tok.Indent) {
+        this.error('unexpected indentation');
+        this.skipBlock();
+        continue;
+      }
+      stmtList.push(this.stmt());
+      this.stmtEnd();
+    }
+    this.want(Tok.Dedent);
+    this.blockEnded = true;
+    return {kind: 'Block', pos, stmtList};
+  }
+
+  // Control structures are expressions; at statement position they ride in
+  // an ExprStmt.
+  private controlExpr(): Expr {
+    switch (this.tok()) {
+      case Tok.If:
+        return this.ifExpr();
+      case Tok.For:
+        return this.forExpr();
+      case Tok.While:
+        return this.whileExpr();
+      case Tok.Switch:
+        return this.switchExpr();
+      default:
+        this.error(`expected control structure, found '${this.tok()}'`);
+        return this.badExpr(this.pos());
+    }
+  }
+
+  private ifExpr(): IfExpr {
+    const pos = this.pos();
+    this.next(); // 'if'
+    const cond = this.expr();
+    const then = this.block();
+    let orelse: IfExpr | Block | null = null;
+    if (this.got(Tok.Else)) {
+      orelse = this.tok() === Tok.If ? this.ifExpr() : this.block();
+    }
+    return {kind: 'IfExpr', pos, cond, then, else: orelse};
+  }
+
+  private whileExpr(): Expr {
+    const pos = this.pos();
+    this.next(); // 'while'
+    const cond = this.expr();
+    const body = this.block();
+    return {kind: 'WhileExpr', pos, cond, body};
+  }
+
+  // `for i = a to b [by s]` | `for x in xs` | `for [i, v] in xs`.
+  private forExpr(): Expr {
+    const pos = this.pos();
+    this.next(); // 'for'
+    if (this.tok() === Tok.Lbrack) {
+      const target = this.tuplePattern();
+      this.want(Tok.In);
+      const x = this.expr();
+      return {kind: 'ForInExpr', pos, target, x, body: this.block()};
+    }
+    const index = this.name();
+    if (this.got(Tok.In)) {
+      const x = this.expr();
+      return {kind: 'ForInExpr', pos, target: index, x, body: this.block()};
+    }
+    this.want(Tok.Assign);
+    const from = this.expr();
+    this.want(Tok.To);
+    const to = this.expr();
+    const step = this.got(Tok.By) ? this.expr() : null;
+    return {kind: 'ForExpr', pos, index, from, to, step, body: this.block()};
+  }
+
+  // `switch [subject]` with `pattern => body` arms; a bare `=>` arm is the
+  // default. Arm bodies are inline expressions or indented blocks.
+  private switchExpr(): Expr {
+    const pos = this.pos();
+    this.next(); // 'switch'
+    const subject = this.tok() === Tok.Newline ? null : this.expr();
+    this.want(Tok.Newline);
+    this.want(Tok.Indent);
+    const arms: SwitchArm[] = [];
+    while (this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
+      if (this.got(Tok.Newline)) {
+        continue;
+      }
+      const armPos = this.pos();
+      const pattern = this.tok() === Tok.Arrow ? null : this.expr();
+      this.want(Tok.Arrow);
+      let body: Expr | Block;
+      if (this.tok() === Tok.Newline) {
+        body = this.block();
+      } else {
+        body = this.expr();
+        this.stmtEnd();
+      }
+      arms.push({kind: 'SwitchArm', pos: armPos, pattern, body});
+    }
+    this.want(Tok.Dedent);
+    this.blockEnded = true;
+    return {kind: 'SwitchExpr', pos, subject, arms};
+  }
+
+  // ---- function declarations -----------------------------------------------
+
+  // At a statement-leading name: does `name ( … )` close on this logical line
+  // and land on '=>'? Pure lookahead over the balanced parens; a newline
+  // token inside means the statement broke before the parens closed.
+  private arrowFollowsParens(): boolean {
+    return this.lookAhead(() => {
+      this.next(); // the leading name
+      if (this.tok() !== Tok.Lparen) {
+        return false;
+      }
+      let depth = 0;
+      do {
+        const tok = this.tok();
+        if (tok === Tok.Lparen || tok === Tok.Lbrack) {
+          depth += 1;
+        } else if (tok === Tok.Rparen || tok === Tok.Rbrack) {
+          depth -= 1;
+        } else if (
+          tok === Tok.Eof ||
+          tok === Tok.Newline ||
+          tok === Tok.Indent ||
+          tok === Tok.Dedent
+        ) {
+          return false;
+        }
+        this.next();
+      } while (depth > 0);
+      return this.tok() === Tok.Arrow;
+    });
+  }
+
+  private funcDeclRest(pos: Pos, exported: boolean, method: boolean): FuncDecl {
+    const name = this.name();
+    const params = this.params();
+    this.want(Tok.Arrow);
+    const body = this.tok() === Tok.Newline ? this.block() : this.expr();
+    return {kind: 'FuncDecl', pos, exported, method, name, params, body};
+  }
+
+  private params(): Param[] {
+    this.want(Tok.Lparen);
+    const params: Param[] = [];
+    if (this.tok() !== Tok.Rparen) {
+      do {
+        params.push(this.param());
+      } while (this.got(Tok.Comma));
+    }
+    this.want(Tok.Rparen);
+    return params;
+  }
+
+  // `[qualifier] [type] name [= default]` — longest shape first, each
+  // committed only when the trailing name is present.
+  private param(): Param {
+    const pos = this.pos();
+    const qualified = this.tryParse(() => {
+      if (this.tok() !== Tok.Name) {
+        return null;
+      }
+      const qualifier = this.name();
+      const typeName = this.typeName();
+      if (typeName === null || this.tok() !== Tok.Name) {
+        return null;
+      }
+      return {qualifier, typeName, name: this.name()};
+    });
+    if (qualified !== null) {
+      return this.finishParam(
+        pos,
+        {
+          kind: 'TypeAnnotation',
+          pos,
+          qualifier: qualified.qualifier,
+          name: qualified.typeName,
+        },
+        qualified.name,
+      );
+    }
+    const typed = this.tryParse(() => {
+      const typeName = this.typeName();
+      if (typeName === null || this.tok() !== Tok.Name) {
+        return null;
+      }
+      return {typeName, name: this.name()};
+    });
+    if (typed !== null) {
+      return this.finishParam(
+        pos,
+        {kind: 'TypeAnnotation', pos, qualifier: null, name: typed.typeName},
+        typed.name,
+      );
+    }
+    return this.finishParam(pos, null, this.name());
+  }
+
+  private finishParam(
+    pos: Pos,
+    paramType: TypeAnnotation | null,
+    name: Name,
+  ): Param {
+    const defaultValue = this.got(Tok.Assign) ? this.expr() : null;
+    return {kind: 'Param', pos, paramType, name, defaultValue};
+  }
+
   private name(): Name {
-    if (this.tok() === 'name') {
+    if (this.tok() === Tok.Name) {
       const name: Name = {
         kind: 'Name',
         pos: this.pos(),
