@@ -1,6 +1,6 @@
 # tea-lang
 
-Clean-room Tea language toolchain — syntax (incremental scanner + parser) → noder (`loadPackage` → unified IR) → codegen. `src/main.ts` is the CLI shell; `src/compile.ts` is the pipeline driver. The `tea` CLI has three verbs: `run`, `build`, `parse`.
+Clean-room Tea language toolchain — syntax (incremental scanner + parser) → typecheck → noder (`loadPackage` parses the package; `buildProgram` → Program) → codegen (lowering). `src/main.ts` is the CLI shell; `src/compile.ts` is the pipeline driver. The `tea` CLI has three verbs: `run`, `build`, `parse`.
 
 ## Invariants
 

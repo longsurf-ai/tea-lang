@@ -1,10 +1,10 @@
-// Purpose: Noder — loadPackage() reads and parses the package's source files and wires their errors into the compilation's error list; lowering to unified Tea IR follows.
+// Purpose: Noder — loadPackage() reads and parses the package's source files and wires their errors into the compilation's error list; buildProgram() turns checked syntax into the Tea Program.
 
 import {readFileSync} from 'node:fs';
 import {newFileBase} from '../base/pos';
 import type {Errors} from '../base/print';
 import {unimplemented} from '../base/unimplemented';
-import type {IrProgram} from '../ir/node';
+import type {Program} from '../ir/program';
 import type {File} from '../syntax/nodes';
 import {parse} from '../syntax/syntax';
 
@@ -20,8 +20,8 @@ export function loadPackage(
   );
 }
 
-// Lower parsed files to the unified IR; lands after the parser produces real
-// Files.
-export function lower(files: readonly File[], errors: Errors): IrProgram {
-  return unimplemented('noder: lower', files, errors);
+// Build the Program from checked syntax ("noding"). "Lowering" is reserved
+// for Program → JS in codegen, per the pipeline vocabulary.
+export function buildProgram(files: readonly File[], errors: Errors): Program {
+  return unimplemented('noder: buildProgram', files, errors);
 }

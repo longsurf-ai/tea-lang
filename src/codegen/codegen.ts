@@ -3,10 +3,10 @@
 import type {CompileConfig} from '../base/config';
 import type {Errors} from '../base/print';
 import {unimplemented} from '../base/unimplemented';
-import type {IrProgram} from '../ir/node';
+import type {Program} from '../ir/program';
 
 export function generate(
-  program: IrProgram,
+  program: Program,
   config: CompileConfig,
   errors: Errors,
 ): string {

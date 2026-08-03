@@ -1,10 +1,10 @@
-// Purpose: Pipeline driver — sole owner of stage order, phase barriers, and the per-compilation Errors instance: loadPackage (parse) → [typecheck reserved] → lower → generate.
+// Purpose: Pipeline driver — sole owner of stage order, phase barriers, and the per-compilation Errors instance: loadPackage (parse) → [typecheck reserved] → buildProgram → generate (lowering).
 
 import type {CompileConfig} from './base/config';
 import {Errors, type ErrorMsg} from './base/print';
 import {generate} from './codegen/codegen';
-import type {IrProgram} from './ir/node';
-import {loadPackage, lower} from './noder/noder';
+import type {Program} from './ir/program';
+import {buildProgram, loadPackage} from './noder/noder';
 import type {File} from './syntax/nodes';
 
 // Compilation either emits JavaScript or fails with the flushed, ordered
@@ -21,8 +21,8 @@ export function compileToAst(filename: string, errors: Errors): File {
   return loadPackage([filename], errors)[0];
 }
 
-export function compileToIr(filename: string, errors: Errors): IrProgram {
-  return lower(loadPackage([filename], errors), errors);
+export function compileToIr(filename: string, errors: Errors): Program {
+  return buildProgram(loadPackage([filename], errors), errors);
 }
 
 export function compile(
@@ -37,7 +37,7 @@ export function compile(
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};
   }
-  const program = lower(files, errors);
+  const program = buildProgram(files, errors);
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};
   }
