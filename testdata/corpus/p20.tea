@@ -1,0 +1,105 @@
+//@version=6
+indicator("s", "GCM RUS", overlay=false, max_lines_count=500, max_labels_count=500)
+grpCore      = "s"
+source       = input.source(close, "Source", group=grpCore)
+smoothType   = input.string("LSMA", "s", options=["EMA", "SMA", "HMA", "WMA", "RMA", "LSMA", "ALMA", "DEMA", "TEMA", "ZLEMA"], group=grpCore)
+rsiSmoothLen = input.int(7, "s", group=grpCore)
+shortMaLen   = input.int(5, "s", group=grpCore)
+grpBB        = "s"
+bbMult1      = input.float(2.0, "s", group=grpBB)
+bbMult2      = input.float(1.5, "s", group=grpBB)
+showDiv      = input.bool(true, "s", group=grpDiv)
+lbR          = input.int(1, "s", minval=1, group=grpDiv)
+maxDivBars   = input.int(5, "Max Lookback", minval=5, group=grpDiv)
+grpVis       = "s"
+colBear      = input.color(color.new(#ff0000, 0), "s", group=grpVis)
+colMacroUp   = input.color(color.new(#5b9cf6, 0), "s", group=grpVis)
+grpDash      = "s"
+showTable    = input.bool(true, "s", group=grpDash)
+dashSizeStr  = input.string("Normal", "Text Size", options=["Tiny", "Small", "Normal", "Large"], group=grpDash)
+rawRsi    = ta.rsi(source, length)
+shortMa   = getMA(smoothRSI, shortMaLen, shortMaType)
+bbBasis   = ta.sma(smoothRSI, bbLength)
+bbUpper1  = bbBasis + (bbMult1 * bbStdev)
+bbLower1  = bbBasis - (bbMult1 * bbStdev)
+bbLower2  = bbBasis - (bbMult2 * bbStdev)
+plFound   = not na(ta.pivotlow(smoothRSI, lbL, lbR))
+var float prevRsiValL = na, var float prevPriceValL = na, var int prevBarIndexL = na
+var float prevRsiValH = na, var float prevPriceValH = na, var int prevBarIndexH = na
+regBear = false, hidBear = false
+if plFound
+    rsiValL   = smoothRSI[lbR]
+    priceValL = low[lbR]
+    barIndexL = bar_index[lbR]
+    if not na(prevBarIndexL) and (barIndexL - prevBarIndexL <= maxDivBars)
+        regBull := priceValL < prevPriceValL and rsiValL > prevRsiValL
+        hidBull := priceValL > prevPriceValL and rsiValL < prevRsiValL
+        if showDiv and (regBull or hidBull)
+            line.new(prevBarIndexL, prevRsiValL, barIndexL, rsiValL, color=colBull, width=1, style=hidBull ? line.style_dashed : line.style_solid)
+            line.new(prevBarIndexL, prevPriceValL, barIndexL, priceValL, color=colBull, width=1, style=hidBull ? line.style_dashed : line.style_solid, force_overlay=true)
+            label.new(barIndexL, rsiValL, text=hidBull ? "H" : "R", color=color.new(colBull, 50), textcolor=color.white, style=label.style_label_up, size=size.small)
+            label.new(barIndexL, priceValL, text=hidBull ? "H" : "R", color=color.new(colBull, 50), textcolor=color.white, style=label.style_label_up, size=size.small, force_overlay=true)
+    prevRsiValL := rsiValL, prevPriceValL := priceValL, prevBarIndexL := barIndexL
+slopeBull   = smoothRSI > smoothRSI[1]
+c_micro     = slopeBull ? colBull : colBear
+isZoneUp    = shortMa > 50
+plot(smoothRSI, "Smoothed RSI", color.new(c_micro, 0), display=display.none)
+hline(80, "Overbought", color.new(color.red, 30), hline.style_dashed, linewidth=1)
+hline(50, "Mid Line", color.new(#A9A9A9, 60), hline.style_solid, linewidth=1)
+p_bbUp1 = plot(bbUpper1, "s", display=display.none, editable=false)
+p_bbLo1 = plot(bbLower1, "s", display=display.none, editable=false)
+p_bbLo2 = plot(bbLower2, "s", display=display.none, editable=false)
+fill(p_bbUp1, p_bbUp2, color.new(colBear, 80), title="s", editable=false)
+ribbonTop    = math.max(smoothRSI, shortMa)
+ribbonBottom = math.min(smoothRSI, shortMa)
+macroEnd     = isZoneUp ? ribbonBottom : ribbonTop
+stepM        = (macroEnd - 50) / 8
+m1 = plot(50 + stepM * 1, display=display.none, editable=false)
+m2 = plot(50 + stepM * 2, display=display.none, editable=false)
+m4 = plot(50 + stepM * 4, display=display.none, editable=false)
+m5 = plot(50 + stepM * 5, display=display.none, editable=false)
+m7 = plot(50 + stepM * 7, display=display.none, editable=false)
+m8 = plot(macroEnd, display=display.none, editable=false)
+fill(m1, m2, color.new(c_macro, 75), editable=false)
+fill(m2, m3, color.new(c_macro, 62), editable=false)
+fill(m4, m5, color.new(c_macro, 37), editable=false)
+fill(m5, m6, color.new(c_macro, 25), editable=false)
+fill(m7, m8, color.new(c_macro, 0), editable=false)
+step = (ribbonTop - ribbonBottom) / 8
+p1 = plot(ribbonBottom + step * 1, display=display.none, editable=false)
+p2 = plot(ribbonBottom + step * 2, display=display.none, editable=false)
+p4 = plot(ribbonBottom + step * 4, display=display.none, editable=false)
+p5 = plot(ribbonBottom + step * 5, display=display.none, editable=false)
+p7 = plot(ribbonBottom + step * 7, display=display.none, editable=false)
+p8 = plot(ribbonTop, display=display.none, editable=false)
+t02 = isZoneUp ? 85  : 14
+t03 = isZoneUp ? 71  : 28
+t05 = isZoneUp ? 43  : 57
+t06 = isZoneUp ? 28  : 71
+t08 = isZoneUp ? 0   : 100
+fill(p0, p1, color.new(c_micro, t01), editable=false)
+fill(p2, p3, color.new(c_micro, t03), editable=false)
+fill(p3, p4, color.new(c_micro, t04), editable=false)
+fill(p5, p6, color.new(c_micro, t06), editable=false)
+fill(p6, p7, color.new(c_micro, t07), editable=false)
+dashPos = dashPosStr == "Top Right" ? position.top_right :
+  dashPosStr == "Top Center" ? position.top_center :
+  dashPosStr == "Top Left" ? position.top_left :
+  dashPosStr == "Bottom Right" ? position.bottom_right :
+  dashPosStr == "s" ? position.bottom_center : position.bottom_left
+dashSize = dashSizeStr == "Tiny" ? size.tiny :
+  dashSizeStr == "Small" ? size.small :
+  dashSizeStr == "Normal" ? size.normal : size.large
+var table dashTable = table.new(dashPos, 2, 4, border_width=1, border_color=color.new(#A9A9A9, 85), frame_color=color.new(#A9A9A9, 85), frame_width=1, bgcolor=color.new(#151924, 15))
+if showTable and barstate.islast
+    table.cell(dashTable, 0, 0, text="s", text_color=color.new(color.white, 10), text_size=dashSize, text_halign=text.align_center, bgcolor=color.new(#2a2e39, 10))
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+    rsiCol = smoothRSI >= 80 ? colBear : smoothRSI <= 20 ? colBull : colSilver
+    table.cell(dashTable, 0, 1, text="RSI Level", text_color=colSilver, text_size=dashSize, text_halign=text.align_left)
+    table.cell(dashTable, 1, 1, text=str.tostring(smoothRSI, "#.00"), text_color=rsiCol, text_size=dashSize, text_halign=text.align_right)
+    table.cell(dashTable, 0, 2, text="Micro Signal", text_color=colSilver, text_size=dashSize, text_halign=text.align_left)
+    table.cell(dashTable, 1, 2, text=isRsiOverMa ? "BULLISH" : "BEARISH", text_color=isRsiOverMa ? colBull : colBear, text_size=dashSize, text_halign=text.align_right)
+    table.cell(dashTable, 0, 3, text="Macro Regime", text_color=colSilver, text_size=dashSize, text_halign=text.align_left)
+    table.cell(dashTable, 1, 3, text=isZoneUp ? "UPTREND" : "DOWNTREND", text_color=isZoneUp ? colMacroUp : colMacroDn, text_size=dashSize, text_halign=text.align_right)
+alertcondition(ta.crossunder(smoothRSI, shortMa), "s", "s")
+alertcondition(regBull or hidBull, "s", "s")

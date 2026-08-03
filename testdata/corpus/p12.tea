@@ -1,0 +1,63 @@
+//@version=6
+indicator("s", overlay=true,
+  max_lines_count=500, max_boxes_count=500, max_labels_count=500)
+grpSession = "s"
+tzInput       = input.string("s", "Timezone", group=grpSession,
+  tooltip="s")
+sessionInput  = input.session("0930-1600", "Session", group=grpSession,
+  tooltip="s")
+grpFVG = "FVG Settings"
+mitType       = input.string("Close", "s",
+  options=["Close", "Wick"], group=grpFVG,
+  tooltip="s")
+showFVG       = input.bool(false, "s", group=grpFVG,
+  tooltip="s")
+extendBars    = input.int(500, "s", minval=0, maxval=5000,
+  group=grpFVG,
+  tooltip="s")
+maxAgeBars    = input.int(500, "s", minval=10, maxval=5000,
+  group=grpFVG,
+  tooltip="s")
+bullFVGColor  = input.color(color.new(#2962FF, 80), "s",
+  group=grpVisual, inline="fvg")
+bearFVGColor  = input.color(color.new(#F23645, 80), "s",
+  group=grpVisual, inline="fvg")
+bearIFVGColor = input.color(color.new(#FF9800, 70), "s",
+  group=grpVisual, inline="ifvg")
+inSession = useSession ? not na(time(timeframe.period, sessionInput, tzInput)) : true
+var fvg_boxes    = array.new<box>(0)
+var ifvg_records = array.new<fvg>(0)
+int tfMs       = math.round(timeframe.in_seconds() * 1000)
+int extendMs   = extendBars * tfMs
+bull_fvg = low > high[2] and close[1] > high[2] and (threshold == 0.0 or (low - high[2]) / high[2] >= threshold / 100)
+bear_fvg = high < low[2] and close[1] < low[2] and (threshold == 0.0 or (low[2] - high) / high >= threshold / 100)
+if bear_fvg and inSession and barstate.isconfirmed
+    fvg_records.unshift(fvg.new(low[2], high, false, time[2]))
+    fvg_boxes.unshift(showFVG ? box.new(time[2], low[2], time + extendMs, high, xloc=xloc.bar_time, border_color=na, bgcolor=bearFVGColor) : na)
+var bool bull_ifvg_created = false
+bull_ifvg_created := false
+bear_ifvg_created := false
+if ifvg_records.size() > 0
+    for i = ifvg_records.size() - 1 to 0
+        fvg g = ifvg_records.get(i)
+        bool mitigated = false
+        if g.isbull
+            float mitSrc = mitType == "Close" ? close : low
+            mitigated := mitSrc < g.min
+        else
+            float mitSrc = mitType == "Close" ? close : high
+            mitigated := mitSrc > g.max
+        bool tooOld = g.bar_time < cutoffTime
+        if tooOld or mitigated
+            box b = ifvg_boxes.get(i)
+            if not na(b)
+                b.delete()
+            ifvg_boxes.remove(i)
+            ifvg_records.remove(i)
+        else
+            if showIFVG
+                box b = ifvg_boxes.get(i)
+                if not na(b)
+                    b.set_right(time + extendMs)
+alertcondition(bull_ifvg_created, "s",
+  "s")

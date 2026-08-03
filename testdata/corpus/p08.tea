@@ -1,0 +1,218 @@
+//@version=6
+indicator("s", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+const string g2 = "s"
+const string g3 = "Signals"
+const string g5 = "s"
+ma_len          = input.int(28,     "MA Length",             minval=1,   maxval=200,            group=g1, tooltip="s")
+atr_mult        = input.float(1.25, "s",  minval=0.5, maxval=8.0, step=0.25, group=g1, tooltip="s")
+swing_len       = input.int(12,     "s",        minval=2,   maxval=30,             group=g2, tooltip="s")
+max_zones       = input.int(3,      "Max Zones",             minval=1,   maxval=12,             group=g2)
+extend_bars     = input.int(50,     "Extend Bars",           minval=10,  maxval=300,            group=g2)
+keep_broken     = input.bool(true,  "s",     group=g2, tooltip="s")
+broken_opacity  = input.int(88,     "s",      minval=0,   maxval=100,            group=g2, tooltip="s")
+bull_color      = input.color(#00ff00, "Bull",               group=g4, inline="c")
+bear_color      = input.color(#ff0000, "Bear",               group=g4, inline="c")
+entry_mode      = input.string("s", "Entry Mode", options=["s", "Trail Retest"], group=g5, tooltip="s")
+pin_to_current  = input.bool(false,  "s",   group=g5, tooltip="s")
+tp2_r           = input.float(2.0,   "TP2 (R)",              minval=0.1, maxval=20.0, step=0.1, group=g5)
+tp3_r           = input.float(3.0,   "TP3 (R)",              minval=0.1, maxval=20.0, step=0.1, group=g5)
+get_size(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        =>          size.small
+lbl_sz = get_size(lbl_size_str)
+float ma  = ta.ema(close, ma_len)
+float ph = ta.pivothigh(high, swing_len, swing_len)
+float raw_up = ma - atr * atr_mult
+float raw_dn = ma + atr * atr_mult
+var float trail = na
+if na(trail)
+    trail := close > ma ? raw_up : raw_dn
+    trend := close > ma ? 1 : -1
+bool flip_bull = trend == 1  and trend[1] == -1
+bool flip_bear = trend == -1 and trend[1] == 1
+type LiquidityZone
+    float top
+    float bot
+    float price
+    bool  is_high
+    bool  broken
+    bool  retested
+    int   born_bar
+    int   break_bar
+    box   bx
+    label lb
+var LiquidityZone[] zones = array.new<LiquidityZone>()
+zone_border_color(bool is_high, bool broken) =>
+    if broken
+        color.new(is_high ? bear_color : bull_color, 35)
+    else
+        color.new(is_high ? bear_color : bull_color, 20)
+zone_label_text(bool is_high, bool broken, float price) =>
+    string side  = is_high ? "H-LIQ" : "L-LIQ"
+    string state = broken ? " • Broken" : ""
+    side + state + "  " + str.tostring(price, "#.##")
+add_zone(float price, bool is_high) =>
+    float pad = math.max(atr * zone_atr_mult, syminfo.mintick)
+    float top = is_high ? price : price + pad
+    float bot = is_high ? price - pad : price
+    if zones.size() >= max_zones
+        LiquidityZone old = zones.shift()
+        delete_zone(old)
+    color fill_c   = zone_fill_color(is_high, false)
+    color border_c = zone_border_color(is_high, false)
+    string txt     = zone_label_text(is_high, false, price)
+    box bx = box.new(
+         bar_index - swing_len, top,
+         bar_index + extend_bars, bot,
+         bgcolor      = fill_c,
+         border_color = border_c,
+         border_width = 1)
+    label lb = label.new(
+         bar_index + extend_bars, price,
+         txt,
+         color     = color.new(color.black, 100),
+         textcolor = is_high ? bear_color : bull_color,
+         style     = label.style_label_left,
+         size      = lbl_sz)
+    zones.push(LiquidityZone.new(top, bot, price, is_high, false, false, bar_index - swing_len, na, bx, lb))
+if show_zones
+    if not na(ph)
+        add_zone(ph, true)
+    if not na(pl)
+        add_zone(pl, false)
+var bool bear_break_signal  = false
+var bool bull_retest_signal = false
+bull_break_signal  := false
+bear_break_signal  := false
+bear_retest_signal := false
+if zones.size() > 0
+    int i = zones.size() - 1
+    while i >= 0
+        LiquidityZone z = zones.get(i)
+        z.bx.set_right(bar_index + extend_bars)
+        z.lb.set_x(bar_index + extend_bars)
+        z.lb.set_y(z.price)
+        z.lb.set_size(lbl_sz)
+        bool bull_break = not z.broken and z.is_high and close > z.top
+        bool bear_break = not z.broken and not z.is_high and close < z.bot
+        if bull_break or bear_break
+            z.broken    := true
+            z.break_bar := bar_index
+            z.bx.set_bgcolor(zone_fill_color(z.is_high, true))
+            z.bx.set_border_color(zone_border_color(z.is_high, true))
+            z.lb.set_text(zone_label_text(z.is_high, true, z.price))
+            if bull_break
+                bull_break_signal := true
+            if bear_break
+                bear_break_signal := true
+        if z.broken and not z.retested and not na(z.break_bar)
+            bool touch_after_bull_break = z.is_high and low <= z.top and high >= z.bot
+            bool touch_after_bear_break = not z.is_high and high >= z.bot and low <= z.top
+            bool confirm_bull_retest = close >= z.top
+            bool confirm_bear_retest = close <= z.bot
+            bool bull_retest = z.is_high and touch_after_bull_break and confirm_bull_retest
+            bool bear_retest = z.is_high and touch_after_bear_break and confirm_bear_retest
+            if bull_retest
+                z.retested := true
+                bull_retest_signal := true
+                z.lb.set_text("s" + str.tostring(z.price, "#.##"))
+                z.bx.set_border_width(2)
+            if bear_retest
+                z.retested := true
+                bear_retest_signal := true
+                z.lb.set_text("s" + str.tostring(z.price, "#.##"))
+                z.bx.set_border_width(2)
+        bool remove_broken_now = z.broken and not keep_broken
+        if remove_broken_now
+            delete_zone(z)
+            zones.remove(i)
+        else
+            zones.set(i, z)
+        i -= 1
+var PositionTool active_pos = na
+var int   pending_dir   = 0
+if flip_bull
+    pending_dir   := 1
+    pending_trail := trail
+if flip_bear
+    pending_dir   := -1
+    pending_trail := trail
+bool retest_bear_entry = entry_mode == "Trail Retest" and pending_dir == -1 and high >= pending_trail and close <= pending_trail
+bool sig_bull_entry = entry_mode == "s" and flip_bull
+bool do_bull_entry = sig_bull_entry or retest_bull_entry
+bool do_bear_entry = sig_bear_entry or retest_bear_entry
+delete_position(PositionTool p) =>
+    line.delete(p.entry_line)
+    line.delete(p.sl_line)
+    line.delete(p.tp1_line)
+    line.delete(p.tp2_line)
+    line.delete(p.tp3_line)
+    label.delete(p.entry_lbl)
+    label.delete(p.sl_lbl)
+    label.delete(p.tp1_lbl)
+    label.delete(p.tp2_lbl)
+    label.delete(p.tp3_lbl)
+    box.delete(p.risk_box)
+if show_pos_tool and (do_bull_entry or do_bear_entry)
+    if not na(active_pos)
+        delete_position(active_pos)
+    bool  bull     = do_bull_entry
+    float entry_px = close
+    float sl_px    = trail
+    float risk     = math.abs(entry_px - sl_px)
+    int   x1       = bar_index
+    int   x2       = bar_index + pos_extend
+    float tp1_px = bull ? entry_px + risk * tp1_r : entry_px - risk * tp1_r
+    float tp2_px = bull ? entry_px + risk * tp2_r : entry_px - risk * tp2_r
+    float tp3_px = bull ? entry_px + risk * tp3_r : entry_px - risk * tp3_r
+    color sl_c    = color.new(bear_color, 0)
+    color entry_c = color.new(color.white, 20)
+    color tp1_c   = color.new(bull_color, 40)
+    color tp2_c   = color.new(bull_color, 20)
+    color tp3_c   = color.new(bull_color, 0)
+    color risk_bg = bull ? color.new(bear_color, 90) : color.new(bull_color, 90)
+    box risk_b = box.new(x1, entry_px, x2, sl_px,
+         bgcolor=risk_bg, border_color=color.new(color.white, 100), border_width=0)
+    line e_ln  = line.new(x1, entry_px, x2, entry_px, color=entry_c, width=1, style=line.style_dashed)
+    line sl_ln = line.new(x1, sl_px,    x2, sl_px,    color=sl_c,    width=2, style=line.style_solid)
+    line t1_ln = line.new(x1, tp1_px,   x2, tp1_px,   color=tp1_c,   width=1, style=line.style_dashed)
+    line t2_ln = line.new(x1, tp2_px,   x2, tp2_px,   color=tp2_c,   width=1, style=line.style_dashed)
+    line t3_ln = line.new(x1, tp3_px,   x2, tp3_px,   color=tp3_c,   width=2, style=line.style_solid)
+    label e_lbl  = label.new(x2, entry_px,
+         "ENTRY  " + str.tostring(entry_px, "#.####"),
+         color=color.new(color.black,100), textcolor=entry_c, style=label.style_label_left, size=lbl_sz)
+    label sl_lbl = label.new(x2, sl_px,
+         "SL  " + str.tostring(sl_px, "#.####"),
+         color=color.new(color.black,100), textcolor=sl_c, style=label.style_label_left, size=lbl_sz)
+    label t1_lbl = label.new(x2, tp1_px,
+         "TP1  " + str.tostring(tp1_r, "#.#") + "R   " + str.tostring(tp1_px, "#.####"),
+         color=color.new(color.black,100), textcolor=tp1_c, style=label.style_label_left, size=lbl_sz)
+    label t2_lbl = label.new(x2, tp2_px,
+         "TP2  " + str.tostring(tp2_r, "#.#") + "R   " + str.tostring(tp2_px, "#.####"),
+         color=color.new(color.black,100), textcolor=tp2_c, style=label.style_label_left, size=lbl_sz)
+    label t3_lbl = label.new(x2, tp3_px,
+         "TP3  " + str.tostring(tp3_r, "#.#") + "R   " + str.tostring(tp3_px, "#.####"),
+         color=color.new(color.black,100), textcolor=tp3_c, style=label.style_label_left, size=lbl_sz)
+    active_pos := PositionTool.new(
+         entry_px, sl_px, tp1_px, tp2_px, tp3_px, bull, x1,
+         e_ln, sl_ln, t1_ln, t2_ln, t3_ln,
+         e_lbl, sl_lbl, t1_lbl, t2_lbl, t3_lbl,
+         risk_b)
+p_trail = plot(trend != trend[1] ? na : trail, "Trail",
+     color=trend_col, linewidth=2, style=plot.style_linebr)
+p_ma = plot(ma, "MA",
+     color=color.new(trend_col, 100), linewidth=1)
+plotshape(flip_bull ? trail : na, "Buy Glow",  shape.diamond, location.absolute, color.new(bull_color, 50), size=size.small)
+plotshape(flip_bull ? trail : na, "Buy",       shape.diamond, location.absolute, bull_color,                size=size.tiny)
+plotshape(flip_bear ? trail : na, "Sell",      shape.diamond, location.absolute, bear_color,                size=size.tiny)
+plotcandle(open, high, low, close,
+     color=trend_col, wickcolor=trend_col, bordercolor=trend_col)
+alertcondition(flip_bear,           "Bear Signal",     "s")
+alertcondition(bull_break_signal,   "s", "s")
+alertcondition(bull_retest_signal,  "Bull Retest",     "s")
+alertcondition(bear_retest_signal,  "Bear Retest",     "s")
+alertcondition(retest_bear_entry,   "s", "s")

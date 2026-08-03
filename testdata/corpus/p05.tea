@@ -1,0 +1,44 @@
+//@version=6
+indicator("s", overlay=true)
+emaTimeframe = input.timeframe("D", title="s")
+emaLength    = input.int(200, title="s")
+kSmoothing = input.int(6,  title="s")
+dSmoothing = input.int(3,  title="s")
+bearZone   = input.float(75, title="s")
+var table warningTable = table.new(position.top_right, columns=1, rows=1, bgcolor=color.new(color.red, 80), border_width=1, border_color=color.red)
+if barstate.isfirst
+    table.cell(warningTable, column=0, row=0, text=warnText, text_color=color.red, text_size=size.normal)
+baseEma = ta.ema(close, emaLength)
+plot(useEmaFilter ? emaValue : na, color=color.blue, linewidth=2, title="s")
+rawK  = ta.stoch(close, high, low, kLength)
+slowD = ta.sma(slowK, dSmoothing)
+bodySize   = math.abs(close - open)
+isBullish  = close > open
+isBearish  = close < open
+upperWick  = isBullish ? high - close : high - open
+isDojiBody     = bodySize <= (candleRng * 0.1)
+isShavenBottom = lowerWick <= (candleRng * 0.05)
+isShavenTop    = upperWick <= (candleRng * 0.05)
+isSpinningTop  = isSmallBody and lowerWick > bodySize and upperWick > bodySize
+bearEngulfing = isBullish[1] and isBearish and open > close[1] and close < open[1]
+prevMidpoint = isBearish[1] ? close[1] + (bodySize[1] / 2) : close[1] - (bodySize[1] / 2)
+darkCloud = isBullish[1] and isBearish and open > close[1] and close <= prevMidpoint and close > open[1]
+gravestoneDoji = isDojiBody and lowerWick <= (candleRng * 0.1) and upperWick > (candleRng * 0.6)
+dragonflyDoji  = isDojiBody and upperWick <= (candleRng * 0.1) and lowerWick > (candleRng * 0.6)
+bullDojiStar = isBearish[1] and isDojiBody and high < low[1]
+bearDojiStar = isBullish[1] and isDojiBody and low > high[1]
+isInvUmbrella = isSmallBody and upperWick >= (2 * bodySize) and lowerWick <= (bodySize * 0.5)
+morningStar = isBearish[2] and bodySize[2] > (candleRng[2] * 0.5) and
+              isSmallBody[1] and close[1] < close[2] and
+              isBullish and close > (open[2] + close[2]) / 2
+bullBeltHold = isBullish and isShavenBottom and upperWick > 0
+bearBeltHold = isBearish and isShavenTop and lowerWick > 0
+bullEmaCond = not useEmaFilter or (close > emaValue)
+bearEmaCond = not useEmaFilter or (close < emaValue)
+bearStochCond = slowK > bearZone
+bullPattern = bullEngulfing or piercing or dragonflyDoji or bullDojiStar or
+              isUmbrella or isInvUmbrella or morningStar or
+              bullBeltHold or (marubozu and isBullish)
+bullTrigger = bullEmaCond and bullStochCond and bullPattern
+bearTrigger = bearEmaCond and bearStochCond and bearPattern
+plotshape(bearTrigger, title="s", location=location.abovebar, color=color.new(color.red, 0), style=shape.triangledown, size=size.small, text="BEAR")

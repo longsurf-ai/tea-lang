@@ -1,0 +1,60 @@
+//@version=6
+indicator("s", overlay=false, format=format.price, precision=2, max_labels_count=500, max_lines_count=500)
+string GROUP_SIGNAL = "s"
+int   n          = input.int(15, "s", group=GROUP_AMA)
+int   slowLength = input.int(50, "s", group=GROUP_AMA)
+float gamma      = input.float(0.15, "Signal Gamma", step=0.1, group=GROUP_SIGNAL)
+string sigMode   = input.string("s", "Signal Mode", options=["Standard", "s"], group=GROUP_SIGNAL)
+bool reqPriceConf= input.bool(true, "s", group=GROUP_SIGNAL)
+color colorUp    = input.color(#00E676, "s", group=GROUP_SIGNAL, inline="col")
+color colorDn    = input.color(#FF1744, "s", group=GROUP_SIGNAL, inline="col")
+type AMACalculator
+    float value = na
+    float value_prev = na
+    float velocity = 0.0
+    float filterBand = 0.0
+method calc(AMACalculator this, float src, int lengthER, int fastLen, int slowLen, float g) =>
+    float change     = math.abs(src - src[lengthER])
+    float volatility = math.sum(math.abs(src - src[1]), lengthER)
+    float ER         = volatility == 0 ? 0 : change / volatility
+    float fastest = 2.0 / (fastLen + 1)
+    float slowest = 2.0 / (slowLen + 1)
+    float sc      = math.pow(ER * (fastest - slowest) + slowest, 2)
+    this.value_prev := this.value
+    float prevAma = na(this.value_prev) ? src : this.value_prev
+    this.value   := prevAma + sc * (src - prevAma)
+    this.velocity   := this.value - prevAma
+var AMACalculator amaObj = AMACalculator.new(na, na, 0.0, 0.0)
+amaObj.calc(close, n, fastLength, slowLength, gamma)
+float sigma = ta.stdev(amaGlobalSeries, n)
+amaObj.filterBand := gamma * sigma
+float currentFilter   = amaObj.filterBand
+float extremeBand     = currentFilter * extMulti
+bool rawBearSignal = sigMode == "Standard" ? ta.crossunder(currentVelocity, currentFilter) : ta.crossunder(currentVelocity, extremeBand)
+if reqPriceConf
+    rawBullSignal := rawBullSignal and close > open
+    rawBearSignal := rawBearSignal and close < open
+var array<int> lastBear = array.new<int>()
+bool finalBullSignal = lastBull.filterSignal(rawBullSignal, cooldown)
+color histColor = currentVelocity > currentFilter ? color.new(colorUp, 20) :
+                  currentVelocity < -currentFilter ? color.new(colorDn, 20) :
+                  currentVelocity > 0 ? color.new(colorUp, 70) :
+                  color.new(colorDn, 70)
+hline(0, "Zero Line", color=color.new(#787B86, 50), linestyle=hline.style_dashed)
+plot(-currentFilter, "s", color=color.new(colorUp, 40), linewidth=1, style=plot.style_line)
+plot(extremeBand, "s", color=color.new(colorDn, 60), linewidth=1, style=plot.style_line, display=sigMode == "s" ? display.all : display.none)
+p_upper = plot(currentFilter, display=display.none)
+p_lower = plot(-currentFilter, display=display.none)
+plot(currentVelocity, "AMA Velocity", color=histColor, style=plot.style_columns)
+plot(currentVelocity, "s", color=histColor, linewidth=2)
+if finalBearSignal
+    label.new(x=bar_index, y=math.max(0, currentVelocity) + math.abs(sigMode == "s" ? extremeBand : currentFilter) + (math.abs(currentFilter) * 1.5),
+              text="SELL\n▼",
+              color=color.new(color.white, 100),
+              textcolor=colorDn,
+              style=label.style_none,
+              size=size.small)
+alertcondition(finalBullSignal, "Buy Signal", "s")
+bool posTrend = ta.crossover(currentVelocity, 0)
+bool negTrend = ta.crossunder(currentVelocity, 0)
+alertcondition(negTrend, "s", "s")

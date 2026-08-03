@@ -1,0 +1,50 @@
+//@version=6
+indicator("s", overlay = true, max_labels_count = 500)
+const color BEAR_COLOR = #f23645
+group_htf = "s"
+rsi_len = input.int(14, "RSI Length", minval = 1, group = group_htf)
+pivot_len_htf = input.int(5, "s", minval = 1, group = group_htf)
+pivot_len_ltf = input.int(3, "s", minval = 1, group = group_ltf)
+calc_htf_state(r_len, p_len) =>
+    r = ta.rsi(close, r_len)
+    ph = ta.pivothigh(r, p_len, p_len)
+    pl = ta.pivotlow(r, p_len, p_len)
+    var float last_ph_rsi = na
+    var float last_ph_price = na
+    var float last_pl_rsi = na
+    var float last_pl_price = na
+    var int div_state = 0
+    if not na(ph)
+        price_at_ph = high[p_len]
+        if not na(last_ph_rsi)
+            if price_at_ph > last_ph_price and ph < last_ph_rsi
+                div_state := 2
+        last_ph_rsi := ph
+        last_ph_price := price_at_ph
+    if not na(pl)
+        price_at_pl = low[p_len]
+        if not na(last_pl_rsi)
+            if price_at_pl < last_pl_price and pl > last_pl_rsi
+                div_state := 1
+        last_pl_rsi := pl
+        last_pl_price := price_at_pl
+    div_state
+ltf_ph = ta.pivothigh(high, pivot_len_ltf, pivot_len_ltf)
+ltf_pl = ta.pivotlow(low, pivot_len_ltf, pivot_len_ltf)
+var float last_swing_low  = na
+if not na(ltf_ph)
+    last_swing_high := ltf_ph
+var int last_fired_state = 0
+cross_up = ta.crossover(close, last_swing_high)
+bull_choch = htf_div_state == 1 and cross_up and last_fired_state != 1
+bear_choch = htf_div_state == 2 and cross_dn and last_fired_state != 2
+if htf_div_state == 0
+    last_fired_state := 0
+plotshape(bull_choch, "s", shape.triangleup, location.belowbar, BULL_COLOR, size = size.small, text = "Bull ChoCh", textcolor = BULL_COLOR)
+plot(last_swing_high, "s", color = color.new(BEAR_COLOR, 80), style = plot.style_linebr)
+plot(last_swing_low,  "s",  color = color.new(BULL_COLOR, 80), style = plot.style_linebr)
+if barstate.islast
+    table.cell(status_tbl, 0, 0, "HTF State (" + htf_tf + "):", text_color = chart.fg_color)
+    table.cell(status_tbl, 1, 0, htf_div_state == 1 ? "BULL DIV" : htf_div_state == 2 ? "BEAR DIV" : "NEUTRAL",
+     bgcolor = htf_div_state == 1 ? BULL_COLOR : htf_div_state == 2 ? BEAR_COLOR : color.gray, text_color = color.white)
+alertcondition(bull_choch, "s", "s")

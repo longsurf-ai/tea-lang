@@ -1,0 +1,181 @@
+//@version=6
+indicator("s", overlay=true, max_boxes_count=500, max_labels_count=500)
+fvg_threshold_atr = input.float(0.5, "s", minval=0.1, step=0.1, group=grp_logic, tooltip="s")
+strict_mode       = input.bool(true, "Strict Mode", group=grp_logic, tooltip="s")
+show_last_n = input.int(10, "s", group=grp_vis)
+show_ghost  = input.bool(true, "s", group=grp_vis)
+c_bear_bar  = input.color(color.new(#ff5252, 20), "s", group=grp_vis)
+c_str_bar   = input.color(color.new(#00e5ff, 20), "s", group=grp_vis)
+c_ghost     = input.color(color.new(#8a91a5, 85), "s", group=grp_vis)
+c_border    = input.color(color.new(#8a91a5, 50), "Border Color", group=grp_vis)
+type PendingFVG
+    float top
+    float btm
+    bool is_bull_gap
+    bool processed
+    int created_time
+type IFVG
+    int start_time
+    int origin_time
+    float top
+    float btm
+    bool is_bull_ifvg
+    float pct_bull
+    float pct_bear
+    float pct_strength
+    box container
+    box ghost_box
+    box bg_bull
+    box bar_bull
+    box bg_bear
+    box bar_bear
+    box bg_str
+    box bar_str
+    label lbl_bull
+    label lbl_bear
+    label lbl_str
+    bool active
+var active_ifvgs = array.new<IFVG>()
+float atr_val = ta.atr(14)
+[curr_p_bull, curr_p_bear, curr_p_str] = calc_metrics(open, high, low, close, volume)
+method create_drawings(IFVG this) =>
+    if show_ghost
+        this.ghost_box := box.new(
+             left=this.origin_time,
+             top=this.top,
+             right=this.start_time,
+             bottom=this.btm,
+             border_color=color.new(c_border, 20),
+             border_width=1,
+             border_style=line.style_dashed,
+             bgcolor=c_ghost,
+             xloc=xloc.bar_time
+         )
+    this.container := box.new(
+         left=this.start_time,
+         top=this.top,
+         right=time,
+         bottom=this.btm,
+         border_color=c_border,
+         border_width=1,
+         bgcolor=color(na),
+         xloc=xloc.bar_time
+     )
+    this.bg_bull  := box.new(this.start_time, this.top, time, this.top, border_width=0, bgcolor=c_bg_dark, xloc=xloc.bar_time)
+    this.bar_bull := box.new(this.start_time, this.top, this.start_time, this.top, border_width=0, bgcolor=c_bull_bar, xloc=xloc.bar_time)
+    this.bg_bear  := box.new(this.start_time, this.top, time, this.top, border_width=0, bgcolor=c_bg_dark, xloc=xloc.bar_time)
+    this.bar_bear := box.new(this.start_time, this.top, this.start_time, this.top, border_width=0, bgcolor=c_bear_bar, xloc=xloc.bar_time)
+    this.bg_str   := box.new(this.start_time, this.top, time, this.top, border_width=0, bgcolor=c_bg_dark, xloc=xloc.bar_time)
+    this.bar_str  := box.new(this.start_time, this.top, this.start_time, this.top, border_width=0, bgcolor=c_str_bar, xloc=xloc.bar_time)
+    this.lbl_bull := label.new(x=this.start_time, y=this.top, text="", xloc=xloc.bar_time, textcolor=txt_color, style=label.style_none, size=size.small, textalign=text.align_center)
+    this.lbl_bear := label.new(x=this.start_time, y=this.top, text="", xloc=xloc.bar_time, textcolor=txt_color, style=label.style_none, size=size.small, textalign=text.align_center)
+    this.lbl_str  := label.new(x=this.start_time, y=this.top, text="", xloc=xloc.bar_time, textcolor=txt_color, style=label.style_none, size=size.small, textalign=text.align_center)
+method update(IFVG this) =>
+    if this.active
+        int now = time
+        int dur = now - this.start_time
+        if dur <= 0
+            dur := timeframe.in_seconds() * 1000
+        float total_h = this.top - this.btm
+        float h_slice = total_h / 3
+        float y1 = this.top
+        float y2 = this.top - h_slice
+        float y3 = this.top - 2 * h_slice
+        float y4 = this.btm
+        int center_x = math.round((this.start_time + now) / 2)
+        float mid_bull = this.top - (h_slice * 0.5)
+        float mid_bear = this.top - (h_slice * 1.5)
+        float mid_str  = this.top - (h_slice * 2.5)
+        this.container.set_right(now)
+        int w_bull = math.round(dur * this.pct_bull)
+        int w_bear = math.round(dur * this.pct_bear)
+        int w_str  = math.round(dur * this.pct_strength)
+        this.bg_bull.set_left(this.start_time)
+        this.bg_bull.set_right(now)
+        this.bg_bull.set_top(y1)
+        this.bg_bull.set_bottom(y2)
+        this.bar_bull.set_left(this.start_time)
+        this.bar_bull.set_right(this.start_time + w_bull)
+        this.bar_bull.set_top(y1)
+        this.bar_bull.set_bottom(y2)
+        this.bg_bear.set_left(this.start_time)
+        this.bg_bear.set_right(now)
+        this.bg_bear.set_top(y2)
+        this.bg_bear.set_bottom(y3)
+        this.bar_bear.set_left(this.start_time)
+        this.bar_bear.set_right(this.start_time + w_bear)
+        this.bar_bear.set_top(y2)
+        this.bar_bear.set_bottom(y3)
+        this.bg_str.set_left(this.start_time)
+        this.bg_str.set_right(now)
+        this.bg_str.set_top(y3)
+        this.bg_str.set_bottom(y4)
+        this.bar_str.set_left(this.start_time)
+        this.bar_str.set_right(this.start_time + w_str)
+        this.bar_str.set_top(y3)
+        this.bar_str.set_bottom(y4)
+        this.lbl_bull.set_xy(center_x, mid_bull)
+        this.lbl_bull.set_text(str.format("Bull: {0}%", math.round(this.pct_bull * 100)))
+        this.lbl_bear.set_xy(center_x, mid_bear)
+        this.lbl_bear.set_text(str.format("Bear: {0}%", math.round(this.pct_bear * 100)))
+        this.lbl_str.set_xy(center_x, mid_str)
+        this.lbl_str.set_text(str.format("Str: {0}%", math.round(this.pct_strength * 100)))
+        bool broken = false
+        if this.is_bull_ifvg and close < this.btm
+            broken := true
+        if not this.is_bull_ifvg and close > this.top
+            broken := true
+        if broken
+            this.active := false
+            this.remove()
+bool bull_cond = strict_mode ? (low[0] > high[2]) : (close[0] > high[2])
+float gap_size = 0.0
+if bull_cond and close[1] > open[1]
+    gap_size := low[0] - high[2]
+bool is_significant = gap_size >= (atr_val * fvg_threshold_atr)
+if is_significant
+    PendingFVG p = PendingFVG.new()
+    p.created_time := time[1]
+    p.processed := false
+    if bull_cond
+        p.is_bull_gap := true
+        p.top := low[0]
+        p.btm := high[2]
+    else
+        p.is_bull_gap := false
+        p.top := low[2]
+        p.btm := high[0]
+    array.push(pending_fvgs, p)
+if array.size(pending_fvgs) > 0
+    for i = array.size(pending_fvgs) - 1 to 0
+        PendingFVG p = array.get(pending_fvgs, i)
+        if not p.processed
+            bool inverted = false
+            bool to_bull = false
+            if not p.is_bull_gap and close > p.top
+                inverted := true
+                to_bull := true
+            if p.is_bull_gap and close < p.btm
+                inverted := true
+                to_bull := false
+            if inverted
+                IFVG obj = IFVG.new()
+                obj.start_time := time
+                obj.origin_time := p.created_time
+                obj.top := p.top
+                obj.btm := p.btm
+                obj.is_bull_ifvg := to_bull
+                obj.pct_bull := curr_p_bull
+                obj.pct_bear := curr_p_bear
+                obj.pct_strength := curr_p_str
+                obj.active := true
+                obj.create_drawings()
+                array.push(active_ifvgs, obj)
+                p.processed := true
+if array.size(active_ifvgs) > 0
+    for i = array.size(active_ifvgs) - 1 to 0
+        IFVG item = array.get(active_ifvgs, i)
+        item.update()
+    while array.size(active_ifvgs) > show_last_n
+        IFVG d = array.shift(active_ifvgs)
+        d.remove()

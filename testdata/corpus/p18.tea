@@ -1,0 +1,24 @@
+//@version=6
+indicator("s", shorttitle="AMW[Pineify]", overlay=false)
+length   = input.int(14, title="s", group=grp_main)
+smooth   = input.int(7, title="s", tooltip="s", group=grp_main)
+grp_zones = "s"
+obLevel   = input.int(80, title="s", group=grp_zones)
+grp_style = "s"
+bullCol   = input.color(#089981, title="s", group=grp_style)
+sigCol    = input.color(#ffb74d, title="s", group=grp_style)
+smooth_price = ta.hma(close, smooth)
+signal = ta.ema(oscillator, sigLen)
+osc_color = oscillator > signal ? bullCol : bearCol
+p_sig = plot(signal, title="Signal Line", color=sigCol, linewidth=1)
+fill(p_osc, p_sig, color = oscillator > signal ? color.new(bullCol, 75) : color.new(bearCol, 75), title="Wave Fill")
+p_mid = plot(50, title="Midline", color=color.new(color.gray, 70), style=plot.style_line)
+p_os  = plot(osLevel, title="Oversold", color=color.new(bullCol, 50), style=plot.style_line)
+p_bot = plot(0, display=display.none)
+fill(p_ob, p_top, color=color.new(bearCol, 90), title="s")
+fill(p_osc, p_ob, color = oscillator > obLevel ? color.new(bearCol, 60) : na, title="s")
+fill(p_osc, p_os, color = oscillator < osLevel ? color.new(bullCol, 60) : na, title="s")
+sellCond = ta.crossunder(oscillator, signal) and oscillator > 50
+plotshape(buyCond, title="Buy Signal", style=shape.triangleup, location=location.bottom, color=bullCol, size=size.small)
+alertcondition(buyCond, title="s", message="s")
+alertcondition(sellCond, title="s", message="s")

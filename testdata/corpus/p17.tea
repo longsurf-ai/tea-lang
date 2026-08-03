@@ -1,0 +1,73 @@
+//@version=6
+indicator("Swing Levels", overlay=true, max_bars_back=499, max_lines_count=499, max_labels_count=499)
+pivotDeviation = input.float(6.0, "s", minval=0.0, group="Swing Levels")
+maxLevelCount = input.int(6, "s", minval=1, group="Swing Levels")
+levelAbovePriceColor = input.color(color.new(color.rgb(64, 217, 143), 20), "s", group="s")
+levelBelowPriceColor = input.color(color.new(color.rgb(246, 113, 113), 20), "s", group="s")
+maxDiagonalObjects = input.int(200, "s", minval=10, group="s")
+showDiagonalSrLines = input.bool(true, "s", group="s", inline="diag2")
+extremeHighLineColor = input.color(color.new(color.rgb(64, 217, 143), 20), "s", group="s", inline="diag3")
+extremeLowLineColor = input.color(color.new(color.rgb(246, 113, 113), 20), "s", group="s", inline="diag3")
+lowPivotType = -1
+diagonalFixedColor = color.gray
+var diagonalLines = array.new_line()
+var diagonalSrLines = array.new_line()
+var pivotValues = array.new_float()
+var pivotTypes = array.new_int()
+drawDiagonalLine(x1, x2, y1, y2, lineColor, lineThickness, lineStyle, lineExtend) =>
+    line.new(x1=x1, y1=y1, x2=x2, y2=y2, color=lineColor, style=lineStyle, width=lineThickness, extend=lineExtend)
+drawDiagonalLabel(xValue, yValue, textValue, labelColor, isDownPivot) =>
+    adjustedY = isDownPivot ? yValue * 1.005 : yValue * 0.995
+    diagonalLabel = label.new(xValue, adjustedY, textValue, xloc.bar_index, yloc.price, #00000000, label.style_none, labelColor)
+    if array.size(diagonalLabels) == maxDiagonalObjects
+        label.delete(array.shift(diagonalLabels))
+    array.push(diagonalLabels, diagonalLabel)
+pushManagedLine(x1, x2, y1, y2, lineColor, lineThickness, lineStyle, lineLimit, targetArray, lineExtend) =>
+    newLine = drawDiagonalLine(x1, x2, y1, y2, lineColor, lineThickness, lineStyle, lineExtend)
+    if array.size(targetArray) == lineLimit
+        line.delete(array.shift(targetArray))
+    array.push(targetArray, newLine)
+storePivot(barIndexValue, yValue, pivotType) =>
+    if array.size(pivotValues) == maxDiagonalObjects
+        array.shift(pivotValues)
+        array.shift(pivotBarIndexes)
+        array.shift(pivotTypes)
+    array.push(pivotValues, yValue)
+    array.push(pivotBarIndexes, barIndexValue)
+    array.push(pivotTypes, pivotType)
+addMainDiagonalLine(x2, y2) =>
+    hasPivotData = array.size(pivotValues) >= 1
+    if hasPivotData
+        [x1, y1] = getLastPivot()
+        pushManagedLine(x1, x2, y1, y2, diagonalFixedColor, diagonalLineThickness, line.style_solid, maxDiagonalObjects, diagonalLines, extend.none)
+addDiagonalSrLine(xValue, yValue) =>
+    previousIndex = array.size(pivotValues) - 2
+    if showDiagonalSrLines and previousIndex >= 0
+        previousPivotType = array.get(pivotTypes, previousIndex)
+        previousPivotValue = array.get(pivotValues, previousIndex)
+        previousXValue = array.get(pivotBarIndexes, previousIndex)
+        srLineColor = previousPivotType == highPivotType ? extremeHighLineColor : extremeLowLineColor
+        pushManagedLine(previousXValue, xValue, previousPivotValue, yValue, srLineColor, diagonalLineThickness, line.style_dashed, diagonalSrLineCount, diagonalSrLines, extend.right)
+getLevelColor(yValue) =>
+    yValue > close ? levelAbovePriceColor : levelBelowPriceColor
+drawHorizontalLevel(x1, x2, yValue, lineColor) =>
+    line.new(x1=x1, y1=yValue, x2=x2, y2=yValue, color=lineColor, style=line.style_solid, width=2)
+addHorizontalLevel(switchDetected, lowIndex, highIndex, isDownSwing) =>
+    if switchDetected
+        line newLevel = na
+        pivotIndex = isDownSwing ? highIndex : lowIndex
+        yValue = isDownSwing ? high[pivotIndex] : low[pivotIndex]
+        x1 = bar_index - pivotIndex
+        x2 = bar_index
+        if isDownSwing != isDownSwing[1] and not na(yValue)
+            addMainDiagonalLine(x1, yValue)
+            addDiagonalSrLine(x1, yValue)
+            currentPivotType = isDownSwing ? highPivotType : lowPivotType
+            storePivot(x1, yValue, currentPivotType)
+            newLevel := drawHorizontalLevel(x1, x2, yValue, getLevelColor(yValue))
+        if array.size(horizontalLevels) == maxLevelCount
+            line.delete(array.shift(horizontalLevels))
+        drawDiagonalLabel(x1, yValue, createDiagonalLabelText(yValue), diagonalFixedColor, isDownSwing)
+        array.push(horizontalLevels, newLevel)
+[switchDetected, lowIndex, highIndex, isDownSwing] = calculateZigzag(pivotDepth, pivotDeviation)
+extendAndRecolorLevels(horizontalLevels, extendLevels)

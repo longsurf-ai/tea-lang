@@ -1,0 +1,29 @@
+//@version=5
+indicator("s", overlay=true)
+Mult = input.float(2.5, "Multiplier", minval=0.1)
+Barcolor = input.bool(false, "Barcolor")
+BuyColor  = input.color(color.green, "BUY Color", group="Label Style")
+SellColor = input.color(color.red, "SELL Color", group="Label Style")
+atrVal = ta.atr(Atr)
+longStop  = close - Mult * atrVal
+var float TS = na
+var int dir = 1
+Color = close > TS ? color.green : color.red
+barcolor(Barcolor ? Color : na)
+Buy = ta.crossover(close, TS) and (not ConfirmOnClose or barstate.isconfirmed)
+Sell = ta.crossunder(close, TS) and (not ConfirmOnClose or barstate.isconfirmed)
+if Buy
+    label.new(
+         bar_index, TS - offset, "BUY",
+         yloc=yloc.price,
+         style=label.style_label_up,
+         color=BuyColor,
+         textcolor=TextColor)
+if Sell
+    label.new(
+         bar_index, TS + offset, "SELL",
+         yloc=yloc.price,
+         style=label.style_label_down,
+         color=SellColor,
+         textcolor=TextColor)
+alertcondition(Sell, "Sell Signal", "s")

@@ -1,0 +1,36 @@
+//@version=6
+indicator("MACD P", shorttitle="MACD P", overlay=false)
+int    fastLenInput = input.int(12, "Fast Length")
+int    slowLenInput = input.int(26, "Slow Length")
+bool showBullPCO = input.bool(true, "s", group="PCO Settings")
+bool showBearPCO = input.bool(false, "s", group="PCO Settings")
+string box_size   = input.string("normal", "Text Size", options=["tiny", "small", "normal", "large", "huge"], group="HUD Settings")
+color  bg_color   = input.color(color.new(#26a69a, 60), "s", group="HUD Settings")
+float fastMA = ta.ema(sourceInput, fastLenInput)
+float slowMA = ta.ema(sourceInput, slowLenInput)
+float signal = ta.ema(macd, sigLenInput)
+float hist   = macd - signal
+color col_fall_up = #b2dfdb
+color col_grow_dn = color.new(#ff5252, 20)
+color hColor = hist >= 0 ? (hist > hist[1] ? col_grow_up : col_fall_up) : (hist < hist[1] ? col_grow_dn : col_fall_dn)
+plot(hist, "Histogram", hColor, style=plot.style_columns)
+plot(signal, "Signal", #ff6d00, linewidth=1)
+hline(0, "Zero Line", color.new(#787b86, 50))
+bool bearCross = ta.crossunder(macd, signal)
+bgcolor(showBullPCO and bullCross ? color.new(color.yellow, 75) : na, title="Bullish PCO")
+get_tf() =>
+    string tf = ""
+    if timeframe.isintraday
+        tf := timeframe.multiplier >= 60 and timeframe.multiplier % 60 == 0 ? str.tostring(timeframe.multiplier / 60) + "H" : str.tostring(timeframe.multiplier) + "m"
+    else if timeframe.isdaily
+        tf := str.tostring(timeframe.multiplier) + "D"
+    else if timeframe.isweekly
+        tf := str.tostring(timeframe.multiplier) + "W"
+    else if timeframe.ismonthly
+        tf := str.tostring(timeframe.multiplier) + "M"
+    tf
+t_pos = table_pos == "top_right" ? position.top_right :
+         table_pos == "bottom_right" ? position.bottom_right :
+         table_pos == "top_left" ? position.top_left : position.bottom_left
+if barstate.islast
+    table.cell(tf_table, 0, 0, get_tf(), bgcolor=bg_color, text_color=text_color, text_size=box_size)

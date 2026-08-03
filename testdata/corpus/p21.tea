@@ -1,0 +1,145 @@
+//@version=6
+indicator("s", overlay=true, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+depth          = input.int(10,      "Depth",                 minval=2,   tooltip="s")
+minLegBars     = input.int(2,       "Min Leg Bars",          minval=1,   tooltip="s")
+confirmedOnly  = input.bool(false,  "s", tooltip="s")
+showLabels     = input.bool(true,   "s")
+lineWidth      = input.int(2,       "Line Width",           minval=1, maxval=5)
+bullCol        = input.color(color.new(#089981, 0), "s")
+if barstate.islast
+    pivotPrice = array.new<float>()
+    pivotBar   = array.new<int>()
+    pivotType  = array.new<int>()
+    float dev  = devPct / 100.0
+    int lookback = math.min(maxBars, bar_index)
+    float runHi    = high[0]
+    int   runHiOff = 0
+    float runLo    = low[0]
+    int   runLoOff = 0
+    int   dir      = 0
+    int   startOff = 1
+    for i = 1 to lookback
+        if high[i] > runHi
+            runHi    := high[i]
+            runHiOff := i
+        if low[i] < runLo
+            runLo    := low[i]
+            runLoOff := i
+        if i >= depth and runHi / runLo - 1.0 >= dev and runHiOff != runLoOff
+            int beyondBoth = math.max(runHiOff, runLoOff) + 1
+            if runHiOff < runLoOff
+                pivotPrice.push(runHi)
+                pivotBar.push(bar_index - runHiOff)
+                pivotType.push(1)
+                dir      := -1
+                startOff := beyondBoth
+            else
+                pivotPrice.push(runLo)
+                pivotBar.push(bar_index - runLoOff)
+                pivotType.push(-1)
+                dir      := 1
+                startOff := beyondBoth
+            break
+    if dir != 0
+        float extreme    = dir == -1 ? runLo : runHi
+        int   extremeOff = dir == -1 ? runLoOff : runHiOff
+        for i = startOff to lookback
+            float h = high[i]
+            float l = low[i]
+            if dir == -1
+                if l < extreme
+                    extreme    := l
+                    extremeOff := i
+                else if h >= extreme * (1.0 + dev)
+                    pivotPrice.push(extreme)
+                    pivotBar.push(bar_index - extremeOff)
+                    pivotType.push(-1)
+                    dir        := 1
+                    extreme    := h
+                    extremeOff := i
+            else if dir == 1
+                if h > extreme
+                    extreme    := h
+                    extremeOff := i
+                else if l <= extreme * (1.0 - dev)
+                    pivotPrice.push(extreme)
+                    pivotBar.push(bar_index - extremeOff)
+                    pivotType.push(1)
+                    dir        := -1
+                    extreme    := l
+                    extremeOff := i
+        if not confirmedOnly and pivotPrice.size() > 0
+            float lastP = pivotPrice.last()
+            if extreme != lastP
+                pivotPrice.push(extreme)
+                pivotBar.push(bar_index - extremeOff)
+                pivotType.push(dir == 1 ? 1 : -1)
+    if minLegBars > 1
+        bool changed = true
+        int  safety  = 0
+        int  maxIter = pivotPrice.size()
+        while changed and safety < maxIter
+            changed := false
+            safety  += 1
+            int sz = pivotPrice.size()
+            if sz < 3
+                break
+            int   shortIdx  = -1
+            int   shortBars = maxBars + 1
+            for i = 0 to sz - 2
+                int legLen = math.abs(pivotBar.get(i) - pivotBar.get(i + 1))
+                if legLen < minLegBars and legLen < shortBars
+                    shortBars := legLen
+                    shortIdx  := i
+            if shortIdx == -1
+                break
+            int idx = shortIdx
+            if idx + 2 < sz
+                int   t  = pivotType.get(idx)
+                float p0 = pivotPrice.get(idx)
+                int   b0 = pivotBar.get(idx)
+                float p2 = pivotPrice.get(idx + 2)
+                int   b2 = pivotBar.get(idx + 2)
+                if t == 1
+                    if p2 >= p0
+                        pivotPrice.set(idx, p2)
+                        pivotBar.set(idx, b2)
+                else
+                    if p2 <= p0
+                        pivotPrice.set(idx, p2)
+                        pivotBar.set(idx, b2)
+                pivotPrice.remove(idx + 2)
+                pivotBar.remove(idx + 2)
+                pivotType.remove(idx + 2)
+                pivotPrice.remove(idx + 1)
+                pivotBar.remove(idx + 1)
+                pivotType.remove(idx + 1)
+            else
+                pivotPrice.remove(sz - 1)
+                pivotBar.remove(sz - 1)
+                pivotType.remove(sz - 1)
+            changed := true
+    int total = pivotPrice.size()
+    if total >= 2
+        for i = 0 to total - 2
+            float p1 = pivotPrice.get(i)
+            int   b1 = pivotBar.get(i)
+            float p2 = pivotPrice.get(i + 1)
+            int   b2 = pivotBar.get(i + 1)
+            line.new(b1, p1, b2, p2, color=lineCol, width=lineWidth)
+    if showLabels and total >= 1
+        for i = 0 to total - 1
+            float p = pivotPrice.get(i)
+            int   b = pivotBar.get(i)
+            int   t = pivotType.get(i)
+            string priceTxt = str.tostring(p, format.mintick)
+            string chgTxt = ""
+            if i < total - 1
+                float prevChron = pivotPrice.get(i + 1)
+                float chgPct = (p - prevChron) / prevChron * 100.0
+                chgTxt := " (" + (chgPct >= 0 ? "+" : "") + str.tostring(chgPct, "#.##") + "%)"
+            string txt = priceTxt + chgTxt
+            if t == 1
+                label.new(b, p, txt, style=label.style_label_down, color=color.new(bullCol, 80), textcolor=bullCol, size=size.small)
+            else
+                label.new(b, p, txt, style=label.style_label_up, color=color.new(bearCol, 80), textcolor=bearCol, size=size.small)

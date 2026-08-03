@@ -1,0 +1,298 @@
+//@version=6
+indicator("s", shorttitle="SPM [JOAT]", overlay=true, max_bars_back=500, max_lines_count=500, max_labels_count=500)
+g_pivot = "s"
+g_levels = "s"
+pattern_range = input.int(9, "s", minval=5, maxval=20, group=g_pattern)
+pattern_offset = input.int(0, "s", minval=0, maxval=5, group=g_pattern)
+pivot_left = input.int(6, "s", minval=1, maxval=20, group=g_pivot)
+pivot_right = input.int(1, "s", minval=1, maxval=10, group=g_pivot)
+max_levels = input.int(3, "s", minval=2, maxval=6, group=g_levels)
+level_strength_period = input.int(50, "s", minval=20, maxval=200, group=g_levels)
+show_zones = input.bool(true, "s", group=g_visual)
+zone_width = input.float(0.5, "s", minval=0.1, maxval=2.0, step=0.1, group=g_visual)
+color c_support_strong = #0099ff
+color c_support_weak = #33ccff
+color c_resistance_weak = #ff3399
+color c_pivot_high = #ff0066
+color c_pattern_bull = #00ff99
+color c_pattern_bear = #ff6600
+color c_dashboard_bg = #0a0a0f
+color c_dashboard_border = #0099ff
+f_detect_m_pattern(float src, int lookback, int offset, bool strict) =>
+    int e = 0, int d = 0, int c = 0, int b = 0, int a = 0
+    float valueE = src, float valueD = src, float valueC = src, float valueB = src, float valueA = src
+    bool found = false
+    for off = 0 to offset
+        if found
+            break
+        e := 0
+        d := 0
+        c := 0
+        b := 0
+        a := 0
+        valueE := src
+        valueD := src
+        valueC := src
+        valueB := src
+        valueA := src
+        for i = 1 to lookback - 1
+            if src[i + off] > src[i + off - 1] and valueC == src
+                d := i + off
+                valueD := src[i + off]
+                continue
+            if d == 0
+                break
+            if src[i + off] < src[i + off - 1] and valueB == src
+                c := i + off
+                valueC := src[i + off]
+                continue
+            if c == 0
+                break
+            if src[i + off] > src[i + off - 1] and valueA == src
+                b := i + off
+                valueB := src[i + off]
+                continue
+            if b == 0
+                break
+            if src[i + off] < src[i + off - 1]
+                a := i + off
+                valueA := src[i + off]
+                continue
+            if a == 0
+                break
+        found := a > 0 and a != b and c != 0 and d != 0 and
+                 src[e] < src[c] and src[d] > src[e] and src[d] > src[c] and
+                 (src[b] >= src[d] or not strict) and src[b] > src[a]
+    [found, valueC, valueB, c, b]
+[w_found, w_entry, w_stop, w_c, w_b] = f_detect_w_pattern(close, pattern_range, pattern_offset, strict_mode)
+float pivot_high = ta.pivothigh(high, pivot_left, pivot_right)
+float pivot_low = ta.pivotlow(low, pivot_left, pivot_right)
+var array<float> support_levels = array.new_float(0)
+var array<int> resistance_touches = array.new_int(0)
+if not na(pivot_high) and barstate.isconfirmed
+    if array.size(resistance_levels) < max_levels
+        array.push(resistance_levels, pivot_high)
+        array.push(resistance_touches, 1)
+    else if auto_cleanup
+        array.shift(resistance_levels)
+        array.shift(resistance_touches)
+        array.push(resistance_levels, pivot_high)
+        array.push(resistance_touches, 1)
+if not na(pivot_low) and barstate.isconfirmed
+    if array.size(support_levels) < max_levels
+        array.push(support_levels, pivot_low)
+        array.push(support_touches, 1)
+    else if auto_cleanup
+        array.shift(support_levels)
+        array.shift(support_touches)
+        array.push(support_levels, pivot_low)
+        array.push(support_touches, 1)
+float zone_size = atr_value * zone_width
+if array.size(resistance_levels) > 0
+    for i = 0 to array.size(resistance_levels) - 1
+        float level = array.get(resistance_levels, i)
+        if high >= level - zone_size and high <= level + zone_size
+            array.set(resistance_touches, i, array.get(resistance_touches, i) + 1)
+var array<line> resistance_lines = array.new<line>()
+var array<label> resistance_labels = array.new<label>()
+var array<label> support_labels = array.new<label>()
+if barstate.islast
+    if array.size(resistance_lines) > 0
+        for i = 0 to array.size(resistance_lines) - 1
+            line.delete(array.get(resistance_lines, i))
+        array.clear(resistance_lines)
+    if array.size(resistance_labels) > 0
+        for i = 0 to array.size(resistance_labels) - 1
+            label.delete(array.get(resistance_labels, i))
+        array.clear(resistance_labels)
+    if array.size(support_lines) > 0
+        for i = 0 to array.size(support_lines) - 1
+            line.delete(array.get(support_lines, i))
+        array.clear(support_lines)
+    if array.size(support_labels) > 0
+        for i = 0 to array.size(support_labels) - 1
+            label.delete(array.get(support_labels, i))
+        array.clear(support_labels)
+if barstate.islast and array.size(resistance_levels) > 0 and show_zones
+    float min_distance = atr_value * 1.5
+    array<float> plotted_levels = array.new<float>()
+    for i = 0 to array.size(resistance_levels) - 1
+        float level = array.get(resistance_levels, i)
+        int touches = array.get(resistance_touches, i)
+        bool too_close = false
+        if array.size(plotted_levels) > 0
+            for j = 0 to array.size(plotted_levels) - 1
+                if f_levels_too_close(level, array.get(plotted_levels, j), min_distance)
+                    too_close := true
+                    break
+        if not too_close and touches >= 2
+            array.push(plotted_levels, level)
+            color level_color = touches >= 3 ? c_resistance_strong : c_resistance_weak
+            int level_width = touches >= 3 ? 3 : 2
+            line new_line = line.new(bar_index - level_strength_period, level, bar_index + 50, level,
+                     color=color.new(level_color, 20), width=level_width,
+                     style=line.style_solid, extend=extend.right)
+            array.push(resistance_lines, new_line)
+            string label_text = "R: " + str.tostring(level, format.mintick) + " [" + str.tostring(touches) + "x]"
+            color label_color = touches >= 3 ? c_resistance_strong : c_resistance_weak
+            label new_label = label.new(bar_index + 5, level, label_text,
+                      color=color.new(label_color, 15), textcolor=color.white,
+                      style=label.style_label_left, size=size.small)
+            array.push(resistance_labels, new_label)
+if barstate.islast and array.size(support_levels) > 0 and show_zones
+    float min_distance = atr_value * 1.5
+    array<float> plotted_levels = array.new<float>()
+    for i = 0 to array.size(support_levels) - 1
+        float level = array.get(support_levels, i)
+        int touches = array.get(support_touches, i)
+        bool too_close = false
+        if array.size(plotted_levels) > 0
+            for j = 0 to array.size(plotted_levels) - 1
+                if f_levels_too_close(level, array.get(plotted_levels, j), min_distance)
+                    too_close := true
+                    break
+        if not too_close and touches >= 2
+            array.push(plotted_levels, level)
+            color level_color = touches >= 3 ? c_support_strong : c_support_weak
+            int level_width = touches >= 3 ? 3 : 2
+            line new_line = line.new(bar_index - level_strength_period, level, bar_index + 50, level,
+                     color=color.new(level_color, 20), width=level_width,
+                     style=line.style_solid, extend=extend.right)
+            array.push(support_lines, new_line)
+            string label_text = "S: " + str.tostring(level, format.mintick) + " [" + str.tostring(touches) + "x]"
+            color label_color = touches >= 3 ? c_support_strong : c_support_weak
+            label new_label = label.new(bar_index + 5, level, label_text,
+                      color=color.new(label_color, 15), textcolor=color.white,
+                      style=label.style_label_left, size=size.small)
+            array.push(support_labels, new_label)
+plotchar(show_pivot_labels and not na(pivot_low) ? pivot_low : na, "Pivot Low", "",
+         location.absolute, c_pivot_low, size=size.tiny, offset=-pivot_right)
+if show_pivot_labels and not na(pivot_high) and barstate.isconfirmed
+    label.new(bar_index - pivot_right, pivot_high, "R " + str.tostring(pivot_high, format.mintick),
+              color=color.new(c_pivot_high, 10), textcolor=color.white,
+              style=label.style_label_down, size=size.small)
+if show_pattern_lines and w_found and barstate.isconfirmed
+    line.new(bar_index - w_c, w_entry, bar_index, w_entry,
+             color=color.new(c_pattern_bull, 50), width=2, style=line.style_dashed)
+    line.new(bar_index - w_b, w_stop, bar_index, w_stop,
+             color=color.new(c_pattern_bull, 70), width=1, style=line.style_dotted)
+if show_pattern_lines and m_found and barstate.isconfirmed
+    line.new(bar_index - m_c, m_entry, bar_index, m_entry,
+             color=color.new(c_pattern_bear, 50), width=2, style=line.style_dashed)
+    line.new(bar_index - m_b, m_stop, bar_index, m_stop,
+             color=color.new(c_pattern_bear, 70), width=1, style=line.style_dotted)
+if barstate.islast
+    table.cell(dashboard, 0, 0, "SPM [JOAT]", text_color=c_pattern_bull, text_size=size.normal,
+               bgcolor=color.new(c_dashboard_bg, 0))
+    table.merge_cells(dashboard, 0, 0, 2, 0)
+    table.cell(dashboard, 0, 1, "Resistance", text_color=c_text, text_size=size.tiny)
+    table.cell(dashboard, 1, 1, str.tostring(array.size(resistance_levels)),
+               text_color=c_resistance_weak, text_size=size.small)
+    table.cell(dashboard, 2, 1, "levels", text_color=c_text, text_size=size.tiny)
+    table.cell(dashboard, 0, 2, "Support", text_color=c_text, text_size=size.tiny)
+    table.cell(dashboard, 1, 2, str.tostring(array.size(support_levels)),
+               text_color=c_support_weak, text_size=size.small)
+    table.cell(dashboard, 2, 2, "levels", text_color=c_text, text_size=size.tiny)
+    string pattern_status = w_found ? "W Pattern" : m_found ? "M Pattern" : "No Pattern"
+    color pattern_color = w_found ? c_pattern_bull : m_found ? c_pattern_bear : c_text
+    table.cell(dashboard, 0, 3, pattern_status, text_color=pattern_color, text_size=size.tiny)
+    table.merge_cells(dashboard, 0, 3, 2, 3)
+f_detect_head_shoulders(float src, int lookback) =>
+    bool found = false
+    float left_shoulder = na, float head = na, float right_shoulder = na
+    float neckline = na
+    float ph1 = ta.pivothigh(src, lookback, lookback)
+    float ph2 = ta.pivothigh(src, lookback, lookback)[lookback]
+    float ph3 = ta.pivothigh(src, lookback, lookback)[lookback*2]
+    if not na(ph1) and not na(ph2) and not na(ph3)
+        if ph2 > ph1 and ph2 > ph3 and math.abs(ph1 - ph3) < (ph2 - ph1) * 0.3
+            found := true
+            left_shoulder := ph3
+            head := ph2
+            right_shoulder := ph1
+            neckline := math.min(low[lookback], low[lookback*2])
+    [found, left_shoulder, head, right_shoulder, neckline]
+[hs_found, hs_ls, hs_head, hs_rs, hs_neckline] = f_detect_head_shoulders(high, pattern_range)
+[ihs_found, ihs_ls, ihs_head, ihs_rs, ihs_neckline] = f_detect_inverse_hs(low, pattern_range)
+var array<float> level_volumes = array.new_float(0)
+var array<float> level_strengths = array.new_float(0)
+float sample_strength = 0.0
+if array.size(resistance_levels) > 0 and array.size(resistance_touches) > 0
+    int sample_touches = array.get(resistance_touches, 0)
+    sample_strength := math.min(sample_touches * 8, 40) + math.min(level_strength_period / 100.0 * 30, 30)
+var array<float> price_levels = array.new_float(0)
+var array<float> volume_at_price = array.new_float(0)
+float highest_price = ta.highest(high, vp_lookback)
+float lowest_price = ta.lowest(low, vp_lookback)
+if bar_index % 10 == 0
+    array.clear(price_levels)
+    array.clear(volume_at_price)
+    float price_range = highest_price - lowest_price
+    float bin_size = price_range / 20
+    float base_price = base_price_calc
+    for i = 0 to 19
+        array.push(price_levels, base_price + bin_size * i)
+        array.push(volume_at_price, 0.0)
+    for i = 0 to math.min(vp_lookback - 1, bar_index)
+        float bar_price = close[i]
+        float bar_vol = volume[i]
+        int bin_idx = math.floor((bar_price - base_price) / bin_size)
+        bin_idx := math.max(0, math.min(19, bin_idx))
+        float current_vol = array.get(volume_at_price, bin_idx)
+        array.set(volume_at_price, bin_idx, current_vol + bar_vol)
+float poc_price = na
+if array.size(volume_at_price) > 0
+    for i = 0 to array.size(volume_at_price) - 1
+        float vol = array.get(volume_at_price, i)
+        if vol > max_volume
+            max_volume := vol
+            poc_price := array.get(price_levels, i)
+var line poc_line = na
+if barstate.islast and show_zones and not na(poc_price)
+    if not na(poc_line)
+        line.delete(poc_line)
+    if not na(poc_label)
+        label.delete(poc_label)
+    poc_line := line.new(bar_index - 50, poc_price, bar_index + 50, poc_price,
+                 color=color.new(#ffeb3b, 10), width=2, style=line.style_dotted, extend=extend.right)
+    poc_label := label.new(bar_index + 5, poc_price, "POC: " + str.tostring(poc_price, format.mintick),
+                  color=color.new(#ffeb3b, 20), textcolor=#000000,
+                  style=label.style_label_left, size=size.small)
+var array<bool> level_broken = array.new_bool(0)
+if array.size(resistance_levels) > 0
+    for i = 0 to array.size(resistance_levels) - 1
+        float level = array.get(resistance_levels, i)
+        while array.size(level_broken) <= i
+            array.push(level_broken, false)
+            array.push(break_bar_index, 0)
+        bool was_broken = array.get(level_broken, i)
+        if not was_broken and close > level and close[1] <= level
+            array.set(level_broken, i, true)
+            array.set(break_bar_index, i, bar_index)
+        if was_broken
+            int break_bar = array.get(break_bar_index, i)
+            bool is_retest = bar_index - break_bar >= 3 and bar_index - break_bar <= 20
+            bool touching_level = math.abs(close - level) < atr_value * 0.5
+            if is_retest and touching_level
+                label.new(bar_index, level, "RT", color=color.new(c_support_strong, 20),
+                          textcolor=color.white, style=label.style_label_down, size=size.tiny)
+if barstate.islast
+    if hs_found or ihs_found
+        table.cell(dashboard, 0, 4, hs_found ? "H&S" : "IH&S",
+                   text_color=hs_found ? c_pattern_bear : c_pattern_bull, text_size=size.tiny)
+        table.merge_cells(dashboard, 0, 4, 2, 4)
+    if not na(poc_price)
+        table.cell(dashboard, 0, 5, "POC", text_color=c_text, text_size=size.tiny)
+        table.cell(dashboard, 1, 5, str.tostring(poc_price, "#.##"),
+                   text_color=#ffeb3b, text_size=size.tiny)
+        table.merge_cells(dashboard, 1, 5, 2, 5)
+    if array.size(level_strengths) > 0
+        float max_strength = array.max(level_strengths)
+        table.cell(dashboard, 0, 6, "Max Strength", text_color=c_text, text_size=size.tiny)
+        table.cell(dashboard, 1, 6, str.tostring(max_strength, "#") + "%",
+                   text_color=max_strength >= 70 ? c_resistance_strong : c_text, text_size=size.tiny)
+        table.merge_cells(dashboard, 1, 6, 2, 6)
+alertcondition(m_found, "s", "s")
+alertcondition(not na(pivot_high), "s", "s")
+alertcondition(hs_found, "s", "s")
+alertcondition(ihs_found, "Inverse H&S", "s")

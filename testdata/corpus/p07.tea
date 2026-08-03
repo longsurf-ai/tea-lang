@@ -1,0 +1,207 @@
+//@version=6
+indicator("s", shorttitle="Lin. Reg.", overlay=true)
+_green  = #00ff00
+_red    = #fb0000
+_blue   = #2962ff
+tt_len   = "s"
+len_unit = input.string("Bar", "", ["Bar", "Second", "Minute", "Hour", "Day", "Week", "Month"], inline="window", tooltip=tt_len)
+source   = input.source(close, title="Source", tooltip="s")
+gr_lvl  = "LEVELS"
+col_lr  = input.color(_orange, "", group=gr_lvl, inline="i1")
+col_d1  = input.color(_blue, "", group=gr_lvl, inline="i2")
+act_d1  = input.bool(true, "Upper  ", group=gr_lvl, inline="i2")
+col_d2  = input.color(_blue, "", group=gr_lvl, inline="i3")
+act_d2  = input.bool(true, "Lower  ", group=gr_lvl, inline="i3")
+col_op  = input.color(_gray, "", group=gr_lvl, inline="i6")
+act_op  = input.bool(false, "Custom", group=gr_lvl, inline="i6")
+col_up  = input.color(_green, "", group=gr_lvl, inline="i4")
+act_up  = input.bool(false, "Highest", group=gr_lvl, inline="i4", tooltip="s")
+act_dn  = input.bool(false, "Lowest", group=gr_lvl, inline="i5", tooltip="s")
+gr_dis    = "DISPLAY"
+sh_pr     = input.bool(true, "s",   group = gr_dis, tooltip="s")
+sh_dprc   = input.bool(true,  "s",   group = gr_dis, tooltip="s")
+ext_lines = input.bool(false, "Extend Lines", group = gr_dis, tooltip="s")
+gr_sign = "SIGNALS"
+use_theta   = input.bool(false, "s", group=gr_sign, inline="s2")
+min_theta   = input.float(5.0, "", minval=0.01, maxval=90., step=0.05, group=gr_sign, inline="s2", tooltip="s")
+min_pearson = input.float(0.7, "", minval=0.0, maxval=1.0, step=0.05, group=gr_sign, inline="s3", tooltip="s")
+sh_barc     = input.bool(false, "Barcolor ", group=gr_sign, tooltip="s")
+f_calc_dynamic(_src, _len, _is_log) =>
+    if bar_index < _len
+        [float(na), float(na), float(na), float(na), float(na), float(na)]
+    else
+        sum_x = 0.0, sum_y = 0.0, sum_x_sqr = 0.0, sum_xy = 0.0
+        for i = 0 to _len - 1
+            val = _is_log ? f_scale_converter(_src[i], true) : _src[i]
+            per = i + 1.0
+            sum_x += per, sum_y += val, sum_x_sqr += per * per, sum_xy += val * per
+        slope = (_len * sum_xy - sum_x * sum_y) / (_len * sum_x_sqr - sum_x * sum_x)
+        avg = sum_y / _len
+        intercept = avg - slope * sum_x / _len + slope
+        up_dev = 0.0, dn_dev = 0.0, std_acc = 0.0
+        dsxx = 0.0, dsyy = 0.0, dsxy = 0.0
+        periods = _len - 1
+        da_y = intercept + slope * periods / 2
+        curr_val = intercept
+        for j = 0 to periods
+            v_src  = _is_log ? f_scale_converter(_src[j], true) : _src[j]
+            v_h    = _is_log ? f_scale_converter(high[j], true) : high[j]
+            v_l    = _is_log ? f_scale_converter(low[j], true)  : low[j]
+            if (v_h - curr_val) > up_dev
+                up_dev := v_h - curr_val
+            if (curr_val - v_l) > dn_dev
+                dn_dev := curr_val - v_l
+            p = v_src
+            dxt = p - avg
+            dyt = curr_val - da_y
+            p -= curr_val
+            std_acc += p * p
+            dsxx += dxt * dxt, dsyy += dyt * dyt, dsxy += dxt * dyt
+            curr_val += slope
+        std = math.sqrt(std_acc / (periods == 0 ? 1 : periods))
+        pearson = (dsxx == 0 or dsyy == 0) ? 0 : dsxy / math.sqrt(dsxx * dsyy)
+        teta = math.atan(_is_log ? -slope * 100 : -slope) * 180 / math.pi
+        res_lr = intercept
+        res_up = intercept + up_dev
+        res_dn = intercept - dn_dev
+        fin_lr = _is_log ? f_scale_converter(res_lr, false) : res_lr
+        fin_up = _is_log ? f_scale_converter(res_up, false) : res_up
+        fin_dn = _is_log ? f_scale_converter(res_dn, false) : res_dn
+        [fin_lr, fin_up, fin_dn, std, pearson, teta]
+f_calc_lvl(_base_val, _std, _mult, _is_log) =>
+    base_raw = _is_log ? f_scale_converter(_base_val, true) : _base_val
+    res = base_raw + (_std * _mult)
+    _is_log ? f_scale_converter(res, false) : res
+f_calc_dev_current(_src, _len, _s, _a, _i, _is_log) =>
+    up_d = 0.0, dn_d = 0.0, std_acc = 0.0
+    dsxx = 0.0, dsyy = 0.0, dsxy = 0.0
+    periods = _len - 1
+    da_y = _i + _s * periods / 2
+    val = _i
+    for j = 0 to periods
+        v_src = _is_log ? f_scale_converter(_src[j], true) : _src[j]
+        v_h   = _is_log ? f_scale_converter(high[j], true) : high[j]
+        v_l   = _is_log ? f_scale_converter(low[j], true)  : low[j]
+        if (v_h - val) > up_d
+            up_d := v_h - val
+        if (val - v_l) > dn_d
+            dn_d := val - v_l
+        p = v_src
+        dxt = p - _a
+        dyt = val - da_y
+        p -= val
+        std_acc += p * p
+        dsxx += dxt * dxt, dsyy += dyt * dyt, dsxy += dxt * dyt
+        val += _s
+    std = math.sqrt(std_acc / (periods == 0 ? 1 : periods))
+    r = (dsxx == 0 or dsyy == 0) ? 0 : dsxy / math.sqrt(dsxx * dsyy)
+    [std, r, up_d, dn_d]
+is_log = scale == "Logarithmic"
+var int counter = 0
+if len_unit == "Bar"
+    counter := len_val
+else
+    if not na(target_tf) and timeframe.change(target_tf)
+        counter := 0
+    counter += 1
+[u_s, u_a, u_i] = f_calc_slope_current(source, length, is_log)
+[u_std, u_r, u_up_d, u_dn_d] = f_calc_dev_current(source, length, u_s, u_a, u_i, is_log)
+u_x2 = time
+f_line_coords(_offset_val) =>
+    start_raw = u_i + u_s * (length - 1) + _offset_val
+    end_raw   = u_i + _offset_val
+    y1 = is_log ? f_scale_converter(start_raw, false) : start_raw
+    y2 = is_log ? f_scale_converter(end_raw, false) : end_raw
+    [y1, y2]
+f_daily_lbl(_x, _y, _run, _col) =>
+    daily_open = ta.valuewhen(ta.change(time("D")) != 0, open, 0)
+    if barstate.islast and _run
+        txt = str.tostring((_y - daily_open) / daily_open * 100., "#.##") + "%"
+        var label lb = na, label.delete(lb)
+        align = ext_lines ? text.align_left : text.align_right
+        style = ext_lines ? label.style_none : label.style_label_left
+        lb := label.new(_x, _y, txt, xloc.bar_time, yloc.price, #00000000, style, _col, size.normal, align)
+var line ln_lr = na
+var line ln_dn = na
+var line ln_d1 = na
+var line ln_op = na
+[ly1_lr, ly2_lr] = f_line_coords(0.0)
+[ly1_dn, ly2_dn] = f_line_coords(-u_dn_d)
+[ly1_d1, ly2_d1] = f_line_coords(u_std * mult_d1)
+[ly1_op, ly2_op] = f_line_coords(u_std * mult_op)
+ln_lr := f_draw_line(ln_lr, act_lr, col_lr, ly1_lr, ly2_lr)
+ln_dn := f_draw_line(ln_dn, act_dn, col_dn, ly1_dn, ly2_dn)
+ln_d1 := f_draw_line(ln_d1, act_d1, col_d1, ly1_d1, ly2_d1)
+ln_op := f_draw_line(ln_op, act_op, col_op, ly1_op, ly2_op)
+if sh_dprc
+    f_daily_lbl(u_x2, ly2_lr, act_lr, col_lr)
+    f_daily_lbl(u_x2, ly2_up, act_up, col_up)
+    f_daily_lbl(u_x2, ly2_dn, act_dn, col_dn)
+    f_daily_lbl(u_x2, ly2_d1, act_d1, col_d1)
+    f_daily_lbl(u_x2, ly2_d2, act_d2, col_d2)
+    f_daily_lbl(u_x2, ly2_op, act_op, col_op)
+dyn_d1 = f_calc_lvl(dyn_lr, dyn_std, mult_d1, is_log)
+dyn_d2 = f_calc_lvl(dyn_lr, dyn_std, mult_d2, is_log)
+var label lb_p = na
+label.delete(lb_p)
+var int strat_id = switch ch_strategy
+    "None"                              => 1
+    "s"             => 2
+    "s"        => 3
+    "s"      => 4
+    "s" => 5
+    => 0
+var float lvl_top = na
+if (strat_id == 2 or strat_id == 3)
+    lvl_top := dyn_d1
+    lvl_bot := dyn_d2
+else if (strat_id == 4 or strat_id == 5)
+    lvl_top := dyn_up[1]
+    lvl_bot := dyn_dn[1]
+long_entry  = false
+is_pearson_ok = use_pearson ? (math.abs(dyn_pearson) >= min_pearson) : true
+is_theta_ok_long  = use_theta ? (dyn_teta > min_theta) : true
+if strat_id == 1
+    if use_theta
+        long_entry  := ta.crossover(dyn_teta, min_theta)  and is_pearson_ok
+        short_entry := ta.crossunder(dyn_teta, -min_theta) and is_pearson_ok
+else if (strat_id == 2 or strat_id == 4)
+    long_entry  := ta.crossover(close, lvl_top)  and is_theta_ok_long  and is_pearson_ok
+    short_entry := ta.crossunder(close, lvl_bot) and is_theta_ok_short and is_pearson_ok
+else if (strat_id == 3 or strat_id == 5)
+    long_entry  := ta.crossover(close, lvl_bot) and is_theta_ok_long  and is_pearson_ok
+    short_entry := ta.crossunder(close, lvl_top) and is_theta_ok_short and is_pearson_ok
+long_exit  = false
+var float mr_stop_long = na
+var float mr_stop_short = na
+if strat_id == 1
+    long_exit  := ta.crossunder(dyn_teta, 0)
+    short_exit := ta.crossover(dyn_teta, 0)
+else if (strat_id == 2 or strat_id == 4)
+    long_exit  := ta.crossunder(close, lvl_top)
+    short_exit := ta.crossover(close, lvl_bot)
+else if (strat_id == 3 or strat_id == 5)
+    hit_tp_l = ta.crossover(high, dyn_lr)
+    hit_sl_l = low < mr_stop_long
+    long_exit  := hit_tp_l or hit_sl_l
+    hit_tp_s = ta.crossunder(low, dyn_lr)
+    hit_sl_s = high > mr_stop_short
+    short_exit := hit_tp_s or hit_sl_s
+dir = 0
+valid_long_exit  = (long_exit or short_entry) and nz(dir[1]) > 0
+valid_short_exit = (short_exit or long_entry) and nz(dir[1]) < 0
+plot(sh_hist and act_d1 ? dyn_d1 : na, "s", color=col_d1)
+plot(sh_hist and act_d2 ? dyn_d2 : na, "s", color=col_d2)
+plot(sh_hist and act_dn ? dyn_dn : na, "Lowest Line", color=col_dn)
+plot(sh_hist and act_op ? dyn_op : na, "s", color=col_op)
+plot(dyn_teta,    "Theta θ°", display=display.data_window, color=col_lr, precision=2)
+plotshape(long_entry, "Long Entry", shape.triangleup, location.belowbar, _green, size=size.tiny, precision=0)
+plotshape(valid_long_exit, "Long Exit", shape.xcross, location.belowbar, _green, size=size.tiny, precision=0)
+plotshape(valid_short_exit, "Short Exit", shape.xcross, location.abovebar, _red, size=size.tiny, precision=0)
+barcolor(sh_barc ? dir > 0 ? color.lime : dir < 0 ? color.red : #333333 : na)
+if long_entry
+    alert("Long Entry", alert.freq_once_per_bar_close)
+if valid_long_exit
+    alert("Long Exit", alert.freq_once_per_bar_close)
+if valid_short_exit
+    alert("Short Exit", alert.freq_once_per_bar_close)

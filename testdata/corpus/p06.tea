@@ -1,0 +1,114 @@
+//@version=6
+indicator("BMM V3", overlay=true)
+slowMA = input.int(21, "Slow MA", minval=1)
+src = input.source(close, "Source")
+fast = ta.sma(src, fastMA)
+slow = ta.sma(src, slowMA)
+slowHigherTF = request.security(syminfo.tickerid, str.tostring(higherTF), ta.sma(close, slowMA), lookahead=barmerge.lookahead_on)
+swingHigh = ta.highest(high, 10)
+buySignal = ta.crossover(fast, slow) and fastHigherTF > slowHigherTF and barstate.isconfirmed
+sellSignal = ta.crossunder(fast, slow) and fastHigherTF < slowHigherTF and barstate.isconfirmed
+rr2 = 2.0
+rr3 = 3.0
+var bool longActive = false
+var bool shortActive = false
+var float tp1Level = na
+var float tp2Level = na
+var label buyLabel = na
+var label sellLabel = na
+var label tp1Label = na
+var label tp2Label = na
+var label entryLabel = na
+var line slLine = na
+var line tp2Line = na
+var line tp3Line = na
+var int wins = 0
+var int losses = 0
+if (buySignal)
+    float entry = close
+    float sl = swingLow
+    float tp1 = entry + (entry - sl) * rr1
+    float tp2 = entry + (entry - sl) * rr2
+    float tp3 = entry + (entry - sl) * rr3
+    longActive := true
+    shortActive := false
+    slLevel := sl
+    tp1Level := tp1
+    tp2Level := tp2
+    tp3Level := tp3
+    buyLabel := label.new(bar_index, low - syminfo.mintick * 10, "BUY", style=label.style_label_up, color=#00FFAA, textcolor=color.black)
+    entryLine := line.new(bar_index, entry, bar_index + lineLength, entry, color=#999999, width=2)
+    slLine := line.new(bar_index, sl, bar_index + lineLength, sl, color=#FF0044, style=line.style_dotted, width=3)
+    tp1Line := line.new(bar_index, tp1, bar_index + lineLength, tp1, color=#0099FF, style=line.style_dotted, width=3)
+    tp2Line := line.new(bar_index, tp2, bar_index + lineLength, tp2, color=#0099FF, style=line.style_dotted, width=3)
+    tp3Line := line.new(bar_index, tp3, bar_index + lineLength, tp3, color=#0099FF, style=line.style_dotted, width=3)
+    entryLabel := label.new(bar_index + lineLength + 2, entry, "BUY: " + str.tostring(entry, format.mintick), style=label.style_label_right, color=#00FFAA, textcolor=color.black)
+    slLabel := label.new(bar_index + lineLength + 2, sl, "SL: " + str.tostring(sl, format.mintick), style=label.style_label_right, color=#FF0044, textcolor=color.white)
+    tp1Label := label.new(bar_index + lineLength + 2, tp1, "TP1: " + str.tostring(tp1, format.mintick), style=label.style_label_right, color=#0099FF, textcolor=color.white)
+    tp2Label := label.new(bar_index + lineLength + 2, tp2, "TP2: " + str.tostring(tp2, format.mintick), style=label.style_label_right, color=#0099FF, textcolor=color.white)
+    tp3Label := label.new(bar_index + lineLength + 2, tp3, "TP3: " + str.tostring(tp3, format.mintick), style=label.style_label_right, color=#0099FF, textcolor=color.white)
+    alert("s" + str.tostring(entry), alert.freq_once_per_bar_close)
+if (sellSignal)
+    float entry = close
+    float sl = swingHigh
+    float tp1 = entry - (sl - entry) * rr1
+    float tp2 = entry - (sl - entry) * rr2
+    float tp3 = entry - (sl - entry) * rr3
+    shortActive := true
+    longActive := false
+    slLevel := sl
+    tp1Level := tp1
+    tp2Level := tp2
+    tp3Level := tp3
+    sellLabel := label.new(bar_index, high + syminfo.mintick * 10, "SELL", style=label.style_label_down, color=#FF3366, textcolor=color.white)
+    entryLine := line.new(bar_index, entry, bar_index + lineLength, entry, color=#999999, width=2)
+    slLine := line.new(bar_index, sl, bar_index + lineLength, sl, color=#FF3366, style=line.style_dotted, width=3)
+    tp1Line := line.new(bar_index, tp1, bar_index + lineLength, tp1, color=#0099FF, style=line.style_dotted, width=3)
+    tp2Line := line.new(bar_index, tp2, bar_index + lineLength, tp2, color=#0099FF, style=line.style_dotted, width=3)
+    tp3Line := line.new(bar_index, tp3, bar_index + lineLength, tp3, color=#0099FF, style=line.style_dotted, width=3)
+    entryLabel := label.new(bar_index + lineLength + 2, entry, "SELL: " + str.tostring(entry, format.mintick), style=label.style_label_right, color=#FF3366, textcolor=color.white)
+    slLabel := label.new(bar_index + lineLength + 2, sl, "SL: " + str.tostring(sl, format.mintick), style=label.style_label_right, color=#FF3366, textcolor=color.white)
+    tp1Label := label.new(bar_index + lineLength + 2, tp1, "TP1: " + str.tostring(tp1, format.mintick), style=label.style_label_right, color=#0099FF, textcolor=color.white)
+    tp2Label := label.new(bar_index + lineLength + 2, tp2, "TP2: " + str.tostring(tp2, format.mintick), style=label.style_label_right, color=#0099FF, textcolor=color.white)
+    tp3Label := label.new(bar_index + lineLength + 2, tp3, "TP3: " + str.tostring(tp3, format.mintick), style=label.style_label_right, color=#0099FF, textcolor=color.white)
+if longActive and close >= tp2Level
+    label.set_text(tp2Label, "TP2: " + str.tostring(tp2Level, format.mintick) + " ✅")
+    wins += 1
+if longActive and close >= tp3Level
+    label.set_text(tp3Label, "TP3: " + str.tostring(tp3Level, format.mintick) + " ✅")
+    wins += 1
+    longActive := false
+if shortActive and close <= tp2Level
+    label.set_text(tp2Label, "TP2: " + str.tostring(tp2Level, format.mintick) + " ✅")
+    wins += 1
+if shortActive and close <= tp3Level
+    label.set_text(tp3Label, "TP3: " + str.tostring(tp3Level, format.mintick) + " ✅")
+    wins += 1
+    shortActive := false
+if shortActive and close >= slLevel
+    label.set_text(slLabel, "SL: " + str.tostring(slLevel, format.mintick) + " ❌")
+    losses += 1
+    shortActive := false
+if bar_index % 20 == 0
+    label.new(bar_index, na, "MWABUFX", xloc.bar_index, yloc.price, style=label.style_label_center, color=#111111, textcolor=color.white)
+if bar_index % 10 == 0 or buySignal or sellSignal
+    table.cell(dash, 0, 0, "BMM V1", text_color=color.white, bgcolor=#111111, text_halign=text.align_center)
+    table.cell(dash, 1, 0, "", bgcolor=#111111)
+    table.cell(dash, 0, 1, "Wins: " + str.tostring(wins), bgcolor=#00C853, text_color=color.white)
+    table.cell(dash, 1, 1, "Losses: " + str.tostring(losses), bgcolor=#D50000, text_color=color.white)
+tf_labels = array.new_string()
+array.push(tf_labels, "15m")
+array.push(tf_labels, "1h")
+tf_values = array.new_string()
+array.push(tf_values, "5")
+array.push(tf_values, "60")
+array.push(tf_values, "240")
+var table trendTable = table.new(position.top_right, 4, 2, border_width=1)
+if barstate.islast
+    for i = 0 to array.size(tf_labels) - 1
+        tf_label = array.get(tf_labels, i)
+        tf_val   = array.get(tf_values, i)
+        [trend, fastv, slowv] = get_trend(tf_val, fastMA, slowMA)
+        table.cell(trendTable, i, 0, tf_label, text_color=color.white, bgcolor=color.gray, text_halign=text.align_center)
+        trendColor = trend == "Bullish" ? color.green : trend == "Bearish" ? color.red : color.yellow
+        table.cell(trendTable, i, 1, trend, text_color=color.white, bgcolor=trendColor, text_halign=text.align_center)

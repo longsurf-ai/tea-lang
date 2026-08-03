@@ -1,0 +1,150 @@
+//@version=6
+indicator("s", overlay = true, calc_bars_count = 5000, max_polylines_count = 100, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
+showHistory = input.bool(
+     true,
+     "History",
+     tooltip = "s"
+)
+pivotGroup = "Pivot Points"
+pivotHighRight = input.int(
+     title="/",
+     defval=10,
+     minval=1,
+     inline="Pivot High",
+     group=pivotGroup,
+     tooltip="s"
+)
+pivotLowLeft = input.int(
+     title="Pivot Low",
+     defval=10,
+     minval=1,
+     inline="Pivot Low",
+     group=pivotGroup,
+     tooltip="s"
+)
+bullColor = input.color(
+     color.lime,
+     "",
+     inline="col"
+)
+bearColor = input.color(
+     color.rgb(151, 64, 251),
+     "",
+     inline="col",
+     tooltip="s"
+)
+pivotLow  = ta.pivotlow(pivotLowLeft, pivotLowRight)
+transparentColor = color.new(chart.bg_color, 100)
+var PivotLevel lastHighLevel = PivotLevel.new(0., 0)
+var PivotLevel lastLowLevel  = PivotLevel.new(0., 0)
+if not na(pivotHigh)
+    lastHighLevel.price := pivotHigh
+    lastHighLevel.index := bar_index[pivotHighRight]
+if not na(pivotLow)
+    lastLowLevel.price := pivotLow
+    lastLowLevel.index := bar_index[pivotLowRight]
+var SwingStructure currentBullSwing = SwingStructure.new(na, na, na, na, na)
+var SwingStructure currentBearSwing = SwingStructure.new(na, na, na, na, na)
+var bearSwings = array.new<SwingStructure>()
+bool crossUp = ta.crossover(close, lastHighLevel.price)
+if barstate.isconfirmed
+    if crossUp and lastHighLevel.price == (lastHighLevel[1]).price and (na(trendDirection) or trendDirection < 0)
+        trendDirection := 1
+        lowArray = array.new<float>()
+        if isBreakUpMode
+            for i = 0 to bar_index - lastHighLevel.index
+                lowArray.push(low[i])
+            swingLowIndex = bar_index[lowArray.indexof(lowArray.min())]
+            swingLowPrice = lowArray.min()
+            startLabel = label.new(swingLowIndex, swingLowPrice, str.tostring(swingLowPrice), style=label.style_label_up, color=transparentColor, textcolor=chart.fg_color)
+            baseLine   = line.new(swingLowIndex, swingLowPrice, bar_index, swingLowPrice, color=chart.fg_color)
+            swingLine  = line.new(swingLowIndex, swingLowPrice, bar_index, high, color=bullColor, style=line.style_dashed)
+            buyBox     = box.new(bar_index + 5, swingLowPrice, bar_index + 7, swingLowPrice, bgcolor=bullColor, border_color=chart.bg_color)
+            sellBox    = box.new(bar_index + 5, swingLowPrice, bar_index + 7, swingLowPrice, bgcolor=bearColor, border_color=chart.bg_color)
+            breakLine  = line.new(lastHighLevel.index, lastHighLevel.price, bar_index, lastHighLevel.price, color=bullColor)
+            breakLabel = label.new(int(math.avg(breakLine.get_x1(), breakLine.get_x2())), lastHighLevel.price, "Break", style=label.style_label_down, color=transparentColor, textcolor=chart.fg_color)
+            currentBullSwing := SwingStructure.new(breakLine, swingLine, buyBox, sellBox, baseLine, startLabel, breakLabel)
+            bullSwings.push(currentBullSwing)
+    if crossDn and lastLowLevel.price == (lastLowLevel[1]).price and (na(trendDirection) or trendDirection > 0)
+        trendDirection := -1
+        highArray = array.new<float>()
+        if not isBreakUpMode
+            for i = 0 to bar_index - lastLowLevel.index
+                highArray.push(high[i])
+            swingHighIndex = bar_index[highArray.indexof(highArray.max())]
+            swingHighPrice = highArray.max()
+            startLabel = label.new(swingHighIndex, swingHighPrice, str.tostring(swingHighPrice), style=label.style_label_down, color=transparentColor, textcolor=chart.fg_color)
+            baseLine   = line.new(swingHighIndex, swingHighPrice, bar_index, swingHighPrice, color=chart.fg_color)
+            swingLine  = line.new(swingHighIndex, swingHighPrice, bar_index, high, color=bearColor, style=line.style_dashed)
+            buyBox     = box.new(bar_index + 5, swingHighPrice, bar_index + 7, swingHighPrice, bgcolor=bullColor, border_color=chart.bg_color)
+            sellBox    = box.new(bar_index + 5, swingHighPrice, bar_index + 7, swingHighPrice, bgcolor=bearColor, border_color=chart.bg_color)
+            breakLine  = line.new(lastLowLevel.index, lastLowLevel.price, bar_index, lastLowLevel.price, color=bearColor)
+            breakLabel = label.new(int(math.avg(breakLine.get_x1(), breakLine.get_x2())), lastLowLevel.price, "Break", style=label.style_label_up, color=transparentColor, textcolor=chart.fg_color)
+            currentBearSwing := SwingStructure.new(breakLine, swingLine, buyBox, sellBox, baseLine, startLabel, breakLabel)
+            bearSwings.push(currentBearSwing)
+if trendDirection > 0
+    if isBreakUpMode
+        highArray = array.new<float>()
+        buyVolume = 0.
+        sellVolume = 0.
+        for i = 0 to bar_index - currentBullSwing.swingLine.get_x1()
+            highArray.push(high[i])
+            if close[i] > open[i]
+                buyVolume += volume[i]
+            else
+                sellVolume += volume[i]
+        totalVolume = buyVolume + sellVolume
+        buyPercent  = buyVolume / totalVolume * 100
+        sellPercent = sellVolume / totalVolume * 100
+        swingSize = (currentBullSwing.swingLine.get_y2() - currentBullSwing.swingLine.get_y1()) / 100
+        currentBullSwing.swingLine.set_xy2(bar_index - highArray.indexof(highArray.max()), highArray.max())
+        swingEndIndex = bar_index - highArray.indexof(highArray.max())
+        currentBullSwing.buyBox.set_top(currentBullSwing.swingLine.get_y1() + swingSize * buyPercent)
+        currentBullSwing.buyBox.set_right(swingEndIndex + 9)
+        currentBullSwing.buyBox.set_left(swingEndIndex + 5)
+        currentBullSwing.buyBox.set_text(str.tostring(buyPercent, "##") + "\n%")
+        currentBullSwing.buyBox.set_text_valign(text.align_top)
+        currentBullSwing.buyBox.set_text_color(chart.fg_color)
+        currentBullSwing.buyBox.set_bgcolor(color.from_gradient(buyPercent, 0, 70, transparentColor, bullColor))
+        currentBullSwing.sellBox.set_top(currentBullSwing.swingLine.get_y1() + swingSize * sellPercent)
+        currentBullSwing.sellBox.set_right(swingEndIndex + 13)
+        currentBullSwing.sellBox.set_left(swingEndIndex + 9)
+        currentBullSwing.sellBox.set_text(str.tostring(sellPercent, "##") + "\n%")
+        currentBullSwing.sellBox.set_text_valign(text.align_top)
+        currentBullSwing.sellBox.set_text_color(chart.fg_color)
+        currentBullSwing.sellBox.set_bgcolor(color.from_gradient(sellPercent, 0, 70, transparentColor, bearColor))
+        currentBullSwing.baseLine.set_x2(swingEndIndex + 13)
+else
+    if not isBreakUpMode
+        lowArray = array.new<float>()
+        buyVolume = 0.
+        sellVolume = 0.
+        for i = 0 to bar_index - currentBearSwing.swingLine.get_x1()
+            lowArray.push(low[i])
+            if close[i] > open[i]
+                buyVolume += volume[i]
+            else
+                sellVolume += volume[i]
+        totalVolume = buyVolume + sellVolume
+        buyPercent  = buyVolume / totalVolume * 100
+        sellPercent = sellVolume / totalVolume * 100
+        swingSize = (currentBearSwing.swingLine.get_y2() - currentBearSwing.swingLine.get_y1()) / 100
+        currentBearSwing.swingLine.set_xy2(bar_index - lowArray.indexof(lowArray.min()), lowArray.min())
+        swingEndIndex = bar_index - lowArray.indexof(lowArray.min())
+        currentBearSwing.buyBox.set_top(currentBearSwing.swingLine.get_y1() + swingSize * buyPercent)
+        currentBearSwing.buyBox.set_right(swingEndIndex + 9)
+        currentBearSwing.buyBox.set_left(swingEndIndex + 5)
+        currentBearSwing.buyBox.set_text(str.tostring(buyPercent, "##") + "\n%")
+        currentBearSwing.buyBox.set_text_valign(text.align_bottom)
+        currentBearSwing.buyBox.set_text_color(chart.fg_color)
+        currentBearSwing.buyBox.set_bgcolor(color.from_gradient(buyPercent, 0, 70, transparentColor, bullColor))
+        currentBearSwing.sellBox.set_top(currentBearSwing.swingLine.get_y1() + swingSize * sellPercent)
+        currentBearSwing.sellBox.set_right(swingEndIndex + 13)
+        currentBearSwing.sellBox.set_left(swingEndIndex + 9)
+        currentBearSwing.sellBox.set_text(str.tostring(sellPercent, "##") + "\n%")
+        currentBearSwing.sellBox.set_text_valign(text.align_bottom)
+        currentBearSwing.sellBox.set_text_color(chart.fg_color)
+        currentBearSwing.sellBox.set_bgcolor(color.from_gradient(sellPercent, 0, 70, transparentColor, bearColor))
+        currentBearSwing.baseLine.set_x2(swingEndIndex + 13)
+zoneColor = trendDirection > 0 and isBreakUpMode ? bullColor : trendDirection < 0 and not isBreakUpMode ? bearColor : color(na)
+barcolor(zoneColor)

@@ -1,0 +1,63 @@
+indicator("s", overlay=true, max_lines_count=500)
+color_bull     = color.new(#289eff, 0)
+color_bull_dim = color.new(#289eff, 50)
+color_bear_dim = color.new(#ce3f6c, 50)
+color_bull_glow = color.new(#289eff, 80)
+color_bear_glow = color.new(#ce3f6c, 80)
+color_bear_glow_dim = color.new(#ce3f6c, 80)
+period_left  = input.int(20, "Left Bars", minval=1, group="Logic")
+window       = input.int(20, "s", minval=1, group="Logic")
+max_levels   = input.int(5, "Max History", minval=1, maxval=50, group="Display")
+line_width        = input.int(1, "Line Width", minval=1, group="Style")
+glow_width        = input.int(6, "Glow Width", minval=1, group="Style")
+show_cross_slopes = input.bool(true, "s", group="Style")
+var float[] ph_slopes = array.new_float()
+var line[]  res_lines = array.new_line()
+var line[]  res_glows = array.new_line()
+var line[]  sup_glows = array.new_line()
+var bool[]  res_is_bull = array.new_bool()
+var label[] res_lbls  = array.new_label()
+var label[] sup_lbls  = array.new_label()
+var int pl_count = 0
+var float last_ph_val = na
+ph = ta.pivothigh(high, period_left, period_right)
+pl = ta.pivotlow(low, period_left, period_right)
+if not na(ph)
+    if not na(last_ph_val)
+        float diff = ph - last_ph_val
+        if diff < 0
+            array.push(ph_slopes, diff / ph_count)
+            if array.size(ph_slopes) > window
+                array.shift(ph_slopes)
+    float bear_slope = array.size(ph_slopes) > 0 ? array.avg(ph_slopes) : 0.0
+    float bull_slope = array.size(pl_slopes) > 0 ? array.avg(pl_slopes) : 0.0
+    draw_line_set(bar_index[period_right], ph, bear_slope, color_bear, color_bear_glow, false, res_lines, res_glows, res_is_bull)
+    if show_cross_slopes
+        draw_line_set(bar_index[period_right], ph, bull_slope, color_bull, color_bull_glow, true, res_lines, res_glows, res_is_bull)
+    if show_labels
+        label new_lbl = label.new(bar_index[period_right], ph, "RES " + str.format("s", ph),
+             color=color.new(color.white, 100), textcolor=color_bear, style=label.style_label_down, size=size.small)
+        array.push(res_lbls, new_lbl)
+    int num_to_skip = show_cross_slopes ? 2 : 1
+    if array.size(res_lines) > num_to_skip
+        int end_idx = array.size(res_lines) - (num_to_skip + 1)
+        for i = 0 to end_idx
+            line l = array.get(res_lines, i)
+            line g = array.get(res_glows, i)
+            bool bull = array.get(res_is_bull, i)
+            line.set_color(l, bull ? color_bull_dim : color_bear_dim)
+            line.set_color(g, bull ? color_bull_glow_dim : color_bear_glow_dim)
+    int lines_to_keep = show_cross_slopes ? max_levels * 2 : max_levels
+    while array.size(res_lines) > lines_to_keep
+        line.delete(array.shift(res_lines))
+        line.delete(array.shift(res_glows))
+        array.shift(res_is_bull)
+    if show_labels and array.size(res_lbls) > max_levels
+        label.delete(array.shift(res_lbls))
+    last_ph_val := ph
+    ph_count := 0
+ph_count += 1
+pl_count += 1
+plotshape(ph, "Pivot High", shape.triangledown, location.abovebar, color.new(color_bear,50), offset=-period_right, size=size.tiny)
+bg_color = ph_count == 1 ? color.new(color_bear, 96) : pl_count == 1 ? color.new(color_bull, 96) : na
+bgcolor(bg_color)
