@@ -1,9 +1,12 @@
 //@version=1
 indicator("imports")
 
-import ta as t
+// Builtin libraries need no import; ta is bound by the implicit import.
+s1 = ta.sma(close, 3)
 
-s1 = t.sma(close, 3)
+// An explicit import of a builtin is a legal no-op.
+import ta
+
 s2 = ta.sma(close, 3)
 plot(s1 - s2)
 
