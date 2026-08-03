@@ -1,0 +1,14 @@
+//@version=1
+getMA(src, len, type) =>
+    switch type
+        "EMA" => ta.ema(src, len)
+        "SMA" => ta.sma(src, len)
+export = 1
+method = export + 1
+to = method * 2
+by = to - 1
+in = by
+as = in
+enum = as
+import = enum
+result = getMA(close, 14, "EMA") + import

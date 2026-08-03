@@ -1,0 +1,17 @@
+//@version=1
+indicator("Band Pressure", "BP", overlay = false)
+len = input.int(14, "Length", minval = 1)
+src = input.source(close, "Source")
+up = ta.rma(math.max(ta.change(src), 0), len)
+dn = ta.rma(-math.min(ta.change(src), 0), len)
+rsi = dn == 0 ? 100 : up == 0 ? 0 : 100 - 100 / (1 + up / dn)
+hi = input.int(70, "Upper"), lo = input.int(30, "Lower")
+sig = rsi > hi ? 1 :
+  rsi < lo ? -1 : 0
+var float acc = 0.0
+acc := acc + sig
+bg = sig == 1 ? #26a69a80 : sig == -1 ? #ff525280 : na
+plot(rsi, "RSI", #7e57c2)
+plot(acc, "Pressure", style = plot.style_columns)
+hline(50, "Mid", #78788080)
+alertcondition(sig != sig[1] and sig != 0, "Flip", "Pressure flipped")

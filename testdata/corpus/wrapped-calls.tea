@@ -1,0 +1,19 @@
+//@version=1
+choice = input.string(
+    "Break Up",
+    "Structure",
+    ["Break Up", "Break Down"],
+    tooltip = "pick one"
+) == "Break Up"
+plot(
+    close,
+    title = "Close",
+    color = choice ? #26a69a : #ff5252
+)
+band = math.avg(
+        math.max(high, close),
+        math.min(low, close)
+    )
+mixed = f(a,
+  b,
+      c)

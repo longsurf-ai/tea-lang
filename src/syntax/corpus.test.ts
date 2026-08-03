@@ -1,20 +1,16 @@
-// Purpose: Pine conformance gate — every corpus script must parse with zero errors; skipped on standalone checkouts where the corpus is absent.
+// Purpose: In-package conformance corpus — every script under testdata/corpus must parse with zero errors; the package never reads outside its own tree.
 
-import {existsSync, readdirSync, readFileSync} from 'node:fs';
+import {readdirSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {describe, expect, test} from 'bun:test';
 import {formatPos, newFileBase} from '../base/pos';
 import {parse} from './syntax';
 
-// Monorepo-only: third-party community scripts that are not vendored into
-// this package.
-const CORPUS = join(
-  import.meta.dir,
-  '../../../../docs/tsgraph/pinescripts/scripts',
-);
+const CORPUS = join(import.meta.dir, '../../testdata/corpus');
 
-describe.skipIf(!existsSync(CORPUS))('pine corpus parses cleanly', () => {
-  const files = readdirSync(CORPUS).filter(name => name.endsWith('.pine'));
+describe('conformance corpus parses cleanly', () => {
+  const files = readdirSync(CORPUS).filter(name => name.endsWith('.tea'));
+  expect(files.length).toBeGreaterThan(0);
 
   for (const name of files) {
     test(name, () => {
@@ -23,7 +19,7 @@ describe.skipIf(!existsSync(CORPUS))('pine corpus parses cleanly', () => {
       const file = parse(newFileBase(name), src, (pos, msg) => {
         reports.push(`${formatPos(pos)}: ${msg}`);
       });
-      expect(reports.slice(0, 8)).toEqual([]);
+      expect(reports).toEqual([]);
       expect(file.stmtList.length).toBeGreaterThan(0);
     });
   }

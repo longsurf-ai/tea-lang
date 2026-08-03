@@ -1,0 +1,29 @@
+//@version=1
+import acme/talib/1 as tl
+export type Band
+    float upper
+    float lower = 0.0
+    array<float> history
+type Pair
+    int first
+    int second
+enum Side
+    long = "Long"
+    short
+method widen(Band b, float k) =>
+    b.upper := b.upper * k
+    b.lower := b.lower / k
+    b
+export make(int size) =>
+    Band.new(0.0, 0.0, array.new<float>(size))
+pairs = array.new<Pair>(0)
+for [i, p] in pairs
+    q = tl.helper(p)
+    q
+total = 0
+for i = 0 to 9 by 2
+    total += i
+while total > 100
+    total /= 2
+[lo, hi] = tl.range(pairs)
+side = Side.long
