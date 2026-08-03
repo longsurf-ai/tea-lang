@@ -1,7 +1,9 @@
-// Purpose: Test helpers for the syntax package — scan a source string and collect tokens, raw errors, and the declared version.
+// Purpose: Test helpers for the syntax package — scan or parse a source string and collect tokens, raw errors, and the declared version.
 
 import {newFileBase, type Pos} from '../base/pos';
+import type {File} from './nodes';
 import {Scanner} from './scanner';
+import {parse} from './syntax';
 import type {Token} from './tokens';
 
 export interface ScanError {
@@ -38,4 +40,17 @@ export function scanText(src: string, filename = 'test.tea'): ScanResult {
 
 export function kinds(result: ScanResult): string[] {
   return result.tokens.map(t => t.tok);
+}
+
+export interface ParseResult {
+  readonly file: File;
+  readonly errors: ScanError[];
+}
+
+export function parseText(src: string, filename = 'test.tea'): ParseResult {
+  const errors: ScanError[] = [];
+  const file = parse(newFileBase(filename), src, (pos, msg) => {
+    errors.push({pos, msg});
+  });
+  return {file, errors};
 }

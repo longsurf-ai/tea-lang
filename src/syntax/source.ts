@@ -2,6 +2,14 @@
 
 import type {Pos, PosBase} from '../base/pos';
 
+export interface SourceState {
+  readonly offset: number;
+  readonly line: number;
+  readonly col: number;
+  readonly ch: string;
+  readonly segmentStart: number;
+}
+
 // Reads one character at a time, tracks line/col, and records the current
 // segment so literal/name lexemes are sliced exactly once. Iteration is by
 // UTF-16 code unit; columns count code units.
@@ -46,6 +54,25 @@ export class Source {
     }
     this.offset += 1;
     this.ch = this.offset < this.text.length ? this.text[this.offset] : '';
+  }
+
+  // Snapshot/restore for parser-directed speculation (tryParse) and rescans.
+  checkpoint(): SourceState {
+    return {
+      offset: this.offset,
+      line: this.line,
+      col: this.col,
+      ch: this.ch,
+      segmentStart: this.segmentStart,
+    };
+  }
+
+  restore(state: SourceState): void {
+    this.offset = state.offset;
+    this.line = state.line;
+    this.col = state.col;
+    this.ch = state.ch;
+    this.segmentStart = state.segmentStart;
   }
 
   // Begin recording a segment at the current character.

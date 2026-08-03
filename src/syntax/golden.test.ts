@@ -1,14 +1,30 @@
-// Purpose: Golden token-dump tests — every testdata/*.tea has a committed .tokens.golden; regenerate with UPDATE_GOLDENS=1 bun test.
+// Purpose: Golden dump tests — every testdata/*.tea has a committed .tokens.golden, and parseable fixtures also lock a .ast.golden; regenerate with UPDATE_GOLDENS=1 bun test.
 
 import {existsSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {describe, expect, test} from 'bun:test';
-import {newFileBase} from '../base/pos';
-import {dumpTokens} from './dumper';
-import {tokenize} from './syntax';
+import {formatPos, newFileBase} from '../base/pos';
+import {dumpFile, dumpTokens} from './dumper';
+import {parse, tokenize} from './syntax';
 
 const TESTDATA = join(import.meta.dir, '../../testdata');
 const UPDATE = process.env['UPDATE_GOLDENS'] === '1';
+
+// Grows as parser slices land; every listed fixture must parse error-free.
+const AST_PARSEABLE = ['exprs.tea'];
+
+function checkGolden(goldenPath: string, dump: string): void {
+  if (UPDATE) {
+    writeFileSync(goldenPath, dump);
+    return;
+  }
+  if (!existsSync(goldenPath)) {
+    throw new Error(
+      `missing golden ${goldenPath}; run UPDATE_GOLDENS=1 bun test`,
+    );
+  }
+  expect(dump).toBe(readFileSync(goldenPath, 'utf8'));
+}
 
 describe('token dump goldens', () => {
   const files = readdirSync(TESTDATA).filter(name => name.endsWith('.tea'));
@@ -21,19 +37,24 @@ describe('token dump goldens', () => {
         // Errors are the error-comments harness's concern; goldens lock the
         // recovered token stream either way.
       });
-      const dump = `${dumpTokens(tokens)}\n`;
-      const goldenPath = join(TESTDATA, `${name}.tokens.golden`);
+      checkGolden(
+        join(TESTDATA, `${name}.tokens.golden`),
+        `${dumpTokens(tokens)}\n`,
+      );
+    });
+  }
+});
 
-      if (UPDATE) {
-        writeFileSync(goldenPath, dump);
-        return;
-      }
-      if (!existsSync(goldenPath)) {
-        throw new Error(
-          `missing golden ${goldenPath}; run UPDATE_GOLDENS=1 bun test`,
-        );
-      }
-      expect(dump).toBe(readFileSync(goldenPath, 'utf8'));
+describe('ast dump goldens', () => {
+  for (const name of AST_PARSEABLE) {
+    test(name, () => {
+      const src = readFileSync(join(TESTDATA, name), 'utf8');
+      const errors: string[] = [];
+      const file = parse(newFileBase(`testdata/${name}`), src, (pos, msg) => {
+        errors.push(`${formatPos(pos)}: ${msg}`);
+      });
+      expect(errors).toEqual([]);
+      checkGolden(join(TESTDATA, `${name}.ast.golden`), `${dumpFile(file)}\n`);
     });
   }
 });

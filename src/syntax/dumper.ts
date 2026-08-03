@@ -1,6 +1,7 @@
 // Purpose: Debug printers for tokens and AST — human-readable dumps behind `tea parse`; formatting only, no semantic logic.
 
-import type {File} from './nodes';
+import type {Pos} from '../base/pos';
+import type {File, Node} from './nodes';
 import type {Token} from './tokens';
 
 // Token dumps show only the basename — the reader already knows which file
@@ -25,7 +26,71 @@ export function dumpTokens(tokens: readonly Token[]): string {
     .join('\n');
 }
 
+// One node per line: `Kind @line:col scalar=value ...`, children indented two
+// spaces under a `field:` (or `field[i]:`) label. Null fields are omitted —
+// their absence is grammar-implied. Field order is construction order, which
+// the parser keeps stable.
+
+function isPos(value: unknown): value is Pos {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'base' in value &&
+    'line' in value &&
+    'col' in value
+  );
+}
+
+function isNode(value: unknown): value is Node & {readonly kind: string} {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'kind' in value &&
+    typeof (value as {kind: unknown}).kind === 'string' &&
+    'pos' in value
+  );
+}
+
+function dumpNode(
+  node: Node & {readonly kind: string},
+  label: string,
+  indent: string,
+  out: string[],
+): void {
+  let head = `${indent}${label}${node.kind} @${node.pos.line}:${node.pos.col}`;
+  const children: Array<[string, unknown]> = [];
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'kind' || key === 'pos' || value === null) {
+      continue;
+    }
+    if (
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      head += ` ${key}=${JSON.stringify(value)}`;
+    } else if (isNode(value) || Array.isArray(value)) {
+      children.push([key, value]);
+    } else if (isPos(value)) {
+      head += ` ${key}=@${value.line}:${value.col}`;
+    }
+  }
+  out.push(head);
+  for (const [key, value] of children) {
+    if (Array.isArray(value)) {
+      value.forEach((item, i) => {
+        if (isNode(item)) {
+          dumpNode(item, `${key}[${i}]: `, `${indent}  `, out);
+        }
+      });
+    } else if (isNode(value)) {
+      dumpNode(value, `${key}: `, `${indent}  `, out);
+    }
+  }
+}
+
 export function dumpFile(file: File): string {
-  // Placeholder printer until the node vocabulary deserves a structured one.
-  return JSON.stringify(file.stmtList, null, 2);
+  const out: string[] = [];
+  dumpNode(file, '', '', out);
+  return out.join('\n');
 }

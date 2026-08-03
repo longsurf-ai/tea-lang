@@ -2,7 +2,7 @@
 
 import type {Pos, PosBase} from '../base/pos';
 import type {ErrorHandler} from '../base/print';
-import {Source} from './source';
+import {Source, type SourceState} from './source';
 import {
   KEYWORDS,
   PRECEDENCE,
@@ -11,6 +11,27 @@ import {
   type Op,
   type TokenKind,
 } from './tokens';
+
+// Full scanner snapshot for parser-directed speculation. Opaque to callers.
+export interface ScannerState {
+  readonly source: SourceState;
+  readonly tok: TokenKind;
+  readonly pos: Pos;
+  readonly lit: string;
+  readonly kind: LitKind | null;
+  readonly op: Op | null;
+  readonly prec: number;
+  readonly indents: readonly number[];
+  readonly pendingDedents: number;
+  readonly pendingIndent: boolean;
+  readonly pendingNewline: boolean;
+  readonly newlinePos: Pos;
+  readonly breakPending: boolean;
+  readonly breakPos: Pos;
+  readonly tokensOnStatement: boolean;
+  readonly atLineStart: boolean;
+  readonly eofDrained: boolean;
+}
 
 const KEYWORD_SET: ReadonlySet<string> = new Set(KEYWORDS);
 const INDENT_UNIT = 4; // one block level; a tab counts as one unit
@@ -72,6 +93,52 @@ export class Scanner {
     this.pos = this.source.pos();
     this.newlinePos = this.pos;
     this.breakPos = this.pos;
+  }
+
+  // Snapshot/restore the complete scanner state, enabling the parser's
+  // tryParse speculation. version is deliberately not restored: it is
+  // monotone first-wins metadata.
+  checkpoint(): ScannerState {
+    return {
+      source: this.source.checkpoint(),
+      tok: this.tok,
+      pos: this.pos,
+      lit: this.lit,
+      kind: this.kind,
+      op: this.op,
+      prec: this.prec,
+      indents: [...this.indents],
+      pendingDedents: this.pendingDedents,
+      pendingIndent: this.pendingIndent,
+      pendingNewline: this.pendingNewline,
+      newlinePos: this.newlinePos,
+      breakPending: this.breakPending,
+      breakPos: this.breakPos,
+      tokensOnStatement: this.tokensOnStatement,
+      atLineStart: this.atLineStart,
+      eofDrained: this.eofDrained,
+    };
+  }
+
+  restore(state: ScannerState): void {
+    this.source.restore(state.source);
+    this.tok = state.tok;
+    this.pos = state.pos;
+    this.lit = state.lit;
+    this.kind = state.kind;
+    this.op = state.op;
+    this.prec = state.prec;
+    this.indents.length = 0;
+    this.indents.push(...state.indents);
+    this.pendingDedents = state.pendingDedents;
+    this.pendingIndent = state.pendingIndent;
+    this.pendingNewline = state.pendingNewline;
+    this.newlinePos = state.newlinePos;
+    this.breakPending = state.breakPending;
+    this.breakPos = state.breakPos;
+    this.tokensOnStatement = state.tokensOnStatement;
+    this.atLineStart = state.atLineStart;
+    this.eofDrained = state.eofDrained;
   }
 
   // Advance the scanner by one token, mutating the fields above. Lexical
