@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "allowJs": true,
+    "noEmit": true,
+    "types": ["bun", "node"],
+    "strict": true,
+    "isolatedModules": true
+  },
+  // runtime.ts at the package root is design notes, not compiling source.
+  "include": ["src"]
+}
