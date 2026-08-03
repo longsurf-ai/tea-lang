@@ -1,19 +1,21 @@
-// Purpose: Tea AST node definitions; the node vocabulary is intentionally minimal and grows with the parser.
+// Purpose: Tea AST node definitions — every node carries its source position; the vocabulary grows with the parser.
 
-import type {Span} from '../base/pos';
-import type {SourceFile} from './source';
+import type {Pos} from '../base/pos';
 
-// @agent invariant: every AST node carries the span of the source text it was
-// parsed from; nodes are plain immutable data with no methods.
-export interface SyntaxNodeBase<K extends string = string> {
-  readonly kind: K;
-  readonly span: Span;
+// @agent invariant: nodes are plain immutable data with no methods; every
+// node carries the position of its leftmost defining token.
+export interface Node {
+  readonly pos: Pos;
 }
 
-// Placeholder: real node kinds (VarDecl, If, Call, ...) land with the parser.
-export type SyntaxNode = SyntaxNodeBase;
+// Placeholder statement shape; real statements form a discriminated union on
+// `kind` once the grammar lands.
+export interface Stmt extends Node {
+  readonly kind: string;
+}
 
-export interface SyntaxFile {
-  readonly source: SourceFile;
-  readonly statements: readonly SyntaxNode[];
+// The parse product for one source file.
+export interface File extends Node {
+  readonly stmtList: readonly Stmt[];
+  readonly eof: Pos;
 }

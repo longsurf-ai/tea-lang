@@ -1,15 +1,19 @@
-// Purpose: Source positions and spans — 1-based line/column, the shared location vocabulary for every stage.
+// Purpose: Source positions — every Pos carries its PosBase so file identity travels with the position; lines and columns are 1-based.
+
+export interface PosBase {
+  readonly filename: string;
+}
+
+export function newFileBase(filename: string): PosBase {
+  return {filename};
+}
 
 export interface Pos {
+  readonly base: PosBase;
   readonly line: number;
   readonly col: number;
 }
 
-export interface Span {
-  readonly start: Pos;
-  readonly end: Pos;
-}
-
 export function formatPos(pos: Pos): string {
-  return `${pos.line}:${pos.col}`;
+  return `${pos.base.filename}:${pos.line}:${pos.col}`;
 }

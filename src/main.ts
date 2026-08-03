@@ -1,42 +1,33 @@
 #!/usr/bin/env bun
-// Purpose: CLI entry point — Commander argument parsing and process I/O only; all compilation lives in compile.ts.
+// Purpose: CLI entry point — Commander argument parsing and process I/O only; all compilation lives in compile.ts. Sole owner of error printing and exit codes.
 
 import {readFileSync, writeFileSync} from 'node:fs';
 import {Command} from 'commander';
 import {DEFAULT_COMPILE_CONFIG} from './base/config';
-import {DiagnosticBag} from './base/diagnostics';
-import {formatPos} from './base/pos';
-import {TeaUnimplementedError, unimplemented} from './base/unimplemented';
-import {
-  compile,
-  compileToIr,
-  compileToSyntax,
-  compileToTokens,
-} from './compile';
-import {dumpSyntaxFile, dumpTokens} from './syntax/dumper';
-import {sourceFile, type SourceFile} from './syntax/source';
+import {formatPos, newFileBase} from './base/pos';
+import {Errors, type ErrorMsg} from './base/print';
+import {UnimplementedError, unimplemented} from './base/unimplemented';
+import {compile, compileToAst, compileToIr} from './compile';
+import {dumpFile, dumpTokens} from './syntax/dumper';
+import {tokenize} from './syntax/syntax';
 
-function loadSource(path: string): SourceFile {
-  return sourceFile(path, readFileSync(path, 'utf8'));
+// Exit 1: the Tea source had errors. The batch arrives sorted and deduped
+// from flushErrors(); this is the only place errors are printed.
+function exitWithErrors(errors: readonly ErrorMsg[]): never {
+  for (const e of errors) {
+    console.error(`${formatPos(e.pos)}: ${e.msg}`);
+  }
+  process.exit(1);
 }
 
-function reportDiagnostics(diagnostics: DiagnosticBag): void {
-  for (const d of diagnostics.all) {
-    const where = d.span === null ? '' : `${formatPos(d.span.start)}: `;
-    console.error(`${d.severity}: ${where}${d.message}`);
-  }
-  if (diagnostics.hasErrors) {
-    process.exit(1);
-  }
-}
-
-// Unimplemented stages exit 2 (distinct from exit 1 for Tea source errors);
-// everything else is an internal failure and propagates loudly.
+// Exit 2: an unimplemented stage was reached (distinct from exit 1 for Tea
+// source errors); everything else is an internal failure and propagates
+// loudly with a stack.
 function runStage<T>(fn: () => T): T {
   try {
     return fn();
   } catch (error) {
-    if (error instanceof TeaUnimplementedError) {
+    if (error instanceof UnimplementedError) {
       console.error(`tea: ${error.message}`);
       process.exit(2);
     }
@@ -55,8 +46,11 @@ tea
   .option('-i, --input <file>', 'CSV dataset to bind as the input series')
   .action((file: string, options: {input?: string}) => {
     runStage(() => {
-      const result = compile(loadSource(file), DEFAULT_COMPILE_CONFIG);
-      return unimplemented('runtime: execute', result, options.input);
+      const result = compile([file], DEFAULT_COMPILE_CONFIG);
+      if (!result.ok) {
+        exitWithErrors(result.errors);
+      }
+      return unimplemented('runtime: execute', result.js, options.input);
     });
   });
 
@@ -66,13 +60,14 @@ tea
   .argument('<file>', 'Tea source file')
   .option('-o, --out <file>', 'write emitted JavaScript here instead of stdout')
   .action((file: string, options: {out?: string}) => {
-    const result = runStage(() =>
-      compile(loadSource(file), DEFAULT_COMPILE_CONFIG),
-    );
+    const result = runStage(() => compile([file], DEFAULT_COMPILE_CONFIG));
+    if (!result.ok) {
+      exitWithErrors(result.errors);
+    }
     if (options.out === undefined) {
-      console.log(result.emit.js);
+      console.log(result.js);
     } else {
-      writeFileSync(options.out, result.emit.js);
+      writeFileSync(options.out, result.js);
     }
   });
 
@@ -88,26 +83,29 @@ tea
       file: string,
       options: {tokens?: boolean; ast?: boolean; ir?: boolean},
     ) => {
-      const source = loadSource(file);
-      const diagnostics = new DiagnosticBag();
+      const errors = new Errors();
       const wantTokens = options.tokens === true;
       const wantIr = options.ir === true;
       const wantAst = options.ast === true || (!wantTokens && !wantIr);
 
       runStage(() => {
         if (wantTokens) {
-          console.log(dumpTokens(compileToTokens(source, diagnostics)));
+          const src = readFileSync(file, 'utf8');
+          const tokens = tokenize(newFileBase(file), src, (pos, msg) =>
+            errors.errorAt(pos, msg),
+          );
+          console.log(dumpTokens(tokens));
         }
         if (wantAst) {
-          console.log(dumpSyntaxFile(compileToSyntax(source, diagnostics)));
+          console.log(dumpFile(compileToAst(file, errors)));
         }
         if (wantIr) {
-          console.log(
-            JSON.stringify(compileToIr(source, diagnostics), null, 2),
-          );
+          console.log(JSON.stringify(compileToIr(file, errors), null, 2));
         }
       });
-      reportDiagnostics(diagnostics);
+      if (errors.count > 0) {
+        exitWithErrors(errors.flushErrors());
+      }
     },
   );
 
