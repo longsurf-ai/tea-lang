@@ -8,7 +8,7 @@ lowering plus the per-backend rules tables.
 ## Invariants
 
 - Dense ids (sid/pid/oid/fid/slots) are assigned here and published in the
-  manifest; the kernel never re-derives them from the Program. Frame
+  manifest; the runtime never re-derives them from the Program. Frame
   ownership is explicit: a func owns its params + locals, the program frame
   owns every remaining Name — never ownership by reachability.
 - Only Time-Machine ops lower to rt calls; arithmetic, comparisons, math

@@ -38,7 +38,7 @@ export class Ring {
     this.written = true;
   }
 
-  // Execution-start reset: the kernel chooses the seed per storage class
+  // Execution-start reset: the runtime chooses the seed per storage class
   // (var/varip seed from the last committed value, perBar from na).
   resetScratch(seed: Value): void {
     this.scratch = seed;

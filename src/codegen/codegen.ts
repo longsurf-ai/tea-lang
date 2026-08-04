@@ -1,4 +1,4 @@
-// Purpose: Code generator — lowers a Tea Program to a self-describing JS module (code + manifest) against the rt ABI; docs/runtime.md owns the module contract. Dense ids are assigned here and published in the manifest — the kernel never re-derives them.
+// Purpose: Code generator — lowers a Tea Program to a self-describing JS module (code + manifest) against the rt ABI; docs/runtime.md owns the module contract. Dense ids are assigned here and published in the manifest — the runtime never re-derives them.
 
 import type {CompileConfig} from '../base/config';
 import {fatal, type Errors} from '../base/print';

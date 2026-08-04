@@ -10,7 +10,7 @@ import {mustBuild} from '../noder/testing';
 import {csvProvider} from '../providers/data/csv';
 import {TraceSink} from '../providers/sinks/trace-sink';
 import type {Value} from './abi';
-import {bind} from './kernel';
+import {bind} from './js-runtime';
 import {loadModule} from './load';
 
 const TESTDATA = join(import.meta.dir, '../../testdata');

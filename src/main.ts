@@ -13,7 +13,7 @@ import {csvProvider} from './providers/data/csv';
 import {TableSink} from './providers/sinks/table-sink';
 import {TraceSink} from './providers/sinks/trace-sink';
 import {BindError} from './runtime/abi';
-import {bind} from './runtime/kernel';
+import {bind} from './runtime/js-runtime';
 import {loadModule} from './runtime/load';
 import {dumpFile, dumpTokens} from './syntax/dumper';
 import {tokenize} from './syntax/syntax';

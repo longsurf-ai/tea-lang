@@ -2,22 +2,22 @@
 
 How a compiled Program executes. This document is the source of truth for
 the runtime ABI, the two external seams, and the execution protocol;
-`src/runtime/` implements the kernel and `src/codegen/` targets the ABI. The
+`src/runtime/` implements it (`JSRuntime`) and `src/codegen/` targets the ABI. The
 Program contract stays owned by [ir.md](ir.md); the root `runtime.ts` sketch
 is superseded by this document.
 
 ## Architecture
 
 ```
-generated JS module ──rt──▶ Tea runtime kernel ──data──▶ DataProvider (injected)
+generated JS module ──rt──▶ Tea runtime (JSRuntime) ──data──▶ DataProvider (injected)
                             (owns the main loop) ──sink──▶ OutputSink  (injected)
 ```
 
-One runtime. The kernel owns everything between the two seams: frames,
+One runtime. The runtime owns everything between the two seams: frames,
 rings, the main loop, provisional/commit, and (later) request-child
 scheduling. Hosts differ only in what they inject: the `tea` CLI injects a
 csv provider and a printing sink; OpenChart injects a TSGraph-backed
-provider and the chart/alert sink. A second kernel implementation is not a
+provider and the chart/alert sink. A second runtime implementation is not a
 goal; the ABI merely permits one.
 
 ## Pipeline order
@@ -37,7 +37,7 @@ a permitted later optimization, not the model.
 ## The generated module
 
 Lowering emits one self-describing module — code plus the manifest the
-kernel needs to allocate and bind. The module, not the Program, is the
+runtime needs to allocate and bind. The module, not the Program, is the
 runtime artifact (`tea build` output, cacheable, serializable):
 
 ```js
@@ -60,7 +60,7 @@ export default {
 ```
 
 Dense ids (`sid`, `pid`, `oid`, `fid`, local slots) are assigned by the
-lowering walk; the manifest is their single source of truth — the kernel
+lowering walk; the manifest is their single source of truth — the runtime
 never re-derives ids from the Program.
 
 **Portability contract.** The emitted source is a strict-mode ECMAScript
@@ -85,7 +85,7 @@ rt.series(sid, offset)        // ambient series and input.source params
 rt.param(pid)                 // bind-time scalar
 rt.read(fr, slot, offset)     // a name's history
 rt.write(fr, slot, v)
-rt.request(rid, offset)       // reserved: request slice
+rt.request(rid, sym, tf, offset)  // reserved: request slice (docs/requests.md)
 // frames
 rt.frame(fr, slot)            // open the sub-frame at this call site
 rt.root()                     // the program frame (globals read from funcs)
@@ -116,8 +116,8 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
   References (string, color, UDT, collections) use **null** as na. bool is
   never na — a checker guarantee the runtime may rely on.
 - int semantics are codegen's job (truncating division, `math.*` int
-  overloads); the kernel never re-checks types.
-- Storage is kernel-owned and invisible to generated code: rings may use
+  overloads); the runtime never re-checks types.
+- Storage is runtime-owned and invisible to generated code: rings may use
   compact typed arrays plus validity, plain JS arrays, or anything else.
 
 ## Series access: one interface
@@ -129,25 +129,25 @@ interface SeriesView {
 ```
 
 Every time-addressed read goes through this interface — externally provided
-columnar structures (TSGraph's low-copy pages), the kernel's own rings, and
-later request results. Neither the kernel's read path nor generated code
+columnar structures (TSGraph's low-copy pages), the runtime's own rings, and
+later request results. Neither the runtime's read path nor generated code
 ever assumes a native array; providers try to be efficient, the contract
 doesn't require it.
 
 The alignment contract: **all series a provider serves for one binding
-share one row space** — one context is one axis, so the kernel keeps a
+share one row space** — one context is one axis, so the runtime keeps a
 single cursor and every read is `cursor - offset` arithmetic. There is no
 per-input index mapping inside a Program; cross-axis mapping exists only at
-request edges, where the MergePolicy names it explicitly. The kernel
+request edges, where the MergePolicy names it explicitly. The runtime
 rejects misaligned series at bind.
 
-Two asymmetries between the kernel's rings and provider series:
+Two asymmetries between the runtime's rings and provider series:
 
 - Providers hand over **absolute-indexed committed rows** (`SeriesData`);
-  the kernel wraps them, owning the cursor anchoring (offset → absolute)
+  the runtime wraps them, owning the cursor anchoring (offset → absolute)
   and, under live ticks, the provisional head — so external series and
   rings behave identically under the provisional protocol.
-- Depth means **allocation** for rings (the kernel sizes them) but
+- Depth means **allocation** for rings (the runtime sizes them) but
   **contract** for providers: the demanded depth is the promise `at()` must
   honor that far back (a paged provider keeps pages accordingly; a csv
   provider ignores it).
@@ -202,8 +202,10 @@ interface OutputSink {
 }
 ```
 
-Historical csv execution uses exactly this; live push feeds extend
-DataProvider in the request/live slice without changing the rt surface.
+Historical csv execution uses exactly this. The request slice
+(`docs/requests.md`) supersedes `series()` with async
+`resolveContext(symbol, timeframe, range)` — one resolution path for the
+primary and every request context — without changing the rt surface.
 
 ## Determinism
 
@@ -216,7 +218,8 @@ makes golden traces and the tick/rollback property tests
 
 ## Staged beyond this slice
 
-Request execution (child instances, merge, dynamic contexts), collections
+Request execution (child instances, merge, dynamic contexts — specified in
+`docs/requests.md`), collections
 and UDT heap ops (COW at the `rt.mut*` seam), drawing/handle natives,
 network providers (Stooq), live push feeds, and V8-isolate embedding. None
 of them change the surface above; they fill reserved entries.

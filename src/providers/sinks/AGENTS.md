@@ -1,7 +1,7 @@
 # sinks
 
 `OutputSink` implementations for the CLI and golden harness. Presentation
-only — the kernel never formats emissions.
+only — the runtime never formats emissions.
 
 ## Invariants
 

@@ -1,4 +1,4 @@
-// Purpose: Kernel tests — hand-lowered modules (the exact shape codegen will emit) drive bind, frames, rings, and the provisional/commit protocol end to end.
+// Purpose: JSRuntime tests — hand-lowered modules (the exact shape codegen will emit) drive bind, frames, rings, and the provisional/commit protocol end to end.
 
 import {describe, expect, test} from 'bun:test';
 import {Storage} from '../ir/node';
@@ -10,7 +10,7 @@ import {
   type TeaModule,
   type Value,
 } from './abi';
-import {bind} from './kernel';
+import {bind} from './js-runtime';
 
 // ---- test doubles -----------------------------------------------------------
 

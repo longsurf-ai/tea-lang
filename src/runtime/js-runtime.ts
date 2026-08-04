@@ -1,4 +1,4 @@
-// Purpose: The Tea runtime kernel — implements the rt ABI and owns the main loop: binding, frame trees, ring allocation, the provisional/commit protocol, and emission flushing. docs/runtime.md is the authority.
+// Purpose: The JS runtime — implements the Runtime ABI and owns the main loop: binding, frame trees, ring allocation, the provisional/commit protocol, and emission flushing. docs/runtime.md is the authority.
 
 import {fatal} from '../base/print';
 import {Storage} from '../ir/node';
@@ -11,7 +11,7 @@ import {
   type Frame,
   type FrameLayout,
   type OutputSink,
-  type Rt,
+  type Runtime,
   type SeriesData,
   type TeaModule,
   type Value,
@@ -25,7 +25,7 @@ export function bind(module: TeaModule, inputs: BindInputs): BoundProgram {
   if (module.abi !== 1) {
     throw new BindError(`unsupported module ABI ${String(module.abi)}`);
   }
-  return new Kernel(module, inputs);
+  return new JSRuntime(module, inputs);
 }
 
 interface FrameImpl extends Frame {
@@ -37,13 +37,13 @@ interface FrameImpl extends Frame {
 
 type Phase = 'binding' | 'executing';
 
-class Kernel implements Rt, BoundProgram {
+class JSRuntime implements Runtime, BoundProgram {
   readonly rows: number;
 
   private phase: Phase = 'binding';
   private readonly paramValues: Value[] = [];
   private readonly seriesData: (SeriesData | null)[] = [];
-  // Kernel-owned virtual series: the axis ordinal itself.
+  // Runtime-owned virtual series: the axis ordinal itself.
   private readonly barIndexSids = new Set<number>();
   // Bind-time depth reports from the module's init section.
   private readonly boundLocalDepths = new Map<string, number>();
@@ -91,7 +91,7 @@ class Kernel implements Rt, BoundProgram {
 
     // One context, one axis: every series of a binding shares one row
     // space — the alignment CONTRACT sits on the DataProvider, and the
-    // kernel refuses misaligned data instead of silently truncating.
+    // runtime refuses misaligned data instead of silently truncating.
     const provided = this.seriesData.filter(
       (data): data is SeriesData => data !== null,
     );
@@ -174,7 +174,7 @@ class Kernel implements Rt, BoundProgram {
         }
         id = this.paramValues[manifest.params.indexOf(param)] as string;
       }
-      // bar_index is the kernel's own axis ordinal, never provider data.
+      // bar_index is the runtime's own axis ordinal, never provider data.
       if (id === 'bar_index') {
         this.barIndexSids.add(sid);
         this.seriesData.push(null);

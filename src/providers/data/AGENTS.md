@@ -1,6 +1,6 @@
 # data
 
-`DataProvider` implementations. The kernel never loads series data; hosts
+`DataProvider` implementations. The runtime never loads series data; hosts
 inject these.
 
 ## Invariants

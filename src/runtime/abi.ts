@@ -1,4 +1,4 @@
-// Purpose: The runtime ABI types — the complete surface generated code, providers, and sinks see; docs/runtime.md is the authority. Types only: the kernel implements, codegen targets.
+// Purpose: The runtime ABI types — the complete surface generated code, providers, and sinks see; docs/runtime.md is the authority. Types only: JSRuntime implements, codegen targets.
 
 import type {HistoryDepth, NameStorage} from '../ir/node';
 
@@ -70,33 +70,33 @@ export interface ModuleManifest {
   readonly frames: readonly FrameLayout[]; // fid-indexed; 0 = program frame
 }
 
-// Opaque to generated code: created and interpreted by the kernel only.
+// Opaque to generated code: created and interpreted by the runtime only.
 export interface Frame {
   readonly kind: 'frame';
 }
 
-// The complete runtime artifact: code plus the manifest the kernel binds
-// and allocates from. The kernel never re-derives ids from the Program.
+// The complete runtime artifact: code plus the manifest the runtime binds
+// and allocates from. The runtime never re-derives ids from the Program.
 export interface TeaModule {
   readonly abi: 1;
   readonly manifest: ModuleManifest;
   // Bind time: evaluates bound depths and output bind-args.
-  init(rt: Rt): void;
+  init(rt: Runtime): void;
   // var/varip first-execution thunks, keyed `${fid}:${slot}`.
-  readonly inits: Readonly<Record<string, (rt: Rt, fr: Frame) => Value>>;
+  readonly inits: Readonly<Record<string, (rt: Runtime, fr: Frame) => Value>>;
   // One function per IrFunc stencil, keyed by fid.
   readonly funcs: Readonly<
-    Record<number, (rt: Rt, fr: Frame, ...args: Value[]) => Value>
+    Record<number, (rt: Runtime, fr: Frame, ...args: Value[]) => Value>
   >;
   // The per-row body; fr is the program frame.
-  main(rt: Rt, fr: Frame): void;
+  main(rt: Runtime, fr: Frame): void;
 }
 
 // ---- the rt surface ---------------------------------------------------------
 
 // Only Time-Machine-relevant operations cross this interface; arithmetic,
 // comparisons, and math intrinsics expand inline in generated code.
-export interface Rt {
+export interface Runtime {
   series(sid: number, offset: number): number;
   param(pid: number): Value;
   read(fr: Frame, slot: number, offset: number): Value;
@@ -116,7 +116,7 @@ export interface Rt {
 
 // ---- the external seams -----------------------------------------------------
 
-// Committed rows, absolute-indexed; the kernel owns cursor anchoring and
+// Committed rows, absolute-indexed; the runtime owns cursor anchoring and
 // the provisional head. Depth demands are a contract on how far back at()
 // must answer, not an allocation the provider performs.
 export interface SeriesData {

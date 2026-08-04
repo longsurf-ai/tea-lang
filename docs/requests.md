@@ -1,0 +1,213 @@
+# Requests: cross-context data and the source facade
+
+Authority for request execution and the data-source registry. `docs/ir.md`
+owns the compile-time shape (RequestEdge, capture rules); `docs/runtime.md`
+owns the runtime basics this builds on (frames, rings, provisional protocol,
+SeriesView). This document owns everything between a `request.*()` call and
+a driver fetching bytes.
+
+```text
+Tea script   request.security("FRED:CPIAUCSL", "M", close)     Pine surface,
+                 |  compile: the whole family lowers            unchanged
+                 v  to one primitive
+IR           RequestEdge{symbol, timeframe, merge, child Program}
+                 |  bind (async)
+                 v
+Runtime      child instance per (edge, symbol, timeframe)
+             child rows -> commit -> MERGE onto the parent axis
+             (sample/collect, gaps/lookahead — source-independent)
+                 |  resolveContext(symbol, timeframe, range)
+                 v
+Provider     prefix registry:  "FRED:" -> fred(apiKey)
+             "STOOQ:" -> stooq   "" | "YAHOO:" -> yahoo   csv
+             drivers normalize + resample; errors are typed
+                 ^
+Host config  registry construction + API keys (CLI config / OpenChart)
+```
+
+- One primitive: every `request.*` family member lowers to a RequestEdge.
+  `security_lower_tf` is collect merge; `dividends`/`splits`/`earnings`/
+  `economic`/`financial` are namespace conventions plus a fixed child body.
+  One merge engine, N drivers.
+- The facade is not a language feature. Pine already namespaces symbols by
+  prefix (`NASDAQ:AAPL`, `FRED:UNRATE` are valid TradingView symbols), so
+  source routing lives entirely in the host's registry; existing Pine
+  scripts run unchanged. This is the superset-while-compliant mechanism:
+  quantmod's `src="FRED"` becomes the `FRED:` prefix.
+- Merge semantics are runtime-owned and never delegated to drivers: a FRED
+  monthly series sampled onto a daily axis obeys exactly the gaps/lookahead
+  rules an equity HTF request obeys.
+
+## The provider contract
+
+Context resolution replaces today's `DataProvider.series()` — the primary
+context resolves through the same call as every request context, so context
+acquisition has exactly one owner. Everything else about series access
+(SeriesView, alignment, depth-as-contract) is unchanged from `runtime.md`.
+
+```ts
+interface DataProvider {
+  resolveContext(
+    symbol: string,          // '' = host default (the csv file, the chart)
+    timeframe: string,       // '' = source-native timeframe
+    range: RangeDemand,
+  ): Promise<ProviderContext | ContextError>;
+}
+
+interface RangeDemand {
+  from: number | null;       // epoch ms; null = source's full extent
+  to: number | null;         // epoch ms; null = latest available
+  bars: number | null;       // alternative: trailing bar count
+}
+
+interface ProviderContext {
+  rows: number;
+  time(row: number): number;                      // bar OPEN time, epoch ms UTC
+  closeTime(row: number): number;                 // bar CLOSE time, epoch ms UTC
+  series(id: string): SeriesData | null;          // same alignment contract
+}
+```
+
+- `ProviderContext` and `SeriesData` are accessor contracts, not
+  containers — the SeriesView rule. But they answer **synchronously** over
+  a **fixed extent**: by hand-over, every row is resident or synchronously
+  servable. All asynchrony — pagination, rate limiting, retry/backoff,
+  caching — lives inside `resolveContext`, which is async precisely so
+  drivers can page until covered. **bind becomes async**; the per-row hot
+  path never awaits.
+- Fixed-extent is not an implementation convenience but a semantic
+  requirement: `last_bar_index`, `barstate.islast`, and lookahead merges
+  are statements about the end of history, unanswerable over a stream of
+  unknown length. Live growth arrives as ticks through the push protocol,
+  never as unbounded iteration. A source too large to materialize is
+  served as a narrower `range`, not a streaming row loop.
+- `RangeDemand` is what makes pagination tractable: bind computes it (the
+  primary axis extent, depth demands, `calcBarsCount`) so a driver knows
+  when to stop paging and never fetches blindly.
+- Time is the join key for merge, so a context must expose both bar-open
+  and bar-close times — the primary context included, since it serves as
+  the merge parent (csv gains a `time` column requirement for
+  request-bearing scripts; a missing axis is a BindError).
+- `ContextError` is a typed result (`unknownSource | unknownSymbol |
+  unsupportedTimeframe | fetchFailed`), never a thrown string: the runtime
+  maps it to BindError, runtime error, or `na` per `ignoreInvalidSymbol`.
+- The runtime resolves the primary context as `resolveContext(inputs.symbol,
+  inputs.timeframe, range)` with host-named values from BindInputs (empty
+  for "the driver's default" — a csv file has exactly one context).
+
+### The source registry
+
+A provider implementation routes by symbol prefix — the quantmod pattern
+(`getSymbols` src dispatch + `setSymbolLookup` routing + `setDefaults`
+keys), with the prefix as the routing key:
+
+- Registry: `prefix -> driver`; the empty prefix names the default driver.
+  Construction is host configuration — CLI config file/env for `tea`,
+  OpenChart registers its MarketFeed driver the same way. API keys live
+  here and never appear in Tea source or the runtime.
+- In-package drivers: **csv** (existing), **yahoo** (default; unofficial
+  chart API — free, intraday-capable, also carries dividend/split events
+  for the later sugar; no contractual stability, an accepted tradeoff for
+  a dev tool), **stooq** (EOD, keyless), **fred** (macro, free key). The
+  four demonstrate the facade across market and macro data on a standalone
+  checkout; all are plain `fetch` + normalization, zero dependencies.
+
+### Driver obligations
+
+1. **Normalization** (the xts role in quantmod): every context presents the
+   standard ambient series set. Single-valued sources (FRED) map the value
+   to `close` and collapse `open`/`high`/`low` to it; `volume` is na.
+   Derived ids (`hl2`, `hlc3`, …) follow from the standard set. A demanded
+   id the driver cannot serve is a `ContextError`, never a silent na fill
+   of a whole series.
+2. **Resampling is driver-owned**: a request for `"W"` against a
+   daily-native source aggregates in the driver (OHLC first/max/min/last,
+   volume sum). A driver that cannot produce the requested timeframe
+   reports `unsupportedTimeframe` — it never returns a mislabeled axis.
+3. **Honest axes**: `time`/`closeTime` reflect the source's real bar
+   boundaries. The runtime never guesses session calendars; alignment
+   quality is a driver property.
+
+## Child execution
+
+The generated module gains one nested module-shaped object per RequestEdge
+(`manifest.requests[rid]` carrying the child's manifest + init/funcs/main).
+The runtime binds a child instance exactly as it binds a program — same
+frames, rings, commit machinery, recursively for nested requests — against
+the resolved ProviderContext, with two differences:
+
+- Params are compilation-global (`ir.md`): the child reads the parent's
+  bound params and declares none.
+- A child has no outputs. Its sole emission is `resultName`, an ordinary
+  ring in the child's program frame; merge reads that ring's **committed**
+  values.
+
+Child instances are keyed `(edge, symbol, timeframe)` in a per-binding
+instance table. Identical pairs on one edge share an instance; cross-edge
+dedup is a later optimization, not a semantic requirement.
+
+## Merge
+
+Merge is a pure function of (parent axis, child axis, child committed
+result, MergePolicy), computed by the runtime per parent row and written to
+a per-edge ring in the parent frame — so `result[1]` is "whatever the
+request returned on the previous parent bar", regardless of which pair
+served that bar (dynamic requests included). `rt.request` reads this ring.
+
+Sample mode (`security`):
+
+- **lookahead_off** (default): the merged value at parent row `p` is the
+  child's result at the last child bar with `closeTime <= time(p) +
+  barSpan(p)` — i.e. the most recent child bar that has *closed* by the
+  parent bar's close. A child bar still forming contributes nothing:
+  under live ticks the child's provisional scratch is invisible to merge,
+  which reads committed cells only. HTF repaint-safety falls out of the
+  commit protocol instead of being a special case.
+- **lookahead_on**: the merged value is the child's result at the child
+  bar containing the parent bar's time — on historical data this reads a
+  value that was not yet final (Pine's documented repaint footgun,
+  implemented for compliance; ledger entry for exact TV boundary
+  behavior).
+- **gaps_on**: rows where no *new* child bar closed merge as na;
+  **gaps_off** carries the last merged value forward.
+
+Collect mode (`security_lower_tf`) returns the array of child results whose
+bars fall inside the parent bar — gated on the collections slice (staged).
+
+## Static and dynamic requests
+
+Pine v6 semantics (`dynamic_requests`, default **true**):
+
+- Context args (`symbol`, `timeframe`) may be series; the requested
+  expression is always a static template — it cannot depend on enclosing
+  local-scope variables. The checker enforces this in the existing capture
+  rules; the IR needs nothing new (RequestEdge qualifiers distinguish the
+  forms). `dynamic_requests=false` restores the static-only gate.
+- Unique contexts are capped: default 40 per binding (Pine parity),
+  configurable via BindInputs. Exceeding the cap is a typed runtime error.
+
+Execution:
+
+- **Static edges** (const/input context args): bind evaluates the args
+  (init section, like bindOutput args), awaits `resolveContext`, runs each
+  child over its full history, and prefetches the merged ring. No row ever
+  suspends.
+- **Dynamic edges**: row code evaluates the args and calls
+  `rt.request(rid, sym, tf, offset)`. On an instance-table miss the runtime
+  raises an internal suspension: the parent row's scratch is discarded
+  (rollback is free), `resolveContext` is awaited, the child runs its
+  history, and the parent row **re-executes from committed state** — the
+  same move a live tick makes, yielding results byte-identical to having
+  had the data upfront. Determinism holds; no async ever touches row code.
+- Errors: for static edges a failed context is a BindError; for dynamic
+  edges it is a typed runtime error — or a per-row na when the edge's
+  `ignoreInvalidSymbol` is set.
+
+## Staged beyond this slice
+
+Collect merge and `security_lower_tf` (needs collections);
+`dividends/splits/earnings/economic/financial` catalog sugar over the
+namespace conventions; `MergePolicy.currency` conversion;
+`calcBarsCount` limits; live ticks driving child contexts (child
+provisional state exists, push feeds do not); cross-edge instance dedup;
+disk caching for network drivers.
