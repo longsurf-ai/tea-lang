@@ -6,9 +6,11 @@ import {
   BindError,
   type BindInputs,
   type BoundProgram,
+  type DataProvider,
   type DepthSpec,
   type Frame,
   type FrameLayout,
+  type OutputSink,
   type Rt,
   type SeriesData,
   type TeaModule,
@@ -54,10 +56,20 @@ class Kernel implements Rt, BoundProgram {
   private executedRow = -1;
   private emitBuf = new Map<number, Value[]>();
 
+  // The three host-injected bind dependencies, destructured from BindInputs
+  // so reads name what they touch (params/provider/sink), free of the
+  // language-level "input" vocabulary.
+  private readonly params: BindInputs['params'];
+  private readonly provider: DataProvider;
+  private readonly sink: OutputSink;
+
   constructor(
     private readonly module: TeaModule,
-    private readonly inputs: BindInputs,
+    inputs: BindInputs,
   ) {
+    this.params = inputs.params;
+    this.provider = inputs.provider;
+    this.sink = inputs.sink;
     const manifest = module.manifest;
     this.boundOutputArgs = manifest.outputs.map(() => []);
 
@@ -70,7 +82,7 @@ class Kernel implements Rt, BoundProgram {
     this.bindSeries();
     this.phase = 'executing';
 
-    this.inputs.sink.declare(
+    this.sink.declare(
       manifest.outputs.map((spec, oid) => ({
         spec,
         boundArgs: this.boundOutputArgs[oid],
@@ -99,13 +111,13 @@ class Kernel implements Rt, BoundProgram {
   private bindParams(): void {
     const specs = this.module.manifest.params;
     const known = new Set(specs.map(spec => spec.name));
-    for (const name of Object.keys(this.inputs.params)) {
+    for (const name of Object.keys(this.params)) {
       if (!known.has(name)) {
         throw new BindError(`unknown parameter '${name}'`);
       }
     }
     for (const spec of specs) {
-      const provided = this.inputs.params[spec.name];
+      const provided = this.params[spec.name];
       const value = provided !== undefined ? provided : spec.defaultValue;
       if (spec.type === 'int' || spec.type === 'float') {
         if (typeof value !== 'number') {
@@ -168,7 +180,7 @@ class Kernel implements Rt, BoundProgram {
         this.seriesData.push(null);
         return;
       }
-      const data = this.inputs.provider.series(id);
+      const data = this.provider.series(id);
       if (data === null) {
         throw new BindError(`series '${id}' is not provided by this host`);
       }
@@ -312,7 +324,7 @@ class Kernel implements Rt, BoundProgram {
 
   private flushEmissions(row: number, provisional: boolean): void {
     for (const [oid, channels] of this.emitBuf) {
-      this.inputs.sink.emit(row, oid, channels, provisional);
+      this.sink.emit(row, oid, channels, provisional);
     }
   }
 
