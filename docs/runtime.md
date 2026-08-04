@@ -63,6 +63,15 @@ Dense ids (`sid`, `pid`, `oid`, `fid`, local slots) are assigned by the
 lowering walk; the manifest is their single source of truth — the kernel
 never re-derives ids from the Program.
 
+**Portability contract.** The emitted source is a strict-mode ECMAScript
+**2015 (ES6)** FunctionBody: no module syntax (import/export/require), no
+host I/O, no nondeterminism, and only whitelisted standard globals —
+`Math.{abs, sign, floor, ceil, round, trunc, sqrt, pow, log, log10, exp,
+max, min}`, `Number.isNaN`, `String`, `NaN` — everything else crosses the
+`rt` parameter. Any ES2015 engine loads it with `new Function(src)()`
+(Node, Bun, browsers, V8 isolates alike); an ES2015 parse gate plus a
+deny-list test enforce the ceiling so it cannot drift.
+
 ## The rt surface
 
 Only Time-Machine-relevant operations cross the ABI. Everything else —

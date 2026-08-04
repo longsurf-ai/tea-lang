@@ -20,6 +20,10 @@ lowering plus the per-backend rules tables.
 - Generated code is deterministic and pure: no Date, no Math.random, no
   host I/O; generation of the same Program is byte-identical (locked by
   tests).
+- Portability contract: strict-mode ES2015 FunctionBody, no module syntax,
+  whitelisted globals only (Math.*, Number.isNaN, String, NaN) — enforced
+  by the acorn ES2015 parse gate and deny-list test in
+  codegen/portability.test.ts. New emissions must stay inside the ceiling.
 - Staged constructs (UDT execution, for-in/collections, request reads,
   unlisted natives) throw UnimplementedError at generation — exit 2, never
   wrong code.

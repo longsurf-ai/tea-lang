@@ -41,7 +41,7 @@ export const HELPERS = {
     '(x, p) => { const m = Math.pow(10, p); return Math.round(x * m) / m; }',
   $nz: '(x, r) => (Number.isNaN(x) ? r : x)',
   $colorNew:
-    "(c, t) => c.slice(0, 7) + Math.round((100 - t) * 2.55).toString(16).padStart(2, '0').toUpperCase()",
+    "(c, t) => { const a = Math.round((100 - t) * 2.55).toString(16).toUpperCase(); return c.slice(0, 7) + (a.length < 2 ? '0' + a : a); }",
 } as const;
 
 export type HelperName = keyof typeof HELPERS;

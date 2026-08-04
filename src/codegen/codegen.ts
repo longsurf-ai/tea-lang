@@ -157,7 +157,12 @@ class Generator {
     }
     out.push('const M = {');
     out.push('  abi: 1,');
-    out.push(`  manifest: ${JSON.stringify(manifest)},`);
+    // U+2028/2029 are line terminators in ES2015 string literals; escape
+    // them so the embedded manifest stays parseable everywhere.
+    const manifestJs = JSON.stringify(manifest)
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
+    out.push(`  manifest: ${manifestJs},`);
     out.push('  init(rt) {', ...indent(indent(initLines)), '  },');
     out.push('  inits: {');
     for (const [key, lines] of initThunks) {
