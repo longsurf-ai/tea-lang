@@ -38,6 +38,90 @@ describe('inference and folding', () => {
     expect(declaredName(r, 'c').qualifier).toBe(Qualifier.Series);
   });
 
+  test('reassignment follows binding identity across shadowing', () => {
+    const r = checkText(
+      [
+        'x = 2',
+        'shadow = if true',
+        '    x = 3',
+        '    x := 4',
+        '    x',
+        'folded = x * 3',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+
+    const outer = declaredName(r, 'x');
+    const inner = [...r.info.defs.values()].find(
+      name => name.name === 'x' && name !== outer,
+    );
+    expect(inner).toBeDefined();
+    expect(r.info.reassigned.has(outer)).toBeFalse();
+    expect(r.info.reassigned.has(inner!)).toBeTrue();
+    expect(outer.qualifier).toBe(Qualifier.Const);
+    expect(inner!.qualifier).toBe(Qualifier.Series);
+    expect(initTvOf(r, 'folded').value).toBe(6);
+  });
+
+  test('a nested write to the outer binding remains whole-file conservative', () => {
+    const r = checkText(
+      [
+        'x = 2',
+        'before = x * 3',
+        'if close > 0',
+        '    x := 4',
+        'after = x * 3',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+
+    const x = declaredName(r, 'x');
+    expect(r.info.reassigned.has(x)).toBeTrue();
+    expect(x.qualifier).toBe(Qualifier.Series);
+    expect(initTvOf(r, 'before').value).toBeNull();
+    expect(initTvOf(r, 'after').value).toBeNull();
+  });
+
+  test('function-local writes do not affect same-spelled script bindings', () => {
+    const r = checkText(
+      [
+        'x = 2',
+        'bumpLocal() =>',
+        '    x = 0',
+        '    x += 1',
+        '    x',
+        'folded = x * 3',
+        'called = bumpLocal()',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+
+    const outer = declaredName(r, 'x');
+    const instance = [...r.info.userCalls.values()][0]?.instance;
+    const local = [...instance!.tables.defs.values()].find(
+      name => name.name === 'x',
+    );
+    expect(instance).toBeDefined();
+    expect(local).toBeDefined();
+    expect(r.info.reassigned.has(outer)).toBeFalse();
+    expect(instance!.tables.reassigned.has(local!)).toBeTrue();
+    expect(initTvOf(r, 'folded').value).toBe(6);
+  });
+
+  test('library-local writes cannot affect script bindings by source order', () => {
+    const sources = [
+      ['avg = ta.sma(close, 2)', 'sum = 2', 'picked = input.int(sum)'],
+      ['sum = 2', 'picked = input.int(sum)', 'avg = ta.sma(close, 2)'],
+    ];
+    for (const lines of sources) {
+      const r = checkText(lines.join('\n'));
+      expect(r.errors).toEqual([]);
+      const sum = declaredName(r, 'sum');
+      expect(sum.qualifier).toBe(Qualifier.Const);
+      expect(r.info.reassigned.has(sum)).toBeFalse();
+    }
+  });
+
   test('na literal needs an annotation, and takes one', () => {
     const r = checkText('float x = na');
     expect(r.errors).toEqual([]);
@@ -142,6 +226,22 @@ describe('native calls', () => {
 });
 
 describe('diagnostics', () => {
+  test('invalid for-in targets remain user-facing errors', () => {
+    const r = checkText(
+      [
+        'int[] values = na',
+        'x = 1',
+        'loop = for [i, value, extra] in values',
+        '    x := 2',
+        '    x',
+      ].join('\n'),
+    );
+    expect(r.errors.map(error => error.msg)).toContain(
+      'for-in tuple pattern takes [index, value]',
+    );
+    expect(r.info.reassigned.has(declaredName(r, 'x'))).toBeTrue();
+  });
+
   test('undeclared names and non-bool conditions report once', () => {
     const r = checkText('x = missing + 1');
     expect(r.errors.length).toBe(1);

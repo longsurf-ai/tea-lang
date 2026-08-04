@@ -1,19 +1,12 @@
-// Purpose: Eager checker over syntax (the types2 shape) — annotates side tables with TypeAndValue per expression, creates ir Names at declaration sites, propagates qualifiers (later-known wins), folds constants, and enforces catalog signatures, caps, and placement rules.
+// Purpose: Eager semantic checker over syntax (the types2 shape) — consumes canonical variable bindings, annotates side tables with TypeAndValue, propagates qualifiers (later-known wins), folds constants, and enforces catalog signatures, caps, and placement rules.
 //
-// Known Slice-A limits, lifted by later slices: user-function calls, methods,
-// imports, generics/collections, and request.* report clean errors here; the
-// reassigned-name prepass is by name string (whole file), deliberately
-// conservative.
+// Reassignment binding is scope-sensitive and deliberately flow-insensitive:
+// a binding written anywhere in one checking context never carries fold values.
 
 import {fatal, type Errors} from '../base/print';
 import type {Pos} from '../base/pos';
 import {unimplemented} from '../base/unimplemented';
-import {
-  DepthKind,
-  Storage,
-  type Name as IrName,
-  type NameStorage,
-} from '../ir/node';
+import {DepthKind, type Name as IrName} from '../ir/node';
 import type {SeriesInput} from '../ir/program';
 import {
   assignable,
@@ -62,6 +55,7 @@ import {
   type NativeVar,
 } from './catalog';
 import {isImportError, type Importer, type ResolvedLibrary} from './importer';
+import {bindExpressionNames, bindFileNames, bindFunctionNames} from './binding';
 import {EntryKind, Scope, type ScopeEntry} from './scope';
 
 // ---- results ----------------------------------------------------------------
@@ -87,8 +81,11 @@ export interface SideTables {
   readonly types: Map<syntax.Expr, TypeAndValue>;
   // Use sites of script variables → the shared ir Name object.
   readonly uses: Map<syntax.Name, IrName>;
-  // Declaration sites → the ir Name created there.
+  // Declaration sites → the canonical ir Name created by the binding prepass.
   readonly defs: Map<syntax.Name, IrName>;
+  // Whole-context mutability keyed by declaration identity. The binding pass
+  // completes this set before semantic checking starts for these tables.
+  readonly reassigned: Set<IrName>;
   readonly calls: Map<syntax.CallExpr, ResolvedCall>;
   readonly news: Map<syntax.CallExpr, ResolvedNew>;
   readonly userCalls: Map<syntax.CallExpr, ResolvedUserCall>;
@@ -101,6 +98,7 @@ export function newSideTables(): SideTables {
     types: new Map(),
     uses: new Map(),
     defs: new Map(),
+    reassigned: new Set(),
     calls: new Map(),
     news: new Map(),
     userCalls: new Map(),
@@ -156,10 +154,6 @@ export interface Info extends SideTables {
   // Ambient context series touched by the script, one object per host id;
   // noded Places reference these objects and the depth pass annotates them.
   readonly series: Map<string, SeriesInput>;
-  // Names that appear as assignment targets anywhere in the file (by name
-  // string, conservative) — the noder binds param/plot references through a
-  // declaration only when its name is not in this set.
-  readonly reassigned: ReadonlySet<string>;
 }
 
 export function check(
@@ -214,17 +208,11 @@ const TYPE_NAMES: ReadonlyMap<string, Type> = new Map([
 // ---- checker ----------------------------------------------------------------
 
 class Checker {
-  // Names that appear as := / compound-assignment targets anywhere in the
-  // file (by string, whole-file — conservative). Their declarations never
-  // carry fold values, and plain declarations join series.
-  private reassigned = new Set<string>();
-
   private readonly info: Info = {
     ...newSideTables(),
     captures: new Map(),
     udtDefaults: new Map(),
     series: new Map(),
-    reassigned: this.reassigned,
   };
 
   // The side-table target for the context being checked: the Info itself
@@ -251,7 +239,6 @@ class Checker {
     Map<string, FuncInstance>
   >();
   private readonly instantiating = new Set<syntax.FuncDecl>();
-  private readonly reassignedCollected = new Set<syntax.FuncDecl>();
   private funcBoundary: Scope | null = null;
   private readonly libScopes = new Map<ResolvedLibrary, Scope>();
   // Names bound by the implicit imports — the redeclare guard's set; the
@@ -295,7 +282,7 @@ class Checker {
   }
 
   checkFile(file: syntax.File): Info {
-    collectReassignedStmts(file.stmtList, this.reassigned);
+    bindFileNames(file, this.scope, this.info);
     for (const stmt of file.stmtList) {
       this.checkStmt(stmt);
     }
@@ -356,29 +343,19 @@ class Checker {
     }
 
     const nameNode = d.target;
+    const name = this.boundName(nameNode);
     const {type, qualifier, constValue} = this.declInfo(
       d,
       nameNode,
+      name,
       initTv,
       declared,
     );
-    const storage: NameStorage =
-      d.mode === Mode.Var
-        ? Storage.Var
-        : d.mode === Mode.Varip
-          ? Storage.Varip
-          : Storage.PerBar;
-    const irName: IrName = {
-      name: nameNode.value,
-      storage,
-      type,
-      qualifier,
-      depth: {kind: DepthKind.None},
-      init: null,
-    };
+    name.type = type;
+    name.qualifier = qualifier;
     this.declare(nameNode, {
       kind: EntryKind.Name,
-      name: irName,
+      name,
       constDecl: d.mode === Mode.Const,
       constValue,
     });
@@ -389,6 +366,7 @@ class Checker {
   private declInfo(
     d: syntax.DeclStmt,
     nameNode: syntax.Name,
+    name: IrName,
     initTv: TypeAndValue,
     declared: {type: Type; qualifier: Qualifier | null} | null,
   ): {type: Type; qualifier: Qualifier; constValue: ConstValue | null} {
@@ -430,7 +408,7 @@ class Checker {
       qualifier = Qualifier.Series;
     } else {
       qualifier = initTv.qualifier;
-      if (declared?.qualifier != null) {
+      if (declared !== null && declared.qualifier !== null) {
         if (!qualifierLE(initTv.qualifier, declared.qualifier)) {
           this.error(
             d.init.pos,
@@ -439,7 +417,7 @@ class Checker {
         }
         qualifier = declared.qualifier;
       }
-      if (this.reassigned.has(nameNode.value)) {
+      if (this.tables.reassigned.has(name)) {
         qualifier = joinQualifiers(qualifier, Qualifier.Series);
       }
     }
@@ -447,7 +425,7 @@ class Checker {
     // Fold values travel through names only when reassignment is impossible.
     const foldable =
       d.mode === Mode.Const ||
-      (d.mode === Mode.None && !this.reassigned.has(nameNode.value));
+      (d.mode === Mode.None && !this.tables.reassigned.has(name));
     const constValue =
       foldable && initTv.qualifier === Qualifier.Const ? initTv.value : null;
     return {type, qualifier, constValue};
@@ -475,32 +453,32 @@ class Checker {
         `tuple declaration requires a tuple initializer, got ${formatType(initTv.type)}`,
       );
     }
-    const storage: NameStorage =
-      d.mode === Mode.Var
-        ? Storage.Var
-        : d.mode === Mode.Varip
-          ? Storage.Varip
-          : Storage.PerBar;
     const qualifier =
       d.mode === Mode.Var || d.mode === Mode.Varip
         ? Qualifier.Series
         : initTv.qualifier;
     pattern.elems.forEach((elemName, i) => {
-      const irName: IrName = {
-        name: elemName.value,
-        storage,
-        type: elems !== null ? elems[i] : InvalidType,
-        qualifier,
-        depth: {kind: DepthKind.None},
-        init: null,
-      };
+      const name = this.boundName(elemName);
+      name.type = elems !== null ? elems[i] : InvalidType;
+      name.qualifier =
+        d.mode === Mode.None && this.tables.reassigned.has(name)
+          ? joinQualifiers(qualifier, Qualifier.Series)
+          : qualifier;
       this.declare(elemName, {
         kind: EntryKind.Name,
-        name: irName,
+        name,
         constDecl: d.mode === Mode.Const,
         constValue: null,
       });
     });
+  }
+
+  private boundName(node: syntax.Name): IrName {
+    const name = this.tables.defs.get(node);
+    if (name === undefined) {
+      return fatal(`unbound declaration reached checker: ${node.value}`);
+    }
+    return name;
   }
 
   private declare(nameNode: syntax.Name, entry: ScopeEntry): void {
@@ -508,10 +486,12 @@ class Checker {
       isNativeRoot(nameNode.value) ||
       this.implicitNames.has(nameNode.value)
     ) {
+      this.discardBinding(nameNode, entry);
       this.error(nameNode.pos, `cannot redeclare built-in '${nameNode.value}'`);
       return;
     }
     if (!this.scope.declare(nameNode.value, entry)) {
+      this.discardBinding(nameNode, entry);
       this.error(
         nameNode.pos,
         `'${nameNode.value}' is already declared in this scope`,
@@ -519,8 +499,21 @@ class Checker {
       return;
     }
     if (entry.kind === EntryKind.Name) {
-      this.tables.defs.set(nameNode, entry.name);
+      if (this.boundName(nameNode) !== entry.name) {
+        return fatal(`binding identity changed for '${nameNode.value}'`);
+      }
     }
+  }
+
+  private discardBinding(nameNode: syntax.Name, entry: ScopeEntry): void {
+    if (entry.kind !== EntryKind.Name) {
+      return;
+    }
+    if (this.boundName(nameNode) !== entry.name) {
+      return fatal(`binding identity changed for '${nameNode.value}'`);
+    }
+    this.tables.defs.delete(nameNode);
+    this.tables.reassigned.delete(entry.name);
   }
 
   private checkAssign(a: syntax.AssignStmt): TypeAndValue | null {
@@ -580,7 +573,9 @@ class Checker {
       this.error(target.pos, 'cannot reassign a plot reference');
     }
     const name = entry.name;
-    this.tables.uses.set(target, name);
+    if (this.tables.uses.get(target) !== name) {
+      return fatal(`assignment binding changed for '${target.value}'`);
+    }
 
     const valueTv = this.checkExpr(a.value);
     // Compound forms type-check as the underlying binary operation on the
@@ -1268,14 +1263,9 @@ class Checker {
 
     const savedScope = this.scope;
     this.scope = new Scope(savedScope);
-    const indexName: IrName = {
-      name: e.index.value,
-      storage: Storage.PerBar,
-      type: indexType,
-      qualifier: Qualifier.Series,
-      depth: {kind: DepthKind.None},
-      init: null,
-    };
+    const indexName = this.boundName(e.index);
+    indexName.type = indexType;
+    indexName.qualifier = Qualifier.Series;
     this.declare(e.index, {
       kind: EntryKind.Name,
       name: indexName,
@@ -1301,16 +1291,12 @@ class Checker {
     const savedScope = this.scope;
     this.scope = new Scope(savedScope);
     const declareTarget = (nameNode: syntax.Name, type: Type): void => {
+      const name = this.boundName(nameNode);
+      name.type = type;
+      name.qualifier = Qualifier.Series;
       this.declare(nameNode, {
         kind: EntryKind.Name,
-        name: {
-          name: nameNode.value,
-          storage: Storage.PerBar,
-          type,
-          qualifier: Qualifier.Series,
-          depth: {kind: DepthKind.None},
-          init: null,
-        },
+        name,
         constDecl: false,
         constValue: null,
       });
@@ -1587,17 +1573,6 @@ class Checker {
     aligned: readonly (syntax.Expr | null)[],
     argTvs: readonly (TypeAndValue | null)[],
   ): FuncInstance {
-    // Template locals join the conservative reassignment set once, so
-    // accumulator declarations inside bodies never carry fold values.
-    if (!this.reassignedCollected.has(template)) {
-      this.reassignedCollected.add(template);
-      if (template.body.kind === NodeKind.Block) {
-        collectReassignedStmts(template.body.stmtList, this.reassigned);
-      } else {
-        collectReassignedExpr(template.body, this.reassigned);
-      }
-    }
-
     const saved = {
       scope: this.scope,
       tables: this.tables,
@@ -1607,6 +1582,7 @@ class Checker {
       boundary: this.funcBoundary,
     };
     const tables = newSideTables();
+    bindFunctionNames(template, aligned, base, tables);
     const scope = new Scope(base);
     this.scope = scope;
     this.tables = tables;
@@ -1652,18 +1628,15 @@ class Checker {
           }
         }
       }
-      const irName: IrName = {
-        name: p.name.value,
-        storage: Storage.PerBar,
-        type: annotated !== null ? annotated.type : tv.type,
-        qualifier: tv.qualifier,
-        depth: {kind: DepthKind.None},
-        init: null,
-      };
-      irParams.push(irName);
+      const name = this.boundName(p.name);
+      name.type = annotated !== null ? annotated.type : tv.type;
+      name.qualifier = this.tables.reassigned.has(name)
+        ? joinQualifiers(tv.qualifier, Qualifier.Series)
+        : tv.qualifier;
+      irParams.push(name);
       this.declare(p.name, {
         kind: EntryKind.Name,
-        name: irName,
+        name,
         constDecl: false,
         constValue: null,
       });
@@ -1856,6 +1829,7 @@ class Checker {
     const savedTables = this.tables;
     const savedPool = this.seriesPool;
     const tables = newSideTables();
+    bindExpressionNames(expr, this.scope, tables);
     this.tables = tables;
     this.seriesPool = new Map();
     this.captureDepth += 1;
@@ -2134,130 +2108,6 @@ function foldNativeCall(
     values.push(tv.value);
   }
   return folder(values);
-}
-
-// ---- reassignment prepass ---------------------------------------------------
-
-function collectReassignedStmts(
-  stmts: readonly syntax.Stmt[],
-  out: Set<string>,
-): void {
-  for (const stmt of stmts) {
-    collectReassignedStmt(stmt, out);
-  }
-}
-
-function collectReassignedStmt(stmt: syntax.Stmt, out: Set<string>): void {
-  switch (stmt.kind) {
-    case NodeKind.AssignStmt:
-      if (stmt.target.kind === NodeKind.Name) {
-        out.add(stmt.target.value);
-      }
-      collectReassignedExpr(stmt.target, out);
-      collectReassignedExpr(stmt.value, out);
-      return;
-    case NodeKind.ExprStmt:
-      collectReassignedExpr(stmt.x, out);
-      return;
-    case NodeKind.DeclStmt:
-      collectReassignedExpr(stmt.init, out);
-      return;
-    case NodeKind.FuncDecl:
-      if (stmt.body.kind === NodeKind.Block) {
-        collectReassignedStmts(stmt.body.stmtList, out);
-      } else {
-        collectReassignedExpr(stmt.body, out);
-      }
-      return;
-    case NodeKind.TypeDecl:
-      for (const field of stmt.fields) {
-        if (field.defaultValue !== null) {
-          collectReassignedExpr(field.defaultValue, out);
-        }
-      }
-      return;
-    default:
-      return;
-  }
-}
-
-function collectReassignedExpr(e: syntax.Expr, out: Set<string>): void {
-  switch (e.kind) {
-    case NodeKind.UnaryExpr:
-    case NodeKind.ParenExpr:
-      collectReassignedExpr(e.x, out);
-      return;
-    case NodeKind.SelectorExpr:
-      collectReassignedExpr(e.x, out);
-      return;
-    case NodeKind.BinaryExpr:
-      collectReassignedExpr(e.x, out);
-      collectReassignedExpr(e.y, out);
-      return;
-    case NodeKind.CondExpr:
-      collectReassignedExpr(e.cond, out);
-      collectReassignedExpr(e.then, out);
-      collectReassignedExpr(e.else, out);
-      return;
-    case NodeKind.CallExpr:
-      for (const arg of e.args) {
-        collectReassignedExpr(arg.value, out);
-      }
-      return;
-    case NodeKind.HistoryExpr:
-      collectReassignedExpr(e.x, out);
-      collectReassignedExpr(e.offset, out);
-      return;
-    case NodeKind.TupleExpr:
-      for (const elem of e.elems) {
-        collectReassignedExpr(elem, out);
-      }
-      return;
-    case NodeKind.IfExpr:
-      collectReassignedExpr(e.cond, out);
-      collectReassignedStmts(e.then.stmtList, out);
-      if (e.else !== null) {
-        if (e.else.kind === NodeKind.IfExpr) {
-          collectReassignedExpr(e.else, out);
-        } else {
-          collectReassignedStmts(e.else.stmtList, out);
-        }
-      }
-      return;
-    case NodeKind.ForExpr:
-      collectReassignedExpr(e.from, out);
-      collectReassignedExpr(e.to, out);
-      if (e.step !== null) {
-        collectReassignedExpr(e.step, out);
-      }
-      collectReassignedStmts(e.body.stmtList, out);
-      return;
-    case NodeKind.ForInExpr:
-      collectReassignedExpr(e.x, out);
-      collectReassignedStmts(e.body.stmtList, out);
-      return;
-    case NodeKind.WhileExpr:
-      collectReassignedExpr(e.cond, out);
-      collectReassignedStmts(e.body.stmtList, out);
-      return;
-    case NodeKind.SwitchExpr:
-      if (e.subject !== null) {
-        collectReassignedExpr(e.subject, out);
-      }
-      for (const arm of e.arms) {
-        if (arm.pattern !== null) {
-          collectReassignedExpr(arm.pattern, out);
-        }
-        if (arm.body.kind === NodeKind.Block) {
-          collectReassignedStmts(arm.body.stmtList, out);
-        } else {
-          collectReassignedExpr(arm.body, out);
-        }
-      }
-      return;
-    default:
-      return;
-  }
 }
 
 // A chain of plain Names (`math.max`, `syminfo.tickerid`) usable as a catalog

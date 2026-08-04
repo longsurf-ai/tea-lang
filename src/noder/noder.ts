@@ -49,7 +49,6 @@ import {
 } from '../ir/type';
 import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
-import {parse} from '../syntax/syntax';
 import {Op} from '../syntax/tokens';
 import {Effect} from '../checker/catalog';
 import type {
@@ -255,7 +254,7 @@ class Noder {
         `undeclared decl target reached the noder: ${d.target.value}`,
       );
     }
-    const rebindable = !this.info.reassigned.has(name.name);
+    const rebindable = !this.tables.reassigned.has(name);
 
     // `len = input.int(...)` binds the name to the param: reads become
     // param reads, no per-bar write exists.
@@ -859,7 +858,12 @@ class Noder {
     const captureExpr = resolved.args[captureIndex];
     const symbolExpr = argExpr('symbol');
     const timeframeExpr = argExpr('timeframe');
-    if (captureExpr == null || symbolExpr === null || timeframeExpr === null) {
+    if (
+      captureExpr === null ||
+      captureExpr === undefined ||
+      symbolExpr === null ||
+      timeframeExpr === null
+    ) {
       return fatal('request call matched without its required arguments');
     }
 

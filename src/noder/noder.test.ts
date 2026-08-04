@@ -81,6 +81,38 @@ describe('params and outputs', () => {
     expect(namesOf(program).map(n => n.name)).toEqual(['x']);
   });
 
+  test('a shadowed write does not disable an outer input binding', () => {
+    const program = mustBuild(
+      [
+        'len = input.int(14)',
+        'shadow = if true',
+        '    len = 1',
+        '    len := 2',
+        '    len',
+        'x = close * len',
+      ].join('\n'),
+    );
+    expect(program.params[0].name).toBe('len');
+    expect(namesOf(program).filter(name => name.name === 'len')).toHaveLength(
+      1,
+    );
+  });
+
+  test('a real outer write still disables input reference binding', () => {
+    const program = mustBuild(
+      [
+        'len = input.int(14)',
+        'if close > 0',
+        '    len := 20',
+        'x = close * len',
+      ].join('\n'),
+    );
+    expect(program.params[0].name).not.toBe('len');
+    expect(namesOf(program).filter(name => name.name === 'len')).toHaveLength(
+      1,
+    );
+  });
+
   test('expression-position inputs take the input@line:col identity', () => {
     const program = mustBuild('x = close * input.int(2)');
     expect(program.params.length).toBe(1);
@@ -101,6 +133,26 @@ describe('params and outputs', () => {
     // Each plotted series emits per bar.
     const emits = program.body.filter(s => s.kind === IrKind.Emit);
     expect(emits.length).toBe(2);
+  });
+
+  test('a shadowed write does not disable an outer output reference', () => {
+    const program = mustBuild(
+      [
+        'p = plot(high)',
+        'q = plot(low)',
+        'shadow = if true',
+        '    p = 0',
+        '    p := 1',
+        '    p',
+        'fill(p, q)',
+      ].join('\n'),
+    );
+    const fill = program.outputs[2];
+    expect(fill.bindArgs.map(arg => arg.expr.kind)).toEqual([
+      IrKind.OutputRef,
+      IrKind.OutputRef,
+    ]);
+    expect(namesOf(program).filter(name => name.name === 'p')).toHaveLength(1);
   });
 });
 
@@ -123,6 +175,25 @@ describe('history', () => {
     expect(program).toBeNull();
     expect(errors.some(e => e.msg.includes('history on an expression'))).toBe(
       true,
+    );
+  });
+
+  test('a shadowed write preserves a stable-place alias', () => {
+    const program = mustBuild(
+      [
+        'src = close',
+        'shadow = if true',
+        '    src = 0.0',
+        '    src := 1.0',
+        '    src',
+        'prev = src[1]',
+        'plot(prev)',
+      ].join('\n'),
+    );
+    const close = seriesInputsOf(program).find(series => series.id === 'close');
+    expect(close?.depth).toEqual({kind: DepthKind.Const, bars: 1});
+    expect(namesOf(program).filter(name => name.name === 'src')).toHaveLength(
+      1,
     );
   });
 });

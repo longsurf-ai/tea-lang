@@ -161,16 +161,16 @@ primitive: value signature, per-param qualifier caps, const-required and
 subgraph), and an **effect class** — the tag that selects the compilation and
 runtime protocol:
 
-| Effect class          | Examples                           | Protocol                                                                        |
-| --------------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
-| none                  | `math.*`                           | pure call                                                                       |
-| param                 | `input.*`                          | extracts a `ParamInput`; value arrives at bind time; top-level placement        |
-| declaration           | `indicator`, `strategy`            | script metadata; top-level placement                                            |
-| output (declarative)  | `plot*`, `hline`, `alertcondition` | hoisted to `Program.outputs`; per-bar `Emit`; top-level/unconditional placement |
-| handle-object         | `line.*`, `label.*`, `box.*`       | per-bar host object ops; handle values; rollback participation                  |
-| host-service          | `strategy.*` orders                | effects with host feedback readable next bar                                    |
-| async-host-call       | `llm()` (Tea)                      | awaited/batched host call                                                       |
-| request               | `request.*`                        | expression capture; compiles a child Program (`RequestEdge`)                    |
+| Effect class         | Examples                           | Protocol                                                                        |
+| -------------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
+| none                 | `math.*`                           | pure call                                                                       |
+| param                | `input.*`                          | extracts a `ParamInput`; value arrives at bind time; top-level placement        |
+| declaration          | `indicator`, `strategy`            | script metadata; top-level placement                                            |
+| output (declarative) | `plot*`, `hline`, `alertcondition` | hoisted to `Program.outputs`; per-bar `Emit`; top-level/unconditional placement |
+| handle-object        | `line.*`, `label.*`, `box.*`       | per-bar host object ops; handle values; rollback participation                  |
+| host-service         | `strategy.*` orders                | effects with host feedback readable next bar                                    |
+| async-host-call      | `llm()` (Tea)                      | awaited/batched host call                                                       |
+| request              | `request.*`                        | expression capture; compiles a child Program (`RequestEdge`)                    |
 
 New builtin families are catalog entries plus at most a new noding policy —
 never new checker or IR architecture. Future cross-sectional analysis
@@ -224,8 +224,10 @@ construction.
   initialized by an input call binds the name to its `ParamInput` (reads
   become param reads; no per-bar write), and one initialized by an output
   call (or an alias of one) binds to its `OutputDecl` via `OutputRef` — so
-  `fill(p1, p2)` resolves refs at init, never per bar. Tea `const`
-  declarations vanish entirely (every read folded).
+  `fill(p1, p2)` resolves refs at init, never per bar. “Never reassigned” is
+  a whole-context fact about the exact declaration object, not every binding
+  with the same spelling. Tea `const` declarations vanish entirely (every
+  read folded).
 - `indicator()`/`strategy()` node as OutputDecls whose `effect` is the
   native's name: script metadata is an emission to the host, hoisted like
   every other declarative output.

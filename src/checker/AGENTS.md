@@ -2,8 +2,9 @@
 
 The Tea checker: an eager pass over syntax (the types2 shape) producing the
 `Info` side tables the noder consumes. `catalog.ts` declares every host
-primitive, `scope.ts` is the binder, `check.ts` walks statements and
-expressions, `importer.ts` is the import seam (loading lives in `src/loader`).
+primitive, `binding.ts` creates variable bindings and reassignment facts,
+`scope.ts` owns lexical lookup, `check.ts` walks statements and expressions,
+and `importer.ts` is the import seam (loading lives in `src/loader`).
 
 ## Invariants
 
@@ -20,8 +21,10 @@ expressions, `importer.ts` is the import seam (loading lives in `src/loader`).
   enclosing flow qualifier (loop bodies join series).
 - Fold values travel through a name only when reassignment is impossible:
   Tea `const` declarations, or plain declarations that never appear as an
-  assignment target (the whole-file prepass is conservative, by name
-  string).
+  assignment target. This remains deliberately flow-insensitive, but the
+  prepass is scope-sensitive: each side-table context records reassignment by
+  canonical `ir.Name` identity, never by source spelling. Shadowed bindings
+  and locals in other function/library instances cannot affect one another.
 - User-function declarations bind as templates; calls stencil one
   instantiation per concrete argument signature (memoized), each with its
   own `SideTables` and a scope rooted at the template's base — the user

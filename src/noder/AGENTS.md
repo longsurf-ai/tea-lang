@@ -16,7 +16,9 @@ resolution pass. Source loading lives in `src/loader`.
   whose initializer is an input call binds the name to its `ParamInput`
   (reads become param reads, no per-bar write), and one whose initializer
   nodes to an `OutputRef` binds the name to its `OutputDecl` (fill resolves
-  refs at init). Tea `const` declarations vanish entirely.
+  refs at init). Reassignment eligibility comes directly from the current
+  checker side tables and is keyed by the shared `ir.Name` identity. Tea
+  `const` declarations vanish entirely.
 - Param identity: the binding name when the input call initializes a
   declaration, else `input@line:col`. One `ParamInput`/`OutputDecl` per call
   site, deduped by syntax node.
@@ -37,7 +39,7 @@ resolution pass. Source loading lives in `src/loader`.
   Name, whose later writes would leak through) binds the name to the place,
   so history offsets land on the place itself (`prev = daily[1]` reaches
   the request edge's depth).
-- A request.* call site nodes into a `RequestEdge`: symbol/timeframe/merge
+- A request.\* call site nodes into a `RequestEdge`: symbol/timeframe/merge
   evaluate in the parent context; the captured expression nodes against the
   checker's child tables into a child Program with its own frame, slot
   counter, request list, and `$result` name. Bind-time params stay
