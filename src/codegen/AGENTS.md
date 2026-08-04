@@ -21,12 +21,20 @@ lowering plus the per-backend rules tables.
   host I/O; generation of the same Program is byte-identical (locked by
   tests).
 - Portability contract: strict-mode ES2015 FunctionBody, no module syntax,
-  whitelisted globals only (Math.*, Number.isNaN, String, NaN) — enforced
+  whitelisted globals only (Math.\*, Number.isNaN, String, NaN) — enforced
   by the acorn ES2015 parse gate and deny-list test in
   codegen/portability.test.ts. New emissions must stay inside the ceiling.
-- Staged constructs (UDT execution, for-in/collections, request reads,
-  unlisted natives) throw UnimplementedError at generation — exit 2, never
-  wrong code.
+- Request edges lower to one primitive: JSON metadata in
+  `manifest.requests[rid]`, the child Program recursively generated as a
+  sibling const (`M1`, `M2`… in dependency order — code cannot live in the
+  JSON manifest) referenced from `requests: [...]`, `rt.bindRequest` in the
+  init section for static context args, and `rt.request(rid, offset)` at
+  the read. Every module's code names its own funcs table via its const
+  (`ctx.moduleRef`), never `M`.
+- Staged constructs (UDT execution, for-in/collections, dynamic request
+  contexts, collect merge, request currency/calc_bars_count, unlisted
+  natives) throw UnimplementedError at generation — exit 2, never wrong
+  code.
 - Bound depth expressions must be evaluable without a frame (constants and
   scalar param reads); the depth pass guarantees it by falling back to
   capped otherwise.

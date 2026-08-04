@@ -63,11 +63,32 @@ export interface OutputSpec {
   readonly channels: readonly {readonly name: string; readonly type: string}[];
 }
 
+// The manifest half of a RequestEdge (JSON-safe; the child's code lives in
+// ModuleCode.requests at the same rid). Merge semantics are runtime-owned
+// and source-independent; docs/requests.md is the authority.
+export interface RequestSpec {
+  readonly merge: {
+    readonly mode: 'sample'; // collect arrives with the collections slice
+    readonly gaps: boolean;
+    readonly lookahead: boolean;
+    readonly ignoreInvalidSymbol: boolean;
+  };
+  // History demanded on the merged result — a contract for the future
+  // mapping-based view, not an allocation (the merged view answers any
+  // offset over its extent).
+  readonly depth: DepthSpec;
+  // The designated result: this slot of the CHILD's program frame.
+  readonly resultSlot: number;
+  // Reference-typed results use null as na; numeric results use NaN.
+  readonly ref: boolean;
+}
+
 export interface ModuleManifest {
   readonly series: readonly SeriesSpec[]; // sid-indexed
   readonly params: readonly ParamSpec[]; // pid-indexed
   readonly outputs: readonly OutputSpec[]; // oid-indexed
   readonly frames: readonly FrameLayout[]; // fid-indexed; 0 = program frame
+  readonly requests: readonly RequestSpec[]; // rid-indexed
 }
 
 // Opaque to generated code: created and interpreted by the runtime only.
@@ -75,12 +96,15 @@ export interface Frame {
   readonly kind: 'frame';
 }
 
-// The complete runtime artifact: code plus the manifest the runtime binds
-// and allocates from. The runtime never re-derives ids from the Program.
-export interface TeaModule {
-  readonly abi: 1;
+// One compiled Program: code plus the manifest the runtime binds and
+// allocates from. Request children are the same shape recursively —
+// nested module objects at ModuleCode.requests, rid-aligned with
+// manifest.requests (metadata is JSON in the manifest; code cannot be).
+export interface ModuleCode {
   readonly manifest: ModuleManifest;
-  // Bind time: evaluates bound depths and output bind-args.
+  readonly requests: readonly ModuleCode[]; // rid-indexed child modules
+  // Bind time: evaluates bound depths, output bind-args, and static
+  // request contexts (rt.bindRequest).
   init(rt: Runtime): void;
   // var/varip first-execution thunks, keyed `${fid}:${slot}`.
   readonly inits: Readonly<Record<string, (rt: Runtime, fr: Frame) => Value>>;
@@ -92,6 +116,12 @@ export interface TeaModule {
   main(rt: Runtime, fr: Frame): void;
 }
 
+// The complete runtime artifact (`tea build` output). The runtime never
+// re-derives ids from the Program.
+export interface TeaModule extends ModuleCode {
+  readonly abi: 1;
+}
+
 // ---- the rt surface ---------------------------------------------------------
 
 // Only Time-Machine-relevant operations cross this interface; arithmetic,
@@ -101,7 +131,11 @@ export interface Runtime {
   param(pid: number): Value;
   read(fr: Frame, slot: number, offset: number): Value;
   write(fr: Frame, slot: number, v: Value): void;
-  request(rid: number, offset: number): Value; // reserved: request slice
+  // Reads the edge's merged view at cursor - offset. History reads never
+  // carry context args — the view is parent-row-indexed regardless of
+  // which pair served each row (the dynamic form adds context args at the
+  // offset-0 read; that arrives with the dynamic slice).
+  request(rid: number, offset: number): Value;
   frame(fr: Frame, slot: number): Frame;
   // The program frame — how function bodies reach program-frame names
   // (functions read but never write globals, so this is the one legal
@@ -112,6 +146,9 @@ export interface Runtime {
   bindDepth(fid: number, slot: number, bars: number): void;
   bindSeriesDepth(sid: number, bars: number): void;
   bindOutput(oid: number, argName: string, v: Value): void;
+  // Declares a static edge's context: bind resolves the pair, runs the
+  // child over its history, and prepares the merged view before row 0.
+  bindRequest(rid: number, symbol: Value, timeframe: Value): void;
 }
 
 // ---- the external seams -----------------------------------------------------
@@ -124,9 +161,61 @@ export interface SeriesData {
   at(index: number): number;
 }
 
-export interface DataProvider {
-  // null = this host cannot supply the id; a demanded series is a bind error.
+// A context's time axis — the merge join key. Optional as a whole: an
+// axis-less context (a csv without a time column) still executes, but
+// cannot participate in a merge (BindError at the edge).
+export interface TimeAxis {
+  time(row: number): number; // bar OPEN time, epoch ms UTC
+  closeTime(row: number): number; // bar CLOSE time, epoch ms UTC
+}
+
+// One resolved context: a fixed extent of committed rows, answered
+// synchronously. Fixed-extent is semantic, not convenience — last_bar_index
+// and lookahead merges are statements about the end of history. All
+// asynchrony (pagination, rate limits, caching) lives inside
+// resolveContext.
+export interface ProviderContext {
+  readonly rows: number;
+  readonly axis: TimeAxis | null;
+  // null = this context cannot supply the id; a demanded series is a bind
+  // error. All series of one context share one row space (rows-aligned).
   series(id: string): SeriesData | null;
+}
+
+// Typed context-resolution failures — never thrown strings. The runtime
+// maps them to BindError, a runtime error, or na per ignoreInvalidSymbol.
+export interface ContextError {
+  readonly error:
+    | 'unknownSource'
+    | 'unknownSymbol'
+    | 'unsupportedTimeframe'
+    | 'fetchFailed';
+  readonly detail: string;
+}
+
+export function isContextError(
+  x: ProviderContext | ContextError,
+): x is ContextError {
+  return 'error' in x;
+}
+
+// What bind demands of a context, so paging drivers know when to stop.
+// null members mean the source's full extent / latest available.
+export interface RangeDemand {
+  readonly from: number | null; // epoch ms
+  readonly to: number | null; // epoch ms
+  readonly bars: number | null; // alternative: trailing bar count
+}
+
+// The one data seam. The primary context resolves through the same call as
+// every request context ('' = the host's default symbol/timeframe — a csv
+// file has exactly one context); registry providers route by symbol prefix.
+export interface DataProvider {
+  resolveContext(
+    symbol: string,
+    timeframe: string,
+    range: RangeDemand,
+  ): Promise<ProviderContext | ContextError>;
 }
 
 export interface OutputSink {
@@ -155,6 +244,10 @@ export interface BindInputs {
   readonly params: Readonly<Record<string, Value>>;
   readonly provider: DataProvider;
   readonly sink: OutputSink;
+  // The primary context's name; omitted = '' = the provider's default
+  // (a csv file's only context, the chart's active symbol).
+  readonly symbol?: string;
+  readonly timeframe?: string;
 }
 
 export interface BoundProgram {

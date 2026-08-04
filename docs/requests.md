@@ -48,25 +48,33 @@ acquisition has exactly one owner. Everything else about series access
 ```ts
 interface DataProvider {
   resolveContext(
-    symbol: string,          // '' = host default (the csv file, the chart)
-    timeframe: string,       // '' = source-native timeframe
+    symbol: string, // '' = host default (the csv file, the chart)
+    timeframe: string, // '' = source-native timeframe
     range: RangeDemand,
   ): Promise<ProviderContext | ContextError>;
 }
 
 interface RangeDemand {
-  from: number | null;       // epoch ms; null = source's full extent
-  to: number | null;         // epoch ms; null = latest available
-  bars: number | null;       // alternative: trailing bar count
+  from: number | null; // epoch ms; null = source's full extent
+  to: number | null; // epoch ms; null = latest available
+  bars: number | null; // alternative: trailing bar count
+}
+
+interface TimeAxis {
+  time(row: number): number; // bar OPEN time, epoch ms UTC
+  closeTime(row: number): number; // bar CLOSE time, epoch ms UTC
 }
 
 interface ProviderContext {
   rows: number;
-  time(row: number): number;                      // bar OPEN time, epoch ms UTC
-  closeTime(row: number): number;                 // bar CLOSE time, epoch ms UTC
-  series(id: string): SeriesData | null;          // same alignment contract
+  axis: TimeAxis | null; // null = axis-less context
+  series(id: string): SeriesData | null; // same alignment contract
 }
 ```
+
+An axis-less context (a csv without a `time` column) still executes; it
+just cannot participate in a merge — any request edge over it is a
+BindError, so plain single-context scripts keep working on bare fixtures.
 
 - `ProviderContext` and `SeriesData` are accessor contracts, not
   containers — the SeriesView rule. But they answer **synchronously** over
@@ -84,15 +92,16 @@ interface ProviderContext {
 - `RangeDemand` is what makes pagination tractable: bind computes it (the
   primary axis extent, depth demands, `calcBarsCount`) so a driver knows
   when to stop paging and never fetches blindly.
-- Time is the join key for merge, so a context must expose both bar-open
-  and bar-close times — the primary context included, since it serves as
-  the merge parent (csv gains a `time` column requirement for
-  request-bearing scripts; a missing axis is a BindError).
+- Time is the join key for merge, so a merging context must expose both
+  bar-open and bar-close times — the primary context included, since it
+  serves as the merge parent (csv fixtures provide an epoch-ms `time`
+  column of bar opens; a bar closes when the next opens, the last spanning
+  its predecessor's interval).
 - `ContextError` is a typed result (`unknownSource | unknownSymbol |
-  unsupportedTimeframe | fetchFailed`), never a thrown string: the runtime
+unsupportedTimeframe | fetchFailed`), never a thrown string: the runtime
   maps it to BindError, runtime error, or `na` per `ignoreInvalidSymbol`.
 - The runtime resolves the primary context as `resolveContext(inputs.symbol,
-  inputs.timeframe, range)` with host-named values from BindInputs (empty
+inputs.timeframe, range)` with host-named values from BindInputs (empty
   for "the driver's default" — a csv file has exactly one context).
 
 ### The source registry
@@ -170,7 +179,7 @@ Sample mode (`security`):
 
 - **lookahead_off** (default): the merged value at parent row `p` is the
   child's result at the last child bar with `closeTime <= time(p) +
-  barSpan(p)` — i.e. the most recent child bar that has *closed* by the
+barSpan(p)` — i.e. the most recent child bar that has _closed_ by the
   parent bar's close. A child bar still forming contributes nothing:
   under live ticks the child's provisional scratch is invisible to merge,
   which reads committed cells only. HTF repaint-safety falls out of the
@@ -180,7 +189,7 @@ Sample mode (`security`):
   value that was not yet final (Pine's documented repaint footgun,
   implemented for compliance; ledger entry for exact TV boundary
   behavior).
-- **gaps_on**: rows where no *new* child bar closed merge as na;
+- **gaps_on**: rows where no _new_ child bar closed merge as na;
   **gaps_off** carries the last merged value forward.
 
 Collect mode (`security_lower_tf`) returns the array of child results whose

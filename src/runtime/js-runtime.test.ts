@@ -6,8 +6,10 @@ import {
   BindError,
   type DataProvider,
   type OutputSink,
+  type ProviderContext,
   type SeriesData,
   type TeaModule,
+  type TimeAxis,
   type Value,
 } from './abi';
 import {bind} from './js-runtime';
@@ -24,8 +26,17 @@ class ArraySeries implements SeriesData {
   }
 }
 
-function provider(series: Record<string, ArraySeries>): DataProvider {
-  return {series: (id: string) => series[id] ?? null};
+function provider(
+  series: Record<string, ArraySeries>,
+  axis: TimeAxis | null = null,
+): DataProvider {
+  const rows = Math.max(0, ...Object.values(series).map(s => s.length));
+  const context: ProviderContext = {
+    rows,
+    axis,
+    series: (id: string) => series[id] ?? null,
+  };
+  return {resolveContext: () => Promise.resolve(context)};
 }
 
 class RecordingSink implements OutputSink {
@@ -72,6 +83,7 @@ const EMA_MODULE: TeaModule = {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
     outputs: [PLOT_OUTPUT],
+    requests: [],
     frames: [
       {
         locals: [{storage: Storage.Var, depth: {kind: 'none'}, ref: false}],
@@ -79,6 +91,7 @@ const EMA_MODULE: TeaModule = {
       },
     ],
   },
+  requests: [],
   init() {},
   inits: {'0:0': () => NaN},
   funcs: {},
@@ -91,9 +104,9 @@ const EMA_MODULE: TeaModule = {
 };
 
 describe('historical execution', () => {
-  test('var state carries across committed rows', () => {
+  test('var state carries across committed rows', async () => {
     const sink = new RecordingSink();
-    const bound = bind(EMA_MODULE, {
+    const bound = await bind(EMA_MODULE, {
       params: {},
       provider: provider({close: new ArraySeries([10, 20, 30])}),
       sink,
@@ -123,6 +136,7 @@ const COUNTER_MODULE: TeaModule = {
         ],
       },
     ],
+    requests: [],
     frames: [
       {locals: [], subs: [{fid: 1}, {fid: 1}]},
       {
@@ -131,6 +145,7 @@ const COUNTER_MODULE: TeaModule = {
       },
     ],
   },
+  requests: [],
   init() {},
   inits: {'1:0': () => 0},
   funcs: {
@@ -148,9 +163,9 @@ const COUNTER_MODULE: TeaModule = {
 };
 
 describe('frames', () => {
-  test('call sites share the compiled body but own separate state', () => {
+  test('call sites share the compiled body but own separate state', async () => {
     const sink = new RecordingSink();
-    const bound = bind(COUNTER_MODULE, {
+    const bound = await bind(COUNTER_MODULE, {
       params: {},
       provider: provider({close: new ArraySeries([1, 1, 1])}),
       sink,
@@ -173,6 +188,7 @@ const HISTORY_MODULE: TeaModule = {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
     outputs: [PLOT_OUTPUT],
+    requests: [],
     frames: [
       {
         locals: [
@@ -186,6 +202,7 @@ const HISTORY_MODULE: TeaModule = {
       },
     ],
   },
+  requests: [],
   init() {},
   inits: {},
   funcs: {},
@@ -196,9 +213,9 @@ const HISTORY_MODULE: TeaModule = {
 };
 
 describe('rings', () => {
-  test('history offsets see committed cells; early rows read na', () => {
+  test('history offsets see committed cells; early rows read na', async () => {
     const sink = new RecordingSink();
-    const bound = bind(HISTORY_MODULE, {
+    const bound = await bind(HISTORY_MODULE, {
       params: {},
       provider: provider({close: new ArraySeries([1, 2, 3, 4])}),
       sink,
@@ -233,6 +250,7 @@ const TICK_MODULE: TeaModule = {
         ],
       },
     ],
+    requests: [],
     frames: [
       {
         locals: [
@@ -244,6 +262,7 @@ const TICK_MODULE: TeaModule = {
       },
     ],
   },
+  requests: [],
   init() {},
   inits: {'0:0': () => 0, '0:1': () => 0},
   funcs: {},
@@ -258,10 +277,10 @@ const TICK_MODULE: TeaModule = {
 };
 
 describe('provisional protocol', () => {
-  test('ticks re-execute from committed state; varip alone accumulates', () => {
+  test('ticks re-execute from committed state; varip alone accumulates', async () => {
     const sink = new RecordingSink();
     const close = new ArraySeries([10, 5]);
-    const bound = bind(TICK_MODULE, {
+    const bound = await bind(TICK_MODULE, {
       params: {},
       provider: provider({close}),
       sink,
@@ -293,11 +312,11 @@ describe('provisional protocol', () => {
     expect(commit0.provisional).toBe(false);
   });
 
-  test('for var and perBar, ticks then commit equals never having ticked', () => {
-    const run = (withTicks: boolean) => {
+  test('for var and perBar, ticks then commit equals never having ticked', async () => {
+    const run = async (withTicks: boolean) => {
       const sink = new RecordingSink();
       const close = new ArraySeries([12, 5]);
-      const bound = bind(TICK_MODULE, {
+      const bound = await bind(TICK_MODULE, {
         params: {},
         provider: provider({close}),
         sink,
@@ -313,8 +332,8 @@ describe('provisional protocol', () => {
       bound.commitRow(1);
       return sink.emits.filter(e => !e.provisional);
     };
-    const ticked = run(true);
-    const clean = run(false);
+    const ticked = await run(true);
+    const clean = await run(false);
     // var and perBar channels agree; varip legitimately differs.
     expect(ticked.map(e => [e.channels[0], e.channels[2]])).toEqual(
       clean.map(e => [e.channels[0], e.channels[2]]),
@@ -349,6 +368,7 @@ const BIND_MODULE: TeaModule = {
       },
     ],
     outputs: [{effect: 'hline', staticArgs: [], channels: []}, PLOT_OUTPUT],
+    requests: [],
     frames: [
       {
         locals: [{storage: Storage.PerBar, depth: {kind: 'bound'}, ref: false}],
@@ -356,6 +376,7 @@ const BIND_MODULE: TeaModule = {
       },
     ],
   },
+  requests: [],
   init(rt) {
     rt.bindOutput(0, 'price', rt.param(0));
     rt.bindDepth(0, 0, num(rt.param(1)));
@@ -369,9 +390,9 @@ const BIND_MODULE: TeaModule = {
 };
 
 describe('binding', () => {
-  test('init evaluates bind-time args and bound depths', () => {
+  test('init evaluates bind-time args and bound depths', async () => {
     const sink = new RecordingSink();
-    const bound = bind(BIND_MODULE, {
+    const bound = await bind(BIND_MODULE, {
       params: {level: 105, len: 2},
       provider: provider({close: new ArraySeries([1, 2, 3, 4])}),
       sink,
@@ -384,7 +405,7 @@ describe('binding', () => {
     expect(values[3]).toBe(2);
   });
 
-  test('bind failures are user-facing errors', () => {
+  test('bind failures are user-facing errors', async () => {
     const inputs = {
       provider: provider({close: new ArraySeries([1])}),
       sink: new RecordingSink(),
@@ -405,5 +426,216 @@ describe('binding', () => {
         provider: provider({close: new ArraySeries([1, 2])}),
       }),
     ).not.toThrow();
+  });
+});
+
+// ---- requests ---------------------------------------------------------------
+// r = request.security("X", "", close * scale)   (child reads a parent param)
+// plot(r), plot(r[1])
+
+function regularAxis(start: number, span: number, rows: number) {
+  void rows;
+  return {
+    time: (row: number) => start + row * span,
+    closeTime: (row: number) => start + (row + 1) * span,
+  };
+}
+
+function context(
+  series: Record<string, ArraySeries>,
+  axis: ReturnType<typeof regularAxis> | null,
+): ProviderContext {
+  const rows = Math.max(0, ...Object.values(series).map(s => s.length));
+  return {rows, axis, series: (id: string) => series[id] ?? null};
+}
+
+// Routes by symbol; unknown symbols are typed context errors.
+function contexts(byId: Record<string, ProviderContext>): DataProvider {
+  return {
+    resolveContext: (symbol: string) =>
+      Promise.resolve(
+        byId[symbol] ?? {
+          error: 'unknownSymbol' as const,
+          detail: `no context '${symbol}'`,
+        },
+      ),
+  };
+}
+
+const CHILD_MODULE = {
+  manifest: {
+    series: [{id: 'close', depth: {kind: 'none'}}],
+    params: [],
+    outputs: [],
+    requests: [],
+    frames: [
+      {
+        locals: [{storage: Storage.PerBar, depth: {kind: 'none'}, ref: false}],
+        subs: [],
+      },
+    ],
+  },
+  requests: [],
+  init() {},
+  inits: {},
+  funcs: {},
+  main(
+    rt: Parameters<TeaModule['main']>[0],
+    fr: Parameters<TeaModule['main']>[1],
+  ) {
+    // Bind-time params are compilation-global: pid 0 is the PARENT's param.
+    rt.write(fr, 0, rt.series(0, 0) * num(rt.param(0)));
+  },
+} satisfies Omit<TeaModule, 'abi'>;
+
+function requestModule(merge: {
+  gaps: boolean;
+  lookahead: boolean;
+  ignoreInvalidSymbol: boolean;
+}): TeaModule {
+  return {
+    abi: 1,
+    manifest: {
+      series: [{id: 'close', depth: {kind: 'none'}}],
+      params: [
+        {
+          name: 'scale',
+          title: null,
+          type: 'float',
+          defaultValue: 10,
+          constraints: null,
+          seriesSid: null,
+        },
+      ],
+      outputs: [
+        {
+          effect: 'plot',
+          staticArgs: [],
+          channels: [
+            {name: 'r', type: 'float'},
+            {name: 'prev', type: 'float'},
+          ],
+        },
+      ],
+      requests: [
+        {
+          merge: {mode: 'sample', ...merge},
+          depth: {kind: 'const', bars: 1},
+          resultSlot: 0,
+          ref: false,
+        },
+      ],
+      frames: [{locals: [], subs: []}],
+    },
+    requests: [CHILD_MODULE],
+    init(rt) {
+      rt.bindRequest(0, 'X', '');
+    },
+    inits: {},
+    funcs: {},
+    main(rt) {
+      rt.emit(0, 0, rt.request(0, 0));
+      rt.emit(0, 1, rt.request(0, 1));
+    },
+  };
+}
+
+describe('requests', () => {
+  const parent = () =>
+    context({close: new ArraySeries([1, 2, 3, 4, 5, 6])}, regularAxis(0, 1, 6));
+  const child = () =>
+    context({close: new ArraySeries([10, 20, 30])}, regularAxis(0, 2, 3));
+
+  test('a child runs on its own context and merges committed results', async () => {
+    const sink = new RecordingSink();
+    const bound = await bind(
+      requestModule({
+        gaps: false,
+        lookahead: false,
+        ignoreInvalidSymbol: false,
+      }),
+      {params: {}, provider: contexts({'': parent(), X: child()}), sink},
+    );
+    bound.runAll();
+    // Child values scale by the PARENT's param default (10): 100, 200, 300.
+    // lookahead_off over 2-span child bars: closed at t=2,4,6.
+    expect(sink.emits.map(e => e.channels[0])).toEqual([
+      NaN,
+      100,
+      100,
+      200,
+      200,
+      300,
+    ]);
+    // History reads the merged view one parent row back — never the child.
+    expect(sink.emits.map(e => e.channels[1])).toEqual([
+      NaN,
+      NaN,
+      100,
+      100,
+      200,
+      200,
+    ]);
+  });
+
+  test('gaps_on merges na except where a new child bar arrived', async () => {
+    const sink = new RecordingSink();
+    const bound = await bind(
+      requestModule({gaps: true, lookahead: false, ignoreInvalidSymbol: false}),
+      {params: {}, provider: contexts({'': parent(), X: child()}), sink},
+    );
+    bound.runAll();
+    expect(sink.emits.map(e => e.channels[0])).toEqual([
+      NaN,
+      100,
+      NaN,
+      200,
+      NaN,
+      300,
+    ]);
+  });
+
+  test('an unknown symbol is a BindError unless ignore_invalid_symbol', async () => {
+    const inputs = {
+      params: {},
+      provider: contexts({'': parent()}),
+      sink: new RecordingSink(),
+    };
+    expect(() =>
+      bind(
+        requestModule({
+          gaps: false,
+          lookahead: false,
+          ignoreInvalidSymbol: false,
+        }),
+        inputs,
+      ),
+    ).toThrow(BindError);
+
+    const sink = new RecordingSink();
+    const bound = await bind(
+      requestModule({gaps: false, lookahead: false, ignoreInvalidSymbol: true}),
+      {...inputs, sink},
+    );
+    bound.runAll();
+    expect(sink.emits.every(e => Number.isNaN(num(e.channels[0])))).toBe(true);
+  });
+
+  test('merge without a time axis on either context is a BindError', async () => {
+    const noAxis = context({close: new ArraySeries([1, 2, 3])}, null);
+    expect(() =>
+      bind(
+        requestModule({
+          gaps: false,
+          lookahead: false,
+          ignoreInvalidSymbol: false,
+        }),
+        {
+          params: {},
+          provider: contexts({'': noAxis, X: child()}),
+          sink: new RecordingSink(),
+        },
+      ),
+    ).toThrow('time axis');
   });
 });

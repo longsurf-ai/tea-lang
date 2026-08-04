@@ -1,31 +1,134 @@
-// Purpose: The JS runtime — implements the Runtime ABI and owns the main loop: binding, frame trees, ring allocation, the provisional/commit protocol, and emission flushing. docs/runtime.md is the authority.
+// Purpose: The JS runtime — implements the Runtime ABI and owns the main loop: binding, frame trees, ring allocation, request-child scheduling, the provisional/commit protocol, and emission flushing. docs/runtime.md and docs/requests.md are the authorities.
 
 import {fatal} from '../base/print';
 import {Storage} from '../ir/node';
 import {
   BindError,
+  isContextError,
   type BindInputs,
   type BoundProgram,
+  type ContextError,
   type DataProvider,
   type DepthSpec,
   type Frame,
   type FrameLayout,
+  type ModuleCode,
+  type ModuleManifest,
   type OutputSink,
+  type ProviderContext,
+  type RangeDemand,
   type Runtime,
   type SeriesData,
   type TeaModule,
   type Value,
 } from './abi';
+import {sampleMergeMap} from './merge';
 import {Ring} from './ring';
 
+// Slice scope: static requests resolve their full extent at bind; range
+// narrowing (depth demands, calc_bars_count) is a later refinement.
+const FULL_RANGE: RangeDemand = {from: null, to: null, bars: null};
+
 // Bind a lowered module to parameter values, a data provider, and an output
-// sink. Everything bind-time happens here: validation, series resolution,
-// running the module's init section, sizing rings, declaring outputs.
-export function bind(module: TeaModule, inputs: BindInputs): BoundProgram {
+// sink. Everything bind-time happens here: validation, context resolution,
+// running the module's init section, request-child execution and merge,
+// sizing rings, declaring outputs. Async because context resolution is the
+// seam where drivers fetch; the per-row hot path never awaits.
+export async function bind(
+  module: TeaModule,
+  inputs: BindInputs,
+): Promise<BoundProgram> {
   if (module.abi !== 1) {
     throw new BindError(`unsupported module ABI ${String(module.abi)}`);
   }
-  return new JSRuntime(module, inputs);
+  const symbol = inputs.symbol ?? '';
+  const timeframe = inputs.timeframe ?? '';
+  const context = await inputs.provider.resolveContext(
+    symbol,
+    timeframe,
+    FULL_RANGE,
+  );
+  if (isContextError(context)) {
+    throw new BindError(formatContextError('primary context', context));
+  }
+  const params = resolveParams(module.manifest, inputs.params);
+  const rt = new JSRuntime(
+    module,
+    inputs.provider,
+    inputs.sink,
+    context,
+    params,
+  );
+  await rt.bindRequests();
+  rt.finishBind();
+  return rt;
+}
+
+function formatContextError(what: string, error: ContextError): string {
+  return `${what}: ${error.error} (${error.detail})`;
+}
+
+// Param resolution is a pure function of the manifest and the host's raw
+// values; request children skip it — bind-time params are compilation-global
+// and children inherit the parent's resolved values.
+function resolveParams(
+  manifest: ModuleManifest,
+  raw: Readonly<Record<string, Value>>,
+): Value[] {
+  const specs = manifest.params;
+  const known = new Set(specs.map(spec => spec.name));
+  for (const name of Object.keys(raw)) {
+    if (!known.has(name)) {
+      throw new BindError(`unknown parameter '${name}'`);
+    }
+  }
+  const values: Value[] = [];
+  for (const spec of specs) {
+    const provided = raw[spec.name];
+    const value = provided !== undefined ? provided : spec.defaultValue;
+    if (spec.type === 'int' || spec.type === 'float') {
+      if (typeof value !== 'number') {
+        throw new BindError(`parameter '${spec.name}' expects a number`);
+      }
+      if (spec.type === 'int' && !Number.isInteger(value)) {
+        throw new BindError(`parameter '${spec.name}' expects an integer`);
+      }
+      const c = spec.constraints;
+      if (c !== null) {
+        if (c.minval !== null && value < c.minval) {
+          throw new BindError(
+            `parameter '${spec.name}' below minval ${c.minval}`,
+          );
+        }
+        if (c.maxval !== null && value > c.maxval) {
+          throw new BindError(
+            `parameter '${spec.name}' above maxval ${c.maxval}`,
+          );
+        }
+      }
+    } else if (spec.type === 'bool' && typeof value !== 'boolean') {
+      throw new BindError(`parameter '${spec.name}' expects a boolean`);
+    } else if (
+      (spec.type === 'string' ||
+        spec.type === 'color' ||
+        spec.type === 'source') &&
+      typeof value !== 'string'
+    ) {
+      throw new BindError(`parameter '${spec.name}' expects a string`);
+    }
+    const c = spec.constraints;
+    if (
+      c !== null &&
+      c.options !== null &&
+      !c.options.some(option => option === value)
+    ) {
+      throw new BindError(
+        `parameter '${spec.name}' must be one of ${c.options.map(String).join(', ')}`,
+      );
+    }
+    values.push(value);
+  }
+  return values;
 }
 
 interface FrameImpl extends Frame {
@@ -35,20 +138,35 @@ interface FrameImpl extends Frame {
   readonly subs: (FrameImpl | null)[];
 }
 
+// A merged request result: a parent-row-indexed view. Slice A materializes
+// the mapping plus the child's result column; the contract (docs/requests.md)
+// is the view, so a zero-copy mapping over child storage can replace this
+// without touching the ABI.
+interface MergedView {
+  at(row: number): Value;
+}
+
 type Phase = 'binding' | 'executing';
 
 class JSRuntime implements Runtime, BoundProgram {
   readonly rows: number;
 
   private phase: Phase = 'binding';
-  private readonly paramValues: Value[] = [];
+  private readonly paramValues: readonly Value[];
   private readonly seriesData: (SeriesData | null)[] = [];
   // Runtime-owned virtual series: the axis ordinal itself.
   private readonly barIndexSids = new Set<number>();
   // Bind-time depth reports from the module's init section.
   private readonly boundLocalDepths = new Map<string, number>();
   private readonly boundOutputArgs: {name: string; value: Value}[][];
-  private readonly rootFrame: FrameImpl;
+  // Static request pairs declared by init (rt.bindRequest), then the merged
+  // views bindRequests() builds from them.
+  private readonly requestPairs = new Map<
+    number,
+    {symbol: string; timeframe: string}
+  >();
+  private readonly requestViews: MergedView[] = [];
+  private rootFrame: FrameImpl | null = null;
 
   // Main-loop state.
   private cursor = -1;
@@ -56,111 +174,135 @@ class JSRuntime implements Runtime, BoundProgram {
   private executedRow = -1;
   private emitBuf = new Map<number, Value[]>();
 
-  // The three host-injected bind dependencies, destructured from BindInputs
-  // so reads name what they touch (params/provider/sink), free of the
-  // language-level "input" vocabulary.
-  private readonly params: BindInputs['params'];
-  private readonly provider: DataProvider;
-  private readonly sink: OutputSink;
-
+  // The runtime instance for one module against one resolved context —
+  // request children recurse through the same class with a null sink and
+  // the parent's resolved params.
   constructor(
-    private readonly module: TeaModule,
-    inputs: BindInputs,
+    private readonly module: ModuleCode,
+    private readonly provider: DataProvider,
+    private readonly sink: OutputSink | null,
+    private readonly context: ProviderContext,
+    params: readonly Value[],
   ) {
-    this.params = inputs.params;
-    this.provider = inputs.provider;
-    this.sink = inputs.sink;
-    const manifest = module.manifest;
-    this.boundOutputArgs = manifest.outputs.map(() => []);
-
-    this.bindParams();
+    this.paramValues = params;
+    this.boundOutputArgs = module.manifest.outputs.map(() => []);
 
     // Run the compiled bind-time expressions (bound depths, output
-    // bind-args) before allocation: ring sizes may depend on them.
+    // bind-args, static request contexts) before allocation: ring sizes may
+    // depend on them, and request pairs must be known before bindRequests.
     this.module.init(this);
 
     this.bindSeries();
-    this.phase = 'executing';
 
-    this.sink.declare(
-      manifest.outputs.map((spec, oid) => ({
-        spec,
-        boundArgs: this.boundOutputArgs[oid],
-      })),
-    );
-
-    // One context, one axis: every series of a binding shares one row
-    // space — the alignment CONTRACT sits on the DataProvider, and the
-    // runtime refuses misaligned data instead of silently truncating.
-    const provided = this.seriesData.filter(
-      (data): data is SeriesData => data !== null,
-    );
-    const lengths = new Set(provided.map(data => data.length));
-    if (lengths.size > 1) {
-      throw new BindError(
-        `provider series are not row-aligned (lengths ${[...lengths].join(', ')})`,
-      );
-    }
-    this.rows = provided.length === 0 ? 0 : provided[0].length;
-
-    this.rootFrame = this.newFrame(0);
+    // One context, one axis: the context owns the row space, and every
+    // series it serves must fill it — the runtime refuses misaligned data
+    // instead of silently truncating.
+    this.rows = context.rows;
+    this.seriesData.forEach((data, sid) => {
+      if (data !== null && data.length !== this.rows) {
+        throw new BindError(
+          `series ${sid} has ${data.length} rows, context has ${this.rows}`,
+        );
+      }
+    });
   }
 
   // ---- binding --------------------------------------------------------------
 
-  private bindParams(): void {
-    const specs = this.module.manifest.params;
-    const known = new Set(specs.map(spec => spec.name));
-    for (const name of Object.keys(this.params)) {
-      if (!known.has(name)) {
-        throw new BindError(`unknown parameter '${name}'`);
+  // Resolve every static request edge: fetch the child context, bind and run
+  // the child over its full history, and build the merged view. Recursion
+  // handles nested requests; all awaits happen here, before row 0.
+  async bindRequests(): Promise<void> {
+    const specs = this.module.manifest.requests;
+    for (let rid = 0; rid < specs.length; rid += 1) {
+      const spec = specs[rid];
+      const naValue = spec.ref ? null : NaN;
+      const pair = this.requestPairs.get(rid);
+      if (pair === undefined) {
+        return fatal(`request ${rid} was never declared by init`);
       }
-    }
-    for (const spec of specs) {
-      const provided = this.params[spec.name];
-      const value = provided !== undefined ? provided : spec.defaultValue;
-      if (spec.type === 'int' || spec.type === 'float') {
-        if (typeof value !== 'number') {
-          throw new BindError(`parameter '${spec.name}' expects a number`);
+      const what = `request '${pair.symbol}','${pair.timeframe}'`;
+      const resolved = await this.provider.resolveContext(
+        pair.symbol,
+        pair.timeframe,
+        FULL_RANGE,
+      );
+      if (isContextError(resolved)) {
+        const invalidSymbol =
+          resolved.error === 'unknownSymbol' ||
+          resolved.error === 'unknownSource';
+        if (spec.merge.ignoreInvalidSymbol && invalidSymbol) {
+          this.requestViews.push({at: () => naValue});
+          continue;
         }
-        if (spec.type === 'int' && !Number.isInteger(value)) {
-          throw new BindError(`parameter '${spec.name}' expects an integer`);
-        }
-        const c = spec.constraints;
-        if (c !== null) {
-          if (c.minval !== null && value < c.minval) {
-            throw new BindError(
-              `parameter '${spec.name}' below minval ${c.minval}`,
-            );
-          }
-          if (c.maxval !== null && value > c.maxval) {
-            throw new BindError(
-              `parameter '${spec.name}' above maxval ${c.maxval}`,
-            );
-          }
-        }
-      } else if (spec.type === 'bool' && typeof value !== 'boolean') {
-        throw new BindError(`parameter '${spec.name}' expects a boolean`);
-      } else if (
-        (spec.type === 'string' ||
-          spec.type === 'color' ||
-          spec.type === 'source') &&
-        typeof value !== 'string'
-      ) {
-        throw new BindError(`parameter '${spec.name}' expects a string`);
+        throw new BindError(formatContextError(what, resolved));
       }
-      const c = spec.constraints;
-      if (
-        c !== null &&
-        c.options !== null &&
-        !c.options.some(option => option === value)
-      ) {
+
+      const parentAxis = this.context.axis;
+      const childAxis = resolved.axis;
+      if (parentAxis === null || childAxis === null) {
         throw new BindError(
-          `parameter '${spec.name}' must be one of ${c.options.map(String).join(', ')}`,
+          `${what}: merge requires a time axis on both contexts` +
+            " (a csv context needs a 'time' column)",
         );
       }
-      this.paramValues.push(value);
+
+      const child = new JSRuntime(
+        this.module.requests[rid],
+        this.provider,
+        null,
+        resolved,
+        this.paramValues,
+      );
+      await child.bindRequests();
+      child.finishBind();
+
+      // The child runs its full history now; each committed result lands in
+      // the column the merged view reads through.
+      const values: Value[] = [];
+      const childRoot = child.root();
+      for (let row = 0; row < child.rows; row += 1) {
+        child.executeRow(row, false);
+        values.push(child.read(childRoot, spec.resultSlot, 0));
+        child.commitRow(row);
+      }
+
+      const map = sampleMergeMap(
+        parentAxis,
+        this.rows,
+        childAxis,
+        child.rows,
+        spec.merge,
+      );
+      this.requestViews.push({
+        at: row => {
+          const childRow = map[row];
+          return childRow < 0 ? naValue : values[childRow];
+        },
+      });
     }
+  }
+
+  // The bind barrier: everything after this is the synchronous execution
+  // phase — outputs declared, program frame allocated, no more awaits.
+  finishBind(): void {
+    this.phase = 'executing';
+    if (this.sink !== null) {
+      this.sink.declare(
+        this.module.manifest.outputs.map((spec, oid) => ({
+          spec,
+          boundArgs: this.boundOutputArgs[oid],
+        })),
+      );
+    }
+    this.rootFrame = this.newFrame(0);
+  }
+
+  private mustRoot(): FrameImpl {
+    if (this.rootFrame === null) {
+      return fatal('execution before finishBind');
+    }
+    return this.rootFrame;
   }
 
   private bindSeries(): void {
@@ -180,9 +322,9 @@ class JSRuntime implements Runtime, BoundProgram {
         this.seriesData.push(null);
         return;
       }
-      const data = this.provider.series(id);
+      const data = this.context.series(id);
       if (data === null) {
-        throw new BindError(`series '${id}' is not provided by this host`);
+        throw new BindError(`series '${id}' is not provided by this context`);
       }
       this.seriesData.push(data);
     });
@@ -301,9 +443,9 @@ class JSRuntime implements Runtime, BoundProgram {
     const sameRow = this.executedRow === row;
     this.cursor = row;
     this.executedRow = row;
-    this.resetFrameScratch(this.rootFrame, sameRow);
+    this.resetFrameScratch(this.mustRoot(), sameRow);
     this.emitBuf = new Map();
-    this.module.main(this, this.rootFrame);
+    this.module.main(this, this.mustRoot());
     this.flushEmissions(row, provisional);
   }
 
@@ -311,7 +453,7 @@ class JSRuntime implements Runtime, BoundProgram {
     if (row !== this.executedRow || row !== this.committedRows) {
       return fatal(`commitRow(${row}) without a matching execute`);
     }
-    this.commitFrame(this.rootFrame);
+    this.commitFrame(this.mustRoot());
     this.committedRows = row + 1;
   }
 
@@ -323,6 +465,9 @@ class JSRuntime implements Runtime, BoundProgram {
   }
 
   private flushEmissions(row: number, provisional: boolean): void {
+    if (this.sink === null) {
+      return;
+    }
     for (const [oid, channels] of this.emitBuf) {
       this.sink.emit(row, oid, channels, provisional);
     }
@@ -354,12 +499,21 @@ class JSRuntime implements Runtime, BoundProgram {
     (fr as FrameImpl).rings[slot].setScratch(v);
   }
 
-  request(): Value {
-    return fatal('request execution is not part of this slice');
+  request(rid: number, offset: number): Value {
+    const view = this.requestViews[rid];
+    if (view === undefined) {
+      return fatal(`request ${rid} has no merged view`);
+    }
+    const index = this.cursor - offset;
+    const spec = this.module.manifest.requests[rid];
+    if (index < 0) {
+      return spec.ref ? null : NaN;
+    }
+    return view.at(index);
   }
 
   root(): Frame {
-    return this.rootFrame;
+    return this.mustRoot();
   }
 
   frame(fr: Frame, slot: number): Frame {
@@ -403,6 +557,16 @@ class JSRuntime implements Runtime, BoundProgram {
   bindOutput(oid: number, argName: string, v: Value): void {
     this.assertBinding('bindOutput');
     this.boundOutputArgs[oid].push({name: argName, value: v});
+  }
+
+  bindRequest(rid: number, symbol: Value, timeframe: Value): void {
+    this.assertBinding('bindRequest');
+    if (typeof symbol !== 'string' || typeof timeframe !== 'string') {
+      throw new BindError(
+        `request ${rid}: symbol and timeframe must bind to strings`,
+      );
+    }
+    this.requestPairs.set(rid, {symbol, timeframe});
   }
 
   private assertBinding(what: string): void {

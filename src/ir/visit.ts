@@ -249,6 +249,31 @@ function visitSeries(series: SeriesInput, reach: Reach): void {
   visitDepth(series.depth, reach);
 }
 
+// Whether an expression can evaluate in a module's init section, which has
+// no frame: only constants, scalar param reads, and pure combinations
+// qualify. Shared by the depth pass (bound depths run at init) and codegen
+// (static request contexts lower into init).
+export function bindEvaluable(e: IrExpr): boolean {
+  switch (e.kind) {
+    case IrKind.Const:
+      return true;
+    case IrKind.HistRead:
+      return e.place.kind === PlaceKind.Param && e.offset === null;
+    case IrKind.Binary:
+      return bindEvaluable(e.x) && bindEvaluable(e.y);
+    case IrKind.Unary:
+      return bindEvaluable(e.x);
+    case IrKind.Cond:
+      return (
+        bindEvaluable(e.cond) && bindEvaluable(e.then) && bindEvaluable(e.else)
+      );
+    case IrKind.CallNative:
+      return e.args.every(bindEvaluable);
+    default:
+      return false;
+  }
+}
+
 // Adding an IrKind without extending the walker fails to compile here.
 function unreachableExpr(expr: never): never {
   return fatal(`unhandled IR expression: ${JSON.stringify(expr)}`);

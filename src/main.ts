@@ -42,6 +42,19 @@ function runStage<T>(fn: () => T): T {
   }
 }
 
+// The async variant for verbs that bind: context resolution awaits.
+async function runStageAsync<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof UnimplementedError) {
+      console.error(`tea: ${error.message}`);
+      process.exit(2);
+    }
+    throw error;
+  }
+}
+
 const tea = new Command('tea')
   .description('Tea language compiler and runner')
   .version('0.1.0');
@@ -55,8 +68,8 @@ tea
     '--trace',
     'print the machine trace format (golden-compatible) instead of a table',
   )
-  .action((file: string, options: {input?: string; trace?: boolean}) => {
-    runStage(() => {
+  .action(async (file: string, options: {input?: string; trace?: boolean}) => {
+    await runStageAsync(async () => {
       const result = compile([file], DEFAULT_COMPILE_CONFIG);
       if (!result.ok) {
         exitWithErrors(result.errors);
@@ -72,12 +85,12 @@ tea
           : new TableSink(text => console.log(text));
       const sink = table ?? new TraceSink(line => console.log(line));
       try {
-        const bound = bind(module, {
+        const exec = await bind(module, {
           params: {},
           provider: csvProvider(readFileSync(options.input, 'utf8')),
           sink,
         });
-        bound.runAll();
+        exec.runAll();
         table?.flush();
       } catch (error) {
         if (error instanceof BindError) {
@@ -147,4 +160,4 @@ tea
     },
   );
 
-tea.parse();
+await tea.parseAsync();

@@ -51,8 +51,13 @@ export default {
       {locals: [{storage, depth}, ...],   // slot-indexed; depth: none|const n|bound|capped n
        subs:   [{fid}, ...]},             // call-site-slot-indexed
     ],
+    requests: [{merge, depth, resultSlot, ref}, ...],  // rid-indexed metadata
   },
-  init(rt) {...},                // bind time: rt.bindDepth / rt.bindOutput calls
+  requests: [M1, ...],           // rid-indexed child modules (same shape,
+                                 // sibling consts — code cannot live in the
+                                 // JSON manifest)
+  init(rt) {...},                // bind time: rt.bindDepth / rt.bindOutput /
+                                 // rt.bindRequest calls
   inits: {(fid, slot): (rt, fr) => v},   // var/varip first-execution thunks
   funcs: {fid: (rt, fr, ...args) => v},
   main(rt, fr) {...},            // the per-row body (fr = program frame)
@@ -85,7 +90,9 @@ rt.series(sid, offset)        // ambient series and input.source params
 rt.param(pid)                 // bind-time scalar
 rt.read(fr, slot, offset)     // a name's history
 rt.write(fr, slot, v)
-rt.request(rid, sym, tf, offset)  // reserved: request slice (docs/requests.md)
+rt.request(rid, offset)       // the edge's merged view (docs/requests.md);
+                              // the dynamic form adds context args at the
+                              // offset-0 read — a later slice
 // frames
 rt.frame(fr, slot)            // open the sub-frame at this call site
 rt.root()                     // the program frame (globals read from funcs)
@@ -95,6 +102,7 @@ rt.emit(oid, channel, v)
 rt.bindDepth(fid, slot, bars)   // a name's bound history depth
 rt.bindSeriesDepth(sid, bars)   // a series/input.source bound depth
 rt.bindOutput(oid, argName, v)  // an output's bind-time argument
+rt.bindRequest(rid, sym, tf)    // a static request edge's context pair
 // heap (reserved: collections/UDT slice)
 rt.newUdt / rt.field / rt.mutField / rt.array*
 ```
@@ -124,7 +132,7 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
 
 ```ts
 interface SeriesView {
-  at(offset: number): number;   // offset 0 = current row; out of range = na
+  at(offset: number): number; // offset 0 = current row; out of range = na
 }
 ```
 
@@ -165,9 +173,13 @@ n` / `capped n` = n + 1 cells, `bound` = the value `init` reported via
 ## Main loop and the provisional protocol
 
 ```
-bind(module, params, provider, sink):
-  validate params against constraints; resolve manifest.series via provider
-  (a demanded id the provider lacks is a bind error); run module.init;
+bind(module, params, provider, sink):        # async — awaits live here only
+  await provider.resolveContext('', '')      # the primary context
+  validate params; run module.init           # collects depths, output args,
+                                             # and static request pairs
+  resolve manifest.series from the context   # a missing id is a bind error
+  per request edge: await resolveContext(pair); bind + run the child
+  (recursively, same machinery, null sink); build the merged view
   size rings; build the program frame; sink.declare(outputs + bound args)
 
 per row r (historical):        execute(r); commit(r)
@@ -194,10 +206,15 @@ Emissions carry a `provisional` flag to the sink; alert-class outputs fire
 on commit only.
 
 ```ts
-interface DataProvider { series(id: string): SeriesData | null }
-interface SeriesData   { readonly length: number; at(index: number): number }
+interface DataProvider {
+  series(id: string): SeriesData | null;
+}
+interface SeriesData {
+  readonly length: number;
+  at(index: number): number;
+}
 interface OutputSink {
-  declare(outputs): void;                            // before the first row
+  declare(outputs): void; // before the first row
   emit(row, oid, channels, provisional): void;
 }
 ```
@@ -218,8 +235,8 @@ makes golden traces and the tick/rollback property tests
 
 ## Staged beyond this slice
 
-Request execution (child instances, merge, dynamic contexts — specified in
-`docs/requests.md`), collections
+Dynamic requests (series context args — `docs/requests.md`), collections
 and UDT heap ops (COW at the `rt.mut*` seam), drawing/handle natives,
-network providers (Stooq), live push feeds, and V8-isolate embedding. None
-of them change the surface above; they fill reserved entries.
+network drivers beyond csv (yahoo/stooq/fred), live push feeds, and
+V8-isolate embedding. None of them change the surface above; they fill
+reserved entries.

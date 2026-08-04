@@ -18,9 +18,17 @@ frame trees, rings, the provisional/commit protocol, emission flushing.
   Commit pushes scratch into history; rollback is discarding scratch.
 - One Ring class serves value and reference slots (naValue NaN vs null);
   var/varip rings keep at least one committed cell regardless of depth.
-- Bind-time entries (bindDepth/bindSeriesDepth/bindOutput) are legal only
-  while the module's init section runs; series depth demands are a contract
-  passed to providers, not an allocation.
+- Bind-time entries (bindDepth/bindSeriesDepth/bindOutput/bindRequest) are
+  legal only while the module's init section runs; series depth demands are
+  a contract passed to providers, not an allocation.
+- bind is async and is the ONLY await point: context resolution and
+  request-child execution happen before row 0; the per-row hot path never
+  awaits. Request children recurse through the same JSRuntime class with a
+  null sink and the parent's resolved params (compilation-global).
+- Merge is alignment, not data movement (`merge.ts` owns the mapping; the
+  merged result is a parent-row-indexed view over child committed values).
+  Merge reads committed child cells only — provisional child state is
+  invisible by construction.
 - Bind failures (bad param, missing series) throw `BindError` — user-facing
   and host-actionable; protocol misuse (out-of-order rows, unknown slots)
   is `fatal()`.

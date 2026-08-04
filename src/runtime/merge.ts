@@ -1,0 +1,44 @@
+// Purpose: Sample-merge alignment — a pure function from two time axes and a merge policy to a parent→child row mapping; never copies child data (docs/requests.md: merge is alignment, not data movement).
+
+import type {RequestSpec, TimeAxis} from './abi';
+
+// The parent-row-indexed mapping: entry p is the child row whose result
+// serves parent row p, or -1 for na. Merge semantics are runtime-owned and
+// source-independent; a FRED monthly series under a daily axis obeys the
+// same rules as an equity HTF request.
+export function sampleMergeMap(
+  parentAxis: TimeAxis,
+  parentRows: number,
+  childAxis: TimeAxis,
+  childRows: number,
+  merge: RequestSpec['merge'],
+): Int32Array {
+  const map = new Int32Array(parentRows);
+  let child = -1;
+  for (let p = 0; p < parentRows; p += 1) {
+    const before = child;
+    if (merge.lookahead) {
+      // lookahead_on: the child bar containing the parent bar's open —
+      // reads a value not yet final on historical data (Pine's documented
+      // repaint footgun, implemented for compliance).
+      const openTime = parentAxis.time(p);
+      while (child + 1 < childRows && childAxis.time(child + 1) <= openTime) {
+        child += 1;
+      }
+    } else {
+      // lookahead_off: the most recent child bar that has CLOSED by this
+      // parent bar's close. A still-forming child bar contributes nothing.
+      const closeTime = parentAxis.closeTime(p);
+      while (
+        child + 1 < childRows &&
+        childAxis.closeTime(child + 1) <= closeTime
+      ) {
+        child += 1;
+      }
+    }
+    // gaps_on: only rows where a NEW child bar arrived carry a value.
+    const gapped = merge.gaps && child === before;
+    map[p] = child < 0 || gapped ? -1 : child;
+  }
+  return map;
+}

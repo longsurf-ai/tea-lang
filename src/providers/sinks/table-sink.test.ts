@@ -20,7 +20,10 @@ describe('TableSink', () => {
       {
         spec: spec(
           'indicator',
-          [{name: 'title', value: 'MACD'}, {name: 'shorttitle', value: 'MACD'}],
+          [
+            {name: 'title', value: 'MACD'},
+            {name: 'shorttitle', value: 'MACD'},
+          ],
           [],
         ),
         boundArgs: [],

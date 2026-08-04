@@ -10,11 +10,7 @@ describe('TabWriter', () => {
     tw.writeCells(['0', '1', '2']);
     tw.writeCells(['10', '0.5', '12.25']);
     expect(tw.flush()).toBe(
-      [
-        'row  MACD  Signal',
-        '0    1     2',
-        '10   0.5   12.25',
-      ].join('\n'),
+      ['row  MACD  Signal', '0    1     2', '10   0.5   12.25'].join('\n'),
     );
   });
 

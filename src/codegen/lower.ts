@@ -11,7 +11,13 @@ import {
   type IrStmt,
   type Name,
 } from '../ir/node';
-import type {IrFunc, OutputDecl, ParamInput, SeriesInput} from '../ir/program';
+import type {
+  IrFunc,
+  OutputDecl,
+  ParamInput,
+  RequestEdge,
+  SeriesInput,
+} from '../ir/program';
 import {isNaValue, TypeKind, type Type} from '../ir/type';
 
 // Everything the walk needs to address program objects as dense ids. The
@@ -25,6 +31,11 @@ export interface LowerCtx {
   readonly paramSeriesIds: Map<ParamInput, number>;
   readonly outputIds: Map<OutputDecl, number>;
   readonly funcIds: Map<IrFunc, number>;
+  readonly requestIds: Map<RequestEdge, number>;
+  // The generated const this module's own code refers to itself by ('M'
+  // for the root, 'M1'… for request children) — funcs-table dispatch must
+  // name the module that owns the func.
+  readonly moduleRef: string;
   // The frame whose handle is in scope as `fr` while lowering.
   currentFid: number;
   noteCallSite(fid: number, slot: number, callee: IrFunc): void;
@@ -152,8 +163,15 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           // Scalar params are constant over rows; history is the value.
           return `rt.param(${pid})`;
         }
-        case PlaceKind.Request:
-          return unimplemented('codegen: request reads');
+        case PlaceKind.Request: {
+          const rid = ctx.requestIds.get(e.place.request);
+          if (rid === undefined) {
+            return fatal('lowering reached an unmapped request edge');
+          }
+          return `rt.request(${rid}, ${off})`;
+        }
+        default:
+          return fatal('unhandled place kind');
       }
     }
     case IrKind.Binary:
@@ -176,7 +194,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       }
       ctx.noteCallSite(ctx.currentFid, e.slot, e.func);
       const args = e.args.map(a => subexpr(a, out, ctx).expr);
-      return `M.funcs[${fid}](rt, rt.frame(fr, ${e.slot})${args.map(a => `, (${a})`).join('')})`;
+      return `${ctx.moduleRef}.funcs[${fid}](rt, rt.frame(fr, ${e.slot})${args.map(a => `, (${a})`).join('')})`;
     }
     case IrKind.CallNative:
       return lowerNative(e.native, e.args, out, ctx);
