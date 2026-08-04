@@ -105,6 +105,7 @@ const child: Program = {
 };
 
 const edge: RequestEdge = {
+  pos,
   symbol: {
     kind: IrKind.Const,
     pos,

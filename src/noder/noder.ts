@@ -118,7 +118,13 @@ class Noder {
   // pushed per child capture being noded (nested requests belong to the
   // child).
   private readonly requestLevels: RequestEdge[][] = [[]];
-  private readonly requestOf = new Map<syntax.CallExpr, RequestEdge>();
+  // Request edges memoize per (side-table view, call site): the same syntax
+  // call noded under two FuncInstances must yield two edges — the context
+  // exprs reference the INSTANCE's param Names.
+  private readonly requestOf = new Map<
+    SideTables,
+    Map<syntax.CallExpr, RequestEdge>
+  >();
   private version = 1;
 
   // The side-table view for the context being noded: the Info itself for
@@ -160,7 +166,32 @@ class Noder {
       body,
     };
     resolveDepths(program);
+    this.checkDynamicRequestsFlag(program);
     return program;
+  }
+
+  // Pine v6 dynamic_requests defaults to true; an explicit false on the
+  // declaration restores the static-only gate on context args. A post-pass
+  // so declaration order cannot dodge it.
+  private checkDynamicRequestsFlag(program: Program): void {
+    const declared = program.outputs
+      .flatMap(output => output.staticArgs)
+      .find(arg => arg.name === 'dynamic_requests');
+    if (declared === undefined || declared.value !== false) {
+      return;
+    }
+    const visit = (requests: readonly RequestEdge[]): void => {
+      for (const edge of requests) {
+        if (this.isDynamicEdge(edge)) {
+          this.errors.errorAt(
+            edge.pos,
+            'series context arguments need dynamic_requests=true',
+          );
+        }
+        visit(edge.child.requests);
+      }
+    };
+    visit(program.requests);
   }
 
   private tvOf(e: syntax.Expr): TypeAndValue {
@@ -287,6 +318,13 @@ class Noder {
       init.kind === IrKind.HistRead &&
       init.offset === null &&
       init.place.kind !== PlaceKind.Name &&
+      // Dynamic request reads must EXECUTE per row (rt.requestFor); an
+      // alias would erase the execution, so the declaration stays a real
+      // per-row Name write.
+      !(
+        init.place.kind === PlaceKind.Request &&
+        this.isDynamicEdge(init.place.request)
+      ) &&
       rebindable &&
       d.mode === Mode.None
     ) {
@@ -693,7 +731,21 @@ class Noder {
   private nodeHistory(e: syntax.HistoryExpr, tv: TypeAndValue): IrExpr {
     const offset = this.nodeExpr(e.offset);
     const x = this.nodeExpr(e.x);
-    if (x.kind === IrKind.HistRead && x.offset === null) {
+    // e[0] IS e: the current-bar value, whatever the expression.
+    if (offset.kind === IrKind.Const && offset.value === 0) {
+      return x;
+    }
+    if (
+      x.kind === IrKind.HistRead &&
+      x.offset === null &&
+      // A dynamic request read cannot collapse into an offset read — the
+      // offset-0 read is its execution; history desugars through the
+      // synthetic per-row name below.
+      !(
+        x.place.kind === PlaceKind.Request &&
+        this.isDynamicEdge(x.place.request)
+      )
+    ) {
       return {
         kind: IrKind.HistRead,
         pos: e.pos,
@@ -839,7 +891,7 @@ class Noder {
     resolved: ResolvedCall,
     tv: TypeAndValue,
   ): IrExpr {
-    const existing = this.requestOf.get(c);
+    const existing = this.requestMemo().get(c);
     if (existing !== undefined) {
       return this.requestRead(c, existing, tv);
     }
@@ -871,20 +923,6 @@ class Noder {
     // Parent-context pieces first.
     const symbol = this.nodeExpr(symbolExpr);
     const timeframe = this.nodeExpr(timeframeExpr);
-    // Pine v6 dynamic_requests defaults to true; an explicit false restores
-    // the static-only gate on context args. Best-effort placement: the
-    // indicator declaration precedes request calls in practice.
-    if (!bindEvaluable(symbol) || !bindEvaluable(timeframe)) {
-      const declared = this.outputs
-        .flatMap(output => output.staticArgs)
-        .find(arg => arg.name === 'dynamic_requests');
-      if (declared !== undefined && declared.value === false) {
-        this.errors.errorAt(
-          c.pos,
-          'series context arguments need dynamic_requests=true',
-        );
-      }
-    }
     const calcBars = argExpr('calc_bars_count');
     const currency = argValue('currency');
     const merge: MergePolicy = {
@@ -938,6 +976,7 @@ class Noder {
     resolveDepths(child);
 
     const edge: RequestEdge = {
+      pos: c.pos,
       symbol,
       timeframe,
       merge,
@@ -947,8 +986,24 @@ class Noder {
       child,
     };
     this.requestLevels[this.requestLevels.length - 1].push(edge);
-    this.requestOf.set(c, edge);
+    this.requestMemo().set(c, edge);
     return this.requestRead(c, edge, tv);
+  }
+
+  private requestMemo(): Map<syntax.CallExpr, RequestEdge> {
+    let memo = this.requestOf.get(this.tables);
+    if (memo === undefined) {
+      memo = new Map();
+      this.requestOf.set(this.tables, memo);
+    }
+    return memo;
+  }
+
+  // A dynamic edge's offset-0 read is its EXECUTION (rt.requestFor), so
+  // reads must materialize where the call appears: no alias binding, no
+  // history collapse onto the place — history rides a real per-row Name.
+  private isDynamicEdge(edge: RequestEdge): boolean {
+    return !bindEvaluable(edge.symbol) || !bindEvaluable(edge.timeframe);
   }
 
   private requestRead(

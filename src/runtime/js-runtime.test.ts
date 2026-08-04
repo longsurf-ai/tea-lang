@@ -784,3 +784,76 @@ describe('dynamic requests', () => {
     expect(bound.runAll()).rejects.toThrow('exceed the cap of 1');
   });
 });
+
+const VARIP_DYNAMIC_MODULE: TeaModule = {
+  ...DYNAMIC_MODULE,
+  manifest: {
+    ...DYNAMIC_MODULE.manifest,
+    frames: [
+      {
+        locals: [{storage: Storage.Varip, depth: {kind: 'none'}, ref: false}],
+        subs: [],
+      },
+    ],
+  },
+  inits: {'0:0': () => 0},
+  main(rt, fr) {
+    // varip increments BEFORE the request read, so an aborted attempt
+    // would contaminate it without the snapshot restore.
+    rt.write(fr, 0, num(rt.read(fr, 0, 0)) + 1);
+    const sym = rt.series(0, 0) > 3 ? 'X' : 'Y';
+    rt.emit(0, 0, rt.requestFor(0, sym, ''));
+    rt.emit(0, 1, rt.read(fr, 0, 0));
+  },
+};
+
+describe('suspension protocol', () => {
+  const parentSix = () =>
+    context({close: new ArraySeries([1, 2, 3, 4, 5, 6])}, regularAxis(0, 1, 6));
+  const twoSpan = (values: number[]) =>
+    context({close: new ArraySeries(values)}, regularAxis(0, 2, values.length));
+
+  test('commitRow after a suspended execution is protocol misuse', async () => {
+    const bound = await bind(DYNAMIC_MODULE, {
+      params: {},
+      provider: contexts({'': parentSix(), X: twoSpan([1]), Y: twoSpan([2])}),
+      sink: new RecordingSink(),
+    });
+    expect(() => bound.executeRow(0, false)).toThrow(
+      'unresolved request context',
+    );
+    expect(() => bound.commitRow(0)).toThrow('after a suspended execution');
+    // The documented recovery: resolve, re-execute, then commit.
+    await bound.resolvePending();
+    bound.executeRow(0, false);
+    bound.commitRow(0);
+  });
+
+  test('varip survives completed ticks but not aborted attempts', async () => {
+    const close = new ArraySeries([1, 2]);
+    const sink = new RecordingSink();
+    const bound = await bind(VARIP_DYNAMIC_MODULE, {
+      params: {},
+      provider: contexts({
+        '': context({close}, regularAxis(0, 1, 2)),
+        X: twoSpan([10]),
+        Y: twoSpan([100]),
+      }),
+      sink,
+    });
+    // Tick 1 on row 0: pair Y unresolved — the attempt aborts, resolves,
+    // and the retry completes with p=1 (the abort vanished).
+    expect(() => bound.executeRow(0, true)).toThrow('unresolved');
+    await bound.resolvePending();
+    bound.executeRow(0, true);
+    // Tick 2 flips the symbol to the unresolved pair X mid-row: the abort
+    // must not eat tick 1's legitimate varip accumulation.
+    close.values[0] = 5;
+    expect(() => bound.executeRow(0, true)).toThrow('unresolved');
+    await bound.resolvePending();
+    bound.executeRow(0, true);
+    const varips = sink.emits.map(e => e.channels[1]);
+    // tick1 completes with p=1; tick2 completes with p=2.
+    expect(varips).toEqual([1, 2]);
+  });
+});

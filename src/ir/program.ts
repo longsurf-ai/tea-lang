@@ -1,5 +1,6 @@
 // Purpose: Tea Program contract — the compiler's complete static description of a script; the runtime implements the Time Machine (buffers, copy-on-write, rollback) from this description.
 
+import type {Pos} from '../base/pos';
 import type {DataSeriesId, HistoryDepth, IrExpr, IrStmt, Name} from './node';
 import type {ConstValue, Qualifier, Type} from './type';
 
@@ -100,6 +101,9 @@ export interface MergePolicy {
 // A request.* call site: the expression's dependency closure compiled as a
 // child Program with its own context, axis, and rollback.
 export interface RequestEdge {
+  // The call site (diagnostics: post-pass errors like the
+  // dynamic_requests=false gate anchor here).
+  readonly pos: Pos;
   // input/simple for static contexts; series-qualified exprs are the dynamic
   // request form — the child stays one static template, and the runtime
   // instantiates it per distinct (symbol, timeframe) pair it encounters.

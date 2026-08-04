@@ -60,6 +60,11 @@ export class Ring {
     if (offset === 0) {
       return this.scratch;
     }
+    // Runtime-computed negative offsets would index a future/garbage cell;
+    // out-of-range reads are na, exactly like series reads.
+    if (offset < 0) {
+      return this.naValue;
+    }
     const back = offset - 1; // 0 = most recent committed
     if (back >= this.count || back >= this.keep) {
       return this.naValue;

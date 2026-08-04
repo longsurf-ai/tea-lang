@@ -309,6 +309,84 @@ describe('dynamic requests end to end', () => {
     ]);
   });
 
+  test('history-only reads still execute the request (materialized name)', async () => {
+    // No offset-0 plot at all: the write at the declaration is the
+    // execution, so history is well-defined instead of silently na.
+    const lines = await runSource(
+      [
+        'r = request.security(close > 3 ? "X" : "Y", "D", close)',
+        'plot(r[1])',
+      ].join(chr10()),
+      '',
+      {},
+      csvContexts({'': primaryCsv, X: contextX, Y: contextY}),
+    );
+    expect(lines.slice(1)).toEqual([
+      '0 0 na',
+      '1 0 na',
+      '2 0 100',
+      '3 0 100',
+      '4 0 20',
+      '5 0 20',
+    ]);
+  });
+
+  test('direct history and explicit [0] on a dynamic request', async () => {
+    const lines = await runSource(
+      [
+        'plot(request.security(close > 3 ? "X" : "Y", "D", close)[1])',
+        'plot(request.security(close > 3 ? "X" : "Y", "D", close)[0])',
+      ].join(chr10()),
+      '',
+      {},
+      csvContexts({'': primaryCsv, X: contextX, Y: contextY}),
+    );
+    expect(lines.slice(2)).toEqual([
+      '0 0 na',
+      '0 1 na',
+      '1 0 na',
+      '1 1 100',
+      '2 0 100',
+      '2 1 100',
+      '3 0 100',
+      '3 1 20',
+      '4 0 20',
+      '4 1 20',
+      '5 0 20',
+      '5 1 30',
+    ]);
+  });
+
+  test('a request inside a function gets one edge per instance', async () => {
+    const lines = await runSource(
+      [
+        'f(string s) =>',
+        String.fromCharCode(9) + 'request.security(s, "D", close)',
+        'a = f(close > 3 ? "X" : "Y")',
+        'b = f("Y")',
+        'plot(a)',
+        'plot(b)',
+      ].join(chr10()),
+      '',
+      {},
+      csvContexts({'': primaryCsv, X: contextX, Y: contextY}),
+    );
+    expect(lines.slice(2)).toEqual([
+      '0 0 na',
+      '0 1 na',
+      '1 0 100',
+      '1 1 100',
+      '2 0 100',
+      '2 1 100',
+      '3 0 20',
+      '3 1 200',
+      '4 0 20',
+      '4 1 200',
+      '5 0 30',
+      '5 1 300',
+    ]);
+  });
+
   test('an unknown dynamic pair under ignore_invalid_symbol is na and warned', async () => {
     const {sink: logSink, events} = captureSink();
     const original = logConfig();

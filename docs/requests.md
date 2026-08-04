@@ -226,11 +226,14 @@ Execution:
   child over its full history, and prepares the merged view. No row ever
   suspends.
 - **Dynamic edges**: the offset-0 read evaluates the context args inline
-  and calls `rt.requestFor(rid, sym, tf)`; the returned value also lands
-  in the edge's **result ring**, which history reads (`rt.request(rid,
-  offset)`) go through — the parent-row history of "whatever the request
-  returned", whichever pair served each row. One merged view per
-  `(edge, pair)`, built on first encounter.
+  and calls `rt.requestFor(rid, sym, tf)` — and that read IS the edge's
+  execution, so the noder materializes it: no alias binding, no history
+  collapse onto the place. `r = request.security(sym, …)` stays a real
+  per-row Name write and `r[1]` is a name-ring read (the parent-row
+  history of "whatever the request returned", whichever pair served each
+  row); direct `request(...)[k]` rides the synthetic $hist name. The
+  edge's own result ring backs `rt.request(rid, offset)` for hand-written
+  modules. One merged view per `(edge, pair)`, built on first encounter.
 - **Suspension**: an unresolved pair throws `ContextSuspension` out of
   `executeRow`; the host awaits `resolvePending()` (where
   `resolveContext`, the child's full-history run, and the merge happen)

@@ -35,10 +35,14 @@ resolution pass. Source loading lives in `src/loader`.
   `capped` with the `indicator(max_bars_back=…)` cap or the engine default.
   Depths annotate the shared place objects (Names, series, params) in place.
 - Alias bindings: a never-reassigned plain declaration whose initializer is
-  a current-bar read of a STABLE place (series, param, request — never a
-  Name, whose later writes would leak through) binds the name to the place,
-  so history offsets land on the place itself (`prev = daily[1]` reaches
-  the request edge's depth).
+  a current-bar read of a STABLE place (series, param, STATIC request —
+  never a Name, whose later writes would leak through) binds the name to
+  the place, so history offsets land on the place itself. DYNAMIC request
+  reads never alias and never collapse history onto the place: the
+  offset-0 read IS the execution (rt.requestFor), so the declaration stays
+  a real per-row Name write and history rides that Name (or the synthetic
+  $hist name for direct `request(...)[k]`). `e[0]` normalizes to `e` for
+  every expression.
 - A request.\* call site nodes into a `RequestEdge`: symbol/timeframe/merge
   evaluate in the parent context; the captured expression nodes against the
   checker's child tables into a child Program with its own frame, slot
