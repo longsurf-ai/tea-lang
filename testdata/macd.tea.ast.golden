@@ -1,4 +1,4 @@
-File @2:1 version="6" eof=@34:1
+File @2:1 version="1" eof=@34:1
   stmtList[0]: ExprStmt @2:1
     x: CallExpr @2:1
       fun: Name @2:1 value="indicator"
