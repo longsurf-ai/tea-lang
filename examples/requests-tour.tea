@@ -19,11 +19,7 @@ spyStep = spy - spy[1]
 
 // Explicit prefix routing, weekly bars served natively by the driver,
 // gaps on — rows between weekly closes stay na instead of carrying
-// forward. (STOOQ: routes the same way, but stooq currently fronts its
-// csv endpoint with a JavaScript challenge on some networks — if it
-// answers plainly for you, try: request.security("STOOQ:aapl.us", "W",
-// close, gaps=true). The typed fetchFailed you get otherwise is the
-// driver being honest about an unofficial source.)
+// forward.
 qqqWeekly = request.security("YAHOO:QQQ", "W", close, gaps=true)
 
 // A bogus symbol under ignore_invalid_symbol: the column is na, never a

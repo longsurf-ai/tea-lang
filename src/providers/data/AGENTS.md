@@ -31,12 +31,13 @@ range)` → a fixed-extent `ProviderContext` (or a typed `ContextError`,
   needs what. Hosts (main.ts, OpenChart) call `builtinSources` and never
   assemble driver registries inline.
 - Network drivers (`yahoo.ts` — unofficial v8 chart API, keyless, intraday
-  capable; `stooq.ts` — EOD csv, keyless; `fred.ts` — macro observations,
-  key via options, single-valued → close collapse) all take an injectable
+  capable, the default source; `fred.ts` — macro observations, key via
+  options, single-valued → close collapse) all take an injectable
   `fetchImpl` and are tested fully offline with canned payloads — no test
-  may touch the network. EOD axes use the csv next-open convention with a
-  nominal last-bar span (deviation-ledger item: real session closes
-  differ).
+  may touch the network. The roster follows quantmod's: sources it
+  supports, we support, with the same key treatment (alphavantage/tiingo
+  staged). EOD axes use the csv next-open convention with a nominal
+  last-bar span (deviation-ledger item: real session closes differ).
 - Drivers normalize (single-valued sources map to `close`, collapsing
   OHLC), resample in-driver or report `unsupportedTimeframe`, and keep
   axes honest — the runtime never guesses session calendars.

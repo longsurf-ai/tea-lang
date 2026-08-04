@@ -237,6 +237,6 @@ makes golden traces and the tick/rollback property tests
 
 Dynamic requests (series context args — `docs/requests.md`), collections
 and UDT heap ops (COW at the `rt.mut*` seam), drawing/handle natives,
-network drivers beyond csv (yahoo/stooq/fred), live push feeds, and
+network drivers beyond csv (yahoo/fred; the quantmod roster — alphavantage/tiingo with the same key treatment — as needed), live push feeds, and
 V8-isolate embedding. None of them change the surface above; they fill
 reserved entries.

@@ -51,11 +51,9 @@ describe('builtinSources', () => {
       fetchImpl: urlRecorder(urls),
     });
     await sources.resolveContext('AAPL', 'D', FULL_RANGE);
-    await sources.resolveContext('STOOQ:aapl.us', 'D', FULL_RANGE);
     await sources.resolveContext('FRED:GDP', '', FULL_RANGE);
     expect(urls[0]).toContain('finance.yahoo.com');
-    expect(urls[1]).toContain('stooq.com');
-    expect(urls[2]).toContain('api.stlouisfed.org');
+    expect(urls[1]).toContain('api.stlouisfed.org');
   });
 
   test('FRED without a key is a typed configuration error, no fetch', async () => {

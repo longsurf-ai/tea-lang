@@ -19,7 +19,7 @@ Runtime      child instance per (edge, symbol, timeframe)
                  |  resolveContext(symbol, timeframe, range)
                  v
 Provider     prefix registry:  "FRED:" -> fred(apiKey)
-             "STOOQ:" -> stooq   "" | "YAHOO:" -> yahoo   csv
+             "" -> host primary | unprefixed -> yahoo   csv
              drivers normalize + resample; errors are typed
                  ^
 Host config  registry construction + API keys (CLI config / OpenChart)
@@ -124,9 +124,11 @@ keys), with the prefix as the routing key:
 - In-package drivers: **csv** (existing), **yahoo** (default; unofficial
   chart API — free, intraday-capable, also carries dividend/split events
   for the later sugar; no contractual stability, an accepted tradeoff for
-  a dev tool), **stooq** (EOD, keyless), **fred** (macro, free key). The
-  four demonstrate the facade across market and macro data on a standalone
-  checkout; all are plain `fetch` + normalization, zero dependencies.
+  a dev tool), **fred** (macro, free key). The roster follows quantmod's:
+  the sources it supports, we support, with the same key treatment
+  (alphavantage/tiingo staged; stooq was dropped — its csv endpoint now
+  sits behind a JavaScript challenge). All are plain `fetch` +
+  normalization, zero dependencies.
 
 ### Driver obligations
 

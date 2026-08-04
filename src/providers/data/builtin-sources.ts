@@ -3,7 +3,6 @@
 import type {DataProvider} from '../../runtime/abi';
 import {fredProvider} from './fred';
 import {registryProvider} from './registry';
-import {stooqProvider} from './stooq';
 import {yahooProvider} from './yahoo';
 
 // The quantmod parallel: drivers AND the default-source policy live in the
@@ -46,7 +45,6 @@ export function builtinSources(options: {
     },
     sources: {
       YAHOO: yahoo,
-      STOOQ: stooqProvider({fetchImpl}),
       FRED: fred,
     },
   });

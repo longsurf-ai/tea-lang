@@ -32,7 +32,7 @@ export function csvProvider(text: string): DataProvider {
 }
 
 // Exported for hosts and drivers that assemble multi-context providers from
-// csv-shaped payloads (test fixtures, Stooq responses).
+// csv-shaped payloads (test fixtures, csv-shaped driver payloads).
 export function csvContext(text: string): ProviderContext {
   const lines = text.trim().split(/\r?\n/);
   const headers = lines[0].split(',').map(h => h.trim());
