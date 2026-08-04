@@ -90,7 +90,7 @@ tea
           params: {},
           provider: builtinSources({
             primary: csvProvider(readFileSync(options.input, 'utf8')),
-            fredApiKey: process.env['FRED_API_KEY'],
+            config: process.env,
           }),
           sink,
         });

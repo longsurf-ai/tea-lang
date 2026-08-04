@@ -47,7 +47,7 @@ describe('builtinSources', () => {
     const urls: string[] = [];
     const sources = builtinSources({
       primary: primaryDouble([]),
-      fredApiKey: 'k',
+      config: {FRED_API_KEY: 'k'},
       fetchImpl: urlRecorder(urls),
     });
     await sources.resolveContext('AAPL', 'D', FULL_RANGE);

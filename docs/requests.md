@@ -115,9 +115,12 @@ keys), with the prefix as the routing key:
   policy belong to the package (`builtinSources` — '' is the host's
   primary context, any other unprefixed symbol defaults to yahoo, so
   `request.security("AAPL", …)` works over a csv-driven chart); hosts only
-  parameterize it — the primary context and API keys (env for `tea`,
-  OpenChart's own configuration for its MarketFeed driver). Keys never
-  appear in Tea source or the runtime.
+  parameterize it — a primary context and an opaque config record (the
+  CLI hands in `process.env`; OpenChart hands in its own store). Driver
+  configuration conventions (`FRED_API_KEY`) belong to `builtinSources`,
+  the way quantmod's `getSymbols.av` owns its `av.key` convention — hosts
+  never know which driver needs what, and keys never appear in Tea source
+  or the runtime.
 - In-package drivers: **csv** (existing), **yahoo** (default; unofficial
   chart API — free, intraday-capable, also carries dividend/split events
   for the later sugar; no contractual stability, an accepted tradeoff for

@@ -25,8 +25,11 @@ range)` → a fixed-extent `ProviderContext` (or a typed `ContextError`,
   division: routing policy in the package, hosts only parameterize):
   '' → the host's primary context, other unprefixed symbols → yahoo,
   prefixes → the built-in drivers, FRED without a key → a typed
-  configuration error. Hosts (main.ts, OpenChart) call `builtinSources`
-  and never assemble driver registries inline.
+  configuration error. Driver configuration conventions (which keys exist,
+  their names — `FRED_API_KEY`) also live HERE: hosts hand in an opaque
+  config record (the CLI passes `process.env`) and never know which driver
+  needs what. Hosts (main.ts, OpenChart) call `builtinSources` and never
+  assemble driver registries inline.
 - Network drivers (`yahoo.ts` — unofficial v8 chart API, keyless, intraday
   capable; `stooq.ts` — EOD csv, keyless; `fred.ts` — macro observations,
   key via options, single-valued → close collapse) all take an injectable

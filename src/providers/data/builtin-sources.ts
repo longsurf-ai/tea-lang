@@ -7,26 +7,31 @@ import {stooqProvider} from './stooq';
 import {yahooProvider} from './yahoo';
 
 // The quantmod parallel: drivers AND the default-source policy live in the
-// package (getSymbols' src dispatch + setDefaults); hosts only parameterize
-// it — the primary context ('' — a csv file, a chart) and API keys. Unlike
-// quantmod there is no global mutable state: every call builds an
-// independent provider.
+// package (getSymbols' src dispatch + setDefaults), and so do the drivers'
+// configuration conventions (which keys exist, what they are named) — the
+// way getSymbols.av owns its av.key convention. Hosts hand in only a
+// primary context ('' — a csv file, a chart) and an opaque configuration
+// surface; they never know which driver needs what. Unlike quantmod there
+// is no global mutable state: every call builds an independent provider.
 export function builtinSources(options: {
   readonly primary: DataProvider;
-  readonly fredApiKey?: string;
+  // Key/value configuration the drivers' settings are extracted from
+  // ('FRED_API_KEY'). The CLI hands in process.env; other hosts hand in
+  // their own stores under the same key names.
+  readonly config?: Readonly<Record<string, string | undefined>>;
   // Injected into every driver so tests stay offline.
   readonly fetchImpl?: typeof fetch;
 }): DataProvider {
   const fetchImpl = options.fetchImpl;
   const yahoo = yahooProvider({fetchImpl});
-  const fredKey = options.fredApiKey ?? '';
+  const fredKey = options.config?.['FRED_API_KEY'] ?? '';
   const fred: DataProvider =
     fredKey === ''
       ? {
           resolveContext: () =>
             Promise.resolve({
               error: 'unknownSource' as const,
-              detail: 'a FRED api key is required for FRED: symbols',
+              detail: "FRED: symbols need FRED_API_KEY in the host's config",
             }),
         }
       : fredProvider({apiKey: fredKey, fetchImpl});
