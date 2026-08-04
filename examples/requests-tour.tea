@@ -1,0 +1,40 @@
+//@version=6
+/* The requests tour: every request.security capability of the static
+   slice in one script. The primary axis comes from examples/primary.csv
+   (synthetic prices on real weekday timestamps); every requested series
+   is real, fetched live through the built-in source registry. */
+indicator("Requests tour")
+
+len = input.int(10, "Child smoothing", minval=1)
+
+// An unprefixed symbol resolves through the yahoo default. The captured
+// expression runs with its own state INSIDE the child context (an ema over
+// SPY's closes, not ours), and the input param crosses in — bind-time
+// params are compilation-global.
+spy = request.security("SPY", "D", ta.ema(close, len))
+
+// History on a merged result is parent-row-indexed: the previous ROW of
+// this chart, whatever child bar served it.
+spyStep = spy - spy[1]
+
+// Prefix routing: stooq's EOD endpoint, weekly bars served natively by the
+// driver, gaps on — rows between weekly closes stay na instead of
+// carrying forward.
+aaplWeekly = request.security("STOOQ:aapl.us", "W", close, gaps=true)
+
+// A bogus symbol under ignore_invalid_symbol: the column is na, never a
+// bind error.
+ghost = request.security("ZZZZZZZZ", "D", close, ignore_invalid_symbol=true)
+
+// FRED macro data (single-valued source: the value serves as close).
+// Monthly CPI month-over-month change sampled onto this daily axis; the
+// value changes only when a new monthly observation lands. Without
+// FRED_API_KEY in the environment the column is na (ignore_invalid_symbol
+// covers the typed configuration error).
+cpi = request.security("FRED:CPIAUCSL", "M", ta.change(close), ignore_invalid_symbol=true)
+
+plot(spy, title="SPY ema10")
+plot(spyStep, title="SPY ema step")
+plot(aaplWeekly, title="AAPL weekly close")
+plot(ghost, title="ghost")
+plot(cpi, title="CPI m/m")
