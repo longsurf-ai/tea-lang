@@ -10,7 +10,8 @@ import {UnimplementedError} from './base/unimplemented';
 import {compile, compileToAst, compileToIr} from './compile';
 import {dumpProgram} from './ir/dumper';
 import {csvProvider} from './providers/csv';
-import {BindError, type OutputSink, type Value} from './runtime/abi';
+import {TraceSink} from './providers/trace-sink';
+import {BindError} from './runtime/abi';
 import {bind} from './runtime/kernel';
 import {loadModule} from './runtime/load';
 import {dumpFile, dumpTokens} from './syntax/dumper';
@@ -60,28 +61,7 @@ tea
         process.exit(1);
       }
       const module = loadModule(result.js);
-      const sink: OutputSink = {
-        declare(outputs) {
-          outputs.forEach((output, oid) => {
-            const statics = output.spec.staticArgs
-              .map(a => `${a.name}=${formatValue(a.value)}`)
-              .join(' ');
-            const bounds = output.boundArgs
-              .map(a => `${a.name}=${formatValue(a.value)}`)
-              .join(' ');
-            console.log(
-              `# output[${oid}] ${output.spec.effect}` +
-                (statics.length > 0 ? ` ${statics}` : '') +
-                (bounds.length > 0 ? ` bound{${bounds}}` : ''),
-            );
-          });
-        },
-        emit(row, oid, channels, provisional) {
-          console.log(
-            `${row} ${oid}${provisional ? ' ?' : ''} ${channels.map(formatValue).join(' ')}`,
-          );
-        },
-      };
+      const sink = new TraceSink(line => console.log(line));
       try {
         const bound = bind(module, {
           params: {},
@@ -98,13 +78,6 @@ tea
       }
     });
   });
-
-function formatValue(v: Value): string {
-  if (typeof v === 'number') {
-    return Number.isNaN(v) ? 'na' : String(v);
-  }
-  return String(v);
-}
 
 tea
   .command('build')
