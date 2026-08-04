@@ -17,10 +17,14 @@ spy = request.security("SPY", "D", ta.ema(close, len))
 // this chart, whatever child bar served it.
 spyStep = spy - spy[1]
 
-// Prefix routing: stooq's EOD endpoint, weekly bars served natively by the
-// driver, gaps on — rows between weekly closes stay na instead of
-// carrying forward.
-aaplWeekly = request.security("STOOQ:aapl.us", "W", close, gaps=true)
+// Explicit prefix routing, weekly bars served natively by the driver,
+// gaps on — rows between weekly closes stay na instead of carrying
+// forward. (STOOQ: routes the same way, but stooq currently fronts its
+// csv endpoint with a JavaScript challenge on some networks — if it
+// answers plainly for you, try: request.security("STOOQ:aapl.us", "W",
+// close, gaps=true). The typed fetchFailed you get otherwise is the
+// driver being honest about an unofficial source.)
+qqqWeekly = request.security("YAHOO:QQQ", "W", close, gaps=true)
 
 // A bogus symbol under ignore_invalid_symbol: the column is na, never a
 // bind error.
@@ -35,6 +39,6 @@ cpi = request.security("FRED:CPIAUCSL", "M", ta.change(close), ignore_invalid_sy
 
 plot(spy, title="SPY ema10")
 plot(spyStep, title="SPY ema step")
-plot(aaplWeekly, title="AAPL weekly close")
+plot(qqqWeekly, title="QQQ weekly close")
 plot(ghost, title="ghost")
 plot(cpi, title="CPI m/m")

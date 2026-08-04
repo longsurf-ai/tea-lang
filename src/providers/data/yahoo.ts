@@ -23,10 +23,15 @@ interface IntervalSpec {
 const DAY_MS = 86_400_000;
 
 const TIMEFRAMES: Readonly<Record<string, IntervalSpec>> = {
-  '': {interval: '1d', range: 'max', spanMs: DAY_MS, intraday: false},
-  D: {interval: '1d', range: 'max', spanMs: DAY_MS, intraday: false},
-  W: {interval: '1wk', range: 'max', spanMs: 7 * DAY_MS, intraday: false},
-  M: {interval: '1mo', range: 'max', spanMs: 30 * DAY_MS, intraday: false},
+  // NOT range=max: yahoo silently downgrades granularity for it (probed
+  // 2026-08-04: max&1d and even max&1wk both answer MONTHLY bars). 10y is
+  // the widest span yahoo serves honestly at these intervals; the
+  // granularity guard below refuses the downgrade if yahoo changes again.
+  // RangeDemand-driven period1/period2 windows are the later refinement.
+  '': {interval: '1d', range: '10y', spanMs: DAY_MS, intraday: false},
+  D: {interval: '1d', range: '10y', spanMs: DAY_MS, intraday: false},
+  W: {interval: '1wk', range: '10y', spanMs: 7 * DAY_MS, intraday: false},
+  M: {interval: '1mo', range: '10y', spanMs: 30 * DAY_MS, intraday: false},
   '1': {interval: '1m', range: '7d', spanMs: 60_000, intraday: true},
   '5': {interval: '5m', range: '60d', spanMs: 300_000, intraday: true},
   '15': {interval: '15m', range: '60d', spanMs: 900_000, intraday: true},
@@ -140,6 +145,19 @@ function yahooContext(
   const first = result[0];
   if (!isRecord(first)) {
     return malformed(symbol, 'chart.result[0] is not an object');
+  }
+  // Honest axes: yahoo silently serves a COARSER granularity when the
+  // requested range exceeds what the interval supports. A mislabeled axis
+  // corrupts merges, so a granularity mismatch is refused outright.
+  const meta = first.meta;
+  const granularity = isRecord(meta) ? meta.dataGranularity : null;
+  if (typeof granularity === 'string' && granularity !== spec.interval) {
+    return {
+      error: 'fetchFailed' as const,
+      detail:
+        `yahoo answered '${granularity}' bars for a '${spec.interval}' ` +
+        `request on '${symbol}' — refusing the mislabeled axis`,
+    };
   }
   const timestamp = secondsColumn(first.timestamp);
   if (timestamp === null) {

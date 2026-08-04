@@ -96,7 +96,7 @@ describe('yahooProvider', () => {
       await provider.resolveContext('AAPL', 'D', FULL_RANGE),
     );
     expect(calls).toEqual([
-      'https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=max',
+      'https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=10y',
     ]);
     expect(context.rows).toBe(3);
     expect(values(series(context, 'open'))).toEqual([10, 11, 12]);
@@ -124,7 +124,7 @@ describe('yahooProvider', () => {
     const provider = yahooProvider({fetchImpl});
     await provider.resolveContext('MSFT', 'W', FULL_RANGE);
     expect(calls).toEqual([
-      'https://query1.finance.yahoo.com/v8/finance/chart/MSFT?interval=1wk&range=max',
+      'https://query1.finance.yahoo.com/v8/finance/chart/MSFT?interval=1wk&range=10y',
     ]);
   });
 
@@ -270,5 +270,50 @@ describe('yahooProvider', () => {
     );
     expect(error.error).toBe('fetchFailed');
     expect(error.detail).toContain('open');
+  });
+});
+
+describe('granularity honesty', () => {
+  test('a silently downgraded granularity is refused, never mislabeled', async () => {
+    // range=max makes yahoo answer MONTHLY bars even for 1d/1wk requests;
+    // the driver must refuse rather than serve a mislabeled axis.
+    const payload = {
+      chart: {
+        result: [
+          {
+            meta: {dataGranularity: '1mo'},
+            timestamp: [1000, 2000],
+            indicators: {
+              quote: [
+                {
+                  open: [1, 2],
+                  high: [1, 2],
+                  low: [1, 2],
+                  close: [1, 2],
+                  volume: [1, 2],
+                },
+              ],
+            },
+          },
+        ],
+        error: null,
+      },
+    };
+    const impl = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify(payload)),
+      )) as unknown as typeof fetch;
+    const provider = yahooProvider({fetchImpl: impl});
+    const result = await provider.resolveContext('SPY', 'D', {
+      from: null,
+      to: null,
+      bars: null,
+    });
+    if (!isContextError(result)) {
+      throw new Error('expected a ContextError');
+    }
+    expect(result.error).toBe('fetchFailed');
+    expect(result.detail).toContain("'1mo'");
+    expect(result.detail).toContain("'1d'");
   });
 });
