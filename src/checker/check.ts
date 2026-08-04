@@ -61,12 +61,7 @@ import {
   type NativeTypeRef,
   type NativeVar,
 } from './catalog';
-import {
-  builtinLibraries,
-  builtinLibrary,
-  isBuiltinLibraryName,
-  type BuiltinLibrary,
-} from './library';
+import {isImportError, type Importer, type ResolvedLibrary} from './importer';
 import {EntryKind, Scope, type ScopeEntry} from './scope';
 
 // ---- results ----------------------------------------------------------------
@@ -167,21 +162,26 @@ export interface Info extends SideTables {
   readonly reassigned: ReadonlySet<string>;
 }
 
-export function check(file: syntax.File, errors: Errors): Info {
-  const checker = new Checker(errors);
+export function check(
+  file: syntax.File,
+  errors: Errors,
+  importer: Importer,
+): Info {
+  const checker = new Checker(errors, importer);
   return checker.checkFile(file);
 }
 
-// The pipeline's check stage: one script per compilation for now (library
-// imports link at check time when the function slice lands).
+// The pipeline's check stage: one script per compilation for now; libraries
+// arrive through the injected Importer, never by the checker's own loading.
 export function checkPackage(
   files: readonly syntax.File[],
   errors: Errors,
+  importer: Importer,
 ): Info {
   if (files.length !== 1) {
     return unimplemented('typecheck: multi-file packages', files.length);
   }
-  return check(files[0], errors);
+  return check(files[0], errors, importer);
 }
 
 const INVALID_TV: TypeAndValue = {
@@ -253,31 +253,41 @@ class Checker {
   private readonly instantiating = new Set<syntax.FuncDecl>();
   private readonly reassignedCollected = new Set<syntax.FuncDecl>();
   private funcBoundary: Scope | null = null;
-  private readonly libScopes = new Map<BuiltinLibrary, Scope>();
+  private readonly libScopes = new Map<ResolvedLibrary, Scope>();
+  // Names bound by the implicit imports — the redeclare guard's set; the
+  // checker never learns where these libraries come from.
+  private readonly implicitNames = new Set<string>();
   // The ambient pool reads resolve into: the Info's pool for the script's
   // own context, a fresh pool inside a request capture (child context).
   private seriesPool: Map<string, SeriesInput> = this.info.series;
   private captureDepth = 0;
   private readonly instanceStack: FuncInstance[] = [];
 
-  constructor(private readonly errors: Errors) {
-    for (const library of builtinLibraries()) {
+  constructor(
+    private readonly errors: Errors,
+    private readonly importer: Importer,
+  ) {
+    for (const library of importer.implicit()) {
       this.universe.declare(library.name, {
         kind: EntryKind.Library,
         library,
       });
+      this.implicitNames.add(library.name);
     }
   }
 
   // The scope a library's bodies resolve against: every template of the
   // library under its plain name (rsi calls rma), exported or not; natives
   // via the ordinary catalog path.
-  private libScope(library: BuiltinLibrary): Scope {
+  private libScope(library: ResolvedLibrary): Scope {
     let scope = this.libScopes.get(library);
     if (scope === undefined) {
       scope = new Scope(null);
       for (const [name, decl] of library.locals) {
         scope.declare(name, {kind: EntryKind.Func, decl, base: scope});
+      }
+      for (const [name, dep] of library.imports) {
+        scope.declare(name, {kind: EntryKind.Library, library: dep});
       }
       this.libScopes.set(library, scope);
     }
@@ -494,7 +504,10 @@ class Checker {
   }
 
   private declare(nameNode: syntax.Name, entry: ScopeEntry): void {
-    if (isNativeRoot(nameNode.value) || isBuiltinLibraryName(nameNode.value)) {
+    if (
+      isNativeRoot(nameNode.value) ||
+      this.implicitNames.has(nameNode.value)
+    ) {
       this.error(nameNode.pos, `cannot redeclare built-in '${nameNode.value}'`);
       return;
     }
@@ -637,28 +650,33 @@ class Checker {
     return valueTv;
   }
 
+  // An import declaration: resolution belongs to the injected Importer (the
+  // loader's registry decides what a path means); the checker only positions
+  // resolver errors and binds the namespace.
   private checkImport(stmt: syntax.ImportStmt): void {
     if (this.blockDepth > 0 || this.funcBoundary !== null) {
       this.error(stmt.pos, 'import must be at the top level of the script');
       return;
     }
-    const raw = stmt.path.value;
-    if (raw.includes('/')) {
-      this.error(
-        stmt.path.pos,
-        `external libraries are not supported yet ('${raw}')`,
-      );
+    const outcome = this.importer.import(stmt.path.value);
+    if (isImportError(outcome)) {
+      this.error(stmt.path.pos, outcome.error);
       return;
     }
-    const library = builtinLibrary(raw);
-    if (library === null) {
-      this.error(stmt.path.pos, `unknown library '${raw}'`);
-      return;
-    }
-    // Builtins are already bound by the implicit import; an alias adds a
-    // second binding in the file's scope.
+    const entry = {kind: EntryKind.Library, library: outcome} as const;
     if (stmt.alias !== null) {
-      this.declare(stmt.alias, {kind: EntryKind.Library, library});
+      this.declare(stmt.alias, entry);
+      return;
+    }
+    // Without an alias the library binds under its declared name; implicit
+    // libraries are already bound, so this is a legal no-op for them.
+    if (!this.implicitNames.has(outcome.name)) {
+      if (!this.scope.declare(outcome.name, entry)) {
+        this.error(
+          stmt.path.pos,
+          `'${outcome.name}' is already declared in this scope`,
+        );
+      }
     }
   }
 

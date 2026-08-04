@@ -1,12 +1,11 @@
-// Purpose: Noder — loadPackage() parses the package's source files; buildProgram() turns checked syntax plus the checker's Info into the Tea Program (desugaring compound assigns, tuple patterns, param/output extraction, and history-on-expression).
+// Purpose: Noder — buildProgram() turns checked syntax plus the checker's Info into the Tea Program (desugaring compound assigns, tuple patterns, param/output extraction, and history-on-expression); source loading lives in src/loader.
 //
 // The noder consumes checked, error-free syntax and never re-checks: every
 // type and qualifier comes from Info side tables, every use resolves through
 // Info.uses/defs/ambient to the binder's shared ir objects. Bad nodes or
 // missing table entries here mean the phase barrier was violated — fatal.
 
-import {readFileSync} from 'node:fs';
-import {newFileBase, type Pos} from '../base/pos';
+import type {Pos} from '../base/pos';
 import {fatal, type Errors} from '../base/print';
 import {
   DepthKind,
@@ -60,18 +59,6 @@ import type {
   SideTables,
 } from '../checker/check';
 import {resolveDepths} from './depth';
-
-// Frontend orchestrator: one parse per file.
-export function loadPackage(
-  filenames: readonly string[],
-  errors: Errors,
-): syntax.File[] {
-  return filenames.map(filename =>
-    parse(newFileBase(filename), readFileSync(filename, 'utf8'), (pos, msg) =>
-      errors.errorAt(pos, msg),
-    ),
-  );
-}
 
 // Build the Program from checked syntax ("noding"). Requires a clean check —
 // compile()'s phase barrier guarantees it.

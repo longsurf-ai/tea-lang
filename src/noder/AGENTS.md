@@ -1,8 +1,8 @@
 # noder
 
-Checked syntax → Program. `loadPackage` parses the package's files;
-`buildProgram` nodes one checked file into the Tea Program using the
-checker's `Info` side tables; `depth.ts` is the depth resolution pass.
+Checked syntax → Program. `buildProgram` nodes one checked file into the
+Tea Program using the checker's `Info` side tables; `depth.ts` is the depth
+resolution pass. Source loading lives in `src/loader`.
 
 ## Invariants
 

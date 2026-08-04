@@ -3,8 +3,9 @@
 import {Errors, fatal, type ErrorMsg} from '../base/print';
 import {newFileBase} from '../base/pos';
 import type {Program} from '../ir/program';
-import {parse} from '../syntax/syntax';
 import {check} from '../checker/check';
+import {resolveImports} from '../loader/loader';
+import {parse} from '../syntax/syntax';
 import {buildProgram} from './noder';
 
 export interface BuildResult {
@@ -21,7 +22,7 @@ export function buildText(src: string, filename = 'test.tea'): BuildResult {
   if (errors.count > 0) {
     return {program: null, errors: errors.flushErrors()};
   }
-  const info = check(file, errors);
+  const info = check(file, errors, resolveImports([file]));
   if (errors.count > 0) {
     return {program: null, errors: errors.flushErrors()};
   }

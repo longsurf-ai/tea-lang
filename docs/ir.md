@@ -212,13 +212,14 @@ construction.
   compilation-global: the child references the parent's ParamInputs and
   declares none of its own. Extracting the dependency closure of script
   variables into the child automatically is a possible later extension.
-- Libraries link at check time: imports resolve against library sources and
-  instantiate into the importer's Program — implemented for builtin
-  libraries (implicitly imported; `import <lib> [as alias]` aliases them;
-  external `owner/name/version` paths error until a distribution story
-  exists). The Program is always a closed script; a distributable
-  compiled-library artifact, if ever needed, is a separate contract — never
-  a bent Program.
+- Libraries link at check time through the import seam (Go's
+  types2.Importer split): the loader's registry decides what a path means
+  and loads libraries recursively (cycle detection included); the checker
+  consumes the injected `Importer` and is provenance-blind. Builtins are
+  implicitly imported; external `owner/name/version` paths error until a
+  distribution story exists. The Program is always a closed script; a
+  distributable compiled-library artifact, if ever needed, is a separate
+  contract — never a bent Program.
 - Reference bindings are compile-time only: a never-reassigned declaration
   initialized by an input call binds the name to its `ParamInput` (reads
   become param reads; no per-bar write), and one initialized by an output

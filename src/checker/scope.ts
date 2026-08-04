@@ -3,7 +3,7 @@
 import type {Name as IrName} from '../ir/node';
 import type {ConstValue, EnumType, UdtType} from '../ir/type';
 import type {FuncDecl} from '../syntax/nodes';
-import type {BuiltinLibrary} from './library';
+import type {ResolvedLibrary} from './importer';
 
 // What an identifier resolves to. Name is a variable backed by an ir Name;
 // constDecl marks Tea's `const` declaration mode (reassignment forbidden,
@@ -34,10 +34,10 @@ export type ScopeEntry =
     }
   | {readonly kind: typeof EntryKind.Udt; readonly type: UdtType}
   | {readonly kind: typeof EntryKind.Enum; readonly type: EnumType}
-  // An imported library namespace (builtin libraries bind implicitly).
+  // An imported library namespace (implicit libraries bind ambiently).
   | {
       readonly kind: typeof EntryKind.Library;
-      readonly library: BuiltinLibrary;
+      readonly library: ResolvedLibrary;
     };
 
 export class Scope {

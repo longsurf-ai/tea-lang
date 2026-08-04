@@ -4,9 +4,11 @@ import {Errors, fatal, type ErrorMsg} from '../base/print';
 import {newFileBase} from '../base/pos';
 import type {Name as IrName} from '../ir/node';
 import type {TypeAndValue} from '../ir/type';
+import {resolveImports} from '../loader/loader';
 import {NodeKind, type File} from '../syntax/nodes';
 import {parse} from '../syntax/syntax';
 import {check, type Info} from './check';
+import type {Importer} from './importer';
 
 export interface CheckResult {
   readonly file: File;
@@ -14,12 +16,16 @@ export interface CheckResult {
   readonly errors: readonly ErrorMsg[];
 }
 
-export function checkText(src: string, filename = 'test.tea'): CheckResult {
+export function checkText(
+  src: string,
+  filename = 'test.tea',
+  importer?: Importer,
+): CheckResult {
   const errors = new Errors();
   const file = parse(newFileBase(filename), src, (pos, msg) =>
     errors.errorAt(pos, msg),
   );
-  const info = check(file, errors);
+  const info = check(file, errors, importer ?? resolveImports([file]));
   return {file, info, errors: errors.flushErrors()};
 }
 

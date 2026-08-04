@@ -3,7 +3,7 @@
 The Tea checker: an eager pass over syntax (the types2 shape) producing the
 `Info` side tables the noder consumes. `catalog.ts` declares every host
 primitive, `scope.ts` is the binder, `check.ts` walks statements and
-expressions, `library.ts` loads the builtin Tea-authored libraries.
+expressions, `importer.ts` is the import seam (loading lives in `src/loader`).
 
 ## Invariants
 
@@ -28,14 +28,13 @@ expressions, `library.ts` loads the builtin Tea-authored libraries.
   global scope, or the owning library's scope. Recursion is rejected (the
   static call graph must stay acyclic for frame pre-allocation), and
   function bodies read but never write outer-scope variables.
-- Standard libraries are ordinary Tea libraries under `src/lib`, loaded by
-  `library.ts`: each file's `library("...")` declaration names its
-  namespace, exported templates are the public surface, and every builtin
-  library is implicitly imported (a `Library` entry in the universe scope
-  above the file's global scope). `import <lib> [as alias]` re-binds or
-  aliases builtins; external `owner/name/version` paths are a clean error
-  until a distribution story exists. There is no separate prelude
-  mechanism.
+- The checker is provenance-blind about libraries: it consumes the injected
+  `Importer` only (`importer.ts`), seeding the universe scope from
+  `implicit()` and calling `import(path)` at each import declaration —
+  positioning the resolver's errors, never resolving paths itself. Library
+  bodies check against a scope of the library's locals plus its own import
+  bindings. Where libraries come from (builtin registry, filesystem,
+  external distribution) is `src/loader`'s concern.
 - Checker errors queue into the compilation's `Errors` and poison with
   `TypeKind.Invalid` (assignable both ways, unify-absorbed) so one error
   never cascades; the checker never throws on user input and silently

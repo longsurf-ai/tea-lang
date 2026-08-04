@@ -4,9 +4,10 @@ import type {CompileConfig} from './base/config';
 import {Errors, type ErrorMsg} from './base/print';
 import {generate} from './codegen/codegen';
 import type {Program} from './ir/program';
-import {buildProgram, loadPackage} from './noder/noder';
-import type {File} from './syntax/nodes';
 import {checkPackage} from './checker/check';
+import {loadPackage, resolveImports} from './loader/loader';
+import {buildProgram} from './noder/noder';
+import type {File} from './syntax/nodes';
 
 // Compilation either emits JavaScript or fails with the flushed, ordered
 // error batch — never both, never a partial emit.
@@ -30,7 +31,11 @@ export function compileToIr(filename: string, errors: Errors): Program | null {
   if (errors.count > 0) {
     return null;
   }
-  const info = checkPackage(files, errors);
+  // Import resolution is a driver stage: the loader loads and orders
+  // libraries; the checker consumes them through the Importer and positions
+  // any resolution errors at the import statements.
+  const importer = resolveImports(files);
+  const info = checkPackage(files, errors, importer);
   if (errors.count > 0) {
     return null;
   }
@@ -50,7 +55,8 @@ export function compile(
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};
   }
-  const info = checkPackage(files, errors);
+  const importer = resolveImports(files);
+  const info = checkPackage(files, errors, importer);
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};
   }
