@@ -378,6 +378,9 @@ function buildFuncs(): NativeFunc[] {
         opt('max_bars_back', IntType, Qualifier.Const, {literal: true}),
         opt('timeframe', StringType, Qualifier.Const),
         opt('timeframe_gaps', BoolType, Qualifier.Const, {literal: true}),
+        // Pine v6: default true; false restores the static-only gate on
+        // request context args (enforced by the noder).
+        opt('dynamic_requests', BoolType, Qualifier.Const, {literal: true}),
       ],
       VoidType,
       Qualifier.Const,

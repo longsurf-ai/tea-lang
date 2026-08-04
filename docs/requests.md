@@ -211,10 +211,13 @@ Pine v6 semantics (`dynamic_requests`, default **true**):
 - Context args (`symbol`, `timeframe`) may be series; the requested
   expression is always a static template — it cannot depend on enclosing
   local-scope variables. The checker enforces this in the existing capture
-  rules; the IR needs nothing new (RequestEdge qualifiers distinguish the
-  forms). `dynamic_requests=false` restores the static-only gate.
+  rules; the IR needs nothing new (bind-evaluability of the context args
+  distinguishes the forms, published as `RequestSpec.dynamic`).
+  `dynamic_requests=false` on the indicator declaration restores the
+  static-only gate (a noder error).
 - Unique contexts are capped: default 40 per binding (Pine parity),
-  configurable via BindInputs. Exceeding the cap is a typed runtime error.
+  configurable via `BindInputs.maxRequestContexts`; the budget spans
+  request children. Exceeding it is a `RequestError`.
 
 Execution:
 
@@ -222,16 +225,26 @@ Execution:
   (init section, like bindOutput args), awaits `resolveContext`, runs each
   child over its full history, and prepares the merged view. No row ever
   suspends.
-- **Dynamic edges**: row code evaluates the args and calls
-  `rt.request(rid, sym, tf, offset)`. On an instance-table miss the runtime
-  raises an internal suspension: the parent row's scratch is discarded
-  (rollback is free), `resolveContext` is awaited, the child runs its
-  history, and the parent row **re-executes from committed state** — the
-  same move a live tick makes, yielding results byte-identical to having
-  had the data upfront. Determinism holds; no async ever touches row code.
-- Errors: for static edges a failed context is a BindError; for dynamic
-  edges it is a typed runtime error — or a per-row na when the edge's
-  `ignoreInvalidSymbol` is set.
+- **Dynamic edges**: the offset-0 read evaluates the context args inline
+  and calls `rt.requestFor(rid, sym, tf)`; the returned value also lands
+  in the edge's **result ring**, which history reads (`rt.request(rid,
+  offset)`) go through — the parent-row history of "whatever the request
+  returned", whichever pair served each row. One merged view per
+  `(edge, pair)`, built on first encounter.
+- **Suspension**: an unresolved pair throws `ContextSuspension` out of
+  `executeRow`; the host awaits `resolvePending()` (where
+  `resolveContext`, the child's full-history run, and the merge happen)
+  and re-executes the same row. **The aborted execution vanishes
+  entirely** — the retry resets ALL scratch, varip included, from
+  committed state, so results are byte-identical to having had the data
+  upfront. `runAll` performs this loop itself; live hosts follow the same
+  protocol per tick. Determinism holds; no async ever touches row code.
+- Errors: for static edges a failed context is a `BindError`; for dynamic
+  pairs it is a `RequestError` mid-run — or a per-row na (plus a warn
+  event) when the edge's `ignoreInvalidSymbol` is set. na context args
+  yield na for the row. The unique-context ceiling
+  (`BindInputs.maxRequestContexts`, default 40, shared across children)
+  is a `RequestError` when exceeded.
 
 ## Staged beyond this slice
 

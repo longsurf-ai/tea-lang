@@ -21,10 +21,19 @@ frame trees, rings, the provisional/commit protocol, emission flushing.
 - Bind-time entries (bindDepth/bindSeriesDepth/bindOutput/bindRequest) are
   legal only while the module's init section runs; series depth demands are
   a contract passed to providers, not an allocation.
-- bind is async and is the ONLY await point: context resolution and
-  request-child execution happen before row 0; the per-row hot path never
-  awaits. Request children recurse through the same JSRuntime class with a
-  null sink and the parent's resolved params (compilation-global).
+- bind is async, and awaits otherwise happen only at suspension points:
+  static contexts resolve before row 0; a dynamic pair's first encounter
+  throws `ContextSuspension` out of `executeRow`, the host awaits
+  `resolvePending()`, and the SAME row re-executes — the aborted attempt
+  vanishes entirely (all scratch, varip included, re-seeds from committed
+  state; byte-identical to having had the data upfront). The per-row hot
+  path itself never awaits. Request children recurse through the same
+  JSRuntime class with a null sink, the parent's resolved params
+  (compilation-global), and the shared unique-context budget
+  (maxRequestContexts, default 40).
+- A dynamic edge's history lives in its result ring — "whatever the
+  request returned per parent row", whichever pair served it; merged
+  views are cached per (edge, pair) and never rebuilt.
 - Merge is alignment, not data movement (`merge.ts` owns the mapping; the
   merged result is a parent-row-indexed view over child committed values).
   Merge reads committed child cells only — provisional child state is

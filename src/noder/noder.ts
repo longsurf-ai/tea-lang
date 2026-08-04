@@ -47,6 +47,7 @@ import {
   type ConstValue,
   type TypeAndValue,
 } from '../ir/type';
+import {bindEvaluable} from '../ir/visit';
 import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
 import {Op} from '../syntax/tokens';
@@ -870,6 +871,20 @@ class Noder {
     // Parent-context pieces first.
     const symbol = this.nodeExpr(symbolExpr);
     const timeframe = this.nodeExpr(timeframeExpr);
+    // Pine v6 dynamic_requests defaults to true; an explicit false restores
+    // the static-only gate on context args. Best-effort placement: the
+    // indicator declaration precedes request calls in practice.
+    if (!bindEvaluable(symbol) || !bindEvaluable(timeframe)) {
+      const declared = this.outputs
+        .flatMap(output => output.staticArgs)
+        .find(arg => arg.name === 'dynamic_requests');
+      if (declared !== undefined && declared.value === false) {
+        this.errors.errorAt(
+          c.pos,
+          'series context arguments need dynamic_requests=true',
+        );
+      }
+    }
     const calcBars = argExpr('calc_bars_count');
     const currency = argValue('currency');
     const merge: MergePolicy = {

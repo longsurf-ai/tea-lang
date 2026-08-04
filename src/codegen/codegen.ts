@@ -110,6 +110,7 @@ class Generator {
   private readonly outputIds = new Map<OutputDecl, number>();
   private readonly funcIds = new Map<IrFunc, number>();
   private readonly requestIds = new Map<RequestEdge, number>();
+  private readonly dynamicRequests = new Set<RequestEdge>();
   // fid → slot → callee fid, discovered while lowering call sites.
   private readonly callSites = new Map<number, Map<number, number>>();
   // fid → its locals in slot order.
@@ -125,7 +126,14 @@ class Generator {
     this.funcs = funcsOf(program);
     this.series = seriesInputsOf(program);
     this.requests = requestsOf(program);
-    this.requests.forEach((edge, rid) => this.requestIds.set(edge, rid));
+    this.requests.forEach((edge, rid) => {
+      this.requestIds.set(edge, rid);
+      // Series-qualified context args are the dynamic form: no bind-time
+      // pair, rt.requestFor at the offset-0 read.
+      if (!bindEvaluable(edge.symbol) || !bindEvaluable(edge.timeframe)) {
+        this.dynamicRequests.add(edge);
+      }
+    });
 
     this.series.forEach((s, sid) => this.seriesIds.set(s, sid));
     let nextSid = this.series.length;
@@ -186,6 +194,7 @@ class Generator {
       outputIds: this.outputIds,
       funcIds: this.funcIds,
       requestIds: this.requestIds,
+      dynamicRequests: this.dynamicRequests,
       moduleRef: this.moduleRef,
       currentFid: fid,
       noteCallSite: (siteFid, slot, callee) => {
@@ -297,17 +306,17 @@ class Generator {
       }
     });
     // Static request contexts: bind resolves the pair, runs the child, and
-    // prepares the merged view before row 0. Series-qualified context args
-    // are the dynamic form — a later slice, never wrong code.
+    // prepares the merged view before row 0. Dynamic edges declare nothing
+    // here — their pairs are runtime values.
     this.requests.forEach((edge, rid) => {
-      if (!bindEvaluable(edge.symbol) || !bindEvaluable(edge.timeframe)) {
-        return unimplemented('codegen: dynamic request contexts');
-      }
       if (edge.merge.currency !== null) {
         return unimplemented('codegen: request currency conversion');
       }
       if (edge.merge.calcBarsCount !== null) {
         return unimplemented('codegen: request calc_bars_count');
+      }
+      if (this.dynamicRequests.has(edge)) {
+        return;
       }
       const symbol = lowerExpr(edge.symbol, lines, ctx);
       const timeframe = lowerExpr(edge.timeframe, lines, ctx);
@@ -444,6 +453,7 @@ class Generator {
         depth: depthSpec(edge.depth),
         resultSlot: children[rid].resultSlot,
         ref: isRefType(edge.resultType),
+        dynamic: this.dynamicRequests.has(edge),
       };
     });
 

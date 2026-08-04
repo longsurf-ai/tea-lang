@@ -32,6 +32,9 @@ export interface LowerCtx {
   readonly outputIds: Map<OutputDecl, number>;
   readonly funcIds: Map<IrFunc, number>;
   readonly requestIds: Map<RequestEdge, number>;
+  // Dynamic edges (series context args): the offset-0 read evaluates the
+  // args inline and calls rt.requestFor; history reads stay rt.request.
+  readonly dynamicRequests: ReadonlySet<RequestEdge>;
   // The generated const this module's own code refers to itself by ('M'
   // for the root, 'M1'… for request children) — funcs-table dispatch must
   // name the module that owns the func.
@@ -164,9 +167,15 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           return `rt.param(${pid})`;
         }
         case PlaceKind.Request: {
-          const rid = ctx.requestIds.get(e.place.request);
+          const edge = e.place.request;
+          const rid = ctx.requestIds.get(edge);
           if (rid === undefined) {
             return fatal('lowering reached an unmapped request edge');
+          }
+          if (e.offset === null && ctx.dynamicRequests.has(edge)) {
+            const symbol = subexpr(edge.symbol, out, ctx).expr;
+            const timeframe = subexpr(edge.timeframe, out, ctx).expr;
+            return `rt.requestFor(${rid}, (${symbol}), (${timeframe}))`;
           }
           return `rt.request(${rid}, ${off})`;
         }

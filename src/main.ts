@@ -14,7 +14,7 @@ import {builtinSources} from './providers/data/builtin-sources';
 import {csvProvider} from './providers/data/csv';
 import {TableSink} from './providers/sinks/table-sink';
 import {TraceSink} from './providers/sinks/trace-sink';
-import {BindError} from './runtime/abi';
+import {BindError, RequestError} from './runtime/abi';
 import {bind} from './runtime/js-runtime';
 import {loadModule} from './runtime/load';
 import {dumpFile, dumpTokens} from './syntax/dumper';
@@ -110,10 +110,10 @@ tea
           }),
           sink,
         });
-        exec.runAll();
+        await exec.runAll();
         table?.flush();
       } catch (error) {
-        if (error instanceof BindError) {
+        if (error instanceof BindError || error instanceof RequestError) {
           console.error(`tea: ${error.message}`);
           process.exit(1);
         }

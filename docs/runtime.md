@@ -90,9 +90,11 @@ rt.series(sid, offset)        // ambient series and input.source params
 rt.param(pid)                 // bind-time scalar
 rt.read(fr, slot, offset)     // a name's history
 rt.write(fr, slot, v)
-rt.request(rid, offset)       // the edge's merged view (docs/requests.md);
-                              // the dynamic form adds context args at the
-                              // offset-0 read — a later slice
+rt.request(rid, offset)       // the edge's merged result: static view or
+                              // dynamic result ring (docs/requests.md)
+rt.requestFor(rid, sym, tf)   // dynamic offset-0 read; unresolved pairs
+                              // throw ContextSuspension (host awaits
+                              // resolvePending, re-executes the row)
 // frames
 rt.frame(fr, slot)            // open the sub-frame at this call site
 rt.root()                     // the program frame (globals read from funcs)
@@ -235,8 +237,14 @@ makes golden traces and the tick/rollback property tests
 
 ## Staged beyond this slice
 
-Dynamic requests (series context args — `docs/requests.md`), collections
-and UDT heap ops (COW at the `rt.mut*` seam), drawing/handle natives,
-network drivers beyond csv (yahoo/fred; the quantmod roster — alphavantage/tiingo with the same key treatment — as needed), live push feeds, and
-V8-isolate embedding. None of them change the surface above; they fill
-reserved entries.
+Collections and UDT heap ops (COW at the `rt.mut*` seam), drawing/handle
+natives, further network drivers (the quantmod roster —
+alphavantage/tiingo with the same key treatment — as needed), live push
+feeds, and V8-isolate embedding. None of them change the surface above;
+they fill reserved entries.
+
+A dynamic-request suspension is part of the execution protocol:
+`executeRow` may throw `ContextSuspension`; the host awaits
+`resolvePending()` and re-executes the SAME row, whose aborted attempt
+vanishes entirely (all scratch, varip included, re-seeds from committed
+state). `runAll` runs this loop itself.

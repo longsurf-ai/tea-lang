@@ -112,7 +112,7 @@ describe('historical execution', () => {
       sink,
     });
     expect(bound.rows).toBe(3);
-    bound.runAll();
+    await bound.runAll();
     expect(sink.emits.map(e => e.channels[0])).toEqual([10, 15, 22.5]);
     expect(sink.emits.every(e => !e.provisional)).toBe(true);
   });
@@ -170,7 +170,7 @@ describe('frames', () => {
       provider: provider({close: new ArraySeries([1, 1, 1])}),
       sink,
     });
-    bound.runAll();
+    await bound.runAll();
     expect(sink.emits.map(e => e.channels)).toEqual([
       [1, 1],
       [2, 2],
@@ -220,7 +220,7 @@ describe('rings', () => {
       provider: provider({close: new ArraySeries([1, 2, 3, 4])}),
       sink,
     });
-    bound.runAll();
+    await bound.runAll();
     const values = sink.emits.map(e => e.channels[0]);
     expect(Number.isNaN(num(values[0]))).toBe(true);
     expect(Number.isNaN(num(values[1]))).toBe(true);
@@ -398,7 +398,7 @@ describe('binding', () => {
       sink,
     });
     expect(sink.declared[0].boundArgs).toEqual([{name: 'price', value: 105}]);
-    bound.runAll();
+    await bound.runAll();
     const values = sink.emits.map(e => e.channels[0]);
     expect(Number.isNaN(num(values[1]))).toBe(true);
     expect(values[2]).toBe(1);
@@ -523,6 +523,7 @@ function requestModule(merge: {
           depth: {kind: 'const', bars: 1},
           resultSlot: 0,
           ref: false,
+          dynamic: false,
         },
       ],
       frames: [{locals: [], subs: []}],
@@ -556,7 +557,7 @@ describe('requests', () => {
       }),
       {params: {}, provider: contexts({'': parent(), X: child()}), sink},
     );
-    bound.runAll();
+    await bound.runAll();
     // Child values scale by the PARENT's param default (10): 100, 200, 300.
     // lookahead_off over 2-span child bars: closed at t=2,4,6.
     expect(sink.emits.map(e => e.channels[0])).toEqual([
@@ -584,7 +585,7 @@ describe('requests', () => {
       requestModule({gaps: true, lookahead: false, ignoreInvalidSymbol: false}),
       {params: {}, provider: contexts({'': parent(), X: child()}), sink},
     );
-    bound.runAll();
+    await bound.runAll();
     expect(sink.emits.map(e => e.channels[0])).toEqual([
       NaN,
       100,
@@ -617,7 +618,7 @@ describe('requests', () => {
       requestModule({gaps: false, lookahead: false, ignoreInvalidSymbol: true}),
       {...inputs, sink},
     );
-    bound.runAll();
+    await bound.runAll();
     expect(sink.emits.every(e => Number.isNaN(num(e.channels[0])))).toBe(true);
   });
 
@@ -660,5 +661,126 @@ describe('requests', () => {
         },
       ),
     ).toThrow('time axis');
+  });
+});
+
+// ---- dynamic requests (ABI protocol) ---------------------------------------
+// sym = close > 3 ? 'X' : 'Y';  r = requestFor(...);  history via rt.request
+
+const IDENTITY_CHILD = {
+  manifest: {
+    series: [{id: 'close', depth: {kind: 'none'}}],
+    params: [],
+    outputs: [],
+    requests: [],
+    frames: [
+      {
+        locals: [{storage: Storage.PerBar, depth: {kind: 'none'}, ref: false}],
+        subs: [],
+      },
+    ],
+  },
+  requests: [],
+  init() {},
+  inits: {},
+  funcs: {},
+  main(
+    rt: Parameters<TeaModule['main']>[0],
+    fr: Parameters<TeaModule['main']>[1],
+  ) {
+    rt.write(fr, 0, rt.series(0, 0));
+  },
+} satisfies Omit<TeaModule, 'abi'>;
+
+const DYNAMIC_MODULE: TeaModule = {
+  abi: 1,
+  manifest: {
+    series: [{id: 'close', depth: {kind: 'none'}}],
+    params: [],
+    outputs: [
+      {
+        effect: 'plot',
+        staticArgs: [],
+        channels: [
+          {name: 'r', type: 'float'},
+          {name: 'prev', type: 'float'},
+        ],
+      },
+    ],
+    requests: [
+      {
+        merge: {
+          mode: 'sample',
+          gaps: false,
+          lookahead: false,
+          ignoreInvalidSymbol: false,
+        },
+        depth: {kind: 'const', bars: 1},
+        resultSlot: 0,
+        ref: false,
+        dynamic: true,
+      },
+    ],
+    frames: [{locals: [], subs: []}],
+  },
+  requests: [IDENTITY_CHILD],
+  init() {},
+  inits: {},
+  funcs: {},
+  main(rt) {
+    const sym = rt.series(0, 0) > 3 ? 'X' : 'Y';
+    rt.emit(0, 0, rt.requestFor(0, sym, ''));
+    rt.emit(0, 1, rt.request(0, 1));
+  },
+};
+
+describe('dynamic requests', () => {
+  const parentSix = () =>
+    context({close: new ArraySeries([1, 2, 3, 4, 5, 6])}, regularAxis(0, 1, 6));
+  const twoSpan = (values: number[]) =>
+    context({close: new ArraySeries(values)}, regularAxis(0, 2, values.length));
+
+  test('pairs resolve on first encounter; the ring serves history', async () => {
+    const sink = new RecordingSink();
+    const bound = await bind(DYNAMIC_MODULE, {
+      params: {},
+      provider: contexts({
+        '': parentSix(),
+        X: twoSpan([10, 20, 30]),
+        Y: twoSpan([100, 200, 300]),
+      }),
+      sink,
+    });
+    await bound.runAll();
+    expect(sink.emits.map(e => e.channels[0])).toEqual([
+      NaN,
+      100,
+      100,
+      20,
+      20,
+      30,
+    ]);
+    expect(sink.emits.map(e => e.channels[1])).toEqual([
+      NaN,
+      NaN,
+      100,
+      100,
+      20,
+      20,
+    ]);
+  });
+
+  test('the unique-context cap is a RequestError', async () => {
+    const bound = await bind(DYNAMIC_MODULE, {
+      params: {},
+      provider: contexts({
+        '': parentSix(),
+        X: twoSpan([10, 20, 30]),
+        Y: twoSpan([100, 200, 300]),
+      }),
+      sink: new RecordingSink(),
+      maxRequestContexts: 1,
+    });
+    expect(bound.runAll()).rejects.toThrow('exceed the cap of 1');
   });
 });

@@ -73,14 +73,18 @@ export interface RequestSpec {
     readonly lookahead: boolean;
     readonly ignoreInvalidSymbol: boolean;
   };
-  // History demanded on the merged result — a contract for the future
-  // mapping-based view, not an allocation (the merged view answers any
-  // offset over its extent).
+  // History demanded on the merged result — for a static edge a contract
+  // for the future mapping-based view; for a dynamic edge it sizes the
+  // per-edge result ring history reads go through.
   readonly depth: DepthSpec;
   // The designated result: this slot of the CHILD's program frame.
   readonly resultSlot: number;
   // Reference-typed results use null as na; numeric results use NaN.
   readonly ref: boolean;
+  // Dynamic edges carry series context args: init declares no pair, row
+  // code evaluates them at the offset-0 read (rt.requestFor), and the
+  // runtime instantiates one child per distinct pair it encounters.
+  readonly dynamic: boolean;
 }
 
 export interface ModuleManifest {
@@ -131,11 +135,16 @@ export interface Runtime {
   param(pid: number): Value;
   read(fr: Frame, slot: number, offset: number): Value;
   write(fr: Frame, slot: number, v: Value): void;
-  // Reads the edge's merged view at cursor - offset. History reads never
-  // carry context args — the view is parent-row-indexed regardless of
-  // which pair served each row (the dynamic form adds context args at the
-  // offset-0 read; that arrives with the dynamic slice).
+  // Reads the edge's merged result at cursor - offset: the static view, or
+  // the dynamic edge's result ring. History reads never carry context args
+  // — the result is parent-row-indexed regardless of which pair served
+  // each row.
   request(rid: number, offset: number): Value;
+  // The offset-0 read of a DYNAMIC edge: evaluates against the pair's
+  // merged view, records the row's value in the edge's result ring, and
+  // returns it. An unresolved pair throws ContextSuspension — the host
+  // awaits resolvePending() and re-executes the row from committed state.
+  requestFor(rid: number, symbol: Value, timeframe: Value): Value;
   frame(fr: Frame, slot: number): Frame;
   // The program frame — how function bodies reach program-frame names
   // (functions read but never write globals, so this is the one legal
@@ -248,14 +257,25 @@ export interface BindInputs {
   // (a csv file's only context, the chart's active symbol).
   readonly symbol?: string;
   readonly timeframe?: string;
+  // Ceiling on unique request contexts per binding (static edges plus
+  // distinct dynamic pairs); omitted = 40, Pine parity. Exceeding it is a
+  // RequestError.
+  readonly maxRequestContexts?: number;
 }
 
 export interface BoundProgram {
   readonly rows: number;
+  // Throws ContextSuspension when a dynamic request meets an unresolved
+  // pair: await resolvePending(), then re-execute the SAME row — the
+  // aborted execution vanishes entirely (all scratch, varip included,
+  // re-seeds from committed state), so results are byte-identical to
+  // having had the data upfront.
   executeRow(row: number, provisional: boolean): void;
+  resolvePending(): Promise<void>;
   commitRow(row: number): void;
-  // Historical convenience: execute + commit every row in order.
-  runAll(): void;
+  // Historical convenience: execute + commit every row in order, resolving
+  // suspensions as they arise.
+  runAll(): Promise<void>;
 }
 
 // Host-facing binding failures (bad param, missing series) — user-actionable,
@@ -264,6 +284,28 @@ export class BindError extends Error {
   constructor(msg: string) {
     super(msg);
     this.name = 'BindError';
+  }
+}
+
+// A dynamic request met a pair with no resolved context. Control flow, not
+// a failure: the host awaits resolvePending() and re-executes the row.
+export class ContextSuspension extends Error {
+  constructor(
+    readonly symbol: string,
+    readonly timeframe: string,
+  ) {
+    super(`unresolved request context '${symbol}','${timeframe}'`);
+    this.name = 'ContextSuspension';
+  }
+}
+
+// A dynamic request failed mid-run (unresolvable pair without
+// ignore_invalid_symbol, fetch failure, context cap exceeded) —
+// user-actionable, the runtime's counterpart of BindError.
+export class RequestError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = 'RequestError';
   }
 }
 

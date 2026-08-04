@@ -6,10 +6,11 @@ import {describe, expect, test} from 'bun:test';
 import {DEFAULT_COMPILE_CONFIG} from '../base/config';
 import {Errors} from '../base/print';
 import {generate} from '../codegen/codegen';
-import {mustBuild} from '../noder/testing';
+import {captureSink, configureLog, logConfig} from '../base/log';
+import {buildText, mustBuild} from '../noder/testing';
 import {csvContext, csvProvider} from '../providers/data/csv';
 import {TraceSink} from '../providers/sinks/trace-sink';
-import type {DataProvider, Value} from './abi';
+import {RequestError, type DataProvider, type Value} from './abi';
 import {bind} from './js-runtime';
 import {loadModule} from './load';
 
@@ -32,7 +33,7 @@ async function runSource(
     provider: provider ?? csvProvider(csv),
     sink,
   });
-  bound.runAll();
+  await bound.runAll();
   return lines;
 }
 
@@ -233,6 +234,133 @@ describe('requests end to end', () => {
       '4 0 10',
       '5 0 10',
     ]);
+  });
+});
+
+describe('dynamic requests end to end', () => {
+  const primaryCsv = [
+    'time,close',
+    '0,1',
+    '1,2',
+    '2,3',
+    '3,4',
+    '4,5',
+    '5,6',
+    '',
+  ].join(chr10());
+  const contextX = ['time,close', '0,10', '2,20', '4,30', ''].join(chr10());
+  const contextY = ['time,close', '0,100', '2,200', '4,300', ''].join(chr10());
+
+  test('a series symbol switches pairs per row; history is parent-row-indexed', async () => {
+    const lines = await runSource(
+      [
+        'r = request.security(close > 3 ? "X" : "Y", "D", close)',
+        'plot(r)',
+        'plot(r[1])',
+      ].join(chr10()),
+      '',
+      {},
+      csvContexts({'': primaryCsv, X: contextX, Y: contextY}),
+    );
+    // Rows 0-2 ask Y (close 1,2,3), rows 3-5 ask X (close 4,5,6). The
+    // history channel reads the result ring: the previous ROW's value,
+    // whichever pair served it — including across the switch.
+    expect(lines.slice(2)).toEqual([
+      '0 0 na',
+      '0 1 na',
+      '1 0 100',
+      '1 1 na',
+      '2 0 100',
+      '2 1 100',
+      '3 0 20',
+      '3 1 100',
+      '4 0 20',
+      '4 1 20',
+      '5 0 30',
+      '5 1 20',
+    ]);
+  });
+
+  test('suspended executions vanish: var and varip each count every row once', async () => {
+    const lines = await runSource(
+      [
+        'var n = 0',
+        'varip m = 0',
+        'n := n + 1',
+        'm := m + 1',
+        'r = request.security(close > 3 ? "X" : "Y", "D", close)',
+        'plot(n + m)',
+        'plot(r)',
+      ].join(chr10()),
+      '',
+      {},
+      csvContexts({'': primaryCsv, X: contextX, Y: contextY}),
+    );
+    // Two discovery suspensions happen (row 0 pair Y, row 3 pair X); if the
+    // aborted executions leaked, n+m would jump at those rows.
+    const counters = lines.slice(2).filter(l => l.includes(' 0 '));
+    expect(counters).toEqual([
+      '0 0 2',
+      '1 0 4',
+      '2 0 6',
+      '3 0 8',
+      '4 0 10',
+      '5 0 12',
+    ]);
+  });
+
+  test('an unknown dynamic pair under ignore_invalid_symbol is na and warned', async () => {
+    const {sink: logSink, events} = captureSink();
+    const original = logConfig();
+    configureLog({level: 'warn', sink: logSink});
+    try {
+      const lines = await runSource(
+        [
+          'sym = close > 3 ? "MISSING" : "Y"',
+          'plot(request.security(sym, "D", close, ignore_invalid_symbol=true))',
+        ].join(chr10()),
+        '',
+        {},
+        csvContexts({'': primaryCsv, Y: contextY}),
+      );
+      expect(lines.slice(1)).toEqual([
+        '0 0 na',
+        '1 0 100',
+        '2 0 100',
+        '3 0 na',
+        '4 0 na',
+        '5 0 na',
+      ]);
+      const warned = events.filter(event => event.level === 'warn');
+      expect(warned.length).toBe(1);
+      expect(warned[0].fields['symbol']).toBe('MISSING');
+    } finally {
+      configureLog(original);
+    }
+  });
+
+  test('an unknown dynamic pair without the flag is a RequestError', async () => {
+    expect(() =>
+      runSource(
+        'plot(request.security(close > 3 ? "MISSING" : "Y", "D", close))',
+        '',
+        {},
+        csvContexts({'': primaryCsv, Y: contextY}),
+      ),
+    ).toThrow(RequestError);
+  });
+
+  test('dynamic_requests=false rejects series context args', () => {
+    const {program, errors} = buildText(
+      [
+        'indicator("t", dynamic_requests=false)',
+        'plot(request.security(close > 3 ? "X" : "Y", "D", close))',
+      ].join(chr10()),
+    );
+    expect(program).toBeNull();
+    expect(errors.some(e => e.msg.includes('dynamic_requests=true'))).toBe(
+      true,
+    );
   });
 });
 
