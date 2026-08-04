@@ -111,12 +111,13 @@ A provider implementation routes by symbol prefix — the quantmod pattern
 keys), with the prefix as the routing key:
 
 - Registry: `prefix -> driver`; unprefixed symbols go to the default
-  driver. Construction is host configuration — CLI config file/env for
-  `tea`, OpenChart registers its MarketFeed driver the same way. API keys
-  live here and never appear in Tea source or the runtime. The `tea` CLI's
-  default dispatches: the EMPTY symbol is the csv file the user handed it
-  (the primary context), while any other unprefixed symbol resolves via
-  yahoo — so `request.security("AAPL", …)` works over a csv-driven chart.
+  driver. The quantmod division of labor: drivers AND the default-source
+  policy belong to the package (`builtinSources` — '' is the host's
+  primary context, any other unprefixed symbol defaults to yahoo, so
+  `request.security("AAPL", …)` works over a csv-driven chart); hosts only
+  parameterize it — the primary context and API keys (env for `tea`,
+  OpenChart's own configuration for its MarketFeed driver). Keys never
+  appear in Tea source or the runtime.
 - In-package drivers: **csv** (existing), **yahoo** (default; unofficial
   chart API — free, intraday-capable, also carries dividend/split events
   for the later sugar; no contractual stability, an accepted tradeoff for

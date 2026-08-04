@@ -19,9 +19,14 @@ range)` → a fixed-extent `ProviderContext` (or a typed `ContextError`,
   tests that assemble multi-context providers from csv-shaped payloads.
 - `registry.ts` routes by symbol prefix (`FRED:CPIAUCSL` →
   `sources["FRED"]` with the prefix stripped); unregistered prefixes and
-  the empty symbol go untouched to the default driver. Registry
-  construction is host configuration — API keys live in drivers, never in
-  the runtime or Tea source.
+  the empty symbol go untouched to the default driver. API keys live in
+  drivers, never in the runtime or Tea source.
+- `builtin-sources.ts` owns the package's standard wiring (the quantmod
+  division: routing policy in the package, hosts only parameterize):
+  '' → the host's primary context, other unprefixed symbols → yahoo,
+  prefixes → the built-in drivers, FRED without a key → a typed
+  configuration error. Hosts (main.ts, OpenChart) call `builtinSources`
+  and never assemble driver registries inline.
 - Network drivers (`yahoo.ts` — unofficial v8 chart API, keyless, intraday
   capable; `stooq.ts` — EOD csv, keyless; `fred.ts` — macro observations,
   key via options, single-valued → close collapse) all take an injectable

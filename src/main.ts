@@ -9,14 +9,11 @@ import {Errors, type ErrorMsg} from './base/print';
 import {UnimplementedError} from './base/unimplemented';
 import {compile, compileToAst, compileToIr} from './compile';
 import {dumpProgram} from './ir/dumper';
+import {builtinSources} from './providers/data/builtin-sources';
 import {csvProvider} from './providers/data/csv';
-import {fredProvider} from './providers/data/fred';
-import {registryProvider} from './providers/data/registry';
-import {stooqProvider} from './providers/data/stooq';
-import {yahooProvider} from './providers/data/yahoo';
 import {TableSink} from './providers/sinks/table-sink';
 import {TraceSink} from './providers/sinks/trace-sink';
-import {BindError, type DataProvider} from './runtime/abi';
+import {BindError} from './runtime/abi';
 import {bind} from './runtime/js-runtime';
 import {loadModule} from './runtime/load';
 import {dumpFile, dumpTokens} from './syntax/dumper';
@@ -59,39 +56,6 @@ async function runStageAsync<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-// The CLI's source registry (host configuration, docs/requests.md): the
-// empty symbol is the csv file (the primary context the user handed us);
-// any other unprefixed symbol defaults to yahoo, and prefixes route to
-// their drivers. API keys arrive via environment, never Tea source.
-function cliProvider(csvText: string): DataProvider {
-  const fredKey = process.env['FRED_API_KEY'] ?? '';
-  const fred: DataProvider =
-    fredKey === ''
-      ? {
-          resolveContext: () =>
-            Promise.resolve({
-              error: 'unknownSource' as const,
-              detail: 'set FRED_API_KEY to use FRED: symbols',
-            }),
-        }
-      : fredProvider({apiKey: fredKey});
-  const csv = csvProvider(csvText);
-  const yahoo = yahooProvider();
-  return registryProvider({
-    defaultSource: {
-      resolveContext: (symbol, timeframe, range) =>
-        symbol === ''
-          ? csv.resolveContext(symbol, timeframe, range)
-          : yahoo.resolveContext(symbol, timeframe, range),
-    },
-    sources: {
-      YAHOO: yahoo,
-      STOOQ: stooqProvider(),
-      FRED: fred,
-    },
-  });
-}
-
 const tea = new Command('tea')
   .description('Tea language compiler and runner')
   .version('0.1.0');
@@ -124,7 +88,10 @@ tea
       try {
         const exec = await bind(module, {
           params: {},
-          provider: cliProvider(readFileSync(options.input, 'utf8')),
+          provider: builtinSources({
+            primary: csvProvider(readFileSync(options.input, 'utf8')),
+            fredApiKey: process.env['FRED_API_KEY'],
+          }),
           sink,
         });
         exec.runAll();
