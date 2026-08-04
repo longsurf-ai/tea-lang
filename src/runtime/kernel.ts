@@ -1,4 +1,4 @@
-// Purpose: The Tea runtime kernel — implements the rt ABI and owns the main loop: binding, frame trees, ring allocation, the provisional/commit protocol, and emission flushing. docs/rt.md is the authority.
+// Purpose: The Tea runtime kernel — implements the rt ABI and owns the main loop: binding, frame trees, ring allocation, the provisional/commit protocol, and emission flushing. docs/runtime.md is the authority.
 
 import {fatal} from '../base/print';
 import {Storage} from '../ir/node';
@@ -218,7 +218,7 @@ class Kernel implements Rt, BoundProgram {
     return new Ring(keep, ref ? null : NaN);
   }
 
-  // Execution-start scratch protocol (docs/rt.md): perBar resets to na;
+  // Execution-start scratch protocol (docs/runtime.md): perBar resets to na;
   // var/varip seed from the last committed value — and until anything is
   // committed, their init thunks re-run each execution (a provisional first
   // row rolls back to its initializer). varip alone keeps its scratch

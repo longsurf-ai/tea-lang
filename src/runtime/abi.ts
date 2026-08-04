@@ -1,4 +1,4 @@
-// Purpose: The runtime ABI types — the complete surface generated code, providers, and sinks see; docs/rt.md is the authority. Types only: the kernel implements, codegen targets.
+// Purpose: The runtime ABI types — the complete surface generated code, providers, and sinks see; docs/runtime.md is the authority. Types only: the kernel implements, codegen targets.
 
 import type {HistoryDepth, NameStorage} from '../ir/node';
 

@@ -2,7 +2,7 @@
 
 How a compiled Program executes. This document is the source of truth for
 the runtime ABI, the two external seams, and the execution protocol;
-`src/rt/` implements the kernel and `src/codegen/` targets the ABI. The
+`src/runtime/` implements the kernel and `src/codegen/` targets the ABI. The
 Program contract stays owned by [ir.md](ir.md); the root `runtime.ts` sketch
 is superseded by this document.
 

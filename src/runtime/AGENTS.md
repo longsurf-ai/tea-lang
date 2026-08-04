@@ -1,7 +1,7 @@
 # rt
 
 The Tea runtime kernel: implements the rt ABI (`abi.ts` is the contract
-surface, `docs/rt.md` the authority) and owns the main loop — binding,
+surface, `docs/runtime.md` the authority) and owns the main loop — binding,
 frame trees, rings, the provisional/commit protocol, emission flushing.
 
 ## Invariants
