@@ -4,6 +4,7 @@
 import {readFileSync, writeFileSync} from 'node:fs';
 import {Command} from 'commander';
 import {DEFAULT_COMPILE_CONFIG} from './base/config';
+import {configureLog, parseLogLevel} from './base/log';
 import {formatPos, newFileBase} from './base/pos';
 import {Errors, type ErrorMsg} from './base/print';
 import {UnimplementedError} from './base/unimplemented';
@@ -53,6 +54,21 @@ async function runStageAsync<T>(fn: () => Promise<T>): Promise<T> {
       process.exit(2);
     }
     throw error;
+  }
+}
+
+// Logging is configured once at the process boundary: TEA_LOG names the
+// level (debug|info|warn|error; default warn), events go to stderr —
+// stdout stays program output.
+const teaLogLevel = process.env['TEA_LOG'];
+if (teaLogLevel !== undefined && teaLogLevel !== '') {
+  const level = parseLogLevel(teaLogLevel);
+  if (level === null) {
+    console.error(
+      `tea: unknown TEA_LOG level '${teaLogLevel}' (debug|info|warn|error)`,
+    );
+  } else {
+    configureLog({level});
   }
 }
 

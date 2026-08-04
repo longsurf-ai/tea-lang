@@ -1,5 +1,6 @@
 // Purpose: The JS runtime — implements the Runtime ABI and owns the main loop: binding, frame trees, ring allocation, request-child scheduling, the provisional/commit protocol, and emission flushing. docs/runtime.md and docs/requests.md are the authorities.
 
+import {log} from '../base/log';
 import {fatal} from '../base/print';
 import {Storage} from '../ir/node';
 import {
@@ -28,6 +29,8 @@ import {Ring} from './ring';
 // Slice scope: static requests resolve their full extent at bind; range
 // narrowing (depth demands, calc_bars_count) is a later refinement.
 const FULL_RANGE: RangeDemand = {from: null, to: null, bars: null};
+
+const requestLog = log.child('runtime.request');
 
 // Bind a lowered module to parameter values, a data provider, and an output
 // sink. Everything bind-time happens here: validation, context resolution,
@@ -231,6 +234,7 @@ class JSRuntime implements Runtime, BoundProgram {
         return fatal(`request ${rid} was never declared by init`);
       }
       const what = `request '${pair.symbol}','${pair.timeframe}'`;
+      const resolveDone = requestLog.startTimer('context resolved');
       const resolved = await this.provider.resolveContext(
         pair.symbol,
         pair.timeframe,
@@ -241,11 +245,24 @@ class JSRuntime implements Runtime, BoundProgram {
           resolved.error === 'unknownSymbol' ||
           resolved.error === 'unknownSource';
         if (spec.merge.ignoreInvalidSymbol && invalidSymbol) {
+          // The na column is the ignore_invalid_symbol CONTRACT; the warn
+          // reports it so a missing key or a typo is never silent.
+          requestLog.warn('request context unavailable; merged column is na', {
+            symbol: pair.symbol,
+            timeframe: pair.timeframe,
+            error: resolved.error,
+            detail: resolved.detail,
+          });
           this.requestViews.push({at: () => naValue});
           continue;
         }
         throw new BindError(formatContextError(what, resolved));
       }
+      resolveDone({
+        symbol: pair.symbol,
+        timeframe: pair.timeframe,
+        rows: resolved.rows,
+      });
 
       const parentAxis = this.context.axis;
       const childAxis = resolved.axis;
@@ -269,6 +286,7 @@ class JSRuntime implements Runtime, BoundProgram {
 
       // The child runs its full history now; each committed result lands in
       // the column the merged view reads through.
+      const executeDone = requestLog.startTimer('child executed');
       const values: Value[] = [];
       const childRoot = child.root();
       for (let row = 0; row < child.rows; row += 1) {
@@ -276,6 +294,7 @@ class JSRuntime implements Runtime, BoundProgram {
         values.push(child.read(childRoot, spec.resultSlot, 0));
         child.commitRow(row);
       }
+      executeDone({symbol: pair.symbol, rows: child.rows});
 
       const map = sampleMergeMap(
         parentAxis,

@@ -1,6 +1,7 @@
 // Purpose: Pipeline driver — sole owner of stage order, phase barriers, and the per-compilation Errors instance: loadPackage (parse) → checkPackage (typecheck) → buildProgram (noding) → generate (lowering).
 
 import type {CompileConfig} from './base/config';
+import {log} from './base/log';
 import {Errors, type ErrorMsg} from './base/print';
 import {generate} from './codegen/codegen';
 import type {Program} from './ir/program';
@@ -43,6 +44,9 @@ export function compileToIr(filename: string, errors: Errors): Program | null {
   return errors.count > 0 ? null : program;
 }
 
+// Compiler performance events, one per phase (TEA_LOG=debug shows them).
+const perf = log.child('compile');
+
 export function compile(
   filenames: readonly string[],
   config: CompileConfig,
@@ -51,20 +55,28 @@ export function compile(
 
   // Phase barriers: later phases never run against a compilation that has
   // already failed.
+  const parseDone = perf.startTimer('parse');
   const files = loadPackage(filenames, errors);
+  parseDone({files: files.length});
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};
   }
+  const checkDone = perf.startTimer('check');
   const importer = resolveImports(files);
   const info = checkPackage(files, errors, importer);
+  checkDone();
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};
   }
+  const nodeDone = perf.startTimer('buildProgram');
   const program = buildProgram(files[0], info, errors);
+  nodeDone();
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};
   }
+  const generateDone = perf.startTimer('generate');
   const js = generate(program, config, errors);
+  generateDone({bytes: js.length});
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};
   }
