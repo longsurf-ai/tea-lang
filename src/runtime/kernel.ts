@@ -40,11 +40,13 @@ class Kernel implements Rt, BoundProgram {
 
   private phase: Phase = 'binding';
   private readonly paramValues: Value[] = [];
-  private readonly seriesData: SeriesData[] = [];
+  private readonly seriesData: (SeriesData | null)[] = [];
+  // Kernel-owned virtual series: the axis ordinal itself.
+  private readonly barIndexSids = new Set<number>();
   // Bind-time depth reports from the module's init section.
   private readonly boundLocalDepths = new Map<string, number>();
   private readonly boundOutputArgs: {name: string; value: Value}[][];
-  private readonly root: FrameImpl;
+  private readonly rootFrame: FrameImpl;
 
   // Main-loop state.
   private cursor = -1;
@@ -78,15 +80,18 @@ class Kernel implements Rt, BoundProgram {
     // One context, one axis: every series of a binding shares one row
     // space — the alignment CONTRACT sits on the DataProvider, and the
     // kernel refuses misaligned data instead of silently truncating.
-    const lengths = new Set(this.seriesData.map(data => data.length));
+    const provided = this.seriesData.filter(
+      (data): data is SeriesData => data !== null,
+    );
+    const lengths = new Set(provided.map(data => data.length));
     if (lengths.size > 1) {
       throw new BindError(
         `provider series are not row-aligned (lengths ${[...lengths].join(', ')})`,
       );
     }
-    this.rows = this.seriesData.length === 0 ? 0 : this.seriesData[0].length;
+    this.rows = provided.length === 0 ? 0 : provided[0].length;
 
-    this.root = this.newFrame(0);
+    this.rootFrame = this.newFrame(0);
   }
 
   // ---- binding --------------------------------------------------------------
@@ -156,6 +161,12 @@ class Kernel implements Rt, BoundProgram {
           return fatal(`series slot ${sid} has neither host id nor param`);
         }
         id = this.paramValues[manifest.params.indexOf(param)] as string;
+      }
+      // bar_index is the kernel's own axis ordinal, never provider data.
+      if (id === 'bar_index') {
+        this.barIndexSids.add(sid);
+        this.seriesData.push(null);
+        return;
       }
       const data = this.inputs.provider.series(id);
       if (data === null) {
@@ -278,9 +289,9 @@ class Kernel implements Rt, BoundProgram {
     const sameRow = this.executedRow === row;
     this.cursor = row;
     this.executedRow = row;
-    this.resetFrameScratch(this.root, sameRow);
+    this.resetFrameScratch(this.rootFrame, sameRow);
     this.emitBuf = new Map();
-    this.module.main(this, this.root);
+    this.module.main(this, this.rootFrame);
     this.flushEmissions(row, provisional);
   }
 
@@ -288,7 +299,7 @@ class Kernel implements Rt, BoundProgram {
     if (row !== this.executedRow || row !== this.committedRows) {
       return fatal(`commitRow(${row}) without a matching execute`);
     }
-    this.commitFrame(this.root);
+    this.commitFrame(this.rootFrame);
     this.committedRows = row + 1;
   }
 
@@ -308,9 +319,12 @@ class Kernel implements Rt, BoundProgram {
   // ---- rt surface -----------------------------------------------------------
 
   series(sid: number, offset: number): number {
-    const data = this.seriesData[sid];
     const index = this.cursor - offset;
-    if (index < 0 || index >= data.length) {
+    if (this.barIndexSids.has(sid)) {
+      return index < 0 ? NaN : index;
+    }
+    const data = this.seriesData[sid];
+    if (data === null || index < 0 || index >= data.length) {
       return NaN;
     }
     return data.at(index);
@@ -330,6 +344,10 @@ class Kernel implements Rt, BoundProgram {
 
   request(): Value {
     return fatal('request execution is not part of this slice');
+  }
+
+  root(): Frame {
+    return this.rootFrame;
   }
 
   frame(fr: Frame, slot: number): Frame {

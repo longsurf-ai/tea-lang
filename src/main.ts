@@ -6,9 +6,13 @@ import {Command} from 'commander';
 import {DEFAULT_COMPILE_CONFIG} from './base/config';
 import {formatPos, newFileBase} from './base/pos';
 import {Errors, type ErrorMsg} from './base/print';
-import {UnimplementedError, unimplemented} from './base/unimplemented';
+import {UnimplementedError} from './base/unimplemented';
 import {compile, compileToAst, compileToIr} from './compile';
 import {dumpProgram} from './ir/dumper';
+import {csvProvider} from './providers/csv';
+import {BindError, type OutputSink, type Value} from './runtime/abi';
+import {bind} from './runtime/kernel';
+import {loadModule} from './runtime/load';
 import {dumpFile, dumpTokens} from './syntax/dumper';
 import {tokenize} from './syntax/syntax';
 
@@ -42,7 +46,7 @@ const tea = new Command('tea')
 
 tea
   .command('run')
-  .description('Compile and execute a Tea script')
+  .description('Compile and execute a Tea script over a CSV dataset')
   .argument('<file>', 'Tea source file')
   .option('-i, --input <file>', 'CSV dataset to bind as the input series')
   .action((file: string, options: {input?: string}) => {
@@ -51,9 +55,56 @@ tea
       if (!result.ok) {
         exitWithErrors(result.errors);
       }
-      return unimplemented('runtime: execute', result.js, options.input);
+      if (options.input === undefined) {
+        console.error('tea: run requires --input <csv>');
+        process.exit(1);
+      }
+      const module = loadModule(result.js);
+      const sink: OutputSink = {
+        declare(outputs) {
+          outputs.forEach((output, oid) => {
+            const statics = output.spec.staticArgs
+              .map(a => `${a.name}=${formatValue(a.value)}`)
+              .join(' ');
+            const bounds = output.boundArgs
+              .map(a => `${a.name}=${formatValue(a.value)}`)
+              .join(' ');
+            console.log(
+              `# output[${oid}] ${output.spec.effect}` +
+                (statics.length > 0 ? ` ${statics}` : '') +
+                (bounds.length > 0 ? ` bound{${bounds}}` : ''),
+            );
+          });
+        },
+        emit(row, oid, channels, provisional) {
+          console.log(
+            `${row} ${oid}${provisional ? ' ?' : ''} ${channels.map(formatValue).join(' ')}`,
+          );
+        },
+      };
+      try {
+        const bound = bind(module, {
+          params: {},
+          provider: csvProvider(readFileSync(options.input, 'utf8')),
+          sink,
+        });
+        bound.runAll();
+      } catch (error) {
+        if (error instanceof BindError) {
+          console.error(`tea: ${error.message}`);
+          process.exit(1);
+        }
+        throw error;
+      }
     });
   });
+
+function formatValue(v: Value): string {
+  if (typeof v === 'number') {
+    return Number.isNaN(v) ? 'na' : String(v);
+  }
+  return String(v);
+}
 
 tea
   .command('build')

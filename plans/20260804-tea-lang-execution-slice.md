@@ -102,15 +102,15 @@ traces become the execution-level regression surface.
 
 ## 4. Verification
 
-- [ ] `bun run typecheck` and `bun test` green; new rt/codegen suites
+- [x] `bun run typecheck` and `bun test` green; new rt/codegen suites
       included.
-- [ ] `bun src/main.ts run testdata/macd.tea --input testdata/dataset.csv`
+- [x] `bun src/main.ts run testdata/macd.tea --input testdata/dataset.csv`
       prints per-bar MACD/signal/histogram values; exit 0.
-- [ ] Execution goldens locked under `testdata/run/`; rerun is
+- [x] Execution goldens locked under `testdata/run/`; rerun is
       byte-identical (determinism).
-- [ ] Hand-checked vectors: ta.sma/ema over a tiny known series match
+- [x] Hand-checked vectors: ta.sma/ema over a tiny known series match
       hand-computed values in unit tests (first numeric ground truth).
-- [ ] Provisional property tests pass: tick/rollback equivalence and varip
+- [x] Provisional property tests pass: tick/rollback equivalence and varip
       persistence.
-- [ ] Layering greps: `src/rt` imports only base/ir; generated-module string
+- [x] Layering greps: `src/runtime` imports only base/ir; generated-module string
       contains no `Date.`/`Math.random` (determinism guard).

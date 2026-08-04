@@ -65,6 +65,7 @@ const p: Name = {
 const inc: IrFunc = {
   name: 'inc',
   params: [p],
+  locals: [],
   resultType: FloatType,
   resultQualifier: Qualifier.Series,
   body: {

@@ -974,9 +974,14 @@ class Noder {
     this.slots.pop();
     this.nesting = savedNesting;
     this.tables = savedTables;
+    const paramSet = new Set(instance.params);
+    const locals = [...new Set(instance.tables.defs.values())].filter(
+      name => !paramSet.has(name),
+    );
     const func: IrFunc = {
       name: instance.name,
       params: instance.params,
+      locals,
       resultType: instance.resultType,
       resultQualifier: instance.resultQualifier,
       body,

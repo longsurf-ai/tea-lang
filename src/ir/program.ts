@@ -120,14 +120,19 @@ export interface RequestEdge {
 // One instantiation of a user (or prelude) function per concrete argument
 // signature — Go-style stenciling, and instantiations are REAL functions:
 // calls dispatch at runtime (inlining is at most a codegen optimization).
-// Params are ordinary Names (per-call values); locals are discovered by
-// walking the body. An IrFunc's frame layout is its local Names plus one
-// sub-frame per stateful call site in its body; each call site's slot
+// Params and locals are ordinary Names and BOTH explicit: ownership is by
+// declaration site, never by reachability — a program-frame `var` read only
+// inside a function must still live in the program frame, so walking cannot
+// discover ownership. An IrFunc's frame layout is its params + locals plus
+// one sub-frame per stateful call site in its body; each call site's slot
 // selects its sub-frame, so two ma(close, 10) call sites own two frames
 // (and two ema sub-frames within).
 export interface IrFunc {
   readonly name: string;
   readonly params: readonly Name[];
+  // Names DECLARED in this instantiation's body (the binder's defs minus
+  // params), in source order.
+  readonly locals: readonly Name[];
   readonly resultType: Type;
   readonly resultQualifier: Qualifier;
   readonly body: IrExpr;

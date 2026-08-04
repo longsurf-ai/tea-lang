@@ -8,6 +8,7 @@ import {
   type HistReadExpr,
   type IrExpr,
 } from '../ir/node';
+import {fatal} from '../base/print';
 import type {Program} from '../ir/program';
 import {IntType, Qualifier, qualifierLE} from '../ir/type';
 import {histReadsOf} from '../ir/visit';
@@ -47,7 +48,10 @@ export function resolveDepths(program: Program): void {
     const offset = read.offset;
     if (offset.kind === IrKind.Const && typeof offset.value === 'number') {
       demand.maxConst = Math.max(demand.maxConst, offset.value);
-    } else if (qualifierLE(offset.qualifier, Qualifier.Simple)) {
+    } else if (
+      qualifierLE(offset.qualifier, Qualifier.Simple) &&
+      bindEvaluable(offset)
+    ) {
       demand.bound.push(offset);
     } else {
       demand.dynamic = true;
@@ -125,3 +129,31 @@ function declarationCap(program: Program): number {
   }
   return DEFAULT_MAX_BARS_BACK;
 }
+
+// A bound depth expression runs in the module's init section, which has no
+// frame: only constants, scalar param reads, and pure combinations qualify.
+// Anything touching a frame slot (even const-qualified function params —
+// their values are per call site) falls back to the cap.
+function bindEvaluable(e: IrExpr): boolean {
+  switch (e.kind) {
+    case IrKind.Const:
+      return true;
+    case IrKind.HistRead:
+      return e.place.kind === PlaceKind.Param && e.offset === null;
+    case IrKind.Binary:
+      return bindEvaluable(e.x) && bindEvaluable(e.y);
+    case IrKind.Unary:
+      return bindEvaluable(e.x);
+    case IrKind.Cond:
+      return (
+        bindEvaluable(e.cond) && bindEvaluable(e.then) && bindEvaluable(e.else)
+      );
+    case IrKind.CallNative:
+      return e.args.every(bindEvaluable);
+    default:
+      return false;
+  }
+}
+
+// Referenced to keep the import stable if rules above change.
+void fatal;

@@ -79,6 +79,7 @@ rt.write(fr, slot, v)
 rt.request(rid, offset)       // reserved: request slice
 // frames
 rt.frame(fr, slot)            // open the sub-frame at this call site
+rt.root()                     // the program frame (globals read from funcs)
 // emissions
 rt.emit(oid, channel, v)
 // bind-time (init section only)

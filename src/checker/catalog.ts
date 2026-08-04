@@ -686,13 +686,10 @@ function buildFuncs(): NativeFunc[] {
       ),
     );
   }
+  // fixnan is deliberately absent: it carries state (the last non-na value)
+  // and needs either a stateful-native slot or a bare-name prelude
+  // mechanism; libraries inline the var pattern meanwhile.
   funcs.push(
-    func(
-      'fixnan',
-      [req('source', FloatType, Qualifier.Series)],
-      FloatType,
-      JoinResult,
-    ),
     func('int', [req('x', TypeRef.Num, Qualifier.Series)], IntType, JoinResult),
     func(
       'float',

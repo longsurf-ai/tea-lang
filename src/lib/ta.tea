@@ -152,8 +152,12 @@ export dmi(diLength, adxSmoothing) =>
 	up = change(high)
 	down = -change(low)
 	trur = rma(tr(true), diLength)
-	plus = fixnan(100 * rma(up > down and up > 0 ? up : 0.0, diLength) / trur)
-	minus = fixnan(100 * rma(down > up and down > 0 ? down : 0.0, diLength) / trur)
+	rawPlus = 100 * rma(up > down and up > 0 ? up : 0.0, diLength) / trur
+	rawMinus = 100 * rma(down > up and down > 0 ? down : 0.0, diLength) / trur
+	var float plus = na
+	var float minus = na
+	plus := na(rawPlus) ? plus : rawPlus
+	minus := na(rawMinus) ? minus : rawMinus
 	s = plus + minus
 	adx = 100 * rma(math.abs(plus - minus) / (s == 0 ? 1.0 : s), adxSmoothing)
 	[plus, minus, adx]

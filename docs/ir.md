@@ -2,6 +2,8 @@
 
 How Tea represents semantics between the syntax tree and generated code. This
 document is the source of truth for the middle end; `src/ir/` implements it.
+Execution — the rt ABI, kernel, and generated-module contract — is owned by
+[runtime.md](runtime.md).
 
 ## Pipeline vocabulary
 

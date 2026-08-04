@@ -3,9 +3,10 @@
 import type {HistoryDepth, NameStorage} from '../ir/node';
 
 // In-flight values: numerics carry na as NaN, references use null, bool is
-// never na (a checker guarantee). Heap objects (UDT, collections) arrive
-// with their slice.
-export type Value = number | string | boolean | null;
+// never na (a checker guarantee). Tuples travel as arrays (ephemeral:
+// written to a synthetic slot, destructured immediately). Heap objects
+// (UDT, collections) arrive with their slice.
+export type Value = number | string | boolean | null | readonly Value[];
 
 // ---- the generated module ---------------------------------------------------
 
@@ -102,6 +103,10 @@ export interface Rt {
   write(fr: Frame, slot: number, v: Value): void;
   request(rid: number, offset: number): Value; // reserved: request slice
   frame(fr: Frame, slot: number): Frame;
+  // The program frame — how function bodies reach program-frame names
+  // (functions read but never write globals, so this is the one legal
+  // cross-frame access).
+  root(): Frame;
   emit(oid: number, channel: number, v: Value): void;
   // init section only
   bindDepth(fid: number, slot: number, bars: number): void;
