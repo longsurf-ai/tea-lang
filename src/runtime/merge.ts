@@ -1,6 +1,32 @@
 // Purpose: Sample-merge alignment — a pure function from two time axes and a merge policy to a parent→child row mapping; never copies child data (docs/requests.md: merge is alignment, not data movement).
 
-import type {RequestSpec, TimeAxis} from './abi';
+import {BindError, type RequestSpec, type TimeAxis} from './abi';
+
+// A merge axis must be finite and strictly time-ordered: NaN comparisons
+// are silently false and a shuffled axis would corrupt the mapping without
+// any error, so the bind path refuses instead (assert-and-fail).
+export function assertMergeAxis(
+  axis: TimeAxis,
+  rows: number,
+  what: string,
+): void {
+  let previousOpen = -Infinity;
+  for (let row = 0; row < rows; row += 1) {
+    const open = axis.time(row);
+    const close = axis.closeTime(row);
+    if (!Number.isFinite(open) || !Number.isFinite(close) || close < open) {
+      throw new BindError(
+        `${what}: invalid time axis at row ${row} (open ${open}, close ${close})`,
+      );
+    }
+    if (open <= previousOpen) {
+      throw new BindError(
+        `${what}: time axis is not strictly increasing at row ${row}`,
+      );
+    }
+    previousOpen = open;
+  }
+}
 
 // The parent-row-indexed mapping: entry p is the child row whose result
 // serves parent row p, or -1 for na. Merge semantics are runtime-owned and

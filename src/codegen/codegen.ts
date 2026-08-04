@@ -87,10 +87,11 @@ class ModuleEmitter {
   emitChild(
     child: Program,
     resultName: Name,
+    parent: Generator,
   ): {ref: string; resultSlot: number} {
     this.childCounter += 1;
     const ref = `M${this.childCounter}`;
-    const generator = new Generator(child, ref, this);
+    const generator = new Generator(child, ref, this, parent);
     const body = generator.moduleBody();
     const resultSlot = generator.programFrameSlot(resultName);
     this.childDecls.push(`const ${ref} = {`, ...indent(body), '};');
@@ -119,6 +120,7 @@ class Generator {
     private readonly program: Program,
     private readonly moduleRef: string,
     private readonly emitter: ModuleEmitter,
+    parent: Generator | null = null,
   ) {
     this.funcs = funcsOf(program);
     this.series = seriesInputsOf(program);
@@ -127,6 +129,20 @@ class Generator {
 
     this.series.forEach((s, sid) => this.seriesIds.set(s, sid));
     let nextSid = this.series.length;
+    // Bind-time params are compilation-global: a request child declares no
+    // params of its own and references the PARENT's ParamInput objects, so
+    // a child generator inherits the parent's pid map (the runtime serves
+    // children the parent's resolved values). Source params never cross —
+    // their reads are series-qualified, which the capture check rejects —
+    // so the inherited paramSeriesIds entries are unreachable in a child.
+    if (parent !== null) {
+      for (const [param, pid] of parent.paramIds) {
+        this.paramIds.set(param, pid);
+      }
+      for (const [param, sid] of parent.paramSeriesIds) {
+        this.paramSeriesIds.set(param, sid);
+      }
+    }
     program.params.forEach((param, pid) => {
       this.paramIds.set(param, pid);
       if (param.defaultValue?.kind === ParamDefaultKind.Series) {
@@ -217,7 +233,7 @@ class Generator {
     lowerStmts(this.program.body, mainLines, this.ctxFor(0));
 
     const children = this.requests.map(edge =>
-      this.emitter.emitChild(edge.child, edge.resultName),
+      this.emitter.emitChild(edge.child, edge.resultName, this),
     );
     const manifest = this.buildManifest(children);
 
@@ -411,6 +427,12 @@ class Generator {
     const requests: RequestSpec[] = this.requests.map((edge, rid) => {
       if (edge.merge.mode !== MergeMode.Sample) {
         return unimplemented('codegen: collect merge (security_lower_tf)');
+      }
+      // A tuple result would need per-element na handling in the merged
+      // view (a single ref bit cannot describe it) — staged, never wrong
+      // code.
+      if (edge.resultType.kind === TypeKind.Tuple) {
+        return unimplemented('codegen: tuple request results');
       }
       return {
         merge: {

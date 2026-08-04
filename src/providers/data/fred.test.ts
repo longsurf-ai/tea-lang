@@ -218,3 +218,57 @@ describe('fredProvider', () => {
     }
   });
 });
+
+describe('fredProvider review fixes', () => {
+  const DAY = 86_400_000;
+
+  test('a weekly series opens six days before its period-END date', async () => {
+    const {fetchImpl} = fakeFetch({
+      series: () => json({seriess: [{id: 'WM2NS', frequency_short: 'W'}]}),
+      observations: () =>
+        json({
+          observations: [
+            {date: '2026-01-09', value: '1'}, // week ending Fri Jan 9
+            {date: '2026-01-16', value: '2'},
+          ],
+        }),
+    });
+    const provider = fredProvider({apiKey: 'test-key', fetchImpl});
+    const context = resolved(
+      await provider.resolveContext('WM2NS', '', FULL_RANGE),
+    );
+    const axis = context.axis;
+    expect(axis).not.toBeNull();
+    // Bar opens Sat Jan 3 (period start), closes when the next opens.
+    expect(axis?.time(0)).toBe(Date.UTC(2026, 0, 9) - 6 * DAY);
+    expect(axis?.closeTime(0)).toBe(Date.UTC(2026, 0, 16) - 6 * DAY);
+    expect(axis?.closeTime(1)).toBe(Date.UTC(2026, 0, 16) - 6 * DAY + 7 * DAY);
+  });
+
+  test('an api_key complaint on HTTP 400 is fetchFailed, not unknownSymbol', async () => {
+    const {fetchImpl} = fakeFetch({
+      series: () =>
+        json(
+          {
+            error_message:
+              'Bad Request. The value for variable api_key is not registered.',
+          },
+          400,
+        ),
+    });
+    const provider = fredProvider({apiKey: 'bogus', fetchImpl});
+    const error = failed(await provider.resolveContext('GDP', '', FULL_RANGE));
+    expect(error.error).toBe('fetchFailed');
+    expect(error.detail).toContain('api_key');
+  });
+
+  test('an unserved native frequency is unsupportedTimeframe, not malformed', async () => {
+    const {fetchImpl} = fakeFetch({
+      series: () => json({seriess: [{id: 'X', frequency_short: 'BW'}]}),
+    });
+    const provider = fredProvider({apiKey: 'test-key', fetchImpl});
+    const error = failed(await provider.resolveContext('X', '', FULL_RANGE));
+    expect(error.error).toBe('unsupportedTimeframe');
+    expect(error.detail).toContain("'BW'");
+  });
+});

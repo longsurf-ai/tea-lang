@@ -621,6 +621,29 @@ describe('requests', () => {
     expect(sink.emits.every(e => Number.isNaN(num(e.channels[0])))).toBe(true);
   });
 
+  test('out-of-extent request reads (negative offsets included) are na', async () => {
+    const module = requestModule({
+      gaps: false,
+      lookahead: false,
+      ignoreInvalidSymbol: false,
+    });
+    const probing: TeaModule = {
+      ...module,
+      main(rt) {
+        rt.emit(0, 0, rt.request(0, -100)); // index past the extent
+        rt.emit(0, 1, rt.request(0, 100)); // index before history
+      },
+    };
+    const sink = new RecordingSink();
+    const bound = await bind(probing, {
+      params: {},
+      provider: contexts({'': parent(), X: child()}),
+      sink,
+    });
+    bound.executeRow(0, false);
+    expect(sink.emits[0].channels.every(v => Number.isNaN(num(v)))).toBe(true);
+  });
+
   test('merge without a time axis on either context is a BindError', async () => {
     const noAxis = context({close: new ArraySeries([1, 2, 3])}, null);
     expect(() =>

@@ -16,16 +16,24 @@ const DAY = 86_400_000;
 // because FRED periods are calendar-shaped (a month is not 30 days); interior
 // bars close when the next observation opens, so only the final close leans
 // on this.
+// openShift: how far the observation date sits AFTER the period open.
+// Weekly FRED series date observations at the period END ("Weekly, Ending
+// Friday"), so the bar opens six days earlier; every other frequency dates
+// the period start.
 const FREQUENCIES = new Map<
   string,
-  {readonly timeframe: string; readonly span: number}
+  {
+    readonly timeframe: string;
+    readonly span: number;
+    readonly openShift: number;
+  }
 >([
-  ['D', {timeframe: 'D', span: DAY}],
-  ['W', {timeframe: 'W', span: 7 * DAY}],
-  ['M', {timeframe: 'M', span: 30 * DAY}],
-  ['Q', {timeframe: '3M', span: 91 * DAY}],
-  ['SA', {timeframe: '6M', span: 182 * DAY}],
-  ['A', {timeframe: '12M', span: 365 * DAY}],
+  ['D', {timeframe: 'D', span: DAY, openShift: 0}],
+  ['W', {timeframe: 'W', span: 7 * DAY, openShift: 6 * DAY}],
+  ['M', {timeframe: 'M', span: 30 * DAY, openShift: 0}],
+  ['Q', {timeframe: '3M', span: 91 * DAY, openShift: 0}],
+  ['SA', {timeframe: '6M', span: 182 * DAY, openShift: 0}],
+  ['A', {timeframe: '12M', span: 365 * DAY, openShift: 0}],
 ]);
 
 // The API key is host configuration (CLI config for `tea`, never Tea source
@@ -59,6 +67,14 @@ export function fredProvider(options: {
           detail: `malformed FRED series metadata for '${symbol}'`,
         };
       }
+      if ('unmapped' in frequency) {
+        // A real but unserved FRED frequency (e.g. 'BW' biweekly) is a
+        // timeframe limitation, not a malformed response.
+        return {
+          error: 'unsupportedTimeframe' as const,
+          detail: `FRED series '${symbol}' has native frequency '${frequency.unmapped}', which this driver does not serve yet`,
+        };
+      }
       // Native-frequency serving only: '' means source-native, and an
       // explicit timeframe must match the native one exactly. Resampling
       // (a monthly series onto a weekly axis, aggregation the other way)
@@ -83,7 +99,7 @@ export function fredProvider(options: {
           detail: `malformed FRED observations for '${symbol}'`,
         };
       }
-      return fredContext(observations, frequency.span);
+      return fredContext(observations, frequency.span, frequency.openShift);
     },
   };
 }
@@ -108,10 +124,14 @@ async function fredJson(
   }
   if (!response.ok) {
     // FRED reports both an unknown series id and a missing/invalid API key
-    // as HTTP 400 with an error_message; forwarding the upstream message
-    // verbatim lets the user tell the two apart.
+    // as HTTP 400 with an error_message. A key problem is host
+    // configuration, not a bad symbol — type it fetchFailed so
+    // ignore_invalid_symbol never swallows a misconfigured key.
     const message = errorMessage(body);
     if (response.status === 400 && message !== null) {
+      if (/api_key/i.test(message)) {
+        return {error: 'fetchFailed' as const, detail: message};
+      }
       return {error: 'unknownSymbol' as const, detail: message};
     }
     return {
@@ -128,11 +148,17 @@ function errorMessage(body: unknown): string | null {
     : null;
 }
 
-function parseFrequency(body: unknown): {
-  readonly short: string;
-  readonly timeframe: string;
-  readonly span: number;
-} | null {
+// null = malformed metadata; {unmapped} = a well-formed frequency this
+// driver does not serve.
+function parseFrequency(body: unknown):
+  | {
+      readonly short: string;
+      readonly timeframe: string;
+      readonly span: number;
+      readonly openShift: number;
+    }
+  | {readonly unmapped: string}
+  | null {
   if (!isRecord(body) || !Array.isArray(body.seriess)) {
     return null;
   }
@@ -141,7 +167,9 @@ function parseFrequency(body: unknown): {
     return null;
   }
   const entry = FREQUENCIES.get(first.frequency_short);
-  return entry === undefined ? null : {short: first.frequency_short, ...entry};
+  return entry === undefined
+    ? {unmapped: first.frequency_short}
+    : {short: first.frequency_short, ...entry};
 }
 
 interface FredObservation {
@@ -183,9 +211,10 @@ function isRecord(x: unknown): x is Record<string, unknown> {
 function fredContext(
   observations: readonly FredObservation[],
   span: number,
+  openShift: number,
 ): ProviderContext {
   const rows = observations.length;
-  const times = observations.map(o => o.time);
+  const times = observations.map(o => o.time - openShift);
   const values = observations.map(o => o.value);
   const series = (at: (index: number) => number): SeriesData => ({
     length: rows,

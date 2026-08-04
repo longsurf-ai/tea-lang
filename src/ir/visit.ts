@@ -258,7 +258,13 @@ export function bindEvaluable(e: IrExpr): boolean {
     case IrKind.Const:
       return true;
     case IrKind.HistRead:
-      return e.place.kind === PlaceKind.Param && e.offset === null;
+      // Source params are excluded: their reads are series (a bound host
+      // series), not bind-time scalars, and would lower to rt.series.
+      return (
+        e.place.kind === PlaceKind.Param &&
+        e.offset === null &&
+        e.place.param.defaultValue?.kind !== ParamDefaultKind.Series
+      );
     case IrKind.Binary:
       return bindEvaluable(e.x) && bindEvaluable(e.y);
     case IrKind.Unary:

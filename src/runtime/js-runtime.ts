@@ -22,7 +22,7 @@ import {
   type TeaModule,
   type Value,
 } from './abi';
-import {sampleMergeMap} from './merge';
+import {assertMergeAxis, sampleMergeMap} from './merge';
 import {Ring} from './ring';
 
 // Slice scope: static requests resolve their full extent at bind; range
@@ -214,6 +214,15 @@ class JSRuntime implements Runtime, BoundProgram {
   // handles nested requests; all awaits happen here, before row 0.
   async bindRequests(): Promise<void> {
     const specs = this.module.manifest.requests;
+    if (specs.length > 0) {
+      if (this.context.axis === null) {
+        throw new BindError(
+          'requests require a time axis on the primary context' +
+            " (a csv context needs a 'time' column)",
+        );
+      }
+      assertMergeAxis(this.context.axis, this.rows, 'primary context');
+    }
     for (let rid = 0; rid < specs.length; rid += 1) {
       const spec = specs[rid];
       const naValue = spec.ref ? null : NaN;
@@ -246,6 +255,7 @@ class JSRuntime implements Runtime, BoundProgram {
             " (a csv context needs a 'time' column)",
         );
       }
+      assertMergeAxis(childAxis, resolved.rows, `${what} child context`);
 
       const child = new JSRuntime(
         this.module.requests[rid],
@@ -504,9 +514,11 @@ class JSRuntime implements Runtime, BoundProgram {
     if (view === undefined) {
       return fatal(`request ${rid} has no merged view`);
     }
+    // Out-of-extent reads (including runtime-computed negative offsets) are
+    // na, exactly like rt.series.
     const index = this.cursor - offset;
     const spec = this.module.manifest.requests[rid];
-    if (index < 0) {
+    if (index < 0 || index >= this.rows) {
       return spec.ref ? null : NaN;
     }
     return view.at(index);

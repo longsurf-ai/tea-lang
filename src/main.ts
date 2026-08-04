@@ -59,9 +59,10 @@ async function runStageAsync<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-// The CLI's source registry (host configuration, docs/requests.md): the csv
-// file is the default context; request symbols route by prefix to the
-// network drivers. API keys arrive via environment, never Tea source.
+// The CLI's source registry (host configuration, docs/requests.md): the
+// empty symbol is the csv file (the primary context the user handed us);
+// any other unprefixed symbol defaults to yahoo, and prefixes route to
+// their drivers. API keys arrive via environment, never Tea source.
 function cliProvider(csvText: string): DataProvider {
   const fredKey = process.env['FRED_API_KEY'] ?? '';
   const fred: DataProvider =
@@ -74,10 +75,17 @@ function cliProvider(csvText: string): DataProvider {
             }),
         }
       : fredProvider({apiKey: fredKey});
+  const csv = csvProvider(csvText);
+  const yahoo = yahooProvider();
   return registryProvider({
-    defaultSource: csvProvider(csvText),
+    defaultSource: {
+      resolveContext: (symbol, timeframe, range) =>
+        symbol === ''
+          ? csv.resolveContext(symbol, timeframe, range)
+          : yahoo.resolveContext(symbol, timeframe, range),
+    },
     sources: {
-      YAHOO: yahooProvider(),
+      YAHOO: yahoo,
       STOOQ: stooqProvider(),
       FRED: fred,
     },

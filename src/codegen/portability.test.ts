@@ -21,6 +21,16 @@ const SOURCES = [
     'plot(m + s + h)',
     'plot(ta.sar(0.02, 0.02, 0.2))',
   ].join(String.fromCharCode(10)),
+  // Exercises the request emission shapes: sibling child-module consts,
+  // requests arrays, rt.bindRequest in init, rt.request reads, and an
+  // input param crossing into the capture (compilation-global params).
+  [
+    'indicator("req")',
+    'scale = input.float(10.0)',
+    'r = request.security("X", "D", ta.change(close) * scale)',
+    'plot(r)',
+    'plot(r[1])',
+  ].join(String.fromCharCode(10)),
 ];
 
 // Syntax past ES2015 or impure globals that must never appear.

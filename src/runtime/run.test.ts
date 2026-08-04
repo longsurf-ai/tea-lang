@@ -157,6 +157,66 @@ describe('requests end to end', () => {
     ]);
   });
 
+  test('an input param crosses into the capture (compilation-global params)', async () => {
+    const lines = await runSource(
+      [
+        'scale = input.float(10.0)',
+        'plot(request.security("X", "D", close * scale))',
+      ].join(chr10()),
+      '',
+      {},
+      csvContexts({'': primaryCsv, X: childCsv}),
+    );
+    expect(lines.slice(1)).toEqual([
+      '0 0 na',
+      '1 0 100',
+      '2 0 100',
+      '3 0 200',
+      '4 0 200',
+      '5 0 300',
+    ]);
+  });
+
+  test('a corrupt or shuffled time axis is a BindError, never silent na', async () => {
+    const src = 'plot(request.security("X", "D", close))';
+    // Blank time cell in the parent axis.
+    expect(() =>
+      runSource(
+        src,
+        '',
+        {},
+        csvContexts({
+          '': ['time,close', '0,1', ',2', '2,3', ''].join(chr10()),
+          X: childCsv,
+        }),
+      ),
+    ).toThrow('invalid time axis');
+    // A shuffled child axis trips the close-before-open check (next-open
+    // closeTime convention), a duplicated timestamp the monotonicity check.
+    expect(() =>
+      runSource(
+        src,
+        '',
+        {},
+        csvContexts({
+          '': primaryCsv,
+          X: ['time,close', '2,30', '0,10', '3,40', ''].join(chr10()),
+        }),
+      ),
+    ).toThrow('invalid time axis');
+    expect(() =>
+      runSource(
+        src,
+        '',
+        {},
+        csvContexts({
+          '': primaryCsv,
+          X: ['time,close', '0,10', '0,20', '2,30', ''].join(chr10()),
+        }),
+      ),
+    ).toThrow('not strictly increasing');
+  });
+
   test('the captured expression computes with state inside the child context', async () => {
     const lines = await runSource(
       'plot(request.security("X", "D", ta.change(close)))',
