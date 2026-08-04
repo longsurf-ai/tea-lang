@@ -10,9 +10,13 @@ import {UnimplementedError} from './base/unimplemented';
 import {compile, compileToAst, compileToIr} from './compile';
 import {dumpProgram} from './ir/dumper';
 import {csvProvider} from './providers/data/csv';
+import {fredProvider} from './providers/data/fred';
+import {registryProvider} from './providers/data/registry';
+import {stooqProvider} from './providers/data/stooq';
+import {yahooProvider} from './providers/data/yahoo';
 import {TableSink} from './providers/sinks/table-sink';
 import {TraceSink} from './providers/sinks/trace-sink';
-import {BindError} from './runtime/abi';
+import {BindError, type DataProvider} from './runtime/abi';
 import {bind} from './runtime/js-runtime';
 import {loadModule} from './runtime/load';
 import {dumpFile, dumpTokens} from './syntax/dumper';
@@ -55,6 +59,31 @@ async function runStageAsync<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+// The CLI's source registry (host configuration, docs/requests.md): the csv
+// file is the default context; request symbols route by prefix to the
+// network drivers. API keys arrive via environment, never Tea source.
+function cliProvider(csvText: string): DataProvider {
+  const fredKey = process.env['FRED_API_KEY'] ?? '';
+  const fred: DataProvider =
+    fredKey === ''
+      ? {
+          resolveContext: () =>
+            Promise.resolve({
+              error: 'unknownSource' as const,
+              detail: 'set FRED_API_KEY to use FRED: symbols',
+            }),
+        }
+      : fredProvider({apiKey: fredKey});
+  return registryProvider({
+    defaultSource: csvProvider(csvText),
+    sources: {
+      YAHOO: yahooProvider(),
+      STOOQ: stooqProvider(),
+      FRED: fred,
+    },
+  });
+}
+
 const tea = new Command('tea')
   .description('Tea language compiler and runner')
   .version('0.1.0');
@@ -87,7 +116,7 @@ tea
       try {
         const exec = await bind(module, {
           params: {},
-          provider: csvProvider(readFileSync(options.input, 'utf8')),
+          provider: cliProvider(readFileSync(options.input, 'utf8')),
           sink,
         });
         exec.runAll();
