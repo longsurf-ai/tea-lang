@@ -149,10 +149,22 @@ dedup is a later optimization, not a semantic requirement.
 ## Merge
 
 Merge is a pure function of (parent axis, child axis, child committed
-result, MergePolicy), computed by the runtime per parent row and written to
-a per-edge ring in the parent frame — so `result[1]` is "whatever the
-request returned on the previous parent bar", regardless of which pair
-served that bar (dynamic requests included). `rt.request` reads this ring.
+result, MergePolicy). Its product is **a parent-row-indexed SeriesView per
+edge**, which `rt.request(rid, offset)` reads — so `result[1]` is "whatever
+the request returned on the previous parent bar", regardless of which pair
+served that bar (dynamic requests included).
+
+The view contract deliberately does not say the merged column is
+materialized. **Merge is alignment, not data movement**: the view is
+defined by the child's committed storage plus a parent→child row mapping
+(per row under dynamic requests, an (instance, childRow) pair — still
+indices, never values). A sample-merge mapping is monotonic, so it
+compresses to O(child bars) breakpoints; a low-resolution child under a
+dense parent axis — or a wide multi-column child later — must never be
+duplicated across parent rows. Materializing the merged column is a legal
+first implementation, not the contract; the zero-copy mapping
+implementation must remain reachable without touching the ABI or this
+section's semantics.
 
 Sample mode (`security`):
 
@@ -190,7 +202,7 @@ Execution:
 
 - **Static edges** (const/input context args): bind evaluates the args
   (init section, like bindOutput args), awaits `resolveContext`, runs each
-  child over its full history, and prefetches the merged ring. No row ever
+  child over its full history, and prepares the merged view. No row ever
   suspends.
 - **Dynamic edges**: row code evaluates the args and calls
   `rt.request(rid, sym, tf, offset)`. On an instance-table miss the runtime
