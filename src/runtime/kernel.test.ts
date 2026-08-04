@@ -398,5 +398,12 @@ describe('binding', () => {
     expect(() =>
       bind(EMA_MODULE, {...inputs, params: {}, provider: provider({})}),
     ).toThrow("series 'close' is not provided");
+    expect(() =>
+      bind(TICK_MODULE, {
+        ...inputs,
+        params: {},
+        provider: provider({close: new ArraySeries([1, 2])}),
+      }),
+    ).not.toThrow();
   });
 });

@@ -124,6 +124,13 @@ later request results. Neither the kernel's read path nor generated code
 ever assumes a native array; providers try to be efficient, the contract
 doesn't require it.
 
+The alignment contract: **all series a provider serves for one binding
+share one row space** — one context is one axis, so the kernel keeps a
+single cursor and every read is `cursor - offset` arithmetic. There is no
+per-input index mapping inside a Program; cross-axis mapping exists only at
+request edges, where the MergePolicy names it explicitly. The kernel
+rejects misaligned series at bind.
+
 Two asymmetries between the kernel's rings and provider series:
 
 - Providers hand over **absolute-indexed committed rows** (`SeriesData`);

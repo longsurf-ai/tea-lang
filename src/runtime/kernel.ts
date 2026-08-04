@@ -75,10 +75,16 @@ class Kernel implements Rt, BoundProgram {
       })),
     );
 
-    this.rows =
-      this.seriesData.length === 0
-        ? 0
-        : Math.min(...this.seriesData.map(data => data.length));
+    // One context, one axis: every series of a binding shares one row
+    // space — the alignment CONTRACT sits on the DataProvider, and the
+    // kernel refuses misaligned data instead of silently truncating.
+    const lengths = new Set(this.seriesData.map(data => data.length));
+    if (lengths.size > 1) {
+      throw new BindError(
+        `provider series are not row-aligned (lengths ${[...lengths].join(', ')})`,
+      );
+    }
+    this.rows = this.seriesData.length === 0 ? 0 : this.seriesData[0].length;
 
     this.root = this.newFrame(0);
   }
