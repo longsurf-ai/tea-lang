@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Purpose: CLI entry point — Commander argument parsing and process I/O only; all compilation lives in compile.ts. Sole owner of error printing and exit codes.
+// Purpose: CLI entry point — Commander argument parsing and process I/O only; all compilation lives in compile.ts. Sole owner of error printing and exit codes; run presentation is delegated to providers sinks.
 
 import {readFileSync, writeFileSync} from 'node:fs';
 import {Command} from 'commander';
@@ -9,8 +9,9 @@ import {Errors, type ErrorMsg} from './base/print';
 import {UnimplementedError} from './base/unimplemented';
 import {compile, compileToAst, compileToIr} from './compile';
 import {dumpProgram} from './ir/dumper';
-import {csvProvider} from './providers/csv';
-import {TraceSink} from './providers/trace-sink';
+import {csvProvider} from './providers/data/csv';
+import {TableSink} from './providers/sinks/table-sink';
+import {TraceSink} from './providers/sinks/trace-sink';
 import {BindError} from './runtime/abi';
 import {bind} from './runtime/kernel';
 import {loadModule} from './runtime/load';
@@ -50,7 +51,11 @@ tea
   .description('Compile and execute a Tea script over a CSV dataset')
   .argument('<file>', 'Tea source file')
   .option('-i, --input <file>', 'CSV dataset to bind as the input series')
-  .action((file: string, options: {input?: string}) => {
+  .option(
+    '--trace',
+    'print the machine trace format (golden-compatible) instead of a table',
+  )
+  .action((file: string, options: {input?: string; trace?: boolean}) => {
     runStage(() => {
       const result = compile([file], DEFAULT_COMPILE_CONFIG);
       if (!result.ok) {
@@ -61,7 +66,11 @@ tea
         process.exit(1);
       }
       const module = loadModule(result.js);
-      const sink = new TraceSink(line => console.log(line));
+      const table =
+        options.trace === true
+          ? null
+          : new TableSink(text => console.log(text));
+      const sink = table ?? new TraceSink(line => console.log(line));
       try {
         const bound = bind(module, {
           params: {},
@@ -69,6 +78,7 @@ tea
           sink,
         });
         bound.runAll();
+        table?.flush();
       } catch (error) {
         if (error instanceof BindError) {
           console.error(`tea: ${error.message}`);

@@ -1,6 +1,6 @@
 // Purpose: CSV DataProvider — header names map to ambient series ids; deterministic and offline, the substrate for golden traces and `tea run`.
 
-import type {DataProvider, SeriesData} from '../runtime/abi';
+import type {DataProvider, SeriesData} from '../../runtime/abi';
 
 export function csvProvider(text: string): DataProvider {
   const lines = text.trim().split(/\r?\n/);

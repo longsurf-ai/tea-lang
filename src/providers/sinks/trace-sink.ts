@@ -1,6 +1,6 @@
 // Purpose: Trace-format OutputSink — the single owner of the textual trace format shared by `tea run` and the run goldens; hosts inject only the line writer.
 
-import type {OutputSink, Value} from '../runtime/abi';
+import type {OutputSink, Value} from '../../runtime/abi';
 
 function formatValue(v: Value): string {
   if (typeof v === 'number') {
