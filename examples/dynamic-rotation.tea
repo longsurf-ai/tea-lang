@@ -1,0 +1,31 @@
+//@version=1
+/* Dynamic requests: momentum rotation. The symbol requested on each bar
+   is COMPUTED from data — whichever of SPY/QQQ has the stronger 20-bar
+   momentum — so the request's child context changes row to row. A static
+   request cannot express this: the pair is unknowable before the bar
+   loop runs. Each distinct pair resolves once, on first encounter
+   (run with TEA_LOG=debug to watch the two resolutions happen). */
+indicator("Dynamic rotation")
+
+// Two static requests: each candidate's momentum, computed with its own
+// state inside its own child context.
+spyMom = request.security("SPY", "D", ta.roc(close, 20))
+qqqMom = request.security("QQQ", "D", ta.roc(close, 20))
+
+// The leader is a SERIES string — known only per bar.
+leader = spyMom > qqqMom ? "SPY" : "QQQ"
+
+// The dynamic request: this bar's leader's smoothed price. The captured
+// ta.ema keeps separate state per resolved pair (each child context owns
+// its own frame tree).
+price = request.security(leader, "D", ta.ema(close, 10))
+
+// History on a dynamic result is parent-row-indexed: yesterday's ROW,
+// whichever symbol served it — even across a rotation.
+step = price - price[1]
+
+plot(spyMom, title="SPY roc20")
+plot(qqqMom, title="QQQ roc20")
+plot(leader == "SPY" ? 1 : 2, title="leader (1=SPY 2=QQQ)")
+plot(price, title="leader ema10")
+plot(step, title="leader step")
