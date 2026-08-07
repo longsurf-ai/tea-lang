@@ -387,6 +387,11 @@ class Generator {
       name: param.name,
       title: param.title,
       type: paramType(param),
+      control: param.control,
+      group: param.group,
+      inline: param.inline,
+      tooltip: param.tooltip,
+      confirm: param.confirm,
       defaultValue: paramDefault(param),
       constraints:
         param.constraints === null

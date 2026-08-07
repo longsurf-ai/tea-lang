@@ -42,7 +42,10 @@ export interface SeriesSpec {
 export interface ParamSpec {
   readonly name: string;
   readonly title: string | null;
+  // The VALUE type the runtime validates bound values against; `control`
+  // carries the UI flavor ('price', 'session', 'time', 'auto', …).
   readonly type: 'int' | 'float' | 'bool' | 'string' | 'color' | 'source';
+  readonly control: string;
   // Const default value, or for source params the default host series id.
   readonly defaultValue: Value;
   readonly constraints: {
@@ -50,6 +53,11 @@ export interface ParamSpec {
     readonly maxval: number | null;
     readonly options: readonly Value[] | null;
   } | null;
+  // Settings-UI layout and interaction metadata.
+  readonly group: string | null;
+  readonly inline: string | null;
+  readonly tooltip: string | null;
+  readonly confirm: boolean;
   // For source params: the manifest.series slot this param's choice binds.
   readonly seriesSid: number | null;
 }

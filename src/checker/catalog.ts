@@ -228,6 +228,20 @@ const STRING_CONSTS: Record<string, readonly string[]> = {
     'status_line',
   ],
   'format.': ['inherit', 'price', 'volume', 'percent'],
+  // Table anchors: the constants are plain strings even while table.* itself
+  // is staged with the drawing runtime — scripts fail on table.new, not on
+  // the anchor vocabulary.
+  'position.': [
+    'top_left',
+    'top_center',
+    'top_right',
+    'middle_left',
+    'middle_center',
+    'middle_right',
+    'bottom_left',
+    'bottom_center',
+    'bottom_right',
+  ],
 };
 
 function buildVars(): NativeVar[] {
@@ -381,6 +395,13 @@ function buildFuncs(): NativeFunc[] {
         // Pine v6: default true; false restores the static-only gate on
         // request context args (enforced by the noder).
         opt('dynamic_requests', BoolType, Qualifier.Const, {literal: true}),
+        // Drawing-object budgets: recorded as script metadata now; the
+        // drawing runtime enforces them when handle objects land.
+        opt('max_lines_count', IntType, Qualifier.Const, {literal: true}),
+        opt('max_labels_count', IntType, Qualifier.Const, {literal: true}),
+        opt('max_boxes_count', IntType, Qualifier.Const, {literal: true}),
+        opt('max_polylines_count', IntType, Qualifier.Const, {literal: true}),
+        opt('calc_bars_count', IntType, Qualifier.Const, {literal: true}),
       ],
       VoidType,
       Qualifier.Const,
@@ -399,6 +420,12 @@ function buildFuncs(): NativeFunc[] {
     simpleInput('input.color', ColorType),
     simpleInput('input.timeframe', StringType),
     simpleInput('input.symbol', StringType),
+    // Interactive/session flavors: same value types, distinct UI controls
+    // (ParamInput.control records which input built the param).
+    simpleInput('input.price', FloatType),
+    simpleInput('input.session', StringType),
+    simpleInput('input.time', IntType),
+    simpleInput('input.text_area', StringType),
     func(
       'input.source',
       [req('defval', FloatType, Qualifier.Series), ...inputTail()],

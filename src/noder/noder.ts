@@ -1137,12 +1137,24 @@ class Noder {
         : null;
 
     const title = argValue('title');
+    const group = argValue('group');
+    const inline = argValue('inline');
+    const tooltip = argValue('tooltip');
+    const confirm = argValue('confirm');
     const param: ParamInput = {
       name: bindingName ?? `input@${c.pos.line}:${c.pos.col}`,
       title: typeof title === 'string' ? title : null,
+      control:
+        resolved.native.name === 'input'
+          ? 'auto'
+          : resolved.native.name.slice('input.'.length),
       type: resolved.native.result,
       defaultValue,
       constraints,
+      group: typeof group === 'string' ? group : null,
+      inline: typeof inline === 'string' ? inline : null,
+      tooltip: typeof tooltip === 'string' ? tooltip : null,
+      confirm: confirm === true,
       depth: {kind: DepthKind.None},
     };
     this.params.push(param);

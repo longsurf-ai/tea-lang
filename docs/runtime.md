@@ -45,7 +45,8 @@ export default {
   abi: 1,
   manifest: {
     series:  ['close', ...],              // sid -> host id (ambient + input.source params)
-    params:  [{name, type, default, constraints, seriesSid?}, ...],
+    params:  [{name, type, control, default, constraints,      // control = UI flavor
+               group, inline, tooltip, confirm, seriesSid?}, ...],
     outputs: [{effect, staticArgs, channels: [{name, type}]}, ...],
     frames:  [                            // fid 0 = the program frame
       {locals: [{storage, depth}, ...],   // slot-indexed; depth: none|const n|bound|capped n

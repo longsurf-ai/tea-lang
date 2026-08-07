@@ -56,6 +56,9 @@ export const HELPERS = {
   $nz: '(x, r) => (Number.isNaN(x) ? r : x)',
   $colorNew:
     "(c, t) => { const a = Math.round((100 - t) * 2.55).toString(16).toUpperCase(); return c.slice(0, 7) + (a.length < 2 ? '0' + a : a); }",
+  // Mirrors base/color.ts rgbColor (parity-locked by test).
+  $colorRgb:
+    "(r, g, b, t) => { const h = x => { const c = Math.max(0, Math.min(255, Math.round(x))).toString(16).toUpperCase(); return c.length < 2 ? '0' + c : c; }; const base = '#' + h(r) + h(g) + h(b); if (t === null) { return base; } const a = Math.round((100 - t) * 2.55).toString(16).toUpperCase(); return base + (a.length < 2 ? '0' + a : a); }",
 } as const;
 
 export type HelperName = keyof typeof HELPERS;
@@ -406,6 +409,10 @@ const NATIVE_RULES: Record<string, NativeRule> = {
   'color.new': (a, ctx) => {
     ctx.useHelper('$colorNew');
     return `$colorNew(${a[0]}, ${a[1]})`;
+  },
+  'color.rgb': (a, ctx) => {
+    ctx.useHelper('$colorRgb');
+    return `$colorRgb(${a[0]}, ${a[1]}, ${a[2]}, ${a.length > 3 ? a[3] : 'null'})`;
   },
 };
 

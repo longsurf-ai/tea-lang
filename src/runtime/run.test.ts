@@ -88,6 +88,23 @@ describe('hand-checked vectors', () => {
     expect(lines.slice(1)).toEqual(['0 0 na', '1 0 3', '2 0 -2']);
   });
 
+  test('ta.hma is lag-free on linear data', async () => {
+    // hma(4) = wma(2*wma(src,2) - wma(src,4), 2): on a perfect ramp the
+    // extrapolation cancels the lag exactly, so hma equals the input.
+    const lines = await runSource(
+      'plot(ta.hma(close, 4))',
+      seriesCsv([2, 4, 6, 8, 10, 12]),
+    );
+    expect(lines.slice(1)).toEqual([
+      '0 0 na',
+      '1 0 na',
+      '2 0 na',
+      '3 0 na',
+      '4 0 10',
+      '5 0 12',
+    ]);
+  });
+
   test('var accumulation via ta.cum', async () => {
     const lines = await runSource('plot(ta.cum(close))', seriesCsv([1, 2, 3]));
     expect(lines.slice(1)).toEqual(['0 0 1', '1 0 3', '2 0 6']);
@@ -234,6 +251,69 @@ describe('requests end to end', () => {
       '4 0 10',
       '5 0 10',
     ]);
+  });
+});
+
+describe('the input family end to end', () => {
+  test('extended inputs bind, and the manifest carries UI metadata', async () => {
+    const src = [
+      'indicator("inputs", max_labels_count=200, calc_bars_count=5000)',
+      'session = input.session("0930-1600", "Session", group="Times", inline="a", tooltip="rth", confirm=true)',
+      'lvl = input.price(500.0, "Level")',
+      't0 = input.time(1704067200000, "Start")',
+      'note = input.text_area("hello", "Note")',
+      'shade = input.color(color.new(color.blue, 90), "Shade")',
+      'plot(lvl)',
+    ].join(chr10());
+    const js = generate(mustBuild(src), DEFAULT_COMPILE_CONFIG, new Errors());
+    const module = loadModule(js);
+    const byName = new Map(module.manifest.params.map(p => [p.name, p]));
+    const session = byName.get('session');
+    expect(session?.control).toBe('session');
+    expect(session?.type).toBe('string');
+    expect(session?.group).toBe('Times');
+    expect(session?.inline).toBe('a');
+    expect(session?.tooltip).toBe('rth');
+    expect(session?.confirm).toBe(true);
+    expect(byName.get('lvl')?.control).toBe('price');
+    expect(byName.get('lvl')?.type).toBe('float');
+    expect(byName.get('t0')?.control).toBe('time');
+    expect(byName.get('t0')?.type).toBe('int');
+    expect(byName.get('note')?.control).toBe('text_area');
+    // The folded color.new default lands as a plain const hex+alpha.
+    expect(byName.get('shade')?.defaultValue).toBe('#2196F31A');
+    const indicator = module.manifest.outputs[0];
+    expect(indicator.staticArgs).toContainEqual({
+      name: 'max_labels_count',
+      value: 200,
+    });
+    expect(indicator.staticArgs).toContainEqual({
+      name: 'calc_bars_count',
+      value: 5000,
+    });
+
+    // And the whole thing executes with defaults: an input-qualified plot
+    // arg is a BIND arg — delivered once at declare, not emitted per row.
+    const lines: string[] = [];
+    const sink = new TraceSink(line => lines.push(line));
+    const bound = await bind(module, {
+      params: {},
+      provider: csvProvider(seriesCsv([1, 2])),
+      sink,
+    });
+    await bound.runAll();
+    expect(lines.some(line => line.includes('bound{series=500}'))).toBe(true);
+  });
+
+  test('color.rgb folds at compile time and executes at runtime', async () => {
+    const lines = await runSource(
+      [
+        'c = input.color(color.rgb(33, 150, 243, 20), "C")',
+        'plot(close, color=color.rgb(255, 109, 0))',
+      ].join(chr10()),
+      seriesCsv([1]),
+    );
+    expect(lines.length).toBeGreaterThan(0);
   });
 });
 

@@ -3,6 +3,7 @@
 // Reassignment binding is scope-sensitive and deliberately flow-insensitive:
 // a binding written anywhere in one checking context never carries fold values.
 
+import {applyTransparency, rgbColor} from '../base/color';
 import {fatal, type Errors} from '../base/print';
 import type {Pos} from '../base/pos';
 import {unimplemented} from '../base/unimplemented';
@@ -2071,6 +2072,32 @@ function foldBinary(
 
 // Value folders for pure numeric natives; keyed by catalog name. Applied only
 // when every provided argument folded to a number.
+// Folders over arbitrary const values (color arithmetic); numeric-only
+// folders live in NATIVE_FOLDERS below.
+const VALUE_FOLDERS: Record<
+  string,
+  (xs: readonly ConstValue[]) => ConstValue | null
+> = {
+  'color.new': xs =>
+    typeof xs[0] === 'string' && typeof xs[1] === 'number'
+      ? applyTransparency(xs[0], xs[1])
+      : null,
+  'color.rgb': xs => {
+    if (
+      typeof xs[0] !== 'number' ||
+      typeof xs[1] !== 'number' ||
+      typeof xs[2] !== 'number'
+    ) {
+      return null;
+    }
+    const transp = xs.length > 3 ? xs[3] : null;
+    if (transp !== null && typeof transp !== 'number') {
+      return null;
+    }
+    return rgbColor(xs[0], xs[1], xs[2], transp);
+  },
+};
+
 const NATIVE_FOLDERS: Record<string, (xs: readonly number[]) => number> = {
   'math.abs': xs => Math.abs(xs[0]),
   'math.sign': xs => Math.sign(xs[0]),
@@ -2096,6 +2123,17 @@ function foldNativeCall(
   name: string,
   tvs: readonly TypeAndValue[],
 ): ConstValue | null {
+  const valueFolder = VALUE_FOLDERS[name];
+  if (valueFolder !== undefined) {
+    const values: ConstValue[] = [];
+    for (const tv of tvs) {
+      if (tv.value === null) {
+        return null;
+      }
+      values.push(tv.value);
+    }
+    return valueFolder(values);
+  }
   const folder = NATIVE_FOLDERS[name];
   if (folder === undefined) {
     return null;

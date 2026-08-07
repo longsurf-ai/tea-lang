@@ -26,9 +26,18 @@ export interface ParamInput {
   readonly name: string;
   // Settings-UI label; null renders the name.
   readonly title: string | null;
+  // Which input control built this param ('int', 'price', 'session',
+  // 'auto' for bare input(), …) — UI fidelity; the VALUE type lives in
+  // `type`.
+  readonly control: string;
   readonly type: Type;
   readonly defaultValue: ParamDefault | null;
   readonly constraints: ParamConstraints | null;
+  // Settings-UI layout and interaction metadata, straight from the call.
+  readonly group: string | null;
+  readonly inline: string | null;
+  readonly tooltip: string | null;
+  readonly confirm: boolean;
   // History demanded on the bound value by the body (src[1] on an
   // input.source param reaches the runtime's chosen series). Annotated by
   // the depth pass; meaningful only for series-resulting params.
