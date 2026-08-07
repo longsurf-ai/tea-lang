@@ -54,11 +54,12 @@ export const HELPERS = {
   $round2:
     '(x, p) => { const m = Math.pow(10, p); return Math.round(x * m) / m; }',
   $nz: '(x, r) => (Number.isNaN(x) ? r : x)',
+  // Mirror base/color.ts (parity-locked by test): canonical hex, clamped
+  // domains, na in (null/NaN color, NaN number) → na out, per Pine.
   $colorNew:
-    "(c, t) => { const a = Math.round((100 - t) * 2.55).toString(16).toUpperCase(); return c.slice(0, 7) + (a.length < 2 ? '0' + a : a); }",
-  // Mirrors base/color.ts rgbColor (parity-locked by test).
+    "(c, t) => { if (c === null || Number.isNaN(c) || Number.isNaN(t)) { return null; } const tc = Math.max(0, Math.min(100, t)); const base = c.slice(0, 7); if (tc === 0) { return base; } const a = Math.round((100 - tc) * 2.55).toString(16).toUpperCase(); return base + (a.length < 2 ? '0' + a : a); }",
   $colorRgb:
-    "(r, g, b, t) => { const h = x => { const c = Math.max(0, Math.min(255, Math.round(x))).toString(16).toUpperCase(); return c.length < 2 ? '0' + c : c; }; const base = '#' + h(r) + h(g) + h(b); if (t === null) { return base; } const a = Math.round((100 - t) * 2.55).toString(16).toUpperCase(); return base + (a.length < 2 ? '0' + a : a); }",
+    "(r, g, b, t) => { if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b) || (t !== null && Number.isNaN(t))) { return null; } const h = x => { const c = Math.max(0, Math.min(255, Math.round(x))).toString(16).toUpperCase(); return c.length < 2 ? '0' + c : c; }; const base = '#' + h(r) + h(g) + h(b); const tc = t === null ? 0 : Math.max(0, Math.min(100, t)); if (tc === 0) { return base; } const a = Math.round((100 - tc) * 2.55).toString(16).toUpperCase(); return base + (a.length < 2 ? '0' + a : a); }",
 } as const;
 
 export type HelperName = keyof typeof HELPERS;

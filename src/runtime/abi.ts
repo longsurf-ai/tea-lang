@@ -51,6 +51,7 @@ export interface ParamSpec {
   readonly constraints: {
     readonly minval: number | null;
     readonly maxval: number | null;
+    readonly step: number | null;
     readonly options: readonly Value[] | null;
   } | null;
   // Settings-UI layout and interaction metadata.

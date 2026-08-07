@@ -315,6 +315,77 @@ describe('the input family end to end', () => {
     );
     expect(lines.length).toBeGreaterThan(0);
   });
+
+  test('na propagates through color arithmetic, fold and runtime alike', async () => {
+    const lines = await runSource(
+      [
+        // Series path: the helper sees a null color on na bars.
+        'c = close > 2 ? color.blue : na',
+        'plot(close, color=color.new(c, 50))',
+        // Fold path: a const na folds to na, not a crash.
+        'k = color.new(na, 90)',
+        'plot(close, color=k)',
+        // Component na through color.rgb.
+        'r = close > 2 ? 255 : na',
+        'plot(close, color=color.rgb(r, 0, 0))',
+      ].join(chr10()),
+      seriesCsv([1, 3]),
+    );
+    // Row 0 (close=1): the series color channels are na; the const-na
+    // color folded all the way into the declare line. Row 1 (close=3)
+    // carries real colors ((100-50)*2.55 rounds to 0x7F in IEEE).
+    expect(lines.some(l => l.includes('color=na'))).toBe(true);
+    expect(lines).toContain('0 0 1 na');
+    expect(lines).toContain('0 2 1 na');
+    expect(lines).toContain('1 0 3 #2196F37F');
+    expect(lines).toContain('1 2 3 #FF0000');
+  });
+
+  test('one color, one string: opaque forms are canonical and equal', async () => {
+    // Both comparisons fold to const true, so `x ? 1 : 0` folds to the
+    // static arg series=1 on the declare lines.
+    const lines = await runSource(
+      [
+        'same = color.rgb(255, 0, 0) == color.rgb(255, 0, 0, 0)',
+        'stripped = color.new(color.rgb(255, 0, 0, 40), 0) == color.rgb(255, 0, 0)',
+        'plot(same ? 1 : 0)',
+        'plot(stripped ? 1 : 0)',
+      ].join(chr10()),
+      seriesCsv([1]),
+    );
+    expect(lines.filter(l => l.includes('series=1')).length).toBe(2);
+  });
+
+  test('const out-of-range color arguments fail loudly', () => {
+    const {program, errors} = buildText(
+      'plot(close, color=color.new(color.blue, 150))',
+    );
+    expect(program).toBeNull();
+    expect(errors.some(e => e.msg.includes('between 0 and 100'))).toBe(true);
+    const rgb = buildText('plot(close, color=color.rgb(300, 0, 0))');
+    expect(rgb.program).toBeNull();
+    expect(rgb.errors.some(e => e.msg.includes('between 0 and 255'))).toBe(
+      true,
+    );
+  });
+
+  test("input.price's third positional argument is tooltip, not options", async () => {
+    const js = generate(
+      mustBuild(
+        'lvl = input.price(1.5, "Level", "click the chart")\nplot(lvl)',
+      ),
+      DEFAULT_COMPILE_CONFIG,
+      new Errors(),
+    );
+    const module = loadModule(js);
+    expect(module.manifest.params[0].tooltip).toBe('click the chart');
+  });
+
+  test('input.source rejects a non-source default', () => {
+    const {program, errors} = buildText('x = input.source(42)\nplot(x)');
+    expect(program).toBeNull();
+    expect(errors.some(e => e.msg.includes('built-in source'))).toBe(true);
+  });
 });
 
 describe('dynamic requests end to end', () => {

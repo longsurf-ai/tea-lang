@@ -333,6 +333,26 @@ function numericInput(name: string, type: Type): NativeFunc {
   );
 }
 
+// The input shape WITHOUT an options list (input.price/time/text_area):
+// Pine's third positional argument on these kinds is tooltip, not options.
+function plainInput(name: string, type: Type): NativeFunc {
+  return func(
+    name,
+    [
+      req('defval', type, Qualifier.Const, {literal: true}),
+      opt('title', StringType, Qualifier.Const, {literal: true}),
+      opt('tooltip', StringType, Qualifier.Const, {literal: true}),
+      opt('inline', StringType, Qualifier.Const, {literal: true}),
+      opt('group', StringType, Qualifier.Const, {literal: true}),
+      opt('confirm', BoolType, Qualifier.Const, {literal: true}),
+      opt('display', StringType, Qualifier.Const),
+    ],
+    type,
+    Qualifier.Input,
+    Effect.Param,
+  );
+}
+
 function simpleInput(name: string, type: Type): NativeFunc {
   return func(
     name,
@@ -421,11 +441,13 @@ function buildFuncs(): NativeFunc[] {
     simpleInput('input.timeframe', StringType),
     simpleInput('input.symbol', StringType),
     // Interactive/session flavors: same value types, distinct UI controls
-    // (ParamInput.control records which input built the param).
-    simpleInput('input.price', FloatType),
+    // (ParamInput.control records which input built the param). Per Pine
+    // v6, price/time/text_area take NO options list — and position
+    // matters, so they get their own signatures instead of simpleInput's.
+    plainInput('input.price', FloatType),
     simpleInput('input.session', StringType),
-    simpleInput('input.time', IntType),
-    simpleInput('input.text_area', StringType),
+    plainInput('input.time', IntType),
+    plainInput('input.text_area', StringType),
     func(
       'input.source',
       [req('defval', FloatType, Qualifier.Series), ...inputTail()],

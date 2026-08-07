@@ -399,6 +399,7 @@ class Generator {
           : {
               minval: numOrNull(param.constraints.minval),
               maxval: numOrNull(param.constraints.maxval),
+              step: numOrNull(param.constraints.step),
               options:
                 param.constraints.options?.map(v => constValue(v)) ?? null,
             },

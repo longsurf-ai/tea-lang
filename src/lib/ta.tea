@@ -46,7 +46,7 @@ export vwma(source, length) =>
 	sma(source * volume, length) / sma(volume, length)
 
 export hma(source, length) =>
-	wma(2 * wma(source, math.floor(length / 2)) - wma(source, length), math.floor(math.sqrt(length)))
+	wma(2 * wma(source, math.floor(length / 2)) - wma(source, length), math.round(math.sqrt(length)))
 
 export swma(source) =>
 	source[3] / 6 + source[2] * 2 / 6 + source[1] * 2 / 6 + source / 6

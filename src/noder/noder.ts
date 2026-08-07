@@ -1136,6 +1136,18 @@ class Noder {
         ? {minval, maxval, step, options}
         : null;
 
+    // input.source's default must be a built-in source: a const number
+    // would silently degrade the param to a scalar with control='source'.
+    if (
+      resolved.native.name === 'input.source' &&
+      defaultValue !== null &&
+      defaultValue.kind !== ParamDefaultKind.Series
+    ) {
+      this.errors.errorAt(
+        c.pos,
+        "'input.source' default must be a built-in source (close, hl2, …)",
+      );
+    }
     const title = argValue('title');
     const group = argValue('group');
     const inline = argValue('inline');

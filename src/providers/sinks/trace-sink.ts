@@ -6,7 +6,8 @@ function formatValue(v: Value): string {
   if (typeof v === 'number') {
     return Number.isNaN(v) ? 'na' : String(v);
   }
-  return String(v);
+  // Reference na is null — print it as the language value.
+  return v === null ? 'na' : String(v);
 }
 
 // One line per declaration, then one line per emission:

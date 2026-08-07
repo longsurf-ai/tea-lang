@@ -53,27 +53,36 @@ export const Tok = {
 
 export type TokenKind = (typeof Tok)[keyof typeof Tok];
 
-export const KEYWORDS = [
+// Reserved keywords are never valid names. Contextual keywords are scanned as
+// named tokens but the parser admits them as names outside their governing
+// productions. Editor projections consume this split so they do not paint
+// valid names such as `export = 1` as keywords.
+export const RESERVED_KEYWORDS = [
   Tok.Var,
   Tok.Varip,
   Tok.Const,
   Tok.If,
   Tok.Else,
   Tok.For,
+  Tok.While,
+  Tok.Switch,
+  Tok.Break,
+  Tok.Continue,
+] as const;
+
+export const CONTEXTUAL_KEYWORDS = [
   Tok.To,
   Tok.By,
   Tok.In,
-  Tok.While,
-  Tok.Switch,
   Tok.Import,
   Tok.As,
   Tok.Export,
   Tok.Method,
   Tok.Type,
   Tok.Enum,
-  Tok.Break,
-  Tok.Continue,
 ] as const;
+
+export const KEYWORDS = [...RESERVED_KEYWORDS, ...CONTEXTUAL_KEYWORDS] as const;
 export type KeywordKind = (typeof KEYWORDS)[number];
 
 // Valid when tok === Tok.Literal. Path is produced only by the

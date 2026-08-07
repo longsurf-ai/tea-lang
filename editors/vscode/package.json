@@ -1,0 +1,59 @@
+{
+  "name": "tea-language-support",
+  "displayName": "Tea Language Support",
+  "description": "Syntax highlighting and editor support for the Tea quantitative programming language.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "longsurf",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/longsurf-ai/openchart.git",
+    "directory": "packages/tea-lang/editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "tea",
+    "teascript",
+    "quantitative finance",
+    "syntax highlighting"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "tea",
+        "aliases": [
+          "Tea",
+          "tea"
+        ],
+        "extensions": [
+          ".tea"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "tea",
+        "scopeName": "source.tea",
+        "path": "./syntaxes/tea.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "generate": "bun run scripts/generate-syntax.ts",
+    "check": "bun run scripts/generate-syntax.ts --check && bun test test",
+    "package:vsix": "bunx @vscode/vsce@3.9.2 package --no-dependencies --out tea-language-support.vsix"
+  },
+  "files": [
+    "syntaxes/tea.tmLanguage.json",
+    "language-configuration.json",
+    "README.md",
+    "CHANGELOG.md"
+  ]
+}

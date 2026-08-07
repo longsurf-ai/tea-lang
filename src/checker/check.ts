@@ -26,6 +26,7 @@ import {
   NaType,
   PolylineType,
   qualifierLE,
+  NA_VALUE,
   Qualifier,
   StringType,
   TableType,
@@ -192,7 +193,7 @@ const VOID_TV: TypeAndValue = {
 };
 
 // Type names usable in annotations.
-const TYPE_NAMES: ReadonlyMap<string, Type> = new Map([
+export const BUILTIN_ANNOTATION_TYPES: ReadonlyMap<string, Type> = new Map([
   ['int', IntType],
   ['float', FloatType],
   ['bool', BoolType],
@@ -777,7 +778,7 @@ class Checker {
   private resolveTypeName(t: syntax.TypeName): Type {
     switch (t.kind) {
       case NodeKind.Name: {
-        const builtin = TYPE_NAMES.get(t.value);
+        const builtin = BUILTIN_ANNOTATION_TYPES.get(t.value);
         if (builtin !== undefined) {
           return builtin;
         }
@@ -1809,6 +1810,19 @@ class Checker {
           `argument '${param.name}' to '${native.name}' must be a constant literal`,
         );
       }
+      // Known numeric domains fail loudly when the value is known at
+      // compile time; runtime (series) values clamp instead.
+      const range = CONST_ARG_RANGES[native.name]?.[param.name];
+      if (
+        range !== undefined &&
+        typeof tv.value === 'number' &&
+        (tv.value < range[0] || tv.value > range[1])
+      ) {
+        return fail(
+          expr.pos,
+          `argument '${param.name}' to '${native.name}' must be between ${range[0]} and ${range[1]}, got ${tv.value}`,
+        );
+      }
     }
     return {ok: true, args: aligned};
   }
@@ -2073,16 +2087,24 @@ function foldBinary(
 // Value folders for pure numeric natives; keyed by catalog name. Applied only
 // when every provided argument folded to a number.
 // Folders over arbitrary const values (color arithmetic); numeric-only
-// folders live in NATIVE_FOLDERS below.
+// folders live in NATIVE_FOLDERS below. na propagates: a NA_VALUE argument
+// folds to NA_VALUE, exactly what the runtime helpers do with null/NaN.
 const VALUE_FOLDERS: Record<
   string,
   (xs: readonly ConstValue[]) => ConstValue | null
 > = {
-  'color.new': xs =>
-    typeof xs[0] === 'string' && typeof xs[1] === 'number'
+  'color.new': xs => {
+    if (xs.some(isNaValue)) {
+      return NA_VALUE;
+    }
+    return typeof xs[0] === 'string' && typeof xs[1] === 'number'
       ? applyTransparency(xs[0], xs[1])
-      : null,
+      : null;
+  },
   'color.rgb': xs => {
+    if (xs.some(isNaValue)) {
+      return NA_VALUE;
+    }
     if (
       typeof xs[0] !== 'number' ||
       typeof xs[1] !== 'number' ||
@@ -2095,6 +2117,21 @@ const VALUE_FOLDERS: Record<
       return null;
     }
     return rgbColor(xs[0], xs[1], xs[2], transp);
+  },
+};
+
+// Const arguments with a known numeric domain fail loudly at compile time
+// (Pine parity); series values clamp at runtime instead.
+const CONST_ARG_RANGES: Record<
+  string,
+  Record<string, readonly [number, number]>
+> = {
+  'color.new': {transp: [0, 100]},
+  'color.rgb': {
+    red: [0, 255],
+    green: [0, 255],
+    blue: [0, 255],
+    transp: [0, 100],
   },
 };
 

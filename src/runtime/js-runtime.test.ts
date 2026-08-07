@@ -360,7 +360,7 @@ const BIND_MODULE: TeaModule = {
         tooltip: null,
         confirm: false,
         defaultValue: 70,
-        constraints: {minval: 0, maxval: null, options: null},
+        constraints: {minval: 0, maxval: null, step: null, options: null},
         seriesSid: null,
       },
       {

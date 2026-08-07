@@ -13,5 +13,5 @@
     "isolatedModules": true
   },
   // runtime.ts at the package root is design notes, not compiling source.
-  "include": ["src"]
+  "include": ["src", "editors/vscode/scripts", "editors/vscode/test"]
 }

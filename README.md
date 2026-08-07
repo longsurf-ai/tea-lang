@@ -38,6 +38,12 @@ $> tea run my_indicator.tea -i dataset.csv
 | 2.6     |  red   |
 ```
 
+## Editor support
+
+The VS Code/Cursor extension under [`editors/vscode`](editors/vscode) provides
+syntax highlighting, comment commands, bracket pairing, and indentation-aware
+folding for `.tea` files. See its README for packaging and installation.
+
 ## Why is
 
 ## Execution Model

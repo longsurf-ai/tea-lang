@@ -25,22 +25,12 @@ import type {
 } from './nodes';
 import {AssignOp, COMPOUND_ASSIGN, Mode, NodeKind} from './nodes';
 import {Scanner} from './scanner';
-import {LitKind, Op, Tok, type TokenKind} from './tokens';
+import {CONTEXTUAL_KEYWORDS, LitKind, Op, Tok, type TokenKind} from './tokens';
 
 // Keywords that real Pine treats contextually: they act as keywords only in
 // their governing production and as ordinary names anywhere else (corpus
 // scripts use `type` as a parameter name, for example).
-const SOFT_KEYWORDS: readonly TokenKind[] = [
-  Tok.Type,
-  Tok.Enum,
-  Tok.Import,
-  Tok.Export,
-  Tok.Method,
-  Tok.To,
-  Tok.By,
-  Tok.In,
-  Tok.As,
-];
+const SOFT_KEYWORDS: readonly TokenKind[] = CONTEXTUAL_KEYWORDS;
 
 // @agent invariant: the parser holds the only reference to its Scanner and is
 // the only module that calls scanner.next(). Lookahead is exactly the
