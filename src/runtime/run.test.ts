@@ -88,20 +88,26 @@ describe('hand-checked vectors', () => {
     expect(lines.slice(1)).toEqual(['0 0 na', '1 0 3', '2 0 -2']);
   });
 
-  test('ta.hma is lag-free on linear data', async () => {
-    // hma(4) = wma(2*wma(src,2) - wma(src,4), 2): on a perfect ramp the
-    // extrapolation cancels the lag exactly, so hma equals the input.
+  test('ta.hma rounds the square-root window length', async () => {
+    // For a linear ramp, hma(7) is the input when the final window is
+    // round(sqrt(7)) = 3. floor(sqrt(7)) = 2 would emit one row earlier and
+    // every aligned value would be 28 too high. Multiples of 84 keep the hand
+    // calculation exact.
     const lines = await runSource(
-      'plot(ta.hma(close, 4))',
-      seriesCsv([2, 4, 6, 8, 10, 12]),
+      'plot(ta.hma(close, 7))',
+      seriesCsv([84, 168, 252, 336, 420, 504, 588, 672, 756, 840]),
     );
     expect(lines.slice(1)).toEqual([
       '0 0 na',
       '1 0 na',
       '2 0 na',
       '3 0 na',
-      '4 0 10',
-      '5 0 12',
+      '4 0 na',
+      '5 0 na',
+      '6 0 na',
+      '7 0 na',
+      '8 0 756',
+      '9 0 840',
     ]);
   });
 
@@ -258,10 +264,11 @@ describe('the input family end to end', () => {
   test('extended inputs bind, and the manifest carries UI metadata', async () => {
     const src = [
       'indicator("inputs", max_labels_count=200, calc_bars_count=5000)',
-      'session = input.session("0930-1600", "Session", group="Times", inline="a", tooltip="rth", confirm=true)',
-      'lvl = input.price(500.0, "Level")',
-      't0 = input.time(1704067200000, "Start")',
-      'note = input.text_area("hello", "Note")',
+      'len = input.int(5, "Length", minval=1, step=2, display=display.none)',
+      'session = input.session("0930-1600", "Session", group="Times", inline="a", tooltip="rth", confirm=true, display=display.data_window)',
+      'lvl = input.price(500.0, "Level", "price tip")',
+      't0 = input.time(1704067200000, "Start", "time tip")',
+      'note = input.text_area("hello", "Note", "note tip")',
       'shade = input.color(color.new(color.blue, 90), "Shade")',
       'plot(lvl)',
     ].join(chr10());
@@ -275,11 +282,17 @@ describe('the input family end to end', () => {
     expect(session?.inline).toBe('a');
     expect(session?.tooltip).toBe('rth');
     expect(session?.confirm).toBe(true);
+    expect(session?.display).toBe('data_window');
+    expect(byName.get('len')?.constraints?.step).toBe(2);
+    expect(byName.get('len')?.display).toBe('none');
     expect(byName.get('lvl')?.control).toBe('price');
     expect(byName.get('lvl')?.type).toBe('float');
+    expect(byName.get('lvl')?.tooltip).toBe('price tip');
     expect(byName.get('t0')?.control).toBe('time');
     expect(byName.get('t0')?.type).toBe('int');
+    expect(byName.get('t0')?.tooltip).toBe('time tip');
     expect(byName.get('note')?.control).toBe('text_area');
+    expect(byName.get('note')?.tooltip).toBe('note tip');
     // The folded color.new default lands as a plain const hex+alpha.
     expect(byName.get('shade')?.defaultValue).toBe('#2196F31A');
     const indicator = module.manifest.outputs[0];
@@ -339,6 +352,35 @@ describe('the input family end to end', () => {
     expect(lines).toContain('0 2 1 na');
     expect(lines).toContain('1 0 3 #2196F37F');
     expect(lines).toContain('1 2 3 #FF0000');
+  });
+
+  test('computed const NaN becomes canonical na before color folding', async () => {
+    const src = [
+      'plot(close, color=color.new(color.blue, math.sqrt(-1)))',
+      'plot(close, color=color.rgb(math.sqrt(-1), 0, 0))',
+      'plot(close, color=color.new(color.blue, math.exp(1000) - math.exp(1000)))',
+    ].join(chr10());
+    const program = mustBuild(src);
+    const module = loadModule(
+      generate(program, DEFAULT_COMPILE_CONFIG, new Errors()),
+    );
+    expect(module.manifest.outputs[0].staticArgs).toContainEqual({
+      name: 'color',
+      value: null,
+    });
+    expect(module.manifest.outputs[1].staticArgs).toContainEqual({
+      name: 'color',
+      value: null,
+    });
+    expect(module.manifest.outputs[2].staticArgs).toContainEqual({
+      name: 'color',
+      value: null,
+    });
+    expect(JSON.stringify(module.manifest)).not.toContain('NAN');
+
+    const lines = await runSource(src, seriesCsv([1]));
+    expect(lines.filter(line => line.includes('color=na')).length).toBe(3);
+    expect(lines.join('\n')).not.toContain('NAN');
   });
 
   test('one color, one string: opaque forms are canonical and equal', async () => {

@@ -57,7 +57,9 @@ int → float, and `na` → any nullable type — where, per Pine v6, **bool is
 never nullable** (na does not assign to or unify with bool), and neither are
 void and function types. `na` itself is a first-class constant (`NA_VALUE`, a
 branded singleton — not null, so "no constant" stays distinguishable in
-`TypeAndValue`). Plot/hline references are their own value types
+`TypeAndValue`). Numeric `NaN` is a runtime encoding only; the checker
+canonicalizes folded `NaN` results to `NA_VALUE` before constructing a Program.
+Plot/hline references are their own value types
 (`TypeKind.Plot`/`Hline`): compile-time output ids, const-qualified,
 consumed by `fill` — not runtime heap handles.
 
@@ -67,8 +69,13 @@ A Program is _a bar loop over one context_ — one symbol × timeframe axis —
 owning:
 
 - **params**: `input.*` declarations. Compile time extracts the declaration
-  (name, type, default, const-required constraints); the **value arrives at
-  bind time from the runtime**. That is what the `input` qualifier means.
+  (name, type, default, const-required constraints, and host-facing UI
+  metadata including `display`); the **value arrives at bind time from the
+  runtime**. That is what the `input` qualifier means. For supported input
+  forms, extracted numeric constraints and concrete UI metadata survive into
+  the generated manifest. Input defaults and concrete UI metadata must fold to
+  non-`na` values; nullable numeric constraints such as min/max/step are the
+  explicit exceptions.
 - **ambient series** (not a field): `close`, `time`, `bar_index`,
   `syminfo.*` are built-ins of whatever context the Program runs in —
   provided by the runtime unconditionally, context-scoped, never declared,

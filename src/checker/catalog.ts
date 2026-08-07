@@ -36,6 +36,9 @@ export interface NativeParam {
   // The argument must fold to a compile-time constant VALUE (input defaults,
   // titles), not merely be const-qualified.
   readonly constLiteral: boolean;
+  // Most Tea values are nullable, but host contracts can require a concrete
+  // value (input defaults and settings metadata are the canonical examples).
+  readonly acceptsNa: boolean;
   // Collects all remaining arguments (math.max(a, b, ...)); last param only.
   readonly variadic: boolean;
   // Expression capture (request's expression argument): the checker checks
@@ -99,11 +102,18 @@ export interface Catalog {
 
 // ---- entry builders ---------------------------------------------------------
 
+interface NativeParamOptions {
+  readonly literal?: boolean;
+  readonly variadic?: boolean;
+  readonly capture?: boolean;
+  readonly acceptsNa?: boolean;
+}
+
 function req(
   name: string,
   type: NativeTypeRef,
   qualifierCap: Qualifier,
-  opts: {literal?: boolean; variadic?: boolean; capture?: boolean} = {},
+  opts: NativeParamOptions = {},
 ): NativeParam {
   return {
     name,
@@ -111,6 +121,7 @@ function req(
     qualifierCap,
     required: true,
     constLiteral: opts.literal ?? false,
+    acceptsNa: opts.acceptsNa ?? true,
     variadic: opts.variadic ?? false,
     capture: opts.capture ?? false,
   };
@@ -120,7 +131,7 @@ function opt(
   name: string,
   type: NativeTypeRef,
   qualifierCap: Qualifier,
-  opts: {literal?: boolean; variadic?: boolean; capture?: boolean} = {},
+  opts: NativeParamOptions = {},
 ): NativeParam {
   return {...req(name, type, qualifierCap, opts), required: false};
 }
@@ -300,15 +311,17 @@ function buildVars(): NativeVar[] {
 
 // ---- functions --------------------------------------------------------------
 
+const CONCRETE_CONST_VALUE = {literal: true, acceptsNa: false} as const;
+
 // Shared trailing params of the input.* family.
 function inputTail(): NativeParam[] {
   return [
-    opt('title', StringType, Qualifier.Const, {literal: true}),
-    opt('tooltip', StringType, Qualifier.Const, {literal: true}),
-    opt('inline', StringType, Qualifier.Const, {literal: true}),
-    opt('group', StringType, Qualifier.Const, {literal: true}),
-    opt('confirm', BoolType, Qualifier.Const, {literal: true}),
-    opt('display', StringType, Qualifier.Const),
+    opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+    opt('tooltip', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+    opt('inline', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+    opt('group', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+    opt('confirm', BoolType, Qualifier.Const, CONCRETE_CONST_VALUE),
+    opt('display', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
   ];
 }
 
@@ -316,16 +329,16 @@ function numericInput(name: string, type: Type): NativeFunc {
   return func(
     name,
     [
-      req('defval', type, Qualifier.Const, {literal: true}),
-      opt('title', StringType, Qualifier.Const, {literal: true}),
+      req('defval', type, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
       opt('minval', type, Qualifier.Const, {literal: true}),
       opt('maxval', type, Qualifier.Const, {literal: true}),
       opt('step', type, Qualifier.Const, {literal: true}),
-      opt('tooltip', StringType, Qualifier.Const, {literal: true}),
-      opt('inline', StringType, Qualifier.Const, {literal: true}),
-      opt('group', StringType, Qualifier.Const, {literal: true}),
-      opt('confirm', BoolType, Qualifier.Const, {literal: true}),
-      opt('display', StringType, Qualifier.Const),
+      opt('tooltip', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('inline', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('group', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('confirm', BoolType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('display', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
     ],
     type,
     Qualifier.Input,
@@ -339,13 +352,13 @@ function plainInput(name: string, type: Type): NativeFunc {
   return func(
     name,
     [
-      req('defval', type, Qualifier.Const, {literal: true}),
-      opt('title', StringType, Qualifier.Const, {literal: true}),
-      opt('tooltip', StringType, Qualifier.Const, {literal: true}),
-      opt('inline', StringType, Qualifier.Const, {literal: true}),
-      opt('group', StringType, Qualifier.Const, {literal: true}),
-      opt('confirm', BoolType, Qualifier.Const, {literal: true}),
-      opt('display', StringType, Qualifier.Const),
+      req('defval', type, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('tooltip', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('inline', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('group', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('confirm', BoolType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('display', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
     ],
     type,
     Qualifier.Input,
@@ -357,16 +370,16 @@ function simpleInput(name: string, type: Type): NativeFunc {
   return func(
     name,
     [
-      req('defval', type, Qualifier.Const, {literal: true}),
-      opt('title', StringType, Qualifier.Const, {literal: true}),
+      req('defval', type, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
       // A tuple literal of allowed values (["EMA", "SMA"]), third by
       // position per Pine.
       opt('options', TypeRef.Any, Qualifier.Const),
-      opt('tooltip', StringType, Qualifier.Const, {literal: true}),
-      opt('inline', StringType, Qualifier.Const, {literal: true}),
-      opt('group', StringType, Qualifier.Const, {literal: true}),
-      opt('confirm', BoolType, Qualifier.Const, {literal: true}),
-      opt('display', StringType, Qualifier.Const),
+      opt('tooltip', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('inline', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('group', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('confirm', BoolType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('display', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
     ],
     type,
     Qualifier.Input,
@@ -450,7 +463,10 @@ function buildFuncs(): NativeFunc[] {
     plainInput('input.text_area', StringType),
     func(
       'input.source',
-      [req('defval', FloatType, Qualifier.Series), ...inputTail()],
+      [
+        req('defval', FloatType, Qualifier.Series, {acceptsNa: false}),
+        ...inputTail(),
+      ],
       FloatType,
       Qualifier.Series,
       Effect.Param,
@@ -460,7 +476,10 @@ function buildFuncs(): NativeFunc[] {
     funcs.push(
       func(
         'input',
-        [req('defval', t, Qualifier.Const, {literal: true}), ...inputTail()],
+        [
+          req('defval', t, Qualifier.Const, CONCRETE_CONST_VALUE),
+          ...inputTail(),
+        ],
         t,
         Qualifier.Input,
         Effect.Param,

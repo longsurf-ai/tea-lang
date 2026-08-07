@@ -130,6 +130,31 @@ describe('inference and folding', () => {
     const tv = initTvOf(r, 'x');
     expect(tv.value !== null && isNaValue(tv.value)).toBe(true);
   });
+
+  test('numeric NaN folds to the canonical na constant', () => {
+    const r = checkText(
+      [
+        'sqrt = math.sqrt(-1)',
+        'divide = 1.0 / 0.0',
+        'modulo = 1 % 0',
+        'difference = math.exp(1000) - math.exp(1000)',
+        'composed = math.sqrt(-1) + 1',
+        'negated = -math.sqrt(-1)',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+    for (const name of [
+      'sqrt',
+      'divide',
+      'modulo',
+      'difference',
+      'composed',
+      'negated',
+    ]) {
+      const value = initTvOf(r, name).value;
+      expect(value !== null && isNaValue(value)).toBe(true);
+    }
+  });
 });
 
 describe('qualifier propagation', () => {
@@ -222,6 +247,34 @@ describe('native calls', () => {
     expect(r.errors).toEqual([]);
     expect(declaredName(r, 'a').qualifier).toBe(Qualifier.Const);
     expect(declaredName(r, 'b').qualifier).toBe(Qualifier.Series);
+  });
+
+  test('input defaults and concrete metadata reject na before noding', () => {
+    for (const source of [
+      'x = input.color(color.new(color.blue, math.sqrt(-1)))',
+      'x = input.int(1, title=na)',
+      'x = input.int(1, tooltip=na)',
+      'x = input.int(1, inline=na)',
+      'x = input.int(1, group=na)',
+      'x = input.int(1, display=na)',
+    ]) {
+      const r = checkText(source);
+      expect(r.errors.map(error => error.msg)).toContainEqual(
+        expect.stringContaining('cannot be na'),
+      );
+    }
+
+    const nonFoldedDisplay = checkText(
+      'f() => display.none\nx = input.int(1, display=f())',
+    );
+    expect(nonFoldedDisplay.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining('must be a constant literal'),
+    );
+
+    // These are explicitly nullable constraints, unlike defaults/UI metadata.
+    expect(
+      checkText('x = input.int(1, minval=na, maxval=na, step=na)').errors,
+    ).toEqual([]);
   });
 });
 

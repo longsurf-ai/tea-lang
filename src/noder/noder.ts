@@ -1153,6 +1153,7 @@ class Noder {
     const inline = argValue('inline');
     const tooltip = argValue('tooltip');
     const confirm = argValue('confirm');
+    const display = argValue('display');
     const param: ParamInput = {
       name: bindingName ?? `input@${c.pos.line}:${c.pos.col}`,
       title: typeof title === 'string' ? title : null,
@@ -1167,6 +1168,7 @@ class Noder {
       inline: typeof inline === 'string' ? inline : null,
       tooltip: typeof tooltip === 'string' ? tooltip : null,
       confirm: confirm === true,
+      display: typeof display === 'string' ? display : null,
       depth: {kind: DepthKind.None},
     };
     this.params.push(param);

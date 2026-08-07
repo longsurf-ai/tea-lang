@@ -25,6 +25,14 @@ and `importer.ts` is the import seam (loading lives in `src/loader`).
   prepass is scope-sensitive: each side-table context records reassignment by
   canonical `ir.Name` identity, never by source spelling. Shadowed bindings
   and locals in other function/library instances cannot affect one another.
+- Compile-time na has exactly one representation: `NA_VALUE`. Numeric `NaN`
+  is only the generated/runtime encoding; every constant folder must
+  canonicalize it before publishing a `TypeAndValue` or feeding another
+  folder, so malformed numeric artifacts can never enter a Program.
+- `NativeParam.acceptsNa` owns parameter-level nullability beyond ordinary
+  type assignability. Input defaults and concrete settings metadata reject
+  folded `NA_VALUE` before noding; nullable constraints such as min/max/step
+  remain explicit exceptions.
 - User-function declarations bind as templates; calls stencil one
   instantiation per concrete argument signature (memoized), each with its
   own `SideTables` and a scope rooted at the template's base — the user

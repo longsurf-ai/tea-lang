@@ -38,6 +38,7 @@ export interface ParamInput {
   readonly inline: string | null;
   readonly tooltip: string | null;
   readonly confirm: boolean;
+  readonly display: string | null;
   // History demanded on the bound value by the body (src[1] on an
   // input.source param reaches the runtime's chosen series). Annotated by
   // the depth pass; meaningful only for series-resulting params.

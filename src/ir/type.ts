@@ -216,7 +216,8 @@ export const HlineType: Type = {kind: TypeKind.Hline};
 // Compile-time constant values. Colors are canonical '#rrggbb' / '#rrggbbaa'
 // strings; int vs float is disambiguated by the accompanying Type. `na` is a
 // first-class constant — a branded singleton, deliberately not null, so that
-// TypeAndValue.value === null keeps meaning "not a constant".
+// TypeAndValue.value === null keeps meaning "not a constant". Numeric NaN is
+// the runtime encoding only; checker folders canonicalize it to NA_VALUE.
 export interface NaValue {
   readonly na: true;
 }

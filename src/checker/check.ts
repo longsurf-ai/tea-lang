@@ -1064,7 +1064,13 @@ class Checker {
         return tv;
       }
       const value =
-        tv.value !== null && typeof tv.value === 'number' ? -tv.value : null;
+        tv.value === null
+          ? null
+          : isNaValue(tv.value)
+            ? NA_VALUE
+            : typeof tv.value === 'number'
+              ? canonicalConst(-tv.value)
+              : null;
       return {type: tv.type, qualifier: tv.qualifier, value};
     }
     this.error(e.pos, `invalid unary operator '${e.op}'`);
@@ -1810,6 +1816,12 @@ class Checker {
           `argument '${param.name}' to '${native.name}' must be a constant literal`,
         );
       }
+      if (!param.acceptsNa && tv.value !== null && isNaValue(tv.value)) {
+        return fail(
+          expr.pos,
+          `argument '${param.name}' to '${native.name}' cannot be na`,
+        );
+      }
       // Known numeric domains fail loudly when the value is known at
       // compile time; runtime (series) values clamp instead.
       const range = CONST_ARG_RANGES[native.name]?.[param.name];
@@ -2035,8 +2047,22 @@ function foldBinary(
 ): ConstValue | null {
   const a = x.value;
   const b = y.value;
-  if (a === null || b === null || isNaValue(a) || isNaValue(b)) {
+  if (a === null || b === null) {
     return null;
+  }
+  if (isNaValue(a) || isNaValue(b)) {
+    switch (op) {
+      case Op.Plus:
+      case Op.Minus:
+      case Op.Star:
+      case Op.Slash:
+      case Op.Percent:
+        return NA_VALUE;
+      default:
+        // Keep comparisons conservative: their na behavior is owned by the
+        // generated runtime until the checker models it explicitly.
+        return null;
+    }
   }
   if (op === Op.And || op === Op.Or) {
     if (typeof a !== 'boolean' || typeof b !== 'boolean') {
@@ -2066,19 +2092,21 @@ function foldBinary(
     case Op.Ge:
       return a >= b;
     case Op.Plus:
-      return a + b;
+      return canonicalConst(a + b);
     case Op.Minus:
-      return a - b;
+      return canonicalConst(a - b);
     case Op.Star:
-      return a * b;
+      return canonicalConst(a * b);
     case Op.Slash:
       if (b === 0) {
-        return null;
+        return NA_VALUE;
       }
       // Pine integer division truncates toward zero.
-      return resultType.kind === TypeKind.Int ? Math.trunc(a / b) : a / b;
+      return canonicalConst(
+        resultType.kind === TypeKind.Int ? Math.trunc(a / b) : a / b,
+      );
     case Op.Percent:
-      return b === 0 ? null : a % b;
+      return b === 0 ? NA_VALUE : canonicalConst(a % b);
     default:
       return null;
   }
@@ -2156,6 +2184,14 @@ const NATIVE_FOLDERS: Record<string, (xs: readonly number[]) => number> = {
   float: xs => xs[0],
 };
 
+// @agent invariant: JS NaN is the runtime encoding of numeric na, but the
+// compile-time constant domain has exactly one na representation: NA_VALUE.
+// Every folder result and folded argument crosses this constructor before it
+// can reach another folder or the Program.
+function canonicalConst(value: ConstValue): ConstValue {
+  return typeof value === 'number' && Number.isNaN(value) ? NA_VALUE : value;
+}
+
 function foldNativeCall(
   name: string,
   tvs: readonly TypeAndValue[],
@@ -2167,9 +2203,10 @@ function foldNativeCall(
       if (tv.value === null) {
         return null;
       }
-      values.push(tv.value);
+      values.push(canonicalConst(tv.value));
     }
-    return valueFolder(values);
+    const value = valueFolder(values);
+    return value === null ? null : canonicalConst(value);
   }
   const folder = NATIVE_FOLDERS[name];
   if (folder === undefined) {
@@ -2177,12 +2214,19 @@ function foldNativeCall(
   }
   const values: number[] = [];
   for (const tv of tvs) {
-    if (tv.value === null || typeof tv.value !== 'number') {
+    if (tv.value === null) {
       return null;
     }
-    values.push(tv.value);
+    const value = canonicalConst(tv.value);
+    if (isNaValue(value)) {
+      return NA_VALUE;
+    }
+    if (typeof value !== 'number') {
+      return null;
+    }
+    values.push(value);
   }
-  return folder(values);
+  return canonicalConst(folder(values));
 }
 
 // A chain of plain Names (`math.max`, `syminfo.tickerid`) usable as a catalog

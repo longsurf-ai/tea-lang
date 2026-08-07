@@ -21,7 +21,10 @@ resolution pass. Source loading lives in `src/loader`.
   `const` declarations vanish entirely.
 - Param identity: the binding name when the input call initializes a
   declaration, else `input@line:col`. One `ParamInput`/`OutputDecl` per call
-  site, deduped by syntax node.
+  site, deduped by syntax node. Supported projections must not discard fields:
+  numeric `step` and concrete group/inline/tooltip/confirm/display metadata are
+  copied into that ParamInput after the checker rejects non-folded or `na`
+  metadata.
 - Output args partition by when they are known: folded constants →
   `staticArgs`; output refs and at-most-simple exprs → `bindArgs` (init
   time); series exprs → `channels` + one per-bar `Emit` after the statement.

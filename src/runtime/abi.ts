@@ -59,6 +59,7 @@ export interface ParamSpec {
   readonly inline: string | null;
   readonly tooltip: string | null;
   readonly confirm: boolean;
+  readonly display: string | null;
   // For source params: the manifest.series slot this param's choice binds.
   readonly seriesSid: number | null;
 }
