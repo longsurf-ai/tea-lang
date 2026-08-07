@@ -1,7 +1,11 @@
 Program version=1
 param lookback: int title="Lookback" default=20 depth=none
-series close: series float depth=capped
-  depth.cap: Const 300: const int
+series close: series float depth=bound
+  depth.expr: CallNative math.max: input int
+    Const 0: const int
+    CallNative $historyDepth: input int
+      HistRead param:lookback: input int
+    Const 3: const int
 series open: series float depth=capped
   depth.cap: Const 300: const int
 series bar_index: series int depth=none

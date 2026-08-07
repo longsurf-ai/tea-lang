@@ -47,6 +47,7 @@ import type * as syntax from '../syntax/nodes';
 import {LitKind, Op} from '../syntax/tokens';
 import {
   Effect,
+  FirstArgumentResult,
   isNativeRoot,
   JoinResult,
   nativeFuncs,
@@ -108,11 +109,12 @@ export function newSideTables(): SideTables {
   };
 }
 
-// One per-signature instantiation of a user or prelude function template —
-// a Go-style stencil: after checking, everything is concrete (untyped
-// params adopted the argument types), so no dictionaries exist. Shared by
-// every call site with the same signature; state stays per call site via
-// SlotIds minted at noding.
+// One per-Program, per-signature instantiation of a user or prelude function
+// template — a Go-style stencil: after checking, everything is concrete
+// (untyped params adopted the argument types), so no dictionaries exist.
+// Calls in one Program share the stencil; request children own distinct
+// instances because their Names, history depths, and frames cannot alias the
+// parent's. State within one Program stays per call site via noder SlotIds.
 export interface FuncInstance {
   readonly template: syntax.FuncDecl;
   // Display name: the template name, namespace-qualified for prelude
@@ -192,6 +194,17 @@ const VOID_TV: TypeAndValue = {
   value: null,
 };
 
+const INPUT_SOURCE_DEFAULTS = new Set([
+  'open',
+  'high',
+  'low',
+  'close',
+  'hl2',
+  'hlc3',
+  'ohlc4',
+  'hlcc4',
+]);
+
 // Type names usable in annotations.
 export const BUILTIN_ANNOTATION_TYPES: ReadonlyMap<string, Type> = new Map([
   ['int', IntType],
@@ -232,14 +245,19 @@ class Checker {
   // loop bodies join series (iteration-dependent values).
   private flow: Qualifier = Qualifier.Const;
 
-  // Function stenciling state: one instantiation per (template, signature),
-  // a recursion guard (the static call graph must stay acyclic so frames
-  // pre-allocate), and the instantiation root scope — non-null exactly when
-  // checking inside a function, where outer-scope writes are forbidden.
+  // Function stenciling state: one instantiation per
+  // (Program owner, template, signature), a recursion guard (the static call
+  // graph must stay acyclic so frames pre-allocate), and the instantiation
+  // root scope — non-null exactly when checking inside a function, where
+  // outer-scope writes are forbidden.
   private readonly instances = new Map<
     syntax.FuncDecl,
-    Map<string, FuncInstance>
+    Map<SideTables, Map<string, FuncInstance>>
   >();
+  // The main Info owns the root Program. Every request capture installs its
+  // fresh SideTables as a child-Program identity while checking that capture,
+  // including any transitive UDF/prelude instantiations.
+  private programOwner: SideTables = this.info;
   private readonly instantiating = new Set<syntax.FuncDecl>();
   private funcBoundary: Scope | null = null;
   private readonly libScopes = new Map<ResolvedLibrary, Scope>();
@@ -251,6 +269,11 @@ class Checker {
   private seriesPool: Map<string, SeriesInput> = this.info.series;
   private captureDepth = 0;
   private readonly instanceStack: FuncInstance[] = [];
+  // Input calls are program-global even when written in a local scope. These
+  // sets describe the only local-looking names module.bind can read without
+  // the function/capture execution frame that contained the call.
+  private readonly inputBindings = new Set<IrName>();
+  private readonly rootBindNames = new Set<IrName>();
 
   constructor(
     private readonly errors: Errors,
@@ -361,6 +384,24 @@ class Checker {
       constDecl: d.mode === Mode.Const,
       constValue,
     });
+    const init = unwrapParens(d.init);
+    const resolved =
+      init.kind === NodeKind.CallExpr ? this.tables.calls.get(init) : undefined;
+    if (
+      d.mode === Mode.None &&
+      !this.tables.reassigned.has(name) &&
+      resolved?.native.effect === Effect.Param
+    ) {
+      this.inputBindings.add(name);
+    }
+    if (
+      this.blockDepth === 0 &&
+      this.funcBoundary === null &&
+      this.captureDepth === 0 &&
+      qualifierLE(name.qualifier, Qualifier.Input)
+    ) {
+      this.rootBindNames.add(name);
+    }
     return initTv;
   }
 
@@ -570,7 +611,7 @@ class Checker {
       entry.name.type.kind === TypeKind.Plot ||
       entry.name.type.kind === TypeKind.Hline
     ) {
-      // Output references are compile-time ids consumed at init (fill);
+      // Output references are compile-time ids consumed at bind (fill);
       // a reassignable ref could not be resolved before the first bar.
       this.error(target.pos, 'cannot reassign a plot reference');
     }
@@ -868,18 +909,28 @@ class Checker {
             if (top !== undefined) {
               top.touchesContext = true;
             }
-          } else if (
-            this.captureDepth > 0 &&
-            this.funcBoundary === null &&
-            !qualifierLE(entry.name.qualifier, Qualifier.Input)
-          ) {
-            // Only bind-time values cross contexts; per-context state must
-            // be recomputed inside the expression.
-            this.error(
-              n.pos,
-              `request expressions cannot reference script variable '${n.value}'; only bind-time (input) values cross contexts`,
-            );
-            return INVALID_TV;
+          } else if (this.captureDepth > 0 && this.funcBoundary === null) {
+            if (!qualifierLE(entry.name.qualifier, Qualifier.Input)) {
+              // Per-context state must be recomputed inside the expression.
+              this.error(
+                n.pos,
+                `request expressions cannot reference script variable '${n.value}'; only direct input bindings cross contexts`,
+              );
+              return INVALID_TV;
+            }
+            if (
+              entry.constValue === null &&
+              !this.inputBindings.has(entry.name)
+            ) {
+              // The child Program deliberately has no projection of root
+              // Names. Until capture dependency closure exists, accepting a
+              // computed input alias would read an unwritten child slot.
+              this.error(
+                n.pos,
+                `request expressions cannot capture computed script variable '${n.value}'; pass a direct input binding or recompute it inside the expression`,
+              );
+              return INVALID_TV;
+            }
           }
           this.tables.uses.set(n, entry.name);
           return {
@@ -1010,13 +1061,13 @@ class Checker {
         return {
           type: IntType,
           qualifier: Qualifier.Const,
-          value: Number(lit.value),
+          value: canonicalConst(Number(lit.value)),
         };
       case LitKind.Float:
         return {
           type: FloatType,
           qualifier: Qualifier.Const,
-          value: Number(lit.value),
+          value: canonicalConst(Number(lit.value)),
         };
       case LitKind.String:
         return {
@@ -1097,6 +1148,22 @@ class Checker {
         return INVALID_TV;
       }
       return {type: BoolType, qualifier, value: foldBinary(op, x, y, BoolType)};
+    }
+
+    if (
+      (op === Op.EqEq ||
+        op === Op.NotEq ||
+        op === Op.Lt ||
+        op === Op.Le ||
+        op === Op.Gt ||
+        op === Op.Ge) &&
+      (x.type.kind === TypeKind.Na || y.type.kind === TypeKind.Na)
+    ) {
+      this.error(
+        pos,
+        'cannot use bare na in a comparison; use na(...) to test missing values',
+      );
+      return INVALID_TV;
     }
 
     if (op === Op.EqEq || op === Op.NotEq) {
@@ -1209,6 +1276,11 @@ class Checker {
       }
       qualifier = joinQualifiers(qualifier, tv.qualifier);
     }
+    e.elems.forEach((elem, i) => {
+      if (tvs[i].type.kind === TypeKind.Na) {
+        this.error(elem.pos, 'na tuple element requires a concrete type');
+      }
+    });
     return {
       type: {kind: TypeKind.Tuple, elems: tvs.map(tv => tv.type)},
       qualifier,
@@ -1392,15 +1464,24 @@ class Checker {
     this.scope = new Scope(savedScope);
     this.blockDepth += 1;
     let last: TypeAndValue | null = null;
+    let qualifier: Qualifier = Qualifier.Const;
     for (const [i, stmt] of b.stmtList.entries()) {
       const tv = this.checkStmt(stmt);
+      if (tv !== null) {
+        // A block's result may be consumed at bind time. Its qualifier must
+        // therefore account for every evaluated statement, not only the last
+        // value: otherwise a UDF could hide series/request work before an
+        // input-qualified return and execute it from module.bind.
+        qualifier = joinQualifiers(qualifier, tv.qualifier);
+      }
       if (i === b.stmtList.length - 1) {
         last = tv;
       }
     }
     this.blockDepth -= 1;
     this.scope = savedScope;
-    return last ?? VOID_TV;
+    const result = last ?? VOID_TV;
+    return {...result, qualifier};
   }
 
   // ---- calls ----------------------------------------------------------------
@@ -1542,10 +1623,15 @@ class Checker {
         tv === null ? 'default' : `${formatType(tv.type)}|${tv.qualifier}`,
       )
       .join(',');
-    let bySig = this.instances.get(template);
+    let byOwner = this.instances.get(template);
+    if (byOwner === undefined) {
+      byOwner = new Map();
+      this.instances.set(template, byOwner);
+    }
+    let bySig = byOwner.get(this.programOwner);
     if (bySig === undefined) {
       bySig = new Map();
-      this.instances.set(template, bySig);
+      byOwner.set(this.programOwner, bySig);
     }
     let instance = bySig.get(sigKey);
     if (instance === undefined) {
@@ -1636,6 +1722,13 @@ class Checker {
           }
         }
       }
+      if (annotated === null && tv.type.kind === TypeKind.Na) {
+        const source = aligned[i] ?? p.defaultValue;
+        this.error(
+          source?.pos ?? p.pos,
+          `argument '${p.name.value}' to '${displayName}' needs a concrete type annotation for na`,
+        );
+      }
       const name = this.boundName(p.name);
       name.type = annotated !== null ? annotated.type : tv.type;
       name.qualifier = this.tables.reassigned.has(name)
@@ -1666,6 +1759,12 @@ class Checker {
         ? this.checkBlock(template.body)
         : this.checkExpr(template.body);
     this.instanceStack.pop();
+    if (bodyTv.type.kind === TypeKind.Na) {
+      this.error(
+        template.body.pos,
+        `function '${displayName}' cannot infer a result type from na`,
+      );
+    }
     instance.resultType = bodyTv.type;
     instance.resultQualifier = bodyTv.qualifier;
 
@@ -1700,6 +1799,9 @@ class Checker {
       if (outcome.ok) {
         this.tables.calls.set(c, {native: candidate, args: outcome.args});
         this.checkPlacement(candidate, c.pos);
+        if (candidate.effect === Effect.Param) {
+          this.checkInputContract(c, candidate, outcome.args);
+        }
         if (candidate.effect === Effect.Request) {
           return this.checkRequest(c, candidate, outcome.args);
         }
@@ -1709,7 +1811,11 @@ class Checker {
         firstReason = outcome.reason;
       }
     }
-    if (candidates.length === 1 && firstReason !== null) {
+    if (
+      firstReason !== null &&
+      (candidates.length === 1 ||
+        candidates.every(candidate => candidate.effect === Effect.Param))
+    ) {
       this.error(firstReason.pos, firstReason.msg);
     } else {
       this.error(pos, `no matching overload for '${name}'`);
@@ -1855,17 +1961,27 @@ class Checker {
     }
     const savedTables = this.tables;
     const savedPool = this.seriesPool;
+    const savedProgramOwner = this.programOwner;
     const tables = newSideTables();
     bindExpressionNames(expr, this.scope, tables);
     this.tables = tables;
     this.seriesPool = new Map();
+    this.programOwner = tables;
     this.captureDepth += 1;
     const captureTv = this.checkExpr(expr);
     this.captureDepth -= 1;
+    this.programOwner = savedProgramOwner;
     this.seriesPool = savedPool;
     this.tables = savedTables;
     if (captureTv.type.kind === TypeKind.Void) {
       this.error(expr.pos, 'request expression has no value');
+      return INVALID_TV;
+    }
+    if (captureTv.type.kind === TypeKind.Na) {
+      this.error(
+        expr.pos,
+        'request expression na requires a concrete type (for example float(na))',
+      );
       return INVALID_TV;
     }
     this.info.captures.set(c, {tables, resultType: captureTv.type});
@@ -1873,12 +1989,27 @@ class Checker {
   }
 
   private checkPlacement(native: NativeFunc, pos: Pos): void {
-    const topLevelOnly =
-      native.effect === Effect.Param ||
-      native.effect === Effect.Output ||
-      native.effect === Effect.Declaration;
+    if (native.effect === Effect.Param) {
+      if (this.instanceStack.some(instance => instance.template.exported)) {
+        this.error(
+          pos,
+          `'${native.name}' cannot be called from an exported function`,
+        );
+      }
+      if (
+        this.captureDepth > 0 &&
+        native.resultQualifier === Qualifier.Series
+      ) {
+        this.error(
+          pos,
+          `'${native.name}' cannot declare a source input inside a request expression`,
+        );
+      }
+      return;
+    }
     if (
-      topLevelOnly &&
+      (native.effect === Effect.Output ||
+        native.effect === Effect.Declaration) &&
       (this.blockDepth > 0 ||
         this.funcBoundary !== null ||
         this.captureDepth > 0)
@@ -1887,6 +2018,228 @@ class Checker {
         pos,
         `'${native.name}' can only be called at the top level of the script`,
       );
+    }
+  }
+
+  // input.* has dependent contracts that cannot be expressed by one static
+  // parameter type: options adopt defval's exact type, enum identity is
+  // nominal, and source defaults are a closed host vocabulary.
+  private checkInputContract(
+    c: syntax.CallExpr,
+    native: NativeFunc,
+    args: readonly (syntax.Expr | null)[],
+  ): void {
+    const arg = (name: string): syntax.Expr | null => {
+      const index = native.params.findIndex(param => param.name === name);
+      return index === -1 ? null : (args[index] ?? null);
+    };
+    const value = (name: string): ConstValue | null => {
+      const expr = arg(name);
+      return expr === null ? null : this.tvOf(expr).value;
+    };
+
+    const displayExpr = arg('display');
+    if (displayExpr !== null) {
+      const display = this.tvOf(displayExpr).value;
+      if (
+        display !== 'all' &&
+        display !== 'none' &&
+        display !== 'data_window' &&
+        display !== 'status_line'
+      ) {
+        this.error(
+          displayExpr.pos,
+          `'${native.name}' display must be display.all, display.none, display.data_window, or display.status_line`,
+        );
+      }
+    }
+
+    const activeExpr = arg('active');
+    if (
+      activeExpr !== null &&
+      this.inputActiveNeedsUnavailableFrame(activeExpr)
+    ) {
+      this.error(
+        activeExpr.pos,
+        `'${native.name}' active cannot depend on local execution state because the input is program-global`,
+      );
+    }
+
+    const defvalExpr = arg('defval');
+    const optionsExpr = arg('options');
+    if (defvalExpr !== null && optionsExpr !== null) {
+      const tuple = unwrapParens(optionsExpr);
+      if (tuple.kind !== NodeKind.TupleExpr) {
+        this.error(
+          optionsExpr.pos,
+          `'${native.name}' options must be a direct tuple literal`,
+        );
+      } else if (tuple.elems.length === 0) {
+        this.error(optionsExpr.pos, `'${native.name}' options cannot be empty`);
+      } else {
+        const defvalTv = this.tvOf(defvalExpr);
+        const optionType =
+          native.result === FirstArgumentResult ? defvalTv.type : native.result;
+        const optionValues: ConstValue[] = [];
+        for (const elem of tuple.elems) {
+          const elemTv = this.tvOf(elem);
+          if (!assignable(elemTv.type, optionType)) {
+            this.error(
+              elem.pos,
+              `'${native.name}' option must have type ${formatType(optionType)}, got ${formatType(elemTv.type)}`,
+            );
+          }
+          if (elemTv.value === null || isNaValue(elemTv.value)) {
+            this.error(
+              elem.pos,
+              `'${native.name}' options must contain concrete constants`,
+            );
+            continue;
+          }
+          if (
+            optionValues.some(option => constValuesEqual(option, elemTv.value!))
+          ) {
+            this.error(
+              elem.pos,
+              `'${native.name}' options cannot repeat a value`,
+            );
+          }
+          optionValues.push(elemTv.value);
+        }
+        if (
+          defvalTv.value !== null &&
+          !isNaValue(defvalTv.value) &&
+          optionValues.length > 0 &&
+          !optionValues.some(option =>
+            constValuesEqual(option, defvalTv.value!),
+          )
+        ) {
+          this.error(
+            defvalExpr.pos,
+            `'${native.name}' default must be one of its options`,
+          );
+        }
+      }
+    }
+
+    const minval = value('minval');
+    const maxval = value('maxval');
+    const step = value('step');
+    const defval = value('defval');
+    if (
+      typeof minval === 'number' &&
+      typeof maxval === 'number' &&
+      minval > maxval
+    ) {
+      this.error(c.pos, `'${native.name}' minval cannot exceed maxval`);
+    }
+    if (typeof step === 'number' && step <= 0) {
+      const stepExpr = arg('step');
+      this.error(
+        stepExpr?.pos ?? c.pos,
+        `'${native.name}' step must be greater than zero`,
+      );
+    }
+    if (
+      typeof defval === 'number' &&
+      typeof minval === 'number' &&
+      defval < minval
+    ) {
+      this.error(
+        defvalExpr?.pos ?? c.pos,
+        `'${native.name}' default must be at least minval`,
+      );
+    }
+    if (
+      typeof defval === 'number' &&
+      typeof maxval === 'number' &&
+      defval > maxval
+    ) {
+      this.error(
+        defvalExpr?.pos ?? c.pos,
+        `'${native.name}' default must be at most maxval`,
+      );
+    }
+
+    if (
+      native.name === 'input.source' ||
+      (native.name === 'input' && native.resultQualifier === Qualifier.Series)
+    ) {
+      if (defvalExpr === null) {
+        return;
+      }
+      const source = this.tables.ambient.get(unwrapParens(defvalExpr));
+      if (source === undefined || !INPUT_SOURCE_DEFAULTS.has(source.id)) {
+        this.error(
+          defvalExpr.pos,
+          `'${native.name}' source default must be a built-in source: open, high, low, close, hl2, hlc3, ohlc4, or hlcc4`,
+        );
+      }
+    }
+  }
+
+  private inputActiveNeedsUnavailableFrame(expr: syntax.Expr): boolean {
+    if (this.tvOf(expr).value !== null) {
+      return false;
+    }
+    switch (expr.kind) {
+      case NodeKind.Name: {
+        const name = this.tables.uses.get(expr);
+        return (
+          name !== undefined &&
+          !this.inputBindings.has(name) &&
+          !this.rootBindNames.has(name)
+        );
+      }
+      case NodeKind.BasicLit:
+      case NodeKind.BadExpr:
+        return false;
+      case NodeKind.UnaryExpr:
+      case NodeKind.ParenExpr:
+        return this.inputActiveNeedsUnavailableFrame(expr.x);
+      case NodeKind.BinaryExpr:
+        return (
+          this.inputActiveNeedsUnavailableFrame(expr.x) ||
+          this.inputActiveNeedsUnavailableFrame(expr.y)
+        );
+      case NodeKind.CondExpr:
+        return (
+          this.inputActiveNeedsUnavailableFrame(expr.cond) ||
+          this.inputActiveNeedsUnavailableFrame(expr.then) ||
+          this.inputActiveNeedsUnavailableFrame(expr.else)
+        );
+      case NodeKind.CallExpr:
+        if (
+          this.tables.userCalls.has(expr) &&
+          (this.funcBoundary !== null || this.captureDepth > 0)
+        ) {
+          return true;
+        }
+        return (
+          this.inputActiveNeedsUnavailableFrame(expr.fun) ||
+          expr.args.some(arg =>
+            this.inputActiveNeedsUnavailableFrame(arg.value),
+          )
+        );
+      case NodeKind.SelectorExpr:
+        return this.inputActiveNeedsUnavailableFrame(expr.x);
+      case NodeKind.HistoryExpr:
+        return (
+          this.inputActiveNeedsUnavailableFrame(expr.x) ||
+          this.inputActiveNeedsUnavailableFrame(expr.offset)
+        );
+      case NodeKind.TupleExpr:
+        return expr.elems.some(elem =>
+          this.inputActiveNeedsUnavailableFrame(elem),
+        );
+      case NodeKind.IfExpr:
+      case NodeKind.ForExpr:
+      case NodeKind.ForInExpr:
+      case NodeKind.WhileExpr:
+      case NodeKind.SwitchExpr:
+        // These are series-qualified today and cannot match active's input
+        // cap. Keep the ownership check fail-closed if that changes.
+        return true;
     }
   }
 
@@ -1908,7 +2261,13 @@ class Checker {
     if (qualifier === Qualifier.Const && native.effect === Effect.None) {
       value = foldNativeCall(native.name, tvs);
     }
-    return {type: native.result, qualifier, value};
+    const type =
+      native.result === FirstArgumentResult
+        ? args[0] !== null && args[0] !== undefined
+          ? this.tvOf(args[0]).type
+          : InvalidType
+        : native.result;
+    return {type, qualifier, value};
   }
 
   private checkNew(c: syntax.CallExpr, udt: UdtType): TypeAndValue {
@@ -1971,6 +2330,23 @@ class Checker {
 
 // ---- pure helpers -----------------------------------------------------------
 
+function unwrapParens(e: syntax.Expr): syntax.Expr {
+  let x = e;
+  while (x.kind === NodeKind.ParenExpr) {
+    x = x.x;
+  }
+  return x;
+}
+
+function constValuesEqual(a: ConstValue, b: ConstValue): boolean {
+  if (isNaValue(a) || isNaValue(b)) {
+    return isNaValue(a) && isNaValue(b);
+  }
+  // Pine numeric equality does not distinguish +0 from -0. na never reaches
+  // input options, so strict equality is the correct constant-domain rule.
+  return a === b;
+}
+
 function isNumericType(t: Type): boolean {
   return (
     t.kind === TypeKind.Int ||
@@ -2005,6 +2381,14 @@ function refAssignable(from: Type, to: NativeTypeRef): boolean {
   if (to === TypeRef.Any) {
     return from.kind !== TypeKind.Void;
   }
+  if (to === TypeRef.Enum) {
+    return from.kind === TypeKind.Enum;
+  }
+  if (to === TypeRef.Nullable) {
+    // A bare na has no type yet; the noder contextualizes this call-site
+    // default to float so TypeKind.Na never enters Program IR.
+    return from.kind === TypeKind.Na || isNullableType(from);
+  }
   return assignable(from, to);
 }
 
@@ -2015,7 +2399,20 @@ function formatRef(ref: NativeTypeRef): string {
   if (ref === TypeRef.Any) {
     return 'a value';
   }
+  if (ref === TypeRef.Enum) {
+    return 'an enum value';
+  }
+  if (ref === TypeRef.Nullable) {
+    return 'a nullable value';
+  }
   return formatType(ref);
+}
+
+function isNullableType(type: Type): boolean {
+  // Keep native nullable matching on the same owner as annotations,
+  // assignments, and branch unification. In particular, nominal enums are
+  // nullable even though they are not one of the primitive reference kinds.
+  return assignable(NaType, type);
 }
 
 // The scanner keeps quotes and escapes raw in the lexeme.
@@ -2059,9 +2456,8 @@ function foldBinary(
       case Op.Percent:
         return NA_VALUE;
       default:
-        // Keep comparisons conservative: their na behavior is owned by the
-        // generated runtime until the checker models it explicitly.
-        return null;
+        // Every comparison involving na, including !=, is false.
+        return false;
     }
   }
   if (op === Op.And || op === Op.Or) {
@@ -2154,6 +2550,7 @@ const CONST_ARG_RANGES: Record<
   string,
   Record<string, readonly [number, number]>
 > = {
+  indicator: {max_bars_back: [0, 5000]},
   'color.new': {transp: [0, 100]},
   'color.rgb': {
     red: [0, 255],
@@ -2189,7 +2586,9 @@ const NATIVE_FOLDERS: Record<string, (xs: readonly number[]) => number> = {
 // Every folder result and folded argument crosses this constructor before it
 // can reach another folder or the Program.
 function canonicalConst(value: ConstValue): ConstValue {
-  return typeof value === 'number' && Number.isNaN(value) ? NA_VALUE : value;
+  return typeof value === 'number' && !Number.isFinite(value)
+    ? NA_VALUE
+    : value;
 }
 
 function foldNativeCall(

@@ -58,7 +58,10 @@ never nullable** (na does not assign to or unify with bool), and neither are
 void and function types. `na` itself is a first-class constant (`NA_VALUE`, a
 branded singleton — not null, so "no constant" stays distinguishable in
 `TypeAndValue`). Numeric `NaN` is a runtime encoding only; the checker
-canonicalizes folded `NaN` results to `NA_VALUE` before constructing a Program.
+canonicalizes every folded non-finite result to `NA_VALUE`. Noding then gives
+each `NA_VALUE` the concrete nullable type supplied by its declaration, branch
+join, or call parameter. `TypeKind.Na` is therefore checker-only and never
+appears in a Program.
 Plot/hline references are their own value types
 (`TypeKind.Plot`/`Hline`): compile-time output ids, const-qualified,
 consumed by `fill` — not runtime heap handles.
@@ -71,11 +74,23 @@ owning:
 - **params**: `input.*` declarations. Compile time extracts the declaration
   (name, type, default, const-required constraints, and host-facing UI
   metadata including `display`); the **value arrives at bind time from the
-  runtime**. That is what the `input` qualifier means. For supported input
-  forms, extracted numeric constraints and concrete UI metadata survive into
-  the generated manifest. Input defaults and concrete UI metadata must fold to
-  non-`na` values; nullable numeric constraints such as min/max/step are the
-  explicit exceptions.
+  runtime**. Each syntax call extracts once globally even from a local block,
+  non-exported UDF, or scalar request capture. A program-scope declaration
+  supplies the parameter identity; local declarations use a collision-free
+  `input@line:col` identity while retaining their spelling as the inferred UI
+  label. Source inputs inside request captures are rejected because their
+  series binding is context-owned. That is what the `input` qualifier means.
+  For supported input forms, extracted numeric
+  constraints and concrete UI metadata survive into the generated manifest.
+  Range constraints and options are a discriminated union, so a parameter
+  cannot carry both. Options are direct, non-empty, homogeneously typed tuples
+  whose default is a member; numeric defaults and ranges are concrete and
+  internally consistent. `display` is always one of the four input display
+  values (including its catalog-owned default), while `active` remains an
+  input-qualified IR expression evaluated from the bound parameter values.
+  The checker rejects `active` dependencies on a function/capture execution
+  frame because the global parameter is bound without that frame. No input
+  default or metadata value may be `na`.
 - **ambient series** (not a field): `close`, `time`, `bar_index`,
   `syminfo.*` are built-ins of whatever context the Program runs in —
   provided by the runtime unconditionally, context-scoped, never declared,
@@ -101,14 +116,16 @@ owning:
 - **outputs**: statically-declared effect channels (plot/hline/
   alertcondition), hoisted so the host knows every channel before the first
   bar. Three argument buckets: `staticArgs` (compile-time constants),
-  `bindArgs` (input/simple-qualified exprs — hline price, plot linewidth,
-  plotshape offset — plus `fill`'s plot/hline references, evaluated once at
-  init and delivered before the first bar), and per-bar `channels` written
+  `bindArgs` (input-qualified exprs — hline price, plot linewidth,
+  plotshape offset — plus `fill`'s plot/hline references, evaluated once in
+  module.bind and delivered before the first bar), and per-bar `channels` written
   via `Emit`. `x = plot(...)` lowers to the OutputDecl plus a const
   plot-typed binding holding the OutputId.
-- **requests**: the recursive edge. Each `request.*` call site compiles the
-  dependency closure of its expression argument into a **child Program** with
-  its own context, axis, slots, and rollback. The child designates a
+- **requests**: the recursive edge. Each `request.*` call site compiles its
+  captured expression into a **child Program** with its own context, axis,
+  slots, and rollback. Constants and direct scalar inputs may cross from the
+  root; automatic closure over computed root names is staged and rejected in
+  the meantime. The child designates a
   **result name** (`RequestEdge.resultName`, written each child bar; its type
   is the edge's `resultType`) whose committed values the runtime merges onto
   the parent axis (sample or collect, gaps/lookahead, ignore-invalid-symbol,
@@ -120,9 +137,12 @@ owning:
   distinct (symbol, timeframe) pair it encounters. Non-security request kinds
   (financial/dividends/economic) map to edges whose child is a plain
   series-input projection; their extra context args ride the same shape.
-- **funcs** (a projection, not a field): per-signature instantiations of
-  user/prelude functions — Go-style stencils that remain **real functions
-  with runtime call dispatch**; inlining is at most a codegen optimization.
+- **funcs** (a projection, not a field): per-Program, per-signature
+  instantiations of user/prelude functions — Go-style stencils that remain
+  **real functions with runtime call dispatch**; inlining is at most a
+  codegen optimization. Parent and request-child Programs never share a
+  stencil's mutable Names or depth annotations, even for the same source
+  template/signature.
   State is a **frame tree**: an IrFunc's frame layout is its local Names
   plus one sub-frame per stateful call site (selected by that site's
   `SlotId`); frames nest along the static call graph (acyclic — recursion
@@ -162,7 +182,7 @@ else — all of `ta.*` — is library code: a builtin Tea library
 (`src/lib/ta.tea`, a real `library("ta")` with `export` functions, loaded by
 `checker/library.ts` and implicitly imported into every script), compiled by
 the ordinary pipeline, with per-call-site state falling out of ordinary
-function semantics. Stencils are per-signature, not
+function semantics. Within one Program, stencils are per-signature, not
 per-value: a const-qualified param (`length`) is known per call site at bind
 time but carries no fold value into the shared body. The native catalog (typecheck round) declares, per
 primitive: value signature, per-param qualifier caps, const-required and
@@ -170,16 +190,16 @@ primitive: value signature, per-param qualifier caps, const-required and
 subgraph), and an **effect class** — the tag that selects the compilation and
 runtime protocol:
 
-| Effect class         | Examples                           | Protocol                                                                        |
-| -------------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
-| none                 | `math.*`                           | pure call                                                                       |
-| param                | `input.*`                          | extracts a `ParamInput`; value arrives at bind time; top-level placement        |
-| declaration          | `indicator`, `strategy`            | script metadata; top-level placement                                            |
-| output (declarative) | `plot*`, `hline`, `alertcondition` | hoisted to `Program.outputs`; per-bar `Emit`; top-level/unconditional placement |
-| handle-object        | `line.*`, `label.*`, `box.*`       | per-bar host object ops; handle values; rollback participation                  |
-| host-service         | `strategy.*` orders                | effects with host feedback readable next bar                                    |
-| async-host-call      | `llm()` (Tea)                      | awaited/batched host call                                                       |
-| request              | `request.*`                        | expression capture; compiles a child Program (`RequestEdge`)                    |
+| Effect class         | Examples                           | Protocol                                                                                                         |
+| -------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| none                 | `math.*`                           | pure call                                                                                                        |
+| param                | `input.*`                          | extracts one global `ParamInput` per call site; local blocks, non-exported UDFs, scalar request captures allowed |
+| declaration          | `indicator`, `strategy`            | script metadata; top-level placement                                                                             |
+| output (declarative) | `plot*`, `hline`, `alertcondition` | hoisted to `Program.outputs`; per-bar `Emit`; top-level/unconditional placement                                  |
+| handle-object        | `line.*`, `label.*`, `box.*`       | per-bar host object ops; handle values; rollback participation                                                   |
+| host-service         | `strategy.*` orders                | effects with host feedback readable next bar                                                                     |
+| async-host-call      | `llm()` (Tea)                      | awaited/batched host call                                                                                        |
+| request              | `request.*`                        | expression capture; compiles a child Program (`RequestEdge`)                                                     |
 
 New builtin families are catalog entries plus at most a new noding policy —
 never new checker or IR architecture. Future cross-sectional analysis
@@ -214,8 +234,10 @@ construction.
   `na` if no iteration completed; `break` skips the current iteration's
   value.
 - Request captures: the expression re-checks and nodes in a child context.
-  Only bind-time (input) script values cross contexts; series/simple script
-  variables must be recomputed inside the expression, and functions that
+  Only constants and direct scalar input bindings cross contexts; computed
+  root aliases fail closed until capture dependency-closure extraction is
+  implemented. Series/simple script variables must be recomputed inside the
+  expression, and functions that
   read the context directly (ambient series, outer-scope variables) are
   rejected — pass context through parameters. Bind-time params are
   compilation-global: the child references the parent's ParamInputs and
@@ -233,7 +255,7 @@ construction.
   initialized by an input call binds the name to its `ParamInput` (reads
   become param reads; no per-bar write), and one initialized by an output
   call (or an alias of one) binds to its `OutputDecl` via `OutputRef` — so
-  `fill(p1, p2)` resolves refs at init, never per bar. “Never reassigned” is
+  `fill(p1, p2)` resolves refs at bind, never per bar. “Never reassigned” is
   a whole-context fact about the exact declaration object, not every binding
   with the same spelling. Tea `const` declarations vanish entirely (every
   read folded).
@@ -244,10 +266,13 @@ construction.
   applies defaults); omitted middles node as `na` constants.
 - `Program.init` stays empty for now — hoisting const/input/simple work out
   of the bar loop is a later optimization, not a correctness requirement.
-- Depth resolution, first cut: all-const offsets take their maximum; a
-  single bind-time offset stays `bound`; dynamic or mixed demands fall back
-  to `capped` with the `indicator(max_bars_back=…)` value or the engine
-  default (500). Interval analysis over loop bounds refines this later.
+- Depth resolution walks UDF bodies in call-site context. Constant and
+  root-safe input-qualified offsets are substituted through parameters and
+  single-write input locals, then combined into one exact `bound` maximum
+  (invalid/na components contribute zero). A demand that still depends on
+  per-bar or unresolved frame state is `capped` by
+  `indicator(max_bars_back=…)` or the engine default (500). Interval analysis
+  over loop bounds refines dynamic demands later.
 
 ## Open items
 

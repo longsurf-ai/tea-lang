@@ -22,9 +22,24 @@ import {
 export const TypeRef = {
   Num: 'num',
   Any: 'any',
+  Enum: 'enum',
+  Nullable: 'nullable',
 } as const;
 
-export type NativeTypeRef = Type | typeof TypeRef.Num | typeof TypeRef.Any;
+export type NativeTypeRef =
+  | Type
+  | typeof TypeRef.Num
+  | typeof TypeRef.Any
+  | typeof TypeRef.Enum
+  | typeof TypeRef.Nullable;
+
+// A result whose nominal type is selected by the first argument. input.enum
+// is the canonical case: every enum declaration is a distinct type, so the
+// catalog cannot name one concrete result ahead of overload matching.
+export const FirstArgumentResult = 'first-argument';
+export type NativeResult = Type | typeof FirstArgumentResult;
+
+export type InputDisplay = 'all' | 'none' | 'data_window' | 'status_line';
 
 export interface NativeParam {
   readonly name: string;
@@ -76,13 +91,16 @@ export type ResultQualifier = Qualifier | typeof JoinResult;
 export interface NativeFunc {
   readonly name: string;
   readonly params: readonly NativeParam[];
-  readonly result: Type;
+  readonly result: NativeResult;
   readonly resultQualifier: ResultQualifier;
   readonly effect: NativeEffect;
   // Mints a per-call-site SlotId (a sub-frame in the caller's frame). None of
   // the seed natives carry slot state; ta.* is prelude and gets its state
   // from ordinary function semantics.
   readonly stateful: boolean;
+  // Param controls have a concrete display default. null on every non-param
+  // native keeps the catalog as the sole owner of this host-visible default.
+  readonly inputDefaultDisplay: InputDisplay | null;
 }
 
 // An ambient variable (close, syminfo.tickerid) or const namespace member
@@ -139,11 +157,20 @@ function opt(
 function func(
   name: string,
   params: readonly NativeParam[],
-  result: Type,
+  result: NativeResult,
   resultQualifier: ResultQualifier,
   effect: NativeEffect = Effect.None,
+  inputDefaultDisplay: InputDisplay | null = null,
 ): NativeFunc {
-  return {name, params, result, resultQualifier, effect, stateful: false};
+  return {
+    name,
+    params,
+    result,
+    resultQualifier,
+    effect,
+    stateful: false,
+    inputDefaultDisplay,
+  };
 }
 
 function variable(
@@ -312,78 +339,197 @@ function buildVars(): NativeVar[] {
 // ---- functions --------------------------------------------------------------
 
 const CONCRETE_CONST_VALUE = {literal: true, acceptsNa: false} as const;
+const CONCRETE_CONST_NUMBER = {literal: true, acceptsNa: false} as const;
 
-// Shared trailing params of the input.* family.
-function inputTail(): NativeParam[] {
+function inputParam(
+  name: string,
+  params: readonly NativeParam[],
+  result: NativeResult,
+  resultQualifier: Qualifier,
+  defaultDisplay: InputDisplay,
+): NativeFunc {
+  return func(
+    name,
+    params,
+    result,
+    resultQualifier,
+    Effect.Param,
+    defaultDisplay,
+  );
+}
+
+function active(): NativeParam {
+  return opt('active', BoolType, Qualifier.Input, {acceptsNa: false});
+}
+
+function displayAndActive(): NativeParam[] {
   return [
-    opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-    opt('tooltip', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-    opt('inline', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-    opt('group', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-    opt('confirm', BoolType, Qualifier.Const, CONCRETE_CONST_VALUE),
     opt('display', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+    active(),
   ];
 }
 
-function numericInput(name: string, type: Type): NativeFunc {
-  return func(
+function standardInputMetadata(): NativeParam[] {
+  return [
+    opt('tooltip', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+    opt('inline', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+    opt('group', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+  ];
+}
+
+function confirmedInputTail(): NativeParam[] {
+  return [
+    ...standardInputMetadata(),
+    opt('confirm', BoolType, Qualifier.Const, CONCRETE_CONST_VALUE),
+    ...displayAndActive(),
+  ];
+}
+
+function scalarInput(
+  name: string,
+  type: Type,
+  defaultDisplay: InputDisplay,
+): NativeFunc {
+  return inputParam(
     name,
     [
       req('defval', type, Qualifier.Const, CONCRETE_CONST_VALUE),
       opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('minval', type, Qualifier.Const, {literal: true}),
-      opt('maxval', type, Qualifier.Const, {literal: true}),
-      opt('step', type, Qualifier.Const, {literal: true}),
-      opt('tooltip', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('inline', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('group', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('confirm', BoolType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('display', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      ...confirmedInputTail(),
     ],
     type,
     Qualifier.Input,
-    Effect.Param,
+    defaultDisplay,
   );
 }
 
-// The input shape WITHOUT an options list (input.price/time/text_area):
-// Pine's third positional argument on these kinds is tooltip, not options.
-function plainInput(name: string, type: Type): NativeFunc {
-  return func(
+function optionsInput(
+  name: string,
+  type: Type,
+  defaultDisplay: InputDisplay,
+): NativeFunc {
+  return inputParam(
     name,
     [
       req('defval', type, Qualifier.Const, CONCRETE_CONST_VALUE),
       opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('tooltip', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('inline', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('group', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('confirm', BoolType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('display', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-    ],
-    type,
-    Qualifier.Input,
-    Effect.Param,
-  );
-}
-
-function simpleInput(name: string, type: Type): NativeFunc {
-  return func(
-    name,
-    [
-      req('defval', type, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      // A tuple literal of allowed values (["EMA", "SMA"]), third by
-      // position per Pine.
       opt('options', TypeRef.Any, Qualifier.Const),
-      opt('tooltip', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('inline', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('group', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('confirm', BoolType, Qualifier.Const, CONCRETE_CONST_VALUE),
-      opt('display', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      ...confirmedInputTail(),
     ],
     type,
     Qualifier.Input,
-    Effect.Param,
+    defaultDisplay,
+  );
+}
+
+function numericInput(name: string, type: Type): NativeFunc[] {
+  const trailing = confirmedInputTail();
+  return [
+    inputParam(
+      name,
+      [
+        req('defval', type, Qualifier.Const, CONCRETE_CONST_VALUE),
+        opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+        opt('minval', type, Qualifier.Const, CONCRETE_CONST_NUMBER),
+        opt('maxval', type, Qualifier.Const, CONCRETE_CONST_NUMBER),
+        opt('step', type, Qualifier.Const, CONCRETE_CONST_NUMBER),
+        ...trailing,
+      ],
+      type,
+      Qualifier.Input,
+      'all',
+    ),
+    inputParam(
+      name,
+      [
+        req('defval', type, Qualifier.Const, CONCRETE_CONST_VALUE),
+        opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+        req('options', TypeRef.Any, Qualifier.Const),
+        ...trailing,
+      ],
+      type,
+      Qualifier.Input,
+      'all',
+    ),
+  ];
+}
+
+function textAreaInput(): NativeFunc {
+  return inputParam(
+    'input.text_area',
+    [
+      req('defval', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('tooltip', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('group', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('confirm', BoolType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      ...displayAndActive(),
+    ],
+    StringType,
+    Qualifier.Input,
+    'none',
+  );
+}
+
+function sourceInput(name: 'input.source' | 'input'): NativeFunc {
+  // input.source keeps confirm last in Pine v6. Bare input(source) has no
+  // confirm and orders inline/group before tooltip.
+  const tail =
+    name === 'input.source'
+      ? [
+          ...standardInputMetadata(),
+          ...displayAndActive(),
+          opt('confirm', BoolType, Qualifier.Const, CONCRETE_CONST_VALUE),
+        ]
+      : [
+          opt('inline', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+          opt('group', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+          opt('tooltip', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+          ...displayAndActive(),
+        ];
+  return inputParam(
+    name,
+    [
+      req('defval', FloatType, Qualifier.Series, {acceptsNa: false}),
+      opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      ...tail,
+    ],
+    FloatType,
+    Qualifier.Series,
+    'all',
+  );
+}
+
+function genericScalarInput(
+  type: Type,
+  defaultDisplay: InputDisplay,
+): NativeFunc {
+  return inputParam(
+    'input',
+    [
+      req('defval', type, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      ...standardInputMetadata(),
+      ...displayAndActive(),
+    ],
+    type,
+    Qualifier.Input,
+    defaultDisplay,
+  );
+}
+
+function enumInput(): NativeFunc {
+  return inputParam(
+    'input.enum',
+    [
+      req('defval', TypeRef.Enum, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('title', StringType, Qualifier.Const, CONCRETE_CONST_VALUE),
+      opt('options', TypeRef.Any, Qualifier.Const),
+      ...confirmedInputTail(),
+    ],
+    FirstArgumentResult,
+    Qualifier.Input,
+    'all',
   );
 }
 
@@ -422,7 +568,7 @@ function buildFuncs(): NativeFunc[] {
         opt('overlay', BoolType, Qualifier.Const, {literal: true}),
         opt('format', StringType, Qualifier.Const),
         opt('precision', IntType, Qualifier.Const, {literal: true}),
-        opt('max_bars_back', IntType, Qualifier.Const, {literal: true}),
+        opt('max_bars_back', IntType, Qualifier.Const, CONCRETE_CONST_NUMBER),
         opt('timeframe', StringType, Qualifier.Const),
         opt('timeframe_gaps', BoolType, Qualifier.Const, {literal: true}),
         // Pine v6: default true; false restores the static-only gate on
@@ -446,46 +592,28 @@ function buildFuncs(): NativeFunc[] {
   // runtime supplies the value at bind time. input.source's result is
   // series: the bound value is a per-bar stream, not a bind-time scalar.
   funcs.push(
-    numericInput('input.int', IntType),
-    numericInput('input.float', FloatType),
-    simpleInput('input.bool', BoolType),
-    simpleInput('input.string', StringType),
-    simpleInput('input.color', ColorType),
-    simpleInput('input.timeframe', StringType),
-    simpleInput('input.symbol', StringType),
-    // Interactive/session flavors: same value types, distinct UI controls
-    // (ParamInput.control records which input built the param). Per Pine
-    // v6, price/time/text_area take NO options list — and position
-    // matters, so they get their own signatures instead of simpleInput's.
-    plainInput('input.price', FloatType),
-    simpleInput('input.session', StringType),
-    plainInput('input.time', IntType),
-    plainInput('input.text_area', StringType),
-    func(
-      'input.source',
-      [
-        req('defval', FloatType, Qualifier.Series, {acceptsNa: false}),
-        ...inputTail(),
-      ],
-      FloatType,
-      Qualifier.Series,
-      Effect.Param,
-    ),
+    ...numericInput('input.int', IntType),
+    ...numericInput('input.float', FloatType),
+    scalarInput('input.bool', BoolType, 'none'),
+    optionsInput('input.string', StringType, 'all'),
+    scalarInput('input.color', ColorType, 'none'),
+    optionsInput('input.timeframe', StringType, 'all'),
+    scalarInput('input.symbol', StringType, 'all'),
+    scalarInput('input.price', FloatType, 'all'),
+    optionsInput('input.session', StringType, 'all'),
+    scalarInput('input.time', IntType, 'none'),
+    textAreaInput(),
+    sourceInput('input.source'),
+    enumInput(),
   );
-  for (const t of [IntType, FloatType, BoolType, StringType, ColorType]) {
-    funcs.push(
-      func(
-        'input',
-        [
-          req('defval', t, Qualifier.Const, CONCRETE_CONST_VALUE),
-          ...inputTail(),
-        ],
-        t,
-        Qualifier.Input,
-        Effect.Param,
-      ),
-    );
-  }
+  funcs.push(
+    genericScalarInput(IntType, 'all'),
+    genericScalarInput(FloatType, 'all'),
+    genericScalarInput(BoolType, 'none'),
+    genericScalarInput(StringType, 'all'),
+    genericScalarInput(ColorType, 'none'),
+    sourceInput('input'),
+  );
 
   // Declarative outputs.
   funcs.push(
@@ -725,8 +853,8 @@ function buildFuncs(): NativeFunc[] {
     func(
       'request.security',
       [
-        req('symbol', StringType, Qualifier.Series),
-        req('timeframe', StringType, Qualifier.Series),
+        req('symbol', StringType, Qualifier.Series, {acceptsNa: false}),
+        req('timeframe', StringType, Qualifier.Series, {acceptsNa: false}),
         req('expression', TypeRef.Any, Qualifier.Series, {capture: true}),
         opt('gaps', BoolType, Qualifier.Simple),
         opt('lookahead', BoolType, Qualifier.Simple),
@@ -742,9 +870,14 @@ function buildFuncs(): NativeFunc[] {
 
   // na handling and conversions.
   funcs.push(
-    func('na', [req('x', TypeRef.Any, Qualifier.Series)], BoolType, JoinResult),
+    func(
+      'na',
+      [req('x', TypeRef.Nullable, Qualifier.Series)],
+      BoolType,
+      JoinResult,
+    ),
   );
-  for (const t of [IntType, FloatType, ColorType, StringType]) {
+  for (const t of [IntType, FloatType, ColorType]) {
     funcs.push(
       func(
         'nz',

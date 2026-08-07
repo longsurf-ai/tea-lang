@@ -26,6 +26,7 @@ import {
 } from '../ir/node';
 import {
   MergeMode,
+  ParamConstraintKind,
   ParamDefaultKind,
   type IrFunc,
   type MergePolicy,
@@ -37,6 +38,10 @@ import {
   type RequestEdge,
 } from '../ir/program';
 import {
+  assignable,
+  BoolType,
+  FloatType,
+  IntType,
   NaType,
   NA_VALUE,
   Qualifier,
@@ -44,14 +49,16 @@ import {
   TypeKind,
   VoidType,
   joinQualifiers,
+  unifyTypes,
   type ConstValue,
+  type Type,
   type TypeAndValue,
 } from '../ir/type';
 import {bindEvaluable} from '../ir/visit';
 import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
 import {Op} from '../syntax/tokens';
-import {Effect} from '../checker/catalog';
+import {Effect, TypeRef, type NativeParam} from '../checker/catalog';
 import type {
   FuncInstance,
   Info,
@@ -110,6 +117,11 @@ class Noder {
   // One IrFunc per checker instance (per-signature stencil); bodies node
   // against the instance's own side tables.
   private readonly instanceFuncs = new Map<FuncInstance, IrFunc>();
+  // Names owned by each user-function frame currently being noded. This is
+  // the ownership information request classification needs to distinguish a
+  // root alias (bind-readable through rt.root()) from a function-local input
+  // parameter (which requires a per-call frame and is therefore dynamic).
+  private readonly functionFrameNames: Set<IrName>[] = [];
   // Frame-local slot counters: the program frame at the bottom, one counter
   // per IrFunc body being noded. Every call site mints the next slot of the
   // frame it sits in — the sub-frame selector within that frame.
@@ -182,7 +194,7 @@ class Noder {
     }
     const visit = (requests: readonly RequestEdge[]): void => {
       for (const edge of requests) {
-        if (this.isDynamicEdge(edge)) {
+        if (edge.dynamic) {
           this.errors.errorAt(
             edge.pos,
             'series context arguments need dynamic_requests=true',
@@ -213,14 +225,47 @@ class Noder {
     };
   }
 
-  private naConst(pos: Pos): IrExpr {
+  private constExpr(pos: Pos, type: Type, value: ConstValue): IrExpr {
     return {
       kind: IrKind.Const,
       pos,
-      type: NaType,
+      type,
       qualifier: Qualifier.Const,
-      value: NA_VALUE,
+      value,
     };
+  }
+
+  private naConst(pos: Pos, type: Type): IrExpr {
+    if (!assignable(NaType, type) || type.kind === TypeKind.Na) {
+      return fatal('uncontextualized na reached Program construction');
+    }
+    return this.constExpr(pos, type, NA_VALUE);
+  }
+
+  private nativeExpectedType(
+    param: NativeParam,
+    resultType: Type,
+    nativeName: string | null = null,
+  ): Type | null {
+    if (typeof param.type !== 'string') {
+      return param.type;
+    }
+    if (param.type === TypeRef.Num) {
+      return resultType.kind === TypeKind.Int ||
+        resultType.kind === TypeKind.Float
+        ? resultType
+        : FloatType;
+    }
+    if (param.type === TypeRef.Enum) {
+      return resultType.kind === TypeKind.Enum ? resultType : null;
+    }
+    if (param.type === TypeRef.Nullable) {
+      return FloatType;
+    }
+    if (param.type === TypeRef.Any && nativeName === 'str.tostring') {
+      return FloatType;
+    }
+    return null;
   }
 
   // ---- statements -----------------------------------------------------------
@@ -268,6 +313,11 @@ class Noder {
         }
       }
     }
+    const tv = this.tvOf(stmt.x);
+    if (tv.type.kind === TypeKind.Na && tv.value !== null) {
+      // A standalone na is a dead constant, so it never enters Program IR.
+      return [];
+    }
     const x = this.nodeExpr(stmt.x);
     // A fully-folded statement expression is pure and dead.
     if (x.kind === IrKind.Const) {
@@ -305,10 +355,10 @@ class Noder {
       return [];
     }
 
-    const init = this.nodeExpr(d.init);
+    const init = this.nodeExpr(d.init, name.type);
 
     // `p = plot(...)` (or an alias of it) binds the name to the output
-    // declaration: refs resolve at init time, never per bar.
+    // declaration: refs resolve at bind time, never per bar.
     if (init.kind === IrKind.OutputRef && rebindable && d.mode === Mode.None) {
       this.outputRefs.set(name, init.output);
       return [];
@@ -321,10 +371,7 @@ class Noder {
       // Dynamic request reads must EXECUTE per row (rt.requestFor); an
       // alias would erase the execution, so the declaration stays a real
       // per-row Name write.
-      !(
-        init.place.kind === PlaceKind.Request &&
-        this.isDynamicEdge(init.place.request)
-      ) &&
+      !(init.place.kind === PlaceKind.Request && init.place.request.dynamic) &&
       rebindable &&
       d.mode === Mode.None
     ) {
@@ -365,7 +412,7 @@ class Noder {
         kind: IrKind.WriteName,
         pos: d.pos,
         name: temp,
-        value: this.nodeExpr(d.init),
+        value: this.nodeExpr(d.init, initTv.type),
       },
     ];
     pattern.elems.forEach((elem, i) => {
@@ -393,7 +440,6 @@ class Noder {
   }
 
   private nodeAssign(a: syntax.AssignStmt): IrStmt[] {
-    const value = this.nodeExpr(a.value);
     if (a.target.kind === NodeKind.Name) {
       const name = this.tables.uses.get(a.target);
       if (name === undefined) {
@@ -401,6 +447,7 @@ class Noder {
           `unresolved assign target reached the noder: ${a.target.value}`,
         );
       }
+      const value = this.nodeExpr(a.value, name.type);
       const base = ASSIGN_BASE_OP[a.op];
       const written =
         a.op === AssignOp.Define || base === undefined
@@ -417,13 +464,14 @@ class Noder {
       return [{kind: IrKind.WriteName, pos: a.pos, name, value: written}];
     }
     if (a.target.kind === NodeKind.SelectorExpr) {
+      const targetType = this.tvOf(a.target).type;
       return [
         {
           kind: IrKind.WriteField,
           pos: a.pos,
           x: this.nodeExpr(a.target.x),
           field: a.target.sel.value,
-          value,
+          value: this.nodeExpr(a.value, targetType),
         },
       ];
     }
@@ -432,8 +480,22 @@ class Noder {
 
   // ---- expressions ----------------------------------------------------------
 
-  private nodeExpr(e: syntax.Expr): IrExpr {
-    const tv = this.tvOf(e);
+  private nodeExpr(e: syntax.Expr, expectedType: Type | null = null): IrExpr {
+    const checked = this.tvOf(e);
+    const contextualType =
+      checked.type.kind === TypeKind.Na &&
+      expectedType !== null &&
+      expectedType.kind !== TypeKind.Na &&
+      assignable(checked.type, expectedType)
+        ? expectedType
+        : checked.type;
+    if (contextualType.kind === TypeKind.Na) {
+      return fatal('uncontextualized na reached Program construction');
+    }
+    const tv: TypeAndValue =
+      contextualType === checked.type
+        ? checked
+        : {...checked, type: contextualType};
     // Aggressive folding: any expression the checker resolved to a constant
     // becomes a Const node (const-qualified exprs are pure by construction).
     if (tv.value !== null) {
@@ -453,7 +515,7 @@ class Noder {
         return fatal('unfolded literal reached the noder');
       case NodeKind.UnaryExpr: {
         if (e.op === Op.Plus) {
-          return this.nodeExpr(e.x);
+          return this.nodeExpr(e.x, tv.type);
         }
         const op: IrUnaryOp = e.op === Op.Minus ? IrOp.Neg : IrOp.Not;
         return {
@@ -462,19 +524,22 @@ class Noder {
           type: tv.type,
           qualifier: tv.qualifier,
           op,
-          x: this.nodeExpr(e.x),
+          x: this.nodeExpr(e.x, tv.type),
         };
       }
-      case NodeKind.BinaryExpr:
+      case NodeKind.BinaryExpr: {
+        const operandType =
+          unifyTypes(this.tvOf(e.x).type, this.tvOf(e.y).type) ?? tv.type;
         return {
           kind: IrKind.Binary,
           pos: e.pos,
           type: tv.type,
           qualifier: tv.qualifier,
           op: mapBinaryOp(e.op),
-          x: this.nodeExpr(e.x),
-          y: this.nodeExpr(e.y),
+          x: this.nodeExpr(e.x, operandType),
+          y: this.nodeExpr(e.y, operandType),
         };
+      }
       case NodeKind.CondExpr:
         return {
           kind: IrKind.Cond,
@@ -482,8 +547,8 @@ class Noder {
           type: tv.type,
           qualifier: tv.qualifier,
           cond: this.nodeExpr(e.cond),
-          then: this.nodeExpr(e.then),
-          else: this.nodeExpr(e.else),
+          then: this.nodeExpr(e.then, tv.type),
+          else: this.nodeExpr(e.else, tv.type),
         };
       case NodeKind.CallExpr:
         return this.nodeCall(e, tv);
@@ -495,10 +560,15 @@ class Noder {
           pos: e.pos,
           type: tv.type,
           qualifier: tv.qualifier,
-          elems: e.elems.map(elem => this.nodeExpr(elem)),
+          elems: e.elems.map((elem, i) =>
+            this.nodeExpr(
+              elem,
+              tv.type.kind === TypeKind.Tuple ? tv.type.elems[i] : null,
+            ),
+          ),
         };
       case NodeKind.ParenExpr:
-        return this.nodeExpr(e.x);
+        return this.nodeExpr(e.x, tv.type);
       case NodeKind.IfExpr:
         return this.nodeIf(e, tv);
       case NodeKind.ForExpr: {
@@ -512,10 +582,10 @@ class Noder {
           type: tv.type,
           qualifier: tv.qualifier,
           index,
-          from: this.nodeExpr(e.from),
-          to: this.nodeExpr(e.to),
-          step: e.step !== null ? this.nodeExpr(e.step) : null,
-          body: this.nodeBlock(e.body),
+          from: this.nodeExpr(e.from, index.type),
+          to: this.nodeExpr(e.to, index.type),
+          step: e.step !== null ? this.nodeExpr(e.step, index.type) : null,
+          body: this.nodeBlock(e.body, tv.type),
         };
       }
       case NodeKind.ForInExpr: {
@@ -535,7 +605,7 @@ class Noder {
           qualifier: tv.qualifier,
           targets,
           x: this.nodeExpr(e.x),
-          body: this.nodeBlock(e.body),
+          body: this.nodeBlock(e.body, tv.type),
         };
       }
       case NodeKind.WhileExpr:
@@ -545,19 +615,39 @@ class Noder {
           type: tv.type,
           qualifier: tv.qualifier,
           cond: this.nodeExpr(e.cond),
-          body: this.nodeBlock(e.body),
+          body: this.nodeBlock(e.body, tv.type),
         };
       case NodeKind.SwitchExpr: {
+        const subjectType =
+          e.subject !== null && this.tvOf(e.subject).type.kind === TypeKind.Na
+            ? (e.arms
+                .map(arm =>
+                  arm.pattern !== null ? this.tvOf(arm.pattern).type : null,
+                )
+                .find(
+                  (type): type is Type =>
+                    type !== null && type.kind !== TypeKind.Na,
+                ) ?? null)
+            : e.subject !== null
+              ? this.tvOf(e.subject).type
+              : null;
         const arms: SwitchArm[] = e.arms.map(arm => ({
-          pattern: arm.pattern !== null ? this.nodeExpr(arm.pattern) : null,
-          body: this.blockify(arm.body),
+          pattern:
+            arm.pattern !== null
+              ? this.nodeExpr(
+                  arm.pattern,
+                  e.subject === null ? BoolType : subjectType,
+                )
+              : null,
+          body: this.blockify(arm.body, tv.type),
         }));
         return {
           kind: IrKind.SwitchExpr,
           pos: e.pos,
           type: tv.type,
           qualifier: tv.qualifier,
-          subject: e.subject !== null ? this.nodeExpr(e.subject) : null,
+          subject:
+            e.subject !== null ? this.nodeExpr(e.subject, subjectType) : null,
           arms,
         };
       }
@@ -641,13 +731,13 @@ class Noder {
       const args = constructed.udt.fields.map((field, i) => {
         const provided = constructed.args[i];
         if (provided !== null) {
-          return this.nodeExpr(provided);
+          return this.nodeExpr(provided, field.type);
         }
         const fallback = defaults?.get(field.name);
         // The checker required an argument when no default exists.
         return fallback !== undefined
-          ? this.nodeExpr(fallback)
-          : this.naConst(c.pos);
+          ? this.nodeExpr(fallback, field.type)
+          : this.naConst(c.pos, field.type);
       });
       return {
         kind: IrKind.NewUdt,
@@ -661,12 +751,12 @@ class Noder {
     const userCall = this.tables.userCalls.get(c);
     if (userCall !== undefined) {
       const func = this.funcOf(userCall.instance);
-      const args = userCall.instance.params.map((_, i) => {
+      const args = userCall.instance.params.map((param, i) => {
         const provided = userCall.args[i];
         if (provided !== null) {
-          return this.nodeExpr(provided);
+          return this.nodeExpr(provided, param.type);
         }
-        return this.nodeInstanceDefault(userCall.instance, i);
+        return this.nodeInstanceDefault(userCall.instance, i, param.type);
       });
       return {
         kind: IrKind.CallFunc,
@@ -716,8 +806,28 @@ class Noder {
           qualifier: tv.qualifier,
           native: resolved.native.name,
           slot: null,
-          args: provided.map(arg =>
-            arg !== null ? this.nodeExpr(arg) : this.naConst(c.pos),
+          args: provided.map((arg, i) =>
+            arg !== null
+              ? this.nodeExpr(
+                  arg,
+                  this.nativeExpectedType(
+                    resolved.native.params[
+                      Math.min(i, resolved.native.params.length - 1)
+                    ],
+                    tv.type,
+                    resolved.native.name,
+                  ),
+                )
+              : this.naConst(
+                  c.pos,
+                  this.nativeExpectedType(
+                    resolved.native.params[
+                      Math.min(i, resolved.native.params.length - 1)
+                    ],
+                    tv.type,
+                    resolved.native.name,
+                  ) ?? FloatType,
+                ),
           ),
         };
       }
@@ -729,8 +839,8 @@ class Noder {
   // unconditionally every bar, which is what keeps its history well-defined,
   // so the desugaring exists only at the top level.
   private nodeHistory(e: syntax.HistoryExpr, tv: TypeAndValue): IrExpr {
-    const offset = this.nodeExpr(e.offset);
-    const x = this.nodeExpr(e.x);
+    const offset = this.nodeExpr(e.offset, IntType);
+    const x = this.nodeExpr(e.x, tv.type);
     // e[0] IS e: the current-bar value, whatever the expression.
     if (offset.kind === IrKind.Const && offset.value === 0) {
       return x;
@@ -741,10 +851,7 @@ class Noder {
       // A dynamic request read cannot collapse into an offset read — the
       // offset-0 read is its execution; history desugars through the
       // synthetic per-row name below.
-      !(
-        x.place.kind === PlaceKind.Request &&
-        this.isDynamicEdge(x.place.request)
-      )
+      !(x.place.kind === PlaceKind.Request && x.place.request.dynamic)
     ) {
       return {
         kind: IrKind.HistRead,
@@ -792,8 +899,8 @@ class Noder {
     if (e.else !== null) {
       elseBlock =
         e.else.kind === NodeKind.IfExpr
-          ? this.blockify(e.else)
-          : this.nodeBlock(e.else);
+          ? this.blockify(e.else, tv.type)
+          : this.nodeBlock(e.else, tv.type);
     }
     return {
       kind: IrKind.IfExpr,
@@ -801,18 +908,21 @@ class Noder {
       type: tv.type,
       qualifier: tv.qualifier,
       cond: this.nodeExpr(e.cond),
-      then: this.nodeBlock(e.then),
+      then: this.nodeBlock(e.then, tv.type),
       else: elseBlock,
     };
   }
 
   // An expression in block position (switch arm bodies, else-if chains)
   // wraps into a value-only BlockExpr.
-  private blockify(e: syntax.Expr | syntax.Block): BlockExpr {
+  private blockify(
+    e: syntax.Expr | syntax.Block,
+    expectedType: Type | null = null,
+  ): BlockExpr {
     if (e.kind === NodeKind.Block) {
-      return this.nodeBlock(e);
+      return this.nodeBlock(e, expectedType);
     }
-    const value = this.nodeExpr(e);
+    const value = this.nodeExpr(e, expectedType);
     return {
       kind: IrKind.BlockExpr,
       pos: e.pos,
@@ -823,7 +933,10 @@ class Noder {
     };
   }
 
-  private nodeBlock(b: syntax.Block): BlockExpr {
+  private nodeBlock(
+    b: syntax.Block,
+    expectedType: Type | null = null,
+  ): BlockExpr {
     this.nesting += 1;
     const stmts: IrStmt[] = [];
     let value: IrExpr | null = null;
@@ -837,11 +950,11 @@ class Noder {
         stmt.kind === NodeKind.ExprStmt &&
         this.tvOf(stmt.x).type.kind !== TypeKind.Void
       ) {
-        value = this.nodeExpr(stmt.x);
+        value = this.nodeExpr(stmt.x, expectedType);
         continue;
       }
       stmts.push(...this.nodeStmt(stmt));
-      value = this.lastStmtValue(stmt);
+      value = this.lastStmtValue(stmt, expectedType);
     }
     this.nesting -= 1;
     return {
@@ -855,14 +968,20 @@ class Noder {
   }
 
   // The value a declaration or assignment yields when it closes a block.
-  private lastStmtValue(stmt: syntax.Stmt): IrExpr | null {
+  private lastStmtValue(
+    stmt: syntax.Stmt,
+    expectedType: Type | null,
+  ): IrExpr | null {
     if (stmt.kind === NodeKind.DeclStmt && stmt.target.kind === NodeKind.Name) {
       const tv = this.tvOf(stmt.init);
       if (tv.value !== null) {
         return {
           kind: IrKind.Const,
           pos: stmt.init.pos,
-          type: tv.type,
+          type:
+            tv.type.kind === TypeKind.Na && expectedType !== null
+              ? expectedType
+              : tv.type,
           qualifier: tv.qualifier,
           value: tv.value,
         };
@@ -921,8 +1040,11 @@ class Noder {
     }
 
     // Parent-context pieces first.
-    const symbol = this.nodeExpr(symbolExpr);
-    const timeframe = this.nodeExpr(timeframeExpr);
+    const symbol = this.nodeExpr(symbolExpr, this.tvOf(symbolExpr).type);
+    const timeframe = this.nodeExpr(
+      timeframeExpr,
+      this.tvOf(timeframeExpr).type,
+    );
     const calcBars = argExpr('calc_bars_count');
     const currency = argValue('currency');
     const merge: MergePolicy = {
@@ -931,7 +1053,10 @@ class Noder {
       lookahead: argValue('lookahead') === true,
       ignoreInvalidSymbol: argValue('ignore_invalid_symbol') === true,
       currency: typeof currency === 'string' ? currency : null,
-      calcBarsCount: calcBars !== null ? this.nodeExpr(calcBars) : null,
+      calcBarsCount:
+        calcBars !== null
+          ? this.nodeExpr(calcBars, this.tvOf(calcBars).type)
+          : null,
     };
 
     // The child context: the capture's side tables, a fresh frame and
@@ -950,7 +1075,7 @@ class Noder {
     this.slots.push(0);
     this.requestLevels.push([]);
     this.nesting += 1;
-    const childValue = this.nodeExpr(captureExpr);
+    const childValue = this.nodeExpr(captureExpr, capture.resultType);
     this.nesting -= 1;
     const childRequests = this.requestLevels.pop();
     this.slots.pop();
@@ -975,6 +1100,12 @@ class Noder {
     };
     resolveDepths(child);
 
+    // In the program frame, input-qualified context expressions may use
+    // ordinary aliases and pure UDFs because module.bind owns a real root
+    // frame. Inside function/capture frames, only frame-free expressions are
+    // safe to evaluate independently; local parameters must stay dynamic.
+    const staticAtBind = (expr: IrExpr): boolean =>
+      this.requestContextBindEvaluable(expr);
     const edge: RequestEdge = {
       pos: c.pos,
       symbol,
@@ -982,6 +1113,7 @@ class Noder {
       merge,
       resultName,
       resultType: capture.resultType,
+      dynamic: !staticAtBind(symbol) || !staticAtBind(timeframe),
       depth: {kind: DepthKind.None},
       child,
     };
@@ -1002,10 +1134,6 @@ class Noder {
   // A dynamic edge's offset-0 read is its EXECUTION (rt.requestFor), so
   // reads must materialize where the call appears: no alias binding, no
   // history collapse onto the place — history rides a real per-row Name.
-  private isDynamicEdge(edge: RequestEdge): boolean {
-    return !bindEvaluable(edge.symbol) || !bindEvaluable(edge.timeframe);
-  }
-
   private requestRead(
     c: syntax.CallExpr,
     edge: RequestEdge,
@@ -1019,6 +1147,28 @@ class Noder {
       place: {kind: PlaceKind.Request, request: edge},
       offset: null,
     };
+  }
+
+  private requestContextBindEvaluable(expr: IrExpr): boolean {
+    if (bindEvaluable(expr)) {
+      return true;
+    }
+    if (!qualifierLE(expr.qualifier, Qualifier.Input)) {
+      return false;
+    }
+    // A call site in the program frame can run against the provisional root
+    // frame during module.bind; the checker's aggregate UDF qualifier proves
+    // it contains no hidden series/request work.
+    if (this.slots.length === 1) {
+      return true;
+    }
+    const frameNames = this.functionFrameNames.at(-1);
+    if (frameNames === undefined) {
+      // We are inside a request capture, not a user-function frame. Only the
+      // frame-free cases accepted above are independently bind-evaluable.
+      return false;
+    }
+    return rootNameBindEvaluable(expr, frameNames);
   }
 
   // ---- function stencils ----------------------------------------------------
@@ -1035,19 +1185,21 @@ class Noder {
     const savedTables = this.tables;
     const savedNesting = this.nesting;
     this.tables = instance.tables;
-    this.nesting += 1;
-    this.slots.push(0);
-    const body =
-      instance.template.body.kind === NodeKind.Block
-        ? this.nodeBlock(instance.template.body)
-        : this.nodeExpr(instance.template.body);
-    this.slots.pop();
-    this.nesting = savedNesting;
-    this.tables = savedTables;
     const paramSet = new Set(instance.params);
     const locals = [...new Set(instance.tables.defs.values())].filter(
       name => !paramSet.has(name),
     );
+    this.functionFrameNames.push(new Set([...instance.params, ...locals]));
+    this.nesting += 1;
+    this.slots.push(0);
+    const body =
+      instance.template.body.kind === NodeKind.Block
+        ? this.nodeBlock(instance.template.body, instance.resultType)
+        : this.nodeExpr(instance.template.body, instance.resultType);
+    this.slots.pop();
+    this.functionFrameNames.pop();
+    this.nesting = savedNesting;
+    this.tables = savedTables;
     const func: IrFunc = {
       name: instance.name,
       params: instance.params,
@@ -1063,7 +1215,11 @@ class Noder {
   // An omitted argument nodes the instance's default expression — checked in
   // the instance's tables — at the call site. Defaults must not reference
   // sibling params (see AGENTS.md).
-  private nodeInstanceDefault(instance: FuncInstance, index: number): IrExpr {
+  private nodeInstanceDefault(
+    instance: FuncInstance,
+    index: number,
+    expectedType: Type,
+  ): IrExpr {
     const dflt = instance.defaults.get(index);
     if (dflt === undefined) {
       return fatal(
@@ -1072,7 +1228,7 @@ class Noder {
     }
     const saved = this.tables;
     this.tables = instance.tables;
-    const expr = this.nodeExpr(dflt);
+    const expr = this.nodeExpr(dflt, expectedType);
     this.tables = saved;
     return expr;
   }
@@ -1104,7 +1260,7 @@ class Noder {
       if (tv.value !== null) {
         defaultValue = {kind: ParamDefaultKind.Const, value: tv.value};
       } else {
-        const series = this.tables.ambient.get(defval);
+        const series = this.tables.ambient.get(unwrapExpr(defval));
         if (series !== undefined) {
           defaultValue = {kind: ParamDefaultKind.Series, series};
         } else {
@@ -1119,22 +1275,29 @@ class Noder {
     const minval = argValue('minval');
     const maxval = argValue('maxval');
     const step = argValue('step');
-    // An options list is a tuple literal of constants (["EMA", "SMA"]).
-    let options: ConstValue[] | null = null;
+    // The checker guarantees a direct, non-empty, homogeneously typed tuple.
+    let options: [ConstValue, ...ConstValue[]] | null = null;
     let optionsExpr = argExpr('options');
-    while (optionsExpr !== null && optionsExpr.kind === NodeKind.ParenExpr) {
-      optionsExpr = optionsExpr.x;
-    }
-    if (optionsExpr !== null && optionsExpr.kind === NodeKind.TupleExpr) {
-      const values = optionsExpr.elems.map(elem => this.tvOf(elem).value);
-      if (values.every((v): v is ConstValue => v !== null)) {
-        options = values;
+    if (optionsExpr !== null) {
+      optionsExpr = unwrapExpr(optionsExpr);
+      if (optionsExpr.kind !== NodeKind.TupleExpr) {
+        return fatal('non-tuple input options reached the noder');
       }
+      const values = optionsExpr.elems.map(elem => this.tvOf(elem).value);
+      if (
+        values.length === 0 ||
+        !values.every((v): v is ConstValue => v !== null)
+      ) {
+        return fatal('invalid input options reached the noder');
+      }
+      options = values as [ConstValue, ...ConstValue[]];
     }
     const constraints: ParamConstraints | null =
-      minval !== null || maxval !== null || step !== null || options !== null
-        ? {minval, maxval, step, options}
-        : null;
+      options !== null
+        ? {kind: ParamConstraintKind.Options, options}
+        : minval !== null || maxval !== null || step !== null
+          ? {kind: ParamConstraintKind.Range, minval, maxval, step}
+          : null;
 
     // input.source's default must be a built-in source: a const number
     // would silently degrade the param to a scalar with control='source'.
@@ -1154,21 +1317,44 @@ class Noder {
     const tooltip = argValue('tooltip');
     const confirm = argValue('confirm');
     const display = argValue('display');
+    const activeExpr = argExpr('active');
+    const defaultDisplay = resolved.native.inputDefaultDisplay;
+    if (defaultDisplay === null) {
+      return fatal(
+        `param native '${resolved.native.name}' has no display default`,
+      );
+    }
+    const localBindingName =
+      bindingName !== null && this.nesting > 0 ? bindingName : null;
     const param: ParamInput = {
-      name: bindingName ?? `input@${c.pos.line}:${c.pos.col}`,
-      title: typeof title === 'string' ? title : null,
+      // Local declarations can repeat their spelling across lexical scopes,
+      // so only a program-scope declaration is a safe host-facing identity.
+      name:
+        bindingName !== null && this.nesting === 0
+          ? bindingName
+          : `input@${c.pos.line}:${c.pos.col}`,
+      // Preserve Pine's inferred label for a local declaration even though
+      // its unique host identity is the call site.
+      title: typeof title === 'string' ? title : localBindingName,
       control:
         resolved.native.name === 'input'
           ? 'auto'
           : resolved.native.name.slice('input.'.length),
-      type: resolved.native.result,
+      type: this.tvOf(c).type,
       defaultValue,
       constraints,
       group: typeof group === 'string' ? group : null,
       inline: typeof inline === 'string' ? inline : null,
       tooltip: typeof tooltip === 'string' ? tooltip : null,
       confirm: confirm === true,
-      display: typeof display === 'string' ? display : null,
+      display:
+        typeof display === 'string'
+          ? (display as ParamInput['display'])
+          : defaultDisplay,
+      active:
+        activeExpr !== null
+          ? this.nodeExpr(activeExpr, BoolType)
+          : this.constExpr(c.pos, BoolType, true),
       depth: {kind: DepthKind.None},
     };
     this.params.push(param);
@@ -1207,8 +1393,8 @@ class Noder {
   }
 
   // Split a declarative call's provided args into the three buckets:
-  // compile-time constants (staticArgs), init-time exprs (bindArgs: at most
-  // simple-qualified, plus output refs), and per-bar channels fed by Emit.
+  // compile-time constants (staticArgs), bind-time exprs (bindArgs: at most
+  // input-qualified, plus output refs), and per-bar channels fed by Emit.
   private partitionOutput(resolved: ResolvedCall): {
     output: OutputDecl;
     emitArgs: IrExpr[];
@@ -1231,10 +1417,10 @@ class Noder {
         staticArgs.push({name: param.name, value: tv.value});
         return;
       }
-      const expr = this.nodeExpr(arg);
+      const expr = this.nodeExpr(arg, this.nativeExpectedType(param, tv.type));
       if (
         expr.kind === IrKind.OutputRef ||
-        qualifierLE(tv.qualifier, Qualifier.Simple)
+        qualifierLE(tv.qualifier, Qualifier.Input)
       ) {
         bindArgs.push({name: param.name, expr});
         return;
@@ -1249,12 +1435,56 @@ class Noder {
   }
 }
 
+// A static request nested in a UDF may read compilation-global input aliases
+// through rt.root(), but it cannot read the UDF's own params/locals without a
+// concrete call-site frame. Keep this deliberately structural: UDF calls and
+// control-flow blocks remain dynamic when the request itself is inside a UDF.
+function rootNameBindEvaluable(
+  expr: IrExpr,
+  frameNames: ReadonlySet<IrName>,
+): boolean {
+  if (bindEvaluable(expr)) {
+    return true;
+  }
+  switch (expr.kind) {
+    case IrKind.HistRead:
+      return (
+        expr.offset === null &&
+        expr.place.kind === PlaceKind.Name &&
+        !frameNames.has(expr.place.name) &&
+        qualifierLE(expr.place.name.qualifier, Qualifier.Input)
+      );
+    case IrKind.Binary:
+      return (
+        rootNameBindEvaluable(expr.x, frameNames) &&
+        rootNameBindEvaluable(expr.y, frameNames)
+      );
+    case IrKind.Unary:
+      return rootNameBindEvaluable(expr.x, frameNames);
+    case IrKind.Cond:
+      return (
+        rootNameBindEvaluable(expr.cond, frameNames) &&
+        rootNameBindEvaluable(expr.then, frameNames) &&
+        rootNameBindEvaluable(expr.else, frameNames)
+      );
+    case IrKind.CallNative:
+      return expr.args.every(arg => rootNameBindEvaluable(arg, frameNames));
+    default:
+      return false;
+  }
+}
+
 // A call expression possibly wrapped in parens.
-function unwrapCall(e: syntax.Expr): syntax.CallExpr | null {
+function unwrapExpr(e: syntax.Expr): syntax.Expr {
   let x = e;
   while (x.kind === NodeKind.ParenExpr) {
     x = x.x;
   }
+  return x;
+}
+
+function unwrapCall(e: syntax.Expr): syntax.CallExpr | null {
+  const x = unwrapExpr(e);
   return x.kind === NodeKind.CallExpr ? x : null;
 }
 

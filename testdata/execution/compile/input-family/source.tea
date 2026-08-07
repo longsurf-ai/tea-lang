@@ -1,0 +1,19 @@
+//@version=1
+indicator("Input family compile-through")
+
+enum Mode
+	fast = "Fast"
+	slow = "Slow"
+
+enabled = input.bool(true, "Enabled")
+length = input.int(5, "Length", options=[3, 5, 8], active=enabled)
+scale = input.float(1.5, "Scale", minval=0.5, maxval=3.0, step=0.5, active=enabled)
+method = input.string("SMA", "Method", options=["SMA", "EMA"], active=enabled)
+tone = input.color(color.blue, "Tone", active=enabled)
+source = input.source(close, "Source", active=enabled, confirm=true)
+mode = input.enum(Mode.fast, "Mode", options=[Mode.fast, Mode.slow], active=enabled)
+auto = input(2, "Auto", active=enabled)
+
+plot(source * scale + length + auto, "Result", color=tone)
+plot(close > 0 ? math.exp(1000) : 0, "Folded overflow")
+plot(math.exp(close * 1000), "Dynamic overflow")

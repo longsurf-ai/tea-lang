@@ -140,6 +140,8 @@ describe('inference and folding', () => {
         'difference = math.exp(1000) - math.exp(1000)',
         'composed = math.sqrt(-1) + 1',
         'negated = -math.sqrt(-1)',
+        'literal = 1e999',
+        'literalComparison = 1e999 == 1e999',
       ].join('\n'),
     );
     expect(r.errors).toEqual([]);
@@ -150,10 +152,12 @@ describe('inference and folding', () => {
       'difference',
       'composed',
       'negated',
+      'literal',
     ]) {
       const value = initTvOf(r, name).value;
       expect(value !== null && isNaValue(value)).toBe(true);
     }
+    expect(initTvOf(r, 'literalComparison').value).toBe(false);
   });
 });
 
@@ -252,6 +256,7 @@ describe('native calls', () => {
   test('input defaults and concrete metadata reject na before noding', () => {
     for (const source of [
       'x = input.color(color.new(color.blue, math.sqrt(-1)))',
+      'x = input.float(1e999)',
       'x = input.int(1, title=na)',
       'x = input.int(1, tooltip=na)',
       'x = input.int(1, inline=na)',
@@ -271,10 +276,202 @@ describe('native calls', () => {
       expect.stringContaining('must be a constant literal'),
     );
 
-    // These are explicitly nullable constraints, unlike defaults/UI metadata.
-    expect(
-      checkText('x = input.int(1, minval=na, maxval=na, step=na)').errors,
-    ).toEqual([]);
+    const nullableRange = checkText(
+      'x = input.int(1, minval=na, maxval=na, step=na)',
+    );
+    expect(nullableRange.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining('cannot be na'),
+    );
+  });
+
+  test('indicator max_bars_back is an integer from 0 through 5000', () => {
+    for (const source of [
+      'indicator("t", max_bars_back=na)',
+      'indicator("t", max_bars_back=-1)',
+      'indicator("t", max_bars_back=5001)',
+      'indicator("t", max_bars_back=9007199254740992)',
+    ]) {
+      const r = checkText(source);
+      expect(r.errors).not.toEqual([]);
+    }
+
+    expect(checkText('indicator("t", max_bars_back=5000)').errors).toEqual([]);
+  });
+
+  test('input overloads preserve their exact positional and nominal types', () => {
+    const r = checkText(
+      [
+        'enum Mode',
+        '    fast = "Fast"',
+        '    slow = "Slow"',
+        'enabled = input.bool(true)',
+        'count = input.int(2, "Count", options=[1, 2], active=enabled)',
+        'ratio = input.float(0, options=[-3.14, -1.57, 0, 1.57, 3.14])',
+        'name = input.string("EMA", options=["EMA", "SMA"])',
+        'symbol = input.symbol("NASDAQ:AAPL", "Symbol", "tip")',
+        'note = input.text_area("memo", "Note", "tip", "Group")',
+        'sourceA = input.source(close, confirm=true)',
+        'sourceB = input(close, inline="row", group="Source", tooltip="tip")',
+        'mode = input.enum(Mode.fast, options=[Mode.fast, Mode.slow])',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+    expect(declaredName(r, 'mode').type.kind).toBe(TypeKind.Enum);
+    expect(declaredName(r, 'mode').qualifier).toBe(Qualifier.Input);
+    expect(declaredName(r, 'sourceB').qualifier).toBe(Qualifier.Series);
+  });
+
+  test('inputs are global declarations from local blocks, UDFs, and scalar request captures', () => {
+    const r = checkText(
+      [
+        'if true',
+        '    local = input.int(1)',
+        'f() =>',
+        '    enabled = input.bool(true)',
+        '    input.int(2, active=enabled)',
+        'x = f()',
+        'captured = request.security("X", "D", close * input.float(2))',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+
+    const exported = checkText(
+      ['export f() => input.int(1)', 'x = f()'].join('\n'),
+    );
+    expect(exported.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining('cannot be called from an exported function'),
+    );
+
+    const localActive = checkText(
+      [
+        'enabled = input.bool(true)',
+        'f(bool enabled) => input.int(1, active=enabled)',
+        'x = f(enabled)',
+      ].join('\n'),
+    );
+    expect(localActive.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining(
+        'active cannot depend on local execution state because the input is program-global',
+      ),
+    );
+
+    const capturedSource = checkText(
+      'x = request.security("X", "D", input.source(close))',
+    );
+    expect(capturedSource.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining(
+        'cannot declare a source input inside a request expression',
+      ),
+    );
+
+    const capturedAlias = checkText(
+      [
+        'length = input.int(2)',
+        'computed = length + 0',
+        'x = request.security("X", "D", close[computed])',
+      ].join('\n'),
+    );
+    expect(capturedAlias.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining(
+        "cannot capture computed script variable 'computed'",
+      ),
+    );
+  });
+
+  test('input constraints reject ambiguous or invalid host metadata', () => {
+    const cases = [
+      ['input.bool(true, options=[true])', "unknown argument 'options'"],
+      ['input.symbol("A", options=["A"])', "unknown argument 'options'"],
+      ['input.text_area("x", inline="row")', "unknown argument 'inline'"],
+      ['input(1, confirm=true)', "unknown argument 'confirm'"],
+      [
+        'opts = ["a", "b"]\nx = input.string("a", options=opts)',
+        'direct tuple literal',
+      ],
+      ['x = input.string("a", options=[1, 2])', 'must have type string'],
+      ['x = input.string("a", options=["b", "c"])', 'default must be one of'],
+      ['x = input.int(1, options=[1, 1])', 'cannot repeat'],
+      ['x = input.float(0.0, options=[0.0, -0.0])', 'cannot repeat'],
+      ['x = input.int(0, minval=1)', 'at least minval'],
+      ['x = input.int(3, maxval=2)', 'at most maxval'],
+      ['x = input.int(1, minval=2, maxval=0)', 'cannot exceed'],
+      ['x = input.int(1, step=0)', 'greater than zero'],
+      ['x = input.int(1, display=display.pane)', 'display must be'],
+      ['x = input.source(volume)', 'source default must be'],
+      ['x = input.source(close + 1)', 'source default must be'],
+      ['x = input.int(1, active=close > 0)', 'accepts at most input'],
+    ] as const;
+    for (const [source, diagnostic] of cases) {
+      const r = checkText(source);
+      expect(r.errors.map(error => error.msg)).toContainEqual(
+        expect.stringContaining(diagnostic),
+      );
+    }
+  });
+
+  test('a bind-time UDF qualifier includes work before its return value', () => {
+    const r = checkText(
+      [
+        'f(bool x) =>',
+        '    y = request.security("X", "D", close)',
+        '    z = y + 1',
+        '    x',
+        'enabled = input.bool(true)',
+        'mode = input.int(1, active=f(enabled))',
+      ].join('\n'),
+    );
+    expect(r.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining('accepts at most input'),
+    );
+  });
+
+  test('enum options keep declaration identity', () => {
+    const r = checkText(
+      [
+        'enum Left',
+        '    one',
+        'enum Right',
+        '    one',
+        'x = input.enum(Left.one, options=[Right.one])',
+      ].join('\n'),
+    );
+    expect(r.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining('must have type Left'),
+    );
+  });
+
+  test('na contracts reject bool and string nz while folding comparisons', () => {
+    expect(checkText('x = na(true)').errors).not.toEqual([]);
+    expect(checkText('x = nz("", "fallback")').errors).not.toEqual([]);
+
+    const enumNa = checkText(
+      ['enum Mode', '    fast', 'x = na(Mode.fast)'].join('\n'),
+    );
+    expect(enumNa.errors).toEqual([]);
+
+    const r = checkText(
+      [
+        'float missing = na',
+        'same = missing == 1.0',
+        'different = missing != 1.0',
+        'overflow = math.exp(1000)',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+    expect(initTvOf(r, 'same').value).toBe(false);
+    expect(initTvOf(r, 'different').value).toBe(false);
+    expect(isNaValue(initTvOf(r, 'overflow').value!)).toBe(true);
+
+    for (const source of [
+      'x = na == close',
+      'x = close != na',
+      'x = na < 1',
+      'x = 1 >= na',
+    ]) {
+      expect(checkText(source).errors.map(error => error.msg)).toContain(
+        'cannot use bare na in a comparison; use na(...) to test missing values',
+      );
+    }
   });
 });
 

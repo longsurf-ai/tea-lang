@@ -25,20 +25,36 @@ and `importer.ts` is the import seam (loading lives in `src/loader`).
   prepass is scope-sensitive: each side-table context records reassignment by
   canonical `ir.Name` identity, never by source spelling. Shadowed bindings
   and locals in other function/library instances cannot affect one another.
-- Compile-time na has exactly one representation: `NA_VALUE`. Numeric `NaN`
-  is only the generated/runtime encoding; every constant folder must
-  canonicalize it before publishing a `TypeAndValue` or feeding another
-  folder, so malformed numeric artifacts can never enter a Program.
+- Compile-time na has exactly one representation: `NA_VALUE`. Non-finite JS
+  numbers are only generated/runtime artifacts; numeric literal conversion
+  and every constant folder canonicalize all of them before publishing a
+  `TypeAndValue` or feeding another folder, so malformed numeric artifacts can
+  never enter a Program.
+- A typed expression whose runtime value is na makes every comparison false,
+  including inequality. A direct bare `na` operand in a comparison is a
+  checker error; missingness tests use `na(x)`.
 - `NativeParam.acceptsNa` owns parameter-level nullability beyond ordinary
   type assignability. Input defaults and concrete settings metadata reject
-  folded `NA_VALUE` before noding; nullable constraints such as min/max/step
-  remain explicit exceptions.
+  folded `NA_VALUE` before noding, including min/max/step. Input overloads,
+  dependent option types/default membership, source-default vocabulary,
+  display domain/default, and active qualifier are catalog/checker-owned;
+  downstream manifest or UI projections must not reinterpret them.
+- Every `input.*` syntax call is one program-global parameter even when it
+  appears in a local block, non-exported UDF, or scalar request capture.
+  Source inputs in request captures and all inputs in exported functions are
+  rejected. An input's `active` expression may read direct input bindings and
+  program-root bind values, but never function/capture execution-frame state.
+  Local declaration names are UI-label hints, not parameter identity, because
+  separate scopes may reuse the same spelling.
 - User-function declarations bind as templates; calls stencil one
-  instantiation per concrete argument signature (memoized), each with its
-  own `SideTables` and a scope rooted at the template's base — the user
-  global scope, or the owning library's scope. Recursion is rejected (the
-  static call graph must stay acyclic for frame pre-allocation), and
-  function bodies read but never write outer-scope variables.
+  instantiation per Program owner and concrete argument signature (memoized),
+  each with its own `SideTables` and a scope rooted at the template's base —
+  the user global scope, or the owning library's scope. A request capture is
+  a distinct Program owner: its function Names, frame layout, and mutable
+  depth annotations must never alias the parent's or a sibling capture's.
+  Recursion is rejected (the static call graph must stay acyclic for frame
+  pre-allocation), and function bodies read but never write outer-scope
+  variables.
 - The checker is provenance-blind about libraries: it consumes the injected
   `Importer` only (`importer.ts`), seeding the universe scope from
   `implicit()` and calling `import(path)` at each import declaration —
@@ -54,11 +70,13 @@ and `importer.ts` is the import seam (loading lives in `src/loader`).
   (`Info.series`), shared by every use — the depth pass annotates these
   objects in place.
 - Request captures re-check in a CHILD context (fresh side tables and a
-  fresh ambient pool): only bind-time (⊑ input) script values cross
-  contexts; series/simple script variables and functions that read the
+  fresh ambient pool): only constant values and direct scalar input bindings
+  cross contexts; computed root aliases fail closed until capture dependency
+  closure exists. Series/simple script variables and functions that read the
   context directly (ambient series or outer-scope variables, tracked by
-  `FuncInstance.touchesContext`) are rejected with clean errors. Placement
-  rules treat captures like function bodies.
+  `FuncInstance.touchesContext`) are rejected with clean errors. Scalar input
+  declarations remain compilation-global across the capture boundary; source
+  inputs are context-owned and rejected there.
 - `checkPackage` is the pipeline's check stage, wired between loadPackage
   and buildProgram behind a phase barrier in `src/compile.ts` — the only
   module that owns stage ordering.

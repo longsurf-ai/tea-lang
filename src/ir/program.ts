@@ -20,9 +20,28 @@ export type ParamDefault =
       readonly series: SeriesInput;
     };
 
+export const ParamConstraintKind = {
+  Range: 'range',
+  Options: 'options',
+} as const;
+
+export type ParamConstraints =
+  | {
+      readonly kind: typeof ParamConstraintKind.Range;
+      readonly minval: ConstValue | null;
+      readonly maxval: ConstValue | null;
+      readonly step: ConstValue | null;
+    }
+  | {
+      readonly kind: typeof ParamConstraintKind.Options;
+      readonly options: readonly [ConstValue, ...ConstValue[]];
+    };
+
+export type ParamDisplay = 'all' | 'none' | 'data_window' | 'status_line';
+
 export interface ParamInput {
-  // Identity: the binding name when the input call initializes a
-  // declaration (`len = input.int(...)`), else `input@line:col`.
+  // Identity: the binding name when the input call initializes a program-
+  // scope declaration (`len = input.int(...)`), else `input@line:col`.
   readonly name: string;
   // Settings-UI label; null renders the name.
   readonly title: string | null;
@@ -38,18 +57,14 @@ export interface ParamInput {
   readonly inline: string | null;
   readonly tooltip: string | null;
   readonly confirm: boolean;
-  readonly display: string | null;
+  readonly display: ParamDisplay;
+  // input-qualified enablement evaluated after all parameter values bind.
+  // The catalog default is represented explicitly as a const true node.
+  readonly active: IrExpr;
   // History demanded on the bound value by the body (src[1] on an
   // input.source param reaches the runtime's chosen series). Annotated by
   // the depth pass; meaningful only for series-resulting params.
   depth: HistoryDepth;
-}
-
-export interface ParamConstraints {
-  readonly minval: ConstValue | null;
-  readonly maxval: ConstValue | null;
-  readonly step: ConstValue | null;
-  readonly options: readonly ConstValue[] | null;
 }
 
 // An ambient built-in series of the Program's context, provided by the
@@ -77,9 +92,9 @@ export interface OutputDecl {
     readonly name: string;
     readonly value: ConstValue;
   }[];
-  // input/simple-qualified declarative args (hline price, plot linewidth,
+  // input-qualified declarative args (hline price, plot linewidth,
   // plotshape offset) plus output references (fill's plot/hline operands as
-  // const OutputRef exprs): evaluated once at init, delivered to the host
+  // const OutputRef exprs): evaluated once in module.bind, delivered to the host
   // before the first bar.
   readonly bindArgs: readonly {
     readonly name: string;
@@ -108,8 +123,10 @@ export interface MergePolicy {
   readonly calcBarsCount: IrExpr | null;
 }
 
-// A request.* call site: the expression's dependency closure compiled as a
-// child Program with its own context, axis, and rollback.
+// A request.* call site: its captured expression compiles as a child Program
+// with its own context, axis, and rollback. Constants and direct ParamInputs
+// may cross from the root; automatic computed-root dependency closure is
+// staged and the checker rejects it meanwhile.
 export interface RequestEdge {
   // The call site (diagnostics: post-pass errors like the
   // dynamic_requests=false gate anchor here).
@@ -125,6 +142,10 @@ export interface RequestEdge {
   // must equal that name's type (tuples for multi-value requests).
   readonly resultName: Name;
   readonly resultType: Type;
+  // Classified once by the noder, where the expression's owning frame is
+  // still known. Downstream stages consume this fact instead of re-deriving
+  // it after that ownership context has been erased.
+  readonly dynamic: boolean;
   // History demanded on the merged result by the parent body. Annotated by
   // the depth pass.
   depth: HistoryDepth;

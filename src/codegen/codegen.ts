@@ -7,11 +7,13 @@ import {
   IrKind,
   type HistoryDepth,
   type IrExpr,
+  type IrStmt,
   type Name,
 } from '../ir/node';
 import {unimplemented} from '../base/unimplemented';
 import {
   MergeMode,
+  ParamConstraintKind,
   ParamDefaultKind,
   type IrFunc,
   type OutputDecl,
@@ -23,20 +25,16 @@ import {
 import {
   formatType,
   isNaValue,
+  Qualifier,
+  qualifierLE,
   TypeKind,
   type ConstValue,
-  type Type,
 } from '../ir/type';
-import {
-  bindEvaluable,
-  funcsOf,
-  namesOf,
-  requestsOf,
-  seriesInputsOf,
-} from '../ir/visit';
+import {funcsOf, namesOf, requestsOf, seriesInputsOf} from '../ir/visit';
 import type {
   DepthSpec,
   FrameLayout,
+  ManifestValue,
   ModuleManifest,
   OutputSpec,
   ParamSpec,
@@ -48,6 +46,7 @@ import {
   indent,
   lowerExpr,
   lowerStmts,
+  valueClassOf,
   type HelperName,
   type LowerCtx,
 } from './lower';
@@ -70,7 +69,7 @@ export function generate(
   // arrays — code cannot live inside the JSON manifest.
   out.push(...emitter.childDecls);
   out.push('const M = {');
-  out.push('  abi: 1,');
+  out.push('  abi: 2,');
   out.push(...indent(rootBody));
   out.push('};');
   out.push('return M;');
@@ -128,9 +127,9 @@ class Generator {
     this.requests = requestsOf(program);
     this.requests.forEach((edge, rid) => {
       this.requestIds.set(edge, rid);
-      // Series-qualified context args are the dynamic form: no bind-time
-      // pair, rt.requestFor at the offset-0 read.
-      if (!bindEvaluable(edge.symbol) || !bindEvaluable(edge.timeframe)) {
+      // The noder owns this classification while the expression's frame is
+      // known. Dynamic edges have no bind-time pair and use rt.requestFor.
+      if (edge.dynamic) {
         this.dynamicRequests.add(edge);
       }
     });
@@ -236,6 +235,7 @@ class Generator {
     // Lower all code first: call sites (frame sub layouts) and helpers are
     // discovered during lowering; the manifest is assembled afterwards.
     const initLines = this.lowerInit();
+    const bindLines = this.lowerBind();
     const initThunks = this.lowerInitThunks();
     const funcBodies = this.lowerFuncs();
     const mainLines: string[] = [];
@@ -255,6 +255,7 @@ class Generator {
     out.push(`manifest: ${manifestJs},`);
     out.push(`requests: [${children.map(c => c.ref).join(', ')}],`);
     out.push('init(rt) {', ...indent(initLines), '},');
+    out.push('bind(rt, fr) {', ...indent(bindLines), '},');
     out.push('inits: {');
     for (const [key, lines] of initThunks) {
       out.push(`  ${JSON.stringify(key)}: (rt, fr) => {`);
@@ -272,11 +273,27 @@ class Generator {
     return out;
   }
 
-  // The bind-time section: bound depths and output bind-args are compiled
-  // expressions; binding runs this.
+  // Reserved for frame-free preparation before the provisional bind frame is
+  // allocated. Bound depths run in lowerBind because they may read immutable
+  // input aliases from that frame.
   private lowerInit(): string[] {
+    return [];
+  }
+
+  // Input-time expressions may use ordinary immutable aliases and UDFs.
+  // Evaluate their top-level writes against a provisional program frame,
+  // report the resulting depths, then consume them for the remaining
+  // host-facing bind contracts. The runtime rebuilds the final frame with
+  // those reported capacities after this section returns.
+  private lowerBind(): string[] {
     const ctx = this.ctxFor(0);
     const lines: string[] = [];
+    const inputPrelude = this.program.body.filter(
+      (stmt): stmt is IrStmt =>
+        stmt.kind === IrKind.WriteName &&
+        qualifierLE(stmt.name.qualifier, Qualifier.Input),
+    );
+    lowerStmts(inputPrelude, lines, ctx);
     this.series.forEach((s, sid) => {
       if (s.depth.kind === DepthKind.Bound) {
         const expr = lowerExpr(s.depth.expr, lines, ctx);
@@ -291,12 +308,20 @@ class Generator {
     }
     for (const [name, where] of this.nameSlots) {
       if (name.depth.kind === DepthKind.Bound) {
-        const expr = lowerExpr(name.depth.expr, lines, this.ctxFor(where.fid));
-        // Bound name depths may only reference bind-time values, so the
-        // frame handle is irrelevant to the expression itself.
+        const expr = lowerExpr(name.depth.expr, lines, ctx);
+        // The depth pass normalizes function-frame input dependencies back to
+        // root bind expressions, including root-owned UDF call slots.
         lines.push(`rt.bindDepth(${where.fid}, ${where.slot}, (${expr}));`);
       }
     }
+    this.program.params.forEach(param => {
+      const pid = this.paramIds.get(param);
+      if (pid === undefined) {
+        return fatal(`unmapped param '${param.name}'`);
+      }
+      const active = lowerExpr(param.active, lines, ctx);
+      lines.push(`rt.bindParamActive(${pid}, (${active}));`);
+    });
     this.program.outputs.forEach((output, oid) => {
       for (const arg of output.bindArgs) {
         const expr = lowerExpr(arg.expr, lines, ctx);
@@ -394,16 +419,14 @@ class Generator {
       confirm: param.confirm,
       display: param.display,
       defaultValue: paramDefault(param),
-      constraints:
-        param.constraints === null
-          ? null
-          : {
-              minval: numOrNull(param.constraints.minval),
-              maxval: numOrNull(param.constraints.maxval),
-              step: numOrNull(param.constraints.step),
-              options:
-                param.constraints.options?.map(v => constValue(v)) ?? null,
-            },
+      constraints: paramConstraints(param),
+      enumType:
+        param.type.kind === TypeKind.Enum
+          ? {
+              name: param.type.name,
+              members: param.type.members.map(member => ({...member})),
+            }
+          : null,
       seriesSid: this.paramSeriesIds.get(param) ?? null,
     }));
 
@@ -434,7 +457,7 @@ class Generator {
         locals: names.map(name => ({
           storage: name.storage,
           depth: depthSpec(name.depth),
-          ref: isRefType(name.type),
+          valueClass: valueClassOf(name.type),
         })),
         subs,
       };
@@ -459,7 +482,7 @@ class Generator {
         },
         depth: depthSpec(edge.depth),
         resultSlot: children[rid].resultSlot,
-        ref: isRefType(edge.resultType),
+        valueClass: valueClassOf(edge.resultType),
         dynamic: this.dynamicRequests.has(edge),
       };
     });
@@ -489,16 +512,6 @@ function capBars(expr: IrExpr): number {
   return fatal('capped depth without a constant cap');
 }
 
-function isRefType(t: Type): boolean {
-  return (
-    t.kind === TypeKind.String ||
-    t.kind === TypeKind.Color ||
-    t.kind === TypeKind.Udt ||
-    t.kind === TypeKind.Enum ||
-    t.kind === TypeKind.Tuple
-  );
-}
-
 function paramType(param: ParamInput): ParamSpec['type'] {
   if (param.defaultValue?.kind === ParamDefaultKind.Series) {
     return 'source';
@@ -514,6 +527,8 @@ function paramType(param: ParamInput): ParamSpec['type'] {
       return 'string';
     case TypeKind.Color:
       return 'color';
+    case TypeKind.Enum:
+      return 'enum';
     default:
       return fatal(`param '${param.name}' has no manifest type`);
   }
@@ -529,10 +544,42 @@ function paramDefault(param: ParamInput): ParamSpec['defaultValue'] {
   return constValue(param.defaultValue.value);
 }
 
-function constValue(v: ConstValue): number | string | boolean | null {
-  return isNaValue(v) ? null : v;
+function constValue(v: ConstValue): ManifestValue {
+  if (isNaValue(v)) {
+    return null;
+  }
+  if (typeof v === 'number' && !Number.isFinite(v)) {
+    return fatal('non-finite constant reached manifest construction');
+  }
+  return v;
 }
 
 function numOrNull(v: ConstValue | null): number | null {
-  return typeof v === 'number' ? v : null;
+  if (typeof v !== 'number') {
+    return null;
+  }
+  return Number.isFinite(v)
+    ? v
+    : fatal('non-finite numeric constraint reached manifest construction');
+}
+
+function paramConstraints(param: ParamInput): ParamSpec['constraints'] {
+  const constraints = param.constraints;
+  if (constraints === null) {
+    return null;
+  }
+  switch (constraints.kind) {
+    case ParamConstraintKind.Range:
+      return {
+        kind: ParamConstraintKind.Range,
+        minval: numOrNull(constraints.minval),
+        maxval: numOrNull(constraints.maxval),
+        step: numOrNull(constraints.step),
+      };
+    case ParamConstraintKind.Options:
+      return {
+        kind: ParamConstraintKind.Options,
+        options: constraints.options.map(value => constValue(value)),
+      };
+  }
 }

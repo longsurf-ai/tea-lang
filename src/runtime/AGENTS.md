@@ -16,11 +16,27 @@ frame trees, rings, the provisional/commit protocol, emission flushing.
   last committed value, re-running their init thunks until something has
   committed; varip alone keeps scratch across same-row re-executions.
   Commit pushes scratch into history; rollback is discarding scratch.
-- One Ring class serves value and reference slots (naValue NaN vs null);
+- One Ring class serves all slots. The manifest's explicit `valueClass` owns
+  the empty value: numeric is NaN, reference is null, and bool is false;
   var/varip rings keep at least one committed cell regardless of depth.
-- Bind-time entries (bindDepth/bindSeriesDepth/bindOutput/bindRequest) are
-  legal only while the module's init section runs; series depth demands are
-  a contract passed to providers, not an allocation.
+- A history offset names a cell only when it is a non-negative safe integer.
+  Every other offset (including na, infinity, fractions, and negatives) returns
+  the place's typed empty value and retains zero cells when reported at bind;
+  it can never address a future row or become an array length.
+- `historyDepth` applies that rule to each synthesized bound-demand component
+  before they are maximized; an invalid component contributes zero and cannot
+  poison a valid depth from the same carrier.
+- Provider series values are finite numbers or NaN. Infinity is an impossible
+  provider state and fails loudly at the read; host numeric inputs are stricter
+  and reject NaN and both infinities at bind, while int inputs additionally
+  require a safe integer so the runtime representation stays exact.
+- Binding has two ordered code sections: frame-free `init` is reserved for
+  preparation that needs no frame; frame-aware `bind` runs against a
+  scratch-only provisional frame, computes immutable input aliases/UDFs, and
+  reports depths, param active states, output args, and static request pairs.
+  The runtime then discards that frame and allocates the final tree from the
+  reported depths. All bind-reporting calls are illegal after execution
+  begins; series depth demands are a provider contract, not an allocation.
 - bind is async, and awaits otherwise happen only at suspension points:
   static contexts resolve before row 0; a dynamic pair's first encounter
   throws `ContextSuspension` out of `executeRow`, the host awaits

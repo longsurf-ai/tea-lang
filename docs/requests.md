@@ -149,7 +149,7 @@ keys), with the prefix as the routing key:
 ## Child execution
 
 The generated module gains one nested module-shaped object per RequestEdge
-(`manifest.requests[rid]` carrying the child's manifest + init/funcs/main).
+(`manifest.requests[rid]` carrying the child's manifest + init/bind/funcs/main).
 The runtime binds a child instance exactly as it binds a program — same
 frames, rings, commit machinery, recursively for nested requests — against
 the resolved ProviderContext, with two differences:
@@ -221,8 +221,8 @@ Pine v6 semantics (`dynamic_requests`, default **true**):
 
 Execution:
 
-- **Static edges** (const/input context args): bind evaluates the args
-  (init section, like bindOutput args), awaits `resolveContext`, runs each
+- **Static edges** (const/input context args): the frame-aware bind section
+  evaluates the args (like bindOutput args), awaits `resolveContext`, runs each
   child over its full history, and prepares the merged view. No row ever
   suspends.
 - **Dynamic edges**: the offset-0 read evaluates the context args inline

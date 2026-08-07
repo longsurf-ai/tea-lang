@@ -21,7 +21,7 @@ name source#1: perBar series float depth=none
 name length#1: perBar input int depth=none
 name alpha: perBar input float depth=none
 name e: var series float depth=none
-  init: Const na: const na
+  init: Const na: const float
 name source#2: perBar series float depth=capped
   depth.cap: Const 500: const int
 name length#2: perBar input int depth=none

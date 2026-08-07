@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "input-family",
+      "kind": "compile-through",
+      "source": "compile/input-family/source.tea",
+      "data": "compile/input-family/data.csv",
+      "reference": "compile/input-family/reference.json",
+      "sha256": {
+        "source": "cf273ce27d476706e46490efbb20ca25cc99c693eb6ac09f9daacd86057cd186",
+        "data": "93754f8fb16b8238a4b98d72546f706a1d572082973c724cb7007916b3c719e1",
+        "reference": "85f4aaf88467feb8e786d9593a15593206bbe18a19ecae28f8c1160cfaab21d6"
+      }
+    },
+    {
+      "id": "moving-averages",
+      "kind": "differential",
+      "source": "differential/moving-averages/source.tea",
+      "data": "differential/moving-averages/data.csv",
+      "reference": "differential/moving-averages/reference.json",
+      "sha256": {
+        "source": "b8b75ef31ccd8f30e8458048a6108d20c17228a8618b7476437835016727f719",
+        "data": "72c3d6f074bccf21aa309c239059b920af80bde0e8692cb8acb8e2253bfc7eab",
+        "reference": "4c865f0f4952ab77d23076873dff5a11e5ce5864365266b8cf5a959e9029d8cc"
+      }
+    },
+    {
+      "id": "na-comparisons",
+      "kind": "differential",
+      "source": "differential/na-comparisons/source.tea",
+      "data": "differential/na-comparisons/data.csv",
+      "reference": "differential/na-comparisons/reference.json",
+      "sha256": {
+        "source": "4f89ae75c0378526be4fdc95e5ebfb97e5cea0ec466aa7a3094eb58d56ef5af2",
+        "data": "b893313e6346dcfa94990c4e875c80b61923481fe625d5932b304455f1c3c2df",
+        "reference": "11be4b248fe3140106f1f2a3d9f22f3eced44e5d4bbf8cff38229fd6791709ef"
+      }
+    }
+  ],
+  "deviations": {
+    "path": "deviations.json",
+    "sha256": "0fbd3e5e8dd1bcfab9bb5b32ee78e7710709c3a1d1835c253f78ba1ade5500e7"
+  }
+}

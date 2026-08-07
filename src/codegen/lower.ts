@@ -19,6 +19,7 @@ import type {
   SeriesInput,
 } from '../ir/program';
 import {isNaValue, TypeKind, type Type} from '../ir/type';
+import {ValueClass, type ValueClass as ValueClassType} from '../runtime/abi';
 
 // Everything the walk needs to address program objects as dense ids. The
 // driver (codegen.ts) builds it; call sites discovered during lowering are
@@ -51,31 +52,84 @@ export interface LowerCtx {
 export const HELPERS = {
   $div: '(a, b) => (b === 0 ? NaN : a / b)',
   $mod: '(a, b) => (b === 0 ? NaN : a % b)',
+  $num: '(x) => (Number.isFinite(x) ? x : NaN)',
+  $eq: '(a, b) => (a === null || b === null || Number.isNaN(a) || Number.isNaN(b) ? false : a === b)',
+  $ne: '(a, b) => (a === null || b === null || Number.isNaN(a) || Number.isNaN(b) ? false : a !== b)',
+  $concat: '(a, b) => (a === null || b === null ? null : a + b)',
+  $naBool: '(_) => false',
   $round2:
     '(x, p) => { const m = Math.pow(10, p); return Math.round(x * m) / m; }',
-  $nz: '(x, r) => (Number.isNaN(x) ? r : x)',
+  $nzNum: '(x, r) => (Number.isNaN(x) ? r : x)',
+  $nzRef: '(x, r) => (x === null ? r : x)',
+  $toString: "(x) => (x === null || Number.isNaN(x) ? 'NaN' : String(x))",
+  $enumToString:
+    "(x, pairs) => { if (x === null) { return 'NaN'; } for (let i = 0; i < pairs.length; i += 1) { if (pairs[i][0] === x) { return pairs[i][1]; } } return String(x); }",
   // Mirror base/color.ts (parity-locked by test): canonical hex, clamped
-  // domains, na in (null/NaN color, NaN number) → na out, per Pine.
+  // domains, na/non-finite numeric input → na out, per Pine.
   $colorNew:
-    "(c, t) => { if (c === null || Number.isNaN(c) || Number.isNaN(t)) { return null; } const tc = Math.max(0, Math.min(100, t)); const base = c.slice(0, 7); if (tc === 0) { return base; } const a = Math.round((100 - tc) * 2.55).toString(16).toUpperCase(); return base + (a.length < 2 ? '0' + a : a); }",
+    "(c, t) => { if (c === null || !Number.isFinite(t)) { return null; } const tc = Math.max(0, Math.min(100, t)); const base = c.slice(0, 7); if (tc === 0) { return base; } const a = Math.round((100 - tc) * 2.55).toString(16).toUpperCase(); return base + (a.length < 2 ? '0' + a : a); }",
   $colorRgb:
-    "(r, g, b, t) => { if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b) || (t !== null && Number.isNaN(t))) { return null; } const h = x => { const c = Math.max(0, Math.min(255, Math.round(x))).toString(16).toUpperCase(); return c.length < 2 ? '0' + c : c; }; const base = '#' + h(r) + h(g) + h(b); const tc = t === null ? 0 : Math.max(0, Math.min(100, t)); if (tc === 0) { return base; } const a = Math.round((100 - tc) * 2.55).toString(16).toUpperCase(); return base + (a.length < 2 ? '0' + a : a); }",
+    "(r, g, b, t) => { if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b) || (t !== null && !Number.isFinite(t))) { return null; } const h = x => { const c = Math.max(0, Math.min(255, Math.round(x))).toString(16).toUpperCase(); return c.length < 2 ? '0' + c : c; }; const base = '#' + h(r) + h(g) + h(b); const tc = t === null ? 0 : Math.max(0, Math.min(100, t)); if (tc === 0) { return base; } const a = Math.round((100 - tc) * 2.55).toString(16).toUpperCase(); return base + (a.length < 2 ? '0' + a : a); }",
 } as const;
 
 export type HelperName = keyof typeof HELPERS;
 
-function isRefKind(t: Type): boolean {
-  return (
-    t.kind === TypeKind.String ||
-    t.kind === TypeKind.Color ||
-    t.kind === TypeKind.Udt ||
-    t.kind === TypeKind.Enum ||
-    t.kind === TypeKind.Tuple
-  );
+// The generated backend's one projection from semantic types to the three
+// runtime empty-value families. Manifest construction consumes the same
+// projection so frames and lowered expressions cannot disagree.
+export function valueClassOf(t: Type): ValueClassType {
+  switch (t.kind) {
+    case TypeKind.Int:
+    case TypeKind.Float:
+      return ValueClass.Numeric;
+    case TypeKind.Bool:
+      return ValueClass.Boolean;
+    case TypeKind.String:
+    case TypeKind.Color:
+    case TypeKind.Line:
+    case TypeKind.Label:
+    case TypeKind.Box:
+    case TypeKind.Table:
+    case TypeKind.Polyline:
+    case TypeKind.Linefill:
+    case TypeKind.Array:
+    case TypeKind.Matrix:
+    case TypeKind.Map:
+    case TypeKind.Udt:
+    case TypeKind.Enum:
+    case TypeKind.Tuple:
+      return ValueClass.Reference;
+    case TypeKind.Na:
+      return fatal('uncontextualized na type reached lowering');
+    case TypeKind.Invalid:
+    case TypeKind.Void:
+    case TypeKind.Plot:
+    case TypeKind.Hline:
+    case TypeKind.Func:
+      return fatal(`non-runtime type ${t.kind} reached value lowering`);
+  }
 }
 
-export function naLiteral(t: Type): string {
-  return isRefKind(t) ? 'null' : 'NaN';
+function emptyLiteral(t: Type): string {
+  if (t.kind === TypeKind.Void) {
+    return 'undefined';
+  }
+  switch (valueClassOf(t)) {
+    case ValueClass.Numeric:
+      return 'NaN';
+    case ValueClass.Reference:
+      return 'null';
+    case ValueClass.Boolean:
+      return 'false';
+  }
+}
+
+function naLiteral(t: Type): string {
+  const valueClass = valueClassOf(t);
+  if (valueClass === ValueClass.Boolean) {
+    return fatal('bool na reached lowering');
+  }
+  return valueClass === ValueClass.Reference ? 'null' : 'NaN';
 }
 
 // The frame handle expression for a name: the current frame, or the program
@@ -109,8 +163,6 @@ const BINARY_JS: Partial<Record<IrBinaryOp, string>> = {
   [IrOp.Add]: '+',
   [IrOp.Sub]: '-',
   [IrOp.Mul]: '*',
-  [IrOp.Eq]: '===',
-  [IrOp.Ne]: '!==',
   [IrOp.Lt]: '<',
   [IrOp.Le]: '<=',
   [IrOp.Gt]: '>',
@@ -131,7 +183,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         return naLiteral(e.type);
       }
       if (typeof v === 'number') {
-        return Number.isFinite(v) ? String(v) : 'NaN';
+        return Number.isFinite(v)
+          ? String(v)
+          : fatal('non-finite constant reached lowering');
       }
       if (typeof v === 'boolean') {
         return String(v);
@@ -191,7 +245,11 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       return lowerBinary(e.op, e.x, e.y, e.type, out, ctx);
     case IrKind.Unary: {
       const x = lowerExpr(e.x, out, ctx);
-      return e.op === IrOp.Neg ? `(-(${x}))` : `(!(${x}))`;
+      if (e.op !== IrOp.Neg) {
+        return `(!(${x}))`;
+      }
+      ctx.useHelper('$num');
+      return `$num(-(${x}))`;
     }
     case IrKind.Cond: {
       // Pine evaluates all three operands eagerly.
@@ -224,7 +282,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       return unimplemented('codegen: UDT execution');
     case IrKind.IfExpr: {
       const temp = ctx.fresh();
-      out.push(`let ${temp} = ${naLiteral(e.type)};`);
+      out.push(`let ${temp} = ${emptyLiteral(e.type)};`);
       const c = lowerExpr(e.cond, out, ctx);
       const thenLines: string[] = [];
       const thenVal = lowerBlockInto(e.then, thenLines, ctx);
@@ -245,7 +303,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
     }
     case IrKind.SwitchExpr: {
       const temp = ctx.fresh();
-      out.push(`let ${temp} = ${naLiteral(e.type)};`);
+      out.push(`let ${temp} = ${emptyLiteral(e.type)};`);
       const subject =
         e.subject !== null ? subexpr(e.subject, out, ctx).expr : null;
       e.arms.forEach((arm, i) => {
@@ -261,7 +319,10 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         }
         // Patterns are const expressions; lowering them emits no statements.
         const p = lowerExpr(arm.pattern, out, ctx);
-        const test = subject !== null ? `(${subject}) === (${p})` : `(${p})`;
+        if (subject !== null) {
+          ctx.useHelper('$eq');
+        }
+        const test = subject !== null ? `$eq((${subject}), (${p}))` : `(${p})`;
         out.push(
           `${isFirst ? '' : '} else '}if (${test}) {`,
           ...indent(armLines),
@@ -272,7 +333,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
     }
     case IrKind.ForExpr: {
       const temp = ctx.fresh();
-      out.push(`let ${temp} = ${naLiteral(e.type)};`);
+      out.push(`let ${temp} = ${emptyLiteral(e.type)};`);
       const from = subexpr(e.from, out, ctx).expr;
       const to = subexpr(e.to, out, ctx).expr;
       const step = e.step !== null ? subexpr(e.step, out, ctx).expr : '1';
@@ -292,8 +353,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       if (val !== null) {
         bodyLines.push(`${temp} = (${val});`);
       }
+      ctx.useHelper('$num');
       out.push(
-        `for (rt.write(${frRef}, ${slot}, ${fromT}); (${stepT}) >= 0 ? (${idx}) <= (${toT}) : (${idx}) >= (${toT}); rt.write(${frRef}, ${slot}, (${idx}) + (${stepT}))) {`,
+        `for (rt.write(${frRef}, ${slot}, ${fromT}); (${stepT}) >= 0 ? (${idx}) <= (${toT}) : (${idx}) >= (${toT}); rt.write(${frRef}, ${slot}, $num((${idx}) + (${stepT})))) {`,
         ...indent(bodyLines),
         '}',
       );
@@ -301,7 +363,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
     }
     case IrKind.WhileExpr: {
       const temp = ctx.fresh();
-      out.push(`let ${temp} = ${naLiteral(e.type)};`, 'for (;;) {');
+      out.push(`let ${temp} = ${emptyLiteral(e.type)};`, 'for (;;) {');
       const condLines: string[] = [];
       const c = lowerExpr(e.cond, condLines, ctx);
       const bodyLines: string[] = [];
@@ -352,20 +414,38 @@ function lowerBinary(
   const y = subexpr(ye, out, ctx);
   // Preserve left-to-right order: if lowering y emitted statements, x was
   // already materialized by subexpr.
+  if (op === IrOp.Eq || op === IrOp.Ne) {
+    const helper = op === IrOp.Eq ? '$eq' : '$ne';
+    ctx.useHelper(helper);
+    return `${helper}((${x.expr}), (${y.expr}))`;
+  }
+  if (op === IrOp.Add && type.kind === TypeKind.String) {
+    ctx.useHelper('$concat');
+    return `$concat((${x.expr}), (${y.expr}))`;
+  }
   if (op === IrOp.Div) {
     ctx.useHelper('$div');
+    ctx.useHelper('$num');
     const div = `$div((${x.expr}), (${y.expr}))`;
-    return type.kind === TypeKind.Int ? `Math.trunc(${div})` : div;
+    return type.kind === TypeKind.Int
+      ? `$num(Math.trunc(${div}))`
+      : `$num(${div})`;
   }
   if (op === IrOp.Mod) {
     ctx.useHelper('$mod');
-    return `$mod((${x.expr}), (${y.expr}))`;
+    ctx.useHelper('$num');
+    return `$num($mod((${x.expr}), (${y.expr})))`;
   }
   const js = BINARY_JS[op];
   if (js === undefined) {
     return fatal(`unmapped binary operation ${op}`);
   }
-  return `((${x.expr}) ${js} (${y.expr}))`;
+  const expr = `((${x.expr}) ${js} (${y.expr}))`;
+  if (op === IrOp.Add || op === IrOp.Sub || op === IrOp.Mul) {
+    ctx.useHelper('$num');
+    return `$num(${expr})`;
+  }
+  return expr;
 }
 
 // Lower an operand; if it needed statements, earlier operands must already
@@ -406,7 +486,6 @@ const NATIVE_RULES: Record<string, NativeRule> = {
   },
   int: a => `Math.trunc(${a[0]})`,
   float: a => `(${a[0]})`,
-  'str.tostring': a => `String(${a[0]})`,
   'color.new': (a, ctx) => {
     ctx.useHelper('$colorNew');
     return `$colorNew(${a[0]}, ${a[1]})`;
@@ -423,24 +502,81 @@ function lowerNative(
   out: string[],
   ctx: LowerCtx,
 ): string {
+  // Internal depth-pass primitive: each component is normalized before a
+  // synthesized maximum so one invalid offset cannot erase valid demands.
+  if (native === '$historyDepth') {
+    const x = subexpr(argExprs[0], out, ctx).expr;
+    return `rt.historyDepth((${x}))`;
+  }
   // na/nz inspect their argument's type for the na representation.
   if (native === 'na') {
     const arg = argExprs[0];
+    if (arg.type.kind === TypeKind.Na) {
+      return 'true';
+    }
     const x = lowerExpr(arg, out, ctx);
-    return isRefKind(arg.type) ? `((${x}) === null)` : `Number.isNaN((${x}))`;
+    switch (valueClassOf(arg.type)) {
+      case ValueClass.Numeric:
+        return `Number.isNaN((${x}))`;
+      case ValueClass.Reference:
+        return `((${x}) === null)`;
+      case ValueClass.Boolean:
+        ctx.useHelper('$naBool');
+        return `$naBool((${x}))`;
+    }
   }
   if (native === 'nz') {
-    ctx.useHelper('$nz');
-    const x = subexpr(argExprs[0], out, ctx).expr;
-    const r = argExprs.length > 1 ? subexpr(argExprs[1], out, ctx).expr : '0';
-    return `$nz((${x}), (${r}))`;
+    const arg = argExprs[0];
+    const valueClass = valueClassOf(arg.type);
+    if (valueClass === ValueClass.Boolean) {
+      return fatal('bool nz reached lowering');
+    }
+    const helper = valueClass === ValueClass.Numeric ? '$nzNum' : '$nzRef';
+    ctx.useHelper(helper);
+    const x = subexpr(arg, out, ctx).expr;
+    let replacement: string;
+    if (argExprs.length > 1) {
+      replacement = subexpr(argExprs[1], out, ctx).expr;
+    } else if (valueClass === ValueClass.Numeric) {
+      replacement = '0';
+    } else if (arg.type.kind === TypeKind.Color) {
+      replacement = JSON.stringify('#00000000');
+    } else if (arg.type.kind === TypeKind.String) {
+      replacement = JSON.stringify('');
+    } else {
+      return fatal(`nz has no default for ${arg.type.kind}`);
+    }
+    return `${helper}((${x}), (${replacement}))`;
+  }
+  if (native === 'str.tostring') {
+    const arg = argExprs[0];
+    if (arg.type.kind === TypeKind.Na) {
+      return JSON.stringify('NaN');
+    }
+    if (arg.type.kind === TypeKind.Enum) {
+      ctx.useHelper('$enumToString');
+      const x = subexpr(arg, out, ctx).expr;
+      const members = arg.type.members.map(member => [
+        member.name,
+        member.title,
+      ]);
+      return `$enumToString((${x}), ${JSON.stringify(members)})`;
+    }
+    ctx.useHelper('$toString');
+    const x = subexpr(arg, out, ctx).expr;
+    return `$toString((${x}))`;
   }
   const rule = NATIVE_RULES[native];
   if (rule === undefined) {
     return unimplemented(`codegen: native '${native}'`);
   }
   const args = argExprs.map(a => `(${subexpr(a, out, ctx).expr})`);
-  return rule(args, ctx);
+  const expr = rule(args, ctx);
+  if (native === 'color.new' || native === 'color.rgb') {
+    return expr;
+  }
+  ctx.useHelper('$num');
+  return `$num(${expr})`;
 }
 
 // ---- statements -------------------------------------------------------------

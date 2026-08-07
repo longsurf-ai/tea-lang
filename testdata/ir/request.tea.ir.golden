@@ -16,7 +16,7 @@ request[0] mode=sample result=float depth=none
     name length: perBar input int depth=none
     name alpha: perBar input float depth=none
     name e: var series float depth=none
-      init: Const na: const na
+      init: Const na: const float
     func ta.ema(source: series float, length: input int): series float
       body: BlockExpr: series float
         WriteName alpha

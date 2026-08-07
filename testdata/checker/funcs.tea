@@ -35,7 +35,7 @@ d4 = double(y=1) // ERROR unknown argument 'y' in call to 'double'
 c3 = clamp("s") // ERROR argument 'value' to 'clamp': cannot use string as float
 
 inside() =>
-	input.int(5) // ERROR 'input\.int' can only be called at the top level of the script
+	input.int(5)
 
 i = inside()
 

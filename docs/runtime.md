@@ -30,9 +30,11 @@ Compilation ─▶ Lowering ─▶ Binding ─▶ Execution
 Lowering is **bind-independent**: one JS module per Program, reusable across
 bindings (a settings change rebinds without re-lowering). This revises the
 earlier Binding → Lowering sketch, because bind-time expressions (bound
-depths, output bindArgs) are themselves lowered code: binding RUNS the
-module's `init` section. Baking bound constants into specialized modules is
-a permitted later optimization, not the model.
+depths, input metadata, and output bindArgs) are themselves lowered code:
+binding runs frame-free `init`, creates a scratch-only provisional program
+frame, runs frame-aware `bind`, then allocates the final frame tree from its
+depth reports. Baking bound constants into specialized modules is a permitted
+later optimization, not the model.
 
 ## The generated module
 
@@ -42,23 +44,25 @@ runtime artifact (`tea build` output, cacheable, serializable):
 
 ```js
 export default {
-  abi: 1,
+  abi: 2,
   manifest: {
     series:  ['close', ...],              // sid -> host id (ambient + input.source params)
-    params:  [{name, type, control, default, constraints,      // control = UI flavor
-               group, inline, tooltip, confirm, display, seriesSid?}, ...],
+    params:  [{name, type, control, defaultValue, constraints, // control = UI flavor
+               enumType, group, inline, tooltip, confirm,
+               display, seriesSid?}, ...],
     outputs: [{effect, staticArgs, channels: [{name, type}]}, ...],
     frames:  [                            // fid 0 = the program frame
-      {locals: [{storage, depth}, ...],   // slot-indexed; depth: none|const n|bound|capped n
+      {locals: [{storage, depth, valueClass}, ...], // slot-indexed; typed empty values
        subs:   [{fid}, ...]},             // call-site-slot-indexed
     ],
-    requests: [{merge, depth, resultSlot, ref}, ...],  // rid-indexed metadata
+    requests: [{merge, depth, resultSlot, valueClass}, ...], // rid-indexed metadata
   },
   requests: [M1, ...],           // rid-indexed child modules (same shape,
                                  // sibling consts — code cannot live in the
                                  // JSON manifest)
-  init(rt) {...},                // bind time: rt.bindDepth / rt.bindOutput /
-                                 // rt.bindRequest calls
+  init(rt) {...},                // reserved frame-free preparation
+  bind(rt, fr) {...},            // input aliases/UDFs, depth reports, active,
+                                 // output args, and static request pairs
   inits: {(fid, slot): (rt, fr) => v},   // var/varip first-execution thunks
   funcs: {fid: (rt, fr, ...args) => v},
   main(rt, fr) {...},            // the per-row body (fr = program frame)
@@ -73,10 +77,10 @@ never re-derives ids from the Program.
 **2015 (ES6)** FunctionBody: no module syntax (import/export/require), no
 host I/O, no nondeterminism, and only whitelisted standard globals —
 `Math.{abs, sign, floor, ceil, round, trunc, sqrt, pow, log, log10, exp,
-max, min}`, `Number.isNaN`, `String`, `NaN` — everything else crosses the
-`rt` parameter. Any ES2015 engine loads it with `new Function(src)()`
-(Node, Bun, browsers, V8 isolates alike); an ES2015 parse gate plus a
-deny-list test enforce the ceiling so it cannot drift.
+max, min}`, `Number.{isFinite,isNaN}`, `String`, `NaN` — everything else
+crosses the `rt` parameter. Any ES2015 engine loads it with
+`new Function(src)()` (Node, Bun, browsers, V8 isolates alike); an ES2015
+parse gate plus a deny-list test enforce the ceiling so it cannot drift.
 
 ## The rt surface
 
@@ -101,9 +105,11 @@ rt.frame(fr, slot)            // open the sub-frame at this call site
 rt.root()                     // the program frame (globals read from funcs)
 // emissions
 rt.emit(oid, channel, v)
-// bind-time (init section only)
+// frame-aware bind section (against a provisional scratch-only frame)
+rt.historyDepth(offset)         // invalid history offsets normalize to zero
 rt.bindDepth(fid, slot, bars)   // a name's bound history depth
 rt.bindSeriesDepth(sid, bars)   // a series/input.source bound depth
+rt.bindParamActive(pid, active) // resolved input enablement
 rt.bindOutput(oid, argName, v)  // an output's bind-time argument
 rt.bindRequest(rid, sym, tf)    // a static request edge's context pair
 // heap (reserved: collections/UDT slice)
@@ -121,11 +127,20 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
 
 ## Values
 
-- In-flight (what generated code holds): numerics are JS numbers with
-  **na = NaN** — IEEE propagation implements Pine's na-propagation for
-  arithmetic; comparisons with na yield false (ledger: verify against v6).
-  References (string, color, UDT, collections) use **null** as na. bool is
-  never na — a checker guarantee the runtime may rely on.
+- In-flight (what generated code holds): numerics are finite JS numbers or
+  **na = NaN**. Every arithmetic and numeric-native result crosses the
+  finite-or-na normalizer, so overflow and other non-finite results become
+  NaN on both folded and dynamic paths; `Infinity` is never a Tea value.
+  Every comparison with typed numeric or reference na returns false,
+  including `!=`. References (string, color, UDT, collections) use
+  **null** as na; string concatenation propagates null. bool is never na and
+  its empty value is false — a checker guarantee the runtime may rely on.
+  A direct bare `na` operand in a comparison is instead a compile error; use
+  `na(x)` to test whether a value is missing.
+- Host-bound numeric input values must be finite (NaN and both infinities are
+  bind errors), and int inputs must be safe integers so their value is exact in
+  the JS runtime. Provider series may return finite numbers or NaN; an infinity
+  is a provider-contract invariant violation and fails loudly at the read.
 - int semantics are codegen's job (truncating division, `math.*` int
   overloads); the runtime never re-checks types.
 - Storage is runtime-owned and invisible to generated code: rings may use
@@ -135,9 +150,15 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
 
 ```ts
 interface SeriesView {
-  at(offset: number): number; // offset 0 = current row; out of range = na
+  at(offset: number): Value; // offset 0 = current row; out of range = typed empty
 }
 ```
+
+An offset names history only when it is a non-negative safe integer. Negative,
+fractional, non-finite, and na offsets are out of range and return that place's
+typed empty value (NaN, null, or false); they never turn into future-row indices
+or array properties. The same rule normalizes a bind-reported depth to zero,
+and fixed-context ring retention never exceeds the context's row extent.
 
 Every time-addressed read goes through this interface — externally provided
 columnar structures (TSGraph's low-copy pages), the runtime's own rings, and
@@ -168,22 +189,27 @@ Two asymmetries between the runtime's rings and provider series:
 A frame is a call site's persistent box: one Ring per local slot, one
 sub-frame box per call-site slot, materialized lazily by `rt.frame` (frame
 trees can also appear at runtime — dynamic requests instantiate whole trees
-per context). One Ring class serves value and reference slots alike; ring
-capacity comes from the manifest depth (`none` = current cell only, `const
-n` / `capped n` = n + 1 cells, `bound` = the value `init` reported via
-`rt.bindDepth`). A Ring implements SeriesView.
+per context). One Ring class serves all value classes; ring capacity comes
+from the manifest depth (`none` = current cell only, `const
+n` / `capped n` = n + 1 cells, `bound` = the value `bind` reported via
+`rt.bindDepth`). Each local and request manifest entry carries an explicit
+`valueClass` (`numeric | reference | boolean`), and the Ring derives its empty
+value (NaN, null, or false) from that class. A Ring implements SeriesView.
 
 ## Main loop and the provisional protocol
 
 ```
 bind(module, params, provider, sink):        # async — awaits live here only
   await provider.resolveContext('', '')      # the primary context
-  validate params; run module.init           # collects depths, output args,
-                                             # and static request pairs
+  validate params; run module.init           # frame-free preparation
   resolve manifest.series from the context   # a missing id is a bind error
+  build scratch-only provisional frame
+  run module.bind                            # aliases/UDFs, depths, active,
+                                             # output args, request pairs
+  discard it; allocate final rings/frame tree from reported depths
   per request edge: await resolveContext(pair); bind + run the child
   (recursively, same machinery, null sink); build the merged view
-  size rings; build the program frame; sink.declare(outputs + bound args)
+  sink.declare(outputs + bound args)
 
 per row r (historical):        execute(r); commit(r)
 per live tick on row r:        execute(r) — provisional

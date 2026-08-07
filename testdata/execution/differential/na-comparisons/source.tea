@@ -1,0 +1,7 @@
+//@version=1
+indicator("na comparisons")
+previous = close[1]
+plot(previous == 1 ? 1 : 0, "runtime na equals const")
+plot(previous != 1 ? 1 : 0, "runtime na differs from const")
+plot(close == 1 ? 1 : 0, "series na equals const")
+plot(close != 1 ? 1 : 0, "series na differs from const")

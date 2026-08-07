@@ -1,6 +1,25 @@
 // Purpose: Ring — one history buffer class for value and reference slots alike: committed cells plus the scratch head the provisional protocol executes against.
 
-import type {Value} from './abi';
+import {fatal} from '../base/print';
+import {ValueClass, type Value, type ValueClass as ValueClassType} from './abi';
+
+// History is strictly backward-looking. Non-integer, non-finite, negative,
+// and imprecise offsets cannot name a committed cell and therefore read as
+// the place's typed empty value.
+export function isHistoryOffset(offset: number): boolean {
+  return Number.isSafeInteger(offset) && offset >= 0;
+}
+
+export function emptyValue(valueClass: ValueClassType): Value {
+  switch (valueClass) {
+    case ValueClass.Numeric:
+      return NaN;
+    case ValueClass.Reference:
+      return null;
+    case ValueClass.Boolean:
+      return false;
+  }
+}
 
 // Offsets: at(0) is the row being executed (the scratch head); at(k >= 1)
 // is committed history k rows back. Reads past what is kept or committed
@@ -12,15 +31,20 @@ export class Ring {
   private count = 0; // committed cells filled, <= keep
   private scratch: Value;
   private written = false;
+  readonly emptyValue: Value;
 
   // keep = committed cells retained (0 for perBar depth-none slots — their
   // history never materializes and commit is a no-op).
   constructor(
     readonly keep: number,
-    readonly naValue: Value,
+    readonly valueClass: ValueClassType,
   ) {
+    if (!isHistoryOffset(keep) || keep > 0xffff_ffff) {
+      fatal(`invalid ring retention depth ${keep}`);
+    }
     this.buf = new Array<Value>(keep);
-    this.scratch = naValue;
+    this.emptyValue = emptyValue(valueClass);
+    this.scratch = this.emptyValue;
   }
 
   // The value the current execution sees at offset 0 and the value commit
@@ -47,7 +71,7 @@ export class Ring {
 
   lastCommitted(): Value {
     if (this.count === 0) {
-      return this.naValue;
+      return this.emptyValue;
     }
     return this.buf[this.head];
   }
@@ -57,17 +81,15 @@ export class Ring {
   }
 
   at(offset: number): Value {
+    if (!isHistoryOffset(offset)) {
+      return this.emptyValue;
+    }
     if (offset === 0) {
       return this.scratch;
     }
-    // Runtime-computed negative offsets would index a future/garbage cell;
-    // out-of-range reads are na, exactly like series reads.
-    if (offset < 0) {
-      return this.naValue;
-    }
     const back = offset - 1; // 0 = most recent committed
     if (back >= this.count || back >= this.keep) {
-      return this.naValue;
+      return this.emptyValue;
     }
     const index = (this.head - back + this.keep) % this.keep;
     return this.buf[index];

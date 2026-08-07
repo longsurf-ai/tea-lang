@@ -12,6 +12,7 @@ import {
   type Place,
 } from './node';
 import {
+  ParamConstraintKind,
   ParamDefaultKind,
   type OutputDecl,
   type Program,
@@ -86,16 +87,17 @@ export function dumpProgram(program: Program): string {
     const c = param.constraints;
     if (c !== null) {
       const parts: string[] = [];
-      if (c.minval !== null) {
-        parts.push(`min=${formatValue(c.minval)}`);
-      }
-      if (c.maxval !== null) {
-        parts.push(`max=${formatValue(c.maxval)}`);
-      }
-      if (c.step !== null) {
-        parts.push(`step=${formatValue(c.step)}`);
-      }
-      if (c.options !== null) {
+      if (c.kind === ParamConstraintKind.Range) {
+        if (c.minval !== null) {
+          parts.push(`min=${formatValue(c.minval)}`);
+        }
+        if (c.maxval !== null) {
+          parts.push(`max=${formatValue(c.maxval)}`);
+        }
+        if (c.step !== null) {
+          parts.push(`step=${formatValue(c.step)}`);
+        }
+      } else {
         parts.push(`options=[${c.options.map(formatValue).join(', ')}]`);
       }
       line += ` {${parts.join(' ')}}`;

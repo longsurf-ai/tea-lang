@@ -4,6 +4,7 @@ import {describe, expect, test} from 'bun:test';
 import {Storage} from '../ir/node';
 import {
   BindError,
+  ValueClass,
   type DataProvider,
   type OutputSink,
   type ProviderContext,
@@ -78,7 +79,7 @@ function num(v: Value): number {
 // plot(e)
 
 const EMA_MODULE: TeaModule = {
-  abi: 1,
+  abi: 2,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
@@ -86,13 +87,20 @@ const EMA_MODULE: TeaModule = {
     requests: [],
     frames: [
       {
-        locals: [{storage: Storage.Var, depth: {kind: 'none'}, ref: false}],
+        locals: [
+          {
+            storage: Storage.Var,
+            depth: {kind: 'none'},
+            valueClass: ValueClass.Numeric,
+          },
+        ],
         subs: [],
       },
     ],
   },
   requests: [],
   init() {},
+  bind() {},
   inits: {'0:0': () => NaN},
   funcs: {},
   main(rt, fr) {
@@ -122,7 +130,7 @@ describe('historical execution', () => {
 // counter() => var c = 0; c := c + 1; c
 
 const COUNTER_MODULE: TeaModule = {
-  abi: 1,
+  abi: 2,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
@@ -140,13 +148,20 @@ const COUNTER_MODULE: TeaModule = {
     frames: [
       {locals: [], subs: [{fid: 1}, {fid: 1}]},
       {
-        locals: [{storage: Storage.Var, depth: {kind: 'none'}, ref: false}],
+        locals: [
+          {
+            storage: Storage.Var,
+            depth: {kind: 'none'},
+            valueClass: ValueClass.Numeric,
+          },
+        ],
         subs: [],
       },
     ],
   },
   requests: [],
   init() {},
+  bind() {},
   inits: {'1:0': () => 0},
   funcs: {
     1(rt, fr) {
@@ -183,7 +198,7 @@ describe('frames', () => {
 // x = close; plot(x[2])
 
 const HISTORY_MODULE: TeaModule = {
-  abi: 1,
+  abi: 2,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
@@ -195,7 +210,7 @@ const HISTORY_MODULE: TeaModule = {
           {
             storage: Storage.PerBar,
             depth: {kind: 'const', bars: 2},
-            ref: false,
+            valueClass: ValueClass.Numeric,
           },
         ],
         subs: [],
@@ -204,6 +219,7 @@ const HISTORY_MODULE: TeaModule = {
   },
   requests: [],
   init() {},
+  bind() {},
   inits: {},
   funcs: {},
   main(rt, fr) {
@@ -235,7 +251,7 @@ describe('rings', () => {
 // x = close                       (perBar)
 
 const TICK_MODULE: TeaModule = {
-  abi: 1,
+  abi: 2,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
@@ -254,9 +270,21 @@ const TICK_MODULE: TeaModule = {
     frames: [
       {
         locals: [
-          {storage: Storage.Var, depth: {kind: 'none'}, ref: false},
-          {storage: Storage.Varip, depth: {kind: 'none'}, ref: false},
-          {storage: Storage.PerBar, depth: {kind: 'none'}, ref: false},
+          {
+            storage: Storage.Var,
+            depth: {kind: 'none'},
+            valueClass: ValueClass.Numeric,
+          },
+          {
+            storage: Storage.Varip,
+            depth: {kind: 'none'},
+            valueClass: ValueClass.Numeric,
+          },
+          {
+            storage: Storage.PerBar,
+            depth: {kind: 'none'},
+            valueClass: ValueClass.Numeric,
+          },
         ],
         subs: [],
       },
@@ -264,6 +292,7 @@ const TICK_MODULE: TeaModule = {
   },
   requests: [],
   init() {},
+  bind() {},
   inits: {'0:0': () => 0, '0:1': () => 0},
   funcs: {},
   main(rt, fr) {
@@ -346,7 +375,7 @@ describe('provisional protocol', () => {
 // hline(level)  +  a bound-depth local read at offset len
 
 const BIND_MODULE: TeaModule = {
-  abi: 1,
+  abi: 2,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [
@@ -359,9 +388,15 @@ const BIND_MODULE: TeaModule = {
         inline: null,
         tooltip: null,
         confirm: false,
-        display: null,
+        display: 'all',
         defaultValue: 70,
-        constraints: {minval: 0, maxval: null, step: null, options: null},
+        constraints: {
+          kind: 'range',
+          minval: 0,
+          maxval: null,
+          step: null,
+        },
+        enumType: null,
         seriesSid: null,
       },
       {
@@ -373,9 +408,10 @@ const BIND_MODULE: TeaModule = {
         inline: null,
         tooltip: null,
         confirm: false,
-        display: null,
+        display: 'all',
         defaultValue: 2,
         constraints: null,
+        enumType: null,
         seriesSid: null,
       },
     ],
@@ -383,15 +419,23 @@ const BIND_MODULE: TeaModule = {
     requests: [],
     frames: [
       {
-        locals: [{storage: Storage.PerBar, depth: {kind: 'bound'}, ref: false}],
+        locals: [
+          {
+            storage: Storage.PerBar,
+            depth: {kind: 'bound'},
+            valueClass: ValueClass.Numeric,
+          },
+        ],
         subs: [],
       },
     ],
   },
   requests: [],
   init(rt) {
-    rt.bindOutput(0, 'price', rt.param(0));
     rt.bindDepth(0, 0, num(rt.param(1)));
+  },
+  bind(rt) {
+    rt.bindOutput(0, 'price', rt.param(0));
   },
   inits: {},
   funcs: {},
@@ -402,7 +446,7 @@ const BIND_MODULE: TeaModule = {
 };
 
 describe('binding', () => {
-  test('init evaluates bind-time args and bound depths', async () => {
+  test('init and bind evaluate their owned binding expressions', async () => {
     const sink = new RecordingSink();
     const bound = await bind(BIND_MODULE, {
       params: {level: 105, len: 2},
@@ -482,13 +526,20 @@ const CHILD_MODULE = {
     requests: [],
     frames: [
       {
-        locals: [{storage: Storage.PerBar, depth: {kind: 'none'}, ref: false}],
+        locals: [
+          {
+            storage: Storage.PerBar,
+            depth: {kind: 'none'},
+            valueClass: ValueClass.Numeric,
+          },
+        ],
         subs: [],
       },
     ],
   },
   requests: [],
   init() {},
+  bind() {},
   inits: {},
   funcs: {},
   main(
@@ -506,7 +557,7 @@ function requestModule(merge: {
   ignoreInvalidSymbol: boolean;
 }): TeaModule {
   return {
-    abi: 1,
+    abi: 2,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
       params: [
@@ -519,9 +570,10 @@ function requestModule(merge: {
           inline: null,
           tooltip: null,
           confirm: false,
-          display: null,
+          display: 'all',
           defaultValue: 10,
           constraints: null,
+          enumType: null,
           seriesSid: null,
         },
       ],
@@ -540,14 +592,15 @@ function requestModule(merge: {
           merge: {mode: 'sample', ...merge},
           depth: {kind: 'const', bars: 1},
           resultSlot: 0,
-          ref: false,
+          valueClass: ValueClass.Numeric,
           dynamic: false,
         },
       ],
       frames: [{locals: [], subs: []}],
     },
     requests: [CHILD_MODULE],
-    init(rt) {
+    init() {},
+    bind(rt) {
       rt.bindRequest(0, 'X', '');
     },
     inits: {},
@@ -640,7 +693,7 @@ describe('requests', () => {
     expect(sink.emits.every(e => Number.isNaN(num(e.channels[0])))).toBe(true);
   });
 
-  test('out-of-extent request reads (negative offsets included) are na', async () => {
+  test('invalid request offsets cannot expose future or undefined values', async () => {
     const module = requestModule({
       gaps: false,
       lookahead: false,
@@ -649,8 +702,8 @@ describe('requests', () => {
     const probing: TeaModule = {
       ...module,
       main(rt) {
-        rt.emit(0, 0, rt.request(0, -100)); // index past the extent
-        rt.emit(0, 1, rt.request(0, 100)); // index before history
+        rt.emit(0, 0, rt.request(0, -1));
+        rt.emit(0, 1, rt.request(0, 100));
       },
     };
     const sink = new RecordingSink();
@@ -693,13 +746,20 @@ const IDENTITY_CHILD = {
     requests: [],
     frames: [
       {
-        locals: [{storage: Storage.PerBar, depth: {kind: 'none'}, ref: false}],
+        locals: [
+          {
+            storage: Storage.PerBar,
+            depth: {kind: 'none'},
+            valueClass: ValueClass.Numeric,
+          },
+        ],
         subs: [],
       },
     ],
   },
   requests: [],
   init() {},
+  bind() {},
   inits: {},
   funcs: {},
   main(
@@ -711,7 +771,7 @@ const IDENTITY_CHILD = {
 } satisfies Omit<TeaModule, 'abi'>;
 
 const DYNAMIC_MODULE: TeaModule = {
-  abi: 1,
+  abi: 2,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
@@ -735,7 +795,7 @@ const DYNAMIC_MODULE: TeaModule = {
         },
         depth: {kind: 'const', bars: 1},
         resultSlot: 0,
-        ref: false,
+        valueClass: ValueClass.Numeric,
         dynamic: true,
       },
     ],
@@ -743,6 +803,7 @@ const DYNAMIC_MODULE: TeaModule = {
   },
   requests: [IDENTITY_CHILD],
   init() {},
+  bind() {},
   inits: {},
   funcs: {},
   main(rt) {
@@ -809,7 +870,13 @@ const VARIP_DYNAMIC_MODULE: TeaModule = {
     ...DYNAMIC_MODULE.manifest,
     frames: [
       {
-        locals: [{storage: Storage.Varip, depth: {kind: 'none'}, ref: false}],
+        locals: [
+          {
+            storage: Storage.Varip,
+            depth: {kind: 'none'},
+            valueClass: ValueClass.Numeric,
+          },
+        ],
         subs: [],
       },
     ],

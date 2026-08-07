@@ -130,6 +130,7 @@ const edge: RequestEdge = {
   },
   resultName: childResult,
   resultType: FloatType,
+  dynamic: false,
   depth: {kind: DepthKind.None},
   child,
 };

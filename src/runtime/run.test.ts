@@ -10,7 +10,7 @@ import {captureSink, configureLog, logConfig} from '../base/log';
 import {buildText, mustBuild} from '../noder/testing';
 import {csvContext, csvProvider} from '../providers/data/csv';
 import {TraceSink} from '../providers/sinks/trace-sink';
-import {RequestError, type DataProvider, type Value} from './abi';
+import {BindError, RequestError, type DataProvider, type Value} from './abi';
 import {bind} from './js-runtime';
 import {loadModule} from './load';
 
@@ -86,6 +86,184 @@ describe('hand-checked vectors', () => {
       seriesCsv([5, 8, 6]),
     );
     expect(lines.slice(1)).toEqual(['0 0 na', '1 0 3', '2 0 -2']);
+  });
+
+  test('negative and na history offsets never read future or undefined values', async () => {
+    const lines = await runSource(
+      [
+        'int missing = na',
+        'value = close',
+        'value := close',
+        'plot(close[-1])',
+        'plot(close[missing])',
+        'plot(value[missing])',
+      ].join(chr10()),
+      seriesCsv([10, 20]),
+    );
+    const rows = lines.filter(line => !line.startsWith('#'));
+    expect(rows).toHaveLength(6);
+    expect(rows.every(line => line.endsWith(' na'))).toBe(true);
+  });
+
+  test('an unsafe computed offset cannot erase a valid demand on the same carrier', async () => {
+    const lines = await runSource(
+      [
+        'valid = input.int(2)',
+        'invalid = input.int(9007199254740991) + 1',
+        'base = close * 1',
+        'plot(base[valid])',
+        'plot(base[invalid])',
+      ].join(chr10()),
+      seriesCsv([10, 20, 30]),
+    );
+    expect(lines.filter(line => line.startsWith('2 '))).toEqual([
+      '2 0 10',
+      '2 1 na',
+    ]);
+  });
+
+  test('a computed input alias sizes history beyond the dynamic cap', async () => {
+    const values = Array.from({length: 1002}, (_, index) => index + 1);
+    const lines = await runSource(
+      [
+        'identity(int value) => value',
+        'len = input.int(1000)',
+        'alias = identity(len) + 0',
+        'base = close * 1',
+        'plot(base[alias])',
+      ].join(chr10()),
+      seriesCsv(values),
+    );
+    const rows = lines.filter(line => !line.startsWith('#'));
+    expect(rows.slice(-2)).toEqual(['1000 0 1', '1001 0 2']);
+  });
+
+  test('input UDF offsets and stencil-local aliases size history per call-site max', async () => {
+    const values = Array.from({length: 1002}, (_, index) => index + 1);
+    const direct = await runSource(
+      [
+        'offset(int value) => value',
+        'len = input.int(1000)',
+        'base = close * 1',
+        'plot(base[offset(len)])',
+      ].join(chr10()),
+      seriesCsv(values),
+    );
+    expect(direct.filter(line => !line.startsWith('#')).slice(-2)).toEqual([
+      '1000 0 1',
+      '1001 0 2',
+    ]);
+
+    const stencil = await runSource(
+      [
+        'sample(int length) =>',
+        `${String.fromCharCode(9)}alias = length + 0`,
+        `${String.fromCharCode(9)}base = close * 1`,
+        `${String.fromCharCode(9)}base[alias]`,
+        'plot(sample(input.int(2)))',
+        'plot(sample(input.int(1000)))',
+      ].join(chr10()),
+      seriesCsv(values),
+    );
+    const rows = stencil.filter(line => !line.startsWith('#'));
+    expect(rows.slice(-4)).toEqual([
+      '1000 0 999',
+      '1000 1 1',
+      '1001 0 1000',
+      '1001 1 2',
+    ]);
+
+    const nested = await runSource(
+      [
+        'offset(int value) => value',
+        'sample(int length) =>',
+        `${String.fromCharCode(9)}base = close * 1`,
+        `${String.fromCharCode(9)}base[length]`,
+        'plot(sample(offset(input.int(1000))))',
+      ].join(chr10()),
+      seriesCsv(values),
+    );
+    expect(nested.filter(line => !line.startsWith('#')).slice(-2)).toEqual([
+      '1000 0 1',
+      '1001 0 2',
+    ]);
+
+    const inner = await runSource(
+      [
+        'offset(int value) => value',
+        'sample(int length) =>',
+        `${String.fromCharCode(9)}base = close * 1`,
+        `${String.fromCharCode(9)}base[offset(length)]`,
+        'plot(sample(input.int(1000)))',
+      ].join(chr10()),
+      seriesCsv(values),
+    );
+    expect(inner.filter(line => !line.startsWith('#')).slice(-2)).toEqual([
+      '1000 0 1',
+      '1001 0 2',
+    ]);
+
+    const block = await runSource(
+      [
+        'enabled = input.bool(true)',
+        'value = if enabled',
+        `${String.fromCharCode(9)}alias = input.int(1000) + 0`,
+        `${String.fromCharCode(9)}base = close * 1`,
+        `${String.fromCharCode(9)}base[alias]`,
+        'else',
+        `${String.fromCharCode(9)}na`,
+        'plot(value)',
+      ].join(chr10()),
+      seriesCsv(values),
+    );
+    expect(block.filter(line => !line.startsWith('#')).slice(-2)).toEqual([
+      '1000 0 1',
+      '1001 0 2',
+    ]);
+  });
+
+  test('dynamic offsets cannot truncate larger input or const demands', async () => {
+    const values = Array.from({length: 1201}, (_, index) => index + 1);
+    const lines = await runSource(
+      [
+        'length = input.int(1000)',
+        'base = close * 1',
+        'other = close * 1',
+        'plot(base[length])',
+        'plot(base[bar_index % 2])',
+        'plot(other[1200])',
+        'plot(other[bar_index % 2])',
+      ].join(chr10()),
+      seriesCsv(values),
+    );
+    expect(lines.filter(line => line.startsWith('1200 '))).toEqual([
+      '1200 0 201',
+      '1200 1 1201',
+      '1200 2 1',
+      '1200 3 1201',
+    ]);
+  });
+
+  test('subject switch uses na-aware equality for reference values', async () => {
+    const lines = await runSource(
+      [
+        'color missing = na',
+        'choice = switch missing',
+        '    na => 1',
+        '    => 2',
+        'plot(choice)',
+      ].join(chr10()),
+      seriesCsv([1]),
+    );
+    expect(lines.filter(line => !line.startsWith('#'))).toEqual(['0 0 2']);
+  });
+
+  test('simple ambient output values execute per row, not during bind', async () => {
+    const lines = await runSource(
+      'plot(timeframe.multiplier)',
+      ['timeframe.multiplier', '5', '5', ''].join(chr10()),
+    );
+    expect(lines.slice(1)).toEqual(['0 0 5', '1 0 5']);
   });
 
   test('ta.hma rounds the square-root window length', async () => {
@@ -201,6 +379,47 @@ describe('requests end to end', () => {
     ]);
   });
 
+  test('a scalar input declared inside a request capture is compilation-global', async () => {
+    const lines = await runSource(
+      'plot(request.security("X", "D", close * input.float(2.0, "Scale")))',
+      '',
+      {},
+      csvContexts({'': primaryCsv, X: childCsv}),
+    );
+    expect(lines.slice(1)).toEqual([
+      '0 0 na',
+      '1 0 20',
+      '2 0 20',
+      '3 0 40',
+      '4 0 40',
+      '5 0 60',
+    ]);
+  });
+
+  test('a request inside a UDF binds a computed global input alias statically', async () => {
+    const lines = await runSource(
+      [
+        'indicator("t", dynamic_requests=false)',
+        'identity(string value) => value',
+        'sym = input.string("X")',
+        'alias = identity(sym) + ""',
+        'fetch() => request.security(alias, "D", close)',
+        'plot(fetch())',
+      ].join(chr10()),
+      '',
+      {},
+      csvContexts({'': primaryCsv, X: childCsv}),
+    );
+    expect(lines.filter(line => !line.startsWith('#'))).toEqual([
+      '0 1 na',
+      '1 1 10',
+      '2 1 10',
+      '3 1 20',
+      '4 1 20',
+      '5 1 30',
+    ]);
+  });
+
   test('a corrupt or shuffled time axis is a BindError, never silent na', async () => {
     const src = 'plot(request.security("X", "D", close))';
     // Blank time cell in the parent axis.
@@ -283,16 +502,23 @@ describe('the input family end to end', () => {
     expect(session?.tooltip).toBe('rth');
     expect(session?.confirm).toBe(true);
     expect(session?.display).toBe('data_window');
-    expect(byName.get('len')?.constraints?.step).toBe(2);
+    const lenConstraints = byName.get('len')?.constraints;
+    expect(lenConstraints?.kind).toBe('range');
+    expect(lenConstraints?.kind === 'range' ? lenConstraints.step : null).toBe(
+      2,
+    );
     expect(byName.get('len')?.display).toBe('none');
     expect(byName.get('lvl')?.control).toBe('price');
     expect(byName.get('lvl')?.type).toBe('float');
     expect(byName.get('lvl')?.tooltip).toBe('price tip');
+    expect(byName.get('lvl')?.display).toBe('all');
     expect(byName.get('t0')?.control).toBe('time');
     expect(byName.get('t0')?.type).toBe('int');
     expect(byName.get('t0')?.tooltip).toBe('time tip');
+    expect(byName.get('t0')?.display).toBe('none');
     expect(byName.get('note')?.control).toBe('text_area');
     expect(byName.get('note')?.tooltip).toBe('note tip');
+    expect(byName.get('note')?.display).toBe('none');
     // The folded color.new default lands as a plain const hex+alpha.
     expect(byName.get('shade')?.defaultValue).toBe('#2196F31A');
     const indicator = module.manifest.outputs[0];
@@ -427,6 +653,108 @@ describe('the input family end to end', () => {
     const {program, errors} = buildText('x = input.source(42)\nplot(x)');
     expect(program).toBeNull();
     expect(errors.some(e => e.msg.includes('built-in source'))).toBe(true);
+  });
+
+  test('input.enum keeps nominal metadata and active recomputes per bind', async () => {
+    const source = [
+      'enum Mode',
+      `${String.fromCharCode(9)}fast = "Fast"`,
+      `${String.fromCharCode(9)}slow = "Slow"`,
+      'passthrough(value) => value',
+      'enabled = input.bool(true, "Enabled")',
+      'enabledAlias = enabled and true',
+      'mode = input.enum(Mode.fast, "Mode", options=[Mode.fast, Mode.slow], active=enabledAlias and passthrough(enabled))',
+      'width = enabled ? 2 : 1',
+      'plot(str.tostring(mode) == "Slow" ? 1 : 0, linewidth=width)',
+    ].join(chr10());
+    const module = loadModule(
+      generate(mustBuild(source), DEFAULT_COMPILE_CONFIG, new Errors()),
+    );
+    const bindWith = (params: Record<string, unknown>) =>
+      bind(module, {
+        params,
+        provider: csvProvider(seriesCsv([1])),
+        sink: new TraceSink(() => {}),
+      });
+
+    const disabled = await bindWith({enabled: false, mode: 'slow'});
+    const disabledMode = disabled.inputs.find(
+      input => input.spec.name === 'mode',
+    );
+    expect(disabledMode?.value).toBe('slow');
+    expect(disabledMode?.active).toBe(false);
+    expect(disabledMode?.spec.enumType).toEqual({
+      name: 'Mode',
+      members: [
+        {name: 'fast', title: 'Fast'},
+        {name: 'slow', title: 'Slow'},
+      ],
+    });
+    const lines: string[] = [];
+    const titled = await bind(module, {
+      params: {enabled: false, mode: 'slow'},
+      provider: csvProvider(seriesCsv([1])),
+      sink: new TraceSink(line => lines.push(line)),
+    });
+    await titled.runAll();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('bound{series=1 linewidth=1}');
+
+    const enabled = await bindWith({enabled: true});
+    expect(
+      enabled.inputs.find(input => input.spec.name === 'mode')?.active,
+    ).toBe(true);
+    await expect(bindWith({enabled: false, mode: 'missing'})).rejects.toThrow(
+      BindError,
+    );
+  });
+
+  test('local and UDF inputs extract once with collision-free identities', async () => {
+    const source = [
+      'choose(bool positive) =>',
+      '    if positive',
+      '        value = input.int(2, "Positive")',
+      '        value',
+      '    else',
+      '        value = input.int(3, "Nonpositive")',
+      '        value',
+      'gate = input.bool(true, "Gate")',
+      'branch = if gate',
+      '    value = input.int(4)',
+      '    value',
+      'else',
+      '    0',
+      'plot(choose(close > 0) + branch)',
+    ].join(chr10());
+    const module = loadModule(
+      generate(mustBuild(source), DEFAULT_COMPILE_CONFIG, new Errors()),
+    );
+    const names = module.manifest.params.map(param => param.name);
+    expect(new Set(names).size).toBe(4);
+    expect(names.filter(name => name.startsWith('input@'))).toHaveLength(3);
+    expect(
+      module.manifest.params.find(param => param.name === 'gate'),
+    ).toBeDefined();
+    expect(
+      module.manifest.params.find(param => param.title === 'value')?.name,
+    ).toStartWith('input@');
+
+    const byTitle = new Map(
+      module.manifest.params.map(param => [param.title, param.name]),
+    );
+    const params = {
+      [byTitle.get('Positive')!]: 20,
+      [byTitle.get('Nonpositive')!]: 30,
+      [byTitle.get('value')!]: 40,
+    };
+    const lines: string[] = [];
+    const bound = await bind(module, {
+      params,
+      provider: csvProvider(seriesCsv([-1, 1])),
+      sink: new TraceSink(line => lines.push(line)),
+    });
+    await bound.runAll();
+    expect(lines.slice(1)).toEqual(['0 0 70', '1 0 60']);
   });
 });
 

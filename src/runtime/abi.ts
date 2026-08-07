@@ -1,6 +1,7 @@
-// Purpose: The runtime ABI types — the complete surface generated code, providers, and sinks see; docs/runtime.md is the authority. Types only: JSRuntime implements, codegen targets.
+// Purpose: The runtime ABI contract — the complete surface generated code, providers, and sinks see; docs/runtime.md is the authority. JSRuntime implements it and codegen targets it.
 
 import type {HistoryDepth, NameStorage} from '../ir/node';
+import type {ParamDisplay} from '../ir/program';
 
 // In-flight values: numerics carry na as NaN, references use null, bool is
 // never na (a checker guarantee). Tuples travel as arrays (ephemeral:
@@ -8,10 +9,26 @@ import type {HistoryDepth, NameStorage} from '../ir/node';
 // (UDT, collections) arrive with their slice.
 export type Value = number | string | boolean | null | readonly Value[];
 
+// JSON-safe projection used by the generated manifest. Runtime numeric na is
+// NaN, but JSON has no NaN representation, so manifest na is explicitly null.
+// Non-finite numbers other than na are forbidden before this boundary.
+export type ManifestValue = number | string | boolean | null;
+
+// Empty history is type-directed: numeric na is NaN, reference na is null,
+// and bool (non-nullable in Pine v6) starts false. A single ref bit cannot
+// distinguish numeric and bool slots, so manifests carry this explicit class.
+export const ValueClass = {
+  Numeric: 'numeric',
+  Reference: 'reference',
+  Boolean: 'boolean',
+} as const;
+
+export type ValueClass = (typeof ValueClass)[keyof typeof ValueClass];
+
 // ---- the generated module ---------------------------------------------------
 
-// Depth in the manifest: 'bound' carries no static bars — the module's init
-// section reports the bind-time value through rt.bindDepth/bindSeriesDepth.
+// Depth in the manifest: 'bound' carries no static bars — the module's bind
+// section reports it before final frame allocation.
 export type DepthSpec =
   | {readonly kind: 'none'}
   | {readonly kind: 'const'; readonly bars: number}
@@ -21,9 +38,7 @@ export type DepthSpec =
 export interface LocalSpec {
   readonly storage: NameStorage;
   readonly depth: DepthSpec;
-  // Reference-typed slots (string/color/UDT/collections) use null as na;
-  // numeric slots use NaN.
-  readonly ref: boolean;
+  readonly valueClass: ValueClass;
 }
 
 export interface FrameLayout {
@@ -39,27 +54,50 @@ export interface SeriesSpec {
   readonly depth: DepthSpec;
 }
 
+export type ParamConstraintSpec =
+  | {
+      readonly kind: 'range';
+      readonly minval: number | null;
+      readonly maxval: number | null;
+      readonly step: number | null;
+    }
+  | {
+      readonly kind: 'options';
+      readonly options: readonly ManifestValue[];
+    };
+
 export interface ParamSpec {
   readonly name: string;
   readonly title: string | null;
   // The VALUE type the runtime validates bound values against; `control`
   // carries the UI flavor ('price', 'session', 'time', 'auto', …).
-  readonly type: 'int' | 'float' | 'bool' | 'string' | 'color' | 'source';
+  readonly type:
+    | 'int'
+    | 'float'
+    | 'bool'
+    | 'string'
+    | 'color'
+    | 'source'
+    | 'enum';
   readonly control: string;
   // Const default value, or for source params the default host series id.
-  readonly defaultValue: Value;
-  readonly constraints: {
-    readonly minval: number | null;
-    readonly maxval: number | null;
-    readonly step: number | null;
-    readonly options: readonly Value[] | null;
+  readonly defaultValue: ManifestValue;
+  readonly constraints: ParamConstraintSpec | null;
+  // Nominal enum identity and UI titles. Runtime values are stable member
+  // names; titles are presentation only.
+  readonly enumType: {
+    readonly name: string;
+    readonly members: readonly {
+      readonly name: string;
+      readonly title: string;
+    }[];
   } | null;
   // Settings-UI layout and interaction metadata.
   readonly group: string | null;
   readonly inline: string | null;
   readonly tooltip: string | null;
   readonly confirm: boolean;
-  readonly display: string | null;
+  readonly display: ParamDisplay;
   // For source params: the manifest.series slot this param's choice binds.
   readonly seriesSid: number | null;
 }
@@ -68,7 +106,7 @@ export interface OutputSpec {
   readonly effect: string;
   readonly staticArgs: readonly {
     readonly name: string;
-    readonly value: Value;
+    readonly value: ManifestValue;
   }[];
   readonly channels: readonly {readonly name: string; readonly type: string}[];
 }
@@ -89,9 +127,8 @@ export interface RequestSpec {
   readonly depth: DepthSpec;
   // The designated result: this slot of the CHILD's program frame.
   readonly resultSlot: number;
-  // Reference-typed results use null as na; numeric results use NaN.
-  readonly ref: boolean;
-  // Dynamic edges carry series context args: init declares no pair, row
+  readonly valueClass: ValueClass;
+  // Dynamic edges carry series context args: bind declares no pair, row
   // code evaluates them at the offset-0 read (rt.requestFor), and the
   // runtime instantiates one child per distinct pair it encounters.
   readonly dynamic: boolean;
@@ -117,9 +154,14 @@ export interface Frame {
 export interface ModuleCode {
   readonly manifest: ModuleManifest;
   readonly requests: readonly ModuleCode[]; // rid-indexed child modules
-  // Bind time: evaluates bound depths, output bind-args, and static
-  // request contexts (rt.bindRequest).
+  // Reserved frame-free bind preparation. Frame-dependent depth reports run
+  // in bind() against the provisional frame.
   init(rt: Runtime): void;
+  // Bind-time evaluation with a scratch-only provisional program frame:
+  // computes
+  // input-qualified aliases/functions, input active states, output bind args,
+  // and static request contexts.
+  bind(rt: Runtime, fr: Frame): void;
   // var/varip first-execution thunks, keyed `${fid}:${slot}`.
   readonly inits: Readonly<Record<string, (rt: Runtime, fr: Frame) => Value>>;
   // One function per IrFunc stencil, keyed by fid.
@@ -133,7 +175,7 @@ export interface ModuleCode {
 // The complete runtime artifact (`tea build` output). The runtime never
 // re-derives ids from the Program.
 export interface TeaModule extends ModuleCode {
-  readonly abi: 1;
+  readonly abi: 2;
 }
 
 // ---- the rt surface ---------------------------------------------------------
@@ -161,10 +203,13 @@ export interface Runtime {
   // cross-frame access).
   root(): Frame;
   emit(oid: number, channel: number, v: Value): void;
-  // init section only
+  // Binding phase only. Frame-aware bind reports these against a provisional
+  // scratch-only frame before final allocation.
+  historyDepth(offset: number): number;
   bindDepth(fid: number, slot: number, bars: number): void;
   bindSeriesDepth(sid: number, bars: number): void;
   bindOutput(oid: number, argName: string, v: Value): void;
+  bindParamActive(pid: number, active: Value): void;
   // Declares a static edge's context: bind resolves the pair, runs the
   // child over its history, and prepares the merged view before row 0.
   bindRequest(rid: number, symbol: Value, timeframe: Value): void;
@@ -260,7 +305,7 @@ export interface OutputSink {
 
 export interface BindInputs {
   // Keyed by ParamSpec.name; source params take a host series id string.
-  readonly params: Readonly<Record<string, Value>>;
+  readonly params: Readonly<Record<string, unknown>>;
   readonly provider: DataProvider;
   readonly sink: OutputSink;
   // The primary context's name; omitted = '' = the provider's default
@@ -273,8 +318,15 @@ export interface BindInputs {
   readonly maxRequestContexts?: number;
 }
 
+export interface BoundInput {
+  readonly spec: ParamSpec;
+  readonly value: Value;
+  readonly active: boolean;
+}
+
 export interface BoundProgram {
   readonly rows: number;
+  readonly inputs: readonly BoundInput[];
   // Throws ContextSuspension when a dynamic request meets an unresolved
   // pair: await resolvePending(), then re-execute the SAME row — the
   // aborted execution vanishes entirely (all scratch, varip included,

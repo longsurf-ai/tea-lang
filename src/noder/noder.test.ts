@@ -10,7 +10,8 @@ import {
   type HistReadExpr,
   type WriteNameStmt,
 } from '../ir/node';
-import {MergeMode, ParamDefaultKind} from '../ir/program';
+import {MergeMode, ParamConstraintKind, ParamDefaultKind} from '../ir/program';
+import {TypeKind, isNaValue} from '../ir/type';
 import {funcsOf, namesOf, seriesInputsOf, slotCountOf} from '../ir/visit';
 import {buildText, mustBuild} from './testing';
 import {DEFAULT_MAX_BARS_BACK} from './depth';
@@ -64,6 +65,46 @@ describe('declarations', () => {
     ]);
     const second = program.body[1] as WriteNameStmt;
     expect(second.value.kind).toBe(IrKind.TupleGet);
+  });
+
+  test('every na constant entering Program IR has a concrete nullable type', () => {
+    const program = mustBuild(
+      [
+        'float x = na',
+        'x := na',
+        'y = close > 0 ? na : 1.0',
+        'z = nz(na, 1.0)',
+        'isMissing = na(na)',
+        'asText = str.tostring(na)',
+      ].join('\n'),
+    );
+    const writes = program.body.filter(
+      (stmt): stmt is WriteNameStmt => stmt.kind === IrKind.WriteName,
+    );
+    const xValues = writes
+      .filter(write => write.name.name === 'x')
+      .map(write => write.value);
+    expect(xValues).toHaveLength(2);
+    for (const value of xValues) {
+      expect(value.type.kind).toBe(TypeKind.Float);
+      expect(value.kind).toBe(IrKind.Const);
+      if (value.kind === IrKind.Const) {
+        expect(isNaValue(value.value)).toBe(true);
+      }
+    }
+
+    const y = writes.find(write => write.name.name === 'y')!.value;
+    expect(y.kind).toBe(IrKind.Cond);
+    if (y.kind === IrKind.Cond) {
+      expect(y.then.type.kind).toBe(TypeKind.Float);
+    }
+    for (const name of ['z', 'isMissing', 'asText']) {
+      const call = writes.find(write => write.name.name === name)!.value;
+      expect(call.kind).toBe(IrKind.CallNative);
+      if (call.kind === IrKind.CallNative) {
+        expect(call.args[0].type.kind).toBe(TypeKind.Float);
+      }
+    }
   });
 });
 
@@ -119,6 +160,58 @@ describe('params and outputs', () => {
     expect(program.params[0].name).toBe('input@1:13');
   });
 
+  test('input metadata keeps exclusive constraints, defaults, active, and enum identity', () => {
+    const program = mustBuild(
+      [
+        'enum Mode',
+        '    fast = "Fast"',
+        '    slow = "Slow"',
+        'enabled = input.bool(true)',
+        'count = input.int(2, options=[1, 2], active=enabled)',
+        'ratio = input.float(1.0, minval=0.0, maxval=2.0, step=0.5)',
+        'mode = input.enum(Mode.fast, options=[Mode.fast, Mode.slow])',
+      ].join('\n'),
+    );
+    const [enabled, count, ratio, mode] = program.params;
+    expect(enabled.display).toBe('none');
+    expect(enabled.active).toMatchObject({
+      kind: IrKind.Const,
+      type: {kind: TypeKind.Bool},
+      value: true,
+    });
+    expect(count.display).toBe('all');
+    expect(count.constraints).toEqual({
+      kind: ParamConstraintKind.Options,
+      options: [1, 2],
+    });
+    expect(count.active).toMatchObject({
+      kind: IrKind.HistRead,
+      place: {kind: PlaceKind.Param, param: enabled},
+    });
+    expect(ratio.constraints).toEqual({
+      kind: ParamConstraintKind.Range,
+      minval: 0,
+      maxval: 2,
+      step: 0.5,
+    });
+    expect(mode.type).toMatchObject({
+      kind: TypeKind.Enum,
+      name: 'Mode',
+      members: [
+        {name: 'fast', title: 'Fast'},
+        {name: 'slow', title: 'Slow'},
+      ],
+    });
+    expect(mode.defaultValue).toEqual({
+      kind: ParamDefaultKind.Const,
+      value: 'fast',
+    });
+    expect(mode.constraints).toEqual({
+      kind: ParamConstraintKind.Options,
+      options: ['fast', 'slow'],
+    });
+  });
+
   test('outputs partition into static, bind, and channel args', () => {
     const program = mustBuild(
       'p1 = plot(high, "High")\np2 = plot(low, "Low")\nfill(p1, p2)',
@@ -133,6 +226,18 @@ describe('params and outputs', () => {
     // Each plotted series emits per bar.
     const emits = program.body.filter(s => s.kind === IrKind.Emit);
     expect(emits.length).toBe(2);
+  });
+
+  test('simple ambient output values remain per-bar channels', () => {
+    const program = mustBuild('plot(timeframe.multiplier)');
+    const [plot] = program.outputs;
+    expect(plot.bindArgs).toEqual([]);
+    expect(plot.channels).toEqual([
+      {name: 'series', type: {kind: TypeKind.Int}},
+    ]);
+    expect(program.body.filter(stmt => stmt.kind === IrKind.Emit)).toHaveLength(
+      1,
+    );
   });
 
   test('a shadowed write does not disable an outer output reference', () => {
@@ -219,6 +324,164 @@ describe('depth resolution', () => {
     if (open.kind === DepthKind.Capped) {
       expect(open.bars).toMatchObject({kind: IrKind.Const, value: 300});
     }
+  });
+
+  test('an immutable root input alias remains an exact bound depth', () => {
+    const program = mustBuild(
+      [
+        'identity(int value) => value',
+        'len = input.int(1000)',
+        'alias = identity(len) + 0',
+        'base = close * 1',
+        'plot(base[alias])',
+      ].join('\n'),
+    );
+    const base = namesOf(program).find(name => name.name === 'base');
+    expect(base?.depth.kind).toBe(DepthKind.Bound);
+  });
+
+  test('a block-local root input alias substitutes instead of reading unbound scratch', () => {
+    const program = mustBuild(
+      [
+        'enabled = input.bool(true)',
+        'value = if enabled',
+        '    alias = input.int(1000) + 0',
+        '    base = close * 1',
+        '    base[alias]',
+        'else',
+        '    na',
+        'plot(value)',
+      ].join('\n'),
+    );
+    const base = namesOf(program).find(name => name.name === 'base')!;
+    expect(base.depth.kind).toBe(DepthKind.Bound);
+    if (base.depth.kind === DepthKind.Bound) {
+      expect(base.depth.expr).toMatchObject({
+        kind: IrKind.Binary,
+        x: {kind: IrKind.HistRead, place: {kind: PlaceKind.Param}},
+      });
+    }
+  });
+
+  test('a direct root input UDF offset remains an exact bound depth', () => {
+    const program = mustBuild(
+      [
+        'offset(int value) => value',
+        'len = input.int(1000)',
+        'plot(close[offset(len)])',
+      ].join('\n'),
+    );
+    const close = seriesInputsOf(program).find(
+      series => series.id === 'close',
+    )!;
+    expect(close.depth.kind).toBe(DepthKind.Bound);
+    if (close.depth.kind === DepthKind.Bound) {
+      expect(close.depth.expr).toMatchObject({
+        kind: IrKind.CallFunc,
+        func: {name: 'offset'},
+      });
+    }
+  });
+
+  test('function call sites substitute input params and locals into one max demand', () => {
+    const program = mustBuild(
+      [
+        'sample(int length) =>',
+        '    alias = length + 0',
+        '    close[alias]',
+        'plot(sample(input.int(2)) + sample(input.int(1000)))',
+      ].join('\n'),
+    );
+    const close = seriesInputsOf(program).find(
+      series => series.id === 'close',
+    )!;
+    expect(close.depth.kind).toBe(DepthKind.Bound);
+    if (close.depth.kind === DepthKind.Bound) {
+      expect(close.depth.expr).toMatchObject({
+        kind: IrKind.CallNative,
+        native: 'math.max',
+        args: expect.arrayContaining([
+          expect.objectContaining({
+            kind: IrKind.CallNative,
+            native: '$historyDepth',
+          }),
+        ]),
+      });
+    }
+  });
+
+  test('an input helper called inside the consuming UDF normalizes to the root argument', () => {
+    const program = mustBuild(
+      [
+        'offset(int value) => value',
+        'sample(int length) =>',
+        '    base = close * 1',
+        '    base[offset(length)]',
+        'plot(sample(input.int(1000)))',
+      ].join('\n'),
+    );
+    const base = namesOf(program).find(name => name.name === 'base')!;
+    expect(base.depth.kind).toBe(DepthKind.Bound);
+    if (base.depth.kind === DepthKind.Bound) {
+      expect(base.depth.expr).toMatchObject({
+        kind: IrKind.HistRead,
+        place: {kind: PlaceKind.Param},
+      });
+    }
+  });
+
+  test('multiple root bound and const demands retain their exact maximum', () => {
+    const program = mustBuild(
+      [
+        'short = input.int(2)',
+        'long = input.int(1000)',
+        'base = close * 1',
+        'plot(base[short] + base[long] + base[1200])',
+      ].join('\n'),
+    );
+    const base = namesOf(program).find(name => name.name === 'base')!;
+    expect(base.depth.kind).toBe(DepthKind.Bound);
+    if (base.depth.kind === DepthKind.Bound) {
+      expect(base.depth.expr).toMatchObject({
+        kind: IrKind.CallNative,
+        native: 'math.max',
+      });
+      expect(JSON.stringify(base.depth.expr)).toContain('1200');
+    }
+
+    const invalid = mustBuild(
+      'base = close * 1\nplot(base[2] + base[9007199254740992])',
+    );
+    const invalidBase = namesOf(invalid).find(name => name.name === 'base')!;
+    expect(invalidBase.depth).toEqual({kind: DepthKind.Const, bars: 2});
+  });
+
+  test('a dynamic demand contributes its cap without erasing larger exact demands', () => {
+    const program = mustBuild(
+      [
+        'length = input.int(1000)',
+        'base = close * 1',
+        'other = close * 1',
+        'plot(base[length] + base[bar_index % 2])',
+        'plot(other[1200] + other[bar_index % 2])',
+      ].join('\n'),
+    );
+    const base = namesOf(program).find(name => name.name === 'base')!;
+    expect(base.depth.kind).toBe(DepthKind.Bound);
+    if (base.depth.kind === DepthKind.Bound) {
+      expect(base.depth.expr).toMatchObject({
+        kind: IrKind.CallNative,
+        native: 'math.max',
+      });
+      expect(JSON.stringify(base.depth.expr)).toContain(
+        String(DEFAULT_MAX_BARS_BACK),
+      );
+    }
+    const other = namesOf(program).find(name => name.name === 'other')!;
+    expect(other.depth).toMatchObject({
+      kind: DepthKind.Capped,
+      bars: {kind: IrKind.Const, value: 1200},
+    });
   });
 
   test('the engine default cap applies without a declaration cap', () => {
@@ -327,6 +590,75 @@ describe('requests', () => {
     // The ema stencil lives in the child's call graph, not the parent's.
     expect(funcsOf(child).map(f => f.name)).toEqual(['ta.ema']);
     expect(funcsOf(program)).toEqual([]);
+  });
+
+  test('parent and request child own distinct function Names and depths', () => {
+    const program = mustBuild(
+      [
+        'sample(float source, int length) =>',
+        '\tbase = source * 1',
+        '\tbase[length]',
+        'child = request.security("AAPL", "D", sample(close, input.int(1000)))',
+        'root = sample(close, input.int(2))',
+        'plot(child + root)',
+      ].join('\n'),
+    );
+    const parent = funcsOf(program).find(func => func.name === 'sample')!;
+    const child = funcsOf(program.requests[0].child).find(
+      func => func.name === 'sample',
+    )!;
+    expect(parent).not.toBe(child);
+    expect(parent.locals[0]).not.toBe(child.locals[0]);
+    expect(parent.locals[0].depth.kind).toBe(DepthKind.Bound);
+    expect(child.locals[0].depth.kind).toBe(DepthKind.Bound);
+    expect(parent.locals[0].depth).toMatchObject({
+      kind: DepthKind.Bound,
+      expr: {
+        kind: IrKind.HistRead,
+        place: {
+          kind: PlaceKind.Param,
+          param: {defaultValue: {kind: ParamDefaultKind.Const, value: 2}},
+        },
+      },
+    });
+    expect(child.locals[0].depth).toMatchObject({
+      kind: DepthKind.Bound,
+      expr: {
+        kind: IrKind.HistRead,
+        place: {
+          kind: PlaceKind.Param,
+          param: {defaultValue: {kind: ParamDefaultKind.Const, value: 1000}},
+        },
+      },
+    });
+  });
+
+  test('request binding distinguishes root aliases from function locals', () => {
+    const staticProgram = mustBuild(
+      [
+        'indicator("t", dynamic_requests=false)',
+        'sym = input.string("X")',
+        'alias = sym + ""',
+        'fetch() => request.security(alias, "D", close)',
+        'plot(fetch())',
+      ].join('\n'),
+    );
+    expect(staticProgram.requests[0].dynamic).toBe(false);
+
+    const local = buildText(
+      [
+        'indicator("t", dynamic_requests=false)',
+        'fetch(string symbol) => request.security(symbol, "D", close)',
+        'sym = input.string("X")',
+        'plot(fetch(sym))',
+      ].join('\n'),
+    );
+    expect(local.program).toBeNull();
+    expect(local.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining(
+        'series context arguments need dynamic_requests=true',
+      ),
+    );
   });
 
   test('script series variables cannot cross into captures', () => {

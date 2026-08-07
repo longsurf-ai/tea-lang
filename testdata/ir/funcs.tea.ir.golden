@@ -7,7 +7,7 @@ name source: perBar series float depth=none
 name length: perBar const int depth=none
 name alpha: perBar const float depth=none
 name e: var series float depth=none
-  init: Const na: const na
+  init: Const na: const float
 name slow: perBar series float depth=none
 name x: perBar series float depth=none
 func ta.ema(source: series float, length: const int): series float

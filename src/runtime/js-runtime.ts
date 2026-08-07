@@ -9,6 +9,7 @@ import {
   isContextError,
   RequestError,
   type BindInputs,
+  type BoundInput,
   type BoundProgram,
   type ContextError,
   type DataProvider,
@@ -25,9 +26,10 @@ import {
   type SeriesData,
   type TeaModule,
   type Value,
+  type ValueClass as ValueClassType,
 } from './abi';
 import {assertMergeAxis, sampleMergeMap} from './merge';
-import {Ring} from './ring';
+import {emptyValue, isHistoryOffset, Ring} from './ring';
 
 // Slice scope: static requests resolve their full extent at bind; range
 // narrowing (depth demands, calc_bars_count) is a later refinement.
@@ -35,16 +37,22 @@ const FULL_RANGE: RangeDemand = {from: null, to: null, bars: null};
 
 const requestLog = log.child('runtime.request');
 
+// A bound depth is the same value the read will later use as its history
+// offset. Invalid offsets always read empty, so they retain no committed cells.
+function retentionForOffset(offset: number): number {
+  return isHistoryOffset(offset) ? offset : 0;
+}
+
 // Bind a lowered module to parameter values, a data provider, and an output
 // sink. Everything bind-time happens here: validation, context resolution,
-// running the module's init section, request-child execution and merge,
+// running the module's init/bind sections, request-child execution and merge,
 // sizing rings, declaring outputs. Async because context resolution is the
 // seam where drivers fetch; the per-row hot path never awaits.
 export async function bind(
   module: TeaModule,
   inputs: BindInputs,
 ): Promise<BoundProgram> {
-  if (module.abi !== 1) {
+  if (module.abi !== 2) {
     throw new BindError(`unsupported module ABI ${String(module.abi)}`);
   }
   const symbol = inputs.symbol ?? '';
@@ -114,7 +122,7 @@ function formatContextError(what: string, error: ContextError): string {
 // and children inherit the parent's resolved values.
 function resolveParams(
   manifest: ModuleManifest,
-  raw: Readonly<Record<string, Value>>,
+  raw: Readonly<Record<string, unknown>>,
 ): Value[] {
   const specs = manifest.params;
   const known = new Set(specs.map(spec => spec.name));
@@ -126,41 +134,74 @@ function resolveParams(
   const values: Value[] = [];
   for (const spec of specs) {
     const provided = raw[spec.name];
-    const value = provided !== undefined ? provided : spec.defaultValue;
+    const candidate = provided !== undefined ? provided : spec.defaultValue;
+    let value: Value;
     if (spec.type === 'int' || spec.type === 'float') {
-      if (typeof value !== 'number') {
+      if (typeof candidate !== 'number') {
         throw new BindError(`parameter '${spec.name}' expects a number`);
       }
-      if (spec.type === 'int' && !Number.isInteger(value)) {
-        throw new BindError(`parameter '${spec.name}' expects an integer`);
+      if (!Number.isFinite(candidate)) {
+        throw new BindError(`parameter '${spec.name}' expects a finite number`);
       }
-      const c = spec.constraints;
-      if (c !== null) {
-        if (c.minval !== null && value < c.minval) {
-          throw new BindError(
-            `parameter '${spec.name}' below minval ${c.minval}`,
-          );
-        }
-        if (c.maxval !== null && value > c.maxval) {
-          throw new BindError(
-            `parameter '${spec.name}' above maxval ${c.maxval}`,
-          );
-        }
+      if (spec.type === 'int' && !Number.isSafeInteger(candidate)) {
+        throw new BindError(`parameter '${spec.name}' expects a safe integer`);
       }
-    } else if (spec.type === 'bool' && typeof value !== 'boolean') {
-      throw new BindError(`parameter '${spec.name}' expects a boolean`);
-    } else if (
-      (spec.type === 'string' ||
-        spec.type === 'color' ||
-        spec.type === 'source') &&
-      typeof value !== 'string'
-    ) {
-      throw new BindError(`parameter '${spec.name}' expects a string`);
+      value = candidate;
+    } else if (spec.type === 'bool') {
+      if (typeof candidate !== 'boolean') {
+        throw new BindError(`parameter '${spec.name}' expects a boolean`);
+      }
+      value = candidate;
+    } else if (spec.type === 'color') {
+      if (typeof candidate !== 'string') {
+        throw new BindError(`parameter '${spec.name}' expects a color`);
+      }
+      const color = canonicalInputColor(candidate);
+      if (color === null) {
+        throw new BindError(
+          `parameter '${spec.name}' expects #RRGGBB or #RRGGBBAA`,
+        );
+      }
+      value = color;
+    } else if (spec.type === 'enum') {
+      if (typeof candidate !== 'string') {
+        throw new BindError(`parameter '${spec.name}' expects an enum member`);
+      }
+      const enumType = spec.enumType;
+      if (enumType === null) {
+        return fatal(`enum parameter '${spec.name}' has no enum metadata`);
+      }
+      if (!enumType.members.some(member => member.name === candidate)) {
+        throw new BindError(
+          `parameter '${spec.name}' is not a member of enum '${enumType.name}'`,
+        );
+      }
+      value = candidate;
+    } else {
+      if (typeof candidate !== 'string') {
+        throw new BindError(`parameter '${spec.name}' expects a string`);
+      }
+      value = candidate;
     }
     const c = spec.constraints;
-    if (
-      c !== null &&
-      c.options !== null &&
+    if (c?.kind === 'range') {
+      if (typeof value !== 'number') {
+        return fatal(
+          `non-numeric parameter '${spec.name}' has range constraints`,
+        );
+      }
+      if (c.minval !== null && value < c.minval) {
+        throw new BindError(
+          `parameter '${spec.name}' below minval ${c.minval}`,
+        );
+      }
+      if (c.maxval !== null && value > c.maxval) {
+        throw new BindError(
+          `parameter '${spec.name}' above maxval ${c.maxval}`,
+        );
+      }
+    } else if (
+      c?.kind === 'options' &&
       !c.options.some(option => option === value)
     ) {
       throw new BindError(
@@ -170,6 +211,16 @@ function resolveParams(
     values.push(value);
   }
   return values;
+}
+
+function canonicalInputColor(value: string): string | null {
+  const match = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(value);
+  if (match === null) {
+    return null;
+  }
+  const base = `#${match[1].toUpperCase()}`;
+  const alpha = match[2]?.toUpperCase();
+  return alpha === undefined || alpha === 'FF' ? base : `${base}${alpha}`;
 }
 
 interface FrameImpl extends Frame {
@@ -191,16 +242,18 @@ type Phase = 'binding' | 'executing';
 
 class JSRuntime implements Runtime, BoundProgram {
   readonly rows: number;
+  readonly inputs: readonly BoundInput[];
 
   private phase: Phase = 'binding';
   private readonly paramValues: readonly Value[];
+  private readonly paramActive: boolean[];
   private readonly seriesData: (SeriesData | null)[] = [];
   // Runtime-owned virtual series: the axis ordinal itself.
   private readonly barIndexSids = new Set<number>();
-  // Bind-time depth reports from the module's init section.
+  // Bind-time depth reports from the module's frame-aware bind section.
   private readonly boundLocalDepths = new Map<string, number>();
   private readonly boundOutputArgs: {name: string; value: Value}[][];
-  // Static request pairs declared by init (rt.bindRequest), then the merged
+  // Static request pairs declared by bind (rt.bindRequest), then the merged
   // views bindRequests() builds from them (null entries = dynamic edges,
   // whose reads go through their result ring and the pair-view table).
   private readonly requestPairs = new Map<
@@ -227,6 +280,10 @@ class JSRuntime implements Runtime, BoundProgram {
   private varipSnapshot: Map<Ring, Value> | null = null;
   private readonly hasDynamicRequests: boolean;
   private rootFrame: FrameImpl | null = null;
+  // module.bind needs real frame identity for input aliases/UDFs before bound
+  // capacities are known. Its frames therefore use scratch-only rings and are
+  // discarded; the final tree is rebuilt immediately after all depth reports.
+  private provisionalBindFrames = false;
 
   // Main-loop state.
   private cursor = -1;
@@ -246,14 +303,13 @@ class JSRuntime implements Runtime, BoundProgram {
     private readonly contextBudget: {used: number; readonly max: number},
   ) {
     this.paramValues = params;
+    this.paramActive = module.manifest.params.map(() => true);
     this.boundOutputArgs = module.manifest.outputs.map(() => []);
     this.hasDynamicRequests = module.manifest.requests.some(
       spec => spec.dynamic,
     );
 
-    // Run the compiled bind-time expressions (bound depths, output
-    // bind-args, static request contexts) before allocation: ring sizes may
-    // depend on them, and request pairs must be known before bindRequests.
+    // Reserved frame-free preparation runs before any frame exists.
     this.module.init(this);
 
     this.bindSeries();
@@ -269,6 +325,21 @@ class JSRuntime implements Runtime, BoundProgram {
         );
       }
     });
+
+    // Input-qualified aliases and UDFs need frame identity before their bound
+    // depth reports can size rings. Build a scratch-only provisional tree,
+    // run bind, then rebuild the final tree from the reported capacities.
+    // Bind writes never become execution state; row 0 computes them normally.
+    this.provisionalBindFrames = true;
+    this.rootFrame = this.newFrame(0);
+    this.module.bind(this, this.rootFrame);
+    this.provisionalBindFrames = false;
+    this.rootFrame = this.newFrame(0);
+    this.inputs = module.manifest.params.map((spec, pid) => ({
+      spec,
+      value: this.paramValues[pid],
+      active: this.paramActive[pid],
+    }));
   }
 
   // ---- binding --------------------------------------------------------------
@@ -298,7 +369,7 @@ class JSRuntime implements Runtime, BoundProgram {
       this.requestRings[rid] = null;
       const pair = this.requestPairs.get(rid);
       if (pair === undefined) {
-        return fatal(`request ${rid} was never declared by init`);
+        return fatal(`request ${rid} was never declared by bind`);
       }
       const view = await this.resolveAndMerge(
         rid,
@@ -307,8 +378,8 @@ class JSRuntime implements Runtime, BoundProgram {
         pair.timeframe,
         message => new BindError(message),
       );
-      const naValue = spec.ref ? null : NaN;
-      this.requestViews.push(view === 'invalid' ? {at: () => naValue} : view);
+      const empty = emptyValue(spec.valueClass);
+      this.requestViews.push(view === 'invalid' ? {at: () => empty} : view);
     }
   }
 
@@ -391,16 +462,16 @@ class JSRuntime implements Runtime, BoundProgram {
       child.rows,
       spec.merge,
     );
-    const naValue = spec.ref ? null : NaN;
+    const empty = emptyValue(spec.valueClass);
     return {
       at: row => {
         // Out-of-extent rows (a host executing past the bound extent) are
         // na, never an undefined leak.
         if (row < 0 || row >= map.length) {
-          return naValue;
+          return empty;
         }
         const childRow = map[row];
-        return childRow < 0 ? naValue : values[childRow];
+        return childRow < 0 ? empty : values[childRow];
       },
     };
   }
@@ -441,8 +512,10 @@ class JSRuntime implements Runtime, BoundProgram {
       );
     }
     const keep =
-      depth.kind === 'const' || depth.kind === 'capped' ? depth.bars : 0;
-    return new Ring(keep, spec.ref ? null : NaN);
+      depth.kind === 'const' || depth.kind === 'capped'
+        ? Math.min(retentionForOffset(depth.bars), this.rows)
+        : 0;
+    return new Ring(keep, spec.valueClass);
   }
 
   // The bind barrier: everything after this is the synchronous execution
@@ -457,7 +530,6 @@ class JSRuntime implements Runtime, BoundProgram {
         })),
       );
     }
-    this.rootFrame = this.newFrame(0);
   }
 
   private mustRoot(): FrameImpl {
@@ -504,7 +576,7 @@ class JSRuntime implements Runtime, BoundProgram {
       fid,
       layout,
       rings: layout.locals.map((local, slot) =>
-        this.newRing(fid, slot, local.ref, local.storage, local.depth),
+        this.newRing(fid, slot, local.valueClass, local.storage, local.depth),
       ),
       subs: layout.subs.map(() => null),
     };
@@ -519,10 +591,13 @@ class JSRuntime implements Runtime, BoundProgram {
   private newRing(
     fid: number,
     slot: number,
-    ref: boolean,
+    valueClass: ValueClassType,
     storage: string,
     depth: DepthSpec,
   ): Ring {
+    if (this.provisionalBindFrames) {
+      return new Ring(0, valueClass);
+    }
     let keep: number;
     switch (depth.kind) {
       case 'none':
@@ -530,25 +605,28 @@ class JSRuntime implements Runtime, BoundProgram {
         break;
       case 'const':
       case 'capped':
-        keep = depth.bars;
+        keep = retentionForOffset(depth.bars);
         break;
       case 'bound': {
         const bound = this.boundLocalDepths.get(`${fid}:${slot}`);
         if (bound === undefined) {
           return fatal(
-            `bound depth for frame ${fid} slot ${slot} was never reported by init`,
+            `bound depth for frame ${fid} slot ${slot} was never reported by bind`,
           );
         }
-        keep = bound;
+        keep = retentionForOffset(bound);
         break;
       }
     }
+    // A fixed context can never expose more committed history than its row
+    // extent, even when a bind-time offset is much larger.
+    keep = Math.min(keep, this.rows);
     // var/varip must retain at least the last committed value: the next
     // row's scratch seeds from it even when the body never reads history.
     if (storage === Storage.Var || storage === Storage.Varip) {
       keep = Math.max(keep, 1);
     }
-    return new Ring(keep, ref ? null : NaN);
+    return new Ring(keep, valueClass);
   }
 
   // Execution-start scratch protocol (docs/runtime.md): perBar resets to na;
@@ -567,14 +645,14 @@ class JSRuntime implements Runtime, BoundProgram {
           ring.resetScratch(ring.lastCommitted());
           return;
         }
-        ring.resetScratch(ring.naValue);
+        ring.resetScratch(ring.emptyValue);
         const thunk = this.module.inits[`${frame.fid}:${slot}`];
         if (thunk !== undefined) {
           ring.setScratch(thunk(this, frame));
         }
         return;
       }
-      ring.resetScratch(ring.naValue);
+      ring.resetScratch(ring.emptyValue);
     });
     for (const sub of frame.subs) {
       if (sub !== null) {
@@ -621,7 +699,7 @@ class JSRuntime implements Runtime, BoundProgram {
       }
     }
     for (const ring of this.requestRings) {
-      ring?.resetScratch(ring.naValue);
+      ring?.resetScratch(ring.emptyValue);
     }
     this.emitBuf = new Map();
     this.module.main(this, this.mustRoot());
@@ -662,7 +740,7 @@ class JSRuntime implements Runtime, BoundProgram {
         ring.resetScratch(ring.lastCommitted());
         return;
       }
-      ring.resetScratch(ring.naValue);
+      ring.resetScratch(ring.emptyValue);
       const thunk = this.module.inits[`${frame.fid}:${slot}`];
       if (thunk !== undefined) {
         ring.setScratch(thunk(this, frame));
@@ -723,6 +801,9 @@ class JSRuntime implements Runtime, BoundProgram {
   // ---- rt surface -----------------------------------------------------------
 
   series(sid: number, offset: number): number {
+    if (!isHistoryOffset(offset)) {
+      return NaN;
+    }
     const index = this.cursor - offset;
     if (this.barIndexSids.has(sid)) {
       return index < 0 ? NaN : index;
@@ -731,7 +812,13 @@ class JSRuntime implements Runtime, BoundProgram {
     if (data === null || index < 0 || index >= data.length) {
       return NaN;
     }
-    return data.at(index);
+    const value = data.at(index);
+    if (Number.isFinite(value) || Number.isNaN(value)) {
+      return value;
+    }
+    return fatal(
+      `provider series ${sid} returned a non-finite value at row ${index}`,
+    );
   }
 
   param(pid: number): Value {
@@ -751,6 +838,13 @@ class JSRuntime implements Runtime, BoundProgram {
     if (view === undefined) {
       return fatal(`request ${rid} has no merged view`);
     }
+    const spec = this.module.manifest.requests[rid];
+    if (spec === undefined) {
+      return fatal(`request ${rid} has no manifest entry`);
+    }
+    if (!isHistoryOffset(offset)) {
+      return emptyValue(spec.valueClass);
+    }
     // Dynamic edge: reads go through the result ring — the parent-row
     // history of whatever the request returned, whichever pair served it.
     if (view === null) {
@@ -763,9 +857,8 @@ class JSRuntime implements Runtime, BoundProgram {
     // Out-of-extent reads (including runtime-computed negative offsets) are
     // na, exactly like rt.series.
     const index = this.cursor - offset;
-    const spec = this.module.manifest.requests[rid];
     if (index < 0 || index >= this.rows) {
-      return spec.ref ? null : NaN;
+      return emptyValue(spec.valueClass);
     }
     return view.at(index);
   }
@@ -776,11 +869,11 @@ class JSRuntime implements Runtime, BoundProgram {
     if (spec === undefined || ring === null || ring === undefined) {
       return fatal(`requestFor on non-dynamic request ${rid}`);
     }
-    const naValue = spec.ref ? null : NaN;
+    const empty = emptyValue(spec.valueClass);
     // na context args yield na for the row — there is no context to ask.
     if (symbol === null || timeframe === null) {
-      ring.setScratch(naValue);
-      return naValue;
+      ring.setScratch(empty);
+      return empty;
     }
     if (typeof symbol !== 'string' || typeof timeframe !== 'string') {
       return fatal(`request ${rid} context args must be strings`);
@@ -793,7 +886,7 @@ class JSRuntime implements Runtime, BoundProgram {
       this.suspendedRow = this.cursor;
       throw new ContextSuspension(symbol, timeframe);
     }
-    const value = view === 'invalid' ? naValue : view.at(this.cursor);
+    const value = view === 'invalid' ? empty : view.at(this.cursor);
     ring.setScratch(value);
     return value;
   }
@@ -829,7 +922,12 @@ class JSRuntime implements Runtime, BoundProgram {
 
   bindDepth(fid: number, slot: number, bars: number): void {
     this.assertBinding('bindDepth');
-    this.boundLocalDepths.set(`${fid}:${slot}`, bars);
+    this.boundLocalDepths.set(`${fid}:${slot}`, retentionForOffset(bars));
+  }
+
+  historyDepth(offset: number): number {
+    this.assertBinding('historyDepth');
+    return retentionForOffset(offset);
   }
 
   bindSeriesDepth(sid: number, bars: number): void {
@@ -837,12 +935,23 @@ class JSRuntime implements Runtime, BoundProgram {
     // A contract to the provider, not an allocation: recorded for hosts
     // that page history; the csv provider ignores it.
     void sid;
-    void bars;
+    void retentionForOffset(bars);
   }
 
   bindOutput(oid: number, argName: string, v: Value): void {
     this.assertBinding('bindOutput');
     this.boundOutputArgs[oid].push({name: argName, value: v});
+  }
+
+  bindParamActive(pid: number, active: Value): void {
+    this.assertBinding('bindParamActive');
+    if (this.module.manifest.params[pid] === undefined) {
+      return fatal(`bindParamActive on unknown parameter ${pid}`);
+    }
+    if (typeof active !== 'boolean') {
+      return fatal(`parameter ${pid} active expression did not produce bool`);
+    }
+    this.paramActive[pid] = active;
   }
 
   bindRequest(rid: number, symbol: Value, timeframe: Value): void {
@@ -857,7 +966,7 @@ class JSRuntime implements Runtime, BoundProgram {
 
   private assertBinding(what: string): void {
     if (this.phase !== 'binding') {
-      fatal(`${what} outside the module's init section`);
+      fatal(`${what} outside the module's binding phase`);
     }
   }
 }

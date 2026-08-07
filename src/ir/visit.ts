@@ -46,6 +46,7 @@ function reachProgram(program: Program): Reach {
       reach.series.add(param.defaultValue.series);
     }
     visitDepth(param.depth, reach);
+    visitExpr(param.active, reach);
   }
   for (const output of program.outputs) {
     for (const arg of output.bindArgs) {
@@ -249,10 +250,9 @@ function visitSeries(series: SeriesInput, reach: Reach): void {
   visitDepth(series.depth, reach);
 }
 
-// Whether an expression can evaluate in a module's init section, which has
-// no frame: only constants, scalar param reads, and pure combinations
-// qualify. Shared by the depth pass (bound depths run at init) and codegen
-// (static request contexts lower into init).
+// Whether an expression can evaluate without any frame: only constants,
+// scalar param reads, and pure combinations qualify. This is the strict
+// subset used when no owner-proven root bind frame is available.
 export function bindEvaluable(e: IrExpr): boolean {
   switch (e.kind) {
     case IrKind.Const:
