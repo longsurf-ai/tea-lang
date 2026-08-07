@@ -8,14 +8,15 @@ Execution — the Runtime ABI, the JS runtime, and generated-module contract —
 ## Pipeline vocabulary
 
 ```
-Compilation                                  Binding        Lowering    Execution
-source ─ parse ─ check ─ buildProgram ─▶ Program ─▶ bound ─▶ JS ─▶ bar loop
-         syntax  typecheck   noder                  runtime   codegen  runtime
+Compilation                                  Lowering       Binding        Execution
+source ─ parse ─ check ─ buildProgram ─▶ Program ─▶ JS module ─▶ bound instance ─▶ bar loop
+         syntax  typecheck   noder                  codegen       runtime          runtime
 ```
 
 - **Noding** (`noder.buildProgram`) turns checked syntax into the Program.
-- **Lowering** is reserved for Program → JS (codegen), per `runtime.ts`'s
-  Compilation → Binding → Lowering → Execution flow.
+- **Lowering** is reserved for Program → JS (codegen), per [runtime.md](runtime.md)'s
+  Compilation → Lowering → Binding → Execution flow. Lowering is bind-independent;
+  the generated module evaluates bind-time expressions when the runtime binds it.
 - The checker is a separate pass over syntax with side tables (the types2
   shape); the noder consumes checked syntax and never re-checks.
 
@@ -107,7 +108,7 @@ owning:
   runtime; no synthetic first-bar guards in the body), and mutable analysis
   fields — type, qualifier, and a **history depth resolvable no later than
   bind time** (non-negotiable): `none` (no buffer materializes), `const`,
-  `bound` (an input/simple expression evaluated at bind), or `capped`
+  `bound` (a root-safe input-qualified expression evaluated at bind), or `capped`
   (dynamic offsets under an explicit bind-resolvable `max_bars_back` cap) —
   annotated by the checker and depth pass rather than frozen at
   construction. The binder's objects ARE these Names: one object set from
