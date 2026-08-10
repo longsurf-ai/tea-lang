@@ -108,6 +108,40 @@ describe('declarations', () => {
   });
 });
 
+describe('user-defined types', () => {
+  test('a field default nodes in a function instance', () => {
+    const program = mustBuild(
+      [
+        'type Point',
+        '    int x = 1',
+        'make() => Point.new()',
+        'point = make()',
+      ].join('\n'),
+    );
+    expect(funcsOf(program)[0].body).toMatchObject({
+      kind: IrKind.NewUdt,
+      args: [{kind: IrKind.Const, value: 1}],
+    });
+  });
+
+  test('a field default nodes in a request child', () => {
+    const program = mustBuild(
+      [
+        'type Point',
+        '    int x = 1',
+        'point = request.security("A", "D", Point.new())',
+      ].join('\n'),
+    );
+    expect(program.requests[0].child.body[0]).toMatchObject({
+      kind: IrKind.WriteName,
+      value: {
+        kind: IrKind.NewUdt,
+        args: [{kind: IrKind.Const, value: 1}],
+      },
+    });
+  });
+});
+
 describe('params and outputs', () => {
   test('input binds by declaration name and reads become param reads', () => {
     const program = mustBuild('len = input.int(14, "Length")\nx = close * len');
@@ -492,6 +526,22 @@ describe('depth resolution', () => {
       bars: {value: DEFAULT_MAX_BARS_BACK},
     });
   });
+
+  test('shared params retain the largest root and child demand', () => {
+    const program = mustBuild(
+      [
+        'length = input.int(1)',
+        'deep = request.security("A", "D", length[100])',
+        'shallow = request.security("B", "D", length[20])',
+        'root = length[2]',
+        'plot(deep + shallow + root)',
+      ].join('\n'),
+    );
+    expect(program.params[0].depth).toEqual({
+      kind: DepthKind.Const,
+      bars: 100,
+    });
+  });
 });
 
 describe('function stencils', () => {
@@ -592,6 +642,29 @@ describe('requests', () => {
     expect(funcsOf(program)).toEqual([]);
   });
 
+  test('a shared semantic function reprojects ambient and input dependencies', () => {
+    const program = mustBuild(
+      [
+        'length = input.int(1)',
+        'read() => close[length]',
+        'root = read()',
+        'child = request.security("X", "D", read())',
+        'plot(root + child)',
+      ].join('\n'),
+    );
+    const root = funcsOf(program).find(func => func.name === 'read');
+    const child = funcsOf(program.requests[0].child).find(
+      func => func.name === 'read',
+    );
+    expect(root).toBeDefined();
+    expect(child).toBeDefined();
+    expect(root).not.toBe(child);
+    expect(seriesInputsOf(program).map(series => series.id)).toContain('close');
+    expect(
+      seriesInputsOf(program.requests[0].child).map(series => series.id),
+    ).toContain('close');
+  });
+
   test('parent and request child own distinct function Names and depths', () => {
     const program = mustBuild(
       [
@@ -633,6 +706,26 @@ describe('requests', () => {
     });
   });
 
+  test('request captures stay isolated across function specializations', () => {
+    const program = mustBuild(
+      [
+        'fetch(value) => request.security("X", "D", value)',
+        'price = fetch(close)',
+        'index = fetch(bar_index)',
+      ].join('\n'),
+    );
+    expect(program.requests.map(edge => edge.resultType.kind)).toEqual([
+      TypeKind.Float,
+      TypeKind.Int,
+    ]);
+    expect(
+      program.requests.map(edge => {
+        const result = edge.child.body[0];
+        return result.kind === IrKind.WriteName ? result.value.type.kind : null;
+      }),
+    ).toEqual([TypeKind.Float, TypeKind.Int]);
+  });
+
   test('request binding distinguishes root aliases from function locals', () => {
     const staticProgram = mustBuild(
       [
@@ -669,6 +762,14 @@ describe('requests', () => {
     expect(
       errors.some(e => e.msg.includes('cannot reference script variable')),
     ).toBe(true);
+  });
+
+  test('request children inherit the source language version', () => {
+    const program = mustBuild(
+      '//@version=6\nvalue = request.security("A", "D", close)',
+    );
+    expect(program.version).toBe(6);
+    expect(program.requests[0].child.version).toBe(6);
   });
 });
 

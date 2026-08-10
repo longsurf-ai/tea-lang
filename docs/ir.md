@@ -17,8 +17,38 @@ source ─ parse ─ check ─ buildProgram ─▶ Program ─▶ JS module ─�
 - **Lowering** is reserved for Program → JS (codegen), per [runtime.md](runtime.md)'s
   Compilation → Lowering → Binding → Execution flow. Lowering is bind-independent;
   the generated module evaluates bind-time expressions when the runtime binds it.
-- The checker is a separate pass over syntax with side tables (the types2
-  shape); the noder consumes checked syntax and never re-checks.
+- The checker is a separate semantic pass over syntax (the types2 shape); the
+  noder consumes the checked package and its exact per-context facts and never
+  re-checks.
+
+### Semantic package and occurrence facts (`src/checker/`)
+
+`Package → Scope → Object → Type` is the checker source of truth. A package
+owns its files, package scope, and imports; persistent scopes map source names
+to canonical semantic objects; those objects represent variables, function
+templates, UDTs and fields, enums and members, package names, and builtins. The
+shared type domain describes their value types. This graph answers _what a
+declaration is_ without embedding Program objects or runtime layout.
+
+`Info` answers _what each syntax occurrence means_. It records expression
+types, definitions, uses, selections, scopes, calls, and reassignment for one
+semantic checking context. The package root, each function instance, and each
+request capture retain the exact `Info` in which they were checked. A request
+capture's facts are semantic context, not physical Program identity; the noder
+may project the same semantic objects into multiple Programs.
+
+Every call occurrence has one discriminated `CallResolution`: native,
+function, constructor, or request. A `UdtObject` owns its nominal type and
+ordered `FieldObject`s; each field owns its checked default expression together
+with the `Info`, `TypeAndValue`, and semantic dependency set that interpret it.
+Constructor resolution aligns every supplied or defaulted argument to a field,
+joins their qualifiers, and applies capture policy only to defaults actually
+used by that call. Request resolution owns its capture facts and result type.
+There are no parallel call maps or root-global UDT-default/capture tables.
+
+The boundary is strict: checker results contain no `IrName`, `SeriesInput`,
+`ParamInput`, `RequestEdge`, `HistoryDepth`, slot, or frame. The noder creates
+those backend representations at the Program boundary.
 
 ## The one invariant above all others
 
@@ -70,9 +100,13 @@ consumed by `fill` — not runtime heap handles.
 ## Program (`src/ir/program.ts`)
 
 A Program is _a bar loop over one context_ — one symbol × timeframe axis —
-owning:
+owning the following backend resources. The noder is their sole creator: its
+per-Program context projects `VariableObject → IrName` and
+`BuiltinObject → SeriesInput`, creates `ParamInput` and `RequestEdge` objects,
+mints slots and synthetic names, establishes static frame layouts, and hands
+the resulting places to its depth pass for annotation.
 
-- **params**: `input.*` declarations. Compile time extracts the declaration
+- **params**: `input.*` declarations. Noding extracts the declaration
   (name, type, default, const-required constraints, and host-facing UI
   metadata including `display`); the **value arrives at bind time from the
   runtime**. Each syntax call extracts once globally even from a local block,
@@ -95,25 +129,29 @@ owning:
 - **ambient series** (not a field): `close`, `time`, `bar_index`,
   `syminfo.*` are built-ins of whatever context the Program runs in —
   provided by the runtime unconditionally, context-scoped, never declared,
-  never mandatory. `seriesInputsOf` projects the depth-annotated usage set
-  for buffer sizing.
-- **names**: variables are `Name` objects — the `ir.Name` model. One object
-  per declaration, referenced directly from every use; there is no id and no
-  top-level variable table (enumerations for allocation or serialization are
-  projections derived by walking, produced at the boundary that needs them —
-  exactly how Go keeps a pointer graph in memory and lets the unified-IR
-  writer assign indices at the boundary). A Name carries storage (`perBar` |
-  `var` | `varip` — the persistence axis, orthogonal to qualifiers), a
-  first-bar `init` expression for var/varip storage (evaluated once by the
-  runtime; no synthetic first-bar guards in the body), and mutable analysis
-  fields — type, qualifier, and a **history depth resolvable no later than
-  bind time** (non-negotiable): `none` (no buffer materializes), `const`,
-  `bound` (a root-safe input-qualified expression evaluated at bind), or `capped`
-  (dynamic offsets under an explicit bind-resolvable `max_bars_back` cap) —
-  annotated by the checker and depth pass rather than frozen at
-  construction. The binder's objects ARE these Names: one object set from
-  binding through codegen. Series inputs and request results carry the same
-  depth field, so the runtime sizes every buffer from the description alone.
+  never mandatory. The checker resolves each occurrence to a semantic
+  `BuiltinObject`; the noder interns its own `SeriesInput` in each Program
+  projection. `seriesInputsOf` projects the depth-annotated usage set for
+  buffer sizing.
+- **names**: variables in a Program are `Name` objects — the `ir.Name` model.
+  The noder projects a semantic `VariableObject` to one Name per Program
+  context, referenced directly from every IR use. A checker object and an IR
+  Name are deliberately different abstractions, and parent/request-child
+  Programs never share mutable Names. There is no id and no top-level variable
+  table (enumerations for allocation or serialization are projections derived
+  by walking, produced at the boundary that needs them — exactly how Go keeps
+  a pointer graph in memory and lets the unified-IR writer assign indices at
+  the boundary). A Name carries storage (`perBar` | `var` | `varip` — the
+  persistence axis, orthogonal to qualifiers), a first-bar `init` expression
+  for var/varip storage (evaluated once by the runtime; no synthetic first-bar
+  guards in the body), type and qualifier copied from the semantic object, and
+  a **history depth resolvable no later than bind time** (non-negotiable):
+  `none` (no buffer materializes), `const`, `bound` (a root-safe
+  input-qualified expression evaluated at bind), or `capped` (dynamic offsets
+  under an explicit bind-resolvable `max_bars_back` cap). Init is owned by
+  noding and depth by the noder's depth pass. Series inputs, params, and request
+  results carry the same depth field, so the runtime sizes every buffer from
+  the description alone.
 - **outputs**: statically-declared effect channels (plot/hline/
   alertcondition), hoisted so the host knows every channel before the first
   bar. Three argument buckets: `staticArgs` (compile-time constants),
@@ -122,11 +160,13 @@ owning:
   module.bind and delivered before the first bar), and per-bar `channels` written
   via `Emit`. `x = plot(...)` lowers to the OutputDecl plus a const
   plot-typed binding holding the OutputId.
-- **requests**: the recursive edge. Each `request.*` call site compiles its
-  captured expression into a **child Program** with its own context, axis,
-  slots, and rollback. Constants and direct scalar inputs may cross from the
-  root; automatic closure over computed root names is staged and rejected in
-  the meantime. The child designates a
+- **requests**: the recursive edge. The checker records capture semantics in
+  the request call's resolution; the noder projects that resolution to a
+  `RequestEdge` and compiles its captured expression into a **child Program**
+  with its own context, axis, names, series inputs, slots, and rollback. The
+  capture facts are not the child Program itself. Constants and direct scalar
+  inputs may cross from the root; automatic closure over computed root names
+  is staged and rejected in the meantime. The child designates a
   **result name** (`RequestEdge.resultName`, written each child bar; its type
   is the edge's `resultType`) whose committed values the runtime merges onto
   the parent axis (sample or collect, gaps/lookahead, ignore-invalid-symbol,
@@ -138,12 +178,14 @@ owning:
   distinct (symbol, timeframe) pair it encounters. Non-security request kinds
   (financial/dividends/economic) map to edges whose child is a plain
   series-input projection; their extra context args ride the same shape.
-- **funcs** (a projection, not a field): per-Program, per-signature
-  instantiations of user/prelude functions — Go-style stencils that remain
-  **real functions with runtime call dispatch**; inlining is at most a
-  codegen optimization. Parent and request-child Programs never share a
-  stencil's mutable Names or depth annotations, even for the same source
-  template/signature.
+- **funcs** (a projection, not a field): semantic function stencils are keyed
+  only by `(FunctionObject, type + qualifier signature)`, not by a Program or
+  request owner. They remain **real functions with runtime call dispatch**;
+  inlining is at most a codegen optimization. The same semantic
+  `FunctionInstance` may therefore be used while noding multiple Programs,
+  but each Program context projects it to a distinct `IrFunc`, Name graph, and
+  depth state. Parent and request-child Programs never share those mutable IR
+  objects.
   State is a **frame tree**: an IrFunc's frame layout is its local Names
   plus one sub-frame per stateful call site (selected by that site's
   `SlotId`); frames nest along the static call graph (acyclic — recursion
@@ -158,8 +200,9 @@ owning:
 ## IR nodes (`src/ir/node.ts`)
 
 Typed and resolved: every expression carries `(type, qualifier)`; every use
-is a `Place` referencing its declaration object directly (Name | ParamInput |
-SeriesInput | RequestEdge — no ids), with `HistRead {place, offset?}` — a
+is a `Place` referencing its projected IR declaration object directly (Name |
+ParamInput | SeriesInput | RequestEdge — no ids), with
+`HistRead {place, offset?}` — a
 read through the time machine, offset null meaning the current bar — and
 each use keeping its own position (unlike shared-node designs, diagnostics
 never lose the use site). `TupleGet` has no surface syntax: Pine tuples are
@@ -181,12 +224,13 @@ A builtin is native **only if it is inexpressible in Tea**: data sources
 (`request.*`), heap primitives (`array.*`), math intrinsics. Everything
 else — all of `ta.*` — is library code: a builtin Tea library
 (`src/lib/ta.tea`, a real `library("ta")` with `export` functions, loaded by
-`checker/library.ts` and implicitly imported into every script), compiled by
-the ordinary pipeline, with per-call-site state falling out of ordinary
-function semantics. Within one Program, stencils are per-signature, not
-per-value: a const-qualified param (`length`) is known per call site at bind
-time but carries no fold value into the shared body. The native catalog (typecheck round) declares, per
-primitive: value signature, per-param qualifier caps, const-required and
+the loader/importer seam and implicitly imported into every script), compiled
+by the ordinary pipeline, with per-call-site state falling out of ordinary
+function semantics. Semantic stencils are per type + qualifier signature, not
+per value or Program: a const-qualified param (`length`) is known per call site
+at bind time but carries no fold value into the shared body. The native catalog
+(typecheck round) declares, per primitive: value signature, per-param qualifier
+caps, const-required and
 **expression-capture** markers (what makes `request`'s third argument a
 subgraph), and an **effect class** — the tag that selects the compilation and
 runtime protocol:
@@ -212,8 +256,9 @@ A Program declares its external needs — `params` (bind-time values; an
 unused input still renders in the settings UI) and `requests`
 (child-Program contexts the runtime must resolve) — and its emissions
 (`outputs`; a static-only hline has no Emit), explicitly even where
-derivable: binder, checker, and runtime read what the program needs from
-the world here, never by walking trees. Ambient context builtins (close,
+derivable: the noder populates this interface, and codegen/runtime read what
+the program needs from the world here without reinterpreting checker facts.
+Ambient context builtins (close,
 volume, syminfo.\*) are NOT declared: they are simply available, usage
 optional, and the series list of a child context is a product of request
 resolution. Composition internals — names, funcs, call-site slots — are
@@ -234,16 +279,20 @@ construction.
 - A value-position loop yields the last completed iteration's block value,
   `na` if no iteration completed; `break` skips the current iteration's
   value.
+- UDT construction consumes the constructor call's single resolution. Its
+  field-ordered arguments include both supplied expressions and field-owned
+  defaults; the noder temporarily reads each checked expression's `Info` while
+  lowering it into the caller's current Program and frame. Defaults are
+  semantic expressions, never prebuilt IR shared across Programs.
 - Request captures: the expression re-checks and nodes in a child context.
   Only constants and direct scalar input bindings cross contexts; computed
-  root aliases fail closed until capture dependency-closure extraction is
-  implemented. Series/simple script variables must be recomputed inside the
-  expression, and functions that
-  read the context directly (ambient series, outer-scope variables) are
-  rejected — pass context through parameters. Bind-time params are
+  root aliases fail closed because the child has no projected root-frame place
+  for them. Function instances record exact transitive semantic dependencies:
+  ambient builtins reproject safely in the child, while outer variables must
+  be constants or direct scalar input bindings. Bind-time params are
   compilation-global: the child references the parent's ParamInputs and
-  declares none of its own. Extracting the dependency closure of script
-  variables into the child automatically is a possible later extension.
+  declares none of its own. Materializing computed root values in the child is
+  a possible later extension.
 - Libraries link at check time through the import seam (Go's
   types2.Importer split): the loader's registry decides what a path means
   and loads libraries recursively (cycle detection included); the checker
@@ -258,8 +307,9 @@ construction.
   call (or an alias of one) binds to its `OutputDecl` via `OutputRef` — so
   `fill(p1, p2)` resolves refs at bind, never per bar. “Never reassigned” is
   a whole-context fact about the exact declaration object, not every binding
-  with the same spelling. Tea `const` declarations vanish entirely (every
-  read folded).
+  with the same spelling. That declaration object is the semantic
+  `VariableObject`; the noder chooses the current Program's projected Name.
+  Tea `const` declarations vanish entirely (every read folded).
 - `indicator()`/`strategy()` node as OutputDecls whose `effect` is the
   native's name: script metadata is an emission to the host, hoisted like
   every other declarative output.

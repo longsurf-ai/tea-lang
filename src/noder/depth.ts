@@ -32,7 +32,7 @@ interface DepthCarrier {
 interface Demand {
   maxConst: number;
   bound: IrExpr[];
-  dynamic: boolean;
+  dynamicCap: number | null;
   pos: HistReadExpr['pos'];
 }
 
@@ -53,11 +53,30 @@ interface WalkContext {
 
 // Input-qualified demands are evaluated exactly at bind. Function-local
 // parameters and immutable aliases are substituted with the root call-site
-// arguments that feed them, so one stencil called with multiple input values
+// arguments that feed them, so one IR function called with multiple input values
 // contributes one max expression. Any demand that still depends on per-bar
 // state remains capped.
 export function resolveDepths(program: Program): void {
   const demands = new Map<DepthCarrier, Demand>();
+  collectDemands(program, demands, new Set());
+  for (const [carrier, demand] of demands) {
+    carrier.depth = finalize(demand);
+  }
+}
+
+// Request children may share compilation-global ParamInputs with the root and
+// sibling Programs. Accumulate the entire Program tree before annotating any
+// carrier so a later Program cannot overwrite an earlier, deeper demand.
+function collectDemands(
+  program: Program,
+  demands: Map<DepthCarrier, Demand>,
+  visited: Set<Program>,
+): void {
+  if (visited.has(program)) {
+    return;
+  }
+  visited.add(program);
+  const cap = declarationCap(program);
   const funcs = funcsOf(program);
   const names = namesOf(program);
   const functionNames = new Set(
@@ -79,7 +98,7 @@ export function resolveDepths(program: Program): void {
     const carrier = carrierOf(read);
     let demand = demands.get(carrier);
     if (demand === undefined) {
-      demand = {maxConst: 0, bound: [], dynamic: false, pos: read.pos};
+      demand = {maxConst: 0, bound: [], dynamicCap: null, pos: read.pos};
       demands.set(carrier, demand);
     }
     const offset = read.offset;
@@ -97,7 +116,7 @@ export function resolveDepths(program: Program): void {
       demand.bound.push(normalized.expr);
       return;
     }
-    demand.dynamic = true;
+    demand.dynamicCap = Math.max(demand.dynamicCap ?? 0, cap);
   };
 
   const walkStmt = (stmt: IrStmt, ctx: WalkContext): void => {
@@ -200,10 +219,8 @@ export function resolveDepths(program: Program): void {
   for (const stmt of [...program.init, ...program.body]) {
     walkStmt(stmt, root);
   }
-
-  const cap = declarationCap(program);
-  for (const [carrier, demand] of demands) {
-    carrier.depth = finalize(demand, cap);
+  for (const request of program.requests) {
+    collectDemands(request.child, demands, visited);
   }
 }
 
@@ -369,10 +386,10 @@ function carrierOf(read: HistReadExpr): DepthCarrier {
   }
 }
 
-function finalize(demand: Demand, cap: number): HistoryDepth {
-  const minimum = Math.max(demand.maxConst, demand.dynamic ? cap : 0);
+function finalize(demand: Demand): HistoryDepth {
+  const minimum = Math.max(demand.maxConst, demand.dynamicCap ?? 0);
   if (demand.bound.length === 0) {
-    if (demand.dynamic) {
+    if (demand.dynamicCap !== null) {
       return cappedDepth(demand, minimum);
     }
     return minimum > 0

@@ -3,7 +3,7 @@
 import {Errors, fatal, type ErrorMsg} from '../base/print';
 import {newFileBase} from '../base/pos';
 import type {Program} from '../ir/program';
-import {check} from '../checker/check';
+import {checkPackage} from '../checker/check';
 import {resolveImports} from '../loader/loader';
 import {parse} from '../syntax/syntax';
 import {buildProgram} from './noder';
@@ -22,11 +22,11 @@ export function buildText(src: string, filename = 'test.tea'): BuildResult {
   if (errors.count > 0) {
     return {program: null, errors: errors.flushErrors()};
   }
-  const info = check(file, errors, resolveImports([file]));
+  const checked = checkPackage([file], errors, resolveImports([file]));
   if (errors.count > 0) {
     return {program: null, errors: errors.flushErrors()};
   }
-  const program = buildProgram(file, info, errors);
+  const program = buildProgram(checked, errors);
   if (errors.count > 0) {
     return {program: null, errors: errors.flushErrors()};
   }

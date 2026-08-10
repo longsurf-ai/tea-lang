@@ -1,57 +1,27 @@
-// Purpose: Lexical scopes for the checker — the binder. Declaration sites create ir Name objects directly; the binder's objects ARE the IR Names, one object set from binding through codegen.
+// Purpose: Persistent checker scope tree mapping source names to canonical semantic declaration objects.
 
-import type {Name as IrName} from '../ir/node';
-import type {ConstValue, EnumType, UdtType} from '../ir/type';
-import type {FuncDecl} from '../syntax/nodes';
-import type {ResolvedLibrary} from './importer';
-
-// What an identifier resolves to. Name is a variable backed by an ir Name;
-// constDecl marks Tea's `const` declaration mode (reassignment forbidden,
-// folded value recorded). Func is an uninstantiated user-function template
-// (stenciled per signature when calls are checked). Udt/Enum are type
-// declarations.
-export const EntryKind = {
-  Name: 'name',
-  Func: 'func',
-  Udt: 'udt',
-  Enum: 'enum',
-  Library: 'library',
-} as const;
-
-export type ScopeEntry =
-  | {
-      readonly kind: typeof EntryKind.Name;
-      readonly name: IrName;
-      readonly constDecl: boolean;
-      readonly constValue: ConstValue | null;
-    }
-  | {
-      readonly kind: typeof EntryKind.Func;
-      readonly decl: FuncDecl;
-      // The scope the template's body resolves against when instantiated:
-      // the user file's global scope, or the prelude scope for ta.*.
-      readonly base: Scope;
-    }
-  | {readonly kind: typeof EntryKind.Udt; readonly type: UdtType}
-  | {readonly kind: typeof EntryKind.Enum; readonly type: EnumType}
-  // An imported library namespace (implicit libraries bind ambiently).
-  | {
-      readonly kind: typeof EntryKind.Library;
-      readonly library: ResolvedLibrary;
-    };
+import type {Object} from './object';
 
 export class Scope {
-  private readonly entries = new Map<string, ScopeEntry>();
+  readonly children: Scope[] = [];
+  private readonly objects = new Map<string, Object>();
 
-  constructor(readonly parent: Scope | null) {}
+  constructor(
+    readonly parent: Scope | null,
+    trackChild = true,
+  ) {
+    if (trackChild) {
+      parent?.children.push(this);
+    }
+  }
 
-  lookup(name: string): ScopeEntry | null {
+  lookup(name: string): Object | null {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     let scope: Scope | null = this;
     while (scope !== null) {
-      const entry = scope.entries.get(name);
-      if (entry !== undefined) {
-        return entry;
+      const object = scope.objects.get(name);
+      if (object !== undefined) {
+        return object;
       }
       scope = scope.parent;
     }
@@ -59,7 +29,7 @@ export class Scope {
   }
 
   has(name: string): boolean {
-    return this.entries.has(name);
+    return this.objects.has(name);
   }
 
   // True when `name` resolves within the chain from this scope up to and
@@ -82,11 +52,11 @@ export class Scope {
 
   // Declares into THIS scope; false when the name is already declared here
   // (shadowing an outer scope's name is allowed, redeclaring locally is not).
-  declare(name: string, entry: ScopeEntry): boolean {
-    if (this.entries.has(name)) {
+  declare(object: Object): boolean {
+    if (this.objects.has(object.name)) {
       return false;
     }
-    this.entries.set(name, entry);
+    this.objects.set(object.name, object);
     return true;
   }
 }

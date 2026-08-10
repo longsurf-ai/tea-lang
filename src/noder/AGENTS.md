@@ -1,15 +1,22 @@
 # noder
 
-Checked syntax → Program. `buildProgram` nodes one checked file into the
-Tea Program using the checker's `Info` side tables; `depth.ts` owns depth
-policy and normalization, while `depth-walk.ts` owns lexical traversal and
-single-write input discovery. Source loading lives in `src/loader`.
+Checked semantics → Program. `buildProgram` nodes one checked file into the
+Tea Program using the exact per-context `Info` produced by the checker;
+`depth.ts` owns depth policy and normalization, while `depth-walk.ts` owns
+lexical traversal and single-write input discovery. Source loading lives in
+`src/loader`.
 
 ## Invariants
 
 - The noder never re-checks: every type, qualifier, and resolution comes
-  from `Info`. A Bad node or missing side-table entry here is a phase-barrier
-  violation and `fatal()`s — never a queued user error.
+  from the active semantic context's `Info`. A Bad node or missing fact here
+  is a phase-barrier violation and `fatal()`s — never a queued user error.
+- The noder is the sole semantic-to-backend projection. Each
+  `ProgramLoweringContext` interns `VariableObject → IrName` and
+  `BuiltinObject → SeriesInput`; the noder also creates `ParamInput`,
+  `RequestEdge`, `IrFunc`, synthetic/result names, call-site slots, and the
+  static frame layout. Checker objects never acquire backend depth, init,
+  slot, or frame state.
 - Aggressive folding: any expression the checker resolved to a constant
   nodes as a `Const`; const-qualified expressions are pure by construction,
   so folding never drops effects.
@@ -17,12 +24,18 @@ single-write input discovery. Source loading lives in `src/loader`.
   the concrete nullable type known from its declaration, branch join, field,
   or call parameter; an uncontextualized na reaching Program construction is
   a phase-barrier violation and `fatal()`s.
+- UDT constructors consume their one `ConstructorCall` resolution. Its
+  field-ordered arguments include supplied expressions and field-owned
+  defaults; each `CheckedExpression` supplies the exact semantic `Info` to use
+  while the value lowers into the caller's current Program and frame. A
+  default expression is never prebuilt IR shared between Programs.
 - Reference bindings are compile-time only: a never-reassigned declaration
   whose initializer is an input call binds the name to its `ParamInput`
   (reads become param reads, no per-bar write), and one whose initializer
   nodes to an `OutputRef` binds the name to its `OutputDecl` (fill resolves
   refs at bind). Reassignment eligibility comes directly from the current
-  checker side tables and is keyed by the shared `ir.Name` identity. Tea
+  `Info` and is keyed by canonical semantic `VariableObject` identity; the
+  noder then applies the binding to that Program's projected `IrName`. Tea
   `const` declarations vanish entirely.
 - Param identity: the binding name when the input call initializes a program-
   scope declaration, else `input@line:col`. Inputs in local blocks and
@@ -32,8 +45,7 @@ single-write input discovery. Source loading lives in `src/loader`.
   `active` expression is evaluable without its source function/capture frame.
   One `ParamInput`/`OutputDecl` per call site, deduped by syntax node. Supported
   projections must not discard fields: the exclusive range/options constraint,
-  concrete
-  group/inline/tooltip/confirm/display metadata, nominal enum type, and
+  concrete group/inline/tooltip/confirm/display metadata, nominal enum type, and
   input-qualified `active` expression are copied into that ParamInput after
   the checker rejects invalid metadata.
 - Output args partition by when they are known: folded constants →
@@ -49,7 +61,8 @@ single-write input discovery. Source loading lives in `src/loader`.
   then combines every constant/bound demand on a carrier into one exact,
   na-safe maximum. Any remaining per-bar or unresolved frame dependency is
   `capped` by `indicator(max_bars_back=…)` or the engine default. Depths
-  annotate the shared place objects (Names, series, params) in place; every
+  annotate the noder-created IR place objects (names, series, params, and
+  requests) in place and accumulate across the recursive Program graph; every
   `bound` expression is normalized for lowering from the root bind frame.
 - Alias bindings: a never-reassigned plain declaration whose initializer is
   a current-bar read of a STABLE place (series, param, STATIC request —
@@ -62,15 +75,18 @@ single-write input discovery. Source loading lives in `src/loader`.
   every expression.
 - A request.\* call site nodes into a `RequestEdge`: symbol/timeframe/merge
   evaluate in the parent context; the captured expression nodes against the
-  checker's child tables into a child Program with its own frame, slot
-  counter, request list, and `$result` name. Direct bind-time params stay
-  compilation-global — a child references the parent's ParamInput objects
-  and declares none of its own. Computed root aliases are rejected by the
-  checker until dependency-closure extraction can materialize them there.
-- One IrFunc per checker FuncInstance, its body noded against the
-  instance's side tables under its own frame-local slot counter: every
-  CallFunc site mints the next slot of the frame it sits in — the sub-frame
-  selector. Omitted arguments node the instance's default expression at the
-  call site; defaults must not reference sibling params.
+  request resolution's child `Info` into a child Program with its own name and
+  series projection, frame, slot counter, request list, and `$result` name.
+  The child `Info` is semantic capture facts, not Program identity or an IR
+  cache key.
+  Direct bind-time params stay compilation-global — a child references the
+  parent's `ParamInput` objects and declares none of its own. Computed root
+  aliases are rejected by the checker until dependency-closure extraction can
+  materialize them there.
+- One `IrFunc` per checker `FunctionInstance` per Program projection, its body
+  noded against the instance's `Info` under its own frame-local slot counter:
+  every `CallFunc` site mints the next slot of the frame it sits in — the
+  sub-frame selector. Omitted arguments node the instance's checked default
+  expression at the call site; defaults must not reference sibling params.
 - Program.init stays empty for now: hoisting const/input/simple work out of
   the bar loop is a later optimization, not a correctness requirement.

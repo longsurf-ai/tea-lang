@@ -1,7 +1,7 @@
 // Purpose: Tea IR nodes — the noder's typed, resolved body vocabulary; every expression carries its type and qualifier, and every use references its declaration object directly.
 
 import type {Pos} from '../base/pos';
-import type {ConstValue, Qualifier, Type, UdtType} from './type';
+import type {ConstValue, NameStorage, Qualifier, Type, UdtType} from './type';
 import type {
   IrFunc,
   OutputDecl,
@@ -9,6 +9,8 @@ import type {
   RequestEdge,
   SeriesInput,
 } from './program';
+export {Storage} from './type';
+export type {NameStorage} from './type';
 
 // Data series are bound by host name ('close', 'syminfo.tickerid'), unlike
 // compiler-internal objects which are identified by reference.
@@ -18,17 +20,6 @@ export type DataSeriesId = string;
 // sub-frame within the caller's frame. Frames nest along the static call
 // graph, so the runtime pre-allocates the whole frame tree at bind time.
 export type SlotId = number;
-
-// Persistence, orthogonal to qualifiers: perBar re-initializes each
-// iteration, var carries the previous iteration's value forward (rolled back
-// on provisional re-execution), varip persists across ticks without rollback.
-export const Storage = {
-  PerBar: 'perBar',
-  Var: 'var',
-  Varip: 'varip',
-} as const;
-
-export type NameStorage = (typeof Storage)[keyof typeof Storage];
 
 // How deep a place's history must reach, resolvable no later than bind time:
 // None = never read historically (no buffer materializes); Const = known
@@ -49,17 +40,16 @@ export type HistoryDepth =
   | {readonly kind: typeof DepthKind.Bound; readonly expr: IrExpr}
   | {readonly kind: typeof DepthKind.Capped; readonly bars: IrExpr};
 
-// A declared variable. One object per declaration; every use references it —
-// identity is the object, there is no id and no table. The binder creates
-// it, the checker and depth pass annotate the mutable analysis fields, the
-// noder threads it into trees: one object set from binding to codegen.
-// Variable enumerations (allocation plans, serialized indices) are
-// projections derived by walking, produced at the boundary that needs them.
+// A Program-local variable projection. The noder creates one object per
+// semantic VariableObject in each Program context; every IR use references
+// it directly, with no id or table. Variable enumerations (allocation plans,
+// serialized indices) are projections derived by walking at the boundary
+// that needs them.
 export interface Name {
   readonly name: string;
   readonly storage: NameStorage;
-  // Annotated during checking and depth resolution — working fields, mutable
-  // by the owning pass (the scanner-field precedent), read-only after.
+  // Type/qualifier copy from semantic facts; depth is annotated by the
+  // noder's depth pass. These working fields are read-only afterward.
   type: Type;
   qualifier: Qualifier;
   depth: HistoryDepth;

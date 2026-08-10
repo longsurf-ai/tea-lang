@@ -13,6 +13,11 @@ bad = request.security("A", "D", x) // ERROR request expressions cannot referenc
 ctx() =>
 	close * 2
 
-bad2 = request.security("A", "D", ctx()) // ERROR reads the script's context directly
+viaFunction = request.security("A", "D", ctx())
+
+capturesRoot() =>
+	x
+
+bad2 = request.security("A", "D", capturesRoot()) // ERROR reads script variable 'x'
 
 bad3 = request.security("A", "D", plot(close)) // ERROR 'plot' can only be called at the top level

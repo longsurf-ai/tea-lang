@@ -1,26 +1,21 @@
-// Purpose: Variable binding prepass — creates canonical IR Names and resolves whole-context reassignment facts by lexical binding identity before semantic checking.
+// Purpose: Variable binding prepass — creates canonical semantic VariableObjects and resolves whole-context reassignment facts by lexical identity before checking.
 
 import {fatal} from '../base/print';
-import {
-  DepthKind,
-  Storage,
-  type Name as IrName,
-  type NameStorage,
-} from '../ir/node';
-import {InvalidType, Qualifier} from '../ir/type';
+import {Storage, type NameStorage, InvalidType, Qualifier} from '../ir/type';
 import {Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
-import {EntryKind, Scope} from './scope';
+import {ObjectKind, type Object, type VariableObject} from './object';
+import {Scope} from './scope';
 
 export interface BindingTables {
-  readonly defs: Map<syntax.Name, IrName>;
-  readonly uses: Map<syntax.Name, IrName>;
-  readonly reassigned: Set<IrName>;
+  readonly defs: Map<syntax.Name, Object>;
+  readonly uses: Map<syntax.Name, Object>;
+  readonly reassigned: Set<VariableObject>;
 }
 
 // @agent invariant: Text names are lookup keys only. Every declaration and
-// reassignment fact is represented by the canonical IrName shared with the
-// checker and noder, so shadowed bindings can never affect one another.
+// reassignment fact uses the canonical semantic VariableObject, so shadowed
+// bindings can never affect one another.
 export function bindFileNames(
   file: syntax.File,
   base: Scope,
@@ -55,7 +50,9 @@ class NameBinder {
   ) {
     // Binding must not populate the semantic scope before source-order
     // checking. The temporary child holds only canonical variable objects.
-    this.scope = new Scope(base);
+    // This prepass needs lexical lookup but does not own the semantic scope
+    // tree recorded by the checker.
+    this.scope = new Scope(base, false);
   }
 
   bindFunc(decl: syntax.FuncDecl, args: readonly (syntax.Expr | null)[]): void {
@@ -202,9 +199,9 @@ class NameBinder {
       case NodeKind.AssignStmt: {
         if (stmt.target.kind === NodeKind.Name) {
           const entry = this.scope.lookup(stmt.target.value);
-          if (entry?.kind === EntryKind.Name) {
-            this.tables.uses.set(stmt.target, entry.name);
-            this.tables.reassigned.add(entry.name);
+          if (entry?.kind === ObjectKind.Variable) {
+            this.tables.uses.set(stmt.target, entry);
+            this.tables.reassigned.add(entry);
           }
         }
         this.bindExpr(stmt.target);
@@ -251,21 +248,17 @@ class NameBinder {
     if (this.tables.defs.has(node)) {
       return fatal(`declaration '${node.value}' bound more than once`);
     }
-    const name: IrName = {
+    const object: VariableObject = {
+      kind: ObjectKind.Variable,
       name: node.value,
       storage,
       type: InvalidType,
       qualifier: Qualifier.Const,
-      depth: {kind: DepthKind.None},
-      init: null,
-    };
-    this.tables.defs.set(node, name);
-    this.scope.declare(node.value, {
-      kind: EntryKind.Name,
-      name,
       constDecl,
       constValue: null,
-    });
+    };
+    this.tables.defs.set(node, object);
+    this.scope.declare(object);
   }
 }
 

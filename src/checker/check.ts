@@ -1,4 +1,4 @@
-// Purpose: Eager semantic checker over syntax (the types2 shape) — consumes canonical variable bindings, annotates side tables with TypeAndValue, propagates qualifiers (later-known wins), folds constants, and enforces catalog signatures, caps, and placement rules.
+// Purpose: Eager semantic checker over syntax — builds Package/Scope/Object declarations and per-context Info facts, propagates qualifiers, folds constants, and enforces catalog contracts.
 //
 // Reassignment binding is scope-sensitive and deliberately flow-insensitive:
 // a binding written anywhere in one checking context never carries fold values.
@@ -7,8 +7,6 @@ import {applyTransparency, rgbColor} from '../base/color';
 import {fatal, type Errors} from '../base/print';
 import type {Pos} from '../base/pos';
 import {unimplemented} from '../base/unimplemented';
-import {DepthKind, type Name as IrName} from '../ir/node';
-import type {SeriesInput} from '../ir/program';
 import {
   assignable,
   BoolType,
@@ -32,6 +30,7 @@ import {
   TableType,
   TupleType,
   TypeKind,
+  typesEqual,
   unifyTypes,
   VoidType,
   type ConstValue,
@@ -39,7 +38,6 @@ import {
   type EnumType,
   type Type,
   type TypeAndValue,
-  type UdtField,
   type UdtType,
 } from '../ir/type';
 import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
@@ -59,127 +57,50 @@ import {
 } from './catalog';
 import {isImportError, type Importer, type ResolvedLibrary} from './importer';
 import {bindExpressionNames, bindFileNames, bindFunctionNames} from './binding';
-import {EntryKind, Scope, type ScopeEntry} from './scope';
+import {
+  CallKind,
+  SelectionKind,
+  newInfo,
+  type CheckedDefaultExpression,
+  type CheckedExpression,
+  type FunctionInstance,
+  type Info,
+  type NativeCall,
+  type SemanticDependency,
+} from './info';
+import {
+  ObjectKind,
+  type BuiltinObject,
+  type EnumMemberObject,
+  type EnumObject,
+  type FieldObject,
+  type FunctionObject,
+  type Object,
+  type PackageNameObject,
+  type UdtObject,
+  type VariableObject,
+} from './object';
+import type {CheckedPackage, Package} from './package';
+import {Scope} from './scope';
+
+export type {CallResolution, FunctionInstance, Info} from './info';
+export type {CheckedPackage, Package} from './package';
 
 // ---- results ----------------------------------------------------------------
 
-export interface ResolvedCall {
-  readonly native: NativeFunc;
-  // Param-aligned argument exprs; null = omitted optional (native default).
-  // For a variadic final param the tail extends past params.length - 1.
-  readonly args: readonly (syntax.Expr | null)[];
-}
-
-export interface ResolvedNew {
-  readonly udt: UdtType;
-  // Field-aligned constructor argument exprs; null = omitted (field default).
-  readonly args: readonly (syntax.Expr | null)[];
-}
-
-// Per-context side tables, keyed by syntax nodes. The main script writes
-// into the Info's own tables; each function instantiation gets a fresh set
-// (the same body syntax carries different types per signature — Go's
-// unified-IR shape), stored on its FuncInstance for the noder.
-export interface SideTables {
-  readonly types: Map<syntax.Expr, TypeAndValue>;
-  // Use sites of script variables → the shared ir Name object.
-  readonly uses: Map<syntax.Name, IrName>;
-  // Declaration sites → the canonical ir Name created by the binding prepass.
-  readonly defs: Map<syntax.Name, IrName>;
-  // Whole-context mutability keyed by declaration identity. The binding pass
-  // completes this set before semantic checking starts for these tables.
-  readonly reassigned: Set<IrName>;
-  readonly calls: Map<syntax.CallExpr, ResolvedCall>;
-  readonly news: Map<syntax.CallExpr, ResolvedNew>;
-  readonly userCalls: Map<syntax.CallExpr, ResolvedUserCall>;
-  // Which ambient series a Name/Selector expression resolved to.
-  readonly ambient: Map<syntax.Expr, SeriesInput>;
-}
-
-export function newSideTables(): SideTables {
-  return {
-    types: new Map(),
-    uses: new Map(),
-    defs: new Map(),
-    reassigned: new Set(),
-    calls: new Map(),
-    news: new Map(),
-    userCalls: new Map(),
-    ambient: new Map(),
-  };
-}
-
-// One per-Program, per-signature instantiation of a user or prelude function
-// template — a Go-style stencil: after checking, everything is concrete
-// (untyped params adopted the argument types), so no dictionaries exist.
-// Calls in one Program share the stencil; request children own distinct
-// instances because their Names, history depths, and frames cannot alias the
-// parent's. State within one Program stays per call site via noder SlotIds.
-export interface FuncInstance {
-  readonly template: syntax.FuncDecl;
-  // Display name: the template name, namespace-qualified for prelude
-  // functions ('ta.ema').
-  readonly name: string;
-  readonly params: readonly IrName[];
-  // Param index → default expression for omitted arguments, checked in
-  // this instance's tables. Defaults node caller-side and must not
-  // reference sibling params.
-  readonly defaults: ReadonlyMap<number, syntax.Expr>;
-  readonly tables: SideTables;
-  // Annotated once the body has been checked.
-  resultType: Type;
-  resultQualifier: Qualifier;
-  // True when the body reads ambient series or outer-scope variables
-  // directly (not through params). Such instances are checked against ONE
-  // context and cannot be shared into a request's child context.
-  touchesContext: boolean;
-}
-
-export interface ResolvedUserCall {
-  readonly instance: FuncInstance;
-  // Param-aligned argument exprs; null = omitted (instance default).
-  readonly args: readonly (syntax.Expr | null)[];
-}
-
-// A request.* call site's captured expression, checked in a CHILD context:
-// its own side tables and its own ambient series pool (close inside the
-// expression is the child symbol's close). The noder compiles these tables
-// into the child Program.
-export interface RequestCapture {
-  readonly tables: SideTables;
-  readonly resultType: Type;
-}
-
-// The checker's results (types2 Info): the noder consumes these and never
-// re-checks.
-export interface Info extends SideTables {
-  readonly captures: Map<syntax.CallExpr, RequestCapture>;
-  readonly udtDefaults: Map<UdtType, ReadonlyMap<string, syntax.Expr>>;
-  // Ambient context series touched by the script, one object per host id;
-  // noded Places reference these objects and the depth pass annotates them.
-  readonly series: Map<string, SeriesInput>;
-}
-
-export function check(
-  file: syntax.File,
-  errors: Errors,
-  importer: Importer,
-): Info {
-  const checker = new Checker(errors, importer);
-  return checker.checkFile(file);
-}
-
 // The pipeline's check stage: one script per compilation for now; libraries
-// arrive through the injected Importer, never by the checker's own loading.
+// arrive through the injected Importer
 export function checkPackage(
   files: readonly syntax.File[],
   errors: Errors,
   importer: Importer,
-): Info {
+): CheckedPackage {
   if (files.length !== 1) {
     return unimplemented('typecheck: multi-file packages', files.length);
   }
-  return check(files[0], errors, importer);
+  // TODO(sean): support multiple files
+  const checker = new Checker(files, errors, importer);
+  return checker.checkPackage();
 }
 
 const INVALID_TV: TypeAndValue = {
@@ -223,21 +144,14 @@ export const BUILTIN_ANNOTATION_TYPES: ReadonlyMap<string, Type> = new Map([
 // ---- checker ----------------------------------------------------------------
 
 class Checker {
-  private readonly info: Info = {
-    ...newSideTables(),
-    captures: new Map(),
-    udtDefaults: new Map(),
-    series: new Map(),
-  };
-
-  // The side-table target for the context being checked: the Info itself
-  // for the main script, a FuncInstance's tables during instantiation.
-  private tables: SideTables = this.info;
+  private readonly rootInfo = newInfo();
+  private info: Info = this.rootInfo;
 
   // The universe scope holds implicit bindings every script sees: one
   // Library entry per builtin library. The global scope chains to it.
   private readonly universe = new Scope(null);
-  private scope = new Scope(this.universe);
+  private readonly pkgScope = new Scope(this.universe);
+  private scope = this.pkgScope;
   private loopDepth = 0;
   private blockDepth = 0;
   // The qualifier of the enclosing control flow: writes under an `if` whose
@@ -245,73 +159,103 @@ class Checker {
   // loop bodies join series (iteration-dependent values).
   private flowQualifier: Qualifier = Qualifier.Const;
 
-  // Function stenciling state: one instantiation per
-  // (Program owner, template, signature), a recursion guard (the static call
+  // Function stenciling state: one semantic instantiation per template and
+  // signature, a recursion guard (the static call
   // graph must stay acyclic so frames pre-allocate), and the instantiation
   // root scope — non-null exactly when checking inside a function, where
   // outer-scope writes are forbidden.
-  private readonly instances = new Map<
-    syntax.FuncDecl,
-    Map<SideTables, Map<string, FuncInstance>>
-  >();
-  // The main Info owns the root Program. Every request capture installs its
-  // fresh SideTables as a child-Program identity while checking that capture,
-  // including any transitive UDF/prelude instantiations.
-  private programOwner: SideTables = this.info;
-  private readonly instantiating = new Set<syntax.FuncDecl>();
+  private readonly instances = new Map<FunctionObject, FunctionInstance[]>();
+  private readonly instantiating = new Set<FunctionObject>();
   private funcBoundary: Scope | null = null;
-  private readonly libScopes = new Map<ResolvedLibrary, Scope>();
+  private readonly libraryPackages = new Map<ResolvedLibrary, Package>();
   // Names bound by the implicit imports — the redeclare guard's set; the
   // checker never learns where these libraries come from.
   private readonly implicitNames = new Set<string>();
-  // The ambient pool reads resolve into: the Info's pool for the script's
-  // own context, a fresh pool inside a request capture (child context).
-  private seriesPool: Map<string, SeriesInput> = this.info.series;
+  private readonly builtins = new Map<string, BuiltinObject>();
   private captureDepth = 0;
-  private readonly instanceStack: FuncInstance[] = [];
+  private readonly instanceStack: FunctionInstance[] = [];
+  private readonly dependencyCollectors: Set<SemanticDependency>[] = [];
   // Input calls are program-global even when written in a local scope. These
   // sets describe the only local-looking names module.bind can read without
   // the function/capture execution frame that contained the call.
-  private readonly inputBindings = new Set<IrName>();
-  private readonly rootBindNames = new Set<IrName>();
+  private readonly inputBindings = new Set<VariableObject>();
+  private readonly rootBindNames = new Set<VariableObject>();
+  private readonly udts = new Map<UdtType, UdtObject>();
+  private readonly files: readonly syntax.File[];
+  private readonly pkgImports = new Map<string, Package>();
+  private readonly pkgExports = new Set<string>();
+  private readonly pkg: Package;
 
   constructor(
+    files: readonly syntax.File[],
     private readonly errors: Errors,
     private readonly importer: Importer,
   ) {
+    this.files = files;
+    this.pkg = {
+      path: files[0]?.pos.base.filename ?? '',
+      name: 'main',
+      files,
+      scope: this.pkgScope,
+      imports: this.pkgImports,
+      exports: this.pkgExports,
+    };
     for (const library of importer.implicit()) {
-      this.universe.declare(library.name, {
-        kind: EntryKind.Library,
-        library,
+      const pkg = this.libraryPackage(library);
+      this.universe.declare({
+        kind: ObjectKind.PackageName,
+        name: library.name,
+        pkg,
       });
+      this.pkgImports.set(library.name, pkg);
       this.implicitNames.add(library.name);
     }
   }
 
-  // The scope a library's bodies resolve against: every template of the
-  // library under its plain name (rsi calls rma), exported or not; natives
-  // via the ordinary catalog path.
-  private libScope(library: ResolvedLibrary): Scope {
-    let scope = this.libScopes.get(library);
-    if (scope === undefined) {
-      scope = new Scope(null);
-      for (const [name, decl] of library.locals) {
-        scope.declare(name, {kind: EntryKind.Func, decl, base: scope});
-      }
-      for (const [name, dep] of library.imports) {
-        scope.declare(name, {kind: EntryKind.Library, library: dep});
-      }
-      this.libScopes.set(library, scope);
+  // Materialize loader data into the same semantic Package/Scope/Object graph
+  // used by the entry package. Raw ResolvedLibrary syntax never enters name
+  // resolution after this boundary.
+  private libraryPackage(library: ResolvedLibrary): Package {
+    const existing = this.libraryPackages.get(library);
+    if (existing !== undefined) {
+      return existing;
     }
-    return scope;
+    const scope = new Scope(null);
+    const imports = new Map<string, Package>();
+    const pkg: Package = {
+      path: library.path,
+      name: library.name,
+      files: library.files,
+      scope,
+      imports,
+      exports: new Set(library.exports.keys()),
+    };
+    this.libraryPackages.set(library, pkg);
+    for (const [name, decl] of library.locals) {
+      scope.declare({
+        kind: ObjectKind.Function,
+        name,
+        displayName: name,
+        decl,
+        base: scope,
+      });
+    }
+    for (const [name, dependency] of library.imports) {
+      const imported = this.libraryPackage(dependency);
+      imports.set(name, imported);
+      scope.declare({kind: ObjectKind.PackageName, name, pkg: imported});
+    }
+    return pkg;
   }
 
-  checkFile(file: syntax.File): Info {
-    bindFileNames(file, this.scope, this.info);
+  checkPackage(): CheckedPackage {
+    const file = this.files[0];
+    bindFileNames(file, this.scope, this.rootInfo);
+    this.rootInfo.scopes.set(file, this.pkgScope);
     for (const stmt of file.stmtList) {
       this.checkStmt(stmt);
     }
-    return this.info;
+    return {pkg: this.pkg, info: this.rootInfo};
   }
 
   private error(pos: Pos, msg: string): void {
@@ -378,19 +322,16 @@ class Checker {
     );
     name.type = type;
     name.qualifier = qualifier;
-    this.declare(nameNode, {
-      kind: EntryKind.Name,
-      name,
-      constDecl: d.mode === Mode.Const,
-      constValue,
-    });
+    name.constValue = constValue;
+    this.declare(nameNode, name);
     const init = unwrapParens(d.init);
     const resolved =
-      init.kind === NodeKind.CallExpr ? this.tables.calls.get(init) : undefined;
+      init.kind === NodeKind.CallExpr ? this.info.calls.get(init) : undefined;
     if (
       d.mode === Mode.None &&
-      !this.tables.reassigned.has(name) &&
-      resolved?.native.effect === Effect.Param
+      !this.info.reassigned.has(name) &&
+      resolved?.kind === CallKind.Native &&
+      resolved.native.effect === Effect.Param
     ) {
       this.inputBindings.add(name);
     }
@@ -409,7 +350,7 @@ class Checker {
   private declInfo(
     d: syntax.DeclStmt,
     nameNode: syntax.Name,
-    name: IrName,
+    name: VariableObject,
     initTv: TypeAndValue,
     declared: {type: Type; qualifier: Qualifier | null} | null,
   ): {type: Type; qualifier: Qualifier; constValue: ConstValue | null} {
@@ -460,7 +401,7 @@ class Checker {
         }
         qualifier = declared.qualifier;
       }
-      if (this.tables.reassigned.has(name)) {
+      if (this.info.reassigned.has(name)) {
         qualifier = joinQualifiers(qualifier, Qualifier.Series);
       }
     }
@@ -468,7 +409,7 @@ class Checker {
     // Fold values travel through names only when reassignment is impossible.
     const foldable =
       d.mode === Mode.Const ||
-      (d.mode === Mode.None && !this.tables.reassigned.has(name));
+      (d.mode === Mode.None && !this.info.reassigned.has(name));
     const constValue =
       foldable && initTv.qualifier === Qualifier.Const ? initTv.value : null;
     return {type, qualifier, constValue};
@@ -504,59 +445,58 @@ class Checker {
       const name = this.boundName(elemName);
       name.type = elems !== null ? elems[i] : InvalidType;
       name.qualifier =
-        d.mode === Mode.None && this.tables.reassigned.has(name)
+        d.mode === Mode.None && this.info.reassigned.has(name)
           ? joinQualifiers(qualifier, Qualifier.Series)
           : qualifier;
-      this.declare(elemName, {
-        kind: EntryKind.Name,
-        name,
-        constDecl: d.mode === Mode.Const,
-        constValue: null,
-      });
+      this.declare(elemName, name);
     });
   }
 
-  private boundName(node: syntax.Name): IrName {
-    const name = this.tables.defs.get(node);
-    if (name === undefined) {
+  private boundName(node: syntax.Name): VariableObject {
+    const object = this.info.defs.get(node);
+    if (object?.kind !== ObjectKind.Variable) {
       return fatal(`unbound declaration reached checker: ${node.value}`);
     }
-    return name;
+    return object;
   }
 
-  private declare(nameNode: syntax.Name, entry: ScopeEntry): void {
+  private declare(nameNode: syntax.Name, object: Object): boolean {
     if (
       isNativeRoot(nameNode.value) ||
       this.implicitNames.has(nameNode.value)
     ) {
-      this.discardBinding(nameNode, entry);
+      this.discardBinding(nameNode, object);
       this.error(nameNode.pos, `cannot redeclare built-in '${nameNode.value}'`);
-      return;
+      return false;
     }
-    if (!this.scope.declare(nameNode.value, entry)) {
-      this.discardBinding(nameNode, entry);
+    if (!this.scope.declare(object)) {
+      this.discardBinding(nameNode, object);
       this.error(
         nameNode.pos,
         `'${nameNode.value}' is already declared in this scope`,
       );
-      return;
+      return false;
     }
-    if (entry.kind === EntryKind.Name) {
-      if (this.boundName(nameNode) !== entry.name) {
-        return fatal(`binding identity changed for '${nameNode.value}'`);
-      }
+    const existing = this.info.defs.get(nameNode);
+    if (existing === undefined) {
+      this.info.defs.set(nameNode, object);
+      return true;
     }
+    if (existing !== object) {
+      fatal(`binding identity changed for '${nameNode.value}'`);
+    }
+    return true;
   }
 
-  private discardBinding(nameNode: syntax.Name, entry: ScopeEntry): void {
-    if (entry.kind !== EntryKind.Name) {
+  private discardBinding(nameNode: syntax.Name, object: Object): void {
+    if (object.kind !== ObjectKind.Variable) {
       return;
     }
-    if (this.boundName(nameNode) !== entry.name) {
+    if (this.boundName(nameNode) !== object) {
       return fatal(`binding identity changed for '${nameNode.value}'`);
     }
-    this.tables.defs.delete(nameNode);
-    this.tables.reassigned.delete(entry.name);
+    this.info.defs.delete(nameNode);
+    this.info.reassigned.delete(object);
   }
 
   private checkAssign(a: syntax.AssignStmt): TypeAndValue | null {
@@ -586,7 +526,7 @@ class Checker {
       this.checkExpr(a.value);
       return null;
     }
-    if (entry.kind !== EntryKind.Name) {
+    if (entry.kind !== ObjectKind.Variable) {
       this.error(target.pos, `cannot assign to '${target.value}'`);
       this.checkExpr(a.value);
       return null;
@@ -608,15 +548,15 @@ class Checker {
       );
     }
     if (
-      entry.name.type.kind === TypeKind.Plot ||
-      entry.name.type.kind === TypeKind.Hline
+      entry.type.kind === TypeKind.Plot ||
+      entry.type.kind === TypeKind.Hline
     ) {
       // Output references are compile-time ids consumed at bind (fill);
       // a reassignable ref could not be resolved before the first bar.
       this.error(target.pos, 'cannot reassign a plot reference');
     }
-    const name = entry.name;
-    if (this.tables.uses.get(target) !== name) {
+    const name = entry;
+    if (this.info.uses.get(target) !== name) {
       return fatal(`assignment binding changed for '${target.value}'`);
     }
 
@@ -665,8 +605,9 @@ class Checker {
       );
       return null;
     }
-    const field = (baseTv.type as UdtType).fields.find(
-      f => f.name === target.sel.value,
+    const owner = this.udts.get(baseTv.type as UdtType);
+    const field = owner?.fields.find(
+      object => object.name === target.sel.value,
     );
     if (field === undefined) {
       this.error(
@@ -679,6 +620,7 @@ class Checker {
       this.error(a.pos, 'compound assignment to a field is not supported');
       return null;
     }
+    this.info.selections.set(target, {kind: SelectionKind.Field, field});
     if (!assignable(valueTv.type, field.type)) {
       this.error(
         a.value.pos,
@@ -701,21 +643,33 @@ class Checker {
       this.error(stmt.path.pos, outcome.error);
       return;
     }
-    const entry = {kind: EntryKind.Library, library: outcome} as const;
+    const name = stmt.alias?.value ?? outcome.name;
+    const imported = this.libraryPackage(outcome);
+    const object: PackageNameObject = {
+      kind: ObjectKind.PackageName,
+      name,
+      pkg: imported,
+    };
     if (stmt.alias !== null) {
-      this.declare(stmt.alias, entry);
+      if (this.declare(stmt.alias, object)) {
+        this.pkgImports.set(name, imported);
+      }
       return;
     }
     // Without an alias the library binds under its declared name; implicit
     // libraries are already bound, so this is a legal no-op for them.
-    if (!this.implicitNames.has(outcome.name)) {
-      if (!this.scope.declare(outcome.name, entry)) {
-        this.error(
-          stmt.path.pos,
-          `'${outcome.name}' is already declared in this scope`,
-        );
-      }
+    if (this.implicitNames.has(outcome.name)) {
+      this.pkgImports.set(name, imported);
+      return;
     }
+    if (!this.scope.declare(object)) {
+      this.error(
+        stmt.path.pos,
+        `'${outcome.name}' is already declared in this scope`,
+      );
+      return;
+    }
+    this.pkgImports.set(name, imported);
   }
 
   private checkFuncDecl(d: syntax.FuncDecl): void {
@@ -725,7 +679,16 @@ class Checker {
     }
     // The template is bound now; bodies are checked per concrete argument
     // signature when calls are stenciled.
-    this.declare(d.name, {kind: EntryKind.Func, decl: d, base: this.scope});
+    const object: FunctionObject = {
+      kind: ObjectKind.Function,
+      name: d.name.value,
+      displayName: d.name.value,
+      decl: d,
+      base: this.scope,
+    };
+    if (this.declare(d.name, object) && d.exported) {
+      this.pkgExports.add(object.name);
+    }
   }
 
   private checkTypeDecl(d: syntax.TypeDecl): void {
@@ -733,32 +696,53 @@ class Checker {
       this.error(d.pos, 'types must be declared at the top level');
       return;
     }
-    const fields: UdtField[] = [];
-    const defaults = new Map<string, syntax.Expr>();
+    const fields: FieldObject[] = [];
     for (const field of d.fields) {
       const type = this.resolveTypeName(field.fieldType.name);
-      if (fields.some(f => f.name === field.name.value)) {
+      if (fields.some(object => object.name === field.name.value)) {
         this.error(
           field.name.pos,
           `duplicate field '${field.name.value}' in type '${d.name.value}'`,
         );
         continue;
       }
+      let defaultValue: CheckedDefaultExpression | null = null;
       if (field.defaultValue !== null) {
-        const defTv = this.checkExpr(field.defaultValue);
+        defaultValue = this.checkDefaultExpression(field.defaultValue);
+        const defTv = defaultValue.tv;
         if (!assignable(defTv.type, type)) {
           this.error(
             field.defaultValue.pos,
             `cannot use ${formatType(defTv.type)} as ${formatType(type)} default for field '${field.name.value}'`,
           );
         }
-        defaults.set(field.name.value, field.defaultValue);
       }
-      fields.push({name: field.name.value, type, varip: false});
+      const object: FieldObject = {
+        kind: ObjectKind.Field,
+        name: field.name.value,
+        type,
+        varip: false,
+        decl: field,
+        defaultValue,
+      };
+      fields.push(object);
+      this.info.defs.set(field.name, object);
     }
-    const udt: UdtType = {kind: TypeKind.Udt, name: d.name.value, fields};
-    this.info.udtDefaults.set(udt, defaults);
-    this.declare(d.name, {kind: EntryKind.Udt, type: udt});
+    const udt: UdtType = {
+      kind: TypeKind.Udt,
+      name: d.name.value,
+      fields,
+    };
+    const object: UdtObject = {
+      kind: ObjectKind.Udt,
+      name: d.name.value,
+      type: udt,
+      fields,
+    };
+    this.udts.set(udt, object);
+    if (this.declare(d.name, object) && d.exported) {
+      this.pkgExports.add(object.name);
+    }
   }
 
   private checkEnumDecl(d: syntax.EnumDecl): void {
@@ -794,7 +778,27 @@ class Checker {
       name: d.name.value,
       members,
     };
-    this.declare(d.name, {kind: EntryKind.Enum, type: enumType});
+    const memberObjects: EnumMemberObject[] = [];
+    const enumObject: EnumObject = {
+      kind: ObjectKind.Enum,
+      name: d.name.value,
+      type: enumType,
+      members: memberObjects,
+    };
+    memberObjects.push(
+      ...d.members.map(member => ({
+        kind: ObjectKind.EnumMember,
+        name: member.name.value,
+        decl: member,
+        owner: enumObject,
+      })),
+    );
+    for (const member of memberObjects) {
+      this.info.defs.set(member.decl.name, member);
+    }
+    if (this.declare(d.name, enumObject) && d.exported) {
+      this.pkgExports.add(enumObject.name);
+    }
   }
 
   // ---- annotations ----------------------------------------------------------
@@ -824,7 +828,8 @@ class Checker {
           return builtin;
         }
         const entry = this.scope.lookup(t.value);
-        if (entry?.kind === EntryKind.Udt || entry?.kind === EntryKind.Enum) {
+        if (entry?.kind === ObjectKind.Udt || entry?.kind === ObjectKind.Enum) {
+          this.info.uses.set(t, entry);
           return entry.type;
         }
         this.error(t.pos, `unknown type '${t.value}'`);
@@ -844,12 +849,12 @@ class Checker {
 
   private checkExpr(e: syntax.Expr): TypeAndValue {
     const tv = this.exprTv(e);
-    this.tables.types.set(e, tv);
+    this.info.types.set(e, tv);
     return tv;
   }
 
   private tvOf(e: syntax.Expr): TypeAndValue {
-    return this.tables.types.get(e) ?? INVALID_TV;
+    return this.info.types.get(e) ?? INVALID_TV;
   }
 
   private exprTv(e: syntax.Expr): TypeAndValue {
@@ -898,19 +903,17 @@ class Checker {
     const entry = this.scope.lookup(n.value);
     if (entry !== null) {
       switch (entry.kind) {
-        case EntryKind.Name: {
+        case ObjectKind.Variable: {
           if (
             this.funcBoundary !== null &&
             !this.scope.resolvesWithin(n.value, this.funcBoundary)
           ) {
             // Reading an outer-scope variable pins the instance to the
             // context it was checked in.
-            const top = this.instanceStack[this.instanceStack.length - 1];
-            if (top !== undefined) {
-              top.touchesContext = true;
-            }
+            this.recordFunctionDependency(entry);
           } else if (this.captureDepth > 0 && this.funcBoundary === null) {
-            if (!qualifierLE(entry.name.qualifier, Qualifier.Input)) {
+            const allowed = this.requestVariableAllowed(entry);
+            if (!allowed.ok && !allowed.computed) {
               // Per-context state must be recomputed inside the expression.
               this.error(
                 n.pos,
@@ -918,13 +921,10 @@ class Checker {
               );
               return INVALID_TV;
             }
-            if (
-              entry.constValue === null &&
-              !this.inputBindings.has(entry.name)
-            ) {
-              // The child Program deliberately has no projection of root
-              // Names. Until capture dependency closure exists, accepting a
-              // computed input alias would read an unwritten child slot.
+            if (!allowed.ok) {
+              // A computed input alias is a root-frame value, not a
+              // compilation-global ParamInput. The child Program therefore
+              // has no valid place from which to read it.
               this.error(
                 n.pos,
                 `request expressions cannot capture computed script variable '${n.value}'; pass a direct input binding or recompute it inside the expression`,
@@ -932,23 +932,28 @@ class Checker {
               return INVALID_TV;
             }
           }
-          this.tables.uses.set(n, entry.name);
+          this.recordExpressionDependency(entry);
+          this.info.uses.set(n, entry);
           return {
-            type: entry.name.type,
-            qualifier: entry.name.qualifier,
+            type: entry.type,
+            qualifier: entry.qualifier,
             value: entry.constValue,
           };
         }
-        case EntryKind.Func:
+        case ObjectKind.Function:
           this.error(n.pos, `'${n.value}' is a function; call it`);
           return INVALID_TV;
-        case EntryKind.Udt:
-        case EntryKind.Enum:
+        case ObjectKind.Udt:
+        case ObjectKind.Enum:
           this.error(n.pos, `'${n.value}' is a type, not a value`);
           return INVALID_TV;
-        case EntryKind.Library:
-          this.error(n.pos, `'${n.value}' is a library, not a value`);
+        case ObjectKind.PackageName:
+          this.error(n.pos, `'${n.value}' is a package, not a value`);
           return INVALID_TV;
+        case ObjectKind.Field:
+        case ObjectKind.EnumMember:
+        case ObjectKind.Builtin:
+          return fatal(`invalid lexical object '${entry.name}'`);
       }
     }
     const nv = nativeVar(n.value);
@@ -963,29 +968,101 @@ class Checker {
     return INVALID_TV;
   }
 
-  // Ambient (non-const) native variables become entries in the shared series
-  // pool: one SeriesInput object per host id, shared by every use.
+  // Native variables resolve to semantic builtin objects. Noding projects a
+  // non-const builtin into one SeriesInput per Program context.
   private nativeVarTv(nv: NativeVar, node: syntax.Expr): TypeAndValue {
+    let builtin = this.builtins.get(nv.name);
+    if (builtin === undefined) {
+      builtin = {
+        kind: ObjectKind.Builtin,
+        name: nv.name,
+        hostId: nv.name,
+        type: nv.type,
+        qualifier: nv.qualifier,
+        value: nv.value,
+      };
+      this.builtins.set(nv.name, builtin);
+    }
+    if (node.kind === NodeKind.Name) {
+      this.info.uses.set(node, builtin);
+    } else if (node.kind === NodeKind.SelectorExpr) {
+      this.info.selections.set(node, {
+        kind: SelectionKind.Builtin,
+        builtin,
+      });
+    }
     if (nv.qualifier !== Qualifier.Const) {
-      let series = this.seriesPool.get(nv.name);
-      if (series === undefined) {
-        series = {
-          id: nv.name,
-          type: nv.type,
-          qualifier: nv.qualifier,
-          depth: {kind: DepthKind.None},
-        };
-        this.seriesPool.set(nv.name, series);
-      }
-      this.tables.ambient.set(node, series);
-      // An ambient read inside a function body pins that instance to the
-      // context it was checked in.
-      const top = this.instanceStack[this.instanceStack.length - 1];
-      if (top !== undefined) {
-        top.touchesContext = true;
-      }
+      this.recordFunctionDependency(builtin);
     }
     return {type: nv.type, qualifier: nv.qualifier, value: nv.value};
+  }
+
+  private recordExpressionDependency(dependency: SemanticDependency): void {
+    for (const collector of this.dependencyCollectors) {
+      collector.add(dependency);
+    }
+  }
+
+  private recordFunctionDependency(dependency: SemanticDependency): void {
+    this.recordExpressionDependency(dependency);
+    const top = this.instanceStack[this.instanceStack.length - 1];
+    top?.dependencies.add(dependency);
+  }
+
+  private recordTransitiveDependencies(
+    dependencies: ReadonlySet<SemanticDependency>,
+  ): void {
+    for (const dependency of dependencies) {
+      this.recordFunctionDependency(dependency);
+    }
+  }
+
+  private checkDefaultExpression(expr: syntax.Expr): CheckedDefaultExpression {
+    const info = this.info;
+    const dependencies = new Set<SemanticDependency>();
+    this.dependencyCollectors.push(dependencies);
+    const tv = this.checkExpr(expr);
+    this.dependencyCollectors.pop();
+    if (this.info !== info) {
+      return fatal('default expression changed the active semantic context');
+    }
+    return {expr, info, tv, dependencies};
+  }
+
+  private requestVariableAllowed(
+    object: VariableObject,
+  ): {readonly ok: true} | {readonly ok: false; readonly computed: boolean} {
+    if (!qualifierLE(object.qualifier, Qualifier.Input)) {
+      return {ok: false, computed: false};
+    }
+    if (object.constValue === null && !this.inputBindings.has(object)) {
+      return {ok: false, computed: true};
+    }
+    return {ok: true};
+  }
+
+  private checkRequestDependencies(
+    call: syntax.CallExpr,
+    displayName: string,
+    dependencies: ReadonlySet<SemanticDependency>,
+  ): boolean {
+    for (const dependency of dependencies) {
+      if (dependency.kind === ObjectKind.Builtin) {
+        continue;
+      }
+      const allowed = this.requestVariableAllowed(dependency);
+      if (allowed.ok) {
+        continue;
+      }
+      this.error(
+        call.pos,
+        allowed.computed
+          ? `'${displayName}' captures computed script variable '${dependency.name}' and cannot be used in a request expression`
+          : `'${displayName}' reads script variable '${dependency.name}' and cannot be used in a request expression`,
+      );
+      return false;
+    }
+    return true;
   }
 
   private resolveSelector(s: syntax.SelectorExpr): TypeAndValue {
@@ -1004,8 +1081,11 @@ class Checker {
     }
     if (s.x.kind === NodeKind.Name) {
       const entry = this.scope.lookup(s.x.value);
-      if (entry?.kind === EntryKind.Enum) {
+      if (entry?.kind === ObjectKind.Enum) {
         const member = entry.type.members.find(m => m.name === s.sel.value);
+        const memberObject = entry.members.find(
+          object => object.name === s.sel.value,
+        );
         if (member === undefined) {
           this.error(
             s.sel.pos,
@@ -1013,17 +1093,21 @@ class Checker {
           );
           return INVALID_TV;
         }
+        this.info.uses.set(s.x, entry);
+        if (memberObject !== undefined) {
+          this.info.uses.set(s.sel, memberObject);
+        }
         return {
           type: entry.type,
           qualifier: Qualifier.Const,
           value: member.name,
         };
       }
-      if (entry?.kind === EntryKind.Udt) {
+      if (entry?.kind === ObjectKind.Udt) {
         this.error(s.pos, `'${s.x.value}' is a type, not a value`);
         return INVALID_TV;
       }
-      if (entry?.kind === EntryKind.Func) {
+      if (entry?.kind === ObjectKind.Function) {
         this.error(s.pos, `'${s.x.value}' is a function, not a value`);
         return INVALID_TV;
       }
@@ -1033,9 +1117,8 @@ class Checker {
       return INVALID_TV;
     }
     if (baseTv.type.kind === TypeKind.Udt) {
-      const field = (baseTv.type as UdtType).fields.find(
-        f => f.name === s.sel.value,
-      );
+      const owner = this.udts.get(baseTv.type as UdtType);
+      const field = owner?.fields.find(object => object.name === s.sel.value);
       if (field === undefined) {
         this.error(
           s.sel.pos,
@@ -1043,7 +1126,12 @@ class Checker {
         );
         return INVALID_TV;
       }
-      return {type: field.type, qualifier: baseTv.qualifier, value: null};
+      this.info.selections.set(s, {kind: SelectionKind.Field, field});
+      return {
+        type: field.type,
+        qualifier: baseTv.qualifier,
+        value: null,
+      };
     }
     this.error(
       s.sel.pos,
@@ -1343,15 +1431,11 @@ class Checker {
 
     const savedScope = this.scope;
     this.scope = new Scope(savedScope);
+    this.info.scopes.set(e, this.scope);
     const indexName = this.boundName(e.index);
     indexName.type = indexType;
     indexName.qualifier = Qualifier.Series;
-    this.declare(e.index, {
-      kind: EntryKind.Name,
-      name: indexName,
-      constDecl: false,
-      constValue: null,
-    });
+    this.declare(e.index, indexName);
     const bodyTv = this.checkLoopBody(e.body);
     this.scope = savedScope;
     return {type: bodyTv.type, qualifier: Qualifier.Series, value: null};
@@ -1370,16 +1454,12 @@ class Checker {
     }
     const savedScope = this.scope;
     this.scope = new Scope(savedScope);
+    this.info.scopes.set(e, this.scope);
     const declareTarget = (nameNode: syntax.Name, type: Type): void => {
       const name = this.boundName(nameNode);
       name.type = type;
       name.qualifier = Qualifier.Series;
-      this.declare(nameNode, {
-        kind: EntryKind.Name,
-        name,
-        constDecl: false,
-        constValue: null,
-      });
+      this.declare(nameNode, name);
     };
     if (e.target.kind === NodeKind.Name) {
       declareTarget(e.target, elemType);
@@ -1468,6 +1548,7 @@ class Checker {
   private checkBlock(b: syntax.Block): TypeAndValue {
     const savedScope = this.scope;
     this.scope = new Scope(savedScope);
+    this.info.scopes.set(b, this.scope);
     this.blockDepth += 1;
     let last: TypeAndValue | null = null;
     let qualifier: Qualifier = Qualifier.Const;
@@ -1513,10 +1594,12 @@ class Checker {
     if (fun.kind === NodeKind.Name) {
       const entry = this.scope.lookup(fun.value);
       if (entry !== null) {
-        if (entry.kind === EntryKind.Func) {
-          return this.checkUserCall(c, entry.decl, fun.value, entry.base);
+        if (entry.kind === ObjectKind.Function) {
+          this.info.uses.set(fun, entry);
+          return this.checkUserCall(c, entry);
         }
-        if (entry.kind === EntryKind.Udt) {
+        if (entry.kind === ObjectKind.Udt) {
+          this.info.uses.set(fun, entry);
           this.error(
             c.pos,
             `'${fun.value}' is a type; construct it with '${fun.value}.new(...)'`,
@@ -1531,25 +1614,26 @@ class Checker {
     if (fun.kind === NodeKind.SelectorExpr) {
       if (fun.x.kind === NodeKind.Name && fun.sel.value === 'new') {
         const entry = this.scope.lookup(fun.x.value);
-        if (entry?.kind === EntryKind.Udt) {
-          return this.checkNew(c, entry.type);
+        if (entry?.kind === ObjectKind.Udt) {
+          this.info.uses.set(fun.x, entry);
+          return this.checkNew(c, entry);
         }
       }
       if (fun.x.kind === NodeKind.Name) {
         const rootEntry = this.scope.lookup(fun.x.value);
-        if (rootEntry?.kind === EntryKind.Library) {
+        if (rootEntry?.kind === ObjectKind.PackageName) {
           const written = `${fun.x.value}.${fun.sel.value}`;
-          const template = rootEntry.library.exports.get(fun.sel.value);
-          if (template === undefined) {
+          const template = rootEntry.pkg.scope.lookup(fun.sel.value);
+          if (
+            template?.kind !== ObjectKind.Function ||
+            !rootEntry.pkg.exports.has(fun.sel.value)
+          ) {
             this.error(fun.pos, `unknown function '${written}'`);
             return INVALID_TV;
           }
-          return this.checkUserCall(
-            c,
-            template,
-            written,
-            this.libScope(rootEntry.library),
-          );
+          this.info.uses.set(fun.x, rootEntry);
+          this.info.uses.set(fun.sel, template);
+          return this.checkUserCall(c, template, written);
         }
       }
       const path = dottedPath(fun);
@@ -1571,11 +1655,11 @@ class Checker {
   // signature; call-site state separates later via SlotIds.
   private checkUserCall(
     c: syntax.CallExpr,
-    template: syntax.FuncDecl,
-    displayName: string,
-    base: Scope,
+    template: FunctionObject,
+    displayName = template.displayName,
   ): TypeAndValue {
-    const params = template.params;
+    const decl = template.decl;
+    const params = decl.params;
     const aligned: (syntax.Expr | null)[] = Array<syntax.Expr | null>(
       params.length,
     ).fill(null);
@@ -1624,38 +1708,50 @@ class Checker {
     if (argTvs.some(tv => tv !== null && tv.type.kind === TypeKind.Invalid)) {
       return INVALID_TV;
     }
-    const sigKey = argTvs
-      .map(tv =>
-        tv === null ? 'default' : `${formatType(tv.type)}|${tv.qualifier}`,
-      )
-      .join(',');
-    let byOwner = this.instances.get(template);
-    if (byOwner === undefined) {
-      byOwner = new Map();
-      this.instances.set(template, byOwner);
+    const signature = argTvs.map(tv =>
+      tv === null ? null : {type: tv.type, qualifier: tv.qualifier},
+    );
+    let variants = this.instances.get(template);
+    if (variants === undefined) {
+      variants = [];
+      this.instances.set(template, variants);
     }
-    let bySig = byOwner.get(this.programOwner);
-    if (bySig === undefined) {
-      bySig = new Map();
-      byOwner.set(this.programOwner, bySig);
-    }
-    let instance = bySig.get(sigKey);
+    let instance = variants.find(candidate =>
+      functionSignaturesEqual(candidate.signature, signature),
+    );
     if (instance === undefined) {
-      instance = this.instantiate(template, displayName, base, aligned, argTvs);
-      bySig.set(sigKey, instance);
-    }
-    const top = this.instanceStack[this.instanceStack.length - 1];
-    if (top !== undefined && instance.touchesContext) {
-      top.touchesContext = true;
-    }
-    if (this.captureDepth > 0 && instance.touchesContext) {
-      this.error(
-        c.pos,
-        `'${displayName}' reads the script's context directly and cannot be used in a request expression; pass its inputs as parameters`,
+      instance = this.instantiate(
+        template,
+        displayName,
+        signature,
+        aligned,
+        argTvs,
       );
+      variants.push(instance);
+    }
+    const dependencies = new Set(instance.dependencies);
+    for (const [i, arg] of aligned.entries()) {
+      if (arg === null) {
+        const dflt = instance.defaults.get(i);
+        if (dflt !== undefined) {
+          for (const dependency of dflt.dependencies) {
+            dependencies.add(dependency);
+          }
+        }
+      }
+    }
+    this.recordTransitiveDependencies(dependencies);
+    if (
+      this.captureDepth > 0 &&
+      !this.checkRequestDependencies(c, displayName, dependencies)
+    ) {
       return INVALID_TV;
     }
-    this.tables.userCalls.set(c, {instance, args: aligned});
+    this.info.calls.set(c, {
+      kind: CallKind.Function,
+      instance,
+      args: aligned,
+    });
     return {
       type: instance.resultType,
       qualifier: instance.resultQualifier,
@@ -1663,38 +1759,40 @@ class Checker {
     };
   }
 
-  // Stencil the template for one concrete signature: fresh side tables and a
+  // Stencil the template for one concrete signature: a fresh Info and a
   // scope rooted at the template's base, params adopting the argument types
   // and qualifiers (capped by annotations), body checked once.
   private instantiate(
-    template: syntax.FuncDecl,
+    template: FunctionObject,
     displayName: string,
-    base: Scope,
+    signature: FunctionInstance['signature'],
     aligned: readonly (syntax.Expr | null)[],
     argTvs: readonly (TypeAndValue | null)[],
-  ): FuncInstance {
+  ): FunctionInstance {
+    const decl = template.decl;
     const saved = {
       scope: this.scope,
-      tables: this.tables,
+      info: this.info,
       flowQualifier: this.flowQualifier,
       loopDepth: this.loopDepth,
       blockDepth: this.blockDepth,
       boundary: this.funcBoundary,
     };
-    const tables = newSideTables();
-    bindFunctionNames(template, aligned, base, tables);
-    const scope = new Scope(base);
+    const info = newInfo();
+    bindFunctionNames(decl, aligned, template.base, info);
+    const scope = new Scope(template.base);
     this.scope = scope;
-    this.tables = tables;
+    this.info = info;
+    info.scopes.set(decl, scope);
     this.flowQualifier = Qualifier.Const;
     this.loopDepth = 0;
     this.blockDepth = 0;
     this.funcBoundary = scope;
     this.instantiating.add(template);
 
-    const irParams: IrName[] = [];
-    const defaults = new Map<number, syntax.Expr>();
-    template.params.forEach((p, i) => {
+    const params: VariableObject[] = [];
+    const defaults = new Map<number, CheckedDefaultExpression>();
+    decl.params.forEach((p, i) => {
       const annotated =
         p.paramType !== null ? this.resolveAnnotation(p.paramType) : null;
       let tv = argTvs[i];
@@ -1706,8 +1804,9 @@ class Checker {
             `instantiating '${displayName}' without argument '${p.name.value}'`,
           );
         }
-        defaults.set(i, dflt);
-        tv = this.checkExpr(dflt);
+        const checked = this.checkDefaultExpression(dflt);
+        tv = checked.tv;
+        defaults.set(i, checked);
       } else {
         const argExpr = aligned[i];
         if (annotated !== null && argExpr !== null) {
@@ -1737,37 +1836,33 @@ class Checker {
       }
       const name = this.boundName(p.name);
       name.type = annotated !== null ? annotated.type : tv.type;
-      name.qualifier = this.tables.reassigned.has(name)
+      name.qualifier = this.info.reassigned.has(name)
         ? joinQualifiers(tv.qualifier, Qualifier.Series)
         : tv.qualifier;
-      irParams.push(name);
-      this.declare(p.name, {
-        kind: EntryKind.Name,
-        name,
-        constDecl: false,
-        constValue: null,
-      });
+      params.push(name);
+      this.declare(p.name, name);
     });
 
-    const instance: FuncInstance = {
+    const instance: FunctionInstance = {
       template,
       name: displayName,
-      params: irParams,
+      signature,
+      params,
       defaults,
-      tables,
+      info,
+      dependencies: new Set(),
       resultType: InvalidType,
       resultQualifier: Qualifier.Const,
-      touchesContext: false,
     };
     this.instanceStack.push(instance);
     const bodyTv =
-      template.body.kind === NodeKind.Block
-        ? this.checkBlock(template.body)
-        : this.checkExpr(template.body);
+      decl.body.kind === NodeKind.Block
+        ? this.checkBlock(decl.body)
+        : this.checkExpr(decl.body);
     this.instanceStack.pop();
     if (bodyTv.type.kind === TypeKind.Na) {
       this.error(
-        template.body.pos,
+        decl.body.pos,
         `function '${displayName}' cannot infer a result type from na`,
       );
     }
@@ -1776,7 +1871,7 @@ class Checker {
 
     this.instantiating.delete(template);
     this.scope = saved.scope;
-    this.tables = saved.tables;
+    this.info = saved.info;
     this.flowQualifier = saved.flowQualifier;
     this.loopDepth = saved.loopDepth;
     this.blockDepth = saved.blockDepth;
@@ -1803,7 +1898,6 @@ class Checker {
     for (const candidate of candidates) {
       const outcome = this.matchOverload(c, candidate);
       if (outcome.ok) {
-        this.tables.calls.set(c, {native: candidate, args: outcome.args});
         this.checkPlacement(candidate, c.pos);
         if (candidate.effect === Effect.Param) {
           this.checkInputContract(c, candidate, outcome.args);
@@ -1811,6 +1905,12 @@ class Checker {
         if (candidate.effect === Effect.Request) {
           return this.checkRequest(c, candidate, outcome.args);
         }
+        const resolved: NativeCall = {
+          kind: CallKind.Native,
+          native: candidate,
+          args: outcome.args,
+        };
+        this.info.calls.set(c, resolved);
         return this.callResultTv(candidate, outcome.args);
       }
       if (firstReason === null) {
@@ -1951,10 +2051,9 @@ class Checker {
     return {ok: true, args: aligned};
   }
 
-  // A request call: the captured expression re-checks in a CHILD context —
-  // fresh side tables and a fresh ambient pool, so `close` inside it is the
-  // child symbol's close. The call's result takes the capture's type and is
-  // always series (merged per parent bar).
+  // A request call owns a child semantic context. The same call syntax may be
+  // checked by multiple function instances, so the capture belongs to this
+  // active Info's CallResolution rather than a root-global syntax map.
   private checkRequest(
     c: syntax.CallExpr,
     native: NativeFunc,
@@ -1965,20 +2064,14 @@ class Checker {
     if (expr === null || expr === undefined) {
       return fatal(`request native '${native.name}' matched without a capture`);
     }
-    const savedTables = this.tables;
-    const savedPool = this.seriesPool;
-    const savedProgramOwner = this.programOwner;
-    const tables = newSideTables();
-    bindExpressionNames(expr, this.scope, tables);
-    this.tables = tables;
-    this.seriesPool = new Map();
-    this.programOwner = tables;
+    const parentInfo = this.info;
+    const info = newInfo();
+    bindExpressionNames(expr, this.scope, info);
+    this.info = info;
     this.captureDepth += 1;
     const captureTv = this.checkExpr(expr);
     this.captureDepth -= 1;
-    this.programOwner = savedProgramOwner;
-    this.seriesPool = savedPool;
-    this.tables = savedTables;
+    this.info = parentInfo;
     if (captureTv.type.kind === TypeKind.Void) {
       this.error(expr.pos, 'request expression has no value');
       return INVALID_TV;
@@ -1990,13 +2083,21 @@ class Checker {
       );
       return INVALID_TV;
     }
-    this.info.captures.set(c, {tables, resultType: captureTv.type});
+    parentInfo.calls.set(c, {
+      kind: CallKind.Request,
+      native,
+      args,
+      capture: info,
+      resultType: captureTv.type,
+    });
     return {type: captureTv.type, qualifier: Qualifier.Series, value: null};
   }
 
   private checkPlacement(native: NativeFunc, pos: Pos): void {
     if (native.effect === Effect.Param) {
-      if (this.instanceStack.some(instance => instance.template.exported)) {
+      if (
+        this.instanceStack.some(instance => instance.template.decl.exported)
+      ) {
         this.error(
           pos,
           `'${native.name}' cannot be called from an exported function`,
@@ -2174,8 +2275,20 @@ class Checker {
       if (defvalExpr === null) {
         return;
       }
-      const source = this.tables.ambient.get(unwrapParens(defvalExpr));
-      if (source === undefined || !INPUT_SOURCE_DEFAULTS.has(source.id)) {
+      const sourceExpr = unwrapParens(defvalExpr);
+      let object: Object | undefined;
+      if (sourceExpr.kind === NodeKind.Name) {
+        object = this.info.uses.get(sourceExpr);
+      } else if (sourceExpr.kind === NodeKind.SelectorExpr) {
+        const selection = this.info.selections.get(sourceExpr);
+        if (selection?.kind === SelectionKind.Builtin) {
+          object = selection.builtin;
+        }
+      }
+      if (
+        object?.kind !== ObjectKind.Builtin ||
+        !INPUT_SOURCE_DEFAULTS.has(object.hostId)
+      ) {
         this.error(
           defvalExpr.pos,
           `'${native.name}' source default must be a built-in source: open, high, low, close, hl2, hlc3, ohlc4, or hlcc4`,
@@ -2190,11 +2303,11 @@ class Checker {
     }
     switch (expr.kind) {
       case NodeKind.Name: {
-        const name = this.tables.uses.get(expr);
+        const object = this.info.uses.get(expr);
         return (
-          name !== undefined &&
-          !this.inputBindings.has(name) &&
-          !this.rootBindNames.has(name)
+          object?.kind === ObjectKind.Variable &&
+          !this.inputBindings.has(object) &&
+          !this.rootBindNames.has(object)
         );
       }
       case NodeKind.BasicLit:
@@ -2216,7 +2329,7 @@ class Checker {
         );
       case NodeKind.CallExpr:
         if (
-          this.tables.userCalls.has(expr) &&
+          this.info.calls.get(expr)?.kind === CallKind.Function &&
           (this.funcBoundary !== null || this.captureDepth > 0)
         ) {
           return true;
@@ -2276,7 +2389,7 @@ class Checker {
     return {type, qualifier, value};
   }
 
-  private checkNew(c: syntax.CallExpr, udt: UdtType): TypeAndValue {
+  private checkNew(c: syntax.CallExpr, udt: UdtObject): TypeAndValue {
     const fields = udt.fields;
     const aligned: (syntax.Expr | null)[] = Array(fields.length).fill(null);
     let position = 0;
@@ -2293,7 +2406,7 @@ class Checker {
         position += 1;
         continue;
       }
-      const index = fields.findIndex(f => f.name === arg.name!.value);
+      const index = fields.findIndex(field => field.name === arg.name!.value);
       if (index === -1) {
         this.error(arg.pos, `'${udt.name}' has no field '${arg.name.value}'`);
         return INVALID_TV;
@@ -2304,37 +2417,79 @@ class Checker {
       }
       aligned[index] = arg.value;
     }
-    const defaults = this.info.udtDefaults.get(udt);
+    const args: {
+      field: FieldObject;
+      value: CheckedExpression;
+      supplied: boolean;
+    }[] = [];
+    const defaultDependencies = new Set<SemanticDependency>();
     let qualifier: Qualifier = Qualifier.Const;
     for (const [i, field] of fields.entries()) {
       const expr = aligned[i];
-      if (expr === null) {
-        if (defaults === undefined || !defaults.has(field.name)) {
-          this.error(
-            c.pos,
-            `missing argument '${field.name}' in call to '${udt.name}.new'`,
-          );
-        }
+      const value =
+        expr !== null
+          ? {expr, info: this.info, tv: this.tvOf(expr)}
+          : field.defaultValue;
+      if (value === null) {
+        this.error(
+          c.pos,
+          `missing argument '${field.name}' in call to '${udt.name}.new'`,
+        );
         continue;
       }
-      const tv = this.tvOf(expr);
+      if (expr === null && field.defaultValue !== null) {
+        for (const dependency of field.defaultValue.dependencies) {
+          defaultDependencies.add(dependency);
+        }
+      }
+      const tv = value.tv;
       if (
         tv.type.kind !== TypeKind.Invalid &&
         !assignable(tv.type, field.type)
       ) {
         this.error(
-          expr.pos,
+          value.expr.pos,
           `cannot use ${formatType(tv.type)} as ${formatType(field.type)} for field '${field.name}'`,
         );
       }
       qualifier = joinQualifiers(qualifier, tv.qualifier);
+      args.push({field, value, supplied: expr !== null});
     }
-    this.tables.news.set(c, {udt, args: aligned});
-    return {type: udt, qualifier, value: null};
+    this.recordTransitiveDependencies(defaultDependencies);
+    if (
+      this.captureDepth > 0 &&
+      !this.checkRequestDependencies(c, `${udt.name}.new`, defaultDependencies)
+    ) {
+      return INVALID_TV;
+    }
+    this.info.calls.set(c, {
+      kind: CallKind.Constructor,
+      type: udt,
+      args,
+    });
+    return {type: udt.type, qualifier, value: null};
   }
 }
 
 // ---- pure helpers -----------------------------------------------------------
+
+function functionSignaturesEqual(
+  a: FunctionInstance['signature'],
+  b: FunctionInstance['signature'],
+): boolean {
+  return (
+    a.length === b.length &&
+    a.every((left, i) => {
+      const right = b[i];
+      if (left === null || right === null) {
+        return left === right;
+      }
+      return (
+        left.qualifier === right.qualifier && typesEqual(left.type, right.type)
+      );
+    })
+  );
+}
 
 function unwrapParens(e: syntax.Expr): syntax.Expr {
   let x = e;

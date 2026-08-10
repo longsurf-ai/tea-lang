@@ -12,7 +12,9 @@ only consumes packages.
   Adding a library source kind changes the registry, never the checker.
 - Resolution is recursive with cycle detection (the error names the chain)
   and memoized per path; a library's own imports resolve here, and its
-  binding table (aliases applied) travels on `ResolvedLibrary.imports`.
+  registry path, parsed files, and binding table (aliases applied) travel on
+  `ResolvedLibrary`. The checker materializes that data into a semantic
+  `Package`; it does not reconstruct or discard the library's AST boundary.
 - The loader never reports user errors: outcomes are cached and the checker
   positions them at the import statements. Implicit (builtin) libraries
   failing to load is `fatal` — a compiler defect.

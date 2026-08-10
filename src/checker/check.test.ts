@@ -1,8 +1,10 @@
-// Purpose: Checker unit tests — inferred types, qualifier propagation (later-known wins), const folding, ambient series pooling, and native call resolution observed through the Info side tables.
+// Purpose: Checker unit tests — semantic objects, inferred types, qualifier propagation, constant folding, and call resolution observed through Info.
 
 import {describe, expect, test} from 'bun:test';
 import {NodeKind, type CallExpr, type ExprStmt} from '../syntax/nodes';
 import {Qualifier, TypeKind, isNaValue} from '../ir/type';
+import {CallKind, SelectionKind} from './info';
+import {ObjectKind, type BuiltinObject, type VariableObject} from './object';
 import {checkText, declaredName, initTvOf} from './testing';
 
 describe('inference and folding', () => {
@@ -53,7 +55,10 @@ describe('inference and folding', () => {
 
     const outer = declaredName(r, 'x');
     const inner = [...r.info.defs.values()].find(
-      name => name.name === 'x' && name !== outer,
+      (object): object is VariableObject =>
+        object.kind === ObjectKind.Variable &&
+        object.name === 'x' &&
+        object !== outer,
     );
     expect(inner).toBeDefined();
     expect(r.info.reassigned.has(outer)).toBeFalse();
@@ -97,14 +102,19 @@ describe('inference and folding', () => {
     expect(r.errors).toEqual([]);
 
     const outer = declaredName(r, 'x');
-    const instance = [...r.info.userCalls.values()][0]?.instance;
-    const local = [...instance!.tables.defs.values()].find(
-      name => name.name === 'x',
+    const call = [...r.info.calls.values()].find(
+      resolution => resolution.kind === CallKind.Function,
+    );
+    const instance =
+      call?.kind === CallKind.Function ? call.instance : undefined;
+    const local = [...instance!.info.defs.values()].find(
+      (object): object is VariableObject =>
+        object.kind === ObjectKind.Variable && object.name === 'x',
     );
     expect(instance).toBeDefined();
     expect(local).toBeDefined();
     expect(r.info.reassigned.has(outer)).toBeFalse();
-    expect(instance!.tables.reassigned.has(local!)).toBeTrue();
+    expect(instance!.info.reassigned.has(local!)).toBeTrue();
     expect(initTvOf(r, 'folded').value).toBe(6);
   });
 
@@ -194,20 +204,187 @@ describe('qualifier propagation', () => {
   });
 });
 
+describe('user-defined types', () => {
+  test('constructor qualifier includes omitted field defaults', () => {
+    const r = checkText(
+      [
+        'type Sample',
+        '    float value = close',
+        'fromDefault = Sample.new()',
+        'fromExplicit = Sample.new(1.0)',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+    expect(declaredName(r, 'fromDefault').qualifier).toBe(Qualifier.Series);
+    expect(declaredName(r, 'fromExplicit').qualifier).toBe(Qualifier.Const);
+    const sample = r.checked.pkg.scope.lookup('Sample');
+    expect(sample?.kind).toBe(ObjectKind.Udt);
+    if (sample?.kind === ObjectKind.Udt) {
+      // As in Go structs, the declared type and semantic declaration graph
+      // refer to the same canonical field objects.
+      expect(sample.type.fields[0]).toBe(sample.fields[0]);
+      expect(sample.fields[0].defaultValue?.tv.qualifier).toBe(
+        Qualifier.Series,
+      );
+    }
+  });
+});
+
+describe('semantic ownership', () => {
+  test('a checked package owns declarations, scopes, exports, and imports', () => {
+    const r = checkText(
+      [
+        'import ta',
+        'export identity(x) => x',
+        'value = ta.sma(close, 2) + identity(close)',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.info.scopes.get(r.file)).toBe(r.checked.pkg.scope);
+    expect(r.checked.pkg.scope.lookup('value')).toBe(declaredName(r, 'value'));
+    expect(r.checked.pkg.scope.lookup('identity')?.kind).toBe(
+      ObjectKind.Function,
+    );
+    expect(r.checked.pkg.exports.has('identity')).toBeTrue();
+
+    const ta = r.checked.pkg.imports.get('ta');
+    expect(ta?.name).toBe('ta');
+    expect(ta?.path).toBe('ta');
+    expect(ta?.files).toHaveLength(1);
+    expect(ta?.scope.lookup('sma')?.kind).toBe(ObjectKind.Function);
+    expect(ta?.exports.has('sma')).toBeTrue();
+    expect(
+      [...r.info.uses.values()].some(
+        object => object.kind === ObjectKind.PackageName && object.pkg === ta,
+      ),
+    ).toBeTrue();
+    expect(
+      [...r.info.uses.values()].filter(
+        object => object.kind === ObjectKind.Function,
+      ),
+    ).toHaveLength(2);
+  });
+
+  test('one semantic function instance projects into root and request Programs', () => {
+    const r = checkText(
+      [
+        'read() => close',
+        'root = read()',
+        'child = request.security("X", "D", read())',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+    const rootCall = [...r.info.calls.values()].find(
+      resolution => resolution.kind === CallKind.Function,
+    );
+    const request = [...r.info.calls.values()].find(
+      resolution => resolution.kind === CallKind.Request,
+    );
+    expect(rootCall?.kind).toBe(CallKind.Function);
+    expect(request?.kind).toBe(CallKind.Request);
+    if (
+      rootCall?.kind !== CallKind.Function ||
+      request?.kind !== CallKind.Request
+    ) {
+      return;
+    }
+    const childCall = [...request.capture.calls.values()].find(
+      resolution => resolution.kind === CallKind.Function,
+    );
+    expect(childCall?.kind).toBe(CallKind.Function);
+    if (childCall?.kind === CallKind.Function) {
+      expect(childCall.instance).toBe(rootCall.instance);
+    }
+    expect(
+      [...rootCall.instance.dependencies].some(
+        dependency =>
+          dependency.kind === ObjectKind.Builtin &&
+          dependency.hostId === 'close',
+      ),
+    ).toBeTrue();
+  });
+
+  test('request policy follows transitive declaration dependencies', () => {
+    const allowed = checkText(
+      [
+        'length = input.int(1)',
+        'read() => close[length]',
+        'child = request.security("X", "D", read())',
+      ].join('\n'),
+    );
+    expect(allowed.errors).toEqual([]);
+
+    const rejected = checkText(
+      [
+        'source = close * 2',
+        'read() => source',
+        'child = request.security("X", "D", read())',
+      ].join('\n'),
+    );
+    expect(rejected.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining("reads script variable 'source'"),
+    );
+  });
+
+  test('request policy includes only defaults used by the call', () => {
+    const functionDefault = checkText(
+      [
+        'source = close * 2',
+        'read(value = source) => value',
+        'explicit = request.security("X", "D", read(close))',
+        'omitted = request.security("Y", "D", read())',
+      ].join('\n'),
+    );
+    expect(functionDefault.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining("reads script variable 'source'"),
+    );
+    expect(
+      functionDefault.errors.some(
+        error => error.pos.line === 3 && error.msg.includes('source'),
+      ),
+    ).toBeFalse();
+
+    const constructorDefault = checkText(
+      [
+        'source = close * 2',
+        'type Sample',
+        '    float value = source',
+        'explicit = request.security("X", "D", Sample.new(close))',
+        'omitted = request.security("Y", "D", Sample.new())',
+      ].join('\n'),
+    );
+    expect(constructorDefault.errors.map(error => error.msg)).toContainEqual(
+      expect.stringContaining("'Sample.new' reads script variable 'source'"),
+    );
+    expect(
+      constructorDefault.errors.some(
+        error => error.pos.line === 4 && error.msg.includes('source'),
+      ),
+    ).toBeFalse();
+  });
+});
+
 describe('ambient series', () => {
-  test('one pooled SeriesInput object per host id', () => {
+  test('ambient occurrences resolve to canonical BuiltinObjects', () => {
     const r = checkText('a = close + close\nb = syminfo.tickerid');
     expect(r.errors).toEqual([]);
-    const close = r.info.series.get('close');
-    expect(close).toBeDefined();
-    expect(close!.qualifier).toBe(Qualifier.Series);
-    const tickerid = r.info.series.get('syminfo.tickerid');
-    expect(tickerid).toBeDefined();
-    expect(tickerid!.qualifier).toBe(Qualifier.Simple);
-    // Every ambient use resolves to the same pooled object.
-    const pooled = [...r.info.ambient.values()].filter(s => s.id === 'close');
-    expect(pooled.length).toBe(2);
-    expect(pooled[0]).toBe(pooled[1]);
+    const close = [...r.info.uses.values()].filter(
+      (object): object is BuiltinObject =>
+        object.kind === ObjectKind.Builtin && object.hostId === 'close',
+    );
+    expect(close).toHaveLength(2);
+    expect(close[0].qualifier).toBe(Qualifier.Series);
+    expect(close[0]).toBe(close[1]);
+
+    const tickerid = [...r.info.selections.values()].find(
+      selection =>
+        selection.kind === SelectionKind.Builtin &&
+        selection.builtin.hostId === 'syminfo.tickerid',
+    );
+    expect(tickerid?.kind).toBe(SelectionKind.Builtin);
+    if (tickerid?.kind === SelectionKind.Builtin) {
+      expect(tickerid.builtin.qualifier).toBe(Qualifier.Simple);
+    }
   });
 });
 
@@ -218,13 +395,16 @@ describe('native calls', () => {
     const call = (r.file.stmtList[0] as ExprStmt).x as CallExpr;
     expect(call.kind).toBe(NodeKind.CallExpr);
     const resolved = r.info.calls.get(call);
-    expect(resolved).toBeDefined();
-    expect(resolved!.native.name).toBe('plot');
+    expect(resolved?.kind).toBe(CallKind.Native);
+    if (resolved?.kind !== CallKind.Native) {
+      return;
+    }
+    expect(resolved.native.name).toBe('plot');
     // plot(series, title, color, ...): slot 0 = series, 1 = title, 2 = color.
-    expect(resolved!.args[0]).not.toBeNull();
-    expect(resolved!.args[1]).not.toBeNull();
-    expect(resolved!.args[2]).not.toBeNull();
-    expect(resolved!.args[3]).toBeNull();
+    expect(resolved.args[0]).not.toBeNull();
+    expect(resolved.args[1]).not.toBeNull();
+    expect(resolved.args[2]).not.toBeNull();
+    expect(resolved.args[3]).toBeNull();
   });
 
   test('overload selection: int stays int, mixing widens to float', () => {

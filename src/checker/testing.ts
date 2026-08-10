@@ -1,17 +1,18 @@
-// Purpose: Test helpers for the typecheck package — parse and check a source string against a fresh Errors instance, and look up declared ir Names by source name.
+// Purpose: Test helpers for the checker — parse/check source and inspect canonical semantic declarations and expression facts.
 
 import {Errors, fatal, type ErrorMsg} from '../base/print';
 import {newFileBase} from '../base/pos';
-import type {Name as IrName} from '../ir/node';
 import type {TypeAndValue} from '../ir/type';
 import {resolveImports} from '../loader/loader';
 import {NodeKind, type File} from '../syntax/nodes';
 import {parse} from '../syntax/syntax';
-import {check, type Info} from './check';
+import {checkPackage, type CheckedPackage, type Info} from './check';
 import type {Importer} from './importer';
+import {ObjectKind, type VariableObject} from './object';
 
 export interface CheckResult {
   readonly file: File;
+  readonly checked: CheckedPackage;
   readonly info: Info;
   readonly errors: readonly ErrorMsg[];
 }
@@ -25,29 +26,41 @@ export function checkText(
   const file = parse(newFileBase(filename), src, (pos, msg) =>
     errors.errorAt(pos, msg),
   );
-  const info = check(file, errors, importer ?? resolveImports([file]));
-  return {file, info, errors: errors.flushErrors()};
+  const checked = checkPackage(
+    [file],
+    errors,
+    importer ?? resolveImports([file]),
+  );
+  return {
+    file,
+    checked,
+    info: checked.info,
+    errors: errors.flushErrors(),
+  };
 }
 
-// The ir Name created by the top-level declaration of `name`; fails the test
-// run loudly when the fixture does not declare it.
-export function declaredName(result: CheckResult, name: string): IrName {
+// The semantic variable created by the top-level declaration of `name`;
+// fails loudly when the fixture does not declare one.
+export function declaredName(
+  result: CheckResult,
+  name: string,
+): VariableObject {
   for (const stmt of result.file.stmtList) {
     if (stmt.kind !== NodeKind.DeclStmt) {
       continue;
     }
     if (stmt.target.kind === NodeKind.Name && stmt.target.value === name) {
-      const irName = result.info.defs.get(stmt.target);
-      if (irName !== undefined) {
-        return irName;
+      const object = result.info.defs.get(stmt.target);
+      if (object?.kind === ObjectKind.Variable) {
+        return object;
       }
     }
     if (stmt.target.kind === NodeKind.TuplePattern) {
       for (const elem of stmt.target.elems) {
         if (elem.value === name) {
-          const irName = result.info.defs.get(elem);
-          if (irName !== undefined) {
-            return irName;
+          const object = result.info.defs.get(elem);
+          if (object?.kind === ObjectKind.Variable) {
+            return object;
           }
         }
       }

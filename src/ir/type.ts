@@ -16,6 +16,17 @@ export const Qualifier = {
 
 export type Qualifier = (typeof Qualifier)[keyof typeof Qualifier];
 
+// Persistence is semantic declaration metadata shared by checking and IR:
+// perBar reinitializes each iteration, var carries the prior committed value,
+// and varip additionally persists across provisional executions.
+export const Storage = {
+  PerBar: 'perBar',
+  Var: 'var',
+  Varip: 'varip',
+} as const;
+
+export type NameStorage = (typeof Storage)[keyof typeof Storage];
+
 const QUALIFIER_RANK: Record<Qualifier, number> = {
   const: 0,
   input: 1,

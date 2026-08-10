@@ -36,11 +36,11 @@ export function compileToIr(filename: string, errors: Errors): Program | null {
   // libraries; the checker consumes them through the Importer and positions
   // any resolution errors at the import statements.
   const importer = resolveImports(files);
-  const info = checkPackage(files, errors, importer);
+  const checked = checkPackage(files, errors, importer);
   if (errors.count > 0) {
     return null;
   }
-  const program = buildProgram(files[0], info, errors);
+  const program = buildProgram(checked, errors);
   return errors.count > 0 ? null : program;
 }
 
@@ -63,13 +63,13 @@ export function compile(
   }
   const checkDone = perf.startTimer('check');
   const importer = resolveImports(files);
-  const info = checkPackage(files, errors, importer);
+  const checked = checkPackage(files, errors, importer);
   checkDone();
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};
   }
   const nodeDone = perf.startTimer('buildProgram');
-  const program = buildProgram(files[0], info, errors);
+  const program = buildProgram(checked, errors);
   nodeDone();
   if (errors.count > 0) {
     return {ok: false, errors: errors.flushErrors()};

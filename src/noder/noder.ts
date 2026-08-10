@@ -1,9 +1,9 @@
-// Purpose: Noder — buildProgram() turns checked syntax plus the checker's Info into the Tea Program (desugaring compound assigns, tuple patterns, param/output extraction, and history-on-expression); source loading lives in src/loader.
+// Purpose: Noder — buildProgram() projects a CheckedPackage's semantic objects and per-context Info into a Tea Program, including desugaring and host-interface extraction.
 //
 // The noder consumes checked, error-free syntax and never re-checks: every
-// type and qualifier comes from Info side tables, every use resolves through
-// Info.uses/defs/ambient to the binder's shared ir objects. Bad nodes or
-// missing table entries here mean the phase barrier was violated — fatal.
+// type and qualifier comes from checked Info facts. Semantic objects resolve
+// source identities; this pass projects them into Program-owned IR objects.
+// Bad nodes or missing facts here mean the phase barrier was violated — fatal.
 
 import type {Pos} from '../base/pos';
 import {fatal, type Errors} from '../base/print';
@@ -36,6 +36,7 @@ import {
   type ParamInput,
   type Program,
   type RequestEdge,
+  type SeriesInput,
 } from '../ir/program';
 import {
   assignable,
@@ -59,22 +60,31 @@ import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
 import {Op} from '../syntax/tokens';
 import {Effect, TypeRef, type NativeParam} from '../checker/catalog';
-import type {
-  FuncInstance,
-  Info,
-  ResolvedCall,
-  SideTables,
-} from '../checker/check';
+import {
+  CallKind,
+  SelectionKind,
+  type CheckedExpression,
+  type FunctionInstance,
+  type Info,
+  type NativeCall,
+  type RequestCall,
+} from '../checker/info';
+import {
+  ObjectKind,
+  type BuiltinObject,
+  type VariableObject,
+} from '../checker/object';
+import type {CheckedPackage} from '../checker/package';
 import {resolveDepths} from './depth';
 
 // Build the Program from checked syntax ("noding"). Requires a clean check —
 // compile()'s phase barrier guarantees it.
-export function buildProgram(
-  file: syntax.File,
-  info: Info,
-  errors: Errors,
-): Program {
-  return new Noder(info, errors).build(file);
+export function buildProgram(checked: CheckedPackage, errors: Errors): Program {
+  const file = checked.pkg.files[0];
+  if (file === undefined) {
+    return fatal('checked package has no source file');
+  }
+  return new Noder(checked.info, errors).build(file);
 }
 
 // Surface lexeme vocabulary → semantic operation vocabulary.
@@ -94,6 +104,36 @@ const BINARY_OP_MAP: Readonly<Partial<Record<Op, IrBinaryOp>>> = {
   [Op.Percent]: IrOp.Mod,
 };
 
+interface FrameLoweringContext {
+  readonly kind: 'program' | 'function';
+  readonly program: ProgramLoweringContext;
+  readonly names: ReadonlySet<IrName>;
+  nextSlot: number;
+}
+
+class ProgramLoweringContext {
+  readonly names = new Map<VariableObject, IrName>();
+  readonly series = new Map<BuiltinObject, SeriesInput>();
+  readonly funcs = new Map<FunctionInstance, IrFunc>();
+  readonly outputRefs = new Map<VariableObject, OutputDecl>();
+  readonly aliasRefs = new Map<VariableObject, Place>();
+  readonly requests: RequestEdge[] = [];
+  readonly requestsByCall = new Map<RequestCall, RequestEdge>();
+  readonly rootFrame: FrameLoweringContext;
+
+  constructor(
+    readonly info: Info,
+    readonly parent: ProgramLoweringContext | null,
+  ) {
+    this.rootFrame = {
+      kind: 'program',
+      program: this,
+      names: new Set(),
+      nextSlot: 0,
+    };
+  }
+}
+
 class Noder {
   private readonly params: ParamInput[] = [];
   private readonly outputs: OutputDecl[] = [];
@@ -102,62 +142,35 @@ class Noder {
   // Compile-time reference bindings: `len = input.int(...)` and
   // `p = plot(...)` bind the name to the param/output instead of emitting a
   // per-bar write (only when the name is never reassigned).
-  private readonly paramRefs = new Map<IrName, ParamInput>();
-  private readonly outputRefs = new Map<IrName, OutputDecl>();
-  // Alias bindings: a never-reassigned declaration whose initializer is a
-  // current-bar read of a STABLE place (series, param, request — never a
-  // Name, whose later writes would leak through) binds the name to that
-  // place, so history offsets land on the place itself.
-  private readonly aliasRefs = new Map<IrName, Place>();
+  private readonly paramRefs = new Map<VariableObject, ParamInput>();
   // Per-top-statement queues: synthetic history writes go before the
   // statement, output Emits after it.
   private hoisted: IrStmt[] = [];
   private emitted: IrStmt[] = [];
   private nesting = 0;
-  // One IrFunc per checker instance (per-signature stencil); bodies node
-  // against the instance's own side tables.
-  private readonly instanceFuncs = new Map<FuncInstance, IrFunc>();
-  // Names owned by each user-function frame currently being noded. This is
-  // the ownership information request classification needs to distinguish a
-  // root alias (bind-readable through rt.root()) from a function-local input
-  // parameter (which requires a per-call frame and is therefore dynamic).
-  private readonly functionFrameNames: Set<IrName>[] = [];
-  // Frame-local slot counters: the program frame at the bottom, one counter
-  // per IrFunc body being noded. Every call site mints the next slot of the
-  // frame it sits in — the sub-frame selector within that frame.
-  private readonly slots: number[] = [0];
-  // Request edges per Program level: the parent's list at the bottom, one
-  // pushed per child capture being noded (nested requests belong to the
-  // child).
-  private readonly requestLevels: RequestEdge[][] = [[]];
-  // Request edges memoize per (side-table view, call site): the same syntax
-  // call noded under two FuncInstances must yield two edges — the context
-  // exprs reference the INSTANCE's param Names.
-  private readonly requestOf = new Map<
-    SideTables,
-    Map<syntax.CallExpr, RequestEdge>
-  >();
   private version = 1;
-
-  // The side-table view for the context being noded: the Info itself for
-  // the main body, a FuncInstance's tables inside its body.
-  private tables: SideTables;
+  private info: Info;
+  private program: ProgramLoweringContext;
+  private frame: FrameLoweringContext;
 
   constructor(
-    private readonly info: Info,
+    info: Info,
     private readonly errors: Errors,
   ) {
-    this.tables = info;
+    this.info = info;
+    this.program = new ProgramLoweringContext(info, null);
+    this.frame = this.program.rootFrame;
   }
 
   private mintSlot(): number {
-    const top = this.slots.length - 1;
-    const id = this.slots[top];
-    this.slots[top] += 1;
+    const id = this.frame.nextSlot;
+    this.frame.nextSlot += 1;
     return id;
   }
 
   build(file: syntax.File): Program {
+    const versionNumber = Number(file.version ?? '1');
+    this.version = Number.isFinite(versionNumber) ? versionNumber : 1;
     const body: IrStmt[] = [];
     for (const stmt of file.stmtList) {
       this.hoisted = [];
@@ -165,12 +178,10 @@ class Noder {
       const stmts = this.nodeStmt(stmt);
       body.push(...this.hoisted, ...stmts, ...this.emitted);
     }
-    const versionNumber = Number(file.version ?? '1');
-    this.version = Number.isFinite(versionNumber) ? versionNumber : 1;
     const program: Program = {
       version: this.version,
       params: this.params,
-      requests: this.requestLevels[0],
+      requests: this.program.requests,
       outputs: this.outputs,
       // Hoisting const/input/simple work out of the bar loop is a later
       // optimization; everything runs in the per-bar body for now.
@@ -207,11 +218,81 @@ class Noder {
   }
 
   private tvOf(e: syntax.Expr): TypeAndValue {
-    const tv = this.tables.types.get(e);
+    const tv = this.info.types.get(e);
     if (tv === undefined) {
       return fatal(`unchecked expression reached the noder: ${e.kind}`);
     }
     return tv;
+  }
+
+  private variableDef(node: syntax.Name): VariableObject {
+    const object = this.info.defs.get(node);
+    if (object?.kind !== ObjectKind.Variable) {
+      return fatal(`unbound declaration reached the noder: ${node.value}`);
+    }
+    return object;
+  }
+
+  private variableUse(node: syntax.Name): VariableObject {
+    const object = this.info.uses.get(node);
+    if (object?.kind !== ObjectKind.Variable) {
+      return fatal(`unresolved name reached the noder: ${node.value}`);
+    }
+    return object;
+  }
+
+  private nameOf(object: VariableObject): IrName {
+    let name = this.program.names.get(object);
+    if (name === undefined) {
+      name = {
+        name: object.name,
+        storage: object.storage,
+        type: object.type,
+        qualifier: object.qualifier,
+        depth: {kind: DepthKind.None},
+        init: null,
+      };
+      this.program.names.set(object, name);
+    }
+    return name;
+  }
+
+  private builtinOf(
+    e: syntax.Name | syntax.SelectorExpr,
+  ): BuiltinObject | null {
+    if (e.kind === NodeKind.Name) {
+      const object = this.info.uses.get(e);
+      return object?.kind === ObjectKind.Builtin ? object : null;
+    }
+    const selection = this.info.selections.get(e);
+    return selection?.kind === SelectionKind.Builtin ? selection.builtin : null;
+  }
+
+  private seriesOf(builtin: BuiltinObject): SeriesInput {
+    let series = this.program.series.get(builtin);
+    if (series === undefined) {
+      series = {
+        id: builtin.hostId,
+        type: builtin.type,
+        qualifier: builtin.qualifier,
+        depth: {kind: DepthKind.None},
+      };
+      this.program.series.set(builtin, series);
+    }
+    return series;
+  }
+
+  // A checked default changes only the semantic fact view. It still lowers
+  // into the caller's current Program and frame.
+  private nodeChecked(
+    checked: CheckedExpression,
+    expectedType: Type = checked.tv.type,
+  ): IrExpr {
+    const saved = this.info;
+    this.info = checked.info;
+    const expr = this.nodeExpr(checked.expr, expectedType);
+    this.info = saved;
+    return expr;
   }
 
   private read(name: IrName, pos: Pos): HistReadExpr {
@@ -297,8 +378,8 @@ class Noder {
   private nodeExprStmt(stmt: syntax.ExprStmt): IrStmt[] {
     const call = unwrapCall(stmt.x);
     if (call !== null) {
-      const resolved = this.tables.calls.get(call);
-      if (resolved !== undefined) {
+      const resolved = this.info.calls.get(call);
+      if (resolved?.kind === CallKind.Native) {
         if (resolved.native.effect === Effect.Declaration) {
           this.nodeDeclarationCall(resolved);
           return [];
@@ -330,22 +411,21 @@ class Noder {
     if (d.target.kind === NodeKind.TuplePattern) {
       return this.nodeTupleDecl(d, d.target);
     }
-    const name = this.tables.defs.get(d.target);
-    if (name === undefined) {
-      return fatal(
-        `undeclared decl target reached the noder: ${d.target.value}`,
-      );
-    }
-    const rebindable = !this.tables.reassigned.has(name);
+    const object = this.variableDef(d.target);
+    const name = this.nameOf(object);
+    const rebindable = !this.info.reassigned.has(object);
 
     // `len = input.int(...)` binds the name to the param: reads become
     // param reads, no per-bar write exists.
     const call = unwrapCall(d.init);
     if (call !== null && rebindable && d.mode === Mode.None) {
-      const resolved = this.tables.calls.get(call);
-      if (resolved !== undefined && resolved.native.effect === Effect.Param) {
+      const resolved = this.info.calls.get(call);
+      if (
+        resolved?.kind === CallKind.Native &&
+        resolved.native.effect === Effect.Param
+      ) {
         const param = this.ensureParam(call, resolved, name.name);
-        this.paramRefs.set(name, param);
+        this.paramRefs.set(object, param);
         return [];
       }
     }
@@ -360,7 +440,7 @@ class Noder {
     // `p = plot(...)` (or an alias of it) binds the name to the output
     // declaration: refs resolve at bind time, never per bar.
     if (init.kind === IrKind.OutputRef && rebindable && d.mode === Mode.None) {
-      this.outputRefs.set(name, init.output);
+      this.program.outputRefs.set(object, init.output);
       return [];
     }
 
@@ -375,7 +455,7 @@ class Noder {
       rebindable &&
       d.mode === Mode.None
     ) {
-      this.aliasRefs.set(name, init.place);
+      this.program.aliasRefs.set(object, init.place);
       return [];
     }
 
@@ -416,12 +496,7 @@ class Noder {
       },
     ];
     pattern.elems.forEach((elem, i) => {
-      const name = this.tables.defs.get(elem);
-      if (name === undefined) {
-        return fatal(
-          `undeclared tuple element reached the noder: ${elem.value}`,
-        );
-      }
+      const name = this.nameOf(this.variableDef(elem));
       stmts.push({
         kind: IrKind.WriteName,
         pos: elem.pos,
@@ -441,12 +516,7 @@ class Noder {
 
   private nodeAssign(a: syntax.AssignStmt): IrStmt[] {
     if (a.target.kind === NodeKind.Name) {
-      const name = this.tables.uses.get(a.target);
-      if (name === undefined) {
-        return fatal(
-          `unresolved assign target reached the noder: ${a.target.value}`,
-        );
-      }
+      const name = this.nameOf(this.variableUse(a.target));
       const value = this.nodeExpr(a.value, name.type);
       const base = ASSIGN_BASE_OP[a.op];
       const written =
@@ -465,12 +535,16 @@ class Noder {
     }
     if (a.target.kind === NodeKind.SelectorExpr) {
       const targetType = this.tvOf(a.target).type;
+      const selection = this.info.selections.get(a.target);
+      if (selection?.kind !== SelectionKind.Field) {
+        return fatal('unresolved field assignment reached the noder');
+      }
       return [
         {
           kind: IrKind.WriteField,
           pos: a.pos,
           x: this.nodeExpr(a.target.x),
-          field: a.target.sel.value,
+          field: selection.field.name,
           value: this.nodeExpr(a.value, targetType),
         },
       ];
@@ -572,10 +646,7 @@ class Noder {
       case NodeKind.IfExpr:
         return this.nodeIf(e, tv);
       case NodeKind.ForExpr: {
-        const index = this.tables.defs.get(e.index);
-        if (index === undefined) {
-          return fatal('unresolved loop index reached the noder');
-        }
+        const index = this.nameOf(this.variableDef(e.index));
         return {
           kind: IrKind.ForExpr,
           pos: e.pos,
@@ -591,13 +662,7 @@ class Noder {
       case NodeKind.ForInExpr: {
         const targetNames =
           e.target.kind === NodeKind.Name ? [e.target] : e.target.elems;
-        const targets = targetNames.map(n => {
-          const name = this.tables.defs.get(n);
-          if (name === undefined) {
-            return fatal('unresolved for-in target reached the noder');
-          }
-          return name;
-        });
+        const targets = targetNames.map(n => this.nameOf(this.variableDef(n)));
         return {
           kind: IrKind.ForInExpr,
           pos: e.pos,
@@ -662,8 +727,9 @@ class Noder {
     e: syntax.Name | syntax.SelectorExpr,
     tv: TypeAndValue,
   ): IrExpr {
-    const series = this.tables.ambient.get(e);
-    if (series !== undefined) {
+    const builtin = this.builtinOf(e);
+    if (builtin !== null) {
+      const series = this.seriesOf(builtin);
       const place: Place = {kind: PlaceKind.Series, series};
       return {
         kind: IrKind.HistRead,
@@ -675,11 +741,8 @@ class Noder {
       };
     }
     if (e.kind === NodeKind.Name) {
-      const name = this.tables.uses.get(e);
-      if (name === undefined) {
-        return fatal(`unresolved name reached the noder: ${e.value}`);
-      }
-      const param = this.paramRefs.get(name);
+      const object = this.variableUse(e);
+      const param = this.paramRefs.get(object);
       if (param !== undefined) {
         return {
           kind: IrKind.HistRead,
@@ -690,7 +753,7 @@ class Noder {
           offset: null,
         };
       }
-      const output = this.outputRefs.get(name);
+      const output = this.program.outputRefs.get(object);
       if (output !== undefined) {
         return {
           kind: IrKind.OutputRef,
@@ -700,7 +763,7 @@ class Noder {
           output,
         };
       }
-      const alias = this.aliasRefs.get(name);
+      const alias = this.program.aliasRefs.get(object);
       if (alias !== undefined) {
         return {
           kind: IrKind.HistRead,
@@ -711,52 +774,46 @@ class Noder {
           offset: null,
         };
       }
-      return this.read(name, e.pos);
+      return this.read(this.nameOf(object), e.pos);
     }
-    // A selector that is not ambient and not folded is a UDT field read.
+    const selection = this.info.selections.get(e);
+    if (selection?.kind !== SelectionKind.Field) {
+      return fatal(`unresolved selector reached the noder: ${e.sel.value}`);
+    }
     return {
       kind: IrKind.FieldGet,
       pos: e.pos,
       type: tv.type,
       qualifier: tv.qualifier,
       x: this.nodeExpr(e.x),
-      field: e.sel.value,
+      field: selection.field.name,
     };
   }
 
   private nodeCall(c: syntax.CallExpr, tv: TypeAndValue): IrExpr {
-    const constructed = this.tables.news.get(c);
-    if (constructed !== undefined) {
-      const defaults = this.info.udtDefaults.get(constructed.udt);
-      const args = constructed.udt.fields.map((field, i) => {
-        const provided = constructed.args[i];
-        if (provided !== null) {
-          return this.nodeExpr(provided, field.type);
-        }
-        const fallback = defaults?.get(field.name);
-        // The checker required an argument when no default exists.
-        return fallback !== undefined
-          ? this.nodeExpr(fallback, field.type)
-          : this.naConst(c.pos, field.type);
-      });
+    const resolved = this.info.calls.get(c);
+    if (resolved === undefined) {
+      return fatal('unresolved call reached the noder');
+    }
+    if (resolved.kind === CallKind.Constructor) {
       return {
         kind: IrKind.NewUdt,
         pos: c.pos,
         type: tv.type,
         qualifier: tv.qualifier,
-        udt: constructed.udt,
-        args,
+        udt: resolved.type.type,
+        args: resolved.args.map(arg =>
+          this.nodeChecked(arg.value, arg.field.type),
+        ),
       };
     }
-    const userCall = this.tables.userCalls.get(c);
-    if (userCall !== undefined) {
-      const func = this.funcOf(userCall.instance);
-      const args = userCall.instance.params.map((param, i) => {
-        const provided = userCall.args[i];
-        if (provided !== null) {
-          return this.nodeExpr(provided, param.type);
-        }
-        return this.nodeInstanceDefault(userCall.instance, i, param.type);
+    if (resolved.kind === CallKind.Function) {
+      const func = this.funcOf(resolved.instance);
+      const args = resolved.instance.params.map((param, i) => {
+        const provided = resolved.args[i];
+        return provided !== null
+          ? this.nodeExpr(provided, param.type)
+          : this.nodeInstanceDefault(resolved.instance, i, param.type);
       });
       return {
         kind: IrKind.CallFunc,
@@ -768,9 +825,8 @@ class Noder {
         args,
       };
     }
-    const resolved = this.tables.calls.get(c);
-    if (resolved === undefined) {
-      return fatal('unresolved call reached the noder');
+    if (resolved.kind === CallKind.Request) {
+      return this.nodeRequest(c, resolved, tv);
     }
     switch (resolved.native.effect) {
       case Effect.Param: {
@@ -787,7 +843,7 @@ class Noder {
       case Effect.Output:
         return this.nodeOutputCall(c, resolved);
       case Effect.Request:
-        return this.nodeRequest(c, resolved, tv);
+        return fatal('request native lacks request semantics');
       case Effect.Declaration:
         return fatal(
           'declaration call in expression position reached the noder',
@@ -986,15 +1042,19 @@ class Noder {
           value: tv.value,
         };
       }
-      const name = this.tables.defs.get(stmt.target);
-      return name !== undefined ? this.read(name, stmt.pos) : null;
+      const object = this.info.defs.get(stmt.target);
+      return object?.kind === ObjectKind.Variable
+        ? this.read(this.nameOf(object), stmt.pos)
+        : null;
     }
     if (
       stmt.kind === NodeKind.AssignStmt &&
       stmt.target.kind === NodeKind.Name
     ) {
-      const name = this.tables.uses.get(stmt.target);
-      return name !== undefined ? this.read(name, stmt.pos) : null;
+      const object = this.info.uses.get(stmt.target);
+      return object?.kind === ObjectKind.Variable
+        ? this.read(this.nameOf(object), stmt.pos)
+        : null;
     }
     return null;
   }
@@ -1007,16 +1067,12 @@ class Noder {
   // itself becomes a read of the request place.
   private nodeRequest(
     c: syntax.CallExpr,
-    resolved: ResolvedCall,
+    resolved: RequestCall,
     tv: TypeAndValue,
   ): IrExpr {
-    const existing = this.requestMemo().get(c);
+    const existing = this.program.requestsByCall.get(resolved);
     if (existing !== undefined) {
       return this.requestRead(c, existing, tv);
-    }
-    const capture = this.info.captures.get(c);
-    if (capture === undefined) {
-      return fatal('request call reached the noder without a capture');
     }
     const argExpr = (paramName: string): syntax.Expr | null => {
       const index = resolved.native.params.findIndex(p => p.name === paramName);
@@ -1059,34 +1115,41 @@ class Noder {
           : null,
     };
 
-    // The child context: the capture's side tables, a fresh frame and
-    // request level. History-on-expression synthesis stays disabled inside
-    // (nesting), exactly as in function bodies.
+    // The child context owns its semantic facts, ambient inputs, functions,
+    // frame slots, and nested requests. Compilation-global params remain
+    // shared through the binding projection maps.
     const resultName: IrName = {
       name: '$result',
       storage: Storage.PerBar,
-      type: capture.resultType,
+      type: resolved.resultType,
       qualifier: Qualifier.Series,
       depth: {kind: DepthKind.None},
       init: null,
     };
-    const savedTables = this.tables;
-    this.tables = capture.tables;
-    this.slots.push(0);
-    this.requestLevels.push([]);
+    const parentProgram = this.program;
+    const savedInfo = this.info;
+    const savedFrame = this.frame;
+    const savedNesting = this.nesting;
+    const childContext = new ProgramLoweringContext(
+      resolved.capture,
+      parentProgram,
+    );
+    this.info = resolved.capture;
+    this.program = childContext;
+    this.frame = childContext.rootFrame;
     this.nesting += 1;
-    const childValue = this.nodeExpr(captureExpr, capture.resultType);
-    this.nesting -= 1;
-    const childRequests = this.requestLevels.pop();
-    this.slots.pop();
-    this.tables = savedTables;
+    const childValue = this.nodeExpr(captureExpr, resolved.resultType);
+    this.nesting = savedNesting;
+    this.info = savedInfo;
+    this.program = parentProgram;
+    this.frame = savedFrame;
 
     const child: Program = {
       version: this.version,
       // Bind-time params are compilation-global: a child references the
       // parent's ParamInput objects directly and declares none of its own.
       params: [],
-      requests: childRequests ?? [],
+      requests: childContext.requests,
       outputs: [],
       init: [],
       body: [
@@ -1098,7 +1161,6 @@ class Noder {
         },
       ],
     };
-    resolveDepths(child);
 
     // In the program frame, input-qualified context expressions may use
     // ordinary aliases and pure UDFs because module.bind owns a real root
@@ -1112,23 +1174,14 @@ class Noder {
       timeframe,
       merge,
       resultName,
-      resultType: capture.resultType,
+      resultType: resolved.resultType,
       dynamic: !staticAtBind(symbol) || !staticAtBind(timeframe),
       depth: {kind: DepthKind.None},
       child,
     };
-    this.requestLevels[this.requestLevels.length - 1].push(edge);
-    this.requestMemo().set(c, edge);
+    parentProgram.requests.push(edge);
+    parentProgram.requestsByCall.set(resolved, edge);
     return this.requestRead(c, edge, tv);
-  }
-
-  private requestMemo(): Map<syntax.CallExpr, RequestEdge> {
-    let memo = this.requestOf.get(this.tables);
-    if (memo === undefined) {
-      memo = new Map();
-      this.requestOf.set(this.tables, memo);
-    }
-    return memo;
   }
 
   // A dynamic edge's offset-0 read is its EXECUTION (rt.requestFor), so
@@ -1156,67 +1209,67 @@ class Noder {
     if (!qualifierLE(expr.qualifier, Qualifier.Input)) {
       return false;
     }
-    // A call site in the program frame can run against the provisional root
-    // frame during module.bind; the checker's aggregate UDF qualifier proves
-    // it contains no hidden series/request work.
-    if (this.slots.length === 1) {
-      return true;
+    if (this.frame.kind === 'program') {
+      // Only the compilation root owns the provisional root frame available
+      // during module.bind. Request-child program roots remain frame-free.
+      return this.program.parent === null;
     }
-    const frameNames = this.functionFrameNames.at(-1);
-    if (frameNames === undefined) {
-      // We are inside a request capture, not a user-function frame. Only the
-      // frame-free cases accepted above are independently bind-evaluable.
-      return false;
-    }
-    return rootNameBindEvaluable(expr, frameNames);
+    return rootNameBindEvaluable(expr, this.frame.names);
   }
 
-  // ---- function stencils ----------------------------------------------------
+  // ---- functions ------------------------------------------------------------
 
-  // One IrFunc per checker instance: the body nodes once against the
-  // instance's side tables, under its own frame-local slot counter (each
+  // One IrFunc per checker instance and Program: the body nodes once against
+  // the instance's Info, under its own frame-local slot counter (each
   // CallFunc inside selects a sub-frame of THIS func's frame). Recursion
   // cannot occur — the checker rejected cyclic call graphs.
-  private funcOf(instance: FuncInstance): IrFunc {
-    const existing = this.instanceFuncs.get(instance);
+  private funcOf(instance: FunctionInstance): IrFunc {
+    const existing = this.program.funcs.get(instance);
     if (existing !== undefined) {
       return existing;
     }
-    const savedTables = this.tables;
+    const savedInfo = this.info;
+    const savedFrame = this.frame;
     const savedNesting = this.nesting;
-    this.tables = instance.tables;
+    this.info = instance.info;
     const paramSet = new Set(instance.params);
-    const locals = [...new Set(instance.tables.defs.values())].filter(
-      name => !paramSet.has(name),
+    const localObjects = [...new Set(instance.info.defs.values())].filter(
+      (object): object is VariableObject =>
+        object.kind === ObjectKind.Variable && !paramSet.has(object),
     );
-    this.functionFrameNames.push(new Set([...instance.params, ...locals]));
+    const params = instance.params.map(param => this.nameOf(param));
+    const locals = localObjects.map(local => this.nameOf(local));
+    this.frame = {
+      kind: 'function',
+      program: this.program,
+      names: new Set([...params, ...locals]),
+      nextSlot: 0,
+    };
     this.nesting += 1;
-    this.slots.push(0);
+    const decl = instance.template.decl;
     const body =
-      instance.template.body.kind === NodeKind.Block
-        ? this.nodeBlock(instance.template.body, instance.resultType)
-        : this.nodeExpr(instance.template.body, instance.resultType);
-    this.slots.pop();
-    this.functionFrameNames.pop();
+      decl.body.kind === NodeKind.Block
+        ? this.nodeBlock(decl.body, instance.resultType)
+        : this.nodeExpr(decl.body, instance.resultType);
     this.nesting = savedNesting;
-    this.tables = savedTables;
+    this.info = savedInfo;
+    this.frame = savedFrame;
     const func: IrFunc = {
       name: instance.name,
-      params: instance.params,
+      params,
       locals,
       resultType: instance.resultType,
       resultQualifier: instance.resultQualifier,
       body,
     };
-    this.instanceFuncs.set(instance, func);
+    this.program.funcs.set(instance, func);
     return func;
   }
 
-  // An omitted argument nodes the instance's default expression — checked in
-  // the instance's tables — at the call site. Defaults must not reference
-  // sibling params (see AGENTS.md).
+  // An omitted argument nodes the instance's checked default at the call
+  // site. Defaults must not reference sibling params (see AGENTS.md).
   private nodeInstanceDefault(
-    instance: FuncInstance,
+    instance: FunctionInstance,
     index: number,
     expectedType: Type,
   ): IrExpr {
@@ -1226,18 +1279,14 @@ class Noder {
         `no default for omitted argument ${index} of '${instance.name}'`,
       );
     }
-    const saved = this.tables;
-    this.tables = instance.tables;
-    const expr = this.nodeExpr(dflt, expectedType);
-    this.tables = saved;
-    return expr;
+    return this.nodeChecked(dflt, expectedType);
   }
 
   // ---- params and outputs ---------------------------------------------------
 
   private ensureParam(
     c: syntax.CallExpr,
-    resolved: ResolvedCall,
+    resolved: NativeCall,
     bindingName: string | null,
   ): ParamInput {
     const existing = this.paramOf.get(c);
@@ -1260,9 +1309,16 @@ class Noder {
       if (tv.value !== null) {
         defaultValue = {kind: ParamDefaultKind.Const, value: tv.value};
       } else {
-        const series = this.tables.ambient.get(unwrapExpr(defval));
-        if (series !== undefined) {
-          defaultValue = {kind: ParamDefaultKind.Series, series};
+        const source = unwrapExpr(defval);
+        const builtin =
+          source.kind === NodeKind.Name || source.kind === NodeKind.SelectorExpr
+            ? this.builtinOf(source)
+            : null;
+        if (builtin !== null) {
+          defaultValue = {
+            kind: ParamDefaultKind.Series,
+            series: this.seriesOf(builtin),
+          };
         } else {
           this.errors.errorAt(
             defval.pos,
@@ -1364,13 +1420,13 @@ class Noder {
 
   // indicator()/strategy(): script metadata is an emission to the host,
   // modeled as an OutputDecl with the declaration's effect name.
-  private nodeDeclarationCall(resolved: ResolvedCall): void {
+  private nodeDeclarationCall(resolved: NativeCall): void {
     this.outputs.push(this.partitionOutput(resolved).output);
   }
 
   private nodeOutputCall(
     c: syntax.CallExpr,
-    resolved: ResolvedCall,
+    resolved: NativeCall,
   ): OutputRefExpr {
     const {output, emitArgs} = this.partitionOutput(resolved);
     this.outputs.push(output);
@@ -1395,7 +1451,7 @@ class Noder {
   // Split a declarative call's provided args into the three buckets:
   // compile-time constants (staticArgs), bind-time exprs (bindArgs: at most
   // input-qualified, plus output refs), and per-bar channels fed by Emit.
-  private partitionOutput(resolved: ResolvedCall): {
+  private partitionOutput(resolved: NativeCall): {
     output: OutputDecl;
     emitArgs: IrExpr[];
   } {

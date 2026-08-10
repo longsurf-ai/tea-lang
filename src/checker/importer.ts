@@ -1,10 +1,14 @@
 // Purpose: The import seam — the checker consumes libraries exclusively through this contract; path resolution, loading, and ordering are the loader's (driver-side) concern.
 
-import type {FuncDecl} from '../syntax/nodes';
+import type {File, FuncDecl} from '../syntax/nodes';
 
 // A library's checked-surface contract (our "export data"): namespaced
 // templates the checker instantiates lazily per signature.
 export interface ResolvedLibrary {
+  // Registry identity and parsed syntax retained so the checker can expose a
+  // real semantic Package boundary rather than a namespace-only projection.
+  readonly path: string;
+  readonly files: readonly File[];
   // From the file's own library("...") declaration.
   readonly name: string;
   // Exported templates — the public resolution surface (ta.ema).

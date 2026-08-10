@@ -177,7 +177,7 @@ class Resolver implements Importer {
     if (name === null) {
       return {error: `library '${path}' has no library() declaration`};
     }
-    return {name, exports, locals, imports};
+    return {path, files: [file], name, exports, locals, imports};
   }
 }
 
