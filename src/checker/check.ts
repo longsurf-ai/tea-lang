@@ -243,7 +243,7 @@ class Checker {
   // The qualifier of the enclosing control flow: writes under an `if` whose
   // condition is input-qualified produce values known no earlier than input;
   // loop bodies join series (iteration-dependent values).
-  private flow: Qualifier = Qualifier.Const;
+  private flowQualifier: Qualifier = Qualifier.Const;
 
   // Function stenciling state: one instantiation per
   // (Program owner, template, signature), a recursion guard (the static call
@@ -644,7 +644,7 @@ class Checker {
     }
     name.qualifier = joinQualifiers(
       joinQualifiers(name.qualifier, written.qualifier),
-      this.flow,
+      this.flowQualifier,
     );
     return written;
   }
@@ -1299,8 +1299,8 @@ class Checker {
         `'if' condition must be bool, got ${formatType(condTv.type)}`,
       );
     }
-    const savedFlow = this.flow;
-    this.flow = joinQualifiers(savedFlow, condTv.qualifier);
+    const savedFlowQualifier = this.flowQualifier;
+    this.flowQualifier = joinQualifiers(savedFlowQualifier, condTv.qualifier);
     const thenTv = this.checkBlock(e.then);
     let elseType: Type | null = null;
     if (e.else !== null) {
@@ -1310,7 +1310,7 @@ class Checker {
           : this.checkBlock(e.else);
       elseType = elseTv.type;
     }
-    this.flow = savedFlow;
+    this.flowQualifier = savedFlowQualifier;
     // Mismatched branch types are legal in statement position; the structure
     // then simply has no value, and value-position consumers report that.
     const type =
@@ -1412,20 +1412,23 @@ class Checker {
   // Loop bodies run under series flow: iteration-dependent writes are
   // per-bar values regardless of how early the bounds are known.
   private checkLoopBody(body: syntax.Block): TypeAndValue {
-    const savedFlow = this.flow;
-    this.flow = joinQualifiers(savedFlow, Qualifier.Series);
+    const savedFlowQualifier = this.flowQualifier;
+    this.flowQualifier = joinQualifiers(savedFlowQualifier, Qualifier.Series);
     this.loopDepth += 1;
     const tv = this.checkBlock(body);
     this.loopDepth -= 1;
-    this.flow = savedFlow;
+    this.flowQualifier = savedFlowQualifier;
     return tv;
   }
 
   private switchTv(e: syntax.SwitchExpr): TypeAndValue {
     const subjectTv = e.subject !== null ? this.checkExpr(e.subject) : null;
-    const savedFlow = this.flow;
+    const savedFlowQualifier = this.flowQualifier;
     if (subjectTv !== null) {
-      this.flow = joinQualifiers(savedFlow, subjectTv.qualifier);
+      this.flowQualifier = joinQualifiers(
+        savedFlowQualifier,
+        subjectTv.qualifier,
+      );
     }
     let type: Type | null = null;
     for (const arm of e.arms) {
@@ -1441,7 +1444,10 @@ class Checker {
               `switch condition must be bool, got ${formatType(patternTv.type)}`,
             );
           }
-          this.flow = joinQualifiers(this.flow, patternTv.qualifier);
+          this.flowQualifier = joinQualifiers(
+            this.flowQualifier,
+            patternTv.qualifier,
+          );
         } else if (unifyTypes(subjectTv.type, patternTv.type) === null) {
           this.error(
             arm.pattern.pos,
@@ -1455,7 +1461,7 @@ class Checker {
           : this.checkExpr(arm.body);
       type = type === null ? armTv.type : unifyOrVoid(type, armTv.type);
     }
-    this.flow = savedFlow;
+    this.flowQualifier = savedFlowQualifier;
     return {type: type ?? VoidType, qualifier: Qualifier.Series, value: null};
   }
 
@@ -1670,7 +1676,7 @@ class Checker {
     const saved = {
       scope: this.scope,
       tables: this.tables,
-      flow: this.flow,
+      flowQualifier: this.flowQualifier,
       loopDepth: this.loopDepth,
       blockDepth: this.blockDepth,
       boundary: this.funcBoundary,
@@ -1680,7 +1686,7 @@ class Checker {
     const scope = new Scope(base);
     this.scope = scope;
     this.tables = tables;
-    this.flow = Qualifier.Const;
+    this.flowQualifier = Qualifier.Const;
     this.loopDepth = 0;
     this.blockDepth = 0;
     this.funcBoundary = scope;
@@ -1771,7 +1777,7 @@ class Checker {
     this.instantiating.delete(template);
     this.scope = saved.scope;
     this.tables = saved.tables;
-    this.flow = saved.flow;
+    this.flowQualifier = saved.flowQualifier;
     this.loopDepth = saved.loopDepth;
     this.blockDepth = saved.blockDepth;
     this.funcBoundary = saved.boundary;
