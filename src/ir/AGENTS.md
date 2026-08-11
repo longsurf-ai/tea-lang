@@ -41,6 +41,10 @@ IR node set (`node.ts`), and the Program contract (`program.ts`). Design doc:
   sub-frame in the caller's frame; the frame tree is statically enumerable
   from the call graph and pre-allocated at bind — for user functions, the Tea
   prelude, and stateful natives alike.
+- Free functions, const methods, and mutable methods are an exhaustive
+  Program union. A method owns one hidden receiver Name separate from every
+  source-visible param; const calls carry no writeback path, while mutable
+  calls carry the rooted path used by success-only copy-out.
 - `visit.ts` owns IR traversal; its switches are exhaustive over `IrKind`
   (a new kind fails compilation there until handled). Program fields are
   the external-needs interface (params, requests) plus emissions (outputs)

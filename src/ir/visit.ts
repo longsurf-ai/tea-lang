@@ -78,8 +78,11 @@ function noteFunc(func: IrFunc, reach: Reach): void {
     return;
   }
   reach.funcs.add(func);
-  for (const param of func.params) {
-    noteName(param, reach);
+  if (func.callMode !== 'free') {
+    noteName(func.receiver, reach);
+  }
+  for (const name of [...func.params, ...func.locals]) {
+    noteName(name, reach);
   }
   visitExpr(func.body, reach);
 }
@@ -115,8 +118,8 @@ function visitStmt(stmt: IrStmt, reach: Reach): void {
       noteName(stmt.name, reach);
       visitExpr(stmt.value, reach);
       return;
-    case IrKind.WriteField:
-      visitExpr(stmt.x, reach);
+    case IrKind.UpdateValuePath:
+      noteName(stmt.path.root, reach);
       visitExpr(stmt.value, reach);
       return;
     case IrKind.Emit:
@@ -173,6 +176,23 @@ function visitExpr(expr: IrExpr, reach: Reach): void {
         visitExpr(arg, reach);
       }
       return;
+    case IrKind.CallConstMethod:
+      noteFunc(expr.func, reach);
+      reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
+      visitExpr(expr.receiver, reach);
+      for (const arg of expr.args) {
+        visitExpr(arg, reach);
+      }
+      return;
+    case IrKind.CallMutableMethod:
+      noteFunc(expr.func, reach);
+      noteName(expr.path.root, reach);
+      reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
+      visitExpr(expr.receiver, reach);
+      for (const arg of expr.args) {
+        visitExpr(arg, reach);
+      }
+      return;
     case IrKind.CallNative:
       if (expr.slot !== null) {
         reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
@@ -181,9 +201,18 @@ function visitExpr(expr: IrExpr, reach: Reach): void {
         visitExpr(arg, reach);
       }
       return;
-    case IrKind.NewUdt:
+    case IrKind.MutateCollection:
+      noteName(expr.path.root, reach);
+      visitExpr(expr.receiver, reach);
+      for (const arg of expr.args) {
+        visitExpr(arg, reach);
+      }
+      return;
+    case IrKind.NewUserValue:
     case IrKind.MakeTuple:
-      for (const arg of expr.kind === IrKind.NewUdt ? expr.args : expr.elems) {
+      for (const arg of expr.kind === IrKind.NewUserValue
+        ? expr.args
+        : expr.elems) {
         visitExpr(arg, reach);
       }
       return;

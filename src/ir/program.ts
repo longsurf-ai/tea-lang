@@ -100,6 +100,9 @@ export interface OutputDecl {
     readonly name: string;
     readonly expr: IrExpr;
   }[];
+  // Canonical bindArgs indices in source evaluation order. Bind lowering
+  // captures in this order, then reports values to the host by canonical name.
+  readonly bindArgumentEvaluationOrder: readonly number[];
   readonly channels: readonly {readonly name: string; readonly type: Type}[];
 }
 
@@ -136,6 +139,10 @@ export interface RequestEdge {
   // instantiates it per distinct (symbol, timeframe) pair it encounters.
   readonly symbol: IrExpr;
   readonly timeframe: IrExpr;
+  // Canonical parent-context operand indices (0 = symbol, 1 = timeframe) in
+  // source evaluation order. The captured expression is child-context code
+  // and is deliberately absent from this parent schedule.
+  readonly contextArgumentEvaluationOrder: readonly number[];
   readonly merge: MergePolicy;
   // The designated result: a Name OF THE CHILD written each child bar; the
   // runtime merges its committed values onto the parent axis. resultType
@@ -155,23 +162,47 @@ export interface RequestEdge {
 // One instantiation of a user (or prelude) function per concrete argument
 // signature — Go-style stenciling, and instantiations are REAL functions:
 // calls dispatch at runtime (inlining is at most a codegen optimization).
-// Params and locals are ordinary Names and BOTH explicit: ownership is by
-// declaration site, never by reachability — a program-frame `var` read only
-// inside a function must still live in the program frame, so walking cannot
-// discover ownership. An IrFunc's frame layout is its params + locals plus
-// one sub-frame per stateful call site in its body; each call site's slot
-// selects its sub-frame, so two ma(close, 10) call sites own two frames
-// (and two ema sub-frames within).
-export interface IrFunc {
+// Explicit params, a method's hidden receiver, and locals are ordinary Names:
+// ownership is by declaration site, never by reachability — a program-frame
+// `var` read only inside a function must still live in the program frame, so
+// walking cannot discover ownership. An IrFunc's frame layout is its hidden
+// receiver (for methods), explicit params, and locals plus one sub-frame per
+// stateful call site in its body; each call site's slot selects its sub-frame,
+// so two ma(close, 10) call sites own two frames (and two ema sub-frames
+// within).
+export interface IrFuncBase {
   readonly name: string;
+  // Source-visible parameters only. A method receiver is never inserted into
+  // this list, so named/default argument metadata cannot accidentally expose
+  // the compiler-only receiver.
   readonly params: readonly Name[];
-  // Names DECLARED in this instantiation's body (the binder's defs minus
-  // params), in source order.
+  // Names DECLARED in this instantiation's body (the binder's defs minus the
+  // hidden receiver and explicit params), in source order.
   readonly locals: readonly Name[];
   readonly resultType: Type;
   readonly resultQualifier: Qualifier;
   readonly body: IrExpr;
 }
+
+// @agent invariant: the call-mode discriminator is the Program-level proof
+// that free calls, read-only method calls, and copy-in/copy-out mutable method
+// calls cannot be confused. Method receivers are hidden Names, distinct from
+// every explicit param and local.
+export interface FreeIrFunc extends IrFuncBase {
+  readonly callMode: 'free';
+}
+
+export interface ConstMethodIrFunc extends IrFuncBase {
+  readonly callMode: 'const-method';
+  readonly receiver: Name;
+}
+
+export interface MutableMethodIrFunc extends IrFuncBase {
+  readonly callMode: 'mutable-method';
+  readonly receiver: Name;
+}
+
+export type IrFunc = FreeIrFunc | ConstMethodIrFunc | MutableMethodIrFunc;
 
 // @agent invariant: one Program instance runs against exactly one context
 // (one symbol × timeframe axis) and owns its names, bindings, and rollback;

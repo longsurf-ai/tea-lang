@@ -13,21 +13,19 @@ import {
   ColorType,
   FloatType,
   formatType,
+  isAggregateType,
+  isMapKeyType,
+  isStorableType,
   IntType,
   InvalidType,
   isNaValue,
   joinQualifiers,
-  LabelType,
-  LinefillType,
-  LineType,
-  BoxType,
   NaType,
-  PolylineType,
   qualifierLE,
   NA_VALUE,
   Qualifier,
   StringType,
-  TableType,
+  Storage,
   TupleType,
   TypeKind,
   typesEqual,
@@ -38,7 +36,7 @@ import {
   type EnumType,
   type Type,
   type TypeAndValue,
-  type UdtType,
+  type UserType,
 } from '../ir/type';
 import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
@@ -52,6 +50,8 @@ import {
   nativeVar,
   TypeRef,
   type NativeFunc,
+  type GenericTypeRef,
+  type NativeResult,
   type NativeTypeRef,
   type NativeVar,
 } from './catalog';
@@ -63,9 +63,12 @@ import {
   newInfo,
   type CheckedDefaultExpression,
   type CheckedExpression,
+  type CheckedWritebackTarget,
   type FunctionInstance,
   type Info,
   type NativeCall,
+  type ResolvedMethodReceiver,
+  type ResolvedNativeReceiver,
   type SemanticDependency,
 } from './info';
 import {
@@ -75,13 +78,19 @@ import {
   type EnumObject,
   type FieldObject,
   type FunctionObject,
+  type MethodObject,
   type Object,
   type PackageNameObject,
-  type UdtObject,
+  type UserTypeObject,
   type VariableObject,
 } from './object';
 import type {CheckedPackage, Package} from './package';
 import {Scope} from './scope';
+import {
+  BUILTIN_ANNOTATION_TYPES,
+  COLLECTION_TYPE_CATALOG,
+  METHOD_RESULT_TYPES,
+} from './type-catalog';
 
 export type {CallResolution, FunctionInstance, Info} from './info';
 export type {CheckedPackage, Package} from './package';
@@ -126,21 +135,6 @@ const INPUT_SOURCE_DEFAULTS = new Set([
   'hlcc4',
 ]);
 
-// Type names usable in annotations.
-export const BUILTIN_ANNOTATION_TYPES: ReadonlyMap<string, Type> = new Map([
-  ['int', IntType],
-  ['float', FloatType],
-  ['bool', BoolType],
-  ['string', StringType],
-  ['color', ColorType],
-  ['line', LineType],
-  ['label', LabelType],
-  ['box', BoxType],
-  ['table', TableType],
-  ['polyline', PolylineType],
-  ['linefill', LinefillType],
-]);
-
 // ---- checker ----------------------------------------------------------------
 
 class Checker {
@@ -174,13 +168,29 @@ class Checker {
   private readonly builtins = new Map<string, BuiltinObject>();
   private captureDepth = 0;
   private readonly instanceStack: FunctionInstance[] = [];
+  // A method body can be checked once for declaration validation and again for
+  // call-specific qualifiers. Owner diagnostics remain single-shot while each
+  // concrete instance still gets its own Info.
+  private activeMethod: MethodObject | null = null;
+  private methodErrorAttempts = 0;
+  private readonly reportedMethodDiagnostics = new Map<
+    MethodObject,
+    Set<string>
+  >();
+  private readonly invalidInstances = new WeakSet<FunctionInstance>();
   private readonly dependencyCollectors: Set<SemanticDependency>[] = [];
   // Input calls are program-global even when written in a local scope. These
   // sets describe the only local-looking names module.bind can read without
   // the function/capture execution frame that contained the call.
   private readonly inputBindings = new Set<VariableObject>();
   private readonly rootBindNames = new Set<VariableObject>();
-  private readonly udts = new Map<UdtType, UdtObject>();
+  private readonly userTypeDecls = new Map<
+    syntax.UserTypeDecl,
+    UserTypeObject
+  >();
+  private readonly finalizedUserTypes = new Set<UserTypeObject>();
+  private readonly enumDecls = new Map<syntax.EnumDecl, EnumObject>();
+  private readonly finalizedEnums = new Set<EnumObject>();
   private readonly files: readonly syntax.File[];
   private readonly pkgImports = new Map<string, Package>();
   private readonly pkgExports = new Set<string>();
@@ -238,6 +248,7 @@ class Checker {
         displayName: name,
         decl,
         base: scope,
+        receiver: null,
       });
     }
     for (const [name, dependency] of library.imports) {
@@ -250,15 +261,394 @@ class Checker {
 
   checkPackage(): CheckedPackage {
     const file = this.files[0];
+    this.predeclareNominalTypes(file);
+    this.resolveUserTypeMembers(file);
+    this.rejectDirectUserTypeCycles();
     bindFileNames(file, this.scope, this.rootInfo);
     this.rootInfo.scopes.set(file, this.pkgScope);
     for (const stmt of file.stmtList) {
       this.checkStmt(stmt);
     }
+    this.validateMethodDeclarations();
     return {pkg: this.pkg, info: this.rootInfo};
   }
 
+  private predeclareNominalTypes(file: syntax.File): void {
+    for (const stmt of file.stmtList) {
+      if (stmt.kind === NodeKind.UserTypeDecl) {
+        this.predeclareUserType(stmt);
+      } else if (stmt.kind === NodeKind.EnumDecl) {
+        this.predeclareEnum(stmt);
+      }
+    }
+  }
+
+  private predeclareUserType(decl: syntax.UserTypeDecl): void {
+    const fields: FieldObject[] = [];
+    const methods: MethodObject[] = [];
+    const type: UserType = {
+      kind: TypeKind.UserType,
+      name: decl.name.value,
+      fields,
+    };
+    const object: UserTypeObject = {
+      kind: ObjectKind.UserType,
+      name: decl.name.value,
+      type,
+      fields,
+      methods,
+    };
+    if (!this.declare(decl.name, object)) {
+      return;
+    }
+    this.userTypeDecls.set(decl, object);
+    if (decl.exported) {
+      this.pkgExports.add(object.name);
+    }
+  }
+
+  private predeclareEnum(decl: syntax.EnumDecl): void {
+    const memberTypes: EnumMemberType[] = [];
+    const memberObjects: EnumMemberObject[] = [];
+    const type: EnumType = {
+      kind: TypeKind.Enum,
+      name: decl.name.value,
+      members: memberTypes,
+    };
+    const object: EnumObject = {
+      kind: ObjectKind.Enum,
+      name: decl.name.value,
+      type,
+      members: memberObjects,
+    };
+    memberObjects.push(
+      ...decl.members.map(member => ({
+        kind: ObjectKind.EnumMember,
+        name: member.name.value,
+        decl: member,
+        owner: object,
+      })),
+    );
+    if (!this.declare(decl.name, object)) {
+      return;
+    }
+    this.enumDecls.set(decl, object);
+    for (const member of memberObjects) {
+      this.info.defs.set(member.decl.name, member);
+    }
+    if (decl.exported) {
+      this.pkgExports.add(object.name);
+    }
+  }
+
+  private resolveUserTypeMembers(file: syntax.File): void {
+    for (const stmt of file.stmtList) {
+      if (stmt.kind !== NodeKind.UserTypeDecl) {
+        continue;
+      }
+      const owner = this.userTypeDecls.get(stmt);
+      if (owner === undefined) {
+        continue;
+      }
+      const fields = owner.fields as FieldObject[];
+      const methods = owner.methods as MethodObject[];
+      const memberNames = new Set<string>();
+      for (const member of stmt.members) {
+        const memberName = member.name.value;
+        if (memberNames.has(memberName)) {
+          this.error(
+            member.name.pos,
+            `duplicate member '${memberName}' in type '${stmt.name.value}'`,
+          );
+          continue;
+        }
+        memberNames.add(memberName);
+        if (member.kind === NodeKind.MethodDecl) {
+          const seenParams = new Set<string>();
+          const paramNames = new Set(
+            member.params.map(param => param.name.value),
+          );
+          const invalidDefaults = new Set<number>();
+          const declaredParams = member.params.map(param => {
+            if (seenParams.has(param.name.value)) {
+              this.error(
+                param.name.pos,
+                `duplicate parameter '${param.name.value}' in method '${memberName}'`,
+              );
+            }
+            seenParams.add(param.name.value);
+            return this.resolveAnnotation(param.paramType);
+          });
+          for (const [index, param] of member.params.entries()) {
+            if (param.defaultValue === null) {
+              continue;
+            }
+            this.checkMethodDefaultReferences(
+              param.defaultValue,
+              paramNames,
+              () => invalidDefaults.add(index),
+            );
+          }
+          const method: MethodObject = {
+            kind: ObjectKind.Function,
+            name: memberName,
+            displayName: `${owner.name}.${memberName}`,
+            decl: member,
+            base: this.scope,
+            receiver: {owner, mode: member.receiverMode},
+            declaredParams,
+            invalidDefaults,
+            declaredResult: this.resolveMethodResult(member.result),
+          };
+          methods.push(method);
+          if (!this.scope.declareMethod(method)) {
+            return fatal(
+              `duplicate method '${memberName}' survived member checking`,
+            );
+          }
+          this.info.defs.set(member.name, method);
+          continue;
+        }
+        const field = member;
+        if (field.fieldType.qualifier !== null) {
+          this.error(
+            field.fieldType.qualifier.pos,
+            `field-level '${field.fieldType.qualifier.value}' is not supported; persistence belongs to the containing variable`,
+          );
+        }
+        const object: FieldObject = {
+          kind: ObjectKind.Field,
+          owner,
+          index: fields.length,
+          name: field.name.value,
+          type: this.resolveTypeName(field.fieldType.name),
+          decl: field,
+          defaultValue: null,
+        };
+        fields.push(object);
+        this.info.defs.set(field.name, object);
+      }
+    }
+  }
+
+  private checkMethodDefaultReferences(
+    expr: syntax.Expr,
+    paramNames: ReadonlySet<string>,
+    invalidate: () => void,
+  ): void {
+    const visitBlock = (block: syntax.Block): void => {
+      for (const stmt of block.stmtList) {
+        visitStmt(stmt);
+      }
+    };
+    const visitStmt = (stmt: syntax.Stmt): void => {
+      switch (stmt.kind) {
+        case NodeKind.ExprStmt:
+          visitExpr(stmt.x);
+          return;
+        case NodeKind.DeclStmt:
+          visitExpr(stmt.init);
+          return;
+        case NodeKind.AssignStmt:
+          visitExpr(stmt.target);
+          visitExpr(stmt.value);
+          return;
+        case NodeKind.FuncDecl:
+          for (const param of stmt.params) {
+            if (param.defaultValue !== null) {
+              visitExpr(param.defaultValue);
+            }
+          }
+          if (stmt.body.kind === NodeKind.Block) {
+            visitBlock(stmt.body);
+          } else {
+            visitExpr(stmt.body);
+          }
+          return;
+        case NodeKind.UserTypeDecl:
+          for (const member of stmt.members) {
+            if (member.kind === NodeKind.FieldDecl) {
+              if (member.defaultValue !== null) {
+                visitExpr(member.defaultValue);
+              }
+              continue;
+            }
+            for (const param of member.params) {
+              if (param.defaultValue !== null) {
+                visitExpr(param.defaultValue);
+              }
+            }
+            if (member.body.kind === NodeKind.Block) {
+              visitBlock(member.body);
+            } else {
+              visitExpr(member.body);
+            }
+          }
+          return;
+        case NodeKind.EnumDecl:
+          for (const member of stmt.members) {
+            if (member.title !== null) {
+              visitExpr(member.title);
+            }
+          }
+          return;
+        case NodeKind.TypeAliasDecl:
+        case NodeKind.ImportStmt:
+        case NodeKind.BreakStmt:
+        case NodeKind.ContinueStmt:
+        case NodeKind.BadStmt:
+          return;
+      }
+    };
+    const visitExpr = (current: syntax.Expr): void => {
+      switch (current.kind) {
+        case NodeKind.Name:
+          if (paramNames.has(current.value)) {
+            invalidate();
+            this.error(
+              current.pos,
+              `method parameter default cannot reference method parameter '${current.value}'`,
+            );
+          }
+          return;
+        case NodeKind.ThisExpr:
+          invalidate();
+          this.error(
+            current.pos,
+            "method parameter default cannot reference 'this'",
+          );
+          return;
+        case NodeKind.BasicLit:
+        case NodeKind.BadExpr:
+          return;
+        case NodeKind.UnaryExpr:
+        case NodeKind.ParenExpr:
+          visitExpr(current.x);
+          return;
+        case NodeKind.SelectorExpr:
+          visitExpr(current.x);
+          return;
+        case NodeKind.BinaryExpr:
+          visitExpr(current.x);
+          visitExpr(current.y);
+          return;
+        case NodeKind.CondExpr:
+          visitExpr(current.cond);
+          visitExpr(current.then);
+          visitExpr(current.else);
+          return;
+        case NodeKind.CallExpr:
+          visitExpr(current.fun);
+          for (const arg of current.args) {
+            visitExpr(arg.value);
+          }
+          return;
+        case NodeKind.HistoryExpr:
+          visitExpr(current.x);
+          visitExpr(current.offset);
+          return;
+        case NodeKind.TupleExpr:
+          for (const elem of current.elems) {
+            visitExpr(elem);
+          }
+          return;
+        case NodeKind.IfExpr:
+          visitExpr(current.cond);
+          visitBlock(current.then);
+          if (current.else === null) {
+            return;
+          }
+          if (current.else.kind === NodeKind.IfExpr) {
+            visitExpr(current.else);
+          } else {
+            visitBlock(current.else);
+          }
+          return;
+        case NodeKind.ForExpr:
+          visitExpr(current.from);
+          visitExpr(current.to);
+          if (current.step !== null) {
+            visitExpr(current.step);
+          }
+          visitBlock(current.body);
+          return;
+        case NodeKind.ForInExpr:
+          visitExpr(current.x);
+          visitBlock(current.body);
+          return;
+        case NodeKind.WhileExpr:
+          visitExpr(current.cond);
+          visitBlock(current.body);
+          return;
+        case NodeKind.SwitchExpr:
+          if (current.subject !== null) {
+            visitExpr(current.subject);
+          }
+          for (const arm of current.arms) {
+            if (arm.pattern !== null) {
+              visitExpr(arm.pattern);
+            }
+            if (arm.body.kind === NodeKind.Block) {
+              visitBlock(arm.body);
+            } else {
+              visitExpr(arm.body);
+            }
+          }
+          return;
+      }
+    };
+    visitExpr(expr);
+  }
+
+  private rejectDirectUserTypeCycles(): void {
+    const visiting = new Set<UserTypeObject>();
+    const visited = new Set<UserTypeObject>();
+    const visit = (owner: UserTypeObject): void => {
+      if (visited.has(owner)) {
+        return;
+      }
+      visiting.add(owner);
+      for (const field of owner.fields) {
+        if (field.type.kind !== TypeKind.UserType) {
+          continue;
+        }
+        const target = [...this.userTypeDecls.values()].find(
+          candidate => candidate.type === field.type,
+        );
+        if (target === undefined) {
+          continue;
+        }
+        if (visiting.has(target)) {
+          this.error(
+            field.decl.pos,
+            `type '${owner.name}' has an infinite value layout through field '${field.name}'`,
+          );
+          continue;
+        }
+        visit(target);
+      }
+      visiting.delete(owner);
+      visited.add(owner);
+    };
+    for (const owner of this.userTypeDecls.values()) {
+      visit(owner);
+    }
+  }
+
   private error(pos: Pos, msg: string): void {
+    if (this.activeMethod !== null) {
+      this.methodErrorAttempts += 1;
+      let diagnostics = this.reportedMethodDiagnostics.get(this.activeMethod);
+      if (diagnostics === undefined) {
+        diagnostics = new Set();
+        this.reportedMethodDiagnostics.set(this.activeMethod, diagnostics);
+      }
+      const key = `${pos.base.filename}:${pos.line}:${pos.col}:${msg}`;
+      if (diagnostics.has(key)) {
+        return;
+      }
+      diagnostics.add(key);
+    }
     this.errors.errorAt(pos, msg);
   }
 
@@ -277,8 +667,11 @@ class Checker {
       case NodeKind.FuncDecl:
         this.checkFuncDecl(stmt);
         return null;
-      case NodeKind.TypeDecl:
-        this.checkTypeDecl(stmt);
+      case NodeKind.UserTypeDecl:
+        this.checkUserTypeDecl(stmt);
+        return null;
+      case NodeKind.TypeAliasDecl:
+        this.checkTypeAliasDecl(stmt);
         return null;
       case NodeKind.EnumDecl:
         this.checkEnumDecl(stmt);
@@ -365,8 +758,15 @@ class Checker {
       );
       return {type: InvalidType, qualifier: Qualifier.Const, constValue: null};
     }
+    if (initTv.type.kind === TypeKind.Tuple) {
+      this.error(
+        d.init.pos,
+        'tuple values are transport-only and must be destructured at declaration',
+      );
+      return {type: InvalidType, qualifier: Qualifier.Const, constValue: null};
+    }
 
-    let type = initTv.type;
+    let type: Type = initTv.type;
     if (declared !== null) {
       if (!assignable(initTv.type, declared.type)) {
         this.error(
@@ -593,41 +993,85 @@ class Checker {
     a: syntax.AssignStmt,
     target: syntax.SelectorExpr,
   ): TypeAndValue | null {
-    const baseTv = this.checkExpr(target.x);
+    const targetTv = this.checkExpr(target);
     const valueTv = this.checkExpr(a.value);
-    if (baseTv.type.kind === TypeKind.Invalid) {
-      return null;
-    }
-    if (baseTv.type.kind !== TypeKind.Udt) {
-      this.error(
-        target.pos,
-        `${formatType(baseTv.type)} has no field '${target.sel.value}'`,
-      );
-      return null;
-    }
-    const owner = this.udts.get(baseTv.type as UdtType);
-    const field = owner?.fields.find(
-      object => object.name === target.sel.value,
-    );
-    if (field === undefined) {
-      this.error(
-        target.sel.pos,
-        `${formatType(baseTv.type)} has no field '${target.sel.value}'`,
-      );
+    if (targetTv.type.kind === TypeKind.Invalid) {
       return null;
     }
     if (a.op !== AssignOp.Define) {
       this.error(a.pos, 'compound assignment to a field is not supported');
       return null;
     }
-    this.info.selections.set(target, {kind: SelectionKind.Field, field});
-    if (!assignable(valueTv.type, field.type)) {
+    const writeback = this.checkedWritebackTarget(target);
+    if (writeback === null) {
+      return null;
+    }
+    if (!assignable(valueTv.type, targetTv.type)) {
       this.error(
         a.value.pos,
-        `cannot assign ${formatType(valueTv.type)} to field '${field.name}' of type ${formatType(field.type)}`,
+        `cannot assign ${formatType(valueTv.type)} to field '${target.sel.value}' of type ${formatType(targetTv.type)}`,
       );
     }
+    writeback.root.qualifier = joinQualifiers(
+      joinQualifiers(writeback.root.qualifier, valueTv.qualifier),
+      this.flowQualifier,
+    );
+    this.info.updates.set(a, writeback);
     return valueTv;
+  }
+
+  private checkedWritebackTarget(
+    receiver: syntax.Expr,
+  ): CheckedWritebackTarget | null {
+    const checked: CheckedExpression = {
+      expr: receiver,
+      info: this.info,
+      tv: this.tvOf(receiver),
+    };
+    if (checked.tv.type.kind === TypeKind.Invalid) {
+      return null;
+    }
+    const fields: FieldObject[] = [];
+    let current = unwrapParens(receiver);
+    while (current.kind === NodeKind.SelectorExpr) {
+      const selection = this.info.selections.get(current);
+      if (selection?.kind !== SelectionKind.Field) {
+        this.error(receiver.pos, 'mutation requires a current rooted value');
+        return null;
+      }
+      fields.push(selection.field);
+      current = unwrapParens(current.x);
+    }
+    if (current.kind !== NodeKind.Name && current.kind !== NodeKind.ThisExpr) {
+      this.error(receiver.pos, 'mutation requires a current rooted value');
+      return null;
+    }
+    const object = this.info.uses.get(current);
+    if (object?.kind !== ObjectKind.Variable) {
+      this.error(receiver.pos, 'mutation requires a variable root');
+      return null;
+    }
+    if (object.constDecl) {
+      this.error(
+        receiver.pos,
+        current.kind === NodeKind.ThisExpr
+          ? "cannot mutate 'this' in a const method"
+          : `cannot mutate '${object.name}' declared with const`,
+      );
+      return null;
+    }
+    if (
+      current.kind === NodeKind.Name &&
+      this.funcBoundary !== null &&
+      !this.scope.resolvesWithin(current.value, this.funcBoundary)
+    ) {
+      this.error(
+        receiver.pos,
+        `cannot modify global variable '${object.name}' inside a function`,
+      );
+      return null;
+    }
+    return {receiver: checked, root: object, fields: fields.reverse()};
   }
 
   // An import declaration: resolution belongs to the injected Importer (the
@@ -685,64 +1129,93 @@ class Checker {
       displayName: d.name.value,
       decl: d,
       base: this.scope,
+      receiver: null,
     };
     if (this.declare(d.name, object) && d.exported) {
       this.pkgExports.add(object.name);
     }
   }
 
-  private checkTypeDecl(d: syntax.TypeDecl): void {
+  private checkUserTypeDecl(d: syntax.UserTypeDecl): void {
     if (this.blockDepth > 0) {
       this.error(d.pos, 'types must be declared at the top level');
       return;
     }
-    const fields: FieldObject[] = [];
-    for (const field of d.fields) {
-      const type = this.resolveTypeName(field.fieldType.name);
-      if (fields.some(object => object.name === field.name.value)) {
-        this.error(
-          field.name.pos,
-          `duplicate field '${field.name.value}' in type '${d.name.value}'`,
-        );
-        continue;
-      }
-      let defaultValue: CheckedDefaultExpression | null = null;
-      if (field.defaultValue !== null) {
-        defaultValue = this.checkDefaultExpression(field.defaultValue);
-        const defTv = defaultValue.tv;
-        if (!assignable(defTv.type, type)) {
+    const owner = this.userTypeDecls.get(d);
+    if (owner === undefined) {
+      return;
+    }
+    if (this.finalizedUserTypes.has(owner)) {
+      return fatal(`user type '${owner.name}' finalized more than once`);
+    }
+    for (const field of owner.fields) {
+      if (field.decl.defaultValue !== null) {
+        const checked = this.checkDefaultExpression(field.decl.defaultValue);
+        if (!assignable(checked.tv.type, field.type)) {
           this.error(
-            field.defaultValue.pos,
-            `cannot use ${formatType(defTv.type)} as ${formatType(type)} default for field '${field.name.value}'`,
+            field.decl.defaultValue.pos,
+            `cannot use ${formatType(checked.tv.type)} as ${formatType(field.type)} default for field '${field.name}'`,
           );
         }
+        field.defaultValue = checked;
       }
-      const object: FieldObject = {
-        kind: ObjectKind.Field,
-        name: field.name.value,
-        type,
-        varip: false,
-        decl: field,
-        defaultValue,
-      };
-      fields.push(object);
-      this.info.defs.set(field.name, object);
     }
-    const udt: UdtType = {
-      kind: TypeKind.Udt,
-      name: d.name.value,
-      fields,
-    };
-    const object: UdtObject = {
-      kind: ObjectKind.Udt,
-      name: d.name.value,
-      type: udt,
-      fields,
-    };
-    this.udts.set(udt, object);
-    if (this.declare(d.name, object) && d.exported) {
-      this.pkgExports.add(object.name);
+    this.finalizedUserTypes.add(owner);
+  }
+
+  private validateMethodDeclarations(): void {
+    // These instances are checker-only: no syntax CallExpr owns them, so the
+    // noder cannot project them into a Program. They establish declaration
+    // correctness even when a method is never called.
+    for (const owner of this.userTypeDecls.values()) {
+      for (const method of owner.methods) {
+        const receiverQualifier =
+          method.receiver.mode === 'mutable'
+            ? Qualifier.Series
+            : Qualifier.Const;
+        const signature: FunctionInstance['signature'] =
+          method.declaredParams.map(param => ({
+            type: param.type,
+            qualifier: param.qualifier ?? Qualifier.Const,
+          }));
+        let variants = this.instances.get(method);
+        if (variants === undefined) {
+          variants = [];
+          this.instances.set(method, variants);
+        }
+        const existing = variants.find(
+          candidate =>
+            !this.invalidInstances.has(candidate) &&
+            candidate.receiver?.qualifier === receiverQualifier &&
+            functionSignaturesEqual(candidate.signature, signature),
+        );
+        if (existing !== undefined) {
+          continue;
+        }
+        const argTvs: TypeAndValue[] = signature.map(param => ({
+          type: param?.type ?? InvalidType,
+          qualifier: param?.qualifier ?? Qualifier.Const,
+          value: null,
+        }));
+        const instance = this.instantiate(
+          method,
+          method.displayName,
+          signature,
+          Array<syntax.Expr | null>(method.decl.params.length).fill(null),
+          argTvs,
+          receiverQualifier,
+        );
+        variants.push(instance);
+      }
     }
+  }
+
+  private checkTypeAliasDecl(d: syntax.TypeAliasDecl): void {
+    if (this.blockDepth > 0) {
+      this.error(d.pos, 'types must be declared at the top level');
+      return;
+    }
+    this.error(d.pos, 'type aliases are not supported yet');
   }
 
   private checkEnumDecl(d: syntax.EnumDecl): void {
@@ -750,7 +1223,14 @@ class Checker {
       this.error(d.pos, 'enums must be declared at the top level');
       return;
     }
-    const members: EnumMemberType[] = [];
+    const owner = this.enumDecls.get(d);
+    if (owner === undefined) {
+      return;
+    }
+    if (this.finalizedEnums.has(owner)) {
+      return fatal(`enum '${owner.name}' finalized more than once`);
+    }
+    const members = owner.type.members as EnumMemberType[];
     for (const member of d.members) {
       if (members.some(m => m.name === member.name.value)) {
         this.error(
@@ -773,32 +1253,7 @@ class Checker {
       }
       members.push({name: member.name.value, title});
     }
-    const enumType: EnumType = {
-      kind: TypeKind.Enum,
-      name: d.name.value,
-      members,
-    };
-    const memberObjects: EnumMemberObject[] = [];
-    const enumObject: EnumObject = {
-      kind: ObjectKind.Enum,
-      name: d.name.value,
-      type: enumType,
-      members: memberObjects,
-    };
-    memberObjects.push(
-      ...d.members.map(member => ({
-        kind: ObjectKind.EnumMember,
-        name: member.name.value,
-        decl: member,
-        owner: enumObject,
-      })),
-    );
-    for (const member of memberObjects) {
-      this.info.defs.set(member.decl.name, member);
-    }
-    if (this.declare(d.name, enumObject) && d.exported) {
-      this.pkgExports.add(enumObject.name);
-    }
+    this.finalizedEnums.add(owner);
   }
 
   // ---- annotations ----------------------------------------------------------
@@ -820,6 +1275,19 @@ class Checker {
     return {type: this.resolveTypeName(a.name), qualifier};
   }
 
+  private resolveMethodResult(a: syntax.TypeAnnotation): Type {
+    if (a.qualifier !== null) {
+      this.error(a.qualifier.pos, 'method result qualifiers are not supported');
+    }
+    if (a.name.kind === NodeKind.Name) {
+      const result = METHOD_RESULT_TYPES.get(a.name.value);
+      if (result !== undefined) {
+        return result;
+      }
+    }
+    return this.resolveTypeName(a.name);
+  }
+
   private resolveTypeName(t: syntax.TypeName): Type {
     switch (t.kind) {
       case NodeKind.Name: {
@@ -828,17 +1296,72 @@ class Checker {
           return builtin;
         }
         const entry = this.scope.lookup(t.value);
-        if (entry?.kind === ObjectKind.Udt || entry?.kind === ObjectKind.Enum) {
+        if (
+          entry?.kind === ObjectKind.UserType ||
+          entry?.kind === ObjectKind.Enum
+        ) {
           this.info.uses.set(t, entry);
           return entry.type;
         }
         this.error(t.pos, `unknown type '${t.value}'`);
         return InvalidType;
       }
-      case NodeKind.GenericType:
-      case NodeKind.ArrayType:
-        this.error(t.pos, 'collection types are not supported yet');
-        return InvalidType;
+      case NodeKind.GenericType: {
+        if (t.name.kind !== NodeKind.Name) {
+          this.error(
+            t.name.pos,
+            'qualified collection types are not supported',
+          );
+          return InvalidType;
+        }
+        const collection = COLLECTION_TYPE_CATALOG.get(t.name.value);
+        if (collection === undefined) {
+          this.error(t.name.pos, `unknown generic type '${t.name.value}'`);
+          return InvalidType;
+        }
+        const expected = collection.typeParams.length;
+        if (t.args.length !== expected) {
+          this.error(
+            t.pos,
+            `generic type '${t.name.value}' expects ${expected} type argument${expected === 1 ? '' : 's'}, got ${t.args.length}`,
+          );
+          return InvalidType;
+        }
+        const args = t.args.map(arg => this.resolveTypeName(arg));
+        if (args.some(arg => arg.kind === TypeKind.Invalid)) {
+          return InvalidType;
+        }
+        collection.typeParams.forEach((param, index) => {
+          if (param.constraint === 'map-key' && !isMapKeyType(args[index])) {
+            this.error(
+              t.args[index].pos,
+              `${formatType(args[index])} is not a valid map key type`,
+            );
+          }
+          if (param.constraint === 'storable' && !isStorableType(args[index])) {
+            this.error(
+              t.args[index].pos,
+              `${formatType(args[index])} cannot be stored in a collection`,
+            );
+          }
+        });
+        if (collection.name === 'map') {
+          return {kind: TypeKind.Map, key: args[0], value: args[1]};
+        }
+        return collection.name === 'array'
+          ? {kind: TypeKind.Array, elem: args[0]}
+          : {kind: TypeKind.Matrix, elem: args[0]};
+      }
+      case NodeKind.ArrayType: {
+        const elem = this.resolveTypeName(t.elem);
+        if (elem.kind !== TypeKind.Invalid && !isStorableType(elem)) {
+          this.error(
+            t.elem.pos,
+            `${formatType(elem)} cannot be stored in a collection`,
+          );
+        }
+        return {kind: TypeKind.Array, elem};
+      }
       case NodeKind.SelectorExpr:
         this.error(t.pos, 'qualified type names are not supported yet');
         return InvalidType;
@@ -861,6 +1384,8 @@ class Checker {
     switch (e.kind) {
       case NodeKind.Name:
         return this.resolveName(e);
+      case NodeKind.ThisExpr:
+        return this.rejectBareThis(e);
       case NodeKind.BasicLit:
         return this.literalTv(e);
       case NodeKind.UnaryExpr:
@@ -897,6 +1422,45 @@ class Checker {
       case NodeKind.BadExpr:
         return INVALID_TV;
     }
+  }
+
+  private rejectBareThis(e: syntax.ThisExpr): TypeAndValue {
+    const instance = this.instanceStack[this.instanceStack.length - 1];
+    if (instance?.receiver === null || instance === undefined) {
+      this.error(e.pos, "'this' is available only inside a method");
+    } else {
+      this.error(
+        e.pos,
+        "bare 'this' cannot be used as a value; select a field or method",
+      );
+    }
+    return INVALID_TV;
+  }
+
+  private checkSelectorBase(e: syntax.Expr): TypeAndValue {
+    if (e.kind === NodeKind.ThisExpr) {
+      const instance = this.instanceStack[this.instanceStack.length - 1];
+      const receiver = instance?.receiver;
+      if (receiver === null || receiver === undefined) {
+        this.error(e.pos, "'this' is available only inside a method");
+        this.info.types.set(e, INVALID_TV);
+        return INVALID_TV;
+      }
+      const tv: TypeAndValue = {
+        type: receiver.type,
+        qualifier: receiver.qualifier,
+        value: null,
+      };
+      this.info.uses.set(e, receiver);
+      this.info.types.set(e, tv);
+      return tv;
+    }
+    if (e.kind === NodeKind.ParenExpr) {
+      const tv = this.checkSelectorBase(e.x);
+      this.info.types.set(e, tv);
+      return tv;
+    }
+    return this.checkExpr(e);
   }
 
   private resolveName(n: syntax.Name): TypeAndValue {
@@ -943,7 +1507,7 @@ class Checker {
         case ObjectKind.Function:
           this.error(n.pos, `'${n.value}' is a function; call it`);
           return INVALID_TV;
-        case ObjectKind.Udt:
+        case ObjectKind.UserType:
         case ObjectKind.Enum:
           this.error(n.pos, `'${n.value}' is a type, not a value`);
           return INVALID_TV;
@@ -1082,6 +1646,13 @@ class Checker {
     if (s.x.kind === NodeKind.Name) {
       const entry = this.scope.lookup(s.x.value);
       if (entry?.kind === ObjectKind.Enum) {
+        if (!this.finalizedEnums.has(entry)) {
+          this.error(
+            s.pos,
+            `enum '${entry.name}' cannot be used before it is declared`,
+          );
+          return INVALID_TV;
+        }
         const member = entry.type.members.find(m => m.name === s.sel.value);
         const memberObject = entry.members.find(
           object => object.name === s.sel.value,
@@ -1103,7 +1674,7 @@ class Checker {
           value: member.name,
         };
       }
-      if (entry?.kind === ObjectKind.Udt) {
+      if (entry?.kind === ObjectKind.UserType) {
         this.error(s.pos, `'${s.x.value}' is a type, not a value`);
         return INVALID_TV;
       }
@@ -1112,13 +1683,14 @@ class Checker {
         return INVALID_TV;
       }
     }
-    const baseTv = this.checkExpr(s.x);
+    const baseTv = this.checkSelectorBase(s.x);
     if (baseTv.type.kind === TypeKind.Invalid) {
       return INVALID_TV;
     }
-    if (baseTv.type.kind === TypeKind.Udt) {
-      const owner = this.udts.get(baseTv.type as UdtType);
-      const field = owner?.fields.find(object => object.name === s.sel.value);
+    if (baseTv.type.kind === TypeKind.UserType) {
+      const field = baseTv.type.fields.find(
+        object => object.name === s.sel.value,
+      ) as FieldObject | undefined;
       if (field === undefined) {
         this.error(
           s.sel.pos,
@@ -1255,6 +1827,18 @@ class Checker {
     }
 
     if (op === Op.EqEq || op === Op.NotEq) {
+      if (
+        isAggregateType(x.type) ||
+        isAggregateType(y.type) ||
+        x.type.kind === TypeKind.Tuple ||
+        y.type.kind === TypeKind.Tuple
+      ) {
+        this.error(
+          pos,
+          `aggregate equality is not defined (${formatType(x.type)} and ${formatType(y.type)})`,
+        );
+        return INVALID_TV;
+      }
       if (unifyTypes(x.type, y.type) === null) {
         this.error(
           pos,
@@ -1324,9 +1908,15 @@ class Checker {
       condTv.qualifier,
       joinQualifiers(thenTv.qualifier, elseTv.qualifier),
     );
-    if (condTv.value !== null && typeof condTv.value === 'boolean') {
+    if (
+      qualifier === Qualifier.Const &&
+      condTv.value !== null &&
+      typeof condTv.value === 'boolean' &&
+      thenTv.value !== null &&
+      elseTv.value !== null
+    ) {
       const branch = condTv.value ? thenTv : elseTv;
-      return {type, qualifier: branch.qualifier, value: branch.value};
+      return {type, qualifier, value: branch.value};
     }
     return {type, qualifier, value: null};
   }
@@ -1348,6 +1938,13 @@ class Checker {
       );
     }
     if (xTv.type.kind === TypeKind.Invalid) {
+      return INVALID_TV;
+    }
+    if (xTv.type.kind === TypeKind.Tuple) {
+      this.error(
+        e.x.pos,
+        'tuple values are transport-only and cannot be read through history',
+      );
       return INVALID_TV;
     }
     // Every history read is a read through the time machine: series, no fold.
@@ -1444,12 +2041,18 @@ class Checker {
   private forInTv(e: syntax.ForInExpr): TypeAndValue {
     const xTv = this.checkExpr(e.x);
     let elemType: Type = InvalidType;
+    let keyType: Type = IntType;
+    let map = false;
     if (xTv.type.kind === TypeKind.Array) {
       elemType = xTv.type.elem;
+    } else if (xTv.type.kind === TypeKind.Map) {
+      map = true;
+      keyType = xTv.type.key;
+      elemType = xTv.type.value;
     } else if (xTv.type.kind !== TypeKind.Invalid) {
       this.error(
         e.x.pos,
-        `for-in requires an array, got ${formatType(xTv.type)}`,
+        `for-in requires an array or map, got ${formatType(xTv.type)}`,
       );
     }
     const savedScope = this.scope;
@@ -1462,12 +2065,20 @@ class Checker {
       this.declare(nameNode, name);
     };
     if (e.target.kind === NodeKind.Name) {
-      declareTarget(e.target, elemType);
+      if (map) {
+        this.error(
+          e.target.pos,
+          'map iteration requires a [key, value] target',
+        );
+        declareTarget(e.target, InvalidType);
+      } else {
+        declareTarget(e.target, elemType);
+      }
     } else if (e.target.elems.length === 2) {
-      declareTarget(e.target.elems[0], IntType);
+      declareTarget(e.target.elems[0], keyType);
       declareTarget(e.target.elems[1], elemType);
     } else {
-      this.error(e.target.pos, 'for-in tuple pattern takes [index, value]');
+      this.error(e.target.pos, 'for-in tuple pattern takes two values');
     }
     const bodyTv = this.checkLoopBody(e.body);
     this.scope = savedScope;
@@ -1511,7 +2122,17 @@ class Checker {
       );
     }
     let type: Type | null = null;
-    for (const arm of e.arms) {
+    let sawDefault = false;
+    for (const [index, arm] of e.arms.entries()) {
+      if (arm.pattern === null) {
+        if (sawDefault) {
+          this.error(arm.pos, 'switch may contain only one default arm');
+        }
+        sawDefault = true;
+        if (index !== e.arms.length - 1) {
+          this.error(arm.pos, 'switch default arm must be last');
+        }
+      }
       if (arm.pattern !== null) {
         const patternTv = this.checkExpr(arm.pattern);
         if (subjectTv === null) {
@@ -1585,20 +2206,19 @@ class Checker {
       }
       this.checkExpr(arg.value);
     }
-    if (c.typeArgs !== null) {
-      this.error(c.pos, 'generic type arguments are not supported yet');
-      return INVALID_TV;
-    }
-
     const fun = c.fun;
     if (fun.kind === NodeKind.Name) {
       const entry = this.scope.lookup(fun.value);
       if (entry !== null) {
         if (entry.kind === ObjectKind.Function) {
+          if (c.typeArgs !== null) {
+            this.error(c.pos, 'user functions do not accept type arguments');
+            return INVALID_TV;
+          }
           this.info.uses.set(fun, entry);
           return this.checkUserCall(c, entry);
         }
-        if (entry.kind === ObjectKind.Udt) {
+        if (entry.kind === ObjectKind.UserType) {
           this.info.uses.set(fun, entry);
           this.error(
             c.pos,
@@ -1609,13 +2229,17 @@ class Checker {
         }
         return INVALID_TV;
       }
-      return this.resolveNativeCall(c, fun.value, fun.pos);
+      return this.resolveNativeCall(c, fun.value, fun.pos, null);
     }
     if (fun.kind === NodeKind.SelectorExpr) {
       if (fun.x.kind === NodeKind.Name && fun.sel.value === 'new') {
         const entry = this.scope.lookup(fun.x.value);
-        if (entry?.kind === ObjectKind.Udt) {
+        if (entry?.kind === ObjectKind.UserType) {
           this.info.uses.set(fun.x, entry);
+          if (c.typeArgs !== null) {
+            this.error(c.pos, 'constructors do not accept type arguments');
+            return INVALID_TV;
+          }
           return this.checkNew(c, entry);
         }
       }
@@ -1633,15 +2257,66 @@ class Checker {
           }
           this.info.uses.set(fun.x, rootEntry);
           this.info.uses.set(fun.sel, template);
+          if (c.typeArgs !== null) {
+            this.error(c.pos, 'user functions do not accept type arguments');
+            return INVALID_TV;
+          }
           return this.checkUserCall(c, template, written);
         }
       }
       const path = dottedPath(fun);
       if (path !== null && this.scope.lookup(path.root) === null) {
-        return this.resolveNativeCall(c, path.path, fun.pos);
+        return this.resolveNativeCall(c, path.path, fun.pos, null);
       }
-      this.error(fun.sel.pos, 'method calls are not supported yet');
-      return INVALID_TV;
+      const receiverTv = this.checkSelectorBase(fun.x);
+      if (receiverTv.type.kind === TypeKind.Invalid) {
+        return INVALID_TV;
+      }
+      const receiver: CheckedExpression = {
+        expr: fun.x,
+        info: this.info,
+        tv: receiverTv,
+      };
+      const namespace = collectionNamespace(receiverTv.type);
+      if (
+        namespace !== null &&
+        nativeFuncs(`${namespace}.${fun.sel.value}`) !== null
+      ) {
+        return this.resolveNativeCall(
+          c,
+          `${namespace}.${fun.sel.value}`,
+          fun.sel.pos,
+          receiver,
+        );
+      }
+      if (c.typeArgs !== null) {
+        this.error(c.pos, 'user methods do not accept type arguments');
+        return INVALID_TV;
+      }
+      const methods = this.scope
+        .lookupMethods(fun.sel.value)
+        .filter(method =>
+          typesEqual(method.receiver.owner.type, receiverTv.type),
+        );
+      if (methods.length === 0) {
+        this.error(
+          fun.sel.pos,
+          `${formatType(receiverTv.type)} has no method '${fun.sel.value}'`,
+        );
+        return INVALID_TV;
+      }
+      if (methods.length > 1) {
+        return fatal(
+          `duplicate method '${fun.sel.value}' survived declaration checking`,
+        );
+      }
+      this.info.uses.set(fun.sel, methods[0]);
+      return this.checkUserCall(
+        c,
+        methods[0],
+        methods[0].displayName,
+        receiver,
+      );
     }
     this.error(fun.pos, 'expression is not callable');
     return INVALID_TV;
@@ -1657,13 +2332,21 @@ class Checker {
     c: syntax.CallExpr,
     template: FunctionObject,
     displayName = template.displayName,
+    receiver: CheckedExpression | null = null,
   ): TypeAndValue {
     const decl = template.decl;
     const params = decl.params;
     const aligned: (syntax.Expr | null)[] = Array<syntax.Expr | null>(
       params.length,
     ).fill(null);
+    const argumentEvaluationOrder: number[] = [];
     let position = 0;
+    if (receiver !== null && template.receiver === null) {
+      return fatal(`non-method '${displayName}' received a method receiver`);
+    }
+    if (receiver === null && template.receiver !== null) {
+      return fatal(`method '${displayName}' checked without its receiver`);
+    }
     for (const arg of c.args) {
       if (arg.name === null) {
         if (position >= params.length) {
@@ -1671,6 +2354,7 @@ class Checker {
           return INVALID_TV;
         }
         aligned[position] = arg.value;
+        argumentEvaluationOrder.push(position);
         position += 1;
         continue;
       }
@@ -1687,6 +2371,7 @@ class Checker {
         return INVALID_TV;
       }
       aligned[index] = arg.value;
+      argumentEvaluationOrder.push(index);
     }
     for (const [i, p] of params.entries()) {
       if (aligned[i] === null && p.defaultValue === null) {
@@ -1696,12 +2381,59 @@ class Checker {
         );
         return INVALID_TV;
       }
+      if (
+        aligned[i] === null &&
+        template.receiver !== null &&
+        template.invalidDefaults.has(i)
+      ) {
+        // The declaration-owner scan already emitted the stable diagnostic.
+        // Do not publish a CallResolution that could lower the poisoned
+        // default in a caller context.
+        return INVALID_TV;
+      }
+    }
+    for (const [index, arg] of aligned.entries()) {
+      if (arg === null) {
+        argumentEvaluationOrder.push(index);
+      }
     }
     if (this.instantiating.has(template)) {
       // The static call graph must stay acyclic: frames pre-allocate along
       // it at bind time.
       this.error(c.pos, `recursive call to '${displayName}'`);
       return INVALID_TV;
+    }
+
+    let resolvedReceiver: ResolvedMethodReceiver | null = null;
+    let receiverQualifier: Qualifier | null = null;
+    if (template.receiver !== null) {
+      if (receiver === null) {
+        return fatal(`method '${displayName}' lost its receiver`);
+      }
+      if (!this.finalizedUserTypes.has(template.receiver.owner)) {
+        this.error(
+          c.pos,
+          `method '${displayName}' cannot be used before type '${template.receiver.owner.name}' is declared`,
+        );
+        return INVALID_TV;
+      }
+      if (template.receiver.mode === 'mutable') {
+        const writeback = this.checkedWritebackTarget(receiver.expr);
+        if (writeback === null) {
+          return INVALID_TV;
+        }
+        this.info.reassigned.add(writeback.root);
+        writeback.root.constValue = null;
+        writeback.root.qualifier = joinQualifiers(
+          writeback.root.qualifier,
+          Qualifier.Series,
+        );
+        receiverQualifier = Qualifier.Series;
+        resolvedReceiver = {mode: 'mutable', value: receiver, writeback};
+      } else {
+        receiverQualifier = receiver.tv.qualifier;
+        resolvedReceiver = {mode: 'const', value: receiver};
+      }
     }
 
     const argTvs = aligned.map(e => (e !== null ? this.tvOf(e) : null));
@@ -1716,8 +2448,11 @@ class Checker {
       variants = [];
       this.instances.set(template, variants);
     }
-    let instance = variants.find(candidate =>
-      functionSignaturesEqual(candidate.signature, signature),
+    let instance = variants.find(
+      candidate =>
+        !this.invalidInstances.has(candidate) &&
+        functionSignaturesEqual(candidate.signature, signature) &&
+        (candidate.receiver?.qualifier ?? null) === receiverQualifier,
     );
     if (instance === undefined) {
       instance = this.instantiate(
@@ -1726,6 +2461,7 @@ class Checker {
         signature,
         aligned,
         argTvs,
+        receiverQualifier,
       );
       variants.push(instance);
     }
@@ -1751,12 +2487,23 @@ class Checker {
       kind: CallKind.Function,
       instance,
       args: aligned,
+      argumentEvaluationOrder,
+      receiver: resolvedReceiver,
     });
-    return {
+    const result: TypeAndValue = {
       type: instance.resultType,
-      qualifier: instance.resultQualifier,
+      qualifier:
+        resolvedReceiver?.mode === 'const'
+          ? joinQualifiers(
+              instance.resultQualifier,
+              resolvedReceiver.value.tv.qualifier,
+            )
+          : instance.resultQualifier,
       value: null,
     };
+    return resolvedReceiver?.mode === 'mutable'
+      ? {...result, qualifier: Qualifier.Series}
+      : result;
   }
 
   // Stencil the template for one concrete signature: a fresh Info and a
@@ -1768,6 +2515,7 @@ class Checker {
     signature: FunctionInstance['signature'],
     aligned: readonly (syntax.Expr | null)[],
     argTvs: readonly (TypeAndValue | null)[],
+    receiverQualifier: Qualifier | null,
   ): FunctionInstance {
     const decl = template.decl;
     const saved = {
@@ -1779,7 +2527,13 @@ class Checker {
       boundary: this.funcBoundary,
     };
     const info = newInfo();
-    bindFunctionNames(decl, aligned, template.base, info);
+    bindFunctionNames(
+      decl,
+      aligned,
+      template.base,
+      info,
+      template.receiver === null ? undefined : template.invalidDefaults,
+    );
     const scope = new Scope(template.base);
     this.scope = scope;
     this.info = info;
@@ -1789,12 +2543,63 @@ class Checker {
     this.blockDepth = 0;
     this.funcBoundary = scope;
     this.instantiating.add(template);
+    const savedActiveMethod = this.activeMethod;
+    const errorAttemptsBefore = this.methodErrorAttempts;
+    this.activeMethod = template.receiver === null ? null : template;
 
+    const receiverObject: VariableObject | null =
+      template.receiver === null
+        ? null
+        : {
+            kind: ObjectKind.Variable,
+            name: 'this',
+            storage: Storage.PerBar,
+            constDecl: template.receiver.mode === 'const',
+            type: template.receiver.owner.type,
+            qualifier:
+              receiverQualifier ??
+              fatal(`method '${displayName}' lost its receiver qualifier`),
+            constValue: null,
+          };
     const params: VariableObject[] = [];
     const defaults = new Map<number, CheckedDefaultExpression>();
     decl.params.forEach((p, i) => {
       const annotated =
-        p.paramType !== null ? this.resolveAnnotation(p.paramType) : null;
+        template.receiver === null
+          ? p.paramType !== null
+            ? this.resolveAnnotation(p.paramType)
+            : null
+          : template.declaredParams[i];
+      let declaredDefault: CheckedDefaultExpression | null = null;
+      if (
+        template.receiver !== null &&
+        p.defaultValue !== null &&
+        !template.invalidDefaults.has(i)
+      ) {
+        const declaredAnnotation =
+          annotated ??
+          fatal(`method '${displayName}' lost parameter annotation ${i}`);
+        declaredDefault = this.checkDefaultExpression(p.defaultValue);
+        defaults.set(i, declaredDefault);
+        if (!assignable(declaredDefault.tv.type, declaredAnnotation.type)) {
+          this.error(
+            p.defaultValue.pos,
+            `default for parameter '${p.name.value}' in '${displayName}': cannot use ${formatType(declaredDefault.tv.type)} as ${formatType(declaredAnnotation.type)}`,
+          );
+        }
+        if (
+          declaredAnnotation.qualifier !== null &&
+          !qualifierLE(
+            declaredDefault.tv.qualifier,
+            declaredAnnotation.qualifier,
+          )
+        ) {
+          this.error(
+            p.defaultValue.pos,
+            `default for parameter '${p.name.value}' in '${displayName}' accepts at most ${declaredAnnotation.qualifier}, got ${declaredDefault.tv.qualifier}`,
+          );
+        }
+      }
       let tv = argTvs[i];
       if (tv === null) {
         const dflt = p.defaultValue;
@@ -1804,7 +2609,7 @@ class Checker {
             `instantiating '${displayName}' without argument '${p.name.value}'`,
           );
         }
-        const checked = this.checkDefaultExpression(dflt);
+        const checked = declaredDefault ?? this.checkDefaultExpression(dflt);
         tv = checked.tv;
         defaults.set(i, checked);
       } else {
@@ -1847,6 +2652,7 @@ class Checker {
       template,
       name: displayName,
       signature,
+      receiver: receiverObject,
       params,
       defaults,
       info,
@@ -1860,16 +2666,35 @@ class Checker {
         ? this.checkBlock(decl.body)
         : this.checkExpr(decl.body);
     this.instanceStack.pop();
-    if (bodyTv.type.kind === TypeKind.Na) {
-      this.error(
-        decl.body.pos,
-        `function '${displayName}' cannot infer a result type from na`,
-      );
+    if (template.receiver === null) {
+      if (bodyTv.type.kind === TypeKind.Na) {
+        this.error(
+          decl.body.pos,
+          `function '${displayName}' cannot infer a result type from na`,
+        );
+      }
+      instance.resultType = bodyTv.type;
+    } else {
+      if (
+        bodyTv.type.kind !== TypeKind.Invalid &&
+        template.declaredResult.kind !== TypeKind.Invalid &&
+        !assignable(bodyTv.type, template.declaredResult)
+      ) {
+        this.error(
+          decl.body.pos,
+          `method '${displayName}' returns ${formatType(bodyTv.type)}, want ${formatType(template.declaredResult)}`,
+        );
+      }
+      instance.resultType = template.declaredResult;
     }
-    instance.resultType = bodyTv.type;
     instance.resultQualifier = bodyTv.qualifier;
 
+    if (this.methodErrorAttempts > errorAttemptsBefore) {
+      this.invalidInstances.add(instance);
+    }
+
     this.instantiating.delete(template);
+    this.activeMethod = savedActiveMethod;
     this.scope = saved.scope;
     this.info = saved.info;
     this.flowQualifier = saved.flowQualifier;
@@ -1883,6 +2708,7 @@ class Checker {
     c: syntax.CallExpr,
     name: string,
     pos: Pos,
+    methodReceiver: CheckedExpression | null,
   ): TypeAndValue {
     const candidates = nativeFuncs(name);
     if (candidates === null) {
@@ -1894,24 +2720,92 @@ class Checker {
       );
       return INVALID_TV;
     }
+    if (
+      (methodReceiver !== null &&
+        methodReceiver.tv.type.kind === TypeKind.Invalid) ||
+      c.args.some(arg => this.tvOf(arg.value).type.kind === TypeKind.Invalid)
+    ) {
+      return INVALID_TV;
+    }
+    const explicitTypes =
+      c.typeArgs === null
+        ? null
+        : c.typeArgs.map(typeArg => this.resolveTypeName(typeArg));
+    if (
+      explicitTypes !== null &&
+      explicitTypes.some(type => type.kind === TypeKind.Invalid)
+    ) {
+      return INVALID_TV;
+    }
     let firstReason: {pos: Pos; msg: string} | null = null;
     for (const candidate of candidates) {
-      const outcome = this.matchOverload(c, candidate);
+      const outcome = this.matchOverload(
+        c,
+        candidate,
+        explicitTypes,
+        methodReceiver?.expr ?? null,
+      );
       if (outcome.ok) {
         this.checkPlacement(candidate, c.pos);
         if (candidate.effect === Effect.Param) {
-          this.checkInputContract(c, candidate, outcome.args);
+          this.checkInputContract(
+            c,
+            candidate,
+            outcome.args,
+            outcome.resultType,
+          );
         }
         if (candidate.effect === Effect.Request) {
-          return this.checkRequest(c, candidate, outcome.args);
+          return this.checkRequest(
+            c,
+            candidate,
+            outcome.args,
+            outcome.argumentEvaluationOrder,
+          );
+        }
+        let receiver: ResolvedNativeReceiver | null = null;
+        const receiverExpr =
+          candidate.params[0]?.name === 'self' ? outcome.args[0] : null;
+        if (receiverExpr !== null && receiverExpr !== undefined) {
+          const checked: CheckedExpression = {
+            expr: receiverExpr,
+            info: this.info,
+            tv: this.tvOf(receiverExpr),
+          };
+          if (candidate.params[0].mode === 'inout') {
+            const writeback = this.checkedWritebackTarget(receiverExpr);
+            if (writeback === null) {
+              return INVALID_TV;
+            }
+            this.info.reassigned.add(writeback.root);
+            writeback.root.constValue = null;
+            writeback.root.qualifier = joinQualifiers(
+              writeback.root.qualifier,
+              Qualifier.Series,
+            );
+            receiver = {mode: 'inout', value: checked, writeback};
+          } else {
+            receiver = {mode: 'value', value: checked};
+          }
         }
         const resolved: NativeCall = {
           kind: CallKind.Native,
           native: candidate,
           args: outcome.args,
+          argTypes: outcome.argTypes,
+          argumentEvaluationOrder: outcome.argumentEvaluationOrder,
+          resultType: outcome.resultType,
+          receiver,
         };
         this.info.calls.set(c, resolved);
-        return this.callResultTv(candidate, outcome.args);
+        const result = this.callResultTv(
+          candidate,
+          outcome.args,
+          outcome.resultType,
+        );
+        return receiver?.mode === 'inout'
+          ? {...result, qualifier: Qualifier.Series, value: null}
+          : result;
       }
       if (firstReason === null) {
         firstReason = outcome.reason;
@@ -1920,7 +2814,8 @@ class Checker {
     if (
       firstReason !== null &&
       (candidates.length === 1 ||
-        candidates.every(candidate => candidate.effect === Effect.Param))
+        candidates.every(candidate => candidate.effect === Effect.Param) ||
+        candidates.every(candidate => candidate.typeParams.length > 0))
     ) {
       this.error(firstReason.pos, firstReason.msg);
     } else {
@@ -1932,8 +2827,16 @@ class Checker {
   private matchOverload(
     c: syntax.CallExpr,
     native: NativeFunc,
+    explicitTypes: readonly Type[] | null,
+    methodReceiver: syntax.Expr | null,
   ):
-    | {ok: true; args: readonly (syntax.Expr | null)[]}
+    | {
+        ok: true;
+        args: readonly (syntax.Expr | null)[];
+        argTypes: readonly Type[];
+        argumentEvaluationOrder: readonly number[];
+        resultType: Type;
+      }
     | {ok: false; reason: {pos: Pos; msg: string}} {
     const fail = (
       pos: Pos,
@@ -1951,15 +2854,26 @@ class Checker {
     const fixedCount = variadic === null ? params.length : params.length - 1;
     const fixed: (syntax.Expr | null)[] = Array(fixedCount).fill(null);
     const tail: syntax.Expr[] = [];
+    const argumentEvaluationOrder: number[] = [];
     let position = 0;
+    if (methodReceiver !== null) {
+      if (fixedCount === 0 || params[0].name !== 'self') {
+        return fail(c.pos, `'${native.name}' is not a method`);
+      }
+      fixed[0] = methodReceiver;
+      argumentEvaluationOrder.push(0);
+      position = 1;
+    }
 
     for (const arg of c.args) {
       if (arg.name === null) {
         if (position < fixedCount) {
           fixed[position] = arg.value;
+          argumentEvaluationOrder.push(position);
           position += 1;
         } else if (variadic !== null) {
           tail.push(arg.value);
+          argumentEvaluationOrder.push(fixedCount + tail.length - 1);
         } else {
           return fail(
             arg.pos,
@@ -1985,6 +2899,7 @@ class Checker {
         return fail(arg.pos, `duplicate argument '${arg.name.value}'`);
       }
       fixed[index] = arg.value;
+      argumentEvaluationOrder.push(index);
     }
 
     for (const [i, param] of params.entries()) {
@@ -2001,19 +2916,89 @@ class Checker {
     }
 
     const aligned = [...fixed, ...tail];
+    if (explicitTypes !== null && native.typeParams.length === 0) {
+      return fail(c.pos, `'${native.name}' does not accept type arguments`);
+    }
+    if (
+      explicitTypes !== null &&
+      explicitTypes.length !== native.typeParams.length
+    ) {
+      return fail(
+        c.pos,
+        `'${native.name}' expects ${native.typeParams.length} type argument${native.typeParams.length === 1 ? '' : 's'}, got ${explicitTypes.length}`,
+      );
+    }
+    const inferred = new Map<string, InferredNativeType>();
+    if (explicitTypes !== null) {
+      native.typeParams.forEach((param, index) => {
+        inferred.set(param.name, {type: explicitTypes[index], locked: true});
+      });
+    }
     for (const [i, expr] of aligned.entries()) {
       if (expr === null) {
         continue;
       }
       const param = params[Math.min(i, params.length - 1)];
+      const reason = inferNativeType(
+        this.tvOf(expr).type,
+        param.type,
+        inferred,
+      );
+      if (reason !== null) {
+        return fail(
+          expr.pos,
+          `argument '${param.name}' to '${native.name}': ${reason}`,
+        );
+      }
+    }
+    for (const param of native.typeParams) {
+      const binding = inferred.get(param.name);
+      if (binding === undefined) {
+        return fail(
+          c.pos,
+          `cannot infer type argument '${param.name}' for '${native.name}'; provide it explicitly`,
+        );
+      }
+      if (
+        (param.constraint === 'storable' && !isStorableType(binding.type)) ||
+        (param.constraint === 'map-key' && !isMapKeyType(binding.type))
+      ) {
+        return fail(
+          c.pos,
+          `${formatType(binding.type)} does not satisfy ${param.constraint} constraint for '${param.name}'`,
+        );
+      }
+    }
+    const argTypes: Type[] = [];
+    for (const [i, expr] of aligned.entries()) {
+      const param = params[Math.min(i, params.length - 1)];
+      const actual = expr === null ? null : this.tvOf(expr).type;
+      const instantiated = instantiateNativeParamType(
+        param.type,
+        inferred,
+        actual,
+      );
+      argTypes.push(instantiated ?? InvalidType);
+      if (expr === null) {
+        continue;
+      }
       const tv = this.tvOf(expr);
       if (tv.type.kind === TypeKind.Invalid) {
         continue;
       }
-      if (!refAssignable(tv.type, param.type)) {
+      const accepted = isGenericTypeRef(param.type)
+        ? instantiated !== null && assignable(tv.type, instantiated)
+        : refAssignable(tv.type, param.type);
+      if (!accepted) {
+        const expected =
+          typeof param.type === 'string'
+            ? formatRef(param.type)
+            : instantiated === null
+              ? formatRef(param.type)
+              : formatType(instantiated);
         return fail(
           expr.pos,
-          `argument '${param.name}' to '${native.name}': cannot use ${formatType(tv.type)} as ${formatRef(param.type)}`,
+          `argument '${param.name}' to '${native.name}': cannot use ${formatType(tv.type)} as ${expected}`,
         );
       }
       if (!qualifierLE(tv.qualifier, param.qualifierCap)) {
@@ -2048,7 +3033,21 @@ class Checker {
         );
       }
     }
-    return {ok: true, args: aligned};
+    const resultType = instantiateNativeResult(
+      native.result,
+      inferred,
+      argTypes,
+    );
+    if (resultType === null) {
+      return fail(c.pos, `cannot instantiate result type of '${native.name}'`);
+    }
+    return {
+      ok: true,
+      args: aligned,
+      argTypes,
+      argumentEvaluationOrder,
+      resultType,
+    };
   }
 
   // A request call owns a child semantic context. The same call syntax may be
@@ -2058,6 +3057,7 @@ class Checker {
     c: syntax.CallExpr,
     native: NativeFunc,
     args: readonly (syntax.Expr | null)[],
+    argumentEvaluationOrder: readonly number[],
   ): TypeAndValue {
     const captureIndex = native.params.findIndex(p => p.capture);
     const expr = args[captureIndex];
@@ -2087,6 +3087,7 @@ class Checker {
       kind: CallKind.Request,
       native,
       args,
+      argumentEvaluationOrder,
       capture: info,
       resultType: captureTv.type,
     });
@@ -2096,7 +3097,11 @@ class Checker {
   private checkPlacement(native: NativeFunc, pos: Pos): void {
     if (native.effect === Effect.Param) {
       if (
-        this.instanceStack.some(instance => instance.template.decl.exported)
+        this.instanceStack.some(instance =>
+          instance.template.receiver === null
+            ? instance.template.decl.exported
+            : this.pkgExports.has(instance.template.receiver.owner.name),
+        )
       ) {
         this.error(
           pos,
@@ -2135,6 +3140,7 @@ class Checker {
     c: syntax.CallExpr,
     native: NativeFunc,
     args: readonly (syntax.Expr | null)[],
+    resultType: Type,
   ): void {
     const arg = (name: string): syntax.Expr | null => {
       const index = native.params.findIndex(param => param.name === name);
@@ -2186,7 +3192,7 @@ class Checker {
       } else {
         const defvalTv = this.tvOf(defvalExpr);
         const optionType =
-          native.result === FirstArgumentResult ? defvalTv.type : native.result;
+          native.result === FirstArgumentResult ? defvalTv.type : resultType;
         const optionValues: ConstValue[] = [];
         for (const elem of tuple.elems) {
           const elemTv = this.tvOf(elem);
@@ -2313,6 +3319,8 @@ class Checker {
       case NodeKind.BasicLit:
       case NodeKind.BadExpr:
         return false;
+      case NodeKind.ThisExpr:
+        return true;
       case NodeKind.UnaryExpr:
       case NodeKind.ParenExpr:
         return this.inputActiveNeedsUnavailableFrame(expr.x);
@@ -2365,6 +3373,7 @@ class Checker {
   private callResultTv(
     native: NativeFunc,
     args: readonly (syntax.Expr | null)[],
+    resultType: Type,
   ): TypeAndValue {
     const tvs = args
       .filter((a): a is syntax.Expr => a !== null)
@@ -2380,35 +3389,41 @@ class Checker {
     if (qualifier === Qualifier.Const && native.effect === Effect.None) {
       value = foldNativeCall(native.name, tvs);
     }
-    const type =
-      native.result === FirstArgumentResult
-        ? args[0] !== null && args[0] !== undefined
-          ? this.tvOf(args[0]).type
-          : InvalidType
-        : native.result;
-    return {type, qualifier, value};
+    return {type: resultType, qualifier, value};
   }
 
-  private checkNew(c: syntax.CallExpr, udt: UdtObject): TypeAndValue {
-    const fields = udt.fields;
+  private checkNew(c: syntax.CallExpr, userType: UserTypeObject): TypeAndValue {
+    if (!this.finalizedUserTypes.has(userType)) {
+      this.error(
+        c.pos,
+        `constructor '${userType.name}.new' cannot be used before type '${userType.name}' is declared`,
+      );
+      return INVALID_TV;
+    }
+    const fields = userType.fields;
     const aligned: (syntax.Expr | null)[] = Array(fields.length).fill(null);
+    const argumentEvaluationOrder: number[] = [];
     let position = 0;
     for (const arg of c.args) {
       if (arg.name === null) {
         if (position >= fields.length) {
           this.error(
             arg.pos,
-            `too many arguments in call to '${udt.name}.new'`,
+            `too many arguments in call to '${userType.name}.new'`,
           );
           return INVALID_TV;
         }
         aligned[position] = arg.value;
+        argumentEvaluationOrder.push(position);
         position += 1;
         continue;
       }
       const index = fields.findIndex(field => field.name === arg.name!.value);
       if (index === -1) {
-        this.error(arg.pos, `'${udt.name}' has no field '${arg.name.value}'`);
+        this.error(
+          arg.pos,
+          `'${userType.name}' has no field '${arg.name.value}'`,
+        );
         return INVALID_TV;
       }
       if (aligned[index] !== null) {
@@ -2416,6 +3431,7 @@ class Checker {
         return INVALID_TV;
       }
       aligned[index] = arg.value;
+      argumentEvaluationOrder.push(index);
     }
     const args: {
       field: FieldObject;
@@ -2433,7 +3449,7 @@ class Checker {
       if (value === null) {
         this.error(
           c.pos,
-          `missing argument '${field.name}' in call to '${udt.name}.new'`,
+          `missing argument '${field.name}' in call to '${userType.name}.new'`,
         );
         continue;
       }
@@ -2455,23 +3471,184 @@ class Checker {
       qualifier = joinQualifiers(qualifier, tv.qualifier);
       args.push({field, value, supplied: expr !== null});
     }
+    for (const arg of args) {
+      if (!arg.supplied) {
+        argumentEvaluationOrder.push(arg.field.index);
+      }
+    }
     this.recordTransitiveDependencies(defaultDependencies);
     if (
       this.captureDepth > 0 &&
-      !this.checkRequestDependencies(c, `${udt.name}.new`, defaultDependencies)
+      !this.checkRequestDependencies(
+        c,
+        `${userType.name}.new`,
+        defaultDependencies,
+      )
     ) {
       return INVALID_TV;
     }
     this.info.calls.set(c, {
       kind: CallKind.Constructor,
-      type: udt,
+      type: userType,
       args,
+      argumentEvaluationOrder,
     });
-    return {type: udt.type, qualifier, value: null};
+    return {type: userType.type, qualifier, value: null};
   }
 }
 
 // ---- pure helpers -----------------------------------------------------------
+
+interface InferredNativeType {
+  readonly type: Type;
+  readonly locked: boolean;
+}
+
+function isGenericTypeRef(ref: NativeTypeRef): ref is GenericTypeRef {
+  return (
+    typeof ref === 'object' &&
+    (ref.kind === 'type-param' ||
+      ref.kind === 'array' ||
+      ref.kind === 'matrix' ||
+      ref.kind === 'map')
+  );
+}
+
+function inferNativeType(
+  actual: Type,
+  ref: NativeTypeRef,
+  inferred: Map<string, InferredNativeType>,
+  invariant = false,
+): string | null {
+  if (!isGenericTypeRef(ref)) {
+    return null;
+  }
+  if (ref.kind === 'type-param') {
+    if (actual.kind === TypeKind.Invalid || actual.kind === TypeKind.Na) {
+      return null;
+    }
+    const current = inferred.get(ref.name);
+    if (current === undefined) {
+      inferred.set(ref.name, {type: actual, locked: invariant});
+      return null;
+    }
+    if (current.locked || invariant) {
+      const accepted = invariant
+        ? typesEqual(actual, current.type)
+        : assignable(actual, current.type);
+      if (accepted) {
+        if (invariant && !current.locked) {
+          inferred.set(ref.name, {type: current.type, locked: true});
+        }
+        return null;
+      }
+      return `cannot use ${formatType(actual)} as ${formatType(current.type)}`;
+    }
+    const unified = unifyTypes(current.type, actual);
+    if (unified === null) {
+      return `cannot infer one type from ${formatType(current.type)} and ${formatType(actual)}`;
+    }
+    inferred.set(ref.name, {type: unified, locked: false});
+    return null;
+  }
+  if (ref.kind === 'array') {
+    if (actual.kind !== TypeKind.Array) {
+      return `cannot use ${formatType(actual)} as an array`;
+    }
+    return inferNativeType(actual.elem, ref.element, inferred, true);
+  }
+  if (ref.kind === 'matrix') {
+    if (actual.kind !== TypeKind.Matrix) {
+      return `cannot use ${formatType(actual)} as a matrix`;
+    }
+    return inferNativeType(actual.elem, ref.element, inferred, true);
+  }
+  if (actual.kind !== TypeKind.Map) {
+    return `cannot use ${formatType(actual)} as a map`;
+  }
+  return (
+    inferNativeType(actual.key, ref.key, inferred, true) ??
+    inferNativeType(actual.value, ref.value, inferred, true)
+  );
+}
+
+function instantiateNativeParamType(
+  ref: NativeTypeRef,
+  inferred: ReadonlyMap<string, InferredNativeType>,
+  actual: Type | null,
+): Type | null {
+  if (isGenericTypeRef(ref)) {
+    return instantiateGenericType(ref, inferred);
+  }
+  if (typeof ref === 'object') {
+    return ref;
+  }
+  // NativeCall publishes concrete contextual argument types so noding never
+  // has to repeat catalog policy. A bare `na` (or an omitted polymorphic
+  // optional) has no useful source type; the established default numeric
+  // domain for Num/Any/Nullable is float.
+  if (actual === null || actual.kind === TypeKind.Na) {
+    if (
+      ref === TypeRef.Num ||
+      ref === TypeRef.Any ||
+      ref === TypeRef.Nullable ||
+      ref === TypeRef.StringConvertible
+    ) {
+      return FloatType;
+    }
+  }
+  return actual;
+}
+
+function instantiateGenericType(
+  ref: GenericTypeRef,
+  inferred: ReadonlyMap<string, InferredNativeType>,
+): Type | null {
+  if (ref.kind === 'type-param') {
+    return inferred.get(ref.name)?.type ?? null;
+  }
+  if (ref.kind === 'array' || ref.kind === 'matrix') {
+    const elem = instantiateNativeParamType(ref.element, inferred, null);
+    if (elem === null) {
+      return null;
+    }
+    return ref.kind === 'array'
+      ? {kind: TypeKind.Array, elem}
+      : {kind: TypeKind.Matrix, elem};
+  }
+  const key = instantiateNativeParamType(ref.key, inferred, null);
+  const value = instantiateNativeParamType(ref.value, inferred, null);
+  return key === null || value === null
+    ? null
+    : {kind: TypeKind.Map, key, value};
+}
+
+function instantiateNativeResult(
+  result: NativeResult,
+  inferred: ReadonlyMap<string, InferredNativeType>,
+  argTypes: readonly Type[],
+): Type | null {
+  if (result === FirstArgumentResult) {
+    return argTypes[0] ?? null;
+  }
+  if (isGenericTypeRef(result)) {
+    return instantiateGenericType(result, inferred);
+  }
+  return result;
+}
+
+function collectionNamespace(type: Type): 'array' | 'matrix' | 'map' | null {
+  if (type.kind === TypeKind.Array) {
+    return 'array';
+  }
+  if (type.kind === TypeKind.Matrix) {
+    return 'matrix';
+  }
+  if (type.kind === TypeKind.Map) {
+    return 'map';
+  }
+  return null;
+}
 
 function functionSignaturesEqual(
   a: FunctionInstance['signature'],
@@ -2536,6 +3713,9 @@ function unifyOrVoid(a: Type, b: Type): Type {
 }
 
 function refAssignable(from: Type, to: NativeTypeRef): boolean {
+  if (isGenericTypeRef(to)) {
+    return false;
+  }
   if (to === TypeRef.Num) {
     return assignable(from, FloatType);
   }
@@ -2550,10 +3730,39 @@ function refAssignable(from: Type, to: NativeTypeRef): boolean {
     // default to float so TypeKind.Na never enters Program IR.
     return from.kind === TypeKind.Na || isNullableType(from);
   }
+  if (to === TypeRef.StringConvertible) {
+    switch (from.kind) {
+      case TypeKind.Na:
+      case TypeKind.Int:
+      case TypeKind.Float:
+      case TypeKind.Bool:
+      case TypeKind.String:
+      case TypeKind.Color:
+      case TypeKind.Enum:
+      case TypeKind.Line:
+      case TypeKind.Label:
+      case TypeKind.Box:
+      case TypeKind.Table:
+      case TypeKind.Polyline:
+      case TypeKind.Linefill:
+        return true;
+      default:
+        return false;
+    }
+  }
   return assignable(from, to);
 }
 
 function formatRef(ref: NativeTypeRef): string {
+  if (isGenericTypeRef(ref)) {
+    if (ref.kind === 'type-param') {
+      return ref.name;
+    }
+    if (ref.kind === 'array' || ref.kind === 'matrix') {
+      return `${ref.kind}<${formatRef(ref.element)}>`;
+    }
+    return `map<${formatRef(ref.key)}, ${formatRef(ref.value)}>`;
+  }
   if (ref === TypeRef.Num) {
     return 'a numeric value';
   }
@@ -2565,6 +3774,9 @@ function formatRef(ref: NativeTypeRef): string {
   }
   if (ref === TypeRef.Nullable) {
     return 'a nullable value';
+  }
+  if (ref === TypeRef.StringConvertible) {
+    return 'a scalar, enum, or resource value';
   }
   return formatType(ref);
 }

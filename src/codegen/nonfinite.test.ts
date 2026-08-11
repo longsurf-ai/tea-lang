@@ -35,6 +35,7 @@ describe('finite-or-na helpers', () => {
       requestIds: new Map(),
       dynamicRequests: new Set(),
       moduleRef: 'M',
+      layoutOf: () => 0,
       currentFid: 0,
       noteCallSite() {},
       useHelper() {},

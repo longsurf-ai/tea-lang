@@ -1,7 +1,8 @@
-// Purpose: Ring — one history buffer class for value and reference slots alike: committed cells plus the scratch head the provisional protocol executes against.
+// Purpose: Ring — one history buffer for every runtime layout: committed cells plus the scratch head the provisional protocol executes against.
 
 import {fatal} from '../base/print';
-import {ValueClass, type Value, type ValueClass as ValueClassType} from './abi';
+import type {Value} from './abi';
+import {type LayoutId, ValueLayoutRegistry} from './value-layout';
 
 // History is strictly backward-looking. Non-integer, non-finite, negative,
 // and imprecise offsets cannot name a committed cell and therefore read as
@@ -10,16 +11,10 @@ export function isHistoryOffset(offset: number): boolean {
   return Number.isSafeInteger(offset) && offset >= 0;
 }
 
-export function emptyValue(valueClass: ValueClassType): Value {
-  switch (valueClass) {
-    case ValueClass.Numeric:
-      return NaN;
-    case ValueClass.Reference:
-      return null;
-    case ValueClass.Boolean:
-      return false;
-  }
-}
+export type RingPublicationMode =
+  | 'committed-only'
+  | 'provisional-candidate'
+  | 'final-candidate';
 
 // Offsets: at(0) is the row being executed (the scratch head); at(k >= 1)
 // is committed history k rows back. Reads past what is kept or committed
@@ -37,13 +32,14 @@ export class Ring {
   // history never materializes and commit is a no-op).
   constructor(
     readonly keep: number,
-    readonly valueClass: ValueClassType,
+    readonly layout: LayoutId,
+    layouts: ValueLayoutRegistry,
   ) {
     if (!isHistoryOffset(keep) || keep > 0xffff_ffff) {
       fatal(`invalid ring retention depth ${keep}`);
     }
     this.buf = new Array<Value>(keep);
-    this.emptyValue = emptyValue(valueClass);
+    this.emptyValue = layouts.empty(layout);
     this.scratch = this.emptyValue;
   }
 
@@ -80,6 +76,31 @@ export class Ring {
     return this.count > 0;
   }
 
+  visitPublicationValues(
+    mode: RingPublicationMode,
+    visit: (value: Value) => void,
+  ): void {
+    if (mode === 'committed-only') {
+      this.visitCommitted(visit, this.count);
+      return;
+    }
+    if (mode === 'provisional-candidate') {
+      this.visitCommitted(visit, this.count);
+      visit(this.scratch);
+      return;
+    }
+    if (this.keep === 0) {
+      return;
+    }
+    visit(this.scratch);
+    this.visitCommitted(visit, Math.min(this.count, this.keep - 1));
+  }
+
+  visitAttemptSafetyValues(visit: (value: Value) => void): void {
+    this.visitCommitted(visit, this.count);
+    visit(this.scratch);
+  }
+
   at(offset: number): Value {
     if (!isHistoryOffset(offset)) {
       return this.emptyValue;
@@ -105,6 +126,17 @@ export class Ring {
         this.count += 1;
       }
     }
+    // Scratch belongs only to the execution attempt. Keeping it after commit
+    // would make discarded tentative aggregate storage look like a live GC
+    // safety root. Persisted values are owned exclusively by committed cells.
+    this.scratch = this.emptyValue;
     this.written = false;
+  }
+
+  private visitCommitted(visit: (value: Value) => void, count: number): void {
+    for (let back = 0; back < count; back += 1) {
+      const index = (this.head - back + this.keep) % this.keep;
+      visit(this.buf[index]);
+    }
   }
 }

@@ -13,8 +13,10 @@ export const NodeKind = {
   DeclStmt: 'DeclStmt',
   AssignStmt: 'AssignStmt',
   FuncDecl: 'FuncDecl',
+  MethodDecl: 'MethodDecl',
   Param: 'Param',
-  TypeDecl: 'TypeDecl',
+  UserTypeDecl: 'UserTypeDecl',
+  TypeAliasDecl: 'TypeAliasDecl',
   FieldDecl: 'FieldDecl',
   EnumDecl: 'EnumDecl',
   EnumMember: 'EnumMember',
@@ -26,6 +28,7 @@ export const NodeKind = {
   GenericType: 'GenericType',
   ArrayType: 'ArrayType',
   Name: 'Name',
+  ThisExpr: 'ThisExpr',
   BasicLit: 'BasicLit',
   UnaryExpr: 'UnaryExpr',
   BinaryExpr: 'BinaryExpr',
@@ -74,7 +77,8 @@ export type Stmt =
   | DeclStmt
   | AssignStmt
   | FuncDecl
-  | TypeDecl
+  | UserTypeDecl
+  | TypeAliasDecl
   | EnumDecl
   | ImportStmt
   | BreakStmt
@@ -153,11 +157,17 @@ export interface AssignStmt extends Node {
 export interface FuncDecl extends Node {
   readonly kind: typeof NodeKind.FuncDecl;
   readonly exported: boolean;
-  readonly method: boolean;
   readonly name: Name;
   readonly params: readonly Param[];
   readonly body: Expr | Block;
 }
+
+export const ReceiverMode = {
+  Mutable: 'mutable',
+  Const: 'const',
+} as const;
+
+export type ReceiverMode = (typeof ReceiverMode)[keyof typeof ReceiverMode];
 
 export interface Param extends Node {
   readonly kind: typeof NodeKind.Param;
@@ -166,19 +176,43 @@ export interface Param extends Node {
   readonly defaultValue: Expr | null;
 }
 
-// `type Foo` with indented field lines.
-export interface TypeDecl extends Node {
-  readonly kind: typeof NodeKind.TypeDecl;
-  readonly exported: boolean;
-  readonly name: Name;
-  readonly fields: readonly FieldDecl[];
+export interface TypedParam extends Param {
+  readonly paramType: TypeAnnotation;
 }
+
+// `struct Foo` and block-form `type Foo` are identical nominal user types.
+export interface UserTypeDecl extends Node {
+  readonly kind: typeof NodeKind.UserTypeDecl;
+  readonly exported: boolean;
+  readonly writtenKeyword: 'struct' | 'type';
+  readonly name: Name;
+  readonly members: readonly UserTypeMember[];
+}
+
+export type UserTypeMember = FieldDecl | MethodDecl;
 
 export interface FieldDecl extends Node {
   readonly kind: typeof NodeKind.FieldDecl;
   readonly fieldType: TypeAnnotation;
   readonly name: Name;
   readonly defaultValue: Expr | null;
+}
+
+export interface MethodDecl extends Node {
+  readonly kind: typeof NodeKind.MethodDecl;
+  readonly result: TypeAnnotation;
+  readonly name: Name;
+  readonly params: readonly TypedParam[];
+  readonly receiverMode: ReceiverMode;
+  readonly body: Expr | Block;
+}
+
+// `type Alias = Target` reserves transparent alias syntax for the checker.
+export interface TypeAliasDecl extends Node {
+  readonly kind: typeof NodeKind.TypeAliasDecl;
+  readonly exported: boolean;
+  readonly name: Name;
+  readonly aliasedType: TypeName;
 }
 
 export interface EnumDecl extends Node {
@@ -245,6 +279,7 @@ export interface ArrayType extends Node {
 
 export type Expr =
   | Name
+  | ThisExpr
   | BasicLit
   | UnaryExpr
   | BinaryExpr
@@ -264,6 +299,10 @@ export type Expr =
 export interface Name extends Node {
   readonly kind: typeof NodeKind.Name;
   readonly value: string;
+}
+
+export interface ThisExpr extends Node {
+  readonly kind: typeof NodeKind.ThisExpr;
 }
 
 // bad mirrors the scanner's malformed-literal reporting so later stages never

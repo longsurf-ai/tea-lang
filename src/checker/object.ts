@@ -6,9 +6,14 @@ import type {
   NameStorage,
   Qualifier,
   Type,
-  UdtType,
+  UserType,
 } from '../ir/type';
-import type {EnumMember, FieldDecl, FuncDecl} from '../syntax/nodes';
+import type {
+  EnumMember,
+  FieldDecl,
+  FuncDecl,
+  MethodDecl,
+} from '../syntax/nodes';
 import type {CheckedDefaultExpression} from './info';
 import type {Package} from './package';
 import type {Scope} from './scope';
@@ -16,7 +21,7 @@ import type {Scope} from './scope';
 export const ObjectKind = {
   Variable: 'variable',
   Function: 'function',
-  Udt: 'udt',
+  UserType: 'userType',
   Field: 'field',
   Enum: 'enum',
   EnumMember: 'enumMember',
@@ -34,30 +39,60 @@ export interface VariableObject {
   constValue: ConstValue | null;
 }
 
-export interface FunctionObject {
+interface FunctionObjectBase {
   readonly kind: typeof ObjectKind.Function;
   readonly name: string;
   readonly displayName: string;
-  readonly decl: FuncDecl;
   // The scope the template's body resolves against when instantiated: the
   // user package scope, or the owning library's scope.
   readonly base: Scope;
 }
 
-export interface UdtObject {
-  readonly kind: typeof ObjectKind.Udt;
+export interface FreeFunctionObject extends FunctionObjectBase {
+  readonly decl: FuncDecl;
+  readonly receiver: null;
+}
+
+export interface MethodObject extends FunctionObjectBase {
+  readonly decl: MethodDecl;
+  readonly receiver: {
+    readonly owner: UserTypeObject;
+    readonly mode: ReceiverMode;
+  };
+  readonly declaredParams: readonly {
+    readonly type: Type;
+    readonly qualifier: Qualifier | null;
+  }[];
+  // Defaults rejected by the declaration-owner scan. Calls may still supply
+  // those parameters explicitly for poison-resistant checking, but omission
+  // never creates a callable/lowerable resolution.
+  readonly invalidDefaults: ReadonlySet<number>;
+  readonly declaredResult: Type;
+}
+
+export type FunctionObject = FreeFunctionObject | MethodObject;
+
+export type ReceiverMode = 'mutable' | 'const';
+
+export interface UserTypeObject {
+  readonly kind: typeof ObjectKind.UserType;
   readonly name: string;
-  readonly type: UdtType;
+  readonly type: UserType;
   readonly fields: readonly FieldObject[];
+  readonly methods: readonly MethodObject[];
 }
 
 export interface FieldObject {
   readonly kind: typeof ObjectKind.Field;
+  readonly owner: UserTypeObject;
+  readonly index: number;
   readonly name: string;
   readonly type: Type;
-  readonly varip: boolean;
   readonly decl: FieldDecl;
-  readonly defaultValue: CheckedDefaultExpression | null;
+  // @agent invariant: the checker assigns this slot exactly once when the
+  // source-order pass reaches the owning type declaration. It is read-only
+  // after CheckedPackage publication.
+  defaultValue: CheckedDefaultExpression | null;
 }
 
 export interface EnumObject {
@@ -92,7 +127,7 @@ export interface BuiltinObject {
 export type Object =
   | VariableObject
   | FunctionObject
-  | UdtObject
+  | UserTypeObject
   | FieldObject
   | EnumObject
   | EnumMemberObject

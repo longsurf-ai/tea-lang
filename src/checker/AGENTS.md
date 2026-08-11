@@ -3,9 +3,11 @@
 The Tea checker: an eager semantic pass over syntax (the types2 shape)
 producing a `CheckedPackage`. `package.ts`, `scope.ts`, and `object.ts` own the
 semantic declaration graph; `info.ts` owns per-context occurrence facts;
-`catalog.ts` declares every host primitive; `binding.ts` creates variable
-objects and reassignment facts; `check.ts` walks statements and expressions;
-and `importer.ts` is the import seam (loading lives in `src/loader`).
+`catalog.ts` declares every host primitive; `type-catalog.ts` owns the complete
+source-facing type vocabulary and its writable projections; `binding.ts`
+creates variable objects and reassignment facts; `check.ts` walks statements
+and expressions; and `importer.ts` is the import seam (loading lives in
+`src/loader`).
 
 ## Invariants
 
@@ -24,13 +26,19 @@ and `importer.ts` is the import seam (loading lives in `src/loader`).
 - Every call occurrence has exactly one discriminated `CallResolution`:
   native, function, constructor, or request. Noding switches on that result;
   parallel per-feature call maps are forbidden.
-- A `UdtObject` owns its nominal type and ordered `FieldObject`s. Each field
-  owns its checked default expression, including the `Info` and
+- A `UserTypeObject` owns its nominal type, ordered `FieldObject`s, and nested
+  `MethodObject`s. Fields and methods share one declaration namespace while
+  field indices ignore interleaved methods. Each field owns its checked default
+  expression, including the `Info` and
   `TypeAndValue` from the context where the default was checked, plus its exact
   semantic dependencies. A constructor resolution aligns every supplied or
   defaulted argument with its field, joins all argument qualifiers, and applies
-  capture policy only to defaults that call actually omits; UDT defaults never
-  live in a root-global auxiliary map.
+  capture policy only to defaults that call actually omits; user-type defaults
+  never live in a root-global auxiliary map.
+- Collection and user-type updates are rooted value writebacks. The checker
+  publishes one canonical `CheckedMutationTarget` inside the existing update
+  or call fact; it never models ordinary user values as object references or
+  assigns Heap persistence policy.
 - The catalog lists a builtin only if it is inexpressible in Tea. All of
   `ta.*` is prelude source compiled by the ordinary pipeline; a new builtin
   family is a catalog entry plus at most a noding policy, never new checker
@@ -67,11 +75,25 @@ and `importer.ts` is the import seam (loading lives in `src/loader`).
   program-root bind values, but never function/capture execution-frame state.
   Local declaration names are UI-label hints, not parameter identity, because
   separate scopes may reuse the same spelling.
-- User-function declarations bind as semantic templates; calls stencil one
+- User-function and nested-method declarations bind as semantic templates;
+  calls stencil one
   `FunctionInstance` per `(FunctionObject, concrete type + qualifier
 signature)` (memoized), independent of any physical Program. Each instance
-  owns its parameter objects and `Info`, with a scope rooted at the template's
-  base — the user package scope, or the owning library's scope. The same
+  owns its explicit source-parameter objects and `Info`. A method instance also
+  owns exactly one synthetic `this` receiver object, separate from its source
+  signature, params, defaults, and argument order. `this` is valid only as the
+  receiver base of field/method selection; mutable methods require a current
+  rooted caller place, while const methods accept values and history and cannot
+  write through their receiver. A method's declared result type is resolved at
+  its owner and checked against every instantiated body. Method defaults are
+  declaration-scope expressions: they may read globals but may not reference
+  `this` or any method parameter, and a rejected omitted default never owns a
+  lowerable call resolution. Every method also has one canonical checker-only
+  declaration-validation instance (declared parameter types, least-constrained
+  qualifiers, and a mode-derived receiver); without a real `CallExpr`, that
+  instance is never projected into Program IR. Instance scopes root at the
+  template's base —
+  the user package scope, or the owning library's scope. The same
   instance may be projected into multiple root/request Programs; each
   `ProgramLoweringContext` must create a distinct `IrFunc`, name graph, frame,
   slots, and depth annotations. Recursion is rejected (the static call graph

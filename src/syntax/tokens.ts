@@ -44,9 +44,10 @@ export const Tok = {
   Import: 'import',
   As: 'as',
   Export: 'export',
-  Method: 'method',
+  Struct: 'struct',
   Type: 'type',
   Enum: 'enum',
+  This: 'this',
   Break: 'break',
   Continue: 'continue',
 } as const;
@@ -68,6 +69,7 @@ export const RESERVED_KEYWORDS = [
   Tok.Switch,
   Tok.Break,
   Tok.Continue,
+  Tok.This,
 ] as const;
 
 export const CONTEXTUAL_KEYWORDS = [
@@ -77,7 +79,7 @@ export const CONTEXTUAL_KEYWORDS = [
   Tok.Import,
   Tok.As,
   Tok.Export,
-  Tok.Method,
+  Tok.Struct,
   Tok.Type,
   Tok.Enum,
 ] as const;

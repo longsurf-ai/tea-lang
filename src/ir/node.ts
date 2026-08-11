@@ -1,9 +1,11 @@
 // Purpose: Tea IR nodes — the noder's typed, resolved body vocabulary; every expression carries its type and qualifier, and every use references its declaration object directly.
 
 import type {Pos} from '../base/pos';
-import type {ConstValue, NameStorage, Qualifier, Type, UdtType} from './type';
+import type {ConstValue, NameStorage, Qualifier, Type, UserType} from './type';
 import type {
-  IrFunc,
+  ConstMethodIrFunc,
+  FreeIrFunc,
+  MutableMethodIrFunc,
   OutputDecl,
   ParamInput,
   RequestEdge,
@@ -66,8 +68,11 @@ export const IrKind = {
   Unary: 'Unary',
   Cond: 'Cond',
   CallFunc: 'CallFunc',
+  CallConstMethod: 'CallConstMethod',
+  CallMutableMethod: 'CallMutableMethod',
   CallNative: 'CallNative',
-  NewUdt: 'NewUdt',
+  MutateCollection: 'MutateCollection',
+  NewUserValue: 'NewUserValue',
   MakeTuple: 'MakeTuple',
   TupleGet: 'TupleGet',
   FieldGet: 'FieldGet',
@@ -79,7 +84,7 @@ export const IrKind = {
   BlockExpr: 'BlockExpr',
   ExprStmt: 'ExprStmt',
   WriteName: 'WriteName',
-  WriteField: 'WriteField',
+  UpdateValuePath: 'UpdateValuePath',
   Emit: 'Emit',
   Break: 'Break',
   Continue: 'Continue',
@@ -146,6 +151,13 @@ export type Place =
   | {readonly kind: typeof PlaceKind.Series; readonly series: SeriesInput}
   | {readonly kind: typeof PlaceKind.Request; readonly request: RequestEdge};
 
+// A current writable root plus canonical user-type field indices. It carries
+// no checker objects and grants no mutation rights to history or temporaries.
+export interface IrValuePath {
+  readonly root: Name;
+  readonly fieldIndices: readonly number[];
+}
+
 // @agent invariant: the IR is built only from checked, error-free syntax —
 // there are no Bad nodes here; recovery ends at the checker's phase barrier.
 // Every expression carries (type, qualifier); the compiler DESCRIBES history
@@ -167,8 +179,11 @@ export type IrExpr =
   | UnaryExpr
   | CondExpr
   | CallFuncExpr
+  | CallConstMethodExpr
+  | CallMutableMethodExpr
   | CallNativeExpr
-  | NewUdtExpr
+  | MutateCollectionExpr
+  | NewUserValueExpr
   | MakeTupleExpr
   | TupleGetExpr
   | FieldGetExpr
@@ -224,9 +239,35 @@ export interface CondExpr extends IrExprBase {
 
 export interface CallFuncExpr extends IrExprBase {
   readonly kind: typeof IrKind.CallFunc;
-  readonly func: IrFunc;
+  readonly func: FreeIrFunc;
   readonly slot: SlotId;
   readonly args: readonly IrExpr[];
+  readonly argumentEvaluationOrder: readonly number[];
+}
+
+// A read-only method call. `receiver` is evaluated exactly once before the
+// source-visible explicit arguments and becomes the callee's hidden receiver.
+export interface CallConstMethodExpr extends IrExprBase {
+  readonly kind: typeof IrKind.CallConstMethod;
+  readonly func: ConstMethodIrFunc;
+  readonly receiver: IrExpr;
+  readonly slot: SlotId;
+  readonly args: readonly IrExpr[];
+  readonly argumentEvaluationOrder: readonly number[];
+}
+
+// Copy-in/copy-out mutable method call. `receiver` is evaluated once before
+// `args`; `args` contains only source-visible explicit parameters. On normal
+// return lowering writes the returned replacement through `path` once and
+// yields the Tea result. A throw or suspension performs no copy-out.
+export interface CallMutableMethodExpr extends IrExprBase {
+  readonly kind: typeof IrKind.CallMutableMethod;
+  readonly func: MutableMethodIrFunc;
+  readonly path: IrValuePath;
+  readonly receiver: IrExpr;
+  readonly slot: SlotId;
+  readonly args: readonly IrExpr[];
+  readonly argumentEvaluationOrder: readonly number[];
 }
 
 // A native primitive call (data-source-, effect-, or intrinsic-classed per
@@ -236,12 +277,26 @@ export interface CallNativeExpr extends IrExprBase {
   readonly native: string;
   readonly slot: SlotId | null;
   readonly args: readonly IrExpr[];
+  readonly argumentEvaluationOrder: readonly number[];
 }
 
-export interface NewUdtExpr extends IrExprBase {
-  readonly kind: typeof IrKind.NewUdt;
-  readonly udt: UdtType;
+// A mutating collection primitive. The receiver is captured before the
+// remaining arguments. The operation computes `{replacement, result}` and
+// lowering performs one path writeback before yielding `result`.
+export interface MutateCollectionExpr extends IrExprBase {
+  readonly kind: typeof IrKind.MutateCollection;
+  readonly path: IrValuePath;
+  readonly receiver: IrExpr;
+  readonly operation: string;
   readonly args: readonly IrExpr[];
+  readonly argumentEvaluationOrder: readonly number[];
+}
+
+export interface NewUserValueExpr extends IrExprBase {
+  readonly kind: typeof IrKind.NewUserValue;
+  readonly userType: UserType;
+  readonly args: readonly IrExpr[];
+  readonly argumentEvaluationOrder: readonly number[];
 }
 
 export interface MakeTupleExpr extends IrExprBase {
@@ -258,7 +313,7 @@ export interface TupleGetExpr extends IrExprBase {
 export interface FieldGetExpr extends IrExprBase {
   readonly kind: typeof IrKind.FieldGet;
   readonly x: IrExpr;
-  readonly field: string;
+  readonly fieldIndex: number;
 }
 
 // Control structures stay expressions in the IR (mirroring the language);
@@ -317,7 +372,7 @@ export interface BlockExpr extends IrExprBase {
 export type IrStmt =
   | ExprStmt
   | WriteNameStmt
-  | WriteFieldStmt
+  | UpdateValuePathStmt
   | EmitStmt
   | BreakStmt
   | ContinueStmt;
@@ -335,10 +390,12 @@ export interface WriteNameStmt extends IrNode {
   readonly value: IrExpr;
 }
 
-export interface WriteFieldStmt extends IrNode {
-  readonly kind: typeof IrKind.WriteField;
-  readonly x: IrExpr;
-  readonly field: string;
+// Atomic rooted replacement. Lowering captures and validates the path before
+// evaluating `value`, then rebuilds it against the then-current root so
+// sibling writes from the RHS survive while this leaf replacement wins.
+export interface UpdateValuePathStmt extends IrNode {
+  readonly kind: typeof IrKind.UpdateValuePath;
+  readonly path: IrValuePath;
   readonly value: IrExpr;
 }
 
@@ -348,6 +405,9 @@ export interface EmitStmt extends IrNode {
   readonly kind: typeof IrKind.Emit;
   readonly output: OutputDecl;
   readonly args: readonly IrExpr[];
+  // Canonical channel indices in source evaluation order. Output metadata and
+  // the ABI remain canonical; only evaluation follows the source call.
+  readonly argumentEvaluationOrder: readonly number[];
 }
 
 export interface BreakStmt extends IrNode {

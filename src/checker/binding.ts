@@ -9,7 +9,7 @@ import {Scope} from './scope';
 
 export interface BindingTables {
   readonly defs: Map<syntax.Name, Object>;
-  readonly uses: Map<syntax.Name, Object>;
+  readonly uses: Map<syntax.Name | syntax.ThisExpr, Object>;
   readonly reassigned: Set<VariableObject>;
 }
 
@@ -25,12 +25,13 @@ export function bindFileNames(
 }
 
 export function bindFunctionNames(
-  decl: syntax.FuncDecl,
+  decl: syntax.FuncDecl | syntax.MethodDecl,
   args: readonly (syntax.Expr | null)[],
   base: Scope,
   tables: BindingTables,
+  invalidDefaults: ReadonlySet<number> = new Set(),
 ): void {
-  new NameBinder(base, tables).bindFunc(decl, args);
+  new NameBinder(base, tables).bindFunc(decl, args, invalidDefaults);
 }
 
 export function bindExpressionNames(
@@ -55,9 +56,17 @@ class NameBinder {
     this.scope = new Scope(base, false);
   }
 
-  bindFunc(decl: syntax.FuncDecl, args: readonly (syntax.Expr | null)[]): void {
+  bindFunc(
+    decl: syntax.FuncDecl | syntax.MethodDecl,
+    args: readonly (syntax.Expr | null)[],
+    invalidDefaults: ReadonlySet<number>,
+  ): void {
     decl.params.forEach((param, i) => {
-      if (args[i] === null && param.defaultValue !== null) {
+      if (
+        param.defaultValue !== null &&
+        !invalidDefaults.has(i) &&
+        (decl.kind === NodeKind.MethodDecl || args[i] === null)
+      ) {
         this.bindExpr(param.defaultValue);
       }
       this.declare(param.name, Storage.PerBar, false);
@@ -79,6 +88,7 @@ class NameBinder {
     switch (expr.kind) {
       case NodeKind.Name:
       case NodeKind.BasicLit:
+      case NodeKind.ThisExpr:
       case NodeKind.BadExpr:
         return;
       case NodeKind.UnaryExpr:
@@ -197,10 +207,11 @@ class NameBinder {
         }
         return;
       case NodeKind.AssignStmt: {
-        if (stmt.target.kind === NodeKind.Name) {
-          const entry = this.scope.lookup(stmt.target.value);
+        const root = assignmentRoot(stmt.target);
+        if (root !== null) {
+          const entry = this.scope.lookup(root.value);
           if (entry?.kind === ObjectKind.Variable) {
-            this.tables.uses.set(stmt.target, entry);
+            this.tables.uses.set(root, entry);
             this.tables.reassigned.add(entry);
           }
         }
@@ -211,12 +222,17 @@ class NameBinder {
       case NodeKind.FuncDecl:
         // Templates own fresh binding tables per concrete instantiation.
         return;
-      case NodeKind.TypeDecl:
-        for (const field of stmt.fields) {
-          if (field.defaultValue !== null) {
-            this.bindExpr(field.defaultValue);
+      case NodeKind.UserTypeDecl:
+        for (const member of stmt.members) {
+          if (
+            member.kind === NodeKind.FieldDecl &&
+            member.defaultValue !== null
+          ) {
+            this.bindExpr(member.defaultValue);
           }
         }
+        return;
+      case NodeKind.TypeAliasDecl:
         return;
       case NodeKind.EnumDecl:
         for (const member of stmt.members) {
@@ -260,6 +276,20 @@ class NameBinder {
     this.tables.defs.set(node, object);
     this.scope.declare(object);
   }
+}
+
+function assignmentRoot(expr: syntax.Expr): syntax.Name | null {
+  let current = expr;
+  while (current.kind === NodeKind.ParenExpr) {
+    current = current.x;
+  }
+  while (current.kind === NodeKind.SelectorExpr) {
+    current = current.x;
+    while (current.kind === NodeKind.ParenExpr) {
+      current = current.x;
+    }
+  }
+  return current.kind === NodeKind.Name ? current : null;
 }
 
 function declarationStorage(mode: syntax.DeclMode): NameStorage {

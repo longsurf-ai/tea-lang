@@ -14,16 +14,19 @@ import type {
   File,
   FuncDecl,
   IfExpr,
+  MethodDecl,
   Name,
   Param,
   SelectorExpr,
   Stmt,
   SwitchArm,
+  TypedParam,
   TuplePattern,
   TypeAnnotation,
   TypeName,
+  UserTypeMember,
 } from './nodes';
-import {AssignOp, COMPOUND_ASSIGN, Mode, NodeKind} from './nodes';
+import {AssignOp, COMPOUND_ASSIGN, Mode, NodeKind, ReceiverMode} from './nodes';
 import {Scanner} from './scanner';
 import {CONTEXTUAL_KEYWORDS, LitKind, Op, Tok, type TokenKind} from './tokens';
 
@@ -31,6 +34,12 @@ import {CONTEXTUAL_KEYWORDS, LitKind, Op, Tok, type TokenKind} from './tokens';
 // their governing production and as ordinary names anywhere else (corpus
 // scripts use `type` as a parameter name, for example).
 const SOFT_KEYWORDS: readonly TokenKind[] = CONTEXTUAL_KEYWORDS;
+
+interface TypedMemberHead {
+  readonly pos: Pos;
+  readonly annotation: TypeAnnotation;
+  readonly name: Name;
+}
 
 // @agent invariant: the parser holds the only reference to its Scanner and is
 // the only module that calls scanner.next(). Lookahead is exactly the
@@ -66,6 +75,10 @@ export class Parser {
 
   private pos(): Pos {
     return this.scanner.pos;
+  }
+
+  private atName(): boolean {
+    return this.tok() === Tok.Name || SOFT_KEYWORDS.includes(this.tok());
   }
 
   private next(): void {
@@ -203,6 +216,20 @@ export class Parser {
     });
   }
 
+  private namedTypeDeclarationFollows(keyword: TokenKind): boolean {
+    return this.lookAhead(() => {
+      this.next();
+      if (!this.atName()) {
+        return false;
+      }
+      this.next();
+      return (
+        this.tok() === Tok.Newline ||
+        (keyword === Tok.Type && this.tok() === Tok.Assign)
+      );
+    });
+  }
+
   private stmtEnd(): void {
     if (this.blockEnded) {
       return;
@@ -283,62 +310,58 @@ export class Parser {
           return this.importStmt(pos);
         }
         break;
+      case Tok.Struct:
       case Tok.Type:
       case Tok.Enum: {
-        const isDecl = this.lookAhead(() => {
+        const keyword = this.tok();
+        if (this.namedTypeDeclarationFollows(keyword)) {
           this.next();
-          if (this.tok() !== Tok.Name) {
-            return false;
+          if (keyword === Tok.Type) {
+            return this.typeOrAliasDecl(pos, false);
           }
-          this.next();
-          return this.tok() === Tok.Newline;
-        });
-        if (isDecl) {
-          const declKind = this.tok();
-          this.next();
-          return declKind === Tok.Type
-            ? this.typeDecl(pos, false)
-            : this.enumDecl(pos, false);
+          if (keyword === Tok.Struct) {
+            return this.userTypeDecl(pos, false, Tok.Struct);
+          }
+          return this.enumDecl(pos, false);
         }
         break;
       }
       case Tok.Export: {
-        const follows = this.lookAhead(() => {
+        const isDecl = this.lookAhead(() => {
           this.next();
-          return this.tok();
+          const keyword = this.tok();
+          if (
+            keyword === Tok.Struct ||
+            keyword === Tok.Type ||
+            keyword === Tok.Enum
+          ) {
+            if (this.namedTypeDeclarationFollows(keyword)) {
+              return true;
+            }
+          }
+          return this.atName() && this.arrowFollowsParens();
         });
-        if (
-          follows !== Tok.Type &&
-          follows !== Tok.Enum &&
-          follows !== Tok.Method &&
-          follows !== Tok.Name
-        ) {
+        if (!isDecl) {
           break;
         }
         this.next();
-        if (this.got(Tok.Type)) {
-          return this.typeDecl(pos, true);
-        }
-        if (this.got(Tok.Enum)) {
+        const keyword = this.tok();
+        if (
+          (keyword === Tok.Struct ||
+            keyword === Tok.Type ||
+            keyword === Tok.Enum) &&
+          this.namedTypeDeclarationFollows(keyword)
+        ) {
+          this.next();
+          if (keyword === Tok.Struct) {
+            return this.userTypeDecl(pos, true, Tok.Struct);
+          }
+          if (keyword === Tok.Type) {
+            return this.typeOrAliasDecl(pos, true);
+          }
           return this.enumDecl(pos, true);
         }
-        const method = this.got(Tok.Method);
-        return this.funcDeclRest(pos, true, method);
-      }
-      case Tok.Method: {
-        const isDecl = this.lookAhead(() => {
-          this.next();
-          if (this.tok() !== Tok.Name) {
-            return false;
-          }
-          this.next();
-          return this.tok() === Tok.Lparen;
-        });
-        if (isDecl) {
-          this.next();
-          return this.funcDeclRest(pos, false, true);
-        }
-        break;
+        return this.funcDeclRest(pos, true);
       }
       default:
         break;
@@ -347,7 +370,7 @@ export class Parser {
     // `float x = …`, `array<float> xs = …`, `m.Type v = …` — commit to a
     // typed declaration only when the full head shape (type, name, '=') is
     // present; otherwise this is an expression-led statement.
-    if (this.tok() === Tok.Name) {
+    if (this.atName()) {
       const typed = this.tryParse(() => this.typedDeclHead());
       if (typed !== null) {
         const init = this.expr();
@@ -363,7 +386,7 @@ export class Parser {
       // `f(x, y = 0) => …` — a function declaration looks like a call until
       // the arrow; peek across the balanced parens for it.
       if (this.arrowFollowsParens()) {
-        return this.funcDeclRest(pos, false, false);
+        return this.funcDeclRest(pos, false);
       }
     }
 
@@ -435,7 +458,7 @@ export class Parser {
   } | null {
     const pos = this.pos();
     const typeName = this.typeName();
-    if (typeName === null || this.tok() !== Tok.Name) {
+    if (typeName === null || !this.atName()) {
       return null;
     }
     const target = this.name();
@@ -476,12 +499,12 @@ export class Parser {
 
   // Speculation-friendly: returns null on any mismatch, reports nothing.
   private typeName(): TypeName | null {
-    if (this.tok() !== Tok.Name) {
+    if (!this.atName()) {
       return null;
     }
     let t: TypeName = this.name();
     if (this.got(Tok.Dot)) {
-      if (this.tok() !== Tok.Name) {
+      if (!this.atName()) {
         return null;
       }
       const sel: SelectorExpr = {
@@ -649,16 +672,19 @@ export class Parser {
       case Tok.Switch:
         return this.controlExpr();
       case Tok.Name:
+      case Tok.Struct:
       case Tok.Type:
       case Tok.Enum:
       case Tok.Import:
       case Tok.Export:
-      case Tok.Method:
       case Tok.To:
       case Tok.By:
       case Tok.In:
       case Tok.As:
         return this.name();
+      case Tok.This:
+        this.next();
+        return {kind: NodeKind.ThisExpr, pos};
       case Tok.Literal: {
         const lit: Expr = {
           kind: NodeKind.BasicLit,
@@ -854,12 +880,12 @@ export class Parser {
     });
   }
 
-  private funcDeclRest(pos: Pos, exported: boolean, method: boolean): FuncDecl {
+  private funcDeclRest(pos: Pos, exported: boolean): FuncDecl {
     const name = this.name();
     const params = this.params();
     this.want(Tok.Arrow);
     const body = this.tok() === Tok.Newline ? this.block() : this.expr();
-    return {kind: NodeKind.FuncDecl, pos, exported, method, name, params, body};
+    return {kind: NodeKind.FuncDecl, pos, exported, name, params, body};
   }
 
   private params(): Param[] {
@@ -879,12 +905,12 @@ export class Parser {
   private param(): Param {
     const pos = this.pos();
     const qualified = this.tryParse(() => {
-      if (this.tok() !== Tok.Name) {
+      if (!this.atName()) {
         return null;
       }
       const qualifier = this.name();
       const typeName = this.typeName();
-      if (typeName === null || this.tok() !== Tok.Name) {
+      if (typeName === null || !this.atName()) {
         return null;
       }
       return {qualifier, typeName, name: this.name()};
@@ -903,7 +929,7 @@ export class Parser {
     }
     const typed = this.tryParse(() => {
       const typeName = this.typeName();
-      if (typeName === null || this.tok() !== Tok.Name) {
+      if (typeName === null || !this.atName()) {
         return null;
       }
       return {typeName, name: this.name()};
@@ -959,82 +985,188 @@ export class Parser {
     return {kind: NodeKind.ImportStmt, pos, path, alias};
   }
 
-  // `type Name` with indented `[qualifier] type name [= default]` lines.
-  private typeDecl(pos: Pos, exported: boolean): Stmt {
+  private typeOrAliasDecl(pos: Pos, exported: boolean): Stmt {
     const name = this.name();
+    if (this.got(Tok.Assign)) {
+      const aliasedType = this.typeName();
+      if (aliasedType !== null) {
+        return {
+          kind: NodeKind.TypeAliasDecl,
+          pos,
+          exported,
+          name,
+          aliasedType,
+        };
+      }
+      this.error('expected aliased type');
+      return {
+        kind: NodeKind.TypeAliasDecl,
+        pos,
+        exported,
+        name,
+        aliasedType: {kind: NodeKind.Name, pos: this.pos(), value: ''},
+      };
+    }
+    return this.userTypeDeclRest(pos, exported, Tok.Type, name);
+  }
+
+  private userTypeDecl(
+    pos: Pos,
+    exported: boolean,
+    writtenKeyword: 'struct' | 'type',
+  ): Stmt {
+    return this.userTypeDeclRest(pos, exported, writtenKeyword, this.name());
+  }
+
+  // `struct Name` and block-form `type Name` contain source-ordered fields
+  // and methods. A method is distinguished by the `(` after its typed name.
+  private userTypeDeclRest(
+    pos: Pos,
+    exported: boolean,
+    writtenKeyword: 'struct' | 'type',
+    name: Name,
+  ): Stmt {
     this.want(Tok.Newline);
     this.want(Tok.Indent);
-    const fields: FieldDecl[] = [];
+    const members: UserTypeMember[] = [];
     while (this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
       if (this.got(Tok.Newline)) {
         continue;
       }
-      fields.push(this.fieldDecl());
+      this.blockEnded = false;
+      members.push(this.userTypeMember());
       this.stmtEnd();
     }
     this.want(Tok.Dedent);
     this.blockEnded = true;
-    return {kind: NodeKind.TypeDecl, pos, exported, name, fields};
+    return {
+      kind: NodeKind.UserTypeDecl,
+      pos,
+      exported,
+      writtenKeyword,
+      name,
+      members,
+    };
   }
 
-  private fieldDecl(): FieldDecl {
+  private userTypeMember(): UserTypeMember {
     const pos = this.pos();
-    const qualified = this.tryParse(() => {
-      if (this.tok() !== Tok.Name) {
-        return null;
-      }
-      const qualifier = this.name();
-      const typeName = this.typeName();
-      if (typeName === null || this.tok() !== Tok.Name) {
-        return null;
-      }
-      return {qualifier, typeName, name: this.name()};
-    });
-    if (qualified !== null) {
-      return this.finishFieldDecl(
-        pos,
-        {
-          kind: NodeKind.TypeAnnotation,
-          pos,
-          qualifier: qualified.qualifier,
-          name: qualified.typeName,
-        },
-        qualified.name,
-      );
-    }
-    const typed = this.tryParse(() => {
-      const typeName = this.typeName();
-      if (typeName === null || this.tok() !== Tok.Name) {
-        return null;
-      }
-      return {typeName, name: this.name()};
-    });
-    if (typed !== null) {
+    const head = this.typedMemberHead();
+    if (head === null) {
+      this.error('expected field type');
+      const name = this.name();
       return this.finishFieldDecl(
         pos,
         {
           kind: NodeKind.TypeAnnotation,
           pos,
           qualifier: null,
-          name: typed.typeName,
+          name: {kind: NodeKind.Name, pos, value: ''},
         },
-        typed.name,
+        name,
       );
     }
-    // Fields require a type; recover by synthesizing one so the tree stays
-    // total.
-    this.error('expected field type');
-    const fieldName = this.name();
-    return this.finishFieldDecl(
-      pos,
-      {
-        kind: NodeKind.TypeAnnotation,
+    if (this.tok() === Tok.Lparen) {
+      return this.methodDecl(head);
+    }
+    return this.finishFieldDecl(pos, head.annotation, head.name);
+  }
+
+  private methodDecl(head: TypedMemberHead): MethodDecl {
+    const params = this.typedParams();
+    const receiverMode = this.got(Tok.Const)
+      ? ReceiverMode.Const
+      : ReceiverMode.Mutable;
+    this.want(Tok.Arrow);
+    const body = this.tok() === Tok.Newline ? this.block() : this.expr();
+    return {
+      kind: NodeKind.MethodDecl,
+      pos: head.pos,
+      result: head.annotation,
+      name: head.name,
+      params,
+      receiverMode,
+      body,
+    };
+  }
+
+  private typedParams(): TypedParam[] {
+    this.want(Tok.Lparen);
+    const params: TypedParam[] = [];
+    if (this.tok() !== Tok.Rparen) {
+      do {
+        const param = this.param();
+        if (param.paramType !== null) {
+          params.push({...param, paramType: param.paramType});
+          continue;
+        }
+        this.error('method parameters require explicit types', param.pos);
+        params.push({
+          ...param,
+          paramType: {
+            kind: NodeKind.TypeAnnotation,
+            pos: param.pos,
+            qualifier: null,
+            name: {kind: NodeKind.Name, pos: param.pos, value: ''},
+          },
+        });
+      } while (this.got(Tok.Comma));
+    }
+    this.want(Tok.Rparen);
+    return params;
+  }
+
+  private typedMemberHead(): TypedMemberHead | null {
+    const pos = this.pos();
+    const qualified = this.tryParse(() => {
+      if (!this.atName() && this.tok() !== Tok.Varip) {
+        return null;
+      }
+      const reserved = this.tok() === Tok.Varip;
+      const qualifier: Name = reserved
+        ? {kind: NodeKind.Name, pos: this.pos(), value: Tok.Varip}
+        : this.name();
+      if (reserved) {
+        this.next();
+      }
+      const typeName = this.typeName();
+      if (typeName === null || !this.atName()) {
+        return null;
+      }
+      return {qualifier, typeName, name: this.name()};
+    });
+    if (qualified !== null) {
+      return {
         pos,
-        qualifier: null,
-        name: {kind: NodeKind.Name, pos, value: ''},
-      },
-      fieldName,
-    );
+        annotation: {
+          kind: NodeKind.TypeAnnotation,
+          pos,
+          qualifier: qualified.qualifier,
+          name: qualified.typeName,
+        },
+        name: qualified.name,
+      };
+    }
+    const typed = this.tryParse(() => {
+      const typeName = this.typeName();
+      if (typeName === null || !this.atName()) {
+        return null;
+      }
+      return {typeName, name: this.name()};
+    });
+    if (typed !== null) {
+      return {
+        pos,
+        annotation: {
+          kind: NodeKind.TypeAnnotation,
+          pos,
+          qualifier: null,
+          name: typed.typeName,
+        },
+        name: typed.name,
+      };
+    }
+    return null;
   }
 
   private finishFieldDecl(

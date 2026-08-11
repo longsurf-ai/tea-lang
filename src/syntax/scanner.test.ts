@@ -3,8 +3,10 @@
 import {describe, expect, test} from 'bun:test';
 import {scanText, kinds} from './testing';
 import {
+  CONTEXTUAL_KEYWORDS,
   KEYWORDS,
   PRECEDENCE,
+  RESERVED_KEYWORDS,
   type LitKind,
   type Op,
   type TokenKind,
@@ -113,6 +115,18 @@ describe('keywords', () => {
       expect(kinds(result)).toEqual([keyword, 'newline', 'eof']);
     });
   }
+
+  test('this is reserved while struct is contextual', () => {
+    expect(RESERVED_KEYWORDS).toContain('this');
+    expect(CONTEXTUAL_KEYWORDS).toContain('struct');
+    expect(CONTEXTUAL_KEYWORDS).not.toContain('method');
+    expect(kinds(scanText('method inout'))).toEqual([
+      'name',
+      'name',
+      'newline',
+      'eof',
+    ]);
+  });
 });
 
 test('streaming all samples on one line', () => {

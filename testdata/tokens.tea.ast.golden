@@ -94,7 +94,7 @@ File @2:1 version="1" eof=@26:1
   stmtList[11]: AssignStmt @18:1 op="+="
     target: Name @18:1 value="m"
     value: BasicLit @18:6 litKind="int" value="1" bad=false
-  stmtList[12]: FuncDecl @19:1 exported=false method=false
+  stmtList[12]: FuncDecl @19:1 exported=false
     name: Name @19:1 value="g"
     body: Block @20:5
       stmtList[0]: ExprStmt @20:5

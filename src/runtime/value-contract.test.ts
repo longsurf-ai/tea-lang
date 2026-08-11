@@ -4,7 +4,7 @@ import {describe, expect, test} from 'bun:test';
 import {Storage} from '../ir/node';
 import {
   BindError,
-  ValueClass,
+  type AggregateLayoutManifest,
   type DataProvider,
   type ManifestValue,
   type OutputSink,
@@ -14,6 +14,17 @@ import {
   type Value,
 } from './abi';
 import {bind} from './js-runtime';
+
+const NUMBER_LAYOUT = 0;
+const NULLABLE_LAYOUT = 1;
+const BOOLEAN_LAYOUT = 2;
+const TEST_LAYOUTS = {
+  layouts: [
+    {kind: 'number', numeric: 'float'},
+    {kind: 'nullable-scalar', scalar: 'string'},
+    {kind: 'boolean'},
+  ],
+} as const satisfies AggregateLayoutManifest;
 
 class Sink implements OutputSink {
   readonly values: Value[][] = [];
@@ -60,7 +71,8 @@ function param(
 }
 
 const EMPTY_VALUES_MODULE: TeaModule = {
-  abi: 2,
+  abi: 3,
+  aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [],
     params: [],
@@ -70,7 +82,7 @@ const EMPTY_VALUES_MODULE: TeaModule = {
         staticArgs: [],
         channels: [
           {name: 'numeric', type: 'float'},
-          {name: 'reference', type: 'string'},
+          {name: 'nullable', type: 'string'},
           {name: 'boolean', type: 'bool'},
         ],
       },
@@ -81,17 +93,17 @@ const EMPTY_VALUES_MODULE: TeaModule = {
           {
             storage: Storage.PerBar,
             depth: {kind: 'none'},
-            valueClass: ValueClass.Numeric,
+            layout: NUMBER_LAYOUT,
           },
           {
             storage: Storage.PerBar,
             depth: {kind: 'none'},
-            valueClass: ValueClass.Reference,
+            layout: NULLABLE_LAYOUT,
           },
           {
             storage: Storage.PerBar,
             depth: {kind: 'none'},
-            valueClass: ValueClass.Boolean,
+            layout: BOOLEAN_LAYOUT,
           },
         ],
         subs: [],
@@ -113,7 +125,8 @@ const EMPTY_VALUES_MODULE: TeaModule = {
 
 function paramModule(spec: ParamSpec): TeaModule {
   return {
-    abi: 2,
+    abi: 3,
+    aggregateLayouts: TEST_LAYOUTS,
     manifest: {
       series: [],
       params: [spec],
@@ -131,7 +144,7 @@ function paramModule(spec: ParamSpec): TeaModule {
 }
 
 describe('runtime value contract', () => {
-  test('empty history is numeric NaN, reference null, and bool false', async () => {
+  test('empty history is numeric NaN, nullable null, and bool false', async () => {
     const sink = new Sink();
     const bound = await bind(EMPTY_VALUES_MODULE, {
       params: {},

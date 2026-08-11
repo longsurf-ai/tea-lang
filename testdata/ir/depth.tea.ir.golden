@@ -37,7 +37,7 @@ body:
   WriteName d
     HistRead name:$hist@9:5: series float
       offset: Const 2: const int
-  Emit output[1]
+  Emit output[1] eval=[0]
     Binary Add: series float
       Binary Add: series float
         Binary Add: series float

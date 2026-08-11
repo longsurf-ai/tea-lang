@@ -108,7 +108,7 @@ File @2:1 version="1" eof=@34:1
         value: SelectorExpr @10:91
           x: Name @10:91 value="display"
           sel: Name @10:99 value="none"
-  stmtList[7]: FuncDecl @13:1 exported=false method=false
+  stmtList[7]: FuncDecl @13:1 exported=false
     name: Name @13:1 value="ma"
     params[0]: Param @13:4
       paramType: TypeAnnotation @13:4

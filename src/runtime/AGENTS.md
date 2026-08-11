@@ -2,7 +2,8 @@
 
 The Tea runtime: `JSRuntime` implements the Runtime ABI (`abi.ts` is the contract
 surface, `docs/runtime.md` the authority) and owns the main loop — binding,
-frame trees, rings, the provisional/commit protocol, emission flushing.
+exact value layouts, frame trees, rings, immutable collection storage, the
+provisional/commit protocol, and emission flushing.
 
 ## Invariants
 
@@ -11,14 +12,33 @@ frame trees, rings, the provisional/commit protocol, emission flushing.
   the injected DataProvider and OutputSink.
 - The manifest is the runtime's single input besides code: ids (sid/pid/oid/
   fid/slots) are never re-derived from the Program.
-- execute always runs the full row from committed state — no incremental
-  update paths exist. perBar scratch resets to na; var/varip seed from the
-  last committed value, re-running their init thunks until something has
-  committed; varip alone keeps scratch across same-row re-executions.
+- execute always runs the full row from its storage-class baseline — no
+  incremental update paths exist. perBar scratch resets to na; var/varip seed
+  from the last committed value, re-running their init thunks until something
+  has committed; varip alone keeps its pre-attempt candidate across completed
+  same-row executions.
   Commit pushes scratch into history; rollback is discarding scratch.
-- One Ring class serves all slots. The manifest's explicit `valueClass` owns
-  the empty value: numeric is NaN, reference is null, and bool is false;
-  var/varip rings keep at least one committed cell regardless of depth.
+- One Ring class serves all slots. Every local and request result carries an
+  exact `LayoutId`; the shared registry validates values, derives typed empty,
+  and walks nested collection storage roots. var/varip rings keep at least one
+  committed cell regardless of depth.
+- Fixed-width Ring cells and materialized request-result columns reserve from
+  the shared `maxFixedValueLogicalBytes` budget using the layout's exact
+  shallow size. Scratch-only bind Rings release before final allocation;
+  completed children release frame Rings when builder ownership transfers,
+  while the result-column lease remains with the merged view until disposal.
+- Ordinary user-defined values are nominal immutable records with value
+  semantics. Collection values are immutable headers over source-hidden
+  `StorageRef`s. Published Heap payloads never mutate, Heap owns no semantic
+  object identity or `var`/`varip` policy, and generated code cannot control
+  attempts or publication.
+- Storage descriptors provide an exact builder-byte estimate. Heap enforces
+  transient cell/byte limits before descriptor sealing may allocate or copy,
+  and the sealed payload's logical byte count must equal the estimate.
+- Exactly one nonterminal Heap attempt may exist. Row publication prepares all
+  fallible Ring, Heap-reachability, and buffered-emission work before a
+  non-throwing internal publish; final sink delivery is post-commit. Abort and
+  suspension invalidate scratch/emissions and all tentative storage.
 - A history offset names a cell only when it is a non-negative safe integer.
   Every other offset (including na, infinity, fractions, and negatives) returns
   the place's typed empty value and retains zero cells when reported at bind;
@@ -37,16 +57,26 @@ frame trees, rings, the provisional/commit protocol, emission flushing.
   The runtime then discards that frame and allocates the final tree from the
   reported depths. All bind-reporting calls are illegal after execution
   begins; series depth demands are a provider contract, not an allocation.
+  Both sections share one abort-only Heap attempt, so bind-time aggregate
+  temporaries can never become published storage.
 - bind is async, and awaits otherwise happen only at suspension points:
   static contexts resolve before row 0; a dynamic pair's first encounter
   throws `ContextSuspension` out of `executeRow`, the host awaits
   `resolvePending()`, and the SAME row re-executes — the aborted attempt
-  vanishes entirely (all scratch, varip included, re-seeds from committed
-  state; byte-identical to having had the data upfront). The per-row hot
-  path itself never awaits. Request children recurse through the same
-  JSRuntime class with a null sink, the parent's resolved params
-  (compilation-global), and the shared unique-context budget
-  (maxRequestContexts, default 40).
+  vanishes entirely: tentative writes/storage disappear and retry restores the
+  exact pre-attempt varip candidate, including one produced by an earlier
+  successful provisional tick. An absent first-row candidate reruns its
+  initializer. The per-row hot path itself never awaits. Request children
+  recurse through the same JSRuntime class with a null sink, the parent's
+  resolved params (compilation-global), and the shared unique-context budget
+  (maxRequestContexts, default 40), exact layout registry, and Heap arena.
+- Request result builders register as Heap-root owners before retaining
+  aggregate values and transfer ownership to result Rings/views before
+  unregistering. A `StorageRef` never crosses into an independently owned
+  arena.
+- Every cached `(edge, symbol, timeframe)` pair consumes the shared request
+  context budget, including ignored-invalid pairs cached as na; an uncached
+  hard resolution failure releases its reservation.
 - A dynamic edge's history lives in its result ring — "whatever the
   request returned per parent row", whichever pair served it; merged
   views are cached per (edge, pair) and never rebuilt.

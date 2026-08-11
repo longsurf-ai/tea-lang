@@ -10,7 +10,7 @@ a driver fetching bytes.
 Tea script   request.security("FRED:CPIAUCSL", "M", close)     Pine surface,
                  |  compile: the whole family lowers            unchanged
                  v  to one primitive
-IR           RequestEdge{symbol, timeframe, merge, child Program}
+IR           RequestEdge{symbol, timeframe, context order, merge, child Program}
                  |  bind (async)
                  v
 Runtime      child instance per (edge, symbol, timeframe)
@@ -34,6 +34,10 @@ Host config  registry construction + API keys (CLI config / OpenChart)
   source routing lives entirely in the host's registry; existing Pine
   scripts run unchanged. This is the superset-while-compliant mechanism:
   quantmod's `src="FRED"` becomes the `FRED:` prefix.
+- Named `symbol` and `timeframe` arguments evaluate in source order and are
+  then assembled into the canonical runtime pair. The captured expression is
+  not part of that parent schedule; it executes once per row in the child
+  Program's context.
 - Merge semantics are runtime-owned and never delegated to drivers: a FRED
   monthly series sampled onto a daily axis obeys exactly the gaps/lookahead
   rules an equity HTF request obeys.
@@ -160,6 +164,21 @@ the resolved ProviderContext, with two differences:
   ring in the child's program frame; merge reads that ring's **committed**
   values.
 
+The root binding constructs one `SharedExecutionState`: the exact value-layout
+registry, immutable Heap arena, unique-context budget, and fixed-value logical
+byte budget. Every static and dynamic child receives that same state. A request
+result therefore keeps its root module's `LayoutId`, and a collection-valued
+result may safely carry a `StorageRef` into the parent; independently owned
+layout namespaces or arenas are forbidden.
+
+The child result builder registers as a Heap-root owner and reserves its exact
+`rows * shallowBytes(layout)` fixed-value lease before it retains its first
+value, including when the result Ring itself has zero history. Ownership and
+the lease then transfer to the merged view before the builder unregisters; the
+completed child releases unrelated frame/Ring reservations. Suspension closes
+and aborts the parent attempt before any child attempt starts, so one shared
+arena never has interleaved nonterminal attempts.
+
 Child instances are keyed `(edge, symbol, timeframe)` in a per-binding
 instance table. Identical pairs on one edge share an instance; cross-edge
 dedup is a later optimization, not a semantic requirement.
@@ -201,8 +220,9 @@ barSpan(p)` — i.e. the most recent child bar that has _closed_ by the
 - **gaps_on**: rows where no _new_ child bar closed merge as na;
   **gaps_off** carries the last merged value forward.
 
-Collect mode (`security_lower_tf`) returns the array of child results whose
-bars fall inside the parent bar — gated on the collections slice (staged).
+Collect mode (`security_lower_tf`) will return the array of child results whose
+bars fall inside the parent bar. Collection storage now supports that value,
+but the collect merge policy itself remains a separate staged request feature.
 
 ## Static and dynamic requests
 
@@ -217,7 +237,10 @@ Pine v6 semantics (`dynamic_requests`, default **true**):
   static-only gate (a noder error).
 - Unique contexts are capped: default 40 per binding (Pine parity),
   configurable via `BindInputs.maxRequestContexts`; the budget spans
-  request children. Exceeding it is a `RequestError`.
+  request children. Every newly cached `(edge, symbol, timeframe)` pair counts,
+  including a pair cached as na by `ignore_invalid_symbol`; an uncached hard
+  resolution failure releases its reservation. Exceeding the cap is a
+  `RequestError`.
 
 Execution:
 
@@ -237,11 +260,12 @@ Execution:
 - **Suspension**: an unresolved pair throws `ContextSuspension` out of
   `executeRow`; the host awaits `resolvePending()` (where
   `resolveContext`, the child's full-history run, and the merge happen)
-  and re-executes the same row. **The aborted execution vanishes
-  entirely** — the retry resets ALL scratch, varip included, from
-  committed state, so results are byte-identical to having had the data
-  upfront. `runAll` performs this loop itself; live hosts follow the same
-  protocol per tick. Determinism holds; no async ever touches row code.
+  and re-executes the same row. **The aborted attempt's tentative work
+  vanishes entirely**. Retry restores the exact pre-attempt varip candidate
+  (including one from an earlier successful provisional tick); an absent
+  first-row candidate reruns its initializer. `runAll` performs this loop
+  itself; live hosts follow the same protocol per tick. Determinism holds; no
+  async ever touches row code.
 - Errors: for static edges a failed context is a `BindError`; for dynamic
   pairs it is a `RequestError` mid-run — or a per-row na (plus a warn
   event) when the edge's `ignoreInvalidSymbol` is set. na context args
@@ -251,7 +275,7 @@ Execution:
 
 ## Staged beyond this slice
 
-Collect merge and `security_lower_tf` (needs collections);
+Collect merge and `security_lower_tf`;
 `dividends/splits/earnings/economic/financial` catalog sugar over the
 namespace conventions; `MergePolicy.currency` conversion;
 `calcBarsCount` limits; live ticks driving child contexts (child

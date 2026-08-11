@@ -80,7 +80,11 @@ function collectDemands(
   const funcs = funcsOf(program);
   const names = namesOf(program);
   const functionNames = new Set(
-    funcs.flatMap(func => [...func.params, ...func.locals]),
+    funcs.flatMap(func => [
+      ...(func.callMode === 'free' ? [] : [func.receiver]),
+      ...func.params,
+      ...func.locals,
+    ]),
   );
   const rootNames = names.filter(name => !functionNames.has(name));
   const immutableByFunc = new Map(
@@ -143,18 +147,32 @@ function collectDemands(
   };
 
   const walkCall = (
-    expr: Extract<IrExpr, {kind: typeof IrKind.CallFunc}>,
+    expr: Extract<
+      IrExpr,
+      {
+        kind:
+          | typeof IrKind.CallFunc
+          | typeof IrKind.CallConstMethod
+          | typeof IrKind.CallMutableMethod;
+      }
+    >,
     ctx: WalkContext,
   ): void => {
-    for (const arg of expr.args) {
+    const args =
+      expr.kind === IrKind.CallFunc ? expr.args : [expr.receiver, ...expr.args];
+    for (const arg of args) {
       walkExpr(arg, ctx);
     }
     if (ctx.active.has(expr.func)) {
       return fatal(`recursive function '${expr.func.name}' reached depth pass`);
     }
     const env = new Map<Name, Normalized>();
-    expr.func.params.forEach((param, index) => {
-      const arg = expr.args[index];
+    const params =
+      expr.func.callMode === 'free'
+        ? expr.func.params
+        : [expr.func.receiver, ...expr.func.params];
+    params.forEach((param, index) => {
+      const arg = args[index];
       if (arg === undefined) {
         return fatal(
           `call to '${expr.func.name}' is missing argument ${index}`,
@@ -183,7 +201,11 @@ function collectDemands(
     if (expr.kind === IrKind.HistRead) {
       note(expr, ctx);
     }
-    if (expr.kind === IrKind.CallFunc) {
+    if (
+      expr.kind === IrKind.CallFunc ||
+      expr.kind === IrKind.CallConstMethod ||
+      expr.kind === IrKind.CallMutableMethod
+    ) {
       walkCall(expr, ctx);
       return;
     }
@@ -296,8 +318,30 @@ function normalize(
         rootSafe: args.every(arg => arg.rootSafe),
       };
     }
+    case IrKind.CallConstMethod: {
+      const receiver = normalize(expr.receiver, ctx, functionNames);
+      const args = expr.args.map(arg => normalize(arg, ctx, functionNames));
+      const operands = [receiver, ...args];
+      if (ctx.scope === 'function') {
+        return normalizeFunctionCall(expr, operands, ctx, functionNames);
+      }
+      return {
+        expr: {
+          ...expr,
+          receiver: receiver.expr,
+          args: args.map(arg => arg.expr),
+        },
+        rootSafe: operands.every(arg => arg.rootSafe),
+      };
+    }
+    case IrKind.CallMutableMethod:
+      // A mutable method writes a root and cannot participate in a bind-time
+      // history-depth expression. Its body is still entered by walkExpr so
+      // history demands inside the method are collected.
+      return {expr, rootSafe: false};
     case IrKind.OutputRef:
-    case IrKind.NewUdt:
+    case IrKind.MutateCollection:
+    case IrKind.NewUserValue:
     case IrKind.MakeTuple:
     case IrKind.TupleGet:
     case IrKind.FieldGet:
@@ -314,7 +358,10 @@ function normalize(
 }
 
 function normalizeFunctionCall(
-  call: Extract<IrExpr, {kind: typeof IrKind.CallFunc}>,
+  call: Extract<
+    IrExpr,
+    {kind: typeof IrKind.CallFunc | typeof IrKind.CallConstMethod}
+  >,
   args: readonly Normalized[],
   ctx: WalkContext,
   functionNames: ReadonlySet<Name>,
@@ -329,7 +376,11 @@ function normalizeFunctionCall(
     return fatal(`recursive function '${call.func.name}' reached depth pass`);
   }
   const env = new Map<Name, Normalized>();
-  call.func.params.forEach((param, index) => {
+  const params =
+    call.func.callMode === 'free'
+      ? call.func.params
+      : [call.func.receiver, ...call.func.params];
+  params.forEach((param, index) => {
     const arg = args[index];
     if (arg === undefined) {
       return fatal(`call to '${call.func.name}' is missing argument ${index}`);
@@ -422,6 +473,7 @@ function maxDemand(demand: Demand, minimum: number): IrExpr {
     native: 'math.max',
     slot: null,
     args,
+    argumentEvaluationOrder: args.map((_arg, index) => index),
   };
 }
 
@@ -434,6 +486,7 @@ function validDepthDemand(expr: IrExpr): IrExpr {
     native: '$historyDepth',
     slot: null,
     args: [expr],
+    argumentEvaluationOrder: [0],
   };
 }
 

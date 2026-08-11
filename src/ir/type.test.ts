@@ -15,12 +15,15 @@ import {
   assignable,
   formatType,
   formatTypeAndQualifier,
+  isAggregateType,
+  isMapKeyType,
   joinQualifiers,
+  isStorableType,
   qualifierLE,
   typesEqual,
   unifyTypes,
   type Type,
-  type UdtType,
+  type UserType,
 } from './type';
 
 const QUALIFIERS = [
@@ -68,10 +71,10 @@ describe('qualifier ordering', () => {
 });
 
 const arrayOf = (elem: Type): Type => ({kind: TypeKind.Array, elem});
-const udt = (name: string): UdtType => ({
-  kind: TypeKind.Udt,
+const userType = (name: string): UserType => ({
+  kind: TypeKind.UserType,
   name,
-  fields: [{name: 'x', type: IntType, varip: false}],
+  fields: [{name: 'x', type: IntType}],
 });
 
 describe('assignability', () => {
@@ -93,12 +96,34 @@ describe('assignability', () => {
     expect(assignable(arrayOf(IntType), arrayOf(IntType))).toBeTrue();
   });
 
-  test('udt identity is by declaration, not structure', () => {
-    const a = udt('Point');
-    const b = udt('Point');
+  test('user-type identity is by declaration, not structure', () => {
+    const a = userType('Point');
+    const b = userType('Point');
     expect(typesEqual(a, a)).toBeTrue();
     expect(typesEqual(a, b)).toBeFalse();
     expect(assignable(a, b)).toBeFalse();
+  });
+});
+
+describe('collection domains', () => {
+  test('storable values, map keys, and aggregates have distinct predicates', () => {
+    const point = userType('Point');
+    const array = arrayOf(point);
+    const tuple: Type = {kind: TypeKind.Tuple, elems: [IntType, FloatType]};
+
+    expect(isStorableType(point)).toBeTrue();
+    expect(isStorableType(array)).toBeTrue();
+    expect(isStorableType(tuple)).toBeFalse();
+    expect(isStorableType(NaType)).toBeFalse();
+
+    expect(isMapKeyType(IntType)).toBeTrue();
+    expect(isMapKeyType(StringType)).toBeTrue();
+    expect(isMapKeyType(point)).toBeFalse();
+    expect(isMapKeyType(array)).toBeFalse();
+
+    expect(isAggregateType(point)).toBeTrue();
+    expect(isAggregateType(array)).toBeTrue();
+    expect(isAggregateType(IntType)).toBeFalse();
   });
 });
 
@@ -129,7 +154,7 @@ describe('formatting', () => {
     expect(formatType({kind: TypeKind.Tuple, elems: [IntType, BoolType]})).toBe(
       '[int, bool]',
     );
-    expect(formatType(udt('Band'))).toBe('Band');
+    expect(formatType(userType('Band'))).toBe('Band');
   });
 
   test('two-axis display form', () => {

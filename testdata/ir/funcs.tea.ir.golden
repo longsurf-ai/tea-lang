@@ -47,7 +47,7 @@ body:
     CallFunc ta.ema slot=1: series float
       HistRead series:close: series float
       Const 21: const int
-  Emit output[1]
+  Emit output[1] eval=[0]
     CallFunc double slot=2: series float
       Binary Sub: series float
         HistRead name:fast: series float

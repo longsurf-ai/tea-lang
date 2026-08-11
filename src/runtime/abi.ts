@@ -2,24 +2,108 @@
 
 import type {HistoryDepth, NameStorage} from '../ir/node';
 import type {ParamDisplay} from '../ir/program';
+import type {Heap, HeapLimits, StorageRef} from './heap';
+import type {
+  AggregateLayoutManifest,
+  LayoutId,
+  UserTypeLayoutId,
+  ValueLayoutRegistry,
+} from './value-layout';
 
-// In-flight values: numerics carry na as NaN, references use null, bool is
-// never na (a checker guarantee). Tuples travel as arrays (ephemeral:
-// written to a synthetic slot, destructured immediately). Heap objects
-// (UDT, collections) arrive with their slice.
-export type Value = number | string | boolean | null | readonly Value[];
+export interface ResourceHandle {
+  readonly kind: 'resource';
+  readonly handle: string;
+  readonly id: number;
+}
+
+export interface UserTypeValue {
+  readonly kind: 'user-type';
+  readonly layout: UserTypeLayoutId;
+  readonly fields: readonly Value[];
+}
+
+export interface ArrayValue {
+  readonly kind: 'array';
+  readonly layout: LayoutId;
+  readonly storage: StorageRef;
+  readonly length: number;
+  readonly capacity: number;
+}
+
+export interface MatrixValue {
+  readonly kind: 'matrix';
+  readonly layout: LayoutId;
+  readonly storage: StorageRef;
+  readonly rows: number;
+  readonly columns: number;
+}
+
+export interface MapValue {
+  readonly kind: 'map';
+  readonly layout: LayoutId;
+  readonly storage: StorageRef;
+  readonly size: number;
+}
+
+export type CollectionValue = ArrayValue | MatrixValue | MapValue;
+
+// User values and collection headers are logically immutable values. Host
+// object identity is not observable; backing identity exists only in Heap.
+export type Value =
+  | number
+  | string
+  | boolean
+  | null
+  | ResourceHandle
+  | UserTypeValue
+  | CollectionValue
+  | readonly Value[];
+
+// Only generated expression/function plumbing may carry undefined for Tea
+// void. Value-owning surfaces (Rings, collections, fields, history) never do.
+export type ExecutionResult = Value | undefined;
+
+export function isTupleValue(value: Value): value is readonly Value[] {
+  return Array.isArray(value);
+}
+
+function isTaggedValue(
+  value: Value,
+): value is ResourceHandle | UserTypeValue | CollectionValue {
+  return typeof value === 'object' && value !== null && !isTupleValue(value);
+}
+
+export function isUserTypeValue(value: Value): value is UserTypeValue {
+  return isTaggedValue(value) && value.kind === 'user-type';
+}
+
+export function isArrayValue(value: Value): value is ArrayValue {
+  return isTaggedValue(value) && value.kind === 'array';
+}
+
+export function isMatrixValue(value: Value): value is MatrixValue {
+  return isTaggedValue(value) && value.kind === 'matrix';
+}
+
+export function isMapValue(value: Value): value is MapValue {
+  return isTaggedValue(value) && value.kind === 'map';
+}
+
+export function isResourceHandle(value: Value): value is ResourceHandle {
+  return isTaggedValue(value) && value.kind === 'resource';
+}
 
 // JSON-safe projection used by the generated manifest. Runtime numeric na is
 // NaN, but JSON has no NaN representation, so manifest na is explicitly null.
 // Non-finite numbers other than na are forbidden before this boundary.
 export type ManifestValue = number | string | boolean | null;
 
-// Empty history is type-directed: numeric na is NaN, reference na is null,
+// Empty history is type-directed: numeric na is NaN, nullable na is null,
 // and bool (non-nullable in Pine v6) starts false. A single ref bit cannot
 // distinguish numeric and bool slots, so manifests carry this explicit class.
 export const ValueClass = {
   Numeric: 'numeric',
-  Reference: 'reference',
+  Nullable: 'nullable',
   Boolean: 'boolean',
 } as const;
 
@@ -38,7 +122,7 @@ export type DepthSpec =
 export interface LocalSpec {
   readonly storage: NameStorage;
   readonly depth: DepthSpec;
-  readonly valueClass: ValueClass;
+  readonly layout: LayoutId;
 }
 
 export interface FrameLayout {
@@ -127,7 +211,7 @@ export interface RequestSpec {
   readonly depth: DepthSpec;
   // The designated result: this slot of the CHILD's program frame.
   readonly resultSlot: number;
-  readonly valueClass: ValueClass;
+  readonly layout: LayoutId;
   // Dynamic edges carry series context args: bind declares no pair, row
   // code evaluates them at the offset-0 read (rt.requestFor), and the
   // runtime instantiates one child per distinct pair it encounters.
@@ -166,16 +250,48 @@ export interface ModuleCode {
   readonly inits: Readonly<Record<string, (rt: Runtime, fr: Frame) => Value>>;
   // One function per IrFunc stencil, keyed by fid.
   readonly funcs: Readonly<
-    Record<number, (rt: Runtime, fr: Frame, ...args: Value[]) => Value>
+    Record<
+      number,
+      (
+        rt: Runtime,
+        fr: Frame,
+        ...args: Value[]
+      ) => ExecutionResult | MutableMethodCallResult
+    >
   >;
   // The per-row body; fr is the program frame.
   main(rt: Runtime, fr: Frame): void;
 }
 
+// Generated-code-only copy-in/copy-out envelope. It is not a Tea tuple and
+// never enters a Ring, collection, parameter, result channel, or history.
+export interface MutableMethodCallResult {
+  readonly receiver: Value;
+  readonly result: ExecutionResult;
+}
+
 // The complete runtime artifact (`tea build` output). The runtime never
 // re-derives ids from the Program.
 export interface TeaModule extends ModuleCode {
-  readonly abi: 2;
+  readonly abi: 3;
+  readonly aggregateLayouts: AggregateLayoutManifest;
+}
+
+export interface ContextBudget {
+  used: number;
+  readonly max: number;
+}
+
+export interface FixedValueStorageBudget {
+  usedLogicalBytes: number;
+  readonly maxLogicalBytes: number;
+}
+
+export interface SharedExecutionState {
+  readonly aggregateLayouts: ValueLayoutRegistry;
+  readonly heap: Heap;
+  readonly contextBudget: ContextBudget;
+  readonly fixedValueStorage: FixedValueStorageBudget;
 }
 
 // ---- the rt surface ---------------------------------------------------------
@@ -195,7 +311,8 @@ export interface Runtime {
   // The offset-0 read of a DYNAMIC edge: evaluates against the pair's
   // merged view, records the row's value in the edge's result ring, and
   // returns it. An unresolved pair throws ContextSuspension — the host
-  // awaits resolvePending() and re-executes the row from committed state.
+  // awaits resolvePending() and re-executes the row from its exact
+  // pre-attempt storage-class baseline.
   requestFor(rid: number, symbol: Value, timeframe: Value): Value;
   frame(fr: Frame, slot: number): Frame;
   // The program frame — how function bodies reach program-frame names
@@ -213,7 +330,75 @@ export interface Runtime {
   // Declares a static edge's context: bind resolves the pair, runs the
   // child over its history, and prepares the merged view before row 0.
   bindRequest(rid: number, symbol: Value, timeframe: Value): void;
+  newUser(layout: LayoutId, fields: readonly Value[]): UserTypeValue;
+  userField(value: Value, ownerLayout: LayoutId, index: number): Value;
+  // Empty fieldIndices replaces the rooted value itself. Non-empty paths
+  // rebuild immutable user values from the leaf back to the root.
+  rebuildUserPath(
+    root: Value,
+    rootLayout: LayoutId,
+    fieldIndices: readonly number[],
+    leaf: Value,
+  ): Value;
+  callCollection(
+    operation: CollectionOperation,
+    resultLayout: LayoutId,
+    args: readonly Value[],
+  ): Value;
+  mutateCollection(
+    operation: CollectionMutationOperation,
+    collectionLayout: LayoutId,
+    receiver: Value,
+    args: readonly Value[],
+  ): CollectionMutation;
+  collectionEntries(value: Value): CollectionEntries;
 }
+
+export type CollectionOperation =
+  | 'array.new'
+  | 'array.from'
+  | 'array.size'
+  | 'array.is_empty'
+  | 'array.get'
+  | 'array.first'
+  | 'array.last'
+  | 'array.copy'
+  | 'matrix.new'
+  | 'matrix.rows'
+  | 'matrix.columns'
+  | 'matrix.elements_count'
+  | 'matrix.get'
+  | 'matrix.row'
+  | 'matrix.column'
+  | 'matrix.copy'
+  | 'map.new'
+  | 'map.size'
+  | 'map.is_empty'
+  | 'map.contains'
+  | 'map.get'
+  | 'map.keys'
+  | 'map.values'
+  | 'map.copy';
+
+export type CollectionMutationOperation =
+  | 'array.set'
+  | 'array.push'
+  | 'array.pop'
+  | 'array.clear'
+  | 'matrix.set'
+  | 'matrix.fill'
+  | 'map.put'
+  | 'map.remove'
+  | 'map.clear';
+
+export interface CollectionMutation {
+  readonly replacement: CollectionValue;
+  readonly result: ExecutionResult;
+}
+
+export type CollectionEntries =
+  | readonly Value[]
+  | readonly (readonly [Value, Value])[];
 
 // ---- the external seams -----------------------------------------------------
 
@@ -316,6 +501,15 @@ export interface BindInputs {
   // distinct dynamic pairs); omitted = 40, Pine parity. Exceeding it is a
   // RequestError.
   readonly maxRequestContexts?: number;
+  readonly maxCollectionElements?: number;
+  readonly maxHeapStorageCells?: number;
+  readonly maxHeapLogicalBytes?: number;
+  readonly maxHeapTransientStorageCells?: number;
+  readonly maxHeapTransientLogicalBytes?: number;
+  // Shared ceiling for fixed-width runtime values retained by Ring scratch,
+  // Ring history, and materialized request-result columns. Collection backing
+  // has the separate Heap budgets above.
+  readonly maxFixedValueLogicalBytes?: number;
 }
 
 export interface BoundInput {
@@ -329,12 +523,16 @@ export interface BoundProgram {
   readonly inputs: readonly BoundInput[];
   // Throws ContextSuspension when a dynamic request meets an unresolved
   // pair: await resolvePending(), then re-execute the SAME row — the
-  // aborted execution vanishes entirely (all scratch, varip included,
-  // re-seeds from committed state), so results are byte-identical to
-  // having had the data upfront.
+  // aborted execution's writes vanish entirely. Retry restores the exact
+  // pre-attempt varip candidate (which may be from a prior completed tick),
+  // while ordinary scratch re-seeds from committed state. A first-row varip
+  // with no prior candidate reruns its initializer.
   executeRow(row: number, provisional: boolean): void;
   resolvePending(): Promise<void>;
   commitRow(row: number): void;
+  // Root-owned deterministic teardown. A pending execution attempt aborts;
+  // committed host outputs are not reversed. Idempotent.
+  dispose(): void;
   // Historical convenience: execute + commit every row in order, resolving
   // suspensions as they arise.
   runAll(): Promise<void>;
@@ -371,4 +569,26 @@ export class RequestError extends Error {
   }
 }
 
-export type {HistoryDepth};
+export type ExecutionErrorCode =
+  | 'NA_COLLECTION'
+  | 'INDEX_OUT_OF_BOUNDS'
+  | 'EMPTY_COLLECTION'
+  | 'INVALID_SHAPE'
+  | 'INVALID_MAP_KEY'
+  | 'COLLECTION_LIMIT_EXCEEDED'
+  | 'HEAP_LIMIT_EXCEEDED'
+  | 'FIXED_VALUE_STORAGE_LIMIT_EXCEEDED'
+  | 'NA_USER_VALUE_WRITE'
+  | 'VALUE_LAYOUT_MISMATCH';
+
+export class ExecutionError extends Error {
+  constructor(
+    readonly code: ExecutionErrorCode,
+    msg: string,
+  ) {
+    super(`${code}: ${msg}`);
+    this.name = 'ExecutionError';
+  }
+}
+
+export type {AggregateLayoutManifest, HeapLimits, HistoryDepth, LayoutId};

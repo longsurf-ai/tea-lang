@@ -26,9 +26,10 @@ source ─ parse ─ check ─ buildProgram ─▶ Program ─▶ JS module ─�
 `Package → Scope → Object → Type` is the checker source of truth. A package
 owns its files, package scope, and imports; persistent scopes map source names
 to canonical semantic objects; those objects represent variables, function
-templates, UDTs and fields, enums and members, package names, and builtins. The
-shared type domain describes their value types. This graph answers _what a
-declaration is_ without embedding Program objects or runtime layout.
+templates, user types and fields, enums and members, package names, and
+builtins. The shared type domain describes their value types. This graph
+answers _what a declaration is_ without embedding Program objects or runtime
+layout.
 
 `Info` answers _what each syntax occurrence means_. It records expression
 types, definitions, uses, selections, scopes, calls, and reassignment for one
@@ -38,13 +39,17 @@ capture's facts are semantic context, not physical Program identity; the noder
 may project the same semantic objects into multiple Programs.
 
 Every call occurrence has one discriminated `CallResolution`: native,
-function, constructor, or request. A `UdtObject` owns its nominal type and
-ordered `FieldObject`s; each field owns its checked default expression together
-with the `Info`, `TypeAndValue`, and semantic dependency set that interpret it.
+function, constructor, or request. A `UserTypeObject` owns its nominal
+`UserType` and ordered `FieldObject`s; each field owns its checked default
+expression together with the `Info`, `TypeAndValue`, and semantic dependency
+set that interpret it.
 Constructor resolution aligns every supplied or defaulted argument to a field,
 joins their qualifiers, and applies capture policy only to defaults actually
 used by that call. Request resolution owns its capture facts and result type.
-There are no parallel call maps or root-global UDT-default/capture tables.
+There are no parallel call maps or root-global user-type-default/capture
+tables. Direct updates have one checked writeback target: a current root
+`VariableObject` plus canonical `FieldObject`s. Mutating call receivers carry
+that target inside their existing `CallResolution`.
 
 The boundary is strict: checker results contain no `IrName`, `SeriesInput`,
 `ParamInput`, `RequestEdge`, `HistoryDepth`, slot, or frame. The noder creates
@@ -67,10 +72,10 @@ historical types2/types split). A Tea type is a point on two axes:
 
 - **Value types**: primitives (int, float, bool, string, color), drawing
   handles (line, label, box, table, polyline, linefill), collections
-  (`array<T>`, `matrix<T>`, `map<K, V>`), UDTs and enums (identity by
-  declaration), tuples, concrete function signatures, plus `void` (effect
-  calls) and `na` (the polymorphic empty value; assignable to every nullable
-  type).
+  (`array<T>`, `matrix<T>`, `map<K, V>`), user-defined value types and enums
+  (identity by declaration), tuples, concrete function signatures, plus
+  `void` (effect calls) and `na` (the polymorphic empty value; assignable to
+  every nullable type).
 - **Qualifiers**: `const < input < simple < series` — an ordering answering
   _when the value becomes known_: compile time, bind time, before the first
   bar, per bar. Combining expressions takes the later-known qualifier of the
@@ -158,8 +163,10 @@ the resulting places to its depth pass for annotation.
   `bindArgs` (input-qualified exprs — hline price, plot linewidth,
   plotshape offset — plus `fill`'s plot/hline references, evaluated once in
   module.bind and delivered before the first bar), and per-bar `channels` written
-  via `Emit`. `x = plot(...)` lowers to the OutputDecl plus a const
-  plot-typed binding holding the OutputId.
+  via `Emit`. `bindArgumentEvaluationOrder` keeps bind-time named arguments in
+  source order while `bindArgs` remains in canonical parameter order. A plot
+  assignment lowers to the OutputDecl plus a const plot-typed binding holding
+  the OutputId.
 - **requests**: the recursive edge. The checker records capture semantics in
   the request call's resolution; the noder projects that resolution to a
   `RequestEdge` and compiles its captured expression into a **child Program**
@@ -186,12 +193,16 @@ the resulting places to its depth pass for annotation.
   but each Program context projects it to a distinct `IrFunc`, Name graph, and
   depth state. Parent and request-child Programs never share those mutable IR
   objects.
-  State is a **frame tree**: an IrFunc's frame layout is its local Names
-  plus one sub-frame per stateful call site (selected by that site's
-  `SlotId`); frames nest along the static call graph (acyclic — recursion
-  is rejected), so the runtime enumerates and pre-allocates every frame at
-  bind time. Two `ma(close, 10)` call sites share one compiled body but own
-  two frames — and two `ema` sub-frames within. `ta.*` rides this exact
+  Free functions, const methods, and mutable methods form an exhaustive
+  Program union. A method owns one hidden receiver `Name` separate from its
+  source-visible `params`; named arguments, defaults, and their canonical
+  indices therefore never expose the receiver. State is a **frame tree**: an
+  IrFunc's frame layout is its hidden receiver (for methods), explicit params,
+  and local Names plus one sub-frame per stateful call site (selected by that
+  site's `SlotId`); frames nest along the static call graph (acyclic —
+  recursion is rejected), so the runtime enumerates and pre-allocates every
+  frame at bind time. Two `ma(close, 10)` call sites share one compiled body
+  but own two frames — and two `ema` sub-frames within. `ta.*` rides this exact
   path as prelude code; nothing is specialized for technical-analysis
   builtins.
 - **init** vs **body**: const/input/simple work hoisted out of the loop vs
@@ -217,12 +228,45 @@ later pass, not a representation constraint. There are no Bad nodes — the IR
 exists only for error-free compilations, enforced by `compile()`'s phase
 barriers.
 
+Aggregate operations keep value semantics explicit without exposing physical
+storage. `NewUserValue` constructs the canonical field vector. `FieldGet`
+names a canonical field index. `UpdateValuePath` owns one projected root Name
+plus field indices and performs one atomic writeback. A mutating collection
+call and a `CallMutableMethod` carry that same path; codegen evaluates their
+receiver once and copies the replacement back only after success. A
+`CallConstMethod` carries a receiver value but no path or writeback authority.
+There are no Program nodes for heap allocation, COW, prepare, publish, or
+rollback.
+
+Canonical argument slots and evaluation order are distinct Program facts.
+Constructors and calls retain an `argumentEvaluationOrder`: lowering captures
+supplied expressions in source order, evaluates omitted user defaults afterward
+in canonical parameter/field order, and only then assembles the canonical ABI
+argument vector. A method receiver is absent from this schedule and from
+`args`; its dedicated call field is always captured once before the scheduled
+explicit arguments. Named arguments therefore never reorder observable effects
+or failures. Output declarations retain the
+analogous `bindArgumentEvaluationOrder` for bind-time arguments, while an
+`Emit` retains it for per-bar channels. A `RequestEdge` retains
+`contextArgumentEvaluationOrder` for its parent-owned symbol and timeframe;
+the captured expression is deliberately absent because it executes in the
+child Program rather than the parent context.
+
+User functions are discriminated by call mode. `CallFunc` targets only a
+`FreeIrFunc`; `CallConstMethod` targets only a `ConstMethodIrFunc`; and
+`CallMutableMethod` targets only a `MutableMethodIrFunc`. Both method function
+types own a hidden receiver `Name` distinct from every explicit param. The
+generated mutable-method `{receiver, result}` return envelope is an internal
+codegen protocol, not a Tea tuple or Program value; const methods return their
+result directly and never write back the receiver.
+
 ## Primitives vs prelude
 
 A builtin is native **only if it is inexpressible in Tea**: data sources
 (`close`, `bar_index`), host effects (`plot`, `line.new`), context capture
-(`request.*`), heap primitives (`array.*`), math intrinsics. Everything
-else — all of `ta.*` — is library code: a builtin Tea library
+(`request.*`), collection primitives (`array.*`, `matrix.*`, `map.*`), math
+intrinsics. Everything else — all of `ta.*` — is library code: a builtin Tea
+library
 (`src/lib/ta.tea`, a real `library("ta")` with `export` functions, loaded by
 the loader/importer seam and implicitly imported into every script), compiled
 by the ordinary pipeline, with per-call-site state falling out of ordinary
@@ -279,7 +323,7 @@ construction.
 - A value-position loop yields the last completed iteration's block value,
   `na` if no iteration completed; `break` skips the current iteration's
   value.
-- UDT construction consumes the constructor call's single resolution. Its
+- User-value construction consumes the constructor call's single resolution. Its
   field-ordered arguments include both supplied expressions and field-owned
   defaults; the noder temporarily reads each checked expression's `Info` while
   lowering it into the caller's current Program and frame. Defaults are

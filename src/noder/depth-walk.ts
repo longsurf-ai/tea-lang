@@ -47,12 +47,23 @@ function countWritesStmt(stmt: IrStmt, writes: Map<Name, number>): void {
   if (stmt.kind === IrKind.WriteName) {
     writes.set(stmt.name, (writes.get(stmt.name) ?? 0) + 1);
   }
+  if (stmt.kind === IrKind.UpdateValuePath) {
+    const root = stmt.path.root;
+    writes.set(root, (writes.get(root) ?? 0) + 1);
+  }
   for (const child of stmtExprs(stmt)) {
     countWritesExpr(child, writes);
   }
 }
 
 function countWritesExpr(expr: IrExpr, writes: Map<Name, number>): void {
+  if (
+    expr.kind === IrKind.CallMutableMethod ||
+    expr.kind === IrKind.MutateCollection
+  ) {
+    const root = expr.path.root;
+    writes.set(root, (writes.get(root) ?? 0) + 1);
+  }
   if (expr.kind === IrKind.BlockExpr) {
     for (const stmt of expr.stmts) {
       countWritesStmt(stmt, writes);
@@ -67,9 +78,10 @@ function countWritesExpr(expr: IrExpr, writes: Map<Name, number>): void {
   }
 }
 
-// Lexical expression children only: a CallFunc exposes its arguments, never
-// its shared function body. The context-aware policy enters that body once per
-// call site with a substituted environment.
+// Lexical expression children only: user calls expose their receiver (for a
+// method) and explicit arguments, never their shared function body. The
+// context-aware policy enters that body once per call site with a substituted
+// environment.
 export function exprChildren(
   expr: Exclude<IrExpr, {kind: typeof IrKind.BlockExpr}>,
 ): readonly IrExpr[] {
@@ -100,7 +112,12 @@ export function exprChildren(
       return [expr.cond, expr.then, expr.else];
     case IrKind.CallFunc:
     case IrKind.CallNative:
-    case IrKind.NewUdt:
+      return expr.args;
+    case IrKind.CallConstMethod:
+    case IrKind.CallMutableMethod:
+    case IrKind.MutateCollection:
+      return [expr.receiver, ...expr.args];
+    case IrKind.NewUserValue:
       return expr.args;
     case IrKind.MakeTuple:
       return expr.elems;
@@ -138,8 +155,8 @@ export function stmtExprs(stmt: IrStmt): readonly IrExpr[] {
       return [stmt.x];
     case IrKind.WriteName:
       return [stmt.value];
-    case IrKind.WriteField:
-      return [stmt.x, stmt.value];
+    case IrKind.UpdateValuePath:
+      return [stmt.value];
     case IrKind.Emit:
       return stmt.args;
     case IrKind.Break:

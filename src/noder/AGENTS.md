@@ -24,11 +24,16 @@ lexical traversal and single-write input discovery. Source loading lives in
   the concrete nullable type known from its declaration, branch join, field,
   or call parameter; an uncontextualized na reaching Program construction is
   a phase-barrier violation and `fatal()`s.
-- UDT constructors consume their one `ConstructorCall` resolution. Its
+- User-value constructors consume their one `ConstructorCall` resolution. Its
   field-ordered arguments include supplied expressions and field-owned
   defaults; each `CheckedExpression` supplies the exact semantic `Info` to use
   while the value lowers into the caller's current Program and frame. A
   default expression is never prebuilt IR shared between Programs.
+- Rooted mutation facts project to one Program-owned `IrValuePath` of Name plus
+  canonical field indices. `UpdateValuePath` and mutating native calls carry
+  that path. Mutable user methods project to the same path
+  protocol, while const methods carry no writeback authority; no checker object
+  or runtime storage handle enters the Program.
 - Reference bindings are compile-time only: a never-reassigned declaration
   whose initializer is an input call binds the name to its `ParamInput`
   (reads become param reads, no per-bar write), and one whose initializer
@@ -51,6 +56,8 @@ lexical traversal and single-write input discovery. Source loading lives in
 - Output args partition by when they are known: folded constants →
   `staticArgs`; output refs and at-most-input exprs → `bindArgs` (module.bind);
   simple/series exprs → `channels` + one per-bar `Emit` after the statement.
+  Both runtime-evaluated buckets retain source evaluation order separately from
+  their canonical parameter order.
   `indicator()`/`strategy()` are OutputDecls whose effect is the native's
   name — script metadata is an emission to the host.
 - History on a computed expression desugars to a synthetic `$hist@line:col`
@@ -84,9 +91,12 @@ lexical traversal and single-write input discovery. Source loading lives in
   aliases are rejected by the checker until dependency-closure extraction can
   materialize them there.
 - One `IrFunc` per checker `FunctionInstance` per Program projection, its body
-  noded against the instance's `Info` under its own frame-local slot counter:
-  every `CallFunc` site mints the next slot of the frame it sits in — the
-  sub-frame selector. Omitted arguments node the instance's checked default
-  expression at the call site; defaults must not reference sibling params.
+  noded against the instance's `Info` under its own frame-local slot counter.
+  Free functions, const methods, and mutable methods remain distinct; a
+  method's hidden receiver is projected separately from explicit params and
+  from named/default argument ordering. Every user-call site mints the next
+  slot of the frame it sits in — the sub-frame selector. Omitted arguments node
+  the instance's checked default expression at the call site; defaults must not
+  reference sibling params.
 - Program.init stays empty for now: hoisting const/input/simple work out of
   the bar loop is a later optimization, not a correctness requirement.

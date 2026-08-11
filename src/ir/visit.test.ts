@@ -2,18 +2,24 @@
 
 import {describe, expect, test} from 'bun:test';
 import {newFileBase, type Pos} from '../base/pos';
+import {dumpProgram} from './dumper';
 import {
   DepthKind,
   IrKind,
   IrOp,
   PlaceKind,
   Storage,
+  type CallConstMethodExpr,
+  type CallFuncExpr,
+  type CallMutableMethodExpr,
   type IrExpr,
   type Name,
 } from './node';
 import {
   MergeMode,
-  type IrFunc,
+  type ConstMethodIrFunc,
+  type FreeIrFunc,
+  type MutableMethodIrFunc,
   type Program,
   type RequestEdge,
   type SeriesInput,
@@ -28,6 +34,17 @@ import {
 } from './visit';
 
 const pos: Pos = {base: newFileBase('t.tea'), line: 1, col: 1};
+
+type Same<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
+
+const CALL_MODE_TYPES: readonly [
+  Same<CallFuncExpr['func'], FreeIrFunc>,
+  Same<CallConstMethodExpr['func'], ConstMethodIrFunc>,
+  Same<CallMutableMethodExpr['func'], MutableMethodIrFunc>,
+] = [true, true, true];
 
 const num = (value: number): IrExpr => ({
   kind: IrKind.Const,
@@ -62,7 +79,8 @@ const p: Name = {
   init: null,
 };
 
-const inc: IrFunc = {
+const inc: FreeIrFunc = {
+  callMode: 'free',
   name: 'inc',
   params: [p],
   locals: [],
@@ -120,6 +138,7 @@ const edge: RequestEdge = {
     qualifier: Qualifier.Simple,
     value: 'D',
   },
+  contextArgumentEvaluationOrder: [0, 1],
   merge: {
     mode: MergeMode.Sample,
     gaps: false,
@@ -163,6 +182,7 @@ const program: Program = {
             offset: num(1),
           },
         ],
+        argumentEvaluationOrder: [0],
       },
     },
     {
@@ -180,7 +200,99 @@ const program: Program = {
   ],
 };
 
+const receiver: Name = {
+  name: 'receiver',
+  storage: Storage.PerBar,
+  type: FloatType,
+  qualifier: Qualifier.Series,
+  depth: {kind: DepthKind.None},
+  init: null,
+};
+
+const mutate: MutableMethodIrFunc = {
+  callMode: 'mutable-method',
+  name: 'mutate',
+  params: [],
+  receiver,
+  locals: [],
+  resultType: FloatType,
+  resultQualifier: Qualifier.Series,
+  body: {
+    kind: IrKind.HistRead,
+    pos,
+    type: FloatType,
+    qualifier: Qualifier.Series,
+    place: {kind: PlaceKind.Name, name: receiver},
+    offset: null,
+  },
+};
+
+const mutationProgram: Program = {
+  version: 1,
+  params: [],
+  requests: [],
+  outputs: [],
+  init: [],
+  body: [
+    {
+      kind: IrKind.UpdateValuePath,
+      pos,
+      path: {root: x, fieldIndices: [0]},
+      value: num(2),
+    },
+    {
+      kind: IrKind.ExprStmt,
+      pos,
+      x: {
+        kind: IrKind.MutateCollection,
+        pos,
+        type: FloatType,
+        qualifier: Qualifier.Series,
+        path: {root: x, fieldIndices: [1]},
+        receiver: {
+          kind: IrKind.HistRead,
+          pos,
+          type: FloatType,
+          qualifier: Qualifier.Series,
+          place: {kind: PlaceKind.Name, name: x},
+          offset: null,
+        },
+        operation: 'array.pop',
+        args: [],
+        argumentEvaluationOrder: [],
+      },
+    },
+    {
+      kind: IrKind.ExprStmt,
+      pos,
+      x: {
+        kind: IrKind.CallMutableMethod,
+        pos,
+        type: FloatType,
+        qualifier: Qualifier.Series,
+        func: mutate,
+        path: {root: x, fieldIndices: []},
+        receiver: {
+          kind: IrKind.HistRead,
+          pos,
+          type: FloatType,
+          qualifier: Qualifier.Series,
+          place: {kind: PlaceKind.Name, name: x},
+          offset: null,
+        },
+        slot: 2,
+        argumentEvaluationOrder: [],
+        args: [],
+      },
+    },
+  ],
+};
+
 describe('derived enumerations', () => {
+  test('call kinds admit only their matching function mode', () => {
+    expect(CALL_MODE_TYPES).toEqual([true, true, true]);
+  });
+
   test('names reach through writes, places, and function params', () => {
     expect(namesOf(program)).toEqual([x, p]);
   });
@@ -198,5 +310,18 @@ describe('derived enumerations', () => {
   test('the child program does not leak into the parent enumeration', () => {
     expect(namesOf(program)).not.toContain(childResult);
     expect(requestsOf(child)).toEqual([]);
+  });
+
+  test('rooted update, collection mutation, and mutable method calls expose ownership', () => {
+    expect(namesOf(mutationProgram)).toEqual([x, receiver]);
+    expect(funcsOf(mutationProgram)).toEqual([mutate]);
+    expect(slotCountOf(mutationProgram)).toBe(3);
+    expect(dumpProgram(mutationProgram)).toContain('UpdateValuePath x[0]');
+    expect(dumpProgram(mutationProgram)).toContain(
+      'MutateCollection array.pop path=x[1]',
+    );
+    expect(dumpProgram(mutationProgram)).toContain(
+      'CallMutableMethod mutate path=x slot=2',
+    );
   });
 });

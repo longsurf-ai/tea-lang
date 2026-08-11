@@ -119,7 +119,7 @@ describe('user-defined types', () => {
       ].join('\n'),
     );
     expect(funcsOf(program)[0].body).toMatchObject({
-      kind: IrKind.NewUdt,
+      kind: IrKind.NewUserValue,
       args: [{kind: IrKind.Const, value: 1}],
     });
   });
@@ -135,8 +135,134 @@ describe('user-defined types', () => {
     expect(program.requests[0].child.body[0]).toMatchObject({
       kind: IrKind.WriteName,
       value: {
-        kind: IrKind.NewUdt,
+        kind: IrKind.NewUserValue,
         args: [{kind: IrKind.Const, value: 1}],
+      },
+    });
+  });
+
+  test('field reads and rooted writes project canonical field indices', () => {
+    const program = mustBuild(
+      [
+        'type Point',
+        '    int x',
+        'type Holder',
+        '    Point point',
+        'holder = Holder.new(Point.new(1))',
+        'holder.point.x := 3',
+        'read = holder.point.x',
+      ].join('\n'),
+    );
+    expect(program.body[1]).toMatchObject({
+      kind: IrKind.UpdateValuePath,
+      path: {
+        root: {name: 'holder'},
+        fieldIndices: [0, 0],
+      },
+      value: {kind: IrKind.Const, value: 3},
+    });
+    expect(program.body[2]).toMatchObject({
+      kind: IrKind.WriteName,
+      value: {
+        kind: IrKind.FieldGet,
+        fieldIndex: 0,
+        x: {kind: IrKind.FieldGet, fieldIndex: 0},
+      },
+    });
+  });
+
+  test('collection mutators capture a rooted path and keep their result', () => {
+    const program = mustBuild(
+      ['xs = array.from(1, 2)', 'xs.push(3)', 'last = xs.pop()'].join('\n'),
+    );
+    expect(program.body[1]).toMatchObject({
+      kind: IrKind.ExprStmt,
+      x: {
+        kind: IrKind.MutateCollection,
+        operation: 'array.push',
+        path: {root: {name: 'xs'}, fieldIndices: []},
+        receiver: {kind: IrKind.HistRead},
+        args: [{kind: IrKind.Const, value: 3}],
+      },
+    });
+    expect(program.body[2]).toMatchObject({
+      kind: IrKind.WriteName,
+      name: {name: 'last'},
+      value: {
+        kind: IrKind.MutateCollection,
+        operation: 'array.pop',
+        path: {root: {name: 'xs'}, fieldIndices: []},
+        args: [],
+      },
+    });
+  });
+
+  test('mutable methods project a hidden receiver and copy-in/copy-out call', () => {
+    const program = mustBuild(
+      [
+        'type Foo',
+        '    array<int> values',
+        '    void append(int value) => this.values.push(value)',
+        'foo = Foo.new(array.from(1))',
+        'foo.append(2)',
+      ].join('\n'),
+    );
+    const append = funcsOf(program).find(func => func.name === 'Foo.append');
+    expect(append).toMatchObject({
+      callMode: 'mutable-method',
+      receiver: {name: 'this'},
+      params: [{name: 'value'}],
+      body: {
+        kind: IrKind.MutateCollection,
+        operation: 'array.push',
+        path: {root: {name: 'this'}, fieldIndices: [0]},
+      },
+    });
+    if (append?.callMode === 'mutable-method') {
+      expect(append.params).not.toContain(append.receiver);
+    }
+    expect(program.body[1]).toMatchObject({
+      kind: IrKind.ExprStmt,
+      x: {
+        kind: IrKind.CallMutableMethod,
+        func: append,
+        path: {root: {name: 'foo'}, fieldIndices: []},
+        receiver: {kind: IrKind.HistRead},
+        args: [{kind: IrKind.Const, value: 2}],
+      },
+    });
+  });
+
+  test('const methods keep the hidden receiver outside explicit argument order', () => {
+    const program = mustBuild(
+      [
+        'struct Foo',
+        '    int value',
+        '    int inspect(int first, int second) const => this.value + first + second',
+        'foo = Foo.new(10)',
+        'result = foo.inspect(second = 2, first = 1)',
+      ].join('\n'),
+    );
+    const inspect = funcsOf(program).find(func => func.name === 'Foo.inspect');
+    expect(inspect).toMatchObject({
+      callMode: 'const-method',
+      receiver: {name: 'this'},
+      params: [{name: 'first'}, {name: 'second'}],
+    });
+    if (inspect?.callMode === 'const-method') {
+      expect(inspect.params).not.toContain(inspect.receiver);
+    }
+    expect(program.body[1]).toMatchObject({
+      kind: IrKind.WriteName,
+      value: {
+        kind: IrKind.CallConstMethod,
+        func: inspect,
+        receiver: {kind: IrKind.HistRead},
+        args: [
+          {kind: IrKind.Const, value: 1},
+          {kind: IrKind.Const, value: 2},
+        ],
+        argumentEvaluationOrder: [1, 0],
       },
     });
   });
@@ -260,6 +386,33 @@ describe('params and outputs', () => {
     // Each plotted series emits per bar.
     const emits = program.body.filter(s => s.kind === IrKind.Emit);
     expect(emits.length).toBe(2);
+  });
+
+  test('output channels retain named-argument source evaluation order', () => {
+    const program = mustBuild(
+      [
+        'type Counter',
+        '    array<int> values',
+        '    int next() =>',
+        '        value = this.values.size()',
+        '        this.values.push(value)',
+        '        value',
+        '    color nextColor() =>',
+        '        this.values.push(9)',
+        '        color.red',
+        'counter = Counter.new(array.new<int>())',
+        'plot(color = counter.nextColor(), series = counter.next())',
+      ].join('\n'),
+    );
+    const emit = program.body.find(stmt => stmt.kind === IrKind.Emit);
+    expect(emit?.kind).toBe(IrKind.Emit);
+    if (emit?.kind === IrKind.Emit) {
+      expect(emit.output.channels.map(channel => channel.name)).toEqual([
+        'series',
+        'color',
+      ]);
+      expect(emit.argumentEvaluationOrder).toEqual([1, 0]);
+    }
   });
 
   test('simple ambient output values remain per-bar channels', () => {
@@ -464,6 +617,27 @@ describe('depth resolution', () => {
     }
   });
 
+  test('mutable method calls substitute the hidden receiver and explicit parameters', () => {
+    const program = mustBuild(
+      [
+        'type Box',
+        '    array<float> values',
+        '    void sample(int length) => this.values.push(close[length])',
+        'length = input.int(1000)',
+        'box = Box.new(array.from(0.0))',
+        'box.sample(length)',
+      ].join('\n'),
+    );
+    const close = seriesInputsOf(program).find(series => series.id === 'close');
+    expect(close?.depth.kind).toBe(DepthKind.Bound);
+    if (close?.depth.kind === DepthKind.Bound) {
+      expect(close.depth.expr).toMatchObject({
+        kind: IrKind.HistRead,
+        place: {kind: PlaceKind.Param, param: {name: 'length'}},
+      });
+    }
+  });
+
   test('multiple root bound and const demands retain their exact maximum', () => {
     const program = mustBuild(
       [
@@ -618,6 +792,21 @@ describe('requests', () => {
     // close directly here.
     expect(seriesInputsOf(edge.child).map(s => s.id)).toEqual(['close']);
     expect(seriesInputsOf(program)).toEqual([]);
+  });
+
+  test('a request keeps source order for parent context arguments only', () => {
+    const program = mustBuild(
+      [
+        'd = request.security(',
+        '    timeframe = "D",',
+        '    expression = close,',
+        '    symbol = "AAPL")',
+      ].join('\n'),
+    );
+    const edge = program.requests[0];
+    // Canonical context slots are symbol=0 and timeframe=1. The captured
+    // expression belongs to the child Program and never enters this schedule.
+    expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
   });
 
   test('parent history on the request result annotates the edge depth', () => {

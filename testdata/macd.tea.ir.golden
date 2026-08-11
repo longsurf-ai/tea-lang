@@ -132,14 +132,14 @@ body:
             offset: Const 1: const int
         then: Const "#FFCDD2": const color
         else: Const "#FF5252": const color
-  Emit output[2]
+  Emit output[2] eval=[0,1]
     HistRead name:hist: series float
     HistRead name:hColor: series color
-  Emit output[3]
+  Emit output[3] eval=[0]
     HistRead name:macd: series float
-  Emit output[4]
+  Emit output[4] eval=[0]
     HistRead name:signal: series float
-  Emit output[5]
+  Emit output[5] eval=[0]
     Binary And: series bool
       Binary Ge: series bool
         HistRead name:hist: series float
@@ -148,7 +148,7 @@ body:
       Binary Lt: series bool
         HistRead name:hist: series float
         Const 0: const int
-  Emit output[6]
+  Emit output[6] eval=[0]
     Binary And: series bool
       Binary Le: series bool
         HistRead name:hist: series float

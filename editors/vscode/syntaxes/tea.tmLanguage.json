@@ -23,6 +23,12 @@
       "include": "#function-declarations"
     },
     {
+      "include": "#receiver-keyword"
+    },
+    {
+      "include": "#method-receiver-modifier"
+    },
+    {
       "include": "#for-header"
     },
     {
@@ -182,7 +188,27 @@
     "type-declarations": {
       "patterns": [
         {
-          "match": "^(\\s*)(?:(export)(\\s+))?(type)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*(?://|/\\*|$))",
+          "match": "^(\\s*)(?:(export)(\\s+))?(type)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(\\s*)(=)(\\s*)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(?=\\s*(?://|/\\*|$))",
+          "captures": {
+            "2": {
+              "name": "storage.modifier.export.tea"
+            },
+            "4": {
+              "name": "storage.type.alias.declaration.tea"
+            },
+            "6": {
+              "name": "entity.name.type.alias.tea"
+            },
+            "8": {
+              "name": "keyword.operator.assignment.tea"
+            },
+            "10": {
+              "name": "entity.name.type.tea"
+            }
+          }
+        },
+        {
+          "match": "^(\\s*)(?:(export)(\\s+))?((?:struct|type))(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*(?://|/\\*|$))",
           "captures": {
             "2": {
               "name": "storage.modifier.export.tea"
@@ -214,26 +240,15 @@
     "function-declarations": {
       "patterns": [
         {
-          "match": "^(\\s*)(export)(\\s+)(method)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "match": "^(\\s+)(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\([^\\r\\n]*\\)\\s*(?:const\\s*)?=>)",
           "captures": {
             "2": {
-              "name": "storage.modifier.export.tea"
+              "name": "storage.modifier.qualifier.tea"
             },
             "4": {
-              "name": "storage.modifier.method.tea"
+              "name": "meta.type.return.tea"
             },
             "6": {
-              "name": "entity.name.function.tea"
-            }
-          }
-        },
-        {
-          "match": "^(\\s*)(method)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
-          "captures": {
-            "2": {
-              "name": "storage.modifier.method.tea"
-            },
-            "4": {
               "name": "entity.name.function.tea"
             }
           }
@@ -256,6 +271,22 @@
               "name": "entity.name.function.tea"
             }
           }
+        }
+      ]
+    },
+    "receiver-keyword": {
+      "patterns": [
+        {
+          "match": "\\b(?:this)\\b",
+          "name": "variable.language.receiver.tea"
+        }
+      ]
+    },
+    "method-receiver-modifier": {
+      "patterns": [
+        {
+          "match": "\\b(?:const)\\b(?=\\s*=>)",
+          "name": "storage.modifier.receiver.tea"
         }
       ]
     },

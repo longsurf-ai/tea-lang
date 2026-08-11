@@ -9,6 +9,7 @@ import {
   type IrBinaryOp,
   type IrExpr,
   type IrStmt,
+  type IrValuePath,
   type Name,
 } from '../ir/node';
 import type {
@@ -18,7 +19,13 @@ import type {
   RequestEdge,
   SeriesInput,
 } from '../ir/program';
-import {isNaValue, TypeKind, type Type} from '../ir/type';
+import {
+  assignable,
+  isNaValue,
+  TypeKind,
+  typesEqual,
+  type Type,
+} from '../ir/type';
 import {ValueClass, type ValueClass as ValueClassType} from '../runtime/abi';
 
 // Everything the walk needs to address program objects as dense ids. The
@@ -40,6 +47,9 @@ export interface LowerCtx {
   // for the root, 'M1'… for request children) — funcs-table dispatch must
   // name the module that owns the func.
   readonly moduleRef: string;
+  // Root ModuleEmitter-owned projection. Request children share the same
+  // layout namespace; no semantic Type is ever mutated with a backend id.
+  layoutOf(type: Type): number;
   // The frame whose handle is in scope as `fr` while lowering.
   currentFid: number;
   noteCallSite(fid: number, slot: number, callee: IrFunc): void;
@@ -95,10 +105,10 @@ export function valueClassOf(t: Type): ValueClassType {
     case TypeKind.Array:
     case TypeKind.Matrix:
     case TypeKind.Map:
-    case TypeKind.Udt:
+    case TypeKind.UserType:
     case TypeKind.Enum:
     case TypeKind.Tuple:
-      return ValueClass.Reference;
+      return ValueClass.Nullable;
     case TypeKind.Na:
       return fatal('uncontextualized na type reached lowering');
     case TypeKind.Invalid:
@@ -117,7 +127,7 @@ function emptyLiteral(t: Type): string {
   switch (valueClassOf(t)) {
     case ValueClass.Numeric:
       return 'NaN';
-    case ValueClass.Reference:
+    case ValueClass.Nullable:
       return 'null';
     case ValueClass.Boolean:
       return 'false';
@@ -129,7 +139,7 @@ function naLiteral(t: Type): string {
   if (valueClass === ValueClass.Boolean) {
     return fatal('bool na reached lowering');
   }
-  return valueClass === ValueClass.Reference ? 'null' : 'NaN';
+  return valueClass === ValueClass.Nullable ? 'null' : 'NaN';
 }
 
 // The frame handle expression for a name: the current frame, or the program
@@ -157,6 +167,129 @@ function slotOf(ctx: LowerCtx, name: Name): number {
     return fatal(`lowering reached an unmapped name '${name.name}'`);
   }
   return entry.slot;
+}
+
+function readRoot(ctx: LowerCtx, path: IrValuePath): string {
+  return `rt.read(${frameRef(ctx, path.root)}, ${slotOf(ctx, path.root)}, 0)`;
+}
+
+// Program paths contain canonical field indices, but codegen is also the
+// final static boundary before those indices become an untyped JS array.
+// Fail malformed hand-built Programs here instead of deferring the fault to
+// a row-time runtime rebuild.
+function valuePathType(path: IrValuePath): Type {
+  let type = path.root.type;
+  for (const index of path.fieldIndices) {
+    if (type.kind !== TypeKind.UserType) {
+      return fatal(`field path traverses non-user type ${type.kind}`);
+    }
+    const field = type.fields[index];
+    if (field === undefined) {
+      return fatal(
+        `field path index ${index} is out of range for ${type.name}`,
+      );
+    }
+    type = field.type;
+  }
+  return type;
+}
+
+function requirePathType(
+  path: IrValuePath,
+  expected: Type,
+  operation: string,
+): void {
+  const actual = valuePathType(path);
+  if (!typesEqual(actual, expected)) {
+    fatal(
+      `${operation} receiver type ${expected.kind} disagrees with path type ${actual.kind}`,
+    );
+  }
+}
+
+function writePath(
+  ctx: LowerCtx,
+  path: IrValuePath,
+  replacement: string,
+): string {
+  valuePathType(path);
+  const root = readRoot(ctx, path);
+  const rebuilt = `rt.rebuildUserPath((${root}), ${ctx.layoutOf(path.root.type)}, ${JSON.stringify(path.fieldIndices)}, (${replacement}))`;
+  return `rt.write(${frameRef(ctx, path.root)}, ${slotOf(ctx, path.root)}, ${rebuilt});`;
+}
+
+// Evaluate now, not merely when a later generated expression happens to use
+// the returned string. Aggregate constructors, tuples, and every call use
+// this to preserve source left-to-right value copies around statement-shaped
+// later arguments.
+function capture(e: IrExpr, out: string[], ctx: LowerCtx): string {
+  const expr = lowerExpr(e, out, ctx);
+  const temp = ctx.fresh();
+  out.push(`const ${temp} = (${expr});`);
+  return temp;
+}
+
+export function captureArguments(
+  args: readonly IrExpr[],
+  argumentEvaluationOrder: readonly number[],
+  out: string[],
+  ctx: LowerCtx,
+  operation: string,
+): string[] {
+  if (argumentEvaluationOrder.length !== args.length) {
+    return fatal(`${operation} has an incomplete argument evaluation order`);
+  }
+  const captured: string[] = [];
+  const seen = new Set<number>();
+  for (const index of argumentEvaluationOrder) {
+    if (
+      !Number.isSafeInteger(index) ||
+      index < 0 ||
+      index >= args.length ||
+      seen.has(index)
+    ) {
+      return fatal(`${operation} has an invalid argument evaluation order`);
+    }
+    seen.add(index);
+    captured[index] = capture(args[index], out, ctx);
+  }
+  return captured;
+}
+
+function validateWritePath(
+  path: IrValuePath,
+  out: string[],
+  ctx: LowerCtx,
+): void {
+  if (path.fieldIndices.length === 0) {
+    return;
+  }
+  const root = ctx.fresh();
+  out.push(`const ${root} = (${readRoot(ctx, path)});`);
+  let value = root;
+  let type = path.root.type;
+  for (const index of path.fieldIndices) {
+    if (type.kind !== TypeKind.UserType) {
+      return fatal(`field path traverses non-user type ${type.kind}`);
+    }
+    const field = type.fields[index];
+    if (field === undefined) {
+      return fatal(
+        `field path index ${index} is out of range for ${type.name}`,
+      );
+    }
+    const next = ctx.fresh();
+    out.push(
+      `const ${next} = rt.userField((${value}), ${ctx.layoutOf(type)}, ${index});`,
+    );
+    value = next;
+    type = field.type;
+  }
+  // Reads through a na user value intentionally yield typed empty. Rebuilding
+  // the unchanged leaf is the side-effect-free writeability/layout check.
+  out.push(
+    `void (rt.rebuildUserPath((${root}), ${ctx.layoutOf(path.root.type)}, ${JSON.stringify(path.fieldIndices)}, (${value})));`,
+  );
 }
 
 const BINARY_JS: Partial<Record<IrBinaryOp, string>> = {
@@ -201,7 +334,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       return String(oid);
     }
     case IrKind.HistRead: {
-      const off = e.offset === null ? '0' : subexpr(e.offset, out, ctx).expr;
+      const off = e.offset === null ? '0' : capture(e.offset, out, ctx);
       switch (e.place.kind) {
         case PlaceKind.Name:
           return `rt.read(${frameRef(ctx, e.place.name)}, ${slotOf(ctx, e.place.name)}, ${off})`;
@@ -231,8 +364,13 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
             return fatal('lowering reached an unmapped request edge');
           }
           if (e.offset === null && ctx.dynamicRequests.has(edge)) {
-            const symbol = subexpr(edge.symbol, out, ctx).expr;
-            const timeframe = subexpr(edge.timeframe, out, ctx).expr;
+            const [symbol, timeframe] = captureArguments(
+              [edge.symbol, edge.timeframe],
+              edge.contextArgumentEvaluationOrder,
+              out,
+              ctx,
+              'request context',
+            );
             return `rt.requestFor(${rid}, (${symbol}), (${timeframe}))`;
           }
           return `rt.request(${rid}, ${off})`;
@@ -253,9 +391,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
     }
     case IrKind.Cond: {
       // Pine evaluates all three operands eagerly.
-      const c = subexpr(e.cond, out, ctx).expr;
-      const t = subexpr(e.then, out, ctx).expr;
-      const f = subexpr(e.else, out, ctx).expr;
+      const c = capture(e.cond, out, ctx);
+      const t = capture(e.then, out, ctx);
+      const f = capture(e.else, out, ctx);
       return `((${c}) ? (${t}) : (${f}))`;
     }
     case IrKind.CallFunc: {
@@ -264,22 +402,178 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         return fatal(`unmapped function '${e.func.name}'`);
       }
       ctx.noteCallSite(ctx.currentFid, e.slot, e.func);
-      const args = e.args.map(a => subexpr(a, out, ctx).expr);
-      return `${ctx.moduleRef}.funcs[${fid}](rt, rt.frame(fr, ${e.slot})${args.map(a => `, (${a})`).join('')})`;
+      const args = captureArguments(
+        e.args,
+        e.argumentEvaluationOrder,
+        out,
+        ctx,
+        `function call '${e.func.name}'`,
+      );
+      return `${ctx.moduleRef}.funcs[${fid}](rt, rt.frame(fr, ${e.slot})${args.map(arg => `, ${arg}`).join('')})`;
+    }
+    case IrKind.CallConstMethod: {
+      if (!typesEqual(e.func.receiver.type, e.receiver.type)) {
+        return fatal(
+          `const method call '${e.func.name}' receiver has the wrong type`,
+        );
+      }
+      if (e.args.length !== e.func.params.length) {
+        return fatal(
+          `const method call '${e.func.name}' has the wrong argument count`,
+        );
+      }
+      if (!typesEqual(e.type, e.func.resultType)) {
+        return fatal(
+          `const method call '${e.func.name}' has the wrong result type`,
+        );
+      }
+      const fid = ctx.funcIds.get(e.func);
+      if (fid === undefined) {
+        return fatal(`unmapped const method '${e.func.name}'`);
+      }
+      ctx.noteCallSite(ctx.currentFid, e.slot, e.func);
+      const receiver = capture(e.receiver, out, ctx);
+      const args = captureArguments(
+        e.args,
+        e.argumentEvaluationOrder,
+        out,
+        ctx,
+        `const method call '${e.func.name}'`,
+      );
+      return `${ctx.moduleRef}.funcs[${fid}](rt, rt.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')})`;
+    }
+    case IrKind.CallMutableMethod: {
+      requirePathType(e.path, e.receiver.type, 'mutable method');
+      if (!typesEqual(e.func.receiver.type, e.receiver.type)) {
+        return fatal(
+          `mutable method call '${e.func.name}' receiver has the wrong type`,
+        );
+      }
+      if (e.args.length !== e.func.params.length) {
+        return fatal(
+          `mutable method call '${e.func.name}' has the wrong argument count`,
+        );
+      }
+      if (!typesEqual(e.type, e.func.resultType)) {
+        return fatal(
+          `mutable method call '${e.func.name}' has the wrong result type`,
+        );
+      }
+      const fid = ctx.funcIds.get(e.func);
+      if (fid === undefined) {
+        return fatal(`unmapped mutable method '${e.func.name}'`);
+      }
+      ctx.noteCallSite(ctx.currentFid, e.slot, e.func);
+      const receiver = capture(e.receiver, out, ctx);
+      const args = captureArguments(
+        e.args,
+        e.argumentEvaluationOrder,
+        out,
+        ctx,
+        `mutable method call '${e.func.name}'`,
+      );
+      const result = ctx.fresh();
+      out.push(
+        `const ${result} = ${ctx.moduleRef}.funcs[${fid}](rt, rt.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')});`,
+        writePath(ctx, e.path, `${result}.receiver`),
+      );
+      return `${result}.result`;
     }
     case IrKind.CallNative:
-      return lowerNative(e.native, e.args, out, ctx);
+      return lowerNative(
+        e.native,
+        e.args,
+        e.argumentEvaluationOrder,
+        e.type,
+        out,
+        ctx,
+      );
+    case IrKind.MutateCollection: {
+      requirePathType(e.path, e.receiver.type, 'collection mutation');
+      const collectionKind = e.receiver.type.kind;
+      if (
+        collectionKind !== TypeKind.Array &&
+        collectionKind !== TypeKind.Matrix &&
+        collectionKind !== TypeKind.Map
+      ) {
+        return fatal(
+          `collection mutation receiver has non-collection type ${collectionKind}`,
+        );
+      }
+      if (!e.operation.startsWith(`${collectionKind.toLowerCase()}.`)) {
+        return fatal(
+          `collection mutation '${e.operation}' disagrees with ${collectionKind} receiver`,
+        );
+      }
+      const receiver = capture(e.receiver, out, ctx);
+      const args = captureArguments(
+        e.args,
+        e.argumentEvaluationOrder,
+        out,
+        ctx,
+        `collection mutation '${e.operation}'`,
+      );
+      const result = ctx.fresh();
+      out.push(
+        `const ${result} = rt.mutateCollection(${JSON.stringify(e.operation)}, ${ctx.layoutOf(e.receiver.type)}, ${receiver}, [${args.join(', ')}]);`,
+        writePath(ctx, e.path, `${result}.replacement`),
+      );
+      return `${result}.result`;
+    }
     case IrKind.MakeTuple: {
-      const elems = e.elems.map(el => subexpr(el, out, ctx).expr);
+      const elems = e.elems.map(el => capture(el, out, ctx));
       return `[${elems.map(x => `(${x})`).join(', ')}]`;
     }
     case IrKind.TupleGet: {
-      const x = lowerExpr(e.x, out, ctx);
-      return `((${x})[${e.index}])`;
+      const tuple = capture(e.x, out, ctx);
+      return `((${tuple}) === null ? ${emptyLiteral(e.type)} : (${tuple})[${e.index}])`;
     }
-    case IrKind.NewUdt:
-    case IrKind.FieldGet:
-      return unimplemented('codegen: UDT execution');
+    case IrKind.NewUserValue: {
+      if (!typesEqual(e.type, e.userType)) {
+        return fatal(
+          `constructor for '${e.userType.name}' has a different result type`,
+        );
+      }
+      if (e.args.length !== e.userType.fields.length) {
+        return fatal(
+          `constructor for '${e.userType.name}' has the wrong argument count`,
+        );
+      }
+      e.args.forEach((arg, index) => {
+        const field = e.userType.fields[index];
+        if (!assignable(arg.type, field.type)) {
+          fatal(
+            `constructor for '${e.userType.name}' has an invalid argument for field '${field.name}'`,
+          );
+        }
+      });
+      const args = captureArguments(
+        e.args,
+        e.argumentEvaluationOrder,
+        out,
+        ctx,
+        `constructor '${e.userType.name}.new'`,
+      );
+      return `rt.newUser(${ctx.layoutOf(e.userType)}, [${args.join(', ')}])`;
+    }
+    case IrKind.FieldGet: {
+      if (e.x.type.kind !== TypeKind.UserType) {
+        return fatal(`field read traverses non-user type ${e.x.type.kind}`);
+      }
+      const selected = e.x.type.fields[e.fieldIndex];
+      if (selected === undefined) {
+        return fatal(
+          `field index ${e.fieldIndex} is out of range for ${e.x.type.name}`,
+        );
+      }
+      if (!typesEqual(e.type, selected.type)) {
+        return fatal(
+          `field '${selected.name}' of '${e.x.type.name}' has the wrong result type`,
+        );
+      }
+      const value = lowerExpr(e.x, out, ctx);
+      return `rt.userField((${value}), ${ctx.layoutOf(e.x.type)}, ${e.fieldIndex})`;
+    }
     case IrKind.IfExpr: {
       const temp = ctx.fresh();
       out.push(`let ${temp} = ${emptyLiteral(e.type)};`);
@@ -303,48 +597,51 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
     }
     case IrKind.SwitchExpr: {
       const temp = ctx.fresh();
-      out.push(`let ${temp} = ${emptyLiteral(e.type)};`);
-      const subject =
-        e.subject !== null ? subexpr(e.subject, out, ctx).expr : null;
-      e.arms.forEach((arm, i) => {
-        const isFirst = i === 0;
+      const matched = ctx.fresh();
+      out.push(
+        `let ${temp} = ${emptyLiteral(e.type)};`,
+        `let ${matched} = false;`,
+      );
+      const subject = e.subject !== null ? capture(e.subject, out, ctx) : null;
+      e.arms.forEach(arm => {
         const armLines: string[] = [];
         const val = lowerBlockInto(arm.body, armLines, ctx);
         if (val !== null) {
           armLines.push(`${temp} = (${val});`);
         }
         if (arm.pattern === null) {
-          out.push(isFirst ? '{' : '} else {', ...indent(armLines));
+          out.push(
+            `if (!(${matched})) {`,
+            ...indent([`${matched} = true;`, ...armLines]),
+            '}',
+          );
           return;
         }
-        // Patterns are const expressions; lowering them emits no statements.
-        const p = lowerExpr(arm.pattern, out, ctx);
+        const patternLines: string[] = [];
+        const p = lowerExpr(arm.pattern, patternLines, ctx);
         if (subject !== null) {
           ctx.useHelper('$eq');
         }
         const test = subject !== null ? `$eq((${subject}), (${p}))` : `(${p})`;
         out.push(
-          `${isFirst ? '' : '} else '}if (${test}) {`,
-          ...indent(armLines),
+          `if (!(${matched})) {`,
+          ...indent([
+            ...patternLines,
+            `if (${test}) {`,
+            ...indent([`${matched} = true;`, ...armLines]),
+            '}',
+          ]),
+          '}',
         );
       });
-      out.push('}');
       return temp;
     }
     case IrKind.ForExpr: {
       const temp = ctx.fresh();
       out.push(`let ${temp} = ${emptyLiteral(e.type)};`);
-      const from = subexpr(e.from, out, ctx).expr;
-      const to = subexpr(e.to, out, ctx).expr;
-      const step = e.step !== null ? subexpr(e.step, out, ctx).expr : '1';
-      const fromT = ctx.fresh();
-      const toT = ctx.fresh();
-      const stepT = ctx.fresh();
-      out.push(
-        `const ${fromT} = (${from});`,
-        `const ${toT} = (${to});`,
-        `const ${stepT} = (${step});`,
-      );
+      const fromT = capture(e.from, out, ctx);
+      const toT = capture(e.to, out, ctx);
+      const stepT = e.step !== null ? capture(e.step, out, ctx) : '1';
       const frRef = frameRef(ctx, e.index);
       const slot = slotOf(ctx, e.index);
       const idx = `rt.read(${frRef}, ${slot}, 0)`;
@@ -377,8 +674,51 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       );
       return temp;
     }
-    case IrKind.ForInExpr:
-      return unimplemented('codegen: for-in over collections');
+    case IrKind.ForInExpr: {
+      const result = ctx.fresh();
+      const collection = capture(e.x, out, ctx);
+      const entries = ctx.fresh();
+      const index = ctx.fresh();
+      out.push(
+        `let ${result} = ${emptyLiteral(e.type)};`,
+        `const ${entries} = rt.collectionEntries(${collection});`,
+      );
+      const body: string[] = [];
+      if (e.x.type.kind === TypeKind.Array) {
+        if (e.targets.length === 1) {
+          body.push(
+            `rt.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${entries}[${index}]);`,
+          );
+        } else if (e.targets.length === 2) {
+          body.push(
+            `rt.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${index});`,
+            `rt.write(${frameRef(ctx, e.targets[1])}, ${slotOf(ctx, e.targets[1])}, ${entries}[${index}]);`,
+          );
+        } else {
+          return fatal('array iteration requires one or two targets');
+        }
+      } else if (e.x.type.kind === TypeKind.Map) {
+        if (e.targets.length !== 2) {
+          return fatal('map iteration requires key and value targets');
+        }
+        body.push(
+          `rt.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${entries}[${index}][0]);`,
+          `rt.write(${frameRef(ctx, e.targets[1])}, ${slotOf(ctx, e.targets[1])}, ${entries}[${index}][1]);`,
+        );
+      } else {
+        return fatal(`unsupported collection iteration over ${e.x.type.kind}`);
+      }
+      const value = lowerBlockInto(e.body, body, ctx);
+      if (value !== null) {
+        body.push(`${result} = (${value});`);
+      }
+      out.push(
+        `for (let ${index} = 0; ${index} < ${entries}.length; ${index} += 1) {`,
+        ...indent(body),
+        '}',
+      );
+      return result;
+    }
     case IrKind.BlockExpr: {
       lowerStmts(e.stmts, out, ctx);
       return e.value !== null ? lowerExpr(e.value, out, ctx) : 'undefined';
@@ -410,23 +750,21 @@ function lowerBinary(
     return temp;
   }
 
-  const x = subexpr(xe, out, ctx);
-  const y = subexpr(ye, out, ctx);
-  // Preserve left-to-right order: if lowering y emitted statements, x was
-  // already materialized by subexpr.
+  const x = capture(xe, out, ctx);
+  const y = capture(ye, out, ctx);
   if (op === IrOp.Eq || op === IrOp.Ne) {
     const helper = op === IrOp.Eq ? '$eq' : '$ne';
     ctx.useHelper(helper);
-    return `${helper}((${x.expr}), (${y.expr}))`;
+    return `${helper}((${x}), (${y}))`;
   }
   if (op === IrOp.Add && type.kind === TypeKind.String) {
     ctx.useHelper('$concat');
-    return `$concat((${x.expr}), (${y.expr}))`;
+    return `$concat((${x}), (${y}))`;
   }
   if (op === IrOp.Div) {
     ctx.useHelper('$div');
     ctx.useHelper('$num');
-    const div = `$div((${x.expr}), (${y.expr}))`;
+    const div = `$div((${x}), (${y}))`;
     return type.kind === TypeKind.Int
       ? `$num(Math.trunc(${div}))`
       : `$num(${div})`;
@@ -434,30 +772,18 @@ function lowerBinary(
   if (op === IrOp.Mod) {
     ctx.useHelper('$mod');
     ctx.useHelper('$num');
-    return `$num($mod((${x.expr}), (${y.expr})))`;
+    return `$num($mod((${x}), (${y})))`;
   }
   const js = BINARY_JS[op];
   if (js === undefined) {
     return fatal(`unmapped binary operation ${op}`);
   }
-  const expr = `((${x.expr}) ${js} (${y.expr}))`;
+  const expr = `((${x}) ${js} (${y}))`;
   if (op === IrOp.Add || op === IrOp.Sub || op === IrOp.Mul) {
     ctx.useHelper('$num');
     return `$num(${expr})`;
   }
   return expr;
-}
-
-// Lower an operand; if it needed statements, earlier operands must already
-// be temps — callers use this for every multi-operand node.
-function subexpr(
-  e: IrExpr,
-  out: string[],
-  ctx: LowerCtx,
-): {expr: string; pure: boolean} {
-  const before = out.length;
-  const expr = lowerExpr(e, out, ctx);
-  return {expr, pure: out.length === before};
 }
 
 // ---- natives ----------------------------------------------------------------
@@ -499,14 +825,29 @@ const NATIVE_RULES: Record<string, NativeRule> = {
 function lowerNative(
   native: string,
   argExprs: readonly IrExpr[],
+  argumentEvaluationOrder: readonly number[],
+  resultType: Type,
   out: string[],
   ctx: LowerCtx,
 ): string {
+  const args = captureArguments(
+    argExprs,
+    argumentEvaluationOrder,
+    out,
+    ctx,
+    `native call '${native}'`,
+  );
   // Internal depth-pass primitive: each component is normalized before a
   // synthesized maximum so one invalid offset cannot erase valid demands.
   if (native === '$historyDepth') {
-    const x = subexpr(argExprs[0], out, ctx).expr;
-    return `rt.historyDepth((${x}))`;
+    return `rt.historyDepth((${args[0]}))`;
+  }
+  if (
+    native.startsWith('array.') ||
+    native.startsWith('matrix.') ||
+    native.startsWith('map.')
+  ) {
+    return `rt.callCollection(${JSON.stringify(native)}, ${ctx.layoutOf(resultType)}, [${args.join(', ')}])`;
   }
   // na/nz inspect their argument's type for the na representation.
   if (native === 'na') {
@@ -514,11 +855,11 @@ function lowerNative(
     if (arg.type.kind === TypeKind.Na) {
       return 'true';
     }
-    const x = lowerExpr(arg, out, ctx);
+    const x = args[0];
     switch (valueClassOf(arg.type)) {
       case ValueClass.Numeric:
         return `Number.isNaN((${x}))`;
-      case ValueClass.Reference:
+      case ValueClass.Nullable:
         return `((${x}) === null)`;
       case ValueClass.Boolean:
         ctx.useHelper('$naBool');
@@ -533,10 +874,10 @@ function lowerNative(
     }
     const helper = valueClass === ValueClass.Numeric ? '$nzNum' : '$nzRef';
     ctx.useHelper(helper);
-    const x = subexpr(arg, out, ctx).expr;
+    const x = args[0];
     let replacement: string;
     if (argExprs.length > 1) {
-      replacement = subexpr(argExprs[1], out, ctx).expr;
+      replacement = args[1];
     } else if (valueClass === ValueClass.Numeric) {
       replacement = '0';
     } else if (arg.type.kind === TypeKind.Color) {
@@ -555,7 +896,7 @@ function lowerNative(
     }
     if (arg.type.kind === TypeKind.Enum) {
       ctx.useHelper('$enumToString');
-      const x = subexpr(arg, out, ctx).expr;
+      const x = args[0];
       const members = arg.type.members.map(member => [
         member.name,
         member.title,
@@ -563,15 +904,17 @@ function lowerNative(
       return `$enumToString((${x}), ${JSON.stringify(members)})`;
     }
     ctx.useHelper('$toString');
-    const x = subexpr(arg, out, ctx).expr;
+    const x = args[0];
     return `$toString((${x}))`;
   }
   const rule = NATIVE_RULES[native];
   if (rule === undefined) {
     return unimplemented(`codegen: native '${native}'`);
   }
-  const args = argExprs.map(a => `(${subexpr(a, out, ctx).expr})`);
-  const expr = rule(args, ctx);
+  const expr = rule(
+    args.map(arg => `(${arg})`),
+    ctx,
+  );
   if (native === 'color.new' || native === 'color.rgb') {
     return expr;
   }
@@ -605,16 +948,32 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       );
       return;
     }
-    case IrKind.WriteField:
-      return unimplemented('codegen: UDT execution');
+    case IrKind.UpdateValuePath: {
+      const targetType = valuePathType(stmt.path);
+      if (!assignable(stmt.value.type, targetType)) {
+        return fatal(
+          `rooted update value type ${stmt.value.type.kind} is not assignable to ${targetType.kind}`,
+        );
+      }
+      validateWritePath(stmt.path, out, ctx);
+      const value = lowerExpr(stmt.value, out, ctx);
+      out.push(writePath(ctx, stmt.path, value));
+      return;
+    }
     case IrKind.Emit: {
       const oid = ctx.outputIds.get(stmt.output);
       if (oid === undefined) {
         return fatal('lowering reached an unmapped output');
       }
-      stmt.args.forEach((arg, channel) => {
-        const v = lowerExpr(arg, out, ctx);
-        out.push(`rt.emit(${oid}, ${channel}, (${v}));`);
+      const args = captureArguments(
+        stmt.args,
+        stmt.argumentEvaluationOrder,
+        out,
+        ctx,
+        `output '${stmt.output.effect}'`,
+      );
+      args.forEach((arg, channel) => {
+        out.push(`rt.emit(${oid}, ${channel}, (${arg}));`);
       });
       return;
     }

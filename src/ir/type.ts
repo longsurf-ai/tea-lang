@@ -76,12 +76,13 @@ export const TypeKind = {
   // not runtime heap handles — no COW or rollback participation.
   Plot: 'Plot',
   Hline: 'Hline',
-  // Collections (heap objects with value-semantic history via runtime COW).
+  // Collections are value headers with persistent backing storage. Their
+  // source semantics never expose backing identity.
   Array: 'Array',
   Matrix: 'Matrix',
   Map: 'Map',
   // Named types, identified by declaration identity (object reference).
-  Udt: 'Udt',
+  UserType: 'UserType',
   Enum: 'Enum',
   // Multi-value shapes.
   Tuple: 'Tuple',
@@ -143,20 +144,18 @@ export interface MapType {
   readonly value: Type;
 }
 
-export interface UdtField {
+export interface UserField {
   readonly name: string;
   readonly type: Type;
-  // Pine v6 allows varip fields: exempt from rollback while sibling fields
-  // roll back — per-field granularity the runtime's Time Machine must know.
-  readonly varip: boolean;
 }
 
-// One UdtType instance exists per `type` declaration; identity is reference
-// identity, never structural.
-export interface UdtType {
-  readonly kind: typeof TypeKind.Udt;
+// One UserType instance exists per `type` declaration. Ordinary user values
+// have shallow value semantics; nominal type identity remains declaration
+// identity, never structural identity.
+export interface UserType {
+  readonly kind: typeof TypeKind.UserType;
   readonly name: string;
-  readonly fields: readonly UdtField[];
+  readonly fields: readonly UserField[];
 }
 
 // Titles are runtime-visible (str.tostring returns the title; input.enum
@@ -198,7 +197,7 @@ export type Type =
   | ArrayType
   | MatrixType
   | MapType
-  | UdtType
+  | UserType
   | EnumType
   | TupleType
   | FuncType;
@@ -285,7 +284,7 @@ export function typesEqual(a: Type, b: Type): boolean {
         a.resultQualifier === other.resultQualifier
       );
     }
-    case TypeKind.Udt:
+    case TypeKind.UserType:
     case TypeKind.Enum:
       return false; // reference identity only, handled by a === b above
     default:
@@ -379,7 +378,7 @@ export function formatType(t: Type): string {
       return `matrix<${formatType(t.elem)}>`;
     case TypeKind.Map:
       return `map<${formatType(t.key)}, ${formatType(t.value)}>`;
-    case TypeKind.Udt:
+    case TypeKind.UserType:
     case TypeKind.Enum:
       return t.name;
     case TypeKind.Tuple:
@@ -391,6 +390,41 @@ export function formatType(t: Type): string {
     default:
       return PRIMITIVE_NAMES[t.kind];
   }
+}
+
+// Values admitted by collection storage. Tuple is compiler transport rather
+// than a source-storable value; functions, void, and output references are
+// likewise excluded.
+export function isStorableType(type: Type): boolean {
+  return (
+    type.kind !== TypeKind.Invalid &&
+    type.kind !== TypeKind.Void &&
+    type.kind !== TypeKind.Na &&
+    type.kind !== TypeKind.Func &&
+    type.kind !== TypeKind.Tuple &&
+    type.kind !== TypeKind.Plot &&
+    type.kind !== TypeKind.Hline
+  );
+}
+
+export function isMapKeyType(type: Type): boolean {
+  return (
+    type.kind === TypeKind.Int ||
+    type.kind === TypeKind.Float ||
+    type.kind === TypeKind.Bool ||
+    type.kind === TypeKind.String ||
+    type.kind === TypeKind.Color ||
+    type.kind === TypeKind.Enum
+  );
+}
+
+export function isAggregateType(type: Type): boolean {
+  return (
+    type.kind === TypeKind.Array ||
+    type.kind === TypeKind.Matrix ||
+    type.kind === TypeKind.Map ||
+    type.kind === TypeKind.UserType
+  );
 }
 
 // `series float`, `simple string` — the full two-axis display form.

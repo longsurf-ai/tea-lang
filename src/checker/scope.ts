@@ -1,10 +1,11 @@
 // Purpose: Persistent checker scope tree mapping source names to canonical semantic declaration objects.
 
-import type {Object} from './object';
+import type {MethodObject, Object} from './object';
 
 export class Scope {
   readonly children: Scope[] = [];
   private readonly objects = new Map<string, Object>();
+  private readonly methods = new Map<string, MethodObject[]>();
 
   constructor(
     readonly parent: Scope | null,
@@ -58,5 +59,33 @@ export class Scope {
     }
     this.objects.set(object.name, object);
     return true;
+  }
+
+  declareMethod(method: MethodObject): boolean {
+    const methods = this.methods.get(method.name);
+    if (methods === undefined) {
+      this.methods.set(method.name, [method]);
+      return true;
+    }
+    if (
+      methods.some(
+        candidate => candidate.receiver.owner === method.receiver.owner,
+      )
+    ) {
+      return false;
+    }
+    methods.push(method);
+    return true;
+  }
+
+  lookupMethods(name: string): readonly MethodObject[] {
+    const methods: MethodObject[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    let scope: Scope | null = this;
+    while (scope !== null) {
+      methods.push(...(scope.methods.get(name) ?? []));
+      scope = scope.parent;
+    }
+    return methods;
   }
 }

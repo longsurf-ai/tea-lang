@@ -28,7 +28,9 @@ import {
   Qualifier,
   qualifierLE,
   TypeKind,
+  typesEqual,
   type ConstValue,
+  type Type,
 } from '../ir/type';
 import {funcsOf, namesOf, requestsOf, seriesInputsOf} from '../ir/visit';
 import type {
@@ -41,12 +43,17 @@ import type {
   RequestSpec,
   SeriesSpec,
 } from '../runtime/abi';
+import type {
+  AggregateLayoutManifest,
+  LayoutId,
+  ValueLayout,
+} from '../runtime/value-layout';
 import {
   HELPERS,
+  captureArguments,
   indent,
   lowerExpr,
   lowerStmts,
-  valueClassOf,
   type HelperName,
   type LowerCtx,
 } from './lower';
@@ -69,7 +76,10 @@ export function generate(
   // arrays — code cannot live inside the JSON manifest.
   out.push(...emitter.childDecls);
   out.push('const M = {');
-  out.push('  abi: 2,');
+  out.push('  abi: 3,');
+  out.push(
+    `  aggregateLayouts: ${json({layouts: emitter.layouts} satisfies AggregateLayoutManifest)},`,
+  );
   out.push(...indent(rootBody));
   out.push('};');
   out.push('return M;');
@@ -81,7 +91,90 @@ export function generate(
 class ModuleEmitter {
   readonly usedHelpers = new Set<HelperName>();
   readonly childDecls: string[] = [];
+  readonly layouts: ValueLayout[] = [];
+  private readonly layoutTypes: Type[] = [];
   private childCounter = 0;
+
+  layoutOf(type: Type): LayoutId {
+    const existing = this.layoutTypes.findIndex(candidate =>
+      typesEqual(candidate, type),
+    );
+    if (existing >= 0) {
+      return existing;
+    }
+
+    const id = this.layouts.length;
+    this.layoutTypes.push(type);
+    // Reserve before recursion: Node { array<Node> children } is finite at
+    // runtime even though its static layout graph has a collection cycle.
+    this.layouts.push({kind: 'boolean'});
+    this.layouts[id] = this.buildLayout(type);
+    return id;
+  }
+
+  private buildLayout(type: Type): ValueLayout {
+    switch (type.kind) {
+      case TypeKind.Int:
+      case TypeKind.Float:
+        return {
+          kind: 'number',
+          numeric: type.kind === TypeKind.Int ? 'int' : 'float',
+        };
+      case TypeKind.Bool:
+        return {kind: 'boolean'};
+      case TypeKind.String:
+      case TypeKind.Color:
+        return {
+          kind: 'nullable-scalar',
+          scalar: type.kind === TypeKind.String ? 'string' : 'color',
+        };
+      case TypeKind.Enum:
+        return {
+          kind: 'enum',
+          name: type.name,
+          members: type.members.map(member => member.name),
+        };
+      case TypeKind.Line:
+      case TypeKind.Label:
+      case TypeKind.Box:
+      case TypeKind.Table:
+      case TypeKind.Polyline:
+      case TypeKind.Linefill:
+        return {kind: 'resource', handle: type.kind};
+      case TypeKind.UserType:
+        return {
+          kind: 'user-type',
+          name: type.name,
+          fields: type.fields.map(field => ({
+            name: field.name,
+            layout: this.layoutOf(field.type),
+          })),
+        };
+      case TypeKind.Array:
+        return {kind: 'array', element: this.layoutOf(type.elem)};
+      case TypeKind.Matrix:
+        return {kind: 'matrix', element: this.layoutOf(type.elem)};
+      case TypeKind.Map:
+        return {
+          kind: 'map',
+          key: this.layoutOf(type.key),
+          value: this.layoutOf(type.value),
+        };
+      case TypeKind.Tuple:
+        return {
+          kind: 'tuple',
+          elements: type.elems.map(element => this.layoutOf(element)),
+        };
+      case TypeKind.Na:
+        return fatal('uncontextualized na type reached layout projection');
+      case TypeKind.Invalid:
+      case TypeKind.Void:
+      case TypeKind.Plot:
+      case TypeKind.Hline:
+      case TypeKind.Func:
+        return fatal(`non-runtime type ${type.kind} reached layout projection`);
+    }
+  }
 
   emitChild(
     child: Program,
@@ -160,18 +253,30 @@ class Generator {
     program.outputs.forEach((output, oid) => this.outputIds.set(output, oid));
     this.funcs.forEach((func, i) => this.funcIds.set(func, i + 1));
 
-    // Frame locals: ownership is explicit — a func owns its params and
-    // declared locals; the program frame owns every remaining Name.
+    // Frame locals: ownership is explicit — a method owns its hidden receiver,
+    // then every function owns its source-visible params and declared locals;
+    // the program frame owns every remaining Name.
     const owned = new Set<Name>();
     for (const func of this.funcs) {
-      for (const name of [...func.params, ...func.locals]) {
+      const receiver = func.callMode === 'free' ? [] : [func.receiver];
+      if (
+        func.callMode !== 'free' &&
+        (func.params.includes(func.receiver) ||
+          func.locals.includes(func.receiver))
+      ) {
+        fatal(
+          `method '${func.name}' hidden receiver also appears in explicit params or locals`,
+        );
+      }
+      for (const name of [...receiver, ...func.params, ...func.locals]) {
         owned.add(name);
       }
     }
     const frame0 = namesOf(this.program).filter(name => !owned.has(name));
     const locals: (readonly Name[])[] = [frame0];
     for (const func of this.funcs) {
-      locals.push([...func.params, ...func.locals]);
+      const receiver = func.callMode === 'free' ? [] : [func.receiver];
+      locals.push([...receiver, ...func.params, ...func.locals]);
     }
     this.frameLocals = locals;
     locals.forEach((names, fid) => {
@@ -195,6 +300,7 @@ class Generator {
       requestIds: this.requestIds,
       dynamicRequests: this.dynamicRequests,
       moduleRef: this.moduleRef,
+      layoutOf: type => this.emitter.layoutOf(type),
       currentFid: fid,
       noteCallSite: (siteFid, slot, callee) => {
         const calleeFid = this.funcIds.get(callee);
@@ -249,10 +355,7 @@ class Generator {
     const out: string[] = [];
     // U+2028/2029 are line terminators in ES2015 string literals; escape
     // them so the embedded manifest stays parseable everywhere.
-    const manifestJs = JSON.stringify(manifest)
-      .replace(/\u2028/g, '\\u2028')
-      .replace(/\u2029/g, '\\u2029');
-    out.push(`manifest: ${manifestJs},`);
+    out.push(`manifest: ${json(manifest)},`);
     out.push(`requests: [${children.map(c => c.ref).join(', ')}],`);
     out.push('init(rt) {', ...indent(initLines), '},');
     out.push('bind(rt, fr) {', ...indent(bindLines), '},');
@@ -323,12 +426,18 @@ class Generator {
       lines.push(`rt.bindParamActive(${pid}, (${active}));`);
     });
     this.program.outputs.forEach((output, oid) => {
-      for (const arg of output.bindArgs) {
-        const expr = lowerExpr(arg.expr, lines, ctx);
+      const args = captureArguments(
+        output.bindArgs.map(arg => arg.expr),
+        output.bindArgumentEvaluationOrder,
+        lines,
+        ctx,
+        `output '${output.effect}' bind arguments`,
+      );
+      output.bindArgs.forEach((arg, index) => {
         lines.push(
-          `rt.bindOutput(${oid}, ${JSON.stringify(arg.name)}, (${expr}));`,
+          `rt.bindOutput(${oid}, ${JSON.stringify(arg.name)}, (${args[index]}));`,
         );
-      }
+      });
     });
     // Static request contexts: bind resolves the pair, runs the child, and
     // prepares the merged view before row 0. Dynamic edges declare nothing
@@ -343,8 +452,13 @@ class Generator {
       if (this.dynamicRequests.has(edge)) {
         return;
       }
-      const symbol = lowerExpr(edge.symbol, lines, ctx);
-      const timeframe = lowerExpr(edge.timeframe, lines, ctx);
+      const [symbol, timeframe] = captureArguments(
+        [edge.symbol, edge.timeframe],
+        edge.contextArgumentEvaluationOrder,
+        lines,
+        ctx,
+        'request context',
+      );
       lines.push(`rt.bindRequest(${rid}, (${symbol}), (${timeframe}));`);
     });
     return lines;
@@ -375,12 +489,16 @@ class Generator {
         return fatal('unmapped function during lowering');
       }
       const ctx = this.ctxFor(fid);
-      const params = func.params.map((_, i) => `p${i}`);
+      // The generated JS ABI is internal: method receivers occupy p0, while
+      // Program.params remains source-visible explicit parameters only.
+      const receiver = func.callMode === 'free' ? [] : [func.receiver];
+      const parameters = [...receiver, ...func.params];
+      const params = parameters.map((_, i) => `p${i}`);
       const lines: string[] = [
         `(rt, fr${params.map(p => `, ${p}`).join('')}) => {`,
       ];
       // Arguments land in the frame so param history works like any name.
-      func.params.forEach((param, i) => {
+      parameters.forEach((param, i) => {
         const where = this.nameSlots.get(param);
         if (where === undefined) {
           return fatal(`unmapped param '${param.name}'`);
@@ -389,7 +507,19 @@ class Generator {
       });
       const bodyLines: string[] = [];
       const value = lowerExpr(func.body, bodyLines, ctx);
-      lines.push(...indent(bodyLines), `  return (${value});`, '},');
+      lines.push(...indent(bodyLines));
+      if (func.callMode === 'mutable-method') {
+        const receiverSlot = this.nameSlots.get(func.receiver);
+        if (receiverSlot === undefined || receiverSlot.fid !== fid) {
+          return fatal(`mutable method '${func.name}' has an unowned receiver`);
+        }
+        lines.push(
+          `  return {receiver: rt.read(fr, ${receiverSlot.slot}, 0), result: (${value})};`,
+        );
+      } else {
+        lines.push(`  return (${value});`);
+      }
+      lines.push('},');
       bodies.set(fid, lines);
     });
     return bodies;
@@ -457,7 +587,7 @@ class Generator {
         locals: names.map(name => ({
           storage: name.storage,
           depth: depthSpec(name.depth),
-          valueClass: valueClassOf(name.type),
+          layout: this.emitter.layoutOf(name.type),
         })),
         subs,
       };
@@ -466,12 +596,6 @@ class Generator {
     const requests: RequestSpec[] = this.requests.map((edge, rid) => {
       if (edge.merge.mode !== MergeMode.Sample) {
         return unimplemented('codegen: collect merge (security_lower_tf)');
-      }
-      // A tuple result would need per-element na handling in the merged
-      // view (a single ref bit cannot describe it) — staged, never wrong
-      // code.
-      if (edge.resultType.kind === TypeKind.Tuple) {
-        return unimplemented('codegen: tuple request results');
       }
       return {
         merge: {
@@ -482,13 +606,19 @@ class Generator {
         },
         depth: depthSpec(edge.depth),
         resultSlot: children[rid].resultSlot,
-        valueClass: valueClassOf(edge.resultType),
+        layout: this.emitter.layoutOf(edge.resultType),
         dynamic: this.dynamicRequests.has(edge),
       };
     });
 
     return {series, params, outputs, frames, requests};
   }
+}
+
+function json(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }
 
 function depthSpec(depth: HistoryDepth): DepthSpec {

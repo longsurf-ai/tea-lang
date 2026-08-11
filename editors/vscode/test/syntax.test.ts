@@ -57,8 +57,15 @@ describe('Tea TextMate grammar', () => {
     const storage = new RegExp(
       grammar.repository['storage-modifiers'].patterns[0].match,
     );
+    const receiver = new RegExp(
+      grammar.repository['receiver-keyword'].patterns[0].match,
+    );
     for (const keyword of RESERVED_KEYWORDS) {
-      expect(control.test(keyword) || storage.test(keyword)).toBeTrue();
+      expect(
+        control.test(keyword) ||
+          storage.test(keyword) ||
+          receiver.test(keyword),
+      ).toBeTrue();
     }
     for (const keyword of CONTEXTUAL_KEYWORDS) {
       expect(control.test(keyword) || storage.test(keyword)).toBeFalse();
@@ -69,6 +76,68 @@ describe('Tea TextMate grammar', () => {
     );
     expect(importPattern.test('import owner/library/1 as lib')).toBeTrue();
     expect(importPattern.test('import = enum')).toBeFalse();
+  });
+
+  test('user types, aliases, and nested methods have dedicated scopes', () => {
+    const grammar = generateGrammar();
+    const types = grammar.repository['type-declarations'].patterns;
+    const methods = grammar.repository['function-declarations'].patterns;
+    const alias = new RegExp(types[0].match).exec(
+      'export type Prices = array<float>',
+    );
+    const blockType = new RegExp(types[1].match).exec('struct Portfolio');
+    const method = new RegExp(methods[0].match).exec(
+      '    series int add(int qty) const =>',
+    );
+    expect(alias?.[4]).toBe('type');
+    expect(alias?.[6]).toBe('Prices');
+    expect(alias?.[10]).toBe('array<float>');
+    expect(blockType?.[4]).toBe('struct');
+    expect(blockType?.[6]).toBe('Portfolio');
+    expect(method?.[2]).toBe('series');
+    expect(method?.[4]).toBe('int');
+    expect(method?.[6]).toBe('add');
+    expect(methods[0].captures['6']).toEqual({
+      name: 'entity.name.function.tea',
+    });
+
+    const modifier = new RegExp(
+      grammar.repository['method-receiver-modifier'].patterns[0].match,
+    );
+    const receiver = new RegExp(
+      grammar.repository['receiver-keyword'].patterns[0].match,
+    );
+    expect(modifier.test('const =>')).toBeTrue();
+    expect(receiver.test('this')).toBeTrue();
+    expect(grammar.repository['receiver-keyword'].patterns[0].name).toBe(
+      'variable.language.receiver.tea',
+    );
+  });
+
+  test('legacy method and inout have no keyword scopes', () => {
+    const grammar = generateGrammar();
+    const methods = grammar.repository['function-declarations'].patterns;
+    expect(
+      methods.some(pattern =>
+        new RegExp(pattern.match).test(
+          'method append(inout Foo self, float value) =>',
+        ),
+      ),
+    ).toBeFalse();
+    expect(
+      grammar.repository['method-receiver-modifier'].patterns[0].match,
+    ).not.toContain('inout');
+    expect(
+      grammar.repository['receiver-keyword'].patterns[0].match,
+    ).not.toContain('method');
+    expect(
+      grammar.repository['receiver-keyword'].patterns[0].match,
+    ).not.toContain('inout');
+    expect(
+      grammar.repository['type-declarations'].patterns[1].captures['4'],
+    ).toEqual({
+      name: 'storage.type.declaration.tea',
+    });
   });
 
   test('scanner-supported number and color forms are covered', () => {

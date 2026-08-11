@@ -8,7 +8,7 @@ import type {
   FieldObject,
   FunctionObject,
   Object,
-  UdtObject,
+  UserTypeObject,
   VariableObject,
 } from './object';
 import type {Scope} from './scope';
@@ -36,12 +36,23 @@ export interface NativeCall {
   readonly kind: typeof CallKind.Native;
   readonly native: NativeFunc;
   readonly args: readonly (syntax.Expr | null)[];
+  readonly argTypes: readonly Type[];
+  // Canonical argument indices in source evaluation order. Omitted runtime
+  // defaults are absent; noder appends any synthetic typed empties afterward.
+  readonly argumentEvaluationOrder: readonly number[];
+  readonly resultType: Type;
+  readonly receiver: ResolvedNativeReceiver | null;
 }
 
 export interface FunctionCall {
   readonly kind: typeof CallKind.Function;
   readonly instance: FunctionInstance;
   readonly args: readonly (syntax.Expr | null)[];
+  // Covers explicit source parameters only: supplied arguments in source
+  // order, then omitted user defaults in canonical parameter order. A method
+  // receiver is a separate semantic input evaluated before these arguments.
+  readonly argumentEvaluationOrder: readonly number[];
+  readonly receiver: ResolvedMethodReceiver | null;
 }
 
 export interface ConstructorArgument {
@@ -52,14 +63,18 @@ export interface ConstructorArgument {
 
 export interface ConstructorCall {
   readonly kind: typeof CallKind.Constructor;
-  readonly type: UdtObject;
+  readonly type: UserTypeObject;
   readonly args: readonly ConstructorArgument[];
+  // Supplied arguments retain source order; omitted field defaults follow in
+  // canonical field order. `args` itself remains canonical for record layout.
+  readonly argumentEvaluationOrder: readonly number[];
 }
 
 export interface RequestCall {
   readonly kind: typeof CallKind.Request;
   readonly native: NativeFunc;
   readonly args: readonly (syntax.Expr | null)[];
+  readonly argumentEvaluationOrder: readonly number[];
   readonly capture: Info;
   readonly resultType: Type;
 }
@@ -82,12 +97,41 @@ export type Selection =
       readonly builtin: BuiltinObject;
     };
 
+export interface CheckedWritebackTarget {
+  readonly receiver: CheckedExpression;
+  readonly root: VariableObject;
+  readonly fields: readonly FieldObject[];
+}
+
+export type ResolvedNativeReceiver =
+  | {
+      readonly mode: 'value';
+      readonly value: CheckedExpression;
+    }
+  | {
+      readonly mode: 'inout';
+      readonly value: CheckedExpression;
+      readonly writeback: CheckedWritebackTarget;
+    };
+
+export type ResolvedMethodReceiver =
+  | {
+      readonly mode: 'const';
+      readonly value: CheckedExpression;
+    }
+  | {
+      readonly mode: 'mutable';
+      readonly value: CheckedExpression;
+      readonly writeback: CheckedWritebackTarget;
+    };
+
 export interface Info {
   readonly types: Map<syntax.Expr, TypeAndValue>;
-  readonly uses: Map<syntax.Name, Object>;
+  readonly uses: Map<syntax.Name | syntax.ThisExpr, Object>;
   readonly defs: Map<syntax.Name, Object>;
   readonly reassigned: Set<VariableObject>;
   readonly calls: Map<syntax.CallExpr, CallResolution>;
+  readonly updates: Map<syntax.AssignStmt, CheckedWritebackTarget>;
   readonly selections: Map<syntax.SelectorExpr, Selection>;
   readonly scopes: Map<syntax.Node, Scope>;
 }
@@ -99,6 +143,7 @@ export function newInfo(): Info {
     defs: new Map(),
     reassigned: new Set(),
     calls: new Map(),
+    updates: new Map(),
     selections: new Map(),
     scopes: new Map(),
   };
@@ -111,6 +156,9 @@ export interface FunctionInstance {
     readonly type: Type;
     readonly qualifier: Qualifier;
   } | null)[];
+  // Compiler-only method receiver. It is not a source parameter and therefore
+  // never appears in signature/params/defaults or call argument ordering.
+  readonly receiver: VariableObject | null;
   readonly params: readonly VariableObject[];
   readonly defaults: ReadonlyMap<number, CheckedDefaultExpression>;
   readonly info: Info;

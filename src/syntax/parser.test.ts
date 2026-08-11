@@ -53,6 +53,95 @@ describe('simple statements', () => {
     expect(out).toContain('stmtList[0]: ExprStmt @1:1');
     expect(out).toContain('fun: Name @1:1 value="plot"');
   });
+
+  test('inout and method are ordinary names', () => {
+    const ordinary = dump('identity(inout) => inout\n');
+    expect(ordinary).toContain('stmtList[0]: FuncDecl @1:1 exported=false');
+    expect(ordinary).toContain('name: Name @1:10 value="inout"');
+
+    expect(dump('method = 1\n')).toContain('target: Name @1:1 value="method"');
+  });
+
+  test('struct is contextual while this stays reserved', () => {
+    const functions = dump('struct(x) => x\nexport struct(y) => y\n');
+    expect(functions).toContain('stmtList[0]: FuncDecl @1:1 exported=false');
+    expect(functions).toContain('name: Name @1:1 value="struct"');
+    expect(functions).toContain('stmtList[1]: FuncDecl @2:1 exported=true');
+    expect(functions).toContain('name: Name @2:8 value="struct"');
+
+    const userType = dump(
+      ['struct Holder', '    int struct', '    int value', ''].join('\n'),
+    );
+    expect(userType).toContain(
+      'UserTypeDecl @1:1 exported=false writtenKeyword="struct"',
+    );
+    expect(userType).toContain('name: Name @2:9 value="struct"');
+
+    const reserved = parseText('this(x) => x\n');
+    expect(reserved.errors.length).toBeGreaterThan(0);
+    expect(dumpFile(reserved.file)).not.toContain('FuncDecl');
+  });
+});
+
+describe('user types and methods', () => {
+  test('struct members retain field and method source order', () => {
+    const out = dump(
+      [
+        'struct Counter',
+        '    int value',
+        '    int add(int qty) =>',
+        '        this.value += qty',
+        '        this.value',
+        '    string label = "counter"',
+        '    int size() const => this.value',
+        '',
+      ].join('\n'),
+    );
+    expect(out).toContain(
+      'UserTypeDecl @1:1 exported=false writtenKeyword="struct"',
+    );
+    expect(out).toContain('members[0]: FieldDecl @2:5');
+    expect(out).toContain('members[1]: MethodDecl @3:5 receiverMode="mutable"');
+    expect(out).toContain('result: TypeAnnotation @3:5');
+    expect(out).toContain('params[0]: Param @3:13');
+    expect(out).toContain('members[2]: FieldDecl @6:5');
+    expect(out).toContain('members[3]: MethodDecl @7:5 receiverMode="const"');
+    expect(out).toContain('x: ThisExpr @4:9');
+    expect(out).toContain('x: ThisExpr @7:25');
+  });
+
+  test('block-form type has the same member AST shape', () => {
+    const out = dump(
+      ['type Point', '    float x', '    float getX() => this.x', ''].join(
+        '\n',
+      ),
+    );
+    expect(out).toContain(
+      'UserTypeDecl @1:1 exported=false writtenKeyword="type"',
+    );
+    expect(out).toContain('members[0]: FieldDecl @2:5');
+    expect(out).toContain('members[1]: MethodDecl @3:5 receiverMode="mutable"');
+  });
+
+  test('type alias is a distinct reserved declaration', () => {
+    const out = dump('type Prices = array<float>\n');
+    expect(out).toContain('stmtList[0]: TypeAliasDecl @1:1 exported=false');
+    expect(out).toContain('aliasedType: GenericType @1:15');
+
+    const invalid = parseText('struct Prices = array<float>\n');
+    expect(invalid.errors.length).toBeGreaterThan(0);
+    expect(dumpFile(invalid.file)).not.toContain('TypeAliasDecl');
+  });
+
+  test('method parameters must carry explicit type annotations', () => {
+    const {file, errors} = parseText(
+      ['struct Counter', '    int add(qty) => qty', ''].join('\n'),
+    );
+    expect(errors.map(error => error.msg)).toContain(
+      'method parameters require explicit types',
+    );
+    expect(dumpFile(file)).toContain('paramType: TypeAnnotation @2:13');
+  });
 });
 
 describe('expressions', () => {

@@ -4,16 +4,16 @@ export type Band
     float upper
     float lower = 0.0
     array<float> history
+    Band widen(float k) =>
+        this.upper := this.upper * k
+        this.lower := this.lower / k
+        Band.new(this.upper, this.lower, this.history)
 type Pair
     int first
     int second
 enum Side
     long = "Long"
     short
-method widen(Band b, float k) =>
-    b.upper := b.upper * k
-    b.lower := b.lower / k
-    b
 export make(int size) =>
     Band.new(0.0, 0.0, array.new<float>(size))
 pairs = array.new<Pair>(0)

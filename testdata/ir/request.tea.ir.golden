@@ -5,7 +5,7 @@ series close: series float depth=none
 output[0] indicator static{title="Request"}
 output[1] plot static{title="Gap"} channels{series: float}
 output[2] plot static{title="PrevDaily"} channels{series: float}
-request[0] mode=sample result=float depth=none
+request[0] mode=sample context_order=0,1 result=float depth=none
   symbol: HistRead series:syminfo.tickerid: simple string
   timeframe: Const "D": const string
   child:
@@ -58,7 +58,7 @@ body:
   WriteName prev
     HistRead name:daily: series float
       offset: Const 1: const int
-  Emit output[1]
+  Emit output[1] eval=[0]
     HistRead name:gap: series float
-  Emit output[2]
+  Emit output[2] eval=[0]
     HistRead name:prev: series float

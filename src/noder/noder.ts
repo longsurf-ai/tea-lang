@@ -22,6 +22,7 @@ import {
   type Name as IrName,
   type OutputRefExpr,
   type Place,
+  type IrValuePath,
   type SwitchArm,
 } from '../ir/node';
 import {
@@ -51,6 +52,7 @@ import {
   VoidType,
   joinQualifiers,
   unifyTypes,
+  typesEqual,
   type ConstValue,
   type Type,
   type TypeAndValue,
@@ -64,6 +66,7 @@ import {
   CallKind,
   SelectionKind,
   type CheckedExpression,
+  type CheckedWritebackTarget,
   type FunctionInstance,
   type Info,
   type NativeCall,
@@ -241,6 +244,14 @@ class Noder {
     return object;
   }
 
+  private receiverUse(node: syntax.ThisExpr): VariableObject {
+    const object = this.info.uses.get(node);
+    if (object?.kind !== ObjectKind.Variable) {
+      return fatal('unresolved this reached the noder');
+    }
+    return object;
+  }
+
   private nameOf(object: VariableObject): IrName {
     let name = this.program.names.get(object);
     if (name === undefined) {
@@ -255,6 +266,23 @@ class Noder {
       this.program.names.set(object, name);
     }
     return name;
+  }
+
+  private pathOf(target: CheckedWritebackTarget): IrValuePath {
+    let type = target.root.type;
+    for (const field of target.fields) {
+      if (type.kind !== TypeKind.UserType || field.owner.type !== type) {
+        return fatal('non-canonical field path reached the noder');
+      }
+      type = field.type;
+    }
+    if (!typesEqual(type, target.receiver.tv.type)) {
+      return fatal('writeback path leaf type disagrees with receiver fact');
+    }
+    return {
+      root: this.nameOf(target.root),
+      fieldIndices: target.fields.map(field => field.index),
+    };
   }
 
   private builtinOf(
@@ -329,6 +357,14 @@ class Noder {
     nativeName: string | null = null,
   ): Type | null {
     if (typeof param.type !== 'string') {
+      if (
+        param.type.kind === 'type-param' ||
+        param.type.kind === 'array' ||
+        param.type.kind === 'matrix' ||
+        param.type.kind === 'map'
+      ) {
+        return null;
+      }
       return param.type;
     }
     if (param.type === TypeRef.Num) {
@@ -360,7 +396,8 @@ class Noder {
       case NodeKind.AssignStmt:
         return this.nodeAssign(stmt);
       case NodeKind.FuncDecl:
-      case NodeKind.TypeDecl:
+      case NodeKind.UserTypeDecl:
+      case NodeKind.TypeAliasDecl:
       case NodeKind.EnumDecl:
       case NodeKind.ImportStmt:
         // Compile-time declarations; nothing runs per bar. (Function bodies
@@ -534,18 +571,16 @@ class Noder {
       return [{kind: IrKind.WriteName, pos: a.pos, name, value: written}];
     }
     if (a.target.kind === NodeKind.SelectorExpr) {
-      const targetType = this.tvOf(a.target).type;
-      const selection = this.info.selections.get(a.target);
-      if (selection?.kind !== SelectionKind.Field) {
-        return fatal('unresolved field assignment reached the noder');
+      const target = this.info.updates.get(a);
+      if (target === undefined) {
+        return fatal('unchecked rooted field update reached the noder');
       }
       return [
         {
-          kind: IrKind.WriteField,
+          kind: IrKind.UpdateValuePath,
           pos: a.pos,
-          x: this.nodeExpr(a.target.x),
-          field: selection.field.name,
-          value: this.nodeExpr(a.value, targetType),
+          path: this.pathOf(target),
+          value: this.nodeExpr(a.value, target.receiver.tv.type),
         },
       ];
     }
@@ -585,6 +620,8 @@ class Noder {
       case NodeKind.Name:
       case NodeKind.SelectorExpr:
         return this.nodePlaceRead(e, tv);
+      case NodeKind.ThisExpr:
+        return this.read(this.nameOf(this.receiverUse(e)), e.pos);
       case NodeKind.BasicLit:
         return fatal('unfolded literal reached the noder');
       case NodeKind.UnaryExpr: {
@@ -722,7 +759,7 @@ class Noder {
   }
 
   // A Name or Selector read: ambient series, param/output reference
-  // bindings, UDT fields, or a plain name read.
+  // bindings, user-value fields, or a plain name read.
   private nodePlaceRead(
     e: syntax.Name | syntax.SelectorExpr,
     tv: TypeAndValue,
@@ -780,13 +817,20 @@ class Noder {
     if (selection?.kind !== SelectionKind.Field) {
       return fatal(`unresolved selector reached the noder: ${e.sel.value}`);
     }
+    const receiverType = this.tvOf(e.x).type;
+    if (
+      receiverType.kind !== TypeKind.UserType ||
+      selection.field.owner.type !== receiverType
+    ) {
+      return fatal('non-canonical field selection reached the noder');
+    }
     return {
       kind: IrKind.FieldGet,
       pos: e.pos,
       type: tv.type,
       qualifier: tv.qualifier,
       x: this.nodeExpr(e.x),
-      field: selection.field.name,
+      fieldIndex: selection.field.index,
     };
   }
 
@@ -796,15 +840,21 @@ class Noder {
       return fatal('unresolved call reached the noder');
     }
     if (resolved.kind === CallKind.Constructor) {
+      resolved.args.forEach((arg, index) => {
+        if (arg.field.owner !== resolved.type || arg.field.index !== index) {
+          return fatal('non-canonical constructor field order reached noder');
+        }
+      });
       return {
-        kind: IrKind.NewUdt,
+        kind: IrKind.NewUserValue,
         pos: c.pos,
         type: tv.type,
         qualifier: tv.qualifier,
-        udt: resolved.type.type,
+        userType: resolved.type.type,
         args: resolved.args.map(arg =>
           this.nodeChecked(arg.value, arg.field.type),
         ),
+        argumentEvaluationOrder: resolved.argumentEvaluationOrder,
       };
     }
     if (resolved.kind === CallKind.Function) {
@@ -815,18 +865,100 @@ class Noder {
           ? this.nodeExpr(provided, param.type)
           : this.nodeInstanceDefault(resolved.instance, i, param.type);
       });
-      return {
-        kind: IrKind.CallFunc,
+      const base = {
         pos: c.pos,
         type: tv.type,
         qualifier: tv.qualifier,
-        func,
         slot: this.mintSlot(),
         args,
+        argumentEvaluationOrder: resolved.argumentEvaluationOrder,
       };
+      switch (func.callMode) {
+        case 'free':
+          if (resolved.receiver !== null) {
+            return fatal(
+              `free function '${func.name}' has a checked method receiver`,
+            );
+          }
+          return {kind: IrKind.CallFunc, ...base, func};
+        case 'const-method': {
+          if (resolved.receiver?.mode !== 'const') {
+            return fatal(
+              `const method '${func.name}' lacks a checked const receiver`,
+            );
+          }
+          return {
+            kind: IrKind.CallConstMethod,
+            ...base,
+            func,
+            receiver: this.nodeChecked(
+              resolved.receiver.value,
+              func.receiver.type,
+            ),
+          };
+        }
+        case 'mutable-method': {
+          if (resolved.receiver?.mode !== 'mutable') {
+            return fatal(
+              `mutable method '${func.name}' lacks a checked writeback receiver`,
+            );
+          }
+          return {
+            kind: IrKind.CallMutableMethod,
+            ...base,
+            func,
+            path: this.pathOf(resolved.receiver.writeback),
+            receiver: this.nodeChecked(
+              resolved.receiver.value,
+              func.receiver.type,
+            ),
+          };
+        }
+      }
     }
     if (resolved.kind === CallKind.Request) {
       return this.nodeRequest(c, resolved, tv);
+    }
+    if (!typesEqual(resolved.resultType, tv.type)) {
+      return fatal(
+        `native '${resolved.native.name}' result facts disagree in the noder`,
+      );
+    }
+    if (resolved.receiver?.mode === 'inout') {
+      const argTypes: readonly Type[] | undefined = resolved.argTypes;
+      const receiverType = argTypes?.[0];
+      if (receiverType === undefined) {
+        return fatal(
+          `inout native '${resolved.native.name}' lacks a receiver type`,
+        );
+      }
+      if (resolved.args[0] !== resolved.receiver.value.expr) {
+        return fatal(
+          `inout native '${resolved.native.name}' receiver is not argument 0`,
+        );
+      }
+      const receiver = this.nodeChecked(resolved.receiver.value, receiverType);
+      if (
+        receiver.type.kind !== TypeKind.Array &&
+        receiver.type.kind !== TypeKind.Matrix &&
+        receiver.type.kind !== TypeKind.Map
+      ) {
+        return fatal(
+          `non-collection inout native '${resolved.native.name}' reached collection noding`,
+        );
+      }
+      const lowered = this.nodeNativeArgs(c, resolved, 1);
+      return {
+        kind: IrKind.MutateCollection,
+        pos: c.pos,
+        type: tv.type,
+        qualifier: tv.qualifier,
+        path: this.pathOf(resolved.receiver.writeback),
+        receiver,
+        operation: resolved.native.name,
+        args: lowered.args,
+        argumentEvaluationOrder: lowered.argumentEvaluationOrder,
+      };
     }
     switch (resolved.native.effect) {
       case Effect.Param: {
@@ -849,45 +981,65 @@ class Noder {
           'declaration call in expression position reached the noder',
         );
       default: {
-        // Provided args in param order; omitted middles become na, omitted
-        // trailing optionals are dropped (the runtime applies defaults).
-        const provided = [...resolved.args];
-        while (provided.length > 0 && provided[provided.length - 1] === null) {
-          provided.pop();
-        }
+        const lowered = this.nodeNativeArgs(c, resolved);
         return {
           kind: IrKind.CallNative,
           pos: c.pos,
           type: tv.type,
           qualifier: tv.qualifier,
           native: resolved.native.name,
-          slot: null,
-          args: provided.map((arg, i) =>
-            arg !== null
-              ? this.nodeExpr(
-                  arg,
-                  this.nativeExpectedType(
-                    resolved.native.params[
-                      Math.min(i, resolved.native.params.length - 1)
-                    ],
-                    tv.type,
-                    resolved.native.name,
-                  ),
-                )
-              : this.naConst(
-                  c.pos,
-                  this.nativeExpectedType(
-                    resolved.native.params[
-                      Math.min(i, resolved.native.params.length - 1)
-                    ],
-                    tv.type,
-                    resolved.native.name,
-                  ) ?? FloatType,
-                ),
-          ),
+          slot: resolved.native.stateful ? this.mintSlot() : null,
+          args: lowered.args,
+          argumentEvaluationOrder: lowered.argumentEvaluationOrder,
         };
       }
     }
+  }
+
+  // NativeCall already owns the instantiated argument types. Noding consumes
+  // those exact facts; it never repeats generic inference. Omitted middles
+  // become typed na while omitted trailing optionals remain runtime defaults.
+  private nodeNativeArgs(
+    c: syntax.CallExpr,
+    resolved: NativeCall,
+    start = 0,
+  ): {
+    readonly args: IrExpr[];
+    readonly argumentEvaluationOrder: readonly number[];
+  } {
+    const argTypes: readonly Type[] | undefined = resolved.argTypes;
+    if (argTypes === undefined) {
+      return fatal(
+        `native '${resolved.native.name}' lacks instantiated argument types`,
+      );
+    }
+    const provided = [...resolved.args];
+    while (provided.length > start && provided[provided.length - 1] === null) {
+      provided.pop();
+    }
+    const args = provided.slice(start).map((arg, relativeIndex) => {
+      const index = start + relativeIndex;
+      const expected = argTypes[index];
+      if (expected === undefined) {
+        return fatal(
+          `native '${resolved.native.name}' lacks argument type ${index}`,
+        );
+      }
+      return arg !== null
+        ? this.nodeExpr(arg, expected)
+        : this.naConst(c.pos, expected);
+    });
+    const requestedOrder = resolved.argumentEvaluationOrder
+      .filter(index => index >= start && index < provided.length)
+      .map(index => index - start);
+    const seen = new Set(requestedOrder);
+    const syntheticOrder = args.flatMap((_arg, index) =>
+      seen.has(index) ? [] : [index],
+    );
+    return {
+      args,
+      argumentEvaluationOrder: [...requestedOrder, ...syntheticOrder],
+    };
   }
 
   // `x[k]`: history through a readable place, or the synthetic-slot policy
@@ -1094,6 +1246,23 @@ class Noder {
     ) {
       return fatal('request call matched without its required arguments');
     }
+    const symbolIndex = resolved.native.params.findIndex(
+      param => param.name === 'symbol',
+    );
+    const timeframeIndex = resolved.native.params.findIndex(
+      param => param.name === 'timeframe',
+    );
+    const contextArgumentEvaluationOrder = resolved.argumentEvaluationOrder
+      .filter(index => index === symbolIndex || index === timeframeIndex)
+      .map(index => (index === symbolIndex ? 0 : 1));
+    if (
+      contextArgumentEvaluationOrder.length !== 2 ||
+      new Set(contextArgumentEvaluationOrder).size !== 2
+    ) {
+      return fatal(
+        `request native '${resolved.native.name}' has an invalid parent-context evaluation order`,
+      );
+    }
 
     // Parent-context pieces first.
     const symbol = this.nodeExpr(symbolExpr, this.tvOf(symbolExpr).type);
@@ -1172,6 +1341,7 @@ class Noder {
       pos: c.pos,
       symbol,
       timeframe,
+      contextArgumentEvaluationOrder,
       merge,
       resultName,
       resultType: resolved.resultType,
@@ -1220,9 +1390,9 @@ class Noder {
   // ---- functions ------------------------------------------------------------
 
   // One IrFunc per checker instance and Program: the body nodes once against
-  // the instance's Info, under its own frame-local slot counter (each
-  // CallFunc inside selects a sub-frame of THIS func's frame). Recursion
-  // cannot occur — the checker rejected cyclic call graphs.
+  // the instance's Info, under its own frame-local slot counter (each user
+  // call inside selects a sub-frame of THIS func's frame). Recursion cannot
+  // occur — the checker rejected cyclic call graphs.
   private funcOf(instance: FunctionInstance): IrFunc {
     const existing = this.program.funcs.get(instance);
     if (existing !== undefined) {
@@ -1238,11 +1408,17 @@ class Noder {
         object.kind === ObjectKind.Variable && !paramSet.has(object),
     );
     const params = instance.params.map(param => this.nameOf(param));
+    const receiver =
+      instance.receiver === null ? null : this.nameOf(instance.receiver);
     const locals = localObjects.map(local => this.nameOf(local));
     this.frame = {
       kind: 'function',
       program: this.program,
-      names: new Set([...params, ...locals]),
+      names: new Set([
+        ...(receiver === null ? [] : [receiver]),
+        ...params,
+        ...locals,
+      ]),
       nextSlot: 0,
     };
     this.nesting += 1;
@@ -1254,7 +1430,7 @@ class Noder {
     this.nesting = savedNesting;
     this.info = savedInfo;
     this.frame = savedFrame;
-    const func: IrFunc = {
+    const base = {
       name: instance.name,
       params,
       locals,
@@ -1262,6 +1438,24 @@ class Noder {
       resultQualifier: instance.resultQualifier,
       body,
     };
+    const declarationReceiver = instance.template.receiver;
+    let func: IrFunc;
+    if (declarationReceiver === null) {
+      if (receiver !== null) {
+        return fatal(
+          `free function '${instance.name}' has a hidden receiver instance`,
+        );
+      }
+      func = {...base, callMode: 'free'};
+    } else {
+      if (receiver === null) {
+        return fatal(`method '${instance.name}' lacks a hidden receiver`);
+      }
+      func =
+        declarationReceiver.mode === 'const'
+          ? {...base, callMode: 'const-method', receiver}
+          : {...base, callMode: 'mutable-method', receiver};
+    }
     this.program.funcs.set(instance, func);
     return func;
   }
@@ -1428,7 +1622,8 @@ class Noder {
     c: syntax.CallExpr,
     resolved: NativeCall,
   ): OutputRefExpr {
-    const {output, emitArgs} = this.partitionOutput(resolved);
+    const {output, emitArgs, emitArgumentEvaluationOrder} =
+      this.partitionOutput(resolved);
     this.outputs.push(output);
     if (emitArgs.length > 0) {
       this.emitted.push({
@@ -1436,6 +1631,7 @@ class Noder {
         pos: c.pos,
         output,
         args: emitArgs,
+        argumentEvaluationOrder: emitArgumentEvaluationOrder,
       });
     }
     const tv = this.tvOf(c);
@@ -1454,6 +1650,7 @@ class Noder {
   private partitionOutput(resolved: NativeCall): {
     output: OutputDecl;
     emitArgs: IrExpr[];
+    emitArgumentEvaluationOrder: number[];
   } {
     const staticArgs: {name: string; value: ConstValue}[] = [];
     const bindArgs: {name: string; expr: IrExpr}[] = [];
@@ -1462,6 +1659,8 @@ class Noder {
       type: OutputDecl['channels'][number]['type'];
     }[] = [];
     const emitArgs: IrExpr[] = [];
+    const bindIndexByArgument = new Map<number, number>();
+    const channelIndexByArgument = new Map<number, number>();
     resolved.args.forEach((arg, i) => {
       if (arg === null) {
         return;
@@ -1478,15 +1677,40 @@ class Noder {
         expr.kind === IrKind.OutputRef ||
         qualifierLE(tv.qualifier, Qualifier.Input)
       ) {
+        bindIndexByArgument.set(i, bindArgs.length);
         bindArgs.push({name: param.name, expr});
         return;
       }
       channels.push({name: param.name, type: tv.type});
+      channelIndexByArgument.set(i, emitArgs.length);
       emitArgs.push(expr);
     });
+    const bindArgumentEvaluationOrder = resolved.argumentEvaluationOrder
+      .map(index => bindIndexByArgument.get(index))
+      .filter((index): index is number => index !== undefined);
+    if (bindArgumentEvaluationOrder.length !== bindArgs.length) {
+      return fatal(
+        `output '${resolved.native.name}' lost a bind-argument evaluation-order entry`,
+      );
+    }
+    const emitArgumentEvaluationOrder = resolved.argumentEvaluationOrder
+      .map(index => channelIndexByArgument.get(index))
+      .filter((index): index is number => index !== undefined);
+    if (emitArgumentEvaluationOrder.length !== emitArgs.length) {
+      return fatal(
+        `output '${resolved.native.name}' lost a channel evaluation-order entry`,
+      );
+    }
     return {
-      output: {effect: resolved.native.name, staticArgs, bindArgs, channels},
+      output: {
+        effect: resolved.native.name,
+        staticArgs,
+        bindArgs,
+        bindArgumentEvaluationOrder,
+        channels,
+      },
       emitArgs,
+      emitArgumentEvaluationOrder,
     };
   }
 }

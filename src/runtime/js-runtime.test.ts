@@ -4,8 +4,9 @@ import {describe, expect, test} from 'bun:test';
 import {Storage} from '../ir/node';
 import {
   BindError,
-  ValueClass,
+  type AggregateLayoutManifest,
   type DataProvider,
+  type ModuleCode,
   type OutputSink,
   type ProviderContext,
   type SeriesData,
@@ -14,6 +15,11 @@ import {
   type Value,
 } from './abi';
 import {bind} from './js-runtime';
+
+const NUMBER_LAYOUT = 0;
+const TEST_LAYOUTS = {
+  layouts: [{kind: 'number', numeric: 'float'}],
+} as const satisfies AggregateLayoutManifest;
 
 // ---- test doubles -----------------------------------------------------------
 
@@ -79,7 +85,8 @@ function num(v: Value): number {
 // plot(e)
 
 const EMA_MODULE: TeaModule = {
-  abi: 2,
+  abi: 3,
+  aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
@@ -91,7 +98,7 @@ const EMA_MODULE: TeaModule = {
           {
             storage: Storage.Var,
             depth: {kind: 'none'},
-            valueClass: ValueClass.Numeric,
+            layout: NUMBER_LAYOUT,
           },
         ],
         subs: [],
@@ -130,7 +137,8 @@ describe('historical execution', () => {
 // counter() => var c = 0; c := c + 1; c
 
 const COUNTER_MODULE: TeaModule = {
-  abi: 2,
+  abi: 3,
+  aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
@@ -152,7 +160,7 @@ const COUNTER_MODULE: TeaModule = {
           {
             storage: Storage.Var,
             depth: {kind: 'none'},
-            valueClass: ValueClass.Numeric,
+            layout: NUMBER_LAYOUT,
           },
         ],
         subs: [],
@@ -170,8 +178,8 @@ const COUNTER_MODULE: TeaModule = {
     },
   },
   main(rt, fr) {
-    const a = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0));
-    const b = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 1));
+    const a = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0)) as Value;
+    const b = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 1)) as Value;
     rt.emit(0, 0, a);
     rt.emit(0, 1, b);
   },
@@ -198,7 +206,8 @@ describe('frames', () => {
 // x = close; plot(x[2])
 
 const HISTORY_MODULE: TeaModule = {
-  abi: 2,
+  abi: 3,
+  aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
@@ -210,7 +219,7 @@ const HISTORY_MODULE: TeaModule = {
           {
             storage: Storage.PerBar,
             depth: {kind: 'const', bars: 2},
-            valueClass: ValueClass.Numeric,
+            layout: NUMBER_LAYOUT,
           },
         ],
         subs: [],
@@ -251,7 +260,8 @@ describe('rings', () => {
 // x = close                       (perBar)
 
 const TICK_MODULE: TeaModule = {
-  abi: 2,
+  abi: 3,
+  aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
@@ -273,17 +283,17 @@ const TICK_MODULE: TeaModule = {
           {
             storage: Storage.Var,
             depth: {kind: 'none'},
-            valueClass: ValueClass.Numeric,
+            layout: NUMBER_LAYOUT,
           },
           {
             storage: Storage.Varip,
             depth: {kind: 'none'},
-            valueClass: ValueClass.Numeric,
+            layout: NUMBER_LAYOUT,
           },
           {
             storage: Storage.PerBar,
             depth: {kind: 'none'},
-            valueClass: ValueClass.Numeric,
+            layout: NUMBER_LAYOUT,
           },
         ],
         subs: [],
@@ -375,7 +385,8 @@ describe('provisional protocol', () => {
 // hline(level)  +  a bound-depth local read at offset len
 
 const BIND_MODULE: TeaModule = {
-  abi: 2,
+  abi: 3,
+  aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [
@@ -423,7 +434,7 @@ const BIND_MODULE: TeaModule = {
           {
             storage: Storage.PerBar,
             depth: {kind: 'bound'},
-            valueClass: ValueClass.Numeric,
+            layout: NUMBER_LAYOUT,
           },
         ],
         subs: [],
@@ -530,7 +541,7 @@ const CHILD_MODULE = {
           {
             storage: Storage.PerBar,
             depth: {kind: 'none'},
-            valueClass: ValueClass.Numeric,
+            layout: NUMBER_LAYOUT,
           },
         ],
         subs: [],
@@ -549,7 +560,7 @@ const CHILD_MODULE = {
     // Bind-time params are compilation-global: pid 0 is the PARENT's param.
     rt.write(fr, 0, rt.series(0, 0) * num(rt.param(0)));
   },
-} satisfies Omit<TeaModule, 'abi'>;
+} satisfies ModuleCode;
 
 function requestModule(merge: {
   gaps: boolean;
@@ -557,7 +568,8 @@ function requestModule(merge: {
   ignoreInvalidSymbol: boolean;
 }): TeaModule {
   return {
-    abi: 2,
+    abi: 3,
+    aggregateLayouts: TEST_LAYOUTS,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
       params: [
@@ -592,7 +604,7 @@ function requestModule(merge: {
           merge: {mode: 'sample', ...merge},
           depth: {kind: 'const', bars: 1},
           resultSlot: 0,
-          valueClass: ValueClass.Numeric,
+          layout: NUMBER_LAYOUT,
           dynamic: false,
         },
       ],
@@ -713,6 +725,7 @@ describe('requests', () => {
       sink,
     });
     bound.executeRow(0, false);
+    bound.commitRow(0);
     expect(sink.emits[0].channels.every(v => Number.isNaN(num(v)))).toBe(true);
   });
 
@@ -750,7 +763,7 @@ const IDENTITY_CHILD = {
           {
             storage: Storage.PerBar,
             depth: {kind: 'none'},
-            valueClass: ValueClass.Numeric,
+            layout: NUMBER_LAYOUT,
           },
         ],
         subs: [],
@@ -768,10 +781,11 @@ const IDENTITY_CHILD = {
   ) {
     rt.write(fr, 0, rt.series(0, 0));
   },
-} satisfies Omit<TeaModule, 'abi'>;
+} satisfies ModuleCode;
 
 const DYNAMIC_MODULE: TeaModule = {
-  abi: 2,
+  abi: 3,
+  aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     params: [],
@@ -795,7 +809,7 @@ const DYNAMIC_MODULE: TeaModule = {
         },
         depth: {kind: 'const', bars: 1},
         resultSlot: 0,
-        valueClass: ValueClass.Numeric,
+        layout: NUMBER_LAYOUT,
         dynamic: true,
       },
     ],
@@ -862,6 +876,26 @@ describe('dynamic requests', () => {
     });
     expect(bound.runAll()).rejects.toThrow('exceed the cap of 1');
   });
+
+  test('ignored-invalid dynamic pairs still consume the unique-context budget', async () => {
+    const invalidPairs: TeaModule = {
+      ...DYNAMIC_MODULE,
+      manifest: {
+        ...DYNAMIC_MODULE.manifest,
+        requests: DYNAMIC_MODULE.manifest.requests.map(request => ({
+          ...request,
+          merge: {...request.merge, ignoreInvalidSymbol: true},
+        })),
+      },
+    };
+    const bound = await bind(invalidPairs, {
+      params: {},
+      provider: contexts({'': parentSix()}),
+      sink: new RecordingSink(),
+      maxRequestContexts: 1,
+    });
+    await expect(bound.runAll()).rejects.toThrow('exceed the cap of 1');
+  });
 });
 
 const VARIP_DYNAMIC_MODULE: TeaModule = {
@@ -874,7 +908,7 @@ const VARIP_DYNAMIC_MODULE: TeaModule = {
           {
             storage: Storage.Varip,
             depth: {kind: 'none'},
-            valueClass: ValueClass.Numeric,
+            layout: NUMBER_LAYOUT,
           },
         ],
         subs: [],

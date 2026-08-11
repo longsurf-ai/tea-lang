@@ -63,6 +63,65 @@ function chr10(): string {
 }
 
 describe('hand-checked vectors', () => {
+  test('same-iteration collection aliases isolate mutations in both write orders', async () => {
+    const lines = await runSource(
+      [
+        'leftFirst = array.from(0)',
+        'leftFirstPeer = leftFirst',
+        'leftFirst.push(1)',
+        'leftFirstPeer.push(2)',
+        'plot(leftFirst.get(1))',
+        'plot(leftFirstPeer.get(1))',
+        'peerFirst = array.from(0)',
+        'peerFirstPeer = peerFirst',
+        'peerFirstPeer.push(3)',
+        'peerFirst.push(4)',
+        'plot(peerFirst.get(1))',
+        'plot(peerFirstPeer.get(1))',
+      ].join(chr10()),
+      seriesCsv([1]),
+    );
+    expect(lines.filter(line => !line.startsWith('#'))).toEqual([
+      '0 0 1',
+      '0 1 2',
+      '0 2 4',
+      '0 3 3',
+    ]);
+  });
+
+  test('nested receiver writeback preserves an argument-side sibling write', async () => {
+    const lines = await runSource(
+      [
+        'type Holder',
+        '    array<int> values',
+        '    int marker',
+        '    int setMarker(int value) =>',
+        '        this.marker := value',
+        '        this.marker',
+        'holder = Holder.new(array.from(1), 2)',
+        'holder.values.push(holder.setMarker(9))',
+        'plot(holder.values.get(1))',
+        'plot(holder.marker)',
+      ].join(chr10()),
+      seriesCsv([1]),
+    );
+    expect(lines.filter(line => !line.startsWith('#'))).toEqual([
+      '0 0 9',
+      '0 1 9',
+    ]);
+  });
+
+  test('eager ternary retains and executes an unselected fallible operand', async () => {
+    await expect(
+      runSource(
+        ['value = true ? 1 : array.new<int>().first()', 'plot(value)'].join(
+          chr10(),
+        ),
+        seriesCsv([1]),
+      ),
+    ).rejects.toThrow('EMPTY_COLLECTION');
+  });
+
   test('ta.sma matches hand-computed values', async () => {
     const lines = await runSource(
       'plot(ta.sma(close, 2))',
@@ -244,7 +303,7 @@ describe('hand-checked vectors', () => {
     ]);
   });
 
-  test('subject switch uses na-aware equality for reference values', async () => {
+  test('subject switch uses na-aware equality for nullable values', async () => {
     const lines = await runSource(
       [
         'color missing = na',

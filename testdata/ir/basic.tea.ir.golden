@@ -31,5 +31,5 @@ body:
     Binary Sub: series float
       HistRead series:close: series float
       HistRead name:prev: series float
-  Emit output[1]
+  Emit output[1] eval=[0]
     HistRead name:delta: series float

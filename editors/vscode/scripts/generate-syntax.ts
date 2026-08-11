@@ -1,8 +1,11 @@
 // Purpose: Generate the Tea TextMate grammar from compiler-owned syntax and semantic vocabulary.
 
 import {fatal} from '../../../src/base/print';
-import {BUILTIN_ANNOTATION_TYPES} from '../../../src/checker/check';
 import {CATALOG, Effect} from '../../../src/checker/catalog';
+import {
+  BUILTIN_ANNOTATION_TYPES,
+  COLLECTION_TYPE_CATALOG,
+} from '../../../src/checker/type-catalog';
 import {Qualifier} from '../../../src/ir/type';
 import {
   CONTEXTUAL_KEYWORDS,
@@ -22,8 +25,6 @@ const TYPE_SYNTAX =
 const MODES = [Tok.Var, Tok.Varip, Tok.Const] as const;
 const LOOP_KEYWORDS = [Tok.In, Tok.To, Tok.By] as const;
 const QUALIFIERS = [Qualifier.Simple, Qualifier.Series] as const;
-const COLLECTION_TYPES = ['array', 'matrix', 'map'] as const;
-
 function words(values: readonly string[]): string {
   return '\\b(?:' + values.join('|') + ')\\b';
 }
@@ -34,11 +35,11 @@ function sorted(values: Iterable<string>): string[] {
 
 function verifyContextualCoverage(): void {
   const handled: ReadonlySet<string> = new Set([
+    Tok.Struct,
     Tok.Type,
     Tok.Enum,
     Tok.Import,
     Tok.Export,
-    Tok.Method,
     Tok.To,
     Tok.By,
     Tok.In,
@@ -56,11 +57,11 @@ export function generateGrammar() {
   verifyContextualCoverage();
 
   const controls = RESERVED_KEYWORDS.filter(
-    word => !MODES.some(mode => mode === word),
+    word => !MODES.some(mode => mode === word) && word !== Tok.This,
   );
   const types = sorted([
     ...BUILTIN_ANNOTATION_TYPES.keys(),
-    ...COLLECTION_TYPES,
+    ...COLLECTION_TYPE_CATALOG.keys(),
   ]);
   const constants = sorted(
     [...CATALOG.vars.values()]
@@ -92,6 +93,8 @@ export function generateGrammar() {
       {include: '#imports'},
       {include: '#type-declarations'},
       {include: '#function-declarations'},
+      {include: '#receiver-keyword'},
+      {include: '#method-receiver-modifier'},
       {include: '#for-header'},
       {include: '#storage-modifiers'},
       {include: '#control-keywords'},
@@ -204,6 +207,29 @@ export function generateGrammar() {
               Tok.Type +
               ')(\\s+)(' +
               IDENTIFIER +
+              ')(\\s*)(=)(\\s*)(' +
+              TYPE_SYNTAX +
+              ')(?=\\s*(?://|/\\*|$))',
+            captures: {
+              '2': {name: 'storage.modifier.export.tea'},
+              '4': {name: 'storage.type.alias.declaration.tea'},
+              '6': {name: 'entity.name.type.alias.tea'},
+              '8': {name: 'keyword.operator.assignment.tea'},
+              '10': {name: 'entity.name.type.tea'},
+            },
+          },
+          {
+            match:
+              '^(\\s*)(?:(' +
+              Tok.Export +
+              ')(\\s+))?(' +
+              '(?:' +
+              Tok.Struct +
+              '|' +
+              Tok.Type +
+              ')' +
+              ')(\\s+)(' +
+              IDENTIFIER +
               ')(?=\\s*(?://|/\\*|$))',
             captures: {
               '2': {name: 'storage.modifier.export.tea'},
@@ -232,29 +258,19 @@ export function generateGrammar() {
         patterns: [
           {
             match:
-              '^(\\s*)(' +
-              Tok.Export +
-              ')(\\s+)(' +
-              Tok.Method +
+              '^(\\s+)(?:(' +
+              words(QUALIFIERS) +
+              ')(\\s+))?(' +
+              TYPE_SYNTAX +
               ')(\\s+)(' +
               IDENTIFIER +
-              ')(?=\\s*\\()',
+              ')(?=\\s*\\([^\\r\\n]*\\)\\s*(?:' +
+              Tok.Const +
+              '\\s*)?=>)',
             captures: {
-              '2': {name: 'storage.modifier.export.tea'},
-              '4': {name: 'storage.modifier.method.tea'},
+              '2': {name: 'storage.modifier.qualifier.tea'},
+              '4': {name: 'meta.type.return.tea'},
               '6': {name: 'entity.name.function.tea'},
-            },
-          },
-          {
-            match:
-              '^(\\s*)(' +
-              Tok.Method +
-              ')(\\s+)(' +
-              IDENTIFIER +
-              ')(?=\\s*\\()',
-            captures: {
-              '2': {name: 'storage.modifier.method.tea'},
-              '4': {name: 'entity.name.function.tea'},
             },
           },
           {
@@ -274,6 +290,19 @@ export function generateGrammar() {
             captures: {
               '2': {name: 'entity.name.function.tea'},
             },
+          },
+        ],
+      },
+      'receiver-keyword': {
+        patterns: [
+          {match: words([Tok.This]), name: 'variable.language.receiver.tea'},
+        ],
+      },
+      'method-receiver-modifier': {
+        patterns: [
+          {
+            match: words([Tok.Const]) + '(?=\\s*=>)',
+            name: 'storage.modifier.receiver.tea',
           },
         ],
       },

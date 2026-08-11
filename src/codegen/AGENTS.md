@@ -9,8 +9,9 @@ lowering plus the per-backend rules tables.
 
 - Dense ids (sid/pid/oid/fid/slots) are assigned here and published in the
   manifest; the runtime never re-derives them from the Program. Frame
-  ownership is explicit: a func owns its params + locals, the program frame
-  owns every remaining Name — never ownership by reachability.
+  ownership is explicit: a method owns its hidden receiver, and every func
+  owns its explicit params + locals; the program frame owns every remaining
+  Name — never ownership by reachability.
 - Only Time-Machine ops lower to rt calls; arithmetic, comparisons, math
   intrinsics, and na()/nz() expand inline via the rules tables in lower.ts.
   Backend-specific rendering decisions live only in those tables.
@@ -47,7 +48,13 @@ lowering plus the per-backend rules tables.
   noder guarantees dynamic reads are offset-null only (history rides
   materialized Names). Every module's code names its own funcs table via
   its const (`ctx.moduleRef`), never `M`.
-- Staged constructs (UDT execution, for-in/collections, collect merge,
+- User-value construction/field updates, array/map iteration, and collection
+  calls lower through exact ABI 3 layouts. Const and mutable method calls
+  capture the hidden receiver before explicit arguments; only mutable methods
+  perform one path writeback, and only after success.
+- Output bind arguments and per-bar channels evaluate in their Program-owned
+  source order before codegen assembles the canonical host argument order.
+- Staged constructs (matrix iteration, collect merge,
   request currency/calc_bars_count, unlisted natives) throw
   UnimplementedError at generation — exit 2, never wrong code.
 - Bound depth expressions may read root-frame immutable aliases and call

@@ -30,6 +30,18 @@ describe('inference and folding', () => {
     expect(initTvOf(r, 'b').value).toBe(true);
   });
 
+  test('eager ternaries fold only when every operand has a concrete value', () => {
+    const r = checkText(
+      [
+        'folded = true ? 1 : 2',
+        'fallible = true ? 1 : array.new<int>().first()',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+    expect(initTvOf(r, 'folded').value).toBe(1);
+    expect(initTvOf(r, 'fallible').value).toBeNull();
+  });
+
   test('fold values travel only through never-reassigned names', () => {
     const r = checkText(
       ['a = 2', 'b = a * 3', 'c = 1', 'c := 2', 'd = c * 3'].join('\n'),
@@ -218,8 +230,8 @@ describe('user-defined types', () => {
     expect(declaredName(r, 'fromDefault').qualifier).toBe(Qualifier.Series);
     expect(declaredName(r, 'fromExplicit').qualifier).toBe(Qualifier.Const);
     const sample = r.checked.pkg.scope.lookup('Sample');
-    expect(sample?.kind).toBe(ObjectKind.Udt);
-    if (sample?.kind === ObjectKind.Udt) {
+    expect(sample?.kind).toBe(ObjectKind.UserType);
+    if (sample?.kind === ObjectKind.UserType) {
       // As in Go structs, the declared type and semantic declaration graph
       // refer to the same canonical field objects.
       expect(sample.type.fields[0]).toBe(sample.fields[0]);
@@ -405,6 +417,7 @@ describe('native calls', () => {
     expect(resolved.args[1]).not.toBeNull();
     expect(resolved.args[2]).not.toBeNull();
     expect(resolved.args[3]).toBeNull();
+    expect(resolved.argumentEvaluationOrder).toEqual([0, 2, 1]);
   });
 
   test('overload selection: int stays int, mixing widens to float', () => {
@@ -566,7 +579,7 @@ describe('native calls', () => {
       ['input(1, confirm=true)', "unknown argument 'confirm'"],
       [
         'opts = ["a", "b"]\nx = input.string("a", options=opts)',
-        'direct tuple literal',
+        'tuple values are transport-only',
       ],
       ['x = input.string("a", options=[1, 2])', 'must have type string'],
       ['x = input.string("a", options=["b", "c"])', 'default must be one of'],
@@ -656,6 +669,22 @@ describe('native calls', () => {
 });
 
 describe('diagnostics', () => {
+  test('switch has at most one default arm and it is final', () => {
+    const nonFinal = checkText(
+      ['x = switch 1', '    => 10', '    1 => 20'].join('\n'),
+    );
+    expect(nonFinal.errors.map(error => error.msg)).toContain(
+      'switch default arm must be last',
+    );
+
+    const duplicate = checkText(
+      ['x = switch 1', '    => 10', '    => 20'].join('\n'),
+    );
+    expect(duplicate.errors.map(error => error.msg)).toContain(
+      'switch may contain only one default arm',
+    );
+  });
+
   test('invalid for-in targets remain user-facing errors', () => {
     const r = checkText(
       [
@@ -667,7 +696,7 @@ describe('diagnostics', () => {
       ].join('\n'),
     );
     expect(r.errors.map(error => error.msg)).toContain(
-      'for-in tuple pattern takes [index, value]',
+      'for-in tuple pattern takes two values',
     );
     expect(r.info.reassigned.has(declaredName(r, 'x'))).toBeTrue();
   });

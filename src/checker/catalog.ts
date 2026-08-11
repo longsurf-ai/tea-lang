@@ -17,27 +17,51 @@ import {
 } from '../ir/type';
 
 // TypeRef.Num accepts anything assignable to float (int, float, na);
-// overloads express result-type differences. TypeRef.Any accepts every value
-// type (na(), str.tostring()).
+// overloads express result-type differences. StringConvertible is the
+// observable scalar/enum/resource domain; aggregate host representations are
+// deliberately not part of Tea semantics.
 export const TypeRef = {
   Num: 'num',
   Any: 'any',
   Enum: 'enum',
   Nullable: 'nullable',
+  StringConvertible: 'string-convertible',
 } as const;
+
+export interface NativeTypeParam {
+  readonly name: string;
+  readonly constraint: 'storable' | 'map-key';
+}
+
+export interface TypeParamRef {
+  readonly kind: 'type-param';
+  readonly name: string;
+}
+
+export type GenericTypeRef =
+  | TypeParamRef
+  | {readonly kind: 'array'; readonly element: NativeTypeRef}
+  | {readonly kind: 'matrix'; readonly element: NativeTypeRef}
+  | {
+      readonly kind: 'map';
+      readonly key: NativeTypeRef;
+      readonly value: NativeTypeRef;
+    };
 
 export type NativeTypeRef =
   | Type
   | typeof TypeRef.Num
   | typeof TypeRef.Any
   | typeof TypeRef.Enum
-  | typeof TypeRef.Nullable;
+  | typeof TypeRef.Nullable
+  | typeof TypeRef.StringConvertible
+  | GenericTypeRef;
 
 // A result whose nominal type is selected by the first argument. input.enum
 // is the canonical case: every enum declaration is a distinct type, so the
 // catalog cannot name one concrete result ahead of overload matching.
 export const FirstArgumentResult = 'first-argument';
-export type NativeResult = Type | typeof FirstArgumentResult;
+export type NativeResult = Type | GenericTypeRef | typeof FirstArgumentResult;
 
 export type InputDisplay = 'all' | 'none' | 'data_window' | 'status_line';
 
@@ -60,6 +84,7 @@ export interface NativeParam {
   // this argument in a child context and the noder compiles it into a child
   // Program instead of evaluating it in place.
   readonly capture: boolean;
+  readonly mode: 'value' | 'inout';
 }
 
 // The effect class selects the compilation and runtime protocol of a call:
@@ -90,6 +115,7 @@ export type ResultQualifier = Qualifier | typeof JoinResult;
 // One overload of a native function.
 export interface NativeFunc {
   readonly name: string;
+  readonly typeParams: readonly NativeTypeParam[];
   readonly params: readonly NativeParam[];
   readonly result: NativeResult;
   readonly resultQualifier: ResultQualifier;
@@ -125,6 +151,7 @@ interface NativeParamOptions {
   readonly variadic?: boolean;
   readonly capture?: boolean;
   readonly acceptsNa?: boolean;
+  readonly mode?: 'value' | 'inout';
 }
 
 function req(
@@ -142,6 +169,7 @@ function req(
     acceptsNa: opts.acceptsNa ?? true,
     variadic: opts.variadic ?? false,
     capture: opts.capture ?? false,
+    mode: opts.mode ?? 'value',
   };
 }
 
@@ -164,6 +192,7 @@ function func(
 ): NativeFunc {
   return {
     name,
+    typeParams: [],
     params,
     result,
     resultQualifier,
@@ -171,6 +200,16 @@ function func(
     stateful: false,
     inputDefaultDisplay,
   };
+}
+
+function genericFunc(
+  name: string,
+  typeParams: readonly NativeTypeParam[],
+  params: readonly NativeParam[],
+  result: NativeResult,
+  resultQualifier: ResultQualifier,
+): NativeFunc {
+  return {...func(name, params, result, resultQualifier), typeParams};
 }
 
 function variable(
@@ -903,7 +942,7 @@ function buildFuncs(): NativeFunc[] {
     ),
     func(
       'str.tostring',
-      [req('value', TypeRef.Any, Qualifier.Series)],
+      [req('value', TypeRef.StringConvertible, Qualifier.Series)],
       StringType,
       JoinResult,
     ),
@@ -927,6 +966,230 @@ function buildFuncs(): NativeFunc[] {
       ColorType,
       JoinResult,
     ),
+  );
+
+  const t: TypeParamRef = {kind: 'type-param', name: 'T'};
+  const k: TypeParamRef = {kind: 'type-param', name: 'K'};
+  const v: TypeParamRef = {kind: 'type-param', name: 'V'};
+  const arrayT: GenericTypeRef = {kind: 'array', element: t};
+  const matrixT: GenericTypeRef = {kind: 'matrix', element: t};
+  const mapKV: GenericTypeRef = {kind: 'map', key: k, value: v};
+  const storableT: readonly NativeTypeParam[] = [
+    {name: 'T', constraint: 'storable'},
+  ];
+  const mapKVParams: readonly NativeTypeParam[] = [
+    {name: 'K', constraint: 'map-key'},
+    {name: 'V', constraint: 'storable'},
+  ];
+  const self = (
+    type: NativeTypeRef,
+    mode: 'value' | 'inout' = 'value',
+  ): NativeParam => req('self', type, Qualifier.Series, {mode});
+
+  // Collections are host primitives because persistent storage and atomic
+  // rooted writeback cannot be expressed in Tea source. Namespace and method
+  // spellings resolve to these same catalog entries.
+  funcs.push(
+    genericFunc('array.new', storableT, [], arrayT, Qualifier.Const),
+    genericFunc(
+      'array.new',
+      storableT,
+      [
+        req('size', IntType, Qualifier.Series, {acceptsNa: false}),
+        req('initial', t, Qualifier.Series),
+      ],
+      arrayT,
+      JoinResult,
+    ),
+    genericFunc(
+      'array.from',
+      storableT,
+      [opt('values', t, Qualifier.Series, {variadic: true})],
+      arrayT,
+      JoinResult,
+    ),
+    genericFunc('array.size', storableT, [self(arrayT)], IntType, JoinResult),
+    genericFunc(
+      'array.is_empty',
+      storableT,
+      [self(arrayT)],
+      BoolType,
+      JoinResult,
+    ),
+    genericFunc(
+      'array.get',
+      storableT,
+      [self(arrayT), req('index', IntType, Qualifier.Series)],
+      t,
+      JoinResult,
+    ),
+    genericFunc('array.first', storableT, [self(arrayT)], t, JoinResult),
+    genericFunc('array.last', storableT, [self(arrayT)], t, JoinResult),
+    genericFunc(
+      'array.set',
+      storableT,
+      [
+        self(arrayT, 'inout'),
+        req('index', IntType, Qualifier.Series),
+        req('value', t, Qualifier.Series),
+      ],
+      VoidType,
+      JoinResult,
+    ),
+    genericFunc(
+      'array.push',
+      storableT,
+      [self(arrayT, 'inout'), req('value', t, Qualifier.Series)],
+      VoidType,
+      JoinResult,
+    ),
+    genericFunc('array.pop', storableT, [self(arrayT, 'inout')], t, JoinResult),
+    genericFunc(
+      'array.clear',
+      storableT,
+      [self(arrayT, 'inout')],
+      VoidType,
+      JoinResult,
+    ),
+    genericFunc('array.copy', storableT, [self(arrayT)], arrayT, JoinResult),
+    genericFunc('matrix.new', storableT, [], matrixT, Qualifier.Const),
+    genericFunc(
+      'matrix.new',
+      storableT,
+      [
+        req('rows', IntType, Qualifier.Series, {acceptsNa: false}),
+        req('columns', IntType, Qualifier.Series, {acceptsNa: false}),
+        req('initial', t, Qualifier.Series),
+      ],
+      matrixT,
+      JoinResult,
+    ),
+    genericFunc('matrix.rows', storableT, [self(matrixT)], IntType, JoinResult),
+    genericFunc(
+      'matrix.columns',
+      storableT,
+      [self(matrixT)],
+      IntType,
+      JoinResult,
+    ),
+    genericFunc(
+      'matrix.elements_count',
+      storableT,
+      [self(matrixT)],
+      IntType,
+      JoinResult,
+    ),
+    genericFunc(
+      'matrix.get',
+      storableT,
+      [
+        self(matrixT),
+        req('row', IntType, Qualifier.Series),
+        req('column', IntType, Qualifier.Series),
+      ],
+      t,
+      JoinResult,
+    ),
+    genericFunc(
+      'matrix.set',
+      storableT,
+      [
+        self(matrixT, 'inout'),
+        req('row', IntType, Qualifier.Series),
+        req('column', IntType, Qualifier.Series),
+        req('value', t, Qualifier.Series),
+      ],
+      VoidType,
+      JoinResult,
+    ),
+    genericFunc(
+      'matrix.fill',
+      storableT,
+      [self(matrixT, 'inout'), req('value', t, Qualifier.Series)],
+      VoidType,
+      JoinResult,
+    ),
+    genericFunc(
+      'matrix.row',
+      storableT,
+      [self(matrixT), req('row', IntType, Qualifier.Series)],
+      arrayT,
+      JoinResult,
+    ),
+    genericFunc(
+      'matrix.column',
+      storableT,
+      [self(matrixT), req('column', IntType, Qualifier.Series)],
+      arrayT,
+      JoinResult,
+    ),
+    genericFunc('matrix.copy', storableT, [self(matrixT)], matrixT, JoinResult),
+    genericFunc('map.new', mapKVParams, [], mapKV, Qualifier.Const),
+    genericFunc('map.size', mapKVParams, [self(mapKV)], IntType, JoinResult),
+    genericFunc(
+      'map.is_empty',
+      mapKVParams,
+      [self(mapKV)],
+      BoolType,
+      JoinResult,
+    ),
+    genericFunc(
+      'map.contains',
+      mapKVParams,
+      [self(mapKV), req('key', k, Qualifier.Series, {acceptsNa: false})],
+      BoolType,
+      JoinResult,
+    ),
+    genericFunc(
+      'map.get',
+      mapKVParams,
+      [self(mapKV), req('key', k, Qualifier.Series, {acceptsNa: false})],
+      v,
+      JoinResult,
+    ),
+    genericFunc(
+      'map.put',
+      mapKVParams,
+      [
+        self(mapKV, 'inout'),
+        req('key', k, Qualifier.Series, {acceptsNa: false}),
+        req('value', v, Qualifier.Series),
+      ],
+      VoidType,
+      JoinResult,
+    ),
+    genericFunc(
+      'map.remove',
+      mapKVParams,
+      [
+        self(mapKV, 'inout'),
+        req('key', k, Qualifier.Series, {acceptsNa: false}),
+      ],
+      v,
+      JoinResult,
+    ),
+    genericFunc(
+      'map.clear',
+      mapKVParams,
+      [self(mapKV, 'inout')],
+      VoidType,
+      JoinResult,
+    ),
+    genericFunc(
+      'map.keys',
+      mapKVParams,
+      [self(mapKV)],
+      {kind: 'array', element: k},
+      JoinResult,
+    ),
+    genericFunc(
+      'map.values',
+      mapKVParams,
+      [self(mapKV)],
+      {kind: 'array', element: v},
+      JoinResult,
+    ),
+    genericFunc('map.copy', mapKVParams, [self(mapKV)], mapKV, JoinResult),
   );
 
   return funcs;

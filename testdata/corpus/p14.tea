@@ -13,17 +13,17 @@ type AMACalculator
     float value_prev = na
     float velocity = 0.0
     float filterBand = 0.0
-method calc(AMACalculator this, float src, int lengthER, int fastLen, int slowLen, float g) =>
-    float change     = math.abs(src - src[lengthER])
-    float volatility = math.sum(math.abs(src - src[1]), lengthER)
-    float ER         = volatility == 0 ? 0 : change / volatility
-    float fastest = 2.0 / (fastLen + 1)
-    float slowest = 2.0 / (slowLen + 1)
-    float sc      = math.pow(ER * (fastest - slowest) + slowest, 2)
-    this.value_prev := this.value
-    float prevAma = na(this.value_prev) ? src : this.value_prev
-    this.value   := prevAma + sc * (src - prevAma)
-    this.velocity   := this.value - prevAma
+    float calc(float src, int lengthER, int fastLen, int slowLen, float g) =>
+        float change     = math.abs(src - src[lengthER])
+        float volatility = math.sum(math.abs(src - src[1]), lengthER)
+        float ER         = volatility == 0 ? 0 : change / volatility
+        float fastest = 2.0 / (fastLen + 1)
+        float slowest = 2.0 / (slowLen + 1)
+        float sc      = math.pow(ER * (fastest - slowest) + slowest, 2)
+        this.value_prev := this.value
+        float prevAma = na(this.value_prev) ? src : this.value_prev
+        this.value   := prevAma + sc * (src - prevAma)
+        this.velocity   := this.value - prevAma
 var AMACalculator amaObj = AMACalculator.new(na, na, 0.0, 0.0)
 amaObj.calc(close, n, fastLength, slowLength, gamma)
 float sigma = ta.stdev(amaGlobalSeries, n)

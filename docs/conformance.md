@@ -25,6 +25,12 @@ manifest spec, bound value, and evaluated `active` flag. This makes UI metadata
 and parameter-dependent enablement part of the compile-through contract rather
 than incidental source that merely has to typecheck.
 
+The `aggregate-values` compile-through case is also the executable lock for
+user-value and collection copying, mutable-method receiver writeback, and
+`const` method reads through history. Its expected rows are Tea-owned contract
+values derived from [memory-model.md](memory-model.md), not copied runtime
+output.
+
 ## Reference ownership
 
 Differential references must be independent of Tea. The initial common subset
@@ -34,8 +40,8 @@ the current Tea output into the reference, or reach the network. A Tea-owned
 compile-through contract may use `oracle.kind = "tea-contract"`; a differential
 case may not.
 
-JSON `null` represents `na` for a numeric expected channel and reference `null`
-for a reference-typed channel. Each reference declares non-negative absolute
+JSON `null` represents `na` for a numeric expected channel and typed-empty
+`null` for a nullable channel. Each reference declares non-negative absolute
 and relative tolerances; zero means exact comparison.
 
 There is intentionally no `UPDATE_GOLDENS` mode or reference generator. To

@@ -8,6 +8,7 @@ import {
   type HistoryDepth,
   type IrExpr,
   type IrStmt,
+  type IrValuePath,
   type Name,
   type Place,
 } from './node';
@@ -120,6 +121,9 @@ export function dumpProgram(program: Program): string {
     out.push(
       `output[${i}] ${output.effect}` +
         (statics.length > 0 ? ` static{${statics}}` : '') +
+        (output.bindArgs.length > 0
+          ? ` bind_eval=[${output.bindArgumentEvaluationOrder.join(',')}]`
+          : '') +
         (channels.length > 0 ? ` channels{${channels}}` : ''),
     );
     for (const bind of output.bindArgs) {
@@ -135,6 +139,7 @@ export function dumpProgram(program: Program): string {
       m.lookahead ? 'lookahead' : null,
       m.ignoreInvalidSymbol ? 'ignore_invalid' : null,
       m.currency !== null ? `currency=${m.currency}` : null,
+      `context_order=${edge.contextArgumentEvaluationOrder.join(',')}`,
       `result=${formatType(edge.resultType)}`,
     ]
       .filter(part => part !== null)
@@ -166,8 +171,13 @@ export function dumpProgram(program: Program): string {
     const params = func.params
       .map(p => `${labels.name(p)}: ${p.qualifier} ${formatType(p.type)}`)
       .join(', ');
+    const receiver =
+      func.callMode === 'free'
+        ? ''
+        : ` receiver=${labels.name(func.receiver)}: ${func.receiver.qualifier} ${formatType(func.receiver.type)}`;
+    const label = func.callMode === 'free' ? 'func' : func.callMode;
     out.push(
-      `func ${func.name}(${params}): ${func.resultQualifier} ${formatType(func.resultType)}`,
+      `${label} ${func.name}(${params})${receiver}: ${func.resultQualifier} ${formatType(func.resultType)}`,
     );
     dumpExpr(func.body, 'body: ', '  ', out, labels);
   }
@@ -220,6 +230,11 @@ function placeLabel(place: Place, labels: Labels): string {
   }
 }
 
+function pathLabel(path: IrValuePath, labels: Labels): string {
+  const fields = path.fieldIndices.map(index => `[${index}]`).join('');
+  return `${labels.name(path.root)}${fields}`;
+}
+
 function dumpStmt(
   stmt: IrStmt,
   label: string,
@@ -236,13 +251,16 @@ function dumpStmt(
       out.push(`${indent}${label}WriteName ${labels.name(stmt.name)}`);
       dumpExpr(stmt.value, '', `${indent}  `, out, labels);
       return;
-    case IrKind.WriteField:
-      out.push(`${indent}${label}WriteField .${stmt.field}`);
-      dumpExpr(stmt.x, 'x: ', `${indent}  `, out, labels);
+    case IrKind.UpdateValuePath:
+      out.push(
+        `${indent}${label}UpdateValuePath ${pathLabel(stmt.path, labels)}`,
+      );
       dumpExpr(stmt.value, 'value: ', `${indent}  `, out, labels);
       return;
     case IrKind.Emit:
-      out.push(`${indent}${label}Emit ${labels.output(stmt.output)}`);
+      out.push(
+        `${indent}${label}Emit ${labels.output(stmt.output)} eval=[${stmt.argumentEvaluationOrder.join(',')}]`,
+      );
       for (const arg of stmt.args) {
         dumpExpr(arg, '', `${indent}  `, out, labels);
       }
@@ -306,14 +324,37 @@ function dumpExpr(
         child(arg);
       }
       return;
+    case IrKind.CallConstMethod:
+      line(` ${expr.func.name} slot=${expr.slot}`);
+      child(expr.receiver, 'receiver: ');
+      for (const arg of expr.args) {
+        child(arg);
+      }
+      return;
+    case IrKind.CallMutableMethod:
+      line(
+        ` ${expr.func.name} path=${pathLabel(expr.path, labels)} slot=${expr.slot}`,
+      );
+      child(expr.receiver, 'receiver: ');
+      for (const arg of expr.args) {
+        child(arg);
+      }
+      return;
     case IrKind.CallNative:
       line(` ${expr.native}${expr.slot !== null ? ` slot=${expr.slot}` : ''}`);
       for (const arg of expr.args) {
         child(arg);
       }
       return;
-    case IrKind.NewUdt:
-      line(` ${expr.udt.name}`);
+    case IrKind.MutateCollection:
+      line(` ${expr.operation} path=${pathLabel(expr.path, labels)}`);
+      child(expr.receiver, 'receiver: ');
+      for (const arg of expr.args) {
+        child(arg);
+      }
+      return;
+    case IrKind.NewUserValue:
+      line(` ${expr.userType.name}`);
       for (const arg of expr.args) {
         child(arg);
       }
@@ -329,7 +370,7 @@ function dumpExpr(
       child(expr.x);
       return;
     case IrKind.FieldGet:
-      line(` .${expr.field}`);
+      line(` field[${expr.fieldIndex}]`);
       child(expr.x);
       return;
     case IrKind.IfExpr:

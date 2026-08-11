@@ -1,4 +1,7 @@
 //@version=1
+struct(value) => value
+type ContextualNames
+    int struct
 getMA(src, len, type) =>
     switch type
         "EMA" => ta.ema(src, len)
@@ -11,4 +14,4 @@ in = by
 as = in
 enum = as
 import = enum
-result = getMA(close, 14, "EMA") + import
+result = getMA(close, 14, "EMA") + import + struct(1)
