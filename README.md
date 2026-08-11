@@ -44,6 +44,14 @@ The VS Code/Cursor extension under [`editors/vscode`](editors/vscode) provides
 syntax highlighting, comment commands, bracket pairing, and indentation-aware
 folding for `.tea` files. See its README for packaging and installation.
 
+## Documentation
+
+The language documentation lives in [`docs`](docs), with the Docusaurus shell
+in [`website`](website). Run `bun run docs:dev` while writing, or
+`bun run docs:check` to verify generated references and the production build.
+Installed Tea releases include that static build, so `tea docs` serves the
+matching documentation locally and opens it in a browser.
+
 ## Why is
 
 ## Execution Model

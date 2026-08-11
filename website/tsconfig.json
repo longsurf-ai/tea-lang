@@ -1,0 +1,15 @@
+{
+  "extends": "@docusaurus/tsconfig",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "strict": true,
+    "types": ["@docusaurus/module-type-aliases", "bun"]
+  },
+  "include": [
+    "docusaurus.config.ts",
+    "sidebars.ts",
+    "scripts/**/*.ts",
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ]
+}

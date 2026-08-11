@@ -13,5 +13,12 @@
     "isolatedModules": true
   },
   // runtime.ts at the package root is design notes, not compiling source.
-  "include": ["src", "editors/vscode/scripts", "editors/vscode/test"]
+  "include": [
+    "src",
+    "editors/vscode/scripts",
+    "editors/vscode/test",
+    "website/docusaurus.config.ts",
+    "website/sidebars.ts",
+    "website/scripts"
+  ]
 }

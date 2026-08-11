@@ -2,13 +2,14 @@
 // Purpose: CLI entry point — Commander argument parsing and process I/O only; all compilation lives in compile.ts. Sole owner of error printing and exit codes; run presentation is delegated to providers sinks.
 
 import {readFileSync, writeFileSync} from 'node:fs';
-import {Command} from 'commander';
+import {Command, InvalidArgumentError} from 'commander';
 import {DEFAULT_COMPILE_CONFIG} from './base/config';
 import {configureLog, parseLogLevel} from './base/log';
 import {formatPos, newFileBase} from './base/pos';
 import {Errors, type ErrorMsg} from './base/print';
 import {UnimplementedError} from './base/unimplemented';
 import {compile, compileToAst, compileToIr} from './compile';
+import {startDocsServer} from './docs/server';
 import {dumpProgram} from './ir/dumper';
 import {builtinSources} from './providers/data/builtin-sources';
 import {csvProvider} from './providers/data/csv';
@@ -75,6 +76,33 @@ if (teaLogLevel !== undefined && teaLogLevel !== '') {
 const tea = new Command('tea')
   .description('Tea language compiler and runner')
   .version('0.1.0');
+
+function parsePort(value: string): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new InvalidArgumentError('port must be an integer from 0 to 65535');
+  }
+  return port;
+}
+
+tea
+  .command('docs')
+  .description('Serve the documentation website locally')
+  .option(
+    '--port <number>',
+    'port to bind (default: any available port)',
+    parsePort,
+    0,
+  )
+  .option('--no-open', 'do not open the documentation in a browser')
+  .action(async (options: {port: number; open: boolean}) => {
+    await startDocsServer({
+      port: options.port,
+      open: options.open,
+      print: line => console.log(line),
+      warn: line => console.error(line),
+    });
+  });
 
 tea
   .command('run')

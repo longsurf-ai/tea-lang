@@ -46,7 +46,7 @@ The pipeline stops at the Program: `codegen/generate` is `unimplemented`,
 there is no runtime, and `tea run` exits with code 2. All runtime-facing
 semantics the compiler describes (depths, storage classes, frames, slots,
 emissions) are unexecuted and therefore numerically unverified — including
-the ~40 ta.* functions, which only ever type-check today.
+the ~40 ta.\* functions, which only ever type-check today.
 
 This slice makes `tea run script.tea --input testdata/dataset.csv` execute
 real bars: lower the Program to a JS module against a small runtime ABI
@@ -80,7 +80,7 @@ traces become the execution-level regression surface.
      for the body; dense ids for names/series/params/outputs/funcs assigned
      by a lowering walk (visit projections).
    - Emitter rules table keyed by (op, operand types): JS renders arithmetic
-     natively (int division truncates, NaN carries na); math.*/na()/nz()
+     natively (int division truncates, NaN carries na); math.\*/na()/nz()
      expand inline. Time-Machine ops call `rt`. Backend-specific choices
      live only in the rules table.
    - `generate()` stops being `unimplemented`; compile() emits a runnable
