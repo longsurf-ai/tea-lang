@@ -1,0 +1,23 @@
+// Purpose: Named request context arguments execute in source order while the runtime still receives the canonical symbol/timeframe pair.
+
+//@version=1
+indicator("request context evaluation order", dynamic_requests = true)
+
+type ContextOrder
+    int calls
+    string next(string first, string second) =>
+        selected = if this.calls == 0
+            first
+        else
+            second
+        this.calls := this.calls + 1
+        selected
+
+order = ContextOrder.new(0)
+requested = request.security(
+    timeframe = order.next("D", "X"),
+    expression = close,
+    symbol = order.next("D", "X"))
+
+plot(requested, "requested value")
+plot(order.calls, "parent context calls")

@@ -1,0 +1,34 @@
+//@version=1
+indicator("value semantics demo")
+
+struct Portfolio
+    array<int> lots
+    int total
+    int add(int qty) =>
+        this.lots.push(qty)
+        this.total := this.total + qty
+        this.total
+    int size() const =>
+        this.lots.size()
+    int readTotal() const =>
+        this.total
+
+base = Portfolio.new(array.from(bar_index), bar_index)
+
+// Copies Portfolio and its array header.
+copy = base
+
+// The mutable method writes the modified receiver value back into copy.
+copy.add(10)
+
+plot(base.lots.size(), "base size")
+plot(copy.size(), "copy size")
+plot(base.total, "base total")
+plot(copy.total, "copy total")
+
+previousCopyTotal = if bar_index > 0
+    copy[1].readTotal()
+else
+    -1
+
+plot(previousCopyTotal, "previous copy total")

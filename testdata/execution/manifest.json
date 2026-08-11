@@ -2,6 +2,18 @@
   "version": 1,
   "cases": [
     {
+      "id": "aggregate-values",
+      "kind": "compile-through",
+      "source": "compile/aggregate-values/source.tea",
+      "data": "compile/aggregate-values/data.csv",
+      "reference": "compile/aggregate-values/reference.json",
+      "sha256": {
+        "source": "70c597a1a1d40fd52bc19fbf9db1f41b2a20505f375284227aa1ea7054849d28",
+        "data": "cff07aff370ed4b45ff408cc12757ef70c0617a547db33fd01207e76b49aa382",
+        "reference": "037e8d90a34e3fd0bf7787c1ba5456d6c25eb6a8c6468940638afd17f675671f"
+      }
+    },
+    {
       "id": "input-family",
       "kind": "compile-through",
       "source": "compile/input-family/source.tea",

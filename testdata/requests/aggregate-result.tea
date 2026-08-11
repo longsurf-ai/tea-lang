@@ -1,0 +1,35 @@
+// Purpose: Compile-through fixture for a user value containing child-owned array storage crossing request.security into parent history.
+
+//@version=1
+indicator("aggregate request result")
+
+type ChildSnapshot
+    array<int> values
+    int childRow
+
+snapshot = request.security("X", "D", ChildSnapshot.new(array.from(bar_index, bar_index + 100), bar_index))
+
+currentValue = if bar_index > 0
+    snapshot.values.get(1)
+else
+    -1
+
+historicalValue = if bar_index > 1
+    snapshot[1].values.get(1)
+else
+    -1
+
+currentChildRow = if bar_index > 0
+    snapshot.childRow
+else
+    -1
+
+historicalChildRow = if bar_index > 1
+    snapshot[1].childRow
+else
+    -1
+
+plot(currentValue, "current array value")
+plot(historicalValue, "historical array value")
+plot(currentChildRow, "current user field")
+plot(historicalChildRow, "historical user field")
