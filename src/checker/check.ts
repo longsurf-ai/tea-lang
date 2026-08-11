@@ -40,7 +40,7 @@ import {
 } from '../ir/type';
 import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
-import {LitKind, Op} from '../syntax/tokens';
+import {LitKind, Op, RESERVED_KEYWORDS} from '../syntax/tokens';
 import {
   Effect,
   FirstArgumentResult,
@@ -55,7 +55,7 @@ import {
   type NativeTypeRef,
   type NativeVar,
 } from './catalog';
-import {isImportError, type Importer, type ResolvedLibrary} from './importer';
+import {isImportError, type Importer, type SourcePackage} from './importer';
 import {bindExpressionNames, bindFileNames, bindFunctionNames} from './binding';
 import {
   CallKind,
@@ -137,15 +137,40 @@ const INPUT_SOURCE_DEFAULTS = new Set([
 
 // ---- checker ----------------------------------------------------------------
 
-class Checker {
-  private readonly rootInfo = newInfo();
-  private info: Info = this.rootInfo;
+type PackagePhase = 'checking' | 'checked' | 'failed';
 
+type PackageMemberResult =
+  | {readonly matched: false}
+  | {
+      readonly matched: true;
+      readonly object: Object | null;
+    };
+
+// All declaration-owned state travels with its semantic package. The checker
+// itself remains one compilation-wide session so function stenciling and
+// transitive semantic dependencies are shared across package boundaries.
+interface PackageState {
+  readonly pkg: Package;
+  readonly info: Info;
+  readonly imports: Package[];
+  readonly exports: Map<string, Object>;
+  readonly functionDecls: Map<syntax.FuncDecl, FunctionObject>;
+  readonly userTypeDecls: Map<syntax.UserTypeDecl, UserTypeObject>;
+  readonly finalizedUserTypes: Set<UserTypeObject>;
+  readonly enumDecls: Map<syntax.EnumDecl, EnumObject>;
+  readonly finalizedEnums: Set<EnumObject>;
+  dependencyFailed: boolean;
+  phase: PackagePhase;
+}
+
+class Checker {
   // The universe scope holds implicit bindings every script sees: one
   // Library entry per builtin library. The global scope chains to it.
   private readonly universe = new Scope(null);
-  private readonly pkgScope = new Scope(this.universe);
-  private scope = this.pkgScope;
+  private readonly rootState: PackageState;
+  private currentPackage: PackageState;
+  private info: Info;
+  private scope: Scope;
   private loopDepth = 0;
   private blockDepth = 0;
   // The qualifier of the enclosing control flow: writes under an `if` whose
@@ -161,7 +186,9 @@ class Checker {
   private readonly instances = new Map<FunctionObject, FunctionInstance[]>();
   private readonly instantiating = new Set<FunctionObject>();
   private funcBoundary: Scope | null = null;
-  private readonly libraryPackages = new Map<ResolvedLibrary, Package>();
+  private readonly packageStates = new Map<string, PackageState>();
+  private readonly stateByPackage = new Map<Package, PackageState>();
+  private readonly userTypeObjectOf = new Map<UserType, UserTypeObject>();
   // Names bound by the implicit imports — the redeclare guard's set; the
   // checker never learns where these libraries come from.
   private readonly implicitNames = new Set<string>();
@@ -184,93 +211,258 @@ class Checker {
   // the function/capture execution frame that contained the call.
   private readonly inputBindings = new Set<VariableObject>();
   private readonly rootBindNames = new Set<VariableObject>();
-  private readonly userTypeDecls = new Map<
-    syntax.UserTypeDecl,
-    UserTypeObject
-  >();
-  private readonly finalizedUserTypes = new Set<UserTypeObject>();
-  private readonly enumDecls = new Map<syntax.EnumDecl, EnumObject>();
-  private readonly finalizedEnums = new Set<EnumObject>();
-  private readonly files: readonly syntax.File[];
-  private readonly pkgImports = new Map<string, Package>();
-  private readonly pkgExports = new Set<string>();
-  private readonly pkg: Package;
-
   constructor(
     files: readonly syntax.File[],
     private readonly errors: Errors,
     private readonly importer: Importer,
   ) {
-    this.files = files;
-    this.pkg = {
-      path: files[0]?.pos.base.filename ?? '',
-      name: 'main',
+    const scope = new Scope(this.universe);
+    this.rootState = this.newPackageState(
+      files[0]?.pos.base.filename ?? '',
+      'main',
       files,
-      scope: this.pkgScope,
-      imports: this.pkgImports,
-      exports: this.pkgExports,
-    };
-    for (const library of importer.implicit()) {
-      const pkg = this.libraryPackage(library);
-      this.universe.declare({
-        kind: ObjectKind.PackageName,
-        name: library.name,
-        pkg,
-      });
-      this.pkgImports.set(library.name, pkg);
-      this.implicitNames.add(library.name);
+      scope,
+    );
+    this.currentPackage = this.rootState;
+    this.info = this.rootState.info;
+    this.scope = scope;
+
+    for (const source of importer.implicit()) {
+      const before = errors.count;
+      const pkg = this.libraryPackage(source);
+      if (errors.count !== before) {
+        return fatal(
+          `builtin library '${source.path}' failed semantic checking`,
+        );
+      }
+      if (
+        !this.universe.declare({
+          kind: ObjectKind.PackageName,
+          name: pkg.name,
+          pkg,
+        })
+      ) {
+        return fatal(`duplicate implicit package name '${pkg.name}'`);
+      }
+      this.addPackageImport(this.rootState, pkg);
+      this.implicitNames.add(pkg.name);
     }
   }
 
-  // Materialize loader data into the same semantic Package/Scope/Object graph
-  // used by the entry package. Raw ResolvedLibrary syntax never enters name
-  // resolution after this boundary.
-  private libraryPackage(library: ResolvedLibrary): Package {
-    const existing = this.libraryPackages.get(library);
-    if (existing !== undefined) {
-      return existing;
-    }
-    const scope = new Scope(null);
-    const imports = new Map<string, Package>();
-    const pkg: Package = {
-      path: library.path,
-      name: library.name,
-      files: library.files,
-      scope,
+  private newPackageState(
+    path: string,
+    name: string,
+    files: readonly syntax.File[],
+    scope: Scope,
+  ): PackageState {
+    const imports: Package[] = [];
+    const exports = new Map<string, Object>();
+    const pkg: Package = {path, name, files, scope, imports, exports};
+    const state: PackageState = {
+      pkg,
+      info: newInfo(),
       imports,
-      exports: new Set(library.exports.keys()),
+      exports,
+      functionDecls: new Map(),
+      userTypeDecls: new Map(),
+      finalizedUserTypes: new Set(),
+      enumDecls: new Map(),
+      finalizedEnums: new Set(),
+      dependencyFailed: false,
+      phase: 'checking',
     };
-    this.libraryPackages.set(library, pkg);
-    for (const [name, decl] of library.locals) {
-      scope.declare({
-        kind: ObjectKind.Function,
-        name,
-        displayName: name,
-        decl,
-        base: scope,
-        receiver: null,
-      });
+    this.stateByPackage.set(pkg, state);
+    return state;
+  }
+
+  // Elaborate source into the same semantic Package/Scope/Object graph used
+  // by the entry package. Loader syntax never becomes an import API directly.
+  private libraryPackage(source: SourcePackage): Package {
+    const existing = this.packageStates.get(source.path);
+    if (existing !== undefined) {
+      if (existing.phase === 'checking') {
+        return fatal(
+          `source import cycle survived loader resolution at '${source.path}'`,
+        );
+      }
+      return existing.pkg;
     }
-    for (const [name, dependency] of library.imports) {
-      const imported = this.libraryPackage(dependency);
-      imports.set(name, imported);
-      scope.declare({kind: ObjectKind.PackageName, name, pkg: imported});
+    if (source.files.length !== 1) {
+      return unimplemented(
+        'typecheck: multi-file imported packages',
+        source.files.length,
+      );
     }
-    return pkg;
+
+    const before = this.errors.count;
+    const file = source.files[0];
+    const headers = file.stmtList.filter(isLibraryDeclaration);
+    let name = packageFallbackName(source.path);
+    if (headers.length === 0) {
+      this.error(
+        file.pos,
+        `library '${source.path}' has no library() declaration`,
+      );
+    } else {
+      name = libraryDeclarationName(headers[0]) ?? name;
+      if (!isSourcePackageName(name)) {
+        this.error(
+          headers[0].pos,
+          `library name '${name}' is not a valid source identifier`,
+        );
+      }
+      if (file.stmtList[0] !== headers[0]) {
+        this.error(
+          headers[0].pos,
+          'library() declaration must be the first statement in a library package',
+        );
+      }
+      for (const duplicate of headers.slice(1)) {
+        this.error(duplicate.pos, 'duplicate library() declaration');
+      }
+    }
+
+    const scope = new Scope(null);
+    const state = this.newPackageState(source.path, name, source.files, scope);
+    this.packageStates.set(source.path, state);
+    this.withPackage(state, () => this.checkLibraryFile(file, headers));
+    state.phase =
+      !state.dependencyFailed && this.errors.count === before
+        ? 'checked'
+        : 'failed';
+    return state.pkg;
   }
 
   checkPackage(): CheckedPackage {
-    const file = this.files[0];
+    const file = this.rootState.pkg.files[0];
+    this.withPackage(this.rootState, () => {
+      this.checkImports(file);
+      this.predeclareNominalTypes(file);
+      this.predeclareFunctions(file);
+      this.resolveUserTypeMembers(file);
+      this.rejectDirectUserTypeCycles([
+        ...this.currentPackage.userTypeDecls.values(),
+      ]);
+      bindFileNames(file, this.scope, this.info);
+      this.info.scopes.set(file, this.scope);
+      for (const stmt of file.stmtList) {
+        if (stmt.kind !== NodeKind.ImportStmt) {
+          this.checkStmt(stmt);
+        }
+      }
+      this.validateMethodDeclarations([
+        ...this.currentPackage.userTypeDecls.values(),
+      ]);
+    });
+    this.rootState.phase = this.errors.count === 0 ? 'checked' : 'failed';
+    return {pkg: this.rootState.pkg, info: this.rootState.info};
+  }
+
+  private checkLibraryFile(
+    file: syntax.File,
+    headers: readonly syntax.ExprStmt[],
+  ): void {
+    this.checkImports(file);
     this.predeclareNominalTypes(file);
+    this.predeclareFunctions(file);
     this.resolveUserTypeMembers(file);
-    this.rejectDirectUserTypeCycles();
-    bindFileNames(file, this.scope, this.rootInfo);
-    this.rootInfo.scopes.set(file, this.pkgScope);
+    const owners = [...this.currentPackage.userTypeDecls.values()];
+    this.rejectDirectUserTypeCycles(owners);
+    bindFileNames(file, this.scope, this.info);
+    this.info.scopes.set(file, this.scope);
+
+    const header = headers[0] ?? null;
     for (const stmt of file.stmtList) {
-      this.checkStmt(stmt);
+      if (stmt === header) {
+        this.checkExpr(stmt.x);
+        continue;
+      }
+      if (stmt.kind === NodeKind.ImportStmt || isLibraryDeclaration(stmt)) {
+        continue;
+      }
+      if (
+        stmt.kind === NodeKind.FuncDecl ||
+        stmt.kind === NodeKind.UserTypeDecl ||
+        stmt.kind === NodeKind.TypeAliasDecl ||
+        stmt.kind === NodeKind.EnumDecl
+      ) {
+        this.checkStmt(stmt);
+        continue;
+      }
+      if (
+        stmt.kind === NodeKind.DeclStmt &&
+        stmt.mode === Mode.Const &&
+        stmt.target.kind === NodeKind.Name
+      ) {
+        this.checkDecl(stmt);
+        continue;
+      }
+      if (stmt.kind !== NodeKind.BadStmt) {
+        this.error(
+          stmt.pos,
+          'library packages allow only imports, declarations, and single-name const values at the top level',
+        );
+      }
     }
-    this.validateMethodDeclarations();
-    return {pkg: this.pkg, info: this.rootInfo};
+    this.validateMethodDeclarations(owners);
+  }
+
+  private checkImports(file: syntax.File): void {
+    for (const stmt of file.stmtList) {
+      if (stmt.kind === NodeKind.ImportStmt) {
+        this.checkImport(stmt);
+      }
+    }
+  }
+
+  private withPackage(state: PackageState, fn: () => void): void {
+    if (
+      this.instanceStack.length !== 0 ||
+      this.dependencyCollectors.length !== 0 ||
+      this.funcBoundary !== null
+    ) {
+      return fatal('package elaboration entered from a function context');
+    }
+    const saved = {
+      package: this.currentPackage,
+      info: this.info,
+      scope: this.scope,
+      loopDepth: this.loopDepth,
+      blockDepth: this.blockDepth,
+      flowQualifier: this.flowQualifier,
+      captureDepth: this.captureDepth,
+      activeMethod: this.activeMethod,
+    };
+    this.currentPackage = state;
+    this.info = state.info;
+    this.scope = state.pkg.scope;
+    this.loopDepth = 0;
+    this.blockDepth = 0;
+    this.flowQualifier = Qualifier.Const;
+    this.captureDepth = 0;
+    this.activeMethod = null;
+    fn();
+    this.currentPackage = saved.package;
+    this.info = saved.info;
+    this.scope = saved.scope;
+    this.loopDepth = saved.loopDepth;
+    this.blockDepth = saved.blockDepth;
+    this.flowQualifier = saved.flowQualifier;
+    this.captureDepth = saved.captureDepth;
+    this.activeMethod = saved.activeMethod;
+  }
+
+  private addPackageImport(state: PackageState, pkg: Package): void {
+    if (!state.imports.includes(pkg)) {
+      state.imports.push(pkg);
+    }
+  }
+
+  private stateOf(pkg: Package): PackageState {
+    return (
+      this.stateByPackage.get(pkg) ??
+      fatal(`semantic package '${pkg.path}' has no checker state`)
+    );
   }
 
   private predeclareNominalTypes(file: syntax.File): void {
@@ -279,6 +471,14 @@ class Checker {
         this.predeclareUserType(stmt);
       } else if (stmt.kind === NodeKind.EnumDecl) {
         this.predeclareEnum(stmt);
+      }
+    }
+  }
+
+  private predeclareFunctions(file: syntax.File): void {
+    for (const stmt of file.stmtList) {
+      if (stmt.kind === NodeKind.FuncDecl) {
+        this.declareFunction(stmt);
       }
     }
   }
@@ -293,6 +493,8 @@ class Checker {
     };
     const object: UserTypeObject = {
       kind: ObjectKind.UserType,
+      pkg: this.currentPackage.pkg,
+      exported: decl.exported,
       name: decl.name.value,
       type,
       fields,
@@ -301,9 +503,10 @@ class Checker {
     if (!this.declare(decl.name, object)) {
       return;
     }
-    this.userTypeDecls.set(decl, object);
+    this.currentPackage.userTypeDecls.set(decl, object);
+    this.userTypeObjectOf.set(type, object);
     if (decl.exported) {
-      this.pkgExports.add(object.name);
+      this.currentPackage.exports.set(object.name, object);
     }
   }
 
@@ -317,6 +520,8 @@ class Checker {
     };
     const object: EnumObject = {
       kind: ObjectKind.Enum,
+      pkg: this.currentPackage.pkg,
+      exported: decl.exported,
       name: decl.name.value,
       type,
       members: memberObjects,
@@ -332,12 +537,12 @@ class Checker {
     if (!this.declare(decl.name, object)) {
       return;
     }
-    this.enumDecls.set(decl, object);
+    this.currentPackage.enumDecls.set(decl, object);
     for (const member of memberObjects) {
       this.info.defs.set(member.decl.name, member);
     }
     if (decl.exported) {
-      this.pkgExports.add(object.name);
+      this.currentPackage.exports.set(object.name, object);
     }
   }
 
@@ -346,7 +551,7 @@ class Checker {
       if (stmt.kind !== NodeKind.UserTypeDecl) {
         continue;
       }
-      const owner = this.userTypeDecls.get(stmt);
+      const owner = this.currentPackage.userTypeDecls.get(stmt);
       if (owner === undefined) {
         continue;
       }
@@ -391,6 +596,8 @@ class Checker {
           }
           const method: MethodObject = {
             kind: ObjectKind.Function,
+            pkg: owner.pkg,
+            exported: owner.exported,
             name: memberName,
             displayName: `${owner.name}.${memberName}`,
             decl: member,
@@ -600,7 +807,7 @@ class Checker {
     visitExpr(expr);
   }
 
-  private rejectDirectUserTypeCycles(): void {
+  private rejectDirectUserTypeCycles(owners: readonly UserTypeObject[]): void {
     const visiting = new Set<UserTypeObject>();
     const visited = new Set<UserTypeObject>();
     const visit = (owner: UserTypeObject): void => {
@@ -612,9 +819,7 @@ class Checker {
         if (field.type.kind !== TypeKind.UserType) {
           continue;
         }
-        const target = [...this.userTypeDecls.values()].find(
-          candidate => candidate.type === field.type,
-        );
+        const target = this.userTypeObjectOf.get(field.type);
         if (target === undefined) {
           continue;
         }
@@ -630,7 +835,7 @@ class Checker {
       visiting.delete(owner);
       visited.add(owner);
     };
-    for (const owner of this.userTypeDecls.values()) {
+    for (const owner of owners) {
       visit(owner);
     }
   }
@@ -863,7 +1068,8 @@ class Checker {
   private declare(nameNode: syntax.Name, object: Object): boolean {
     if (
       isNativeRoot(nameNode.value) ||
-      this.implicitNames.has(nameNode.value)
+      (this.currentPackage === this.rootState &&
+        this.implicitNames.has(nameNode.value))
     ) {
       this.discardBinding(nameNode, object);
       this.error(nameNode.pos, `cannot redeclare built-in '${nameNode.value}'`);
@@ -1087,8 +1293,11 @@ class Checker {
       this.error(stmt.path.pos, outcome.error);
       return;
     }
-    const name = stmt.alias?.value ?? outcome.name;
     const imported = this.libraryPackage(outcome);
+    if (this.stateOf(imported).phase === 'failed') {
+      this.currentPackage.dependencyFailed = true;
+    }
+    const name = stmt.alias?.value ?? imported.name;
     const object: PackageNameObject = {
       kind: ObjectKind.PackageName,
       name,
@@ -1096,24 +1305,34 @@ class Checker {
     };
     if (stmt.alias !== null) {
       if (this.declare(stmt.alias, object)) {
-        this.pkgImports.set(name, imported);
+        this.addPackageImport(this.currentPackage, imported);
       }
       return;
     }
     // Without an alias the library binds under its declared name; implicit
     // libraries are already bound, so this is a legal no-op for them.
-    if (this.implicitNames.has(outcome.name)) {
-      this.pkgImports.set(name, imported);
+    const existing = this.scope.lookup(name);
+    if (
+      this.currentPackage === this.rootState &&
+      this.implicitNames.has(name) &&
+      existing?.kind === ObjectKind.PackageName &&
+      existing.pkg === imported
+    ) {
+      this.addPackageImport(this.currentPackage, imported);
+      return;
+    }
+    if (
+      isNativeRoot(name) ||
+      (this.currentPackage === this.rootState && this.implicitNames.has(name))
+    ) {
+      this.error(stmt.path.pos, `cannot redeclare built-in '${name}'`);
       return;
     }
     if (!this.scope.declare(object)) {
-      this.error(
-        stmt.path.pos,
-        `'${outcome.name}' is already declared in this scope`,
-      );
+      this.error(stmt.path.pos, `'${name}' is already declared in this scope`);
       return;
     }
-    this.pkgImports.set(name, imported);
+    this.addPackageImport(this.currentPackage, imported);
   }
 
   private checkFuncDecl(d: syntax.FuncDecl): void {
@@ -1121,18 +1340,42 @@ class Checker {
       this.error(d.pos, 'functions must be declared at the top level');
       return;
     }
-    // The template is bound now; bodies are checked per concrete argument
-    // signature when calls are stenciled.
+    if (this.currentPackage.functionDecls.has(d)) {
+      return;
+    }
+    this.declareFunction(d);
+  }
+
+  private declareFunction(d: syntax.FuncDecl): void {
+    const seenParams = new Set<string>();
+    const declaredParams = d.params.map(param => {
+      if (seenParams.has(param.name.value)) {
+        this.error(
+          param.name.pos,
+          `duplicate parameter '${param.name.value}' in function '${d.name.value}'`,
+        );
+      }
+      seenParams.add(param.name.value);
+      return param.paramType === null
+        ? null
+        : this.resolveAnnotation(param.paramType);
+    });
+    // The semantic template and written annotations are bound now; its body
+    // remains polymorphic and is checked per concrete call signature.
     const object: FunctionObject = {
       kind: ObjectKind.Function,
+      pkg: this.currentPackage.pkg,
+      exported: d.exported,
       name: d.name.value,
       displayName: d.name.value,
       decl: d,
       base: this.scope,
       receiver: null,
+      declaredParams,
     };
+    this.currentPackage.functionDecls.set(d, object);
     if (this.declare(d.name, object) && d.exported) {
-      this.pkgExports.add(object.name);
+      this.currentPackage.exports.set(object.name, object);
     }
   }
 
@@ -1141,11 +1384,11 @@ class Checker {
       this.error(d.pos, 'types must be declared at the top level');
       return;
     }
-    const owner = this.userTypeDecls.get(d);
+    const owner = this.currentPackage.userTypeDecls.get(d);
     if (owner === undefined) {
       return;
     }
-    if (this.finalizedUserTypes.has(owner)) {
+    if (this.currentPackage.finalizedUserTypes.has(owner)) {
       return fatal(`user type '${owner.name}' finalized more than once`);
     }
     for (const field of owner.fields) {
@@ -1160,14 +1403,14 @@ class Checker {
         field.defaultValue = checked;
       }
     }
-    this.finalizedUserTypes.add(owner);
+    this.currentPackage.finalizedUserTypes.add(owner);
   }
 
-  private validateMethodDeclarations(): void {
+  private validateMethodDeclarations(owners: readonly UserTypeObject[]): void {
     // These instances are checker-only: no syntax CallExpr owns them, so the
     // noder cannot project them into a Program. They establish declaration
     // correctness even when a method is never called.
-    for (const owner of this.userTypeDecls.values()) {
+    for (const owner of owners) {
       for (const method of owner.methods) {
         const receiverQualifier =
           method.receiver.mode === 'mutable'
@@ -1223,11 +1466,11 @@ class Checker {
       this.error(d.pos, 'enums must be declared at the top level');
       return;
     }
-    const owner = this.enumDecls.get(d);
+    const owner = this.currentPackage.enumDecls.get(d);
     if (owner === undefined) {
       return;
     }
-    if (this.finalizedEnums.has(owner)) {
+    if (this.currentPackage.finalizedEnums.has(owner)) {
       return fatal(`enum '${owner.name}' finalized more than once`);
     }
     const members = owner.type.members as EnumMemberType[];
@@ -1253,7 +1496,7 @@ class Checker {
       }
       members.push({name: member.name.value, title});
     }
-    this.finalizedEnums.add(owner);
+    this.currentPackage.finalizedEnums.add(owner);
   }
 
   // ---- annotations ----------------------------------------------------------
@@ -1362,10 +1605,40 @@ class Checker {
         }
         return {kind: TypeKind.Array, elem};
       }
-      case NodeKind.SelectorExpr:
-        this.error(t.pos, 'qualified type names are not supported yet');
+      case NodeKind.SelectorExpr: {
+        if (t.x.kind === NodeKind.Name) {
+          const member = this.packageMember(t.x, t.sel);
+          if (member.matched) {
+            if (
+              member.object?.kind === ObjectKind.UserType ||
+              member.object?.kind === ObjectKind.Enum
+            ) {
+              return member.object.type;
+            }
+            this.error(t.pos, `unknown type '${t.x.value}.${t.sel.value}'`);
+            return InvalidType;
+          }
+        }
+        this.error(t.pos, 'qualified type name must be package.Type');
         return InvalidType;
+      }
     }
+  }
+
+  private packageMember(
+    packageName: syntax.Name,
+    memberName: syntax.Name,
+  ): PackageMemberResult {
+    const binding = this.scope.lookup(packageName.value);
+    if (binding?.kind !== ObjectKind.PackageName) {
+      return {matched: false};
+    }
+    this.info.uses.set(packageName, binding);
+    const object = binding.pkg.exports.get(memberName.value) ?? null;
+    if (object !== null) {
+      this.info.uses.set(memberName, object);
+    }
+    return {matched: true, object};
   }
 
   // ---- expressions ----------------------------------------------------------
@@ -1643,36 +1916,22 @@ class Checker {
       this.error(s.pos, `undeclared name '${path.path}'`);
       return INVALID_TV;
     }
+    if (s.x.kind === NodeKind.SelectorExpr && s.x.x.kind === NodeKind.Name) {
+      const qualified = this.packageMember(s.x.x, s.x.sel);
+      if (qualified.matched) {
+        const written = `${s.x.x.value}.${s.x.sel.value}`;
+        if (qualified.object?.kind === ObjectKind.Enum) {
+          return this.enumMemberTv(qualified.object, s.sel, written);
+        }
+        this.error(s.x.pos, `unknown enum '${written}'`);
+        return INVALID_TV;
+      }
+    }
     if (s.x.kind === NodeKind.Name) {
       const entry = this.scope.lookup(s.x.value);
       if (entry?.kind === ObjectKind.Enum) {
-        if (!this.finalizedEnums.has(entry)) {
-          this.error(
-            s.pos,
-            `enum '${entry.name}' cannot be used before it is declared`,
-          );
-          return INVALID_TV;
-        }
-        const member = entry.type.members.find(m => m.name === s.sel.value);
-        const memberObject = entry.members.find(
-          object => object.name === s.sel.value,
-        );
-        if (member === undefined) {
-          this.error(
-            s.sel.pos,
-            `enum '${entry.type.name}' has no member '${s.sel.value}'`,
-          );
-          return INVALID_TV;
-        }
         this.info.uses.set(s.x, entry);
-        if (memberObject !== undefined) {
-          this.info.uses.set(s.sel, memberObject);
-        }
-        return {
-          type: entry.type,
-          qualifier: Qualifier.Const,
-          value: member.name,
-        };
+        return this.enumMemberTv(entry, s.sel, entry.name);
       }
       if (entry?.kind === ObjectKind.UserType) {
         this.error(s.pos, `'${s.x.value}' is a type, not a value`);
@@ -1710,6 +1969,39 @@ class Checker {
       `${formatType(baseTv.type)} has no field '${s.sel.value}'`,
     );
     return INVALID_TV;
+  }
+
+  private enumMemberTv(
+    owner: EnumObject,
+    memberName: syntax.Name,
+    displayName: string,
+  ): TypeAndValue {
+    if (!this.stateOf(owner.pkg).finalizedEnums.has(owner)) {
+      this.error(
+        memberName.pos,
+        `enum '${displayName}' cannot be used before it is declared`,
+      );
+      return INVALID_TV;
+    }
+    const member = owner.type.members.find(m => m.name === memberName.value);
+    const memberObject = owner.members.find(
+      object => object.name === memberName.value,
+    );
+    if (member === undefined) {
+      this.error(
+        memberName.pos,
+        `enum '${displayName}' has no member '${memberName.value}'`,
+      );
+      return INVALID_TV;
+    }
+    if (memberObject !== undefined) {
+      this.info.uses.set(memberName, memberObject);
+    }
+    return {
+      type: owner.type,
+      qualifier: Qualifier.Const,
+      value: member.name,
+    };
   }
 
   private literalTv(lit: syntax.BasicLit): TypeAndValue {
@@ -2243,20 +2535,34 @@ class Checker {
           return this.checkNew(c, entry);
         }
       }
+      if (
+        fun.sel.value === 'new' &&
+        fun.x.kind === NodeKind.SelectorExpr &&
+        fun.x.x.kind === NodeKind.Name
+      ) {
+        const qualified = this.packageMember(fun.x.x, fun.x.sel);
+        if (qualified.matched) {
+          const written = `${fun.x.x.value}.${fun.x.sel.value}.new`;
+          if (qualified.object?.kind !== ObjectKind.UserType) {
+            this.error(fun.pos, `unknown constructor '${written}'`);
+            return INVALID_TV;
+          }
+          if (c.typeArgs !== null) {
+            this.error(c.pos, 'constructors do not accept type arguments');
+            return INVALID_TV;
+          }
+          return this.checkNew(c, qualified.object);
+        }
+      }
       if (fun.x.kind === NodeKind.Name) {
-        const rootEntry = this.scope.lookup(fun.x.value);
-        if (rootEntry?.kind === ObjectKind.PackageName) {
+        const qualified = this.packageMember(fun.x, fun.sel);
+        if (qualified.matched) {
           const written = `${fun.x.value}.${fun.sel.value}`;
-          const template = rootEntry.pkg.scope.lookup(fun.sel.value);
-          if (
-            template?.kind !== ObjectKind.Function ||
-            !rootEntry.pkg.exports.has(fun.sel.value)
-          ) {
+          const template = qualified.object;
+          if (template?.kind !== ObjectKind.Function) {
             this.error(fun.pos, `unknown function '${written}'`);
             return INVALID_TV;
           }
-          this.info.uses.set(fun.x, rootEntry);
-          this.info.uses.set(fun.sel, template);
           if (c.typeArgs !== null) {
             this.error(c.pos, 'user functions do not accept type arguments');
             return INVALID_TV;
@@ -2293,11 +2599,12 @@ class Checker {
         this.error(c.pos, 'user methods do not accept type arguments');
         return INVALID_TV;
       }
-      const methods = this.scope
-        .lookupMethods(fun.sel.value)
-        .filter(method =>
-          typesEqual(method.receiver.owner.type, receiverTv.type),
-        );
+      const owner =
+        receiverTv.type.kind === TypeKind.UserType
+          ? this.userTypeObjectOf.get(receiverTv.type)
+          : undefined;
+      const methods =
+        owner?.methods.filter(method => method.name === fun.sel.value) ?? [];
       if (methods.length === 0) {
         this.error(
           fun.sel.pos,
@@ -2410,7 +2717,11 @@ class Checker {
       if (receiver === null) {
         return fatal(`method '${displayName}' lost its receiver`);
       }
-      if (!this.finalizedUserTypes.has(template.receiver.owner)) {
+      if (
+        !this.stateOf(template.receiver.owner.pkg).finalizedUserTypes.has(
+          template.receiver.owner,
+        )
+      ) {
         this.error(
           c.pos,
           `method '${displayName}' cannot be used before type '${template.receiver.owner.name}' is declared`,
@@ -2519,6 +2830,7 @@ class Checker {
   ): FunctionInstance {
     const decl = template.decl;
     const saved = {
+      package: this.currentPackage,
       scope: this.scope,
       info: this.info,
       flowQualifier: this.flowQualifier,
@@ -2535,6 +2847,7 @@ class Checker {
       template.receiver === null ? undefined : template.invalidDefaults,
     );
     const scope = new Scope(template.base);
+    this.currentPackage = this.stateOf(template.pkg);
     this.scope = scope;
     this.info = info;
     info.scopes.set(decl, scope);
@@ -2564,12 +2877,7 @@ class Checker {
     const params: VariableObject[] = [];
     const defaults = new Map<number, CheckedDefaultExpression>();
     decl.params.forEach((p, i) => {
-      const annotated =
-        template.receiver === null
-          ? p.paramType !== null
-            ? this.resolveAnnotation(p.paramType)
-            : null
-          : template.declaredParams[i];
+      const annotated = template.declaredParams[i];
       let declaredDefault: CheckedDefaultExpression | null = null;
       if (
         template.receiver !== null &&
@@ -2695,6 +3003,7 @@ class Checker {
 
     this.instantiating.delete(template);
     this.activeMethod = savedActiveMethod;
+    this.currentPackage = saved.package;
     this.scope = saved.scope;
     this.info = saved.info;
     this.flowQualifier = saved.flowQualifier;
@@ -3096,13 +3405,7 @@ class Checker {
 
   private checkPlacement(native: NativeFunc, pos: Pos): void {
     if (native.effect === Effect.Param) {
-      if (
-        this.instanceStack.some(instance =>
-          instance.template.receiver === null
-            ? instance.template.decl.exported
-            : this.pkgExports.has(instance.template.receiver.owner.name),
-        )
-      ) {
+      if (this.instanceStack.some(instance => instance.template.exported)) {
         this.error(
           pos,
           `'${native.name}' cannot be called from an exported function`,
@@ -3393,7 +3696,7 @@ class Checker {
   }
 
   private checkNew(c: syntax.CallExpr, userType: UserTypeObject): TypeAndValue {
-    if (!this.finalizedUserTypes.has(userType)) {
+    if (!this.stateOf(userType.pkg).finalizedUserTypes.has(userType)) {
       this.error(
         c.pos,
         `constructor '${userType.name}.new' cannot be used before type '${userType.name}' is declared`,
@@ -3498,6 +3801,37 @@ class Checker {
 }
 
 // ---- pure helpers -----------------------------------------------------------
+
+function isLibraryDeclaration(stmt: syntax.Stmt): stmt is syntax.ExprStmt {
+  return (
+    stmt.kind === NodeKind.ExprStmt &&
+    stmt.x.kind === NodeKind.CallExpr &&
+    stmt.x.fun.kind === NodeKind.Name &&
+    stmt.x.fun.value === 'library'
+  );
+}
+
+function libraryDeclarationName(stmt: syntax.ExprStmt): string | null {
+  if (stmt.x.kind !== NodeKind.CallExpr) {
+    return null;
+  }
+  const title = stmt.x.args[0]?.value;
+  return title?.kind === NodeKind.BasicLit && title.litKind === LitKind.String
+    ? unquoteString(title.value)
+    : null;
+}
+
+function packageFallbackName(path: string): string {
+  const parts = path.split('/').filter(part => part.length > 0);
+  return parts[parts.length - 1] ?? path;
+}
+
+function isSourcePackageName(name: string): boolean {
+  return (
+    /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) &&
+    !RESERVED_KEYWORDS.some(keyword => keyword === name)
+  );
+}
 
 interface InferredNativeType {
   readonly type: Type;

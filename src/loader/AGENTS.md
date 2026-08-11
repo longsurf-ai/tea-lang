@@ -1,20 +1,25 @@
 # loader
 
 The driver-side half of the import seam: parses entry files (`loadPackage`)
-and resolves import paths into libraries (`resolveImports`), handing the
-checker an `Importer`. Go's split: the build driver owns the DAG; the checker
-only consumes packages.
+and resolves import paths into source packages (`resolveImports`), handing the
+checker an `Importer`. The build driver owns the DAG; the checker consumes
+parsed package sources and owns their semantics.
 
 ## Invariants
 
 - The registry is the source of truth for what an import path means:
   loadable source, `external` (staged distribution mechanism), or unknown.
-  Adding a library source kind changes the registry, never the checker.
+  Adding a package source kind changes the registry, never the checker.
 - Resolution is recursive with cycle detection (the error names the chain)
-  and memoized per path; a library's own imports resolve here, and its
-  registry path, parsed files, and binding table (aliases applied) travel on
-  `ResolvedLibrary`. The checker materializes that data into a semantic
-  `Package`; it does not reconstruct or discard the library's AST boundary.
+  and memoized per path. The loader scans each parsed file's raw top-level
+  `ImportStmt`s only to prewarm that dependency DAG. A `SourcePackage` carries
+  exactly its registry path and parsed files; import aliases never cross this
+  seam.
+- The loader performs no package-header or top-level semantic validation. It
+  does not interpret `library()`, collect declarations or exports, apply
+  aliases, or decide which statements are legal in an imported package. The
+  checker materializes and validates that semantic `Package` from the complete
+  source boundary.
 - The loader never reports user errors: outcomes are cached and the checker
   positions them at the import statements. Implicit (builtin) libraries
   failing to load is `fatal` — a compiler defect.

@@ -1,4 +1,4 @@
-// Purpose: Source loading and import resolution — the driver-side half of the import seam: parses entry files, resolves import paths through a registry, loads libraries recursively with cycle detection, and hands the checker an Importer. Never reports user errors; the checker positions them.
+// Purpose: Source loading and import resolution — the driver-side half of the import seam: parses entry files, resolves import paths through a registry, loads source packages recursively with cycle detection, and hands the checker an Importer. Never reports user errors; the checker positions them.
 
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -8,11 +8,10 @@ import {
   isImportError,
   type Importer,
   type ImportOutcome,
-  type ResolvedLibrary,
+  type SourcePackage,
 } from '../checker/importer';
-import {NodeKind, type Expr, type File, type FuncDecl} from '../syntax/nodes';
+import {NodeKind, type File} from '../syntax/nodes';
 import {parse} from '../syntax/syntax';
-import {LitKind} from '../syntax/tokens';
 
 // Frontend orchestrator: one parse per file.
 export function loadPackage(
@@ -28,12 +27,12 @@ export function loadPackage(
 
 // What a registry says about an import path: a loadable source, a path that
 // belongs to an external distribution mechanism, or nothing.
-export interface LibrarySource {
+export interface PackageSource {
   readonly filename: string;
   readonly source: string;
 }
 
-export type Registry = (path: string) => LibrarySource | 'external' | null;
+export type Registry = (path: string) => PackageSource | 'external' | null;
 
 // Builtin libraries ship with the compiler; single-segment import paths only.
 const BUILTIN_FILES: ReadonlyMap<string, string> = new Map([['ta', 'ta.tea']]);
@@ -43,7 +42,7 @@ const DEFAULT_IMPLICIT: readonly string[] = [...BUILTIN_FILES.keys()];
 
 export function defaultRegistry(
   path: string,
-): LibrarySource | 'external' | null {
+): PackageSource | 'external' | null {
   if (path.includes('/')) {
     return 'external';
   }
@@ -81,26 +80,26 @@ export function resolveImports(
 class Resolver implements Importer {
   private readonly cache = new Map<string, ImportOutcome>();
   private readonly loading: string[] = [];
-  private implicitLibs: readonly ResolvedLibrary[] | null = null;
+  private implicitPackages: readonly SourcePackage[] | null = null;
 
   constructor(
     private readonly registry: Registry,
     private readonly implicitPaths: readonly string[],
   ) {}
 
-  implicit(): readonly ResolvedLibrary[] {
-    if (this.implicitLibs === null) {
-      this.implicitLibs = this.implicitPaths.map(path => {
+  implicit(): readonly SourcePackage[] {
+    if (this.implicitPackages === null) {
+      this.implicitPackages = this.implicitPaths.map(path => {
         const outcome = this.import(path);
         if (isImportError(outcome)) {
-          // Implicit libraries are compiler-owned; failing to load one is a
+          // Implicit packages are compiler-owned; failing to load one is a
           // defect, never a user error.
           return fatal(`builtin library '${path}': ${outcome.error}`);
         }
         return outcome;
       });
     }
-    return this.implicitLibs;
+    return this.implicitPackages;
   }
 
   import(path: string): ImportOutcome {
@@ -134,7 +133,7 @@ class Resolver implements Importer {
     return outcome;
   }
 
-  private load(path: string, {filename, source}: LibrarySource): ImportOutcome {
+  private load(path: string, {filename, source}: PackageSource): ImportOutcome {
     const problems: string[] = [];
     const file = parse(newFileBase(filename), source, (pos, msg) =>
       problems.push(`${formatPos(pos)}: ${msg}`),
@@ -143,60 +142,17 @@ class Resolver implements Importer {
       return {error: `library '${path}' failed to parse: ${problems[0]}`};
     }
 
-    let name: string | null = null;
-    const exports = new Map<string, FuncDecl>();
-    const locals = new Map<string, FuncDecl>();
-    const imports = new Map<string, ResolvedLibrary>();
+    // Dependency prewarming is intentionally a raw syntax scan. Package
+    // headers, legal top-level forms, aliases, declarations, and exports are
+    // semantic facts validated and materialized by the checker.
     for (const stmt of file.stmtList) {
-      if (stmt.kind === NodeKind.ExprStmt && name === null) {
-        const declared = libraryDeclarationName(stmt.x);
-        if (declared !== null) {
-          name = declared;
-          continue;
-        }
-      }
-      if (stmt.kind === NodeKind.FuncDecl) {
-        locals.set(stmt.name.value, stmt);
-        if (stmt.exported) {
-          exports.set(stmt.name.value, stmt);
-        }
-        continue;
-      }
       if (stmt.kind === NodeKind.ImportStmt) {
         const dep = this.import(stmt.path.value);
         if (isImportError(dep)) {
           return {error: `in library '${path}': ${dep.error}`};
         }
-        imports.set(stmt.alias?.value ?? dep.name, dep);
-        continue;
       }
-      return {
-        error: `library '${path}' contains an unexpected top-level statement`,
-      };
     }
-    if (name === null) {
-      return {error: `library '${path}' has no library() declaration`};
-    }
-    return {path, files: [file], name, exports, locals, imports};
+    return {path, files: [file]};
   }
-}
-
-// library("ta") -> 'ta'; null when the expression is anything else.
-function libraryDeclarationName(e: Expr): string | null {
-  if (e.kind !== NodeKind.CallExpr) {
-    return null;
-  }
-  if (e.fun.kind !== NodeKind.Name || e.fun.value !== 'library') {
-    return null;
-  }
-  const first = e.args[0]?.value;
-  if (
-    first === undefined ||
-    first.kind !== NodeKind.BasicLit ||
-    first.litKind !== LitKind.String
-  ) {
-    return null;
-  }
-  // The lexeme keeps its quotes; library names never need escapes.
-  return first.value.slice(1, -1);
 }

@@ -2,6 +2,7 @@
 
 import type * as syntax from '../syntax/nodes';
 import type {Info} from './info';
+import type {Object} from './object';
 import type {Scope} from './scope';
 
 export interface Package {
@@ -9,8 +10,11 @@ export interface Package {
   readonly name: string;
   readonly files: readonly syntax.File[];
   readonly scope: Scope;
-  readonly imports: ReadonlyMap<string, Package>;
-  readonly exports: ReadonlySet<string>;
+  // Direct dependency identities. Local aliases are PackageNameObjects in
+  // the importing scope, never properties of the dependency graph.
+  readonly imports: readonly Package[];
+  // The public namespace points at the same canonical objects held by scope.
+  readonly exports: ReadonlyMap<string, Object>;
 }
 
 export interface CheckedPackage {

@@ -41,6 +41,8 @@ export interface VariableObject {
 
 interface FunctionObjectBase {
   readonly kind: typeof ObjectKind.Function;
+  readonly pkg: Package;
+  readonly exported: boolean;
   readonly name: string;
   readonly displayName: string;
   // The scope the template's body resolves against when instantiated: the
@@ -51,6 +53,13 @@ interface FunctionObjectBase {
 export interface FreeFunctionObject extends FunctionObjectBase {
   readonly decl: FuncDecl;
   readonly receiver: null;
+  // A null entry is a genuinely polymorphic source parameter. Written
+  // annotations are resolved once at package elaboration and reused by every
+  // concrete stencil.
+  readonly declaredParams: readonly ({
+    readonly type: Type;
+    readonly qualifier: Qualifier | null;
+  } | null)[];
 }
 
 export interface MethodObject extends FunctionObjectBase {
@@ -76,6 +85,8 @@ export type ReceiverMode = 'mutable' | 'const';
 
 export interface UserTypeObject {
   readonly kind: typeof ObjectKind.UserType;
+  readonly pkg: Package;
+  readonly exported: boolean;
   readonly name: string;
   readonly type: UserType;
   readonly fields: readonly FieldObject[];
@@ -97,6 +108,8 @@ export interface FieldObject {
 
 export interface EnumObject {
   readonly kind: typeof ObjectKind.Enum;
+  readonly pkg: Package;
+  readonly exported: boolean;
   readonly name: string;
   readonly type: EnumType;
   readonly members: readonly EnumMemberObject[];

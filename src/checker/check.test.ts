@@ -259,7 +259,7 @@ describe('semantic ownership', () => {
     );
     expect(r.checked.pkg.exports.has('identity')).toBeTrue();
 
-    const ta = r.checked.pkg.imports.get('ta');
+    const ta = r.checked.pkg.imports.find(pkg => pkg.name === 'ta');
     expect(ta?.name).toBe('ta');
     expect(ta?.path).toBe('ta');
     expect(ta?.files).toHaveLength(1);

@@ -76,9 +76,13 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   Local declaration names are UI-label hints, not parameter identity, because
   separate scopes may reuse the same spelling.
 - User-function and nested-method declarations bind as semantic templates;
-  calls stencil one
-  `FunctionInstance` per `(FunctionObject, concrete type + qualifier
-signature)` (memoized), independent of any physical Program. Each instance
+  calls stencil one `FunctionInstance` per
+  `(FunctionObject, concrete type + qualifier signature)` (memoized),
+  independent of any physical Program. Imported polymorphic free-function
+  bodies follow this same lazy rule: package elaboration predeclares the
+  canonical templates and resolves every written parameter annotation as part
+  of the complete public type API, but does not invent a body instance before
+  a concrete call signature exists. Each instance
   owns its explicit source-parameter objects and `Info`. A method instance also
   owns exactly one synthetic `this` receiver object, separate from its source
   signature, params, defaults, and argument order. `this` is valid only as the
@@ -99,14 +103,25 @@ signature)` (memoized), independent of any physical Program. Each instance
   slots, and depth annotations. Recursion is rejected (the static call graph
   must stay acyclic for frame pre-allocation), and function bodies read but
   never write outer-scope variables.
-- The checker is provenance-blind about libraries: it consumes the injected
-  `Importer` only (`importer.ts`), seeding the universe scope from
-  `implicit()` and calling `import(path)` at each import declaration —
-  positioning the resolver's errors, never resolving paths itself. At that
-  seam, every resolved library becomes a semantic `Package` with its own
-  scope, imports, and export set; raw library syntax never becomes a scope
-  entry. Where libraries come from (builtin registry, filesystem, external
-  distribution) is `src/loader`'s concern.
+- The checker is provenance-blind about libraries: its injected `Importer`
+  (`importer.ts`) supplies only a `SourcePackage` path and parsed files. The
+  checker positions loader errors and recursively elaborates each source once
+  into a semantic `Package`; it alone interprets `library()`, validates the
+  package root and declaration conflicts, and checks types, enums, defaults,
+  methods, and imports. A library root permits imports, declarations, and
+  single-name `const` values only; tuple constants, mutable values, and
+  executable statements are rejected. Where sources come from and how paths
+  form a dependency DAG remain `src/loader` concerns.
+- `Package.imports` contains unique direct dependency identities, never local
+  spellings. Each import alias is a `PackageNameObject` in the importing
+  scope. `Package.exports` maps public names directly to the same canonical
+  `Object`s held by the package scope; it is the sole cross-package namespace,
+  so private objects never resolve through an alias.
+- Qualified APIs resolve through that canonical export map: `pkg.function`,
+  `pkg.Type`, `pkg.Type.new`, and `pkg.Enum.member` all record their package and
+  member occurrences in the active `Info`. Imported methods remain owned and
+  resolved by their exported `UserTypeObject`, not by the caller's lexical
+  scope.
 - Checker errors queue into the compilation's `Errors` and poison with
   `TypeKind.Invalid` (assignable both ways, unify-absorbed) so one error
   never cascades; the checker never throws on user input and silently

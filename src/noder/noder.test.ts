@@ -1,6 +1,9 @@
 // Purpose: Noder unit tests — desugarings (compound assign, tuple patterns, history-on-expression), param/output extraction with reference binding, and depth resolution observed on the built Program.
 
 import {describe, expect, test} from 'bun:test';
+import {newFileBase} from '../base/pos';
+import {Errors, fatal} from '../base/print';
+import {checkPackage} from '../checker/check';
 import {
   DepthKind,
   IrKind,
@@ -13,8 +16,58 @@ import {
 import {MergeMode, ParamConstraintKind, ParamDefaultKind} from '../ir/program';
 import {TypeKind, isNaValue} from '../ir/type';
 import {funcsOf, namesOf, seriesInputsOf, slotCountOf} from '../ir/visit';
+import {
+  resolveImports,
+  type PackageSource,
+  type Registry,
+} from '../loader/loader';
+import {parse} from '../syntax/syntax';
+import {buildProgram} from './noder';
 import {buildText, mustBuild} from './testing';
 import {DEFAULT_MAX_BARS_BACK} from './depth';
+
+function mustBuildWithLibraries(
+  source: string,
+  libraries: Readonly<Record<string, string>>,
+) {
+  const errors = new Errors();
+  const file = parse(newFileBase('main.tea'), source, (pos, msg) =>
+    errors.errorAt(pos, msg),
+  );
+  const registry: Registry = (path: string): PackageSource | null => {
+    const library = libraries[path];
+    return library === undefined
+      ? null
+      : {filename: `memory/${path}.tea`, source: library};
+  };
+  const checked = checkPackage(
+    [file],
+    errors,
+    resolveImports([file], registry, []),
+  );
+  if (errors.count > 0) {
+    return fatal(
+      `fixture failed to check: ${errors
+        .flushErrors()
+        .map(
+          error => `${error.pos.base.filename}:${error.pos.line}: ${error.msg}`,
+        )
+        .join('; ')}`,
+    );
+  }
+  const program = buildProgram(checked, errors);
+  if (errors.count > 0) {
+    return fatal(
+      `fixture failed to node: ${errors
+        .flushErrors()
+        .map(
+          error => `${error.pos.base.filename}:${error.pos.line}: ${error.msg}`,
+        )
+        .join('; ')}`,
+    );
+  }
+  return program;
+}
 
 describe('declarations', () => {
   test('plain decls write per bar; var decls initialize once', () => {
@@ -109,6 +162,36 @@ describe('declarations', () => {
 });
 
 describe('user-defined types', () => {
+  test('imported semantic types, methods, and functions project into Program IR', () => {
+    const program = mustBuildWithLibraries(
+      [
+        'import model as pkg',
+        'counter = pkg.Counter.new(3)',
+        'read = counter.read()',
+        'next = pkg.bump(counter)',
+      ].join('\n'),
+      {
+        model: [
+          'library("model")',
+          'export type Counter',
+          '    int value = 1',
+          '    int read() const => this.value',
+          'export bump(Counter counter) => counter.value + 1',
+        ].join('\n'),
+      },
+    );
+
+    const writes = program.body.filter(
+      (stmt): stmt is WriteNameStmt => stmt.kind === IrKind.WriteName,
+    );
+    expect(writes[0].value.kind).toBe(IrKind.NewUserValue);
+    expect(
+      funcsOf(program)
+        .map(func => func.callMode)
+        .sort(),
+    ).toEqual(['const-method', 'free']);
+  });
+
   test('a field default nodes in a function instance', () => {
     const program = mustBuild(
       [
