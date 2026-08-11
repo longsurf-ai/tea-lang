@@ -56,7 +56,7 @@ traces become the execution-level regression surface.
 
 ## 3. Implementation
 
-1. **runtime.md — the ABI contract** — `packages/tea-lang/docs/runtime.md`
+1. **runtime.md — the ABI contract** — `docs/runtime.md`
    - Write the runtime authority doc: module shape, rt surface, SeriesView,
      DataProvider/OutputSink seams, value representation, frame/ring/
      provisional semantics, emitter-rules-table note for non-JS backends.

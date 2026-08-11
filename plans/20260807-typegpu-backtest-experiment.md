@@ -23,7 +23,7 @@ Binance market-data API
                               round trips / equity curves
 ```
 
-- `packages/tea-lang/experiment/typegpu` is the standalone owner; it has no
+- `experiment/typegpu` is the standalone owner; it has no
   workspace imports, dependencies, or root lockfile changes.
 - The normalized snapshot and explicit SMA/exchange contract are input sources
   of truth. The GPU journal owns real-run strategy decisions; CPU artifact
@@ -51,7 +51,7 @@ the OpenChart monorepo.
 ## 3. Implementation
 
 1. **Create the standalone experiment boundary** —
-   `packages/tea-lang/experiment/typegpu/package.json`, `tsconfig.json`,
+   `experiment/typegpu/package.json`, `tsconfig.json`,
    `AGENTS.md`, `README.md`
    - Pin concrete npm dependencies for TypeGPU, its Rollup plugin, Dawn,
      boundary parsing, and package-local tooling.

@@ -7,16 +7,16 @@ same Docusaurus build is deployable on the public web and packaged with the Tea
 CLI for local, version-matched reading.
 
 ```text
-packages/tea-lang/docs/
+docs/
   authored Markdown + generated reference projections
         |
         | docs:generate (compiler catalog -> Types / Functions)
         v
-packages/tea-lang/website/       Docusaurus configuration and theme
+website/                         Docusaurus configuration and theme
         |
         | docs:build
         v
-packages/tea-lang/website/build/ static, release-packaged assets
+website/build/                   static, release-packaged assets
         |
         | tea docs
         v
@@ -48,7 +48,7 @@ build will call a model, require credentials, or invent a signature.
 
 ## Implementation
 
-1. Add the Docusaurus site under `packages/tea-lang/website/`, with concrete
+1. Add the Docusaurus site under `website/`, with concrete
    dependency versions in Tea's own `package.json`. Configure strict broken
    link and anchor failures, one docs plugin, separate Documentation and
    Reference sidebars, and a minimal reading-focused theme. Keep the package

@@ -56,7 +56,7 @@ free functions keep their current inferred-result syntax.
 
 ## 3. Implementation
 
-1. **Lock the source-observable receiver contract** — `packages/tea-lang/docs/memory-model.md`, `docs/{ir,conformance}.md`
+1. **Lock the source-observable receiver contract** — `docs/memory-model.md`, `docs/{ir,conformance}.md`
    - Specify default mutable and trailing-`const` methods, rooted-place
      requirements, read-only calls on temporaries/history, non-escaping `this`,
      success-only single writeback, and unchanged value/history isolation.

@@ -17,20 +17,20 @@ The TextMate grammar is generated from the Tea compiler's token, checker, and
 catalog vocabulary. After changing the language, regenerate and verify it:
 
 ```bash
-cd packages/tea-lang/editors/vscode
+cd editors/vscode
 bun run generate
 bun run check
 ```
 
-`packages/tea-lang/testdata/tokens.tea` and
-`packages/tea-lang/testdata/types.tea` are useful visual coverage fixtures.
+`testdata/tokens.tea` and `testdata/types.tea` are useful visual coverage
+fixtures.
 
 ## Package and install
 
 Create a VSIX:
 
 ```bash
-cd packages/tea-lang/editors/vscode
+cd editors/vscode
 bun run package:vsix
 ```
 

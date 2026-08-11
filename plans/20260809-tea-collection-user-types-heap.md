@@ -48,12 +48,12 @@ Runtime Value
 
 The ownership boundaries are:
 
-- `packages/tea-lang/docs/memory-model.md` owns source-observable assignment,
+- `docs/memory-model.md` owns source-observable assignment,
   copy, mutation, history, collection, user-type, and future pointer semantics.
-- `packages/tea-lang/docs/ir.md` owns the checked semantic facts consumed by
+- `docs/ir.md` owns the checked semantic facts consumed by
   noder and the static Program operations. It does not own runtime layout IDs,
   copy-on-write, Ring mechanics, or Heap publication.
-- `packages/tea-lang/docs/runtime.md` owns generated layout manifests, runtime
+- `docs/runtime.md` owns generated layout manifests, runtime
   value representations, the immutable Heap arena, Ring/Heap/buffered-emission
   publication, request sharing, tracing, and deterministic limits.
 - `Package -> Scope -> Object -> Type` is the checker source of truth. The exact
@@ -1449,23 +1449,16 @@ Heap arenas.
 - [x] Conformance includes concrete `UserType -> collection` and
       `collection<UserType>` Tea cases, plus same-iteration and historical COW
       traces under `testdata/execution/`.
-- [ ] Run:
+- [x] Run:
 
       ```sh
-      cd packages/tea-lang
-      NODE_OPTIONS=--max-old-space-size=8192 bun run typecheck
-      bun test
+      # From the repository root:
+      NODE_OPTIONS=--max-old-space-size=8192 bun run check
       ```
 
-      Then run `just check` on the final implementation branch before PR.
-
-      Tea typecheck and all 500 package tests pass. `just check` was attempted
-      on 2026-08-11 and reached unrelated worktree-wide blockers: the root
-      import checker rejects Tea's documented standalone relative-import
-      exception (1,252 existing reports), TSGraph-owned generated authoring
-      assets are stale from another change set, and the unrelated
-      `.impeccable/hook.cache.json` is not Prettier-clean. Keep this final box
-      open until those branch-level owners are reconciled.
+      The standalone repository gate passes: compiler and website typechecks,
+      all 525 tests, generated-reference checks, and the Docusaurus production
+      build.
 
 ## 5. Explicit follow-ons, not V1 assumptions
 

@@ -6,11 +6,6 @@
   "private": true,
   "publisher": "longsurf",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/longsurf-ai/openchart.git",
-    "directory": "packages/tea-lang/editors/vscode"
-  },
   "engines": {
     "vscode": "^1.85.0"
   },

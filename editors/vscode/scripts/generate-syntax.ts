@@ -488,7 +488,7 @@ async function main(): Promise<void> {
     if (current !== output) {
       console.error(
         'Tea TextMate grammar is stale; run bun run generate in ' +
-          'packages/tea-lang/editors/vscode.',
+          'editors/vscode.',
       );
       process.exitCode = 1;
     }

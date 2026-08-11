@@ -56,7 +56,7 @@ Program behavior stay stable except for those correctness repairs.
 
 ## 3. Implementation
 
-1. **Establish semantic identity** — `packages/tea-lang/src/checker/object.ts`,
+1. **Establish semantic identity** — `src/checker/object.ts`,
    `scope.ts`, `binding.ts`
    - Add `Package`, persistent `Scope`, and a discriminated `Object` union for
      variables, function templates, type names, fields, enum members, imported

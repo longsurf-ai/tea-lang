@@ -3,7 +3,7 @@
 ## 1. System map
 
 ```text
-            packages/tea-lang/docs/backtest.md   (semantic source of truth)
+            docs/backtest.md   (semantic source of truth)
             time model | order lifecycle | matching | accounting | precision
                      |                                   |
         CPU: oracle + live path              GPU: parameter sweep
@@ -23,7 +23,7 @@
 - Source of truth is the semantics doc; both runtimes are projections of it and
   a differential conformance suite (L3) enforces agreement.
 - The strategy contract is identical on both targets and matches the Tea IR
-  `host-service` effect class ([ir.md](../packages/tea-lang/docs/ir.md)):
+  `host-service` effect class ([ir.md](../docs/ir.md)):
   intents emitted at bar `t` close, matched during bar `t+1`, fill/position
   feedback readable at bar `t+1`. This is the seam that makes bar-synchronous
   GPU execution and future live execution the same model.
@@ -41,7 +41,7 @@
 The TypeGPU experiment proved one-dispatch parameter sweeps work (64
 full-history jobs, 132k journal events, ~190 ms) but with a hardcoded SMA
 strategy whose entire state is ~20 scalars in registers
-([typegpu-kernel.ts](../packages/tea-lang/experiment/typegpu/src/typegpu-kernel.ts)).
+([typegpu-kernel.ts](../experiment/typegpu/src/typegpu-kernel.ts)).
 We have since decided to drop TypeGPU and lower Tea IR directly to WGSL against
 a hand-written runtime. What is missing is (a) a backtest/live domain model
 that is tape-driven — a host-premerged, timestamp-sorted record tape consumed
@@ -61,22 +61,21 @@ backend are follow-up plans.
 
 ## 3. Implementation
 
-1. **Semantics doc** — `packages/tea-lang/docs/backtest.md`
+1. **Semantics doc** — `docs/backtest.md`
    - Distill Nautilus into a tape-driven model: the outer loop consumes a
      host-premerged sorted record tape (today only Bar records). Two clocks:
      the exchange advances per tape record; the strategy is invoked at its own
      cadence (bar close), so fill-fidelity upgrades (quote/trade records) never
      touch the strategy ABI. Keep/drop table:
 
-   | Nautilus | Keep (simplified) | Drop |
-   |---|---|---|
-   | Strategy/DataActor | `on_init` + `on_bar` | ~40 callbacks, actor lifecycle, msgbus, cache |
-   | OrderMatchingEngine | `OrderMatchingCore` predicates (`is_limit_matched`, `is_stop_matched`) + bar->OHLC tick synthesis | latency queue, emulator, risk engine, venue IDs |
-   | Order model | Market/Limit/StopMarket/StopLimit; Accepted -> Filled/Canceled/Expired; GTC/IOC | 9 types/16 states, trailing, OTO/OCO, Pending* |
-   | FillModel | deterministic predicate + fill-price fn (BestPrice + fixed slippage baseline) | probabilistic RNG models (later: per-job seeded) |
-   | Accounting | flat per-job position driven only by `apply(fill)`; single currency | margin, multi-currency, Money/Currency, Portfolio |
-   | Fixed point | integer price ticks (i32) / quantity lots (u32), per-instrument scale | i64 raw x 10^9 universal scalar |
-
+   | Nautilus            | Keep (simplified)                                                                                 | Drop                                              |
+   | ------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+   | Strategy/DataActor  | `on_init` + `on_bar`                                                                              | ~40 callbacks, actor lifecycle, msgbus, cache     |
+   | OrderMatchingEngine | `OrderMatchingCore` predicates (`is_limit_matched`, `is_stop_matched`) + bar->OHLC tick synthesis | latency queue, emulator, risk engine, venue IDs   |
+   | Order model         | Market/Limit/StopMarket/StopLimit; Accepted -> Filled/Canceled/Expired; GTC/IOC                   | 9 types/16 states, trailing, OTO/OCO, Pending\*   |
+   | FillModel           | deterministic predicate + fill-price fn (BestPrice + fixed slippage baseline)                     | probabilistic RNG models (later: per-job seeded)  |
+   | Accounting          | flat per-job position driven only by `apply(fill)`; single currency                               | margin, multi-currency, Money/Currency, Portfolio |
+   | Fixed point         | integer price ticks (i32) / quantity lots (u32), per-instrument scale                             | i64 raw x 10^9 universal scalar                   |
    - Specify the intra-bar order of operations, the next-bar feedback contract,
      the fixed-capacity pools (open orders per job, journal) with hard-fail
      overflow, and every module seam (orderbook, fill, fee, data granularity,
@@ -85,7 +84,8 @@ backend are follow-up plans.
      per-job future events (strategy timers, order latency) are timestamp
      fields (`next_timer_ts`, `effective_at`) polled against the tape clock,
      never per-job event queues.
-2. **GPU feasibility probes** — extend `packages/tea-lang/experiment/typegpu`
+
+2. **GPU feasibility probes** — extend `experiment/typegpu`
    - State-residency: move sweep state to job-strided storage buffers; measure
      throughput vs. register baseline at 256 B / 1 KiB / 4 KiB / 16 KiB per job.
    - Multi-dispatch bar-slicing: state persists in storage across N dispatches;
@@ -97,7 +97,7 @@ backend are follow-up plans.
      binding limits) and a host-side dispatch-planning policy, written into the
      semantics doc as the scheduling section.
 3. **CPU BacktestHost** — new standalone package
-   `packages/tea-lang/experiment/backtest-runtime` (same isolation invariants
+   `experiment/backtest-runtime` (same isolation invariants
    as the typegpu experiment; no monorepo imports)
    - TypeScript exchange/accounting/recorder implementing the doc exactly,
      integer tick math, driven per-bar through the same
@@ -132,4 +132,4 @@ backend are follow-up plans.
 - [ ] CPU baseline documented: `totalBarSteps/s` CPU (1 core / N workers) vs
       GPU for the same grid.
 - [ ] `npm ci && npm test` green in both experiment packages on Node 22;
-      `bun test` in `packages/tea-lang` untouched.
+      root `bun test` untouched.
