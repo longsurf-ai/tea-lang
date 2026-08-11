@@ -24,6 +24,7 @@ import {
   type ContextError,
   type DataProvider,
   type DepthSpec,
+  type ExecutionSource,
   ExecutionError,
   type FixedValueStorageBudget,
   type Frame,
@@ -52,9 +53,7 @@ import {isHistoryOffset, Ring, type RingPublicationMode} from './ring';
 import {rebuildUserPath, newUserValue, userField} from './user-value';
 import {type LayoutId, ValueLayoutRegistry} from './value-layout';
 
-// Slice scope: static requests resolve their full extent at bind; range
-// narrowing (depth demands, calc_bars_count) is a later refinement.
-const FULL_RANGE: RangeDemand = {from: null, to: null, bars: null};
+const FULL_RANGE: RangeDemand = {kind: 'full'};
 const DEFAULT_MAX_COLLECTION_ELEMENTS = 100_000;
 const DEFAULT_MAX_REQUEST_CONTEXTS = 40;
 const DEFAULT_MAX_FIXED_VALUE_LOGICAL_BYTES = 64 * 1024 * 1024;
@@ -85,6 +84,13 @@ function requestContextLimit(value: number | undefined): number {
   );
 }
 
+function bindTimeNow(value: number): number {
+  if (!Number.isSafeInteger(value)) {
+    throw new BindError('timeNow must be a finite safe epoch-ms integer');
+  }
+  return value;
+}
+
 // A bound depth is the same value the read will later use as its history
 // offset. Invalid offsets always read empty, so they retain no committed cells.
 function retentionForOffset(offset: number): number {
@@ -104,9 +110,10 @@ export async function bind(
     typeof module === 'object' && module !== null
       ? (module as {readonly abi?: unknown}).abi
       : undefined;
-  if (abi !== 3) {
+  if (abi !== 4) {
     throw new BindError(`unsupported module ABI ${String(abi)}`);
   }
+  const timeNow = bindTimeNow(inputs.timeNow);
   const maxRequestContexts = requestContextLimit(inputs.maxRequestContexts);
   const maxCollectionElements =
     optionalBindLimit(inputs.maxCollectionElements, 'maxCollectionElements') ??
@@ -139,6 +146,7 @@ export async function bind(
   if (isContextError(context)) {
     throw new BindError(formatContextError('primary context', context));
   }
+  const contextIdentity = effectiveContextIdentity(context, symbol, timeframe);
   const params = resolveParams(module.manifest, inputs.params);
   const layouts = new ValueLayoutRegistry(module.aggregateLayouts);
   const shared: SharedRuntimeState = {
@@ -160,6 +168,9 @@ export async function bind(
       inputs.provider,
       inputs.sink,
       context,
+      contextIdentity.symbol,
+      contextIdentity.timeframe,
+      timeNow,
       params,
       shared,
       maxCollectionElements,
@@ -181,6 +192,36 @@ export async function bind(
 
 function pairKey(rid: number, symbol: string, timeframe: string): string {
   return `${rid}\u0000${symbol}\u0000${timeframe}`;
+}
+
+function effectiveContextIdentity(
+  context: ProviderContext,
+  fallbackSymbol: string,
+  fallbackTimeframe: string,
+): {readonly symbol: string; readonly timeframe: string} {
+  const symbol = context.builtinValue({domain: 'syminfo', field: 'tickerid'});
+  const timeframe = context.builtinValue({
+    domain: 'timeframe',
+    field: 'period',
+  });
+  if (symbol !== undefined && symbol !== null && typeof symbol !== 'string') {
+    throw new BindError(
+      "provider builtin 'syminfo.tickerid' must be a string or typed empty",
+    );
+  }
+  if (
+    timeframe !== undefined &&
+    timeframe !== null &&
+    typeof timeframe !== 'string'
+  ) {
+    throw new BindError(
+      "provider builtin 'timeframe.period' must be a string or typed empty",
+    );
+  }
+  return {
+    symbol: typeof symbol === 'string' ? symbol : fallbackSymbol,
+    timeframe: typeof timeframe === 'string' ? timeframe : fallbackTimeframe,
+  };
 }
 
 // A child runs its full history at resolution time; nested dynamic edges
@@ -374,6 +415,73 @@ interface SharedRuntimeState {
   disposed: boolean;
 }
 
+interface BoundRequestOptions {
+  readonly gaps: boolean;
+  readonly lookahead: boolean;
+  readonly ignoreInvalidSymbol: boolean;
+  readonly range: RangeDemand;
+}
+
+function executionSourceName(source: ExecutionSource): string {
+  switch (source.domain) {
+    case 'time':
+    case 'bar':
+      return source.field;
+    case 'barstate':
+    case 'syminfo':
+    case 'timeframe':
+      return `${source.domain}.${source.field}`;
+  }
+}
+
+// Providers are allowed to over-return. The runtime owns the exact child row
+// space exposed to generated code, so a positive trailing demand is always
+// enforced here as a shifted immutable view.
+function clampProviderContext(
+  context: ProviderContext,
+  range: RangeDemand,
+  what: string,
+  makeError: (message: string) => Error,
+): ProviderContext {
+  if (!Number.isSafeInteger(context.rows) || context.rows < 0) {
+    throw makeError(
+      `${what}: provider context row count must be a non-negative safe integer, got ${context.rows}`,
+    );
+  }
+  if (range.kind === 'full' || range.bars >= context.rows) {
+    return context;
+  }
+  const start = context.rows - range.bars;
+  const rows = range.bars;
+  const axis = context.axis;
+  return {
+    rows,
+    axis:
+      axis === null
+        ? null
+        : {
+            time: row => axis.time(start + row),
+            closeTime: row => axis.closeTime(start + row),
+          },
+    series(id) {
+      const data = context.series(id);
+      if (data === null) {
+        return null;
+      }
+      if (data.length !== context.rows) {
+        throw makeError(
+          `${what}: series '${id}' has ${data.length} rows, context has ${context.rows}`,
+        );
+      }
+      return {
+        length: rows,
+        at: row => data.at(start + row),
+      };
+    },
+    builtinValue: source => context.builtinValue(source),
+  };
+}
+
 // A merged request result: a parent-row-indexed view. Slice A materializes
 // the mapping plus the child's result column; the contract (docs/requests.md)
 // is the view, so a zero-copy mapping over child storage can replace this
@@ -448,8 +556,7 @@ class JSRuntime implements Runtime, BoundProgram {
   private readonly paramValues: readonly Value[];
   private readonly paramActive: boolean[];
   private readonly seriesData: (SeriesData | null)[] = [];
-  // Runtime-owned virtual series: the axis ordinal itself.
-  private readonly barIndexSids = new Set<number>();
+  private readonly executionContextValues = new Map<number, Value>();
   // Bind-time depth reports from the module's frame-aware bind section.
   private readonly boundLocalDepths = new Map<string, number>();
   private readonly boundOutputArgs: {name: string; value: Value}[][];
@@ -460,6 +567,7 @@ class JSRuntime implements Runtime, BoundProgram {
     number,
     {symbol: string; timeframe: string}
   >();
+  private readonly requestOptions = new Map<number, BoundRequestOptions>();
   private readonly requestViews: (MergedView | null)[] = [];
   // Dynamic request machinery: rid-indexed result rings (null for static
   // edges), per-pair merged views ('invalid' = swallowed by
@@ -503,6 +611,9 @@ class JSRuntime implements Runtime, BoundProgram {
     private readonly provider: DataProvider,
     private readonly sink: OutputSink | null,
     private readonly context: ProviderContext,
+    private readonly contextSymbol: string,
+    private readonly contextTimeframe: string,
+    private readonly timeNow: number,
     params: readonly Value[],
     private readonly shared: SharedRuntimeState,
     private readonly maxCollectionElements: number,
@@ -517,6 +628,12 @@ class JSRuntime implements Runtime, BoundProgram {
       );
     }
     this.paramValues = params;
+    if (!Number.isSafeInteger(context.rows) || context.rows < 0) {
+      throw new BindError(
+        `provider context row count must be a non-negative safe integer, got ${context.rows}`,
+      );
+    }
+    this.rows = context.rows;
     this.paramActive = module.manifest.params.map(() => true);
     this.boundOutputArgs = module.manifest.outputs.map(() => []);
     this.collections = new CollectionRuntime(
@@ -529,15 +646,16 @@ class JSRuntime implements Runtime, BoundProgram {
       const attempt = shared.heap.beginAttempt(`bind:${shared.runtimes.size}`);
       this.heapAttempt = attempt;
       try {
-        // Reserved frame-free preparation runs before any frame exists.
-        this.module.init(this);
-
+        this.bindExecution();
         this.bindSeries();
+
+        // Reserved frame-free preparation runs after context carriers bind
+        // but before any frame exists, so simple metadata is available.
+        this.module.init(this);
 
         // One context, one axis: the context owns the row space, and every
         // series it serves must fill it — the runtime refuses misaligned data
         // instead of silently truncating.
-        this.rows = context.rows;
         this.seriesData.forEach((data, sid) => {
           if (data !== null && data.length !== this.rows) {
             throw new BindError(
@@ -581,6 +699,15 @@ class JSRuntime implements Runtime, BoundProgram {
   // their pairs are runtime values, resolved via requestFor/resolvePending.
   async bindRequests(): Promise<void> {
     const specs = this.module.manifest.requests;
+    specs.forEach((spec, rid) => {
+      void spec;
+      if (!this.requestOptions.has(rid)) {
+        fatal(`request ${rid} was never given bind options`);
+      }
+      if (!spec.dynamic && !this.requestPairs.has(rid)) {
+        fatal(`request ${rid} was never declared by bind`);
+      }
+    });
     if (specs.length > 0) {
       if (this.context.axis === null) {
         throw new BindError(
@@ -675,17 +802,18 @@ class JSRuntime implements Runtime, BoundProgram {
     makeError: (message: string) => Error,
     what: string,
   ): Promise<MergedView | 'invalid'> {
+    const options = this.mustRequestOptions(rid);
     const resolveDone = requestLog.startTimer('context resolved');
     const resolved = await this.provider.resolveContext(
       symbol,
       timeframe,
-      FULL_RANGE,
+      options.range,
     );
     if (isContextError(resolved)) {
       const invalidSymbol =
         resolved.error === 'unknownSymbol' ||
         resolved.error === 'unknownSource';
-      if (spec.merge.ignoreInvalidSymbol && invalidSymbol) {
+      if (options.ignoreInvalidSymbol && invalidSymbol) {
         // The na result is the ignore_invalid_symbol CONTRACT; the warn
         // reports it so a missing key or a typo is never silent.
         requestLog.warn('request context unavailable; values are na', {
@@ -698,23 +826,33 @@ class JSRuntime implements Runtime, BoundProgram {
       }
       throw makeError(formatContextError(what, resolved));
     }
-    resolveDone({symbol, timeframe, rows: resolved.rows});
+    const bounded = clampProviderContext(
+      resolved,
+      options.range,
+      what,
+      makeError,
+    );
+    resolveDone({symbol, timeframe, rows: bounded.rows});
 
     const parentAxis = this.context.axis;
-    const childAxis = resolved.axis;
+    const childAxis = bounded.axis;
     if (parentAxis === null || childAxis === null) {
       throw makeError(
         `${what}: merge requires a time axis on both contexts` +
           " (a csv context needs a 'time' column)",
       );
     }
-    assertMergeAxis(childAxis, resolved.rows, `${what} child context`);
+    assertMergeAxis(childAxis, bounded.rows, `${what} child context`);
+    const childIdentity = effectiveContextIdentity(bounded, symbol, timeframe);
 
     const child = new JSRuntime(
       this.module.requests[rid],
       this.provider,
       null,
-      resolved,
+      bounded,
+      childIdentity.symbol,
+      childIdentity.timeframe,
+      this.timeNow,
       this.paramValues,
       this.shared,
       this.maxCollectionElements,
@@ -745,7 +883,7 @@ class JSRuntime implements Runtime, BoundProgram {
         this.rows,
         childAxis,
         child.rows,
-        spec.merge,
+        options,
       );
       empty = this.shared.aggregateLayouts.empty(spec.layout);
     } catch (error) {
@@ -869,17 +1007,51 @@ class JSRuntime implements Runtime, BoundProgram {
         }
         id = this.paramValues[manifest.params.indexOf(param)] as string;
       }
-      // bar_index is the runtime's own axis ordinal, never provider data.
-      if (id === 'bar_index') {
-        this.barIndexSids.add(sid);
-        this.seriesData.push(null);
-        return;
-      }
       const data = this.context.series(id);
       if (data === null) {
         throw new BindError(`series '${id}' is not provided by this context`);
       }
       this.seriesData.push(data);
+    });
+  }
+
+  private bindExecution(): void {
+    let axisValidated = false;
+    this.module.manifest.execution.forEach((spec, eid) => {
+      // Force every layout id through the registry even if this source is not
+      // read until a later row.
+      this.shared.aggregateLayouts.layout(spec.layout);
+      const source = spec.source;
+      if (source.domain === 'syminfo' || source.domain === 'timeframe') {
+        const value = this.context.builtinValue(source);
+        if (value === undefined) {
+          throw new BindError(
+            `builtin '${executionSourceName(source)}' is not provided by this context`,
+          );
+        }
+        this.shared.aggregateLayouts.assertValue(
+          spec.layout,
+          value,
+          `provider builtin '${executionSourceName(source)}'`,
+        );
+        this.executionContextValues.set(eid, value);
+        return;
+      }
+      if (
+        source.domain === 'time' &&
+        (source.field === 'time' || source.field === 'time_close')
+      ) {
+        const axis = this.context.axis;
+        if (axis === null) {
+          throw new BindError(
+            `builtin '${source.field}' requires a time axis in this context`,
+          );
+        }
+        if (!axisValidated) {
+          assertMergeAxis(axis, this.rows, 'execution context');
+          axisValidated = true;
+        }
+      }
     });
   }
 
@@ -1461,9 +1633,6 @@ class JSRuntime implements Runtime, BoundProgram {
       return NaN;
     }
     const index = this.cursor - offset;
-    if (this.barIndexSids.has(sid)) {
-      return index < 0 ? NaN : index;
-    }
     const data = this.seriesData[sid];
     if (data === null || index < 0 || index >= data.length) {
       return NaN;
@@ -1475,6 +1644,88 @@ class JSRuntime implements Runtime, BoundProgram {
     return fatal(
       `provider series ${sid} returned a non-finite value at row ${index}`,
     );
+  }
+
+  execution(eid: number, offset: number): Value {
+    const spec = this.module.manifest.execution[eid];
+    if (spec === undefined) {
+      return fatal(`execution read from unknown input ${eid}`);
+    }
+    const source = spec.source;
+    if (this.phase === 'binding') {
+      if (
+        offset === 0 &&
+        (source.domain === 'syminfo' || source.domain === 'timeframe')
+      ) {
+        return this.mustExecutionContextValue(eid);
+      }
+      return fatal(
+        `execution builtin '${executionSourceName(source)}' is not bind-visible`,
+      );
+    }
+    const empty = this.shared.aggregateLayouts.empty(spec.layout);
+    if (!isHistoryOffset(offset)) {
+      return empty;
+    }
+    const row = this.cursor - offset;
+    if (row < 0 || row >= this.rows) {
+      return empty;
+    }
+
+    let value: Value;
+    switch (source.domain) {
+      case 'time':
+        switch (source.field) {
+          case 'time':
+            value = this.context.axis?.time(row) ?? empty;
+            break;
+          case 'time_close':
+            value = this.context.axis?.closeTime(row) ?? empty;
+            break;
+          case 'timenow':
+            value = this.timeNow;
+            break;
+        }
+        break;
+      case 'bar':
+        switch (source.field) {
+          case 'bar_index':
+            value = row;
+            break;
+          case 'last_bar_index':
+            value = this.rows - 1;
+            break;
+        }
+        break;
+      case 'barstate':
+        switch (source.field) {
+          case 'isfirst':
+            value = row === 0;
+            break;
+          case 'islast':
+            value = row === this.rows - 1;
+            break;
+          case 'ishistory':
+          case 'isconfirmed':
+          case 'isnew':
+            value = true;
+            break;
+          case 'isrealtime':
+            value = false;
+            break;
+        }
+        break;
+      case 'syminfo':
+      case 'timeframe':
+        value = this.mustExecutionContextValue(eid);
+        break;
+    }
+    this.shared.aggregateLayouts.assertValue(
+      spec.layout,
+      value,
+      `execution builtin '${executionSourceName(source)}'`,
+    );
+    return value;
   }
 
   param(pid: number): Value {
@@ -1594,13 +1845,14 @@ class JSRuntime implements Runtime, BoundProgram {
     if (typeof symbol !== 'string' || typeof timeframe !== 'string') {
       return fatal(`request ${rid} context args must be strings`);
     }
-    const view = this.pairViews.get(pairKey(rid, symbol, timeframe));
+    const pair = this.inheritedRequestPair(symbol, timeframe);
+    const view = this.pairViews.get(pairKey(rid, pair.symbol, pair.timeframe));
     if (view === undefined) {
       // Unresolved pair: record it, mark the row so its retry does a full
       // reset, and hand control to the host's await point.
-      this.pendingPair = {rid, symbol, timeframe};
+      this.pendingPair = {rid, ...pair};
       this.suspendedRow = this.cursor;
-      throw new ContextSuspension(symbol, timeframe);
+      throw new ContextSuspension(pair.symbol, pair.timeframe);
     }
     const value = view === 'invalid' ? empty : view.at(this.cursor);
     ring.setScratch(value);
@@ -1663,6 +1915,14 @@ class JSRuntime implements Runtime, BoundProgram {
     void retentionForOffset(bars);
   }
 
+  bindExecutionDepth(eid: number, bars: number): void {
+    this.assertBinding('bindExecutionDepth');
+    if (this.module.manifest.execution[eid] === undefined) {
+      return fatal(`bindExecutionDepth on unknown execution input ${eid}`);
+    }
+    void retentionForOffset(bars);
+  }
+
   bindOutput(oid: number, argName: string, v: Value): void {
     this.assertBinding('bindOutput');
     this.boundOutputArgs[oid].push({name: argName, value: v});
@@ -1679,14 +1939,92 @@ class JSRuntime implements Runtime, BoundProgram {
     this.paramActive[pid] = active;
   }
 
+  bindRequestOptions(
+    rid: number,
+    gaps: Value,
+    lookahead: Value,
+    ignoreInvalidSymbol: Value,
+    calcBarsCount: Value,
+  ): void {
+    this.assertBinding('bindRequestOptions');
+    if (this.module.manifest.requests[rid] === undefined) {
+      return fatal(`bindRequestOptions on unknown request ${rid}`);
+    }
+    if (this.requestOptions.has(rid)) {
+      return fatal(`request ${rid} bind options were reported twice`);
+    }
+    if (
+      typeof gaps !== 'boolean' ||
+      typeof lookahead !== 'boolean' ||
+      typeof ignoreInvalidSymbol !== 'boolean'
+    ) {
+      throw new BindError(
+        `request ${rid}: gaps, lookahead, and ignore_invalid_symbol must bind to bool values`,
+      );
+    }
+    if (
+      typeof calcBarsCount !== 'number' ||
+      !Number.isSafeInteger(calcBarsCount) ||
+      calcBarsCount < 0
+    ) {
+      throw new BindError(
+        `request ${rid}: calc_bars_count must bind to a non-negative safe integer`,
+      );
+    }
+    this.requestOptions.set(rid, {
+      gaps,
+      lookahead,
+      ignoreInvalidSymbol,
+      range:
+        calcBarsCount === 0
+          ? FULL_RANGE
+          : {kind: 'trailing-bars', bars: calcBarsCount},
+    });
+  }
+
   bindRequest(rid: number, symbol: Value, timeframe: Value): void {
     this.assertBinding('bindRequest');
+    const spec = this.module.manifest.requests[rid];
+    if (spec === undefined) {
+      return fatal(`bindRequest on unknown request ${rid}`);
+    }
+    if (spec.dynamic) {
+      return fatal(`bindRequest on dynamic request ${rid}`);
+    }
+    if (this.requestPairs.has(rid)) {
+      return fatal(`request ${rid} context was reported twice`);
+    }
     if (typeof symbol !== 'string' || typeof timeframe !== 'string') {
       throw new BindError(
         `request ${rid}: symbol and timeframe must bind to strings`,
       );
     }
-    this.requestPairs.set(rid, {symbol, timeframe});
+    this.requestPairs.set(rid, this.inheritedRequestPair(symbol, timeframe));
+  }
+
+  private inheritedRequestPair(
+    symbol: string,
+    timeframe: string,
+  ): {symbol: string; timeframe: string} {
+    return {
+      symbol: symbol === '' ? this.contextSymbol : symbol,
+      timeframe: timeframe === '' ? this.contextTimeframe : timeframe,
+    };
+  }
+
+  private mustRequestOptions(rid: number): BoundRequestOptions {
+    const options = this.requestOptions.get(rid);
+    if (options === undefined) {
+      return fatal(`request ${rid} has no bound options`);
+    }
+    return options;
+  }
+
+  private mustExecutionContextValue(eid: number): Value {
+    if (!this.executionContextValues.has(eid)) {
+      return fatal(`execution input ${eid} has no bound value`);
+    }
+    return this.executionContextValues.get(eid) as Value;
   }
 
   private assertBinding(what: string): void {

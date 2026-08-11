@@ -3,7 +3,7 @@
 Checked semantics → Program. `buildProgram` nodes one checked file into the
 Tea Program using the exact per-context `Info` produced by the checker;
 `depth.ts` owns depth policy and normalization, while `depth-walk.ts` owns
-lexical traversal and single-write input discovery. Source loading lives in
+lexical traversal and single-write bind-known discovery. Source loading lives in
 `src/loader`.
 
 ## Invariants
@@ -12,8 +12,9 @@ lexical traversal and single-write input discovery. Source loading lives in
   from the active semantic context's `Info`. A Bad node or missing fact here
   is a phase-barrier violation and `fatal()`s — never a queued user error.
 - The noder is the sole semantic-to-backend projection. Each
-  `ProgramLoweringContext` interns `VariableObject → IrName` and
-  `BuiltinObject → SeriesInput`; the noder also creates `ParamInput`,
+  `ProgramLoweringContext` interns `VariableObject → IrName` and projects each
+  `BuiltinObject` through its catalog-owned binding to either `SeriesInput` or
+  `ExecutionInput`; the noder also creates `ParamInput`,
   `RequestEdge`, `IrFunc`, synthetic/result names, call-site slots, and the
   static frame layout. Checker objects never acquire backend depth, init,
   slot, or frame state.
@@ -64,13 +65,15 @@ lexical traversal and single-write input discovery. Source loading lives in
   name written unconditionally every bar before the read — which is why the
   desugaring exists only at top level; inside a block it is a clean error.
 - Depth resolution walks each UDF body in call-site context. It substitutes
-  parameters and single-write input locals with root-safe input expressions,
+  parameters and single-write bind-known locals with root-safe expressions,
   then combines every constant/bound demand on a carrier into one exact,
   na-safe maximum. Any remaining per-bar or unresolved frame dependency is
   `capped` by `indicator(max_bars_back=…)` or the engine default. Depths
   annotate the noder-created IR place objects (names, series, params, and
   requests) in place and accumulate across the recursive Program graph; every
   `bound` expression is normalized for lowering from the root bind frame.
+  Immutable root-safe `simple` aliases, including typed execution inputs, are
+  exact `DepthKind.Bound` demands rather than conservatively capped history.
 - Alias bindings: a never-reassigned plain declaration whose initializer is
   a current-bar read of a STABLE place (series, param, STATIC request —
   never a Name, whose later writes would leak through) binds the name to

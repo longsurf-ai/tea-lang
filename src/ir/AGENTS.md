@@ -1,8 +1,8 @@
 # ir
 
-The Tea middle-end vocabulary: the single type domain (`type.ts`), the typed
-IR node set (`node.ts`), and the Program contract (`program.ts`). Design doc:
-`../../docs/ir.md`.
+The Tea middle-end vocabulary: shared builtin identifiers (`builtin.ts`), the
+single type domain (`type.ts`), the typed IR node set (`node.ts`), and the
+Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
 
 ## Invariants
 
@@ -15,6 +15,9 @@ IR node set (`node.ts`), and the Program contract (`program.ts`). Design doc:
   takes the later-known qualifier. History is a property of the qualifier
   axis, and `var`/`varip` persistence is a property of Names, orthogonal to
   both.
+- `builtin.ts` contains only closed runtime-bound builtin identifiers shared
+  by checker, Program, and runtime. It must never acquire semantic objects,
+  Program nodes, provider state, or runtime context objects.
 - One Program instance runs against exactly one context (one symbol ×
   timeframe axis) and owns its slots, bindings, and rollback. Requests
   compose by recursion — child Programs whose merged outputs are parent
@@ -49,8 +52,9 @@ IR node set (`node.ts`), and the Program contract (`program.ts`). Design doc:
   (a new kind fails compilation there until handled). Program fields are
   the external-needs interface (params, requests) plus emissions (outputs)
   — explicit even where derivable, so codegen/runtime never walk trees to
-  learn what a program needs. Ambient context builtins (close,
-  syminfo.\*) are never declared; composition internals (names, funcs,
-  call-site slots) come from the visit projections.
+  learn what a program needs. Numeric context data uses `SeriesInput`; typed
+  builtins use `ExecutionInput`, whose closed `ExecutionSource.domain` is only
+  identity and never implies domain-shaped runtime objects. Composition
+  internals (names, funcs, call-site slots) come from the visit projections.
 - `ir` imports only `base/`; it must never import from `syntax/`,
   `checker/`, or `noder/` (dependencies point at `ir`, not out of it).

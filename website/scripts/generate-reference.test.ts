@@ -16,4 +16,15 @@ describe('native function reference', () => {
       '| `self` | `array<T>` | `series` | Yes | writes receiver |',
     );
   });
+
+  test('marks staged positional parameters without hiding their ABI slot', () => {
+    const page = functionsPage();
+
+    expect(page).toContain(
+      '`request.security(symbol: string, timeframe: string, expression: any value, gaps?: bool, lookahead?: bool, ignore_invalid_symbol?: bool, currency?: string, calc_bars_count?: int) → float`',
+    );
+    expect(page).toContain(
+      '| `currency` | `string` | `const` | No | staged; not supported |',
+    );
+  });
 });

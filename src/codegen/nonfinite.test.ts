@@ -28,6 +28,7 @@ describe('finite-or-na helpers', () => {
     const ctx: LowerCtx = {
       nameSlots: new Map(),
       seriesIds: new Map(),
+      executionIds: new Map(),
       paramIds: new Map(),
       paramSeriesIds: new Map(),
       outputIds: new Map(),

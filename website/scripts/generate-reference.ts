@@ -111,6 +111,9 @@ function formatResultQualifier(
 
 function paramRules(param: NativeParam): string {
   const rules: string[] = [];
+  if (param.availability === 'staged') {
+    rules.push('staged; not supported');
+  }
   if (param.constLiteral) {
     rules.push('constant literal');
   }

@@ -1,6 +1,7 @@
 // Purpose: The runtime ABI contract — the complete surface generated code, providers, and sinks see; docs/runtime.md is the authority. JSRuntime implements it and codegen targets it.
 
 import type {HistoryDepth, NameStorage} from '../ir/node';
+import type {ExecutionSource} from '../ir/builtin';
 import type {ParamDisplay} from '../ir/program';
 import type {Heap, HeapLimits, StorageRef} from './heap';
 import type {
@@ -138,6 +139,14 @@ export interface SeriesSpec {
   readonly depth: DepthSpec;
 }
 
+// Typed builtins supplied by the execution context. `source` is an exact
+// builtin identity, never a request for a domain-shaped runtime object.
+export interface ExecutionSpec {
+  readonly source: ExecutionSource;
+  readonly layout: LayoutId;
+  readonly depth: DepthSpec;
+}
+
 export type ParamConstraintSpec =
   | {
       readonly kind: 'range';
@@ -201,9 +210,6 @@ export interface OutputSpec {
 export interface RequestSpec {
   readonly merge: {
     readonly mode: 'sample'; // collect arrives with the collections slice
-    readonly gaps: boolean;
-    readonly lookahead: boolean;
-    readonly ignoreInvalidSymbol: boolean;
   };
   // History demanded on the merged result — for a static edge a contract
   // for the future mapping-based view; for a dynamic edge it sizes the
@@ -220,6 +226,7 @@ export interface RequestSpec {
 
 export interface ModuleManifest {
   readonly series: readonly SeriesSpec[]; // sid-indexed
+  readonly execution: readonly ExecutionSpec[]; // eid-indexed
   readonly params: readonly ParamSpec[]; // pid-indexed
   readonly outputs: readonly OutputSpec[]; // oid-indexed
   readonly frames: readonly FrameLayout[]; // fid-indexed; 0 = program frame
@@ -273,7 +280,7 @@ export interface MutableMethodCallResult {
 // The complete runtime artifact (`tea build` output). The runtime never
 // re-derives ids from the Program.
 export interface TeaModule extends ModuleCode {
-  readonly abi: 3;
+  readonly abi: 4;
   readonly aggregateLayouts: AggregateLayoutManifest;
 }
 
@@ -299,7 +306,11 @@ export interface SharedExecutionState {
 // Only Time-Machine-relevant operations cross this interface; arithmetic,
 // comparisons, and math intrinsics expand inline in generated code.
 export interface Runtime {
+  // During bind, only offset-zero syminfo/timeframe sources are visible.
+  // time/timenow/bar/barstate remain series-qualified and require a row cursor;
+  // generated code calling them during bind is protocol misuse.
   series(sid: number, offset: number): number;
+  execution(eid: number, offset: number): Value;
   param(pid: number): Value;
   read(fr: Frame, slot: number, offset: number): Value;
   write(fr: Frame, slot: number, v: Value): void;
@@ -325,8 +336,18 @@ export interface Runtime {
   historyDepth(offset: number): number;
   bindDepth(fid: number, slot: number, bars: number): void;
   bindSeriesDepth(sid: number, bars: number): void;
+  bindExecutionDepth(eid: number, bars: number): void;
   bindOutput(oid: number, argName: string, v: Value): void;
   bindParamActive(pid: number, active: Value): void;
+  // Every request edge reports its bind-evaluated options exactly once.
+  // A zero bar count selects the full available child extent.
+  bindRequestOptions(
+    rid: number,
+    gaps: Value,
+    lookahead: Value,
+    ignoreInvalidSymbol: Value,
+    calcBarsCount: Value,
+  ): void;
   // Declares a static edge's context: bind resolves the pair, runs the
   // child over its history, and prepares the merged view before row 0.
   bindRequest(rid: number, symbol: Value, timeframe: Value): void;
@@ -429,6 +450,15 @@ export interface ProviderContext {
   // null = this context cannot supply the id; a demanded series is a bind
   // error. All series of one context share one row space (rows-aligned).
   series(id: string): SeriesData | null;
+  // The provider-owned metadata plane. `undefined` means this context cannot
+  // supply the exact demanded builtin; null/NaN/false remain ordinary typed
+  // empty values and are validated against the manifest layout by Runtime.
+  builtinValue(
+    source: Extract<
+      ExecutionSource,
+      {readonly domain: 'syminfo' | 'timeframe'}
+    >,
+  ): Value | undefined;
 }
 
 // Typed context-resolution failures — never thrown strings. The runtime
@@ -448,13 +478,12 @@ export function isContextError(
   return 'error' in x;
 }
 
-// What bind demands of a context, so paging drivers know when to stop.
-// null members mean the source's full extent / latest available.
-export interface RangeDemand {
-  readonly from: number | null; // epoch ms
-  readonly to: number | null; // epoch ms
-  readonly bars: number | null; // alternative: trailing bar count
-}
+// What bind demands of a context, so paging drivers know when to stop. The
+// runtime defensively enforces the exact trailing extent even when a provider
+// elects to over-return.
+export type RangeDemand =
+  | {readonly kind: 'full'}
+  | {readonly kind: 'trailing-bars'; readonly bars: number};
 
 // The one data seam. The primary context resolves through the same call as
 // every request context ('' = the host's default symbol/timeframe — a csv
@@ -493,6 +522,9 @@ export interface BindInputs {
   readonly params: Readonly<Record<string, unknown>>;
   readonly provider: DataProvider;
   readonly sink: OutputSink;
+  // One deterministic historical execution clock. Hosts validate their own
+  // source of time; the runtime accepts only an exact finite epoch-ms integer.
+  readonly timeNow: number;
   // The primary context's name; omitted = '' = the provider's default
   // (a csv file's only context, the chart's active symbol).
   readonly symbol?: string;
@@ -591,4 +623,10 @@ export class ExecutionError extends Error {
   }
 }
 
-export type {AggregateLayoutManifest, HeapLimits, HistoryDepth, LayoutId};
+export type {
+  AggregateLayoutManifest,
+  ExecutionSource,
+  HeapLimits,
+  HistoryDepth,
+  LayoutId,
+};

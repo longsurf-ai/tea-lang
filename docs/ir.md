@@ -52,8 +52,11 @@ tables. Direct updates have one checked writeback target: a current root
 that target inside their existing `CallResolution`.
 
 The boundary is strict: checker results contain no `IrName`, `SeriesInput`,
-`ParamInput`, `RequestEdge`, `HistoryDepth`, slot, or frame. The noder creates
-those backend representations at the Program boundary.
+`ExecutionInput`, `ParamInput`, `RequestEdge`, `HistoryDepth`, slot, or frame.
+The noder creates those backend representations at the Program boundary.
+Only the closed identifier vocabulary in `ir/builtin.ts` and the shared type
+domain in `ir/type.ts` cross into the checker; backend nodes and Programs do
+not.
 
 ## The one invariant above all others
 
@@ -106,10 +109,11 @@ consumed by `fill` — not runtime heap handles.
 
 A Program is _a bar loop over one context_ — one symbol × timeframe axis —
 owning the following backend resources. The noder is their sole creator: its
-per-Program context projects `VariableObject → IrName` and
-`BuiltinObject → SeriesInput`, creates `ParamInput` and `RequestEdge` objects,
-mints slots and synthetic names, establishes static frame layouts, and hands
-the resulting places to its depth pass for annotation.
+per-Program context projects `VariableObject → IrName` and each
+`BuiltinObject` through its checker-owned binding to either `SeriesInput` or
+`ExecutionInput`, creates `ParamInput` and `RequestEdge` objects, mints slots
+and synthetic names, establishes static frame layouts, and hands the resulting
+places to its depth pass for annotation.
 
 - **params**: `input.*` declarations. Noding extracts the declaration
   (name, type, default, const-required constraints, and host-facing UI
@@ -131,13 +135,22 @@ the resulting places to its depth pass for annotation.
   The checker rejects `active` dependencies on a function/capture execution
   frame because the global parameter is bound without that frame. No input
   default or metadata value may be `na`.
-- **ambient series** (not a field): `close`, `time`, `bar_index`,
-  `syminfo.*` are built-ins of whatever context the Program runs in —
-  provided by the runtime unconditionally, context-scoped, never declared,
-  never mandatory. The checker resolves each occurrence to a semantic
-  `BuiltinObject`; the noder interns its own `SeriesInput` in each Program
-  projection. `seriesInputsOf` projects the depth-annotated usage set for
-  buffer sizing.
+- **numeric series inputs** (a projection, not a field): `open`, `high`,
+  `low`, `close`, `volume`, and the derived price sources are numeric columns
+  supplied by the context's provider. The checker catalog binds them
+  explicitly as series; the noder interns one `SeriesInput` for each used
+  builtin in each Program. `input.source` is restricted to this closed
+  vocabulary. Neither noder nor runtime classifies a builtin by parsing its
+  spelling.
+- **typed execution inputs** (also a projection): `time`, `time_close`,
+  `timenow`, `bar_index`, `last_bar_index`, `barstate.*`, `syminfo.*`, and
+  `timeframe.*` are typed values supplied by the execution context rather than
+  numeric provider columns. They project to `ExecutionInput`, which carries
+  source, type, qualifier, and depth. Its source is a closed `{domain, field}`
+  key. The domain is only the builtin namespace (`time`, `bar`, `barstate`,
+  `syminfo`, or `timeframe`); it never implies a corresponding compiler or
+  runtime context object. Parent and request-child Programs project their own
+  carriers even when they use the same semantic `BuiltinObject`.
 - **names**: variables in a Program are `Name` objects — the `ir.Name` model.
   The noder projects a semantic `VariableObject` to one Name per Program
   context, referenced directly from every IR use. A checker object and an IR
@@ -151,12 +164,12 @@ the resulting places to its depth pass for annotation.
   for var/varip storage (evaluated once by the runtime; no synthetic first-bar
   guards in the body), type and qualifier copied from the semantic object, and
   a **history depth resolvable no later than bind time** (non-negotiable):
-  `none` (no buffer materializes), `const`, `bound` (a root-safe
-  input-qualified expression evaluated at bind), or `capped` (dynamic offsets
-  under an explicit bind-resolvable `max_bars_back` cap). Init is owned by
-  noding and depth by the noder's depth pass. Series inputs, params, and request
-  results carry the same depth field, so the runtime sizes every buffer from
-  the description alone.
+  `none` (no buffer materializes), `const`, `bound` (an immutable root-safe
+  expression no later than `simple`, evaluated at bind), or `capped` (dynamic
+  offsets under an explicit bind-resolvable `max_bars_back` cap). Init is owned
+  by noding and depth by the noder's depth pass. Series inputs, execution
+  inputs, params, and request results carry the same depth field, so every
+  history demand is resolved before execution.
 - **outputs**: statically-declared effect channels (plot/hline/
   alertcondition), hoisted so the host knows every channel before the first
   bar. Three argument buckets: `staticArgs` (compile-time constants),
@@ -176,8 +189,12 @@ the resulting places to its depth pass for annotation.
   is staged and rejected in the meantime. The child designates a
   **result name** (`RequestEdge.resultName`, written each child bar; its type
   is the edge's `resultType`) whose committed values the runtime merges onto
-  the parent axis (sample or collect, gaps/lookahead, ignore-invalid-symbol,
-  currency, calc-bars-count). One Program ↔ one context; composition is by
+  the parent axis. The edge retains four concrete bind-time option
+  expressions (`gaps`, `lookahead`, `ignore_invalid_symbol`, and
+  `calc_bars_count`) plus their source evaluation order; omitted options
+  normalize to `false`, `false`, `false`, and `0`. Currency remains a
+  positional but staged source parameter and does not enter the Program until
+  its FX/unit model exists. One Program ↔ one context; composition is by
   recursion, never by multi-context Programs. With input/simple context
   arguments the context set is static; **dynamic requests** (Pine v6
   `dynamic_requests`) are the same edge with series-qualified context exprs —
@@ -212,7 +229,7 @@ the resulting places to its depth pass for annotation.
 
 Typed and resolved: every expression carries `(type, qualifier)`; every use
 is a `Place` referencing its projected IR declaration object directly (Name |
-ParamInput | SeriesInput | RequestEdge — no ids), with
+ParamInput | SeriesInput | ExecutionInput | RequestEdge — no ids), with
 `HistRead {place, offset?}` — a
 read through the time machine, offset null meaning the current bar — and
 each use keeping its own position (unlike shared-node designs, diagnostics
@@ -247,10 +264,12 @@ argument vector. A method receiver is absent from this schedule and from
 explicit arguments. Named arguments therefore never reorder observable effects
 or failures. Output declarations retain the
 analogous `bindArgumentEvaluationOrder` for bind-time arguments, while an
-`Emit` retains it for per-bar channels. A `RequestEdge` retains
-`contextArgumentEvaluationOrder` for its parent-owned symbol and timeframe;
-the captured expression is deliberately absent because it executes in the
-child Program rather than the parent context.
+`Emit` retains it for per-bar channels. A `RequestEdge` retains two independent
+schedules: `optionArgumentEvaluationOrder` for its four bind-time options and
+`contextArgumentEvaluationOrder` for its parent-owned symbol and timeframe.
+There is deliberately no cross-phase schedule. The captured expression is
+absent from both because it executes in the child Program rather than the
+parent context.
 
 User functions are discriminated by call mode. `CallFunc` targets only a
 `FreeIrFunc`; `CallConstMethod` targets only a `ConstMethodIrFunc`; and
@@ -302,16 +321,15 @@ unused input still renders in the settings UI) and `requests`
 (`outputs`; a static-only hline has no Emit), explicitly even where
 derivable: the noder populates this interface, and codegen/runtime read what
 the program needs from the world here without reinterpreting checker facts.
-Ambient context builtins (close,
-volume, syminfo.\*) are NOT declared: they are simply available, usage
-optional, and the series list of a child context is a product of request
-resolution. Composition internals — names, funcs, call-site slots — are
-projections: `visit.ts` owns the exhaustive traversal and exposes
-`namesOf`, `funcsOf`, `slotCountOf`, plus `seriesInputsOf` (the
-depth-annotated ambient usage set, for buffer sizing) and `requestsOf`
-(how the noder fills the interface field). Request edges the noder finds
-unreachable never enter `requests` — dead-request elimination by
-construction.
+Context builtins are NOT declared as Program fields: they are available only
+when used, and a child context's carriers are a product of its own request
+capture. Composition internals — names, funcs, call-site slots — are
+projections: `visit.ts` owns the exhaustive traversal and exposes `namesOf`,
+`funcsOf`, `slotCountOf`, `seriesInputsOf`, `executionInputsOf`, and
+`requestsOf`. The two input projections become separate id namespaces at the
+module boundary; a typed execution value can never become an input-source
+series merely because its Tea type is numeric. Request edges the noder finds
+unreachable never enter `requests` — dead-request elimination by construction.
 
 ## Noding policies
 
@@ -332,7 +350,7 @@ construction.
   Only constants and direct scalar input bindings cross contexts; computed
   root aliases fail closed because the child has no projected root-frame place
   for them. Function instances record exact transitive semantic dependencies:
-  ambient builtins reproject safely in the child, while outer variables must
+  context builtins reproject safely in the child, while outer variables must
   be constants or direct scalar input bindings. Bind-time params are
   compilation-global: the child references the parent's ParamInputs and
   declares none of its own. Materializing computed root values in the child is
@@ -362,8 +380,9 @@ construction.
 - `Program.init` stays empty for now — hoisting const/input/simple work out
   of the bar loop is a later optimization, not a correctness requirement.
 - Depth resolution walks UDF bodies in call-site context. Constant and
-  root-safe input-qualified offsets are substituted through parameters and
-  single-write input locals, then combined into one exact `bound` maximum
+  immutable root-safe offsets no later than `simple` are substituted through
+  parameters and single-write root locals, including aliases of `ParamInput`
+  and `ExecutionInput`, then combined into one exact `bound` maximum
   (invalid/na components contribute zero). A demand that still depends on
   per-bar or unresolved frame state is `capped` by
   `indicator(max_bars_back=…)` or the engine default (500). Interval analysis

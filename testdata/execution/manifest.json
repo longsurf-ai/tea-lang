@@ -26,6 +26,18 @@
       }
     },
     {
+      "id": "typed-execution-range",
+      "kind": "compile-through",
+      "source": "compile/typed-execution-range/source.tea",
+      "data": "compile/typed-execution-range/data.csv",
+      "reference": "compile/typed-execution-range/reference.json",
+      "sha256": {
+        "source": "eeb0d293fa003270976963696309d73debf659b723c0169a890c09a924dad6d9",
+        "data": "8730fbf989456c0374879b32ca59c411fface63b3b84c5b09a39fcbd9bf1921a",
+        "reference": "a8467b52c8b26d7c1d50bb37f3107b3406817f6112db6d52616b8fc894f94a30"
+      }
+    },
+    {
       "id": "moving-averages",
       "kind": "differential",
       "source": "differential/moving-averages/source.tea",

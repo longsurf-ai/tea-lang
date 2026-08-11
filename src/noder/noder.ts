@@ -29,6 +29,7 @@ import {
   MergeMode,
   ParamConstraintKind,
   ParamDefaultKind,
+  type ExecutionInput,
   type IrFunc,
   type MergePolicy,
   type OutputDecl,
@@ -117,6 +118,7 @@ interface FrameLoweringContext {
 class ProgramLoweringContext {
   readonly names = new Map<VariableObject, IrName>();
   readonly series = new Map<BuiltinObject, SeriesInput>();
+  readonly execution = new Map<BuiltinObject, ExecutionInput>();
   readonly funcs = new Map<FunctionInstance, IrFunc>();
   readonly outputRefs = new Map<VariableObject, OutputDecl>();
   readonly aliasRefs = new Map<VariableObject, Place>();
@@ -297,10 +299,13 @@ class Noder {
   }
 
   private seriesOf(builtin: BuiltinObject): SeriesInput {
+    if (builtin.binding?.kind !== 'series') {
+      return fatal(`builtin '${builtin.name}' is not a numeric series input`);
+    }
     let series = this.program.series.get(builtin);
     if (series === undefined) {
       series = {
-        id: builtin.hostId,
+        id: builtin.binding.id,
         type: builtin.type,
         qualifier: builtin.qualifier,
         depth: {kind: DepthKind.None},
@@ -308,6 +313,23 @@ class Noder {
       this.program.series.set(builtin, series);
     }
     return series;
+  }
+
+  private executionOf(builtin: BuiltinObject): ExecutionInput {
+    if (builtin.binding?.kind !== 'execution') {
+      return fatal(`builtin '${builtin.name}' is not an execution input`);
+    }
+    let execution = this.program.execution.get(builtin);
+    if (execution === undefined) {
+      execution = {
+        source: builtin.binding.source,
+        type: builtin.type,
+        qualifier: builtin.qualifier,
+        depth: {kind: DepthKind.None},
+      };
+      this.program.execution.set(builtin, execution);
+    }
+    return execution;
   }
 
   // A checked default changes only the semantic fact view. It still lowers
@@ -758,16 +780,23 @@ class Noder {
     }
   }
 
-  // A Name or Selector read: ambient series, param/output reference
-  // bindings, user-value fields, or a plain name read.
+  // A Name or Selector read: context builtin, param/output reference binding,
+  // user-value field, or a plain name read.
   private nodePlaceRead(
     e: syntax.Name | syntax.SelectorExpr,
     tv: TypeAndValue,
   ): IrExpr {
     const builtin = this.builtinOf(e);
     if (builtin !== null) {
-      const series = this.seriesOf(builtin);
-      const place: Place = {kind: PlaceKind.Series, series};
+      const place: Place =
+        builtin.binding?.kind === 'series'
+          ? {kind: PlaceKind.Series, series: this.seriesOf(builtin)}
+          : builtin.binding?.kind === 'execution'
+            ? {
+                kind: PlaceKind.Execution,
+                execution: this.executionOf(builtin),
+              }
+            : fatal(`constant builtin '${builtin.name}' reached place noding`);
       return {
         kind: IrKind.HistRead,
         pos: e.pos,
@@ -1230,10 +1259,6 @@ class Noder {
       const index = resolved.native.params.findIndex(p => p.name === paramName);
       return index === -1 ? null : (resolved.args[index] ?? null);
     };
-    const argValue = (paramName: string): ConstValue | null => {
-      const expr = argExpr(paramName);
-      return expr !== null ? this.tvOf(expr).value : null;
-    };
     const captureIndex = resolved.native.params.findIndex(p => p.capture);
     const captureExpr = resolved.args[captureIndex];
     const symbolExpr = argExpr('symbol');
@@ -1270,21 +1295,69 @@ class Noder {
       timeframeExpr,
       this.tvOf(timeframeExpr).type,
     );
-    const calcBars = argExpr('calc_bars_count');
-    const currency = argValue('currency');
+    const optionNames = [
+      'gaps',
+      'lookahead',
+      'ignore_invalid_symbol',
+      'calc_bars_count',
+    ] as const;
+    const optionParamIndices = optionNames.map(name =>
+      resolved.native.params.findIndex(param => param.name === name),
+    );
+    if (optionParamIndices.some(index => index === -1)) {
+      return fatal(
+        `request native '${resolved.native.name}' lost its bind option contract`,
+      );
+    }
+    const suppliedOptionOrder = resolved.argumentEvaluationOrder
+      .filter(index => optionParamIndices.includes(index))
+      .map(index => optionParamIndices.indexOf(index));
+    const omittedOptionOrder = optionNames
+      .map((name, index) => (argExpr(name) === null ? index : null))
+      .filter((index): index is number => index !== null);
+    const optionArgumentEvaluationOrder = [
+      ...suppliedOptionOrder,
+      ...omittedOptionOrder,
+    ];
+    if (
+      optionArgumentEvaluationOrder.length !== optionNames.length ||
+      new Set(optionArgumentEvaluationOrder).size !== optionNames.length
+    ) {
+      return fatal(
+        `request native '${resolved.native.name}' has an invalid option evaluation order`,
+      );
+    }
+    const optionExpr = (
+      name: (typeof optionNames)[number],
+      type: Type,
+      defaultValue: ConstValue,
+    ): IrExpr => {
+      const expr = argExpr(name);
+      return expr === null
+        ? this.constExpr(c.pos, type, defaultValue)
+        : this.nodeExpr(expr, this.tvOf(expr).type);
+    };
     const merge: MergePolicy = {
       mode: MergeMode.Sample,
-      gaps: argValue('gaps') === true,
-      lookahead: argValue('lookahead') === true,
-      ignoreInvalidSymbol: argValue('ignore_invalid_symbol') === true,
-      currency: typeof currency === 'string' ? currency : null,
-      calcBarsCount:
-        calcBars !== null
-          ? this.nodeExpr(calcBars, this.tvOf(calcBars).type)
-          : null,
+      gaps: optionExpr('gaps', BoolType, false),
+      lookahead: optionExpr('lookahead', BoolType, false),
+      ignoreInvalidSymbol: optionExpr('ignore_invalid_symbol', BoolType, false),
+      calcBarsCount: optionExpr('calc_bars_count', IntType, 0),
     };
+    for (const [name, option] of [
+      ['gaps', merge.gaps],
+      ['lookahead', merge.lookahead],
+      ['ignore_invalid_symbol', merge.ignoreInvalidSymbol],
+      ['calc_bars_count', merge.calcBarsCount],
+    ] as const) {
+      if (!this.requestContextBindEvaluable(option)) {
+        return fatal(
+          `request option '${name}' reached noding without a bind-evaluable owner`,
+        );
+      }
+    }
 
-    // The child context owns its semantic facts, ambient inputs, functions,
+    // The child context owns its semantic facts, context inputs, functions,
     // frame slots, and nested requests. Compilation-global params remain
     // shared through the binding projection maps.
     const resultName: IrName = {
@@ -1331,8 +1404,8 @@ class Noder {
       ],
     };
 
-    // In the program frame, input-qualified context expressions may use
-    // ordinary aliases and pure UDFs because module.bind owns a real root
+    // In the program frame, bind-known context expressions may use immutable
+    // input/simple aliases and pure UDFs because module.bind owns a real root
     // frame. Inside function/capture frames, only frame-free expressions are
     // safe to evaluate independently; local parameters must stay dynamic.
     const staticAtBind = (expr: IrExpr): boolean =>
@@ -1342,6 +1415,7 @@ class Noder {
       symbol,
       timeframe,
       contextArgumentEvaluationOrder,
+      optionArgumentEvaluationOrder,
       merge,
       resultName,
       resultType: resolved.resultType,
@@ -1376,7 +1450,7 @@ class Noder {
     if (bindEvaluable(expr)) {
       return true;
     }
-    if (!qualifierLE(expr.qualifier, Qualifier.Input)) {
+    if (!qualifierLE(expr.qualifier, Qualifier.Simple)) {
       return false;
     }
     if (this.frame.kind === 'program') {
@@ -1715,10 +1789,11 @@ class Noder {
   }
 }
 
-// A static request nested in a UDF may read compilation-global input aliases
-// through rt.root(), but it cannot read the UDF's own params/locals without a
-// concrete call-site frame. Keep this deliberately structural: UDF calls and
-// control-flow blocks remain dynamic when the request itself is inside a UDF.
+// A static request nested in a UDF may read compilation-global bind-known
+// aliases through rt.root(), but it cannot read the UDF's own params/locals
+// without a concrete call-site frame. Keep this deliberately structural: UDF
+// calls and control-flow blocks remain dynamic when the request itself is
+// inside a UDF.
 function rootNameBindEvaluable(
   expr: IrExpr,
   frameNames: ReadonlySet<IrName>,
@@ -1732,7 +1807,7 @@ function rootNameBindEvaluable(
         expr.offset === null &&
         expr.place.kind === PlaceKind.Name &&
         !frameNames.has(expr.place.name) &&
-        qualifierLE(expr.place.name.qualifier, Qualifier.Input)
+        qualifierLE(expr.place.name.qualifier, Qualifier.Simple)
       );
     case IrKind.Binary:
       return (

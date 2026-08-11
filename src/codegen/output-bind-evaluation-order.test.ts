@@ -25,6 +25,7 @@ const context: ProviderContext = {
   rows: 1,
   axis: null,
   series: () => null,
+  builtinValue: () => undefined,
 };
 
 const provider: DataProvider = {
@@ -50,6 +51,7 @@ describe('output bind evaluation order', () => {
       params: {},
       provider,
       sink,
+      timeNow: 0,
     }).then(
       () => {
         throw new Error('expected output bind to fail');

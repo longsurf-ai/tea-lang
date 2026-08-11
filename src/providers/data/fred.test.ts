@@ -10,7 +10,7 @@ import type {
 import {isContextError} from '../../runtime/abi';
 import {fredProvider} from './fred';
 
-const FULL_RANGE: RangeDemand = {from: null, to: null, bars: null};
+const FULL_RANGE: RangeDemand = {kind: 'full'};
 
 const MONTHLY_META = {seriess: [{id: 'CPIAUCSL', frequency_short: 'M'}]};
 const MONTHLY_OBSERVATIONS = {
@@ -76,7 +76,7 @@ function column(context: ProviderContext, id: string): SeriesData {
 }
 
 describe('fredProvider', () => {
-  test('monthly series normalizes to the ambient set with a period-open axis', async () => {
+  test('monthly series normalizes to numeric sources with a period-open axis', async () => {
     const {fetchImpl} = fakeFetch({
       series: () => json(MONTHLY_META),
       observations: () => json(MONTHLY_OBSERVATIONS),
@@ -94,7 +94,7 @@ describe('fredProvider', () => {
     expect(close.at(2)).toBe(312.332);
 
     // Single-valued collapse: open/high/low serve the close column; the
-    // derived ambients therefore equal close too.
+    // derived numeric sources therefore equal close too.
     for (const id of ['open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4', 'hlcc4']) {
       const data = column(context, id);
       expect(data.at(0)).toBe(308.417);
@@ -120,8 +120,43 @@ describe('fredProvider', () => {
     expect(axis.closeTime(0)).toBe(feb);
     expect(axis.closeTime(1)).toBe(mar);
     expect(axis.closeTime(2)).toBe(mar + 30 * 86_400_000);
-    const time = column(context, 'time');
-    expect(time.at(0)).toBe(jan);
+    expect(context.series('time')).toBeNull();
+    expect(context.builtinValue({domain: 'syminfo', field: 'tickerid'})).toBe(
+      'CPIAUCSL',
+    );
+    expect(context.builtinValue({domain: 'timeframe', field: 'period'})).toBe(
+      'M',
+    );
+    expect(
+      context.builtinValue({domain: 'timeframe', field: 'ismonthly'}),
+    ).toBe(true);
+    expect(
+      context.builtinValue({domain: 'syminfo', field: 'currency'}),
+    ).toBeNull();
+    expect(
+      context.builtinValue({domain: 'syminfo', field: 'pointvalue'}),
+    ).toBeNaN();
+  });
+
+  test('projects the demanded trailing observations and shifts the axis', async () => {
+    const {fetchImpl} = fakeFetch({
+      series: () => json(MONTHLY_META),
+      observations: () => json(MONTHLY_OBSERVATIONS),
+    });
+    const provider = fredProvider({apiKey: 'test-key', fetchImpl});
+    const context = resolved(
+      await provider.resolveContext('CPIAUCSL', '', {
+        kind: 'trailing-bars',
+        bars: 2,
+      }),
+    );
+    expect(context.rows).toBe(2);
+    expect(column(context, 'close').at(0)).toBeNaN();
+    expect(column(context, 'close').at(1)).toBe(312.332);
+    expect(context.axis?.time(0)).toBe(Date.UTC(2024, 1, 1));
+    expect(context.builtinValue({domain: 'timeframe', field: 'period'})).toBe(
+      'M',
+    );
   });
 
   test("requesting 'M' on a monthly series passes the timeframe gate", async () => {

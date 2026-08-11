@@ -1662,16 +1662,16 @@ _No parameters._
 
 `request.security(symbol: string, timeframe: string, expression: any value, gaps?: bool, lookahead?: bool, ignore_invalid_symbol?: bool, currency?: string, calc_bars_count?: int) → float`
 
-| Parameter               | Type        | Qualifier cap | Required | Rules               |
-| ----------------------- | ----------- | ------------- | -------- | ------------------- |
-| `symbol`                | `string`    | `series`      | Yes      | not na              |
-| `timeframe`             | `string`    | `series`      | Yes      | not na              |
-| `expression`            | `any value` | `series`      | Yes      | captured expression |
-| `gaps`                  | `bool`      | `simple`      | No       | —                   |
-| `lookahead`             | `bool`      | `simple`      | No       | —                   |
-| `ignore_invalid_symbol` | `bool`      | `const`       | No       | —                   |
-| `currency`              | `string`    | `const`       | No       | —                   |
-| `calc_bars_count`       | `int`       | `const`       | No       | —                   |
+| Parameter               | Type        | Qualifier cap | Required | Rules                 |
+| ----------------------- | ----------- | ------------- | -------- | --------------------- |
+| `symbol`                | `string`    | `series`      | Yes      | not na                |
+| `timeframe`             | `string`    | `series`      | Yes      | not na                |
+| `expression`            | `any value` | `series`      | Yes      | captured expression   |
+| `gaps`                  | `bool`      | `simple`      | No       | —                     |
+| `lookahead`             | `bool`      | `simple`      | No       | —                     |
+| `ignore_invalid_symbol` | `bool`      | `simple`      | No       | not na                |
+| `currency`              | `string`    | `const`       | No       | staged; not supported |
+| `calc_bars_count`       | `int`       | `simple`      | No       | not na                |
 
 **Result qualifier:** `series`
 

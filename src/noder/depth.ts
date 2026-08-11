@@ -16,8 +16,8 @@ import {IntType, Qualifier, joinQualifiers, qualifierLE} from '../ir/type';
 import {funcsOf, namesOf} from '../ir/visit';
 import {
   exprChildren,
-  immutableInputLocals,
-  immutableInputNames,
+  immutableBindLocals,
+  immutableBindNames,
   stmtExprs,
 } from './depth-walk';
 
@@ -51,11 +51,11 @@ interface WalkContext {
   readonly active: Set<IrFunc>;
 }
 
-// Input-qualified demands are evaluated exactly at bind. Function-local
-// parameters and immutable aliases are substituted with the root call-site
-// arguments that feed them, so one IR function called with multiple input values
-// contributes one max expression. Any demand that still depends on per-bar
-// state remains capped.
+// Bind-known demands (input or root-safe simple) are evaluated exactly at
+// bind. Function-local parameters and immutable aliases are substituted with
+// the root call-site arguments that feed them, so one IR function called with
+// multiple bind-known values contributes one max expression. Any demand that
+// still depends on per-bar state remains capped.
 export function resolveDepths(program: Program): void {
   const demands = new Map<DepthCarrier, Demand>();
   collectDemands(program, demands, new Set());
@@ -88,9 +88,9 @@ function collectDemands(
   );
   const rootNames = names.filter(name => !functionNames.has(name));
   const immutableByFunc = new Map(
-    funcs.map(func => [func, immutableInputLocals(func)] as const),
+    funcs.map(func => [func, immutableBindLocals(func)] as const),
   );
-  const rootImmutable = immutableInputNames(rootNames, [
+  const rootImmutable = immutableBindNames(rootNames, [
     ...program.init,
     ...program.body,
   ]);
@@ -114,7 +114,7 @@ function collectDemands(
     }
     const normalized = normalize(offset, ctx, functionNames);
     if (
-      qualifierLE(normalized.expr.qualifier, Qualifier.Input) &&
+      qualifierLE(normalized.expr.qualifier, Qualifier.Simple) &&
       normalized.rootSafe
     ) {
       demand.bound.push(normalized.expr);
@@ -264,15 +264,17 @@ function normalize(
           expr,
           rootSafe:
             !functionNames.has(expr.place.name) &&
-            qualifierLE(expr.place.name.qualifier, Qualifier.Input),
+            qualifierLE(expr.place.name.qualifier, Qualifier.Simple),
         };
       }
       return {
         expr,
         rootSafe:
           expr.offset === null &&
-          expr.place.kind === PlaceKind.Param &&
-          expr.place.param.defaultValue?.kind !== ParamDefaultKind.Series,
+          ((expr.place.kind === PlaceKind.Param &&
+            expr.place.param.defaultValue?.kind !== ParamDefaultKind.Series) ||
+            (expr.place.kind === PlaceKind.Execution &&
+              qualifierLE(expr.qualifier, Qualifier.Simple))),
       };
     }
     case IrKind.Binary: {
@@ -432,6 +434,8 @@ function carrierOf(read: HistReadExpr): DepthCarrier {
       return place.param;
     case PlaceKind.Series:
       return place.series;
+    case PlaceKind.Execution:
+      return place.execution;
     case PlaceKind.Request:
       return place.request;
   }

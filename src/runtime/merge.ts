@@ -1,6 +1,6 @@
 // Purpose: Sample-merge alignment — a pure function from two time axes and a merge policy to a parent→child row mapping; never copies child data (docs/requests.md: merge is alignment, not data movement).
 
-import {BindError, type RequestSpec, type TimeAxis} from './abi';
+import {BindError, type TimeAxis} from './abi';
 
 // A merge axis must be finite and strictly time-ordered: NaN comparisons
 // are silently false and a shuffled axis would corrupt the mapping without
@@ -37,7 +37,7 @@ export function sampleMergeMap(
   parentRows: number,
   childAxis: TimeAxis,
   childRows: number,
-  merge: RequestSpec['merge'],
+  merge: {readonly gaps: boolean; readonly lookahead: boolean},
 ): Int32Array {
   const map = new Int32Array(parentRows);
   let child = -1;

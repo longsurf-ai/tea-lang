@@ -72,7 +72,7 @@ function resolutionKind(resolution: CallResolution): string {
 }
 
 describe('checker and IR boundaries', () => {
-  test('production dependencies point from checker to the shared type domain, never backend nodes', () => {
+  test('checker may use shared type/builtin contracts, never backend nodes', () => {
     const checker = import.meta.dir;
     const ir = resolve(checker, '../ir');
     const forbiddenCheckerTargets = new Set([

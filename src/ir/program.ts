@@ -1,7 +1,8 @@
 // Purpose: Tea Program contract — the compiler's complete static description of a script; the runtime implements the Time Machine (buffers, copy-on-write, rollback) from this description.
 
 import type {Pos} from '../base/pos';
-import type {DataSeriesId, HistoryDepth, IrExpr, IrStmt, Name} from './node';
+import type {DataSeriesId, ExecutionSource} from './builtin';
+import type {HistoryDepth, IrExpr, IrStmt, Name} from './node';
 import type {ConstValue, Qualifier, Type} from './type';
 
 // A user-tunable input (input.*): compile time extracts the declaration; the
@@ -67,12 +68,9 @@ export interface ParamInput {
   depth: HistoryDepth;
 }
 
-// An ambient built-in series of the Program's context, provided by the
-// runtime unconditionally and bound by host name: series-qualified per-bar
-// streams (close, volume) or simple-qualified context bindings provided
-// once (syminfo.tickerid, timeframe.period). Availability is never declared
-// and usage is never mandatory; the depth-annotated usage set is projected
-// by seriesInputsOf for buffer sizing.
+// A numeric series in the Program's data context, provided by the runtime and
+// bound by host id (close, volume, hl2, ...). Typed context values live in
+// ExecutionInput instead of widening this numeric data plane.
 export interface SeriesInput {
   readonly id: DataSeriesId;
   readonly type: Type;
@@ -80,6 +78,16 @@ export interface SeriesInput {
   // History demanded on this input by the body (close[500]); the runtime
   // sizes the buffer from this, exactly as for names. Annotated by the depth
   // pass.
+  depth: HistoryDepth;
+}
+
+// @agent invariant: typed execution builtins remain distinct from numeric
+// SeriesInput values. Each Program projection owns and depth-annotates its own
+// carrier, including request-child Programs.
+export interface ExecutionInput {
+  readonly source: ExecutionSource;
+  readonly type: Type;
+  readonly qualifier: Qualifier;
   depth: HistoryDepth;
 }
 
@@ -116,14 +124,13 @@ export type MergeModeName = (typeof MergeMode)[keyof typeof MergeMode];
 
 export interface MergePolicy {
   readonly mode: MergeModeName;
-  readonly gaps: boolean;
-  readonly lookahead: boolean;
+  readonly gaps: IrExpr;
+  readonly lookahead: IrExpr;
   // Invalid symbols yield na instead of a runtime error.
-  readonly ignoreInvalidSymbol: boolean;
-  // Currency conversion applied to the merged result, null for none.
-  readonly currency: string | null;
-  // Bind-resolvable bar-count limit for the child, null for host default.
-  readonly calcBarsCount: IrExpr | null;
+  readonly ignoreInvalidSymbol: IrExpr;
+  // Bind-resolvable bar-count limit for the child. Omitted calls carry an
+  // explicit zero expression, which selects the full available range.
+  readonly calcBarsCount: IrExpr;
 }
 
 // A request.* call site: its captured expression compiles as a child Program
@@ -143,6 +150,10 @@ export interface RequestEdge {
   // source evaluation order. The captured expression is child-context code
   // and is deliberately absent from this parent schedule.
   readonly contextArgumentEvaluationOrder: readonly number[];
+  // Canonical option indices (gaps=0, lookahead=1, ignore=2, bars=3) in
+  // source evaluation order. Omitted defaults follow supplied options in
+  // canonical order so module.bind evaluates each option exactly once.
+  readonly optionArgumentEvaluationOrder: readonly number[];
   readonly merge: MergePolicy;
   // The designated result: a Name OF THE CHILD written each child bar; the
   // runtime merges its committed values onto the parent axis. resultType
@@ -213,11 +224,11 @@ export type IrFunc = FreeIrFunc | ConstMethodIrFunc | MutableMethodIrFunc;
 // (bind-time values) and requests (child-Program contexts the runtime must
 // resolve) — and its emissions (outputs), explicitly, even where derivable:
 // binder, checker, and runtime read what the program needs from the world
-// here, never by walking trees. Ambient context builtins (close, volume,
-// syminfo.*) are NOT declared — they are simply available, and their
-// depth-annotated usage set is projected by seriesInputsOf for buffer
-// sizing. Composition internals (names, funcs, call-site slots) are
-// visit.ts projections; the noder fills requests from the same reach walk.
+// here, never by walking trees. Context builtins are not declarations:
+// numeric and typed usage sets are projected by seriesInputsOf and
+// executionInputsOf for manifest publication. Composition internals (names,
+// funcs, call-site slots) are visit.ts projections; the noder fills requests
+// from the same reach walk.
 export interface Program {
   // Declared Tea language version.
   readonly version: number;

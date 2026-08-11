@@ -22,6 +22,7 @@ import {
 import {formatType, isNaValue, type ConstValue} from './type';
 import {
   funcsOf,
+  executionInputsOf,
   namesOf,
   requestsOf,
   seriesInputsOf,
@@ -111,6 +112,12 @@ export function dumpProgram(program: Program): string {
     dumpDepthLine(line, series.depth, '', out, labels);
   }
 
+  for (const execution of executionInputsOf(program)) {
+    const source = `${execution.source.domain}.${execution.source.field}`;
+    const line = `execution ${source}: ${execution.qualifier} ${formatType(execution.type)}`;
+    dumpDepthLine(line, execution.depth, '', out, labels);
+  }
+
   program.outputs.forEach((output, i) => {
     const statics = output.staticArgs
       .map(a => `${a.name}=${formatValue(a.value)}`)
@@ -135,11 +142,8 @@ export function dumpProgram(program: Program): string {
     const m = edge.merge;
     const flags = [
       `mode=${m.mode}`,
-      m.gaps ? 'gaps' : null,
-      m.lookahead ? 'lookahead' : null,
-      m.ignoreInvalidSymbol ? 'ignore_invalid' : null,
-      m.currency !== null ? `currency=${m.currency}` : null,
       `context_order=${edge.contextArgumentEvaluationOrder.join(',')}`,
+      `option_order=${edge.optionArgumentEvaluationOrder.join(',')}`,
       `result=${formatType(edge.resultType)}`,
     ]
       .filter(part => part !== null)
@@ -147,9 +151,16 @@ export function dumpProgram(program: Program): string {
     dumpDepthLine(`request[${i}] ${flags}`, edge.depth, '', out, labels);
     dumpExpr(edge.symbol, 'symbol: ', '  ', out, labels);
     dumpExpr(edge.timeframe, 'timeframe: ', '  ', out, labels);
-    if (m.calcBarsCount !== null) {
-      dumpExpr(m.calcBarsCount, 'calc_bars_count: ', '  ', out, labels);
-    }
+    dumpExpr(m.gaps, 'gaps: ', '  ', out, labels);
+    dumpExpr(m.lookahead, 'lookahead: ', '  ', out, labels);
+    dumpExpr(
+      m.ignoreInvalidSymbol,
+      'ignore_invalid_symbol: ',
+      '  ',
+      out,
+      labels,
+    );
+    dumpExpr(m.calcBarsCount, 'calc_bars_count: ', '  ', out, labels);
     // The child is a full Program with its own label space.
     out.push('  child:');
     for (const line of dumpProgram(edge.child).split('\n')) {
@@ -225,6 +236,8 @@ function placeLabel(place: Place, labels: Labels): string {
       return `param:${place.param.name}`;
     case PlaceKind.Series:
       return `series:${place.series.id}`;
+    case PlaceKind.Execution:
+      return `execution:${place.execution.source.domain}.${place.execution.source.field}`;
     case PlaceKind.Request:
       return labels.request(place.request);
   }

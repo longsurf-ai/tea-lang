@@ -15,7 +15,13 @@ import {
 } from '../ir/node';
 import {MergeMode, ParamConstraintKind, ParamDefaultKind} from '../ir/program';
 import {TypeKind, isNaValue} from '../ir/type';
-import {funcsOf, namesOf, seriesInputsOf, slotCountOf} from '../ir/visit';
+import {
+  executionInputsOf,
+  funcsOf,
+  namesOf,
+  seriesInputsOf,
+  slotCountOf,
+} from '../ir/visit';
 import {
   resolveImports,
   type PackageSource,
@@ -498,7 +504,7 @@ describe('params and outputs', () => {
     }
   });
 
-  test('simple ambient output values remain per-bar channels', () => {
+  test('simple context-builtin output values remain per-bar channels', () => {
     const program = mustBuild('plot(timeframe.multiplier)');
     const [plot] = program.outputs;
     expect(plot.bindArgs).toEqual([]);
@@ -608,6 +614,20 @@ describe('depth resolution', () => {
     );
     const base = namesOf(program).find(name => name.name === 'base');
     expect(base?.depth.kind).toBe(DepthKind.Bound);
+  });
+
+  test('a simple execution input remains an exact bound depth', () => {
+    const program = mustBuild(
+      ['length = timeframe.multiplier', 'plot(close[length])'].join('\n'),
+    );
+    const close = seriesInputsOf(program).find(series => series.id === 'close');
+    expect(close?.depth).toMatchObject({
+      kind: DepthKind.Bound,
+      expr: {
+        kind: IrKind.HistRead,
+        place: {kind: PlaceKind.Execution},
+      },
+    });
   });
 
   test('a block-local root input alias substitutes instead of reading unbound scratch', () => {
@@ -861,6 +881,30 @@ describe('function stencils', () => {
 });
 
 describe('requests', () => {
+  test('typed builtins use execution places and reproject in request children', () => {
+    const program = mustBuild(
+      [
+        'root = time + time_close + bar_index',
+        'ticker = syminfo.tickerid',
+        'child = request.security(ticker, "D", time)',
+        'plot(root + child)',
+      ].join('\n'),
+    );
+    expect(seriesInputsOf(program)).toEqual([]);
+    const rootInputs = executionInputsOf(program);
+    const childInputs = executionInputsOf(program.requests[0].child);
+    expect(rootInputs.map(input => input.source)).toEqual([
+      {domain: 'time', field: 'time'},
+      {domain: 'time', field: 'time_close'},
+      {domain: 'bar', field: 'bar_index'},
+      {domain: 'syminfo', field: 'tickerid'},
+    ]);
+    expect(childInputs.map(input => input.source)).toEqual([
+      {domain: 'time', field: 'time'},
+    ]);
+    expect(childInputs[0]).not.toBe(rootInputs[0]);
+  });
+
   test('a request compiles its expression into a child Program', () => {
     const program = mustBuild(
       'd = request.security("AAPL", "D", close)\nplot(d)',
@@ -892,6 +936,36 @@ describe('requests', () => {
     expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
   });
 
+  test('request options remain bind expressions with one explicit schedule', () => {
+    const program = mustBuild(
+      [
+        'g = input.bool(true)',
+        'bars = input.int(25)',
+        'd = request.security(',
+        '    "AAPL", "D", close,',
+        '    calc_bars_count=bars, gaps=g)',
+      ].join('\n'),
+    );
+    const edge = program.requests[0];
+    expect(edge.optionArgumentEvaluationOrder).toEqual([3, 0, 1, 2]);
+    expect(edge.merge.gaps).toMatchObject({
+      kind: IrKind.HistRead,
+      place: {kind: PlaceKind.Param},
+    });
+    expect(edge.merge.lookahead).toMatchObject({
+      kind: IrKind.Const,
+      value: false,
+    });
+    expect(edge.merge.ignoreInvalidSymbol).toMatchObject({
+      kind: IrKind.Const,
+      value: false,
+    });
+    expect(edge.merge.calcBarsCount).toMatchObject({
+      kind: IrKind.HistRead,
+      place: {kind: PlaceKind.Param},
+    });
+  });
+
   test('parent history on the request result annotates the edge depth', () => {
     const program = mustBuild(
       'd = request.security("AAPL", "D", close)\np = d[2]\nplot(p)',
@@ -914,7 +988,7 @@ describe('requests', () => {
     expect(funcsOf(program)).toEqual([]);
   });
 
-  test('a shared semantic function reprojects ambient and input dependencies', () => {
+  test('a shared semantic function reprojects context and input dependencies', () => {
     const program = mustBuild(
       [
         'length = input.int(1)',
@@ -1024,6 +1098,23 @@ describe('requests', () => {
         'series context arguments need dynamic_requests=true',
       ),
     );
+  });
+
+  test('request binding respects execution-input qualifiers inline and through aliases', () => {
+    const program = mustBuild(
+      [
+        'rowSymbol = barstate.isfirst ? "X" : "Y"',
+        'simpleSymbol = syminfo.type == "stock" ? "X" : "Y"',
+        'inline = request.security(barstate.isfirst ? "X" : "Y", "D", close)',
+        'aliased = request.security(rowSymbol, "D", close)',
+        'static = request.security(simpleSymbol, timeframe.period, close)',
+      ].join('\n'),
+    );
+    expect(program.requests.map(request => request.dynamic)).toEqual([
+      true,
+      true,
+      false,
+    ]);
   });
 
   test('script series variables cannot cross into captures', () => {

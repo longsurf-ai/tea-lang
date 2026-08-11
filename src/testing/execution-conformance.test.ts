@@ -24,6 +24,7 @@ import {
 } from './execution-conformance-schema';
 
 const EXECUTION_ROOT = join(import.meta.dir, '../../testdata/execution');
+const CONFORMANCE_TIME_NOW = 1_700_000_000_000;
 
 function allFiles(root: string): string[] {
   const found: string[] = [];
@@ -199,6 +200,7 @@ async function runCase(entry: CorpusCase): Promise<{
       readFileSync(join(EXECUTION_ROOT, entry.data), 'utf8'),
     ),
     sink,
+    timeNow: CONFORMANCE_TIME_NOW,
   });
   if (primary !== undefined) {
     expectInputs(bound.inputs, primary.inputs, `${entry.id}.${primary.name}`);
@@ -211,6 +213,7 @@ async function runCase(entry: CorpusCase): Promise<{
         readFileSync(join(EXECUTION_ROOT, entry.data), 'utf8'),
       ),
       sink: scenarioSink,
+      timeNow: CONFORMANCE_TIME_NOW,
     });
     expectInputs(
       rebound.inputs,

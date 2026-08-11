@@ -1,4 +1,4 @@
-// Purpose: ABI 3 aggregate-layout projection tests — layouts remain exact, nominal, deterministic, and finite through collection recursion.
+// Purpose: Aggregate-layout projection tests — layouts remain exact, nominal, deterministic, and finite through collection recursion.
 
 import {describe, expect, test} from 'bun:test';
 import {DEFAULT_COMPILE_CONFIG} from '../base/config';
@@ -31,7 +31,7 @@ function userType(name: string, fields: readonly UserField[]): UserType {
   return {kind: TypeKind.UserType, name, fields};
 }
 
-describe('ABI 3 aggregate layout projection', () => {
+describe('aggregate layout projection', () => {
   test('emits exact, nominal, collision-free layouts', () => {
     const left: EnumType = {
       kind: TypeKind.Enum,
@@ -122,7 +122,7 @@ describe('ABI 3 aggregate layout projection', () => {
       };
     };
 
-    expect(module.abi).toBe(3);
+    expect(module.abi).toBe(4);
     expect(module.manifest.frames[0].locals).toEqual([
       {storage: Storage.PerBar, depth: {kind: 'none'}, layout: 0},
     ]);

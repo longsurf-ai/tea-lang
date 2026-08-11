@@ -5,7 +5,12 @@ import type {DataProvider, ProviderContext} from '../../runtime/abi';
 import {registryProvider} from './registry';
 
 function recordingDriver(log: string[], tag: string): DataProvider {
-  const context: ProviderContext = {rows: 0, axis: null, series: () => null};
+  const context: ProviderContext = {
+    rows: 0,
+    axis: null,
+    series: () => null,
+    builtinValue: () => undefined,
+  };
   return {
     resolveContext(symbol, timeframe) {
       log.push(`${tag}:${symbol}:${timeframe}`);
@@ -21,12 +26,22 @@ describe('registryProvider', () => {
       defaultSource: recordingDriver(log, 'default'),
       sources: {FRED: recordingDriver(log, 'fred')},
     });
-    await registry.resolveContext('FRED:CPIAUCSL', 'M', {
-      from: null,
-      to: null,
-      bars: null,
+    const context = await registry.resolveContext('FRED:CPIAUCSL', 'M', {
+      kind: 'full',
     });
     expect(log).toEqual(['fred:CPIAUCSL:M']);
+    if ('error' in context) {
+      throw new Error(`expected context, got ${context.error}`);
+    }
+    expect(context.builtinValue({domain: 'syminfo', field: 'tickerid'})).toBe(
+      'FRED:CPIAUCSL',
+    );
+    expect(context.builtinValue({domain: 'syminfo', field: 'ticker'})).toBe(
+      'CPIAUCSL',
+    );
+    expect(context.builtinValue({domain: 'syminfo', field: 'prefix'})).toBe(
+      'FRED',
+    );
   });
 
   test('unregistered prefixes fall through untouched (exchange symbols)', async () => {
@@ -35,11 +50,7 @@ describe('registryProvider', () => {
       defaultSource: recordingDriver(log, 'default'),
       sources: {FRED: recordingDriver(log, 'fred')},
     });
-    await registry.resolveContext('NASDAQ:AAPL', 'D', {
-      from: null,
-      to: null,
-      bars: null,
-    });
+    await registry.resolveContext('NASDAQ:AAPL', 'D', {kind: 'full'});
     expect(log).toEqual(['default:NASDAQ:AAPL:D']);
   });
 
@@ -49,7 +60,7 @@ describe('registryProvider', () => {
       defaultSource: recordingDriver(log, 'default'),
       sources: {},
     });
-    await registry.resolveContext('', '', {from: null, to: null, bars: null});
+    await registry.resolveContext('', '', {kind: 'full'});
     expect(log).toEqual(['default::']);
   });
 });

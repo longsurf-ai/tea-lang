@@ -4,6 +4,7 @@ import {describe, expect, test} from 'bun:test';
 import {NodeKind, type CallExpr, type ExprStmt} from '../syntax/nodes';
 import {Qualifier, TypeKind, isNaValue} from '../ir/type';
 import {CallKind, SelectionKind} from './info';
+import {CATALOG} from './catalog';
 import {ObjectKind, type BuiltinObject, type VariableObject} from './object';
 import {checkText, declaredName, initTvOf} from './testing';
 
@@ -311,7 +312,8 @@ describe('semantic ownership', () => {
       [...rootCall.instance.dependencies].some(
         dependency =>
           dependency.kind === ObjectKind.Builtin &&
-          dependency.hostId === 'close',
+          dependency.binding?.kind === 'series' &&
+          dependency.binding.id === 'close',
       ),
     ).toBeTrue();
   });
@@ -376,13 +378,79 @@ describe('semantic ownership', () => {
   });
 });
 
-describe('ambient series', () => {
-  test('ambient occurrences resolve to canonical BuiltinObjects', () => {
+describe('context builtins', () => {
+  test('every catalog variable has exactly the binding allowed by its qualifier', () => {
+    for (const builtin of CATALOG.vars.values()) {
+      if (builtin.qualifier === Qualifier.Const) {
+        expect(builtin.binding).toBeNull();
+      } else {
+        expect(builtin.binding).not.toBeNull();
+      }
+    }
+  });
+
+  test('catalog runtime bindings are an exact closed vocabulary', () => {
+    const series = [...CATALOG.vars.values()].flatMap(builtin =>
+      builtin.binding?.kind === 'series' ? [builtin.binding.id] : [],
+    );
+    expect(series).toEqual([
+      'open',
+      'high',
+      'low',
+      'close',
+      'volume',
+      'hl2',
+      'hlc3',
+      'ohlc4',
+      'hlcc4',
+    ]);
+
+    const execution = [...CATALOG.vars.values()].flatMap(builtin =>
+      builtin.binding?.kind === 'execution'
+        ? [[builtin.name, builtin.binding.source] as const]
+        : [],
+    );
+    expect(execution).toEqual([
+      ['bar_index', {domain: 'bar', field: 'bar_index'}],
+      ['last_bar_index', {domain: 'bar', field: 'last_bar_index'}],
+      ['time', {domain: 'time', field: 'time'}],
+      ['time_close', {domain: 'time', field: 'time_close'}],
+      ['timenow', {domain: 'time', field: 'timenow'}],
+      ['syminfo.tickerid', {domain: 'syminfo', field: 'tickerid'}],
+      ['syminfo.ticker', {domain: 'syminfo', field: 'ticker'}],
+      ['syminfo.prefix', {domain: 'syminfo', field: 'prefix'}],
+      ['syminfo.currency', {domain: 'syminfo', field: 'currency'}],
+      ['syminfo.basecurrency', {domain: 'syminfo', field: 'basecurrency'}],
+      ['syminfo.type', {domain: 'syminfo', field: 'type'}],
+      ['syminfo.timezone', {domain: 'syminfo', field: 'timezone'}],
+      ['syminfo.mintick', {domain: 'syminfo', field: 'mintick'}],
+      ['syminfo.pointvalue', {domain: 'syminfo', field: 'pointvalue'}],
+      ['timeframe.period', {domain: 'timeframe', field: 'period'}],
+      ['timeframe.multiplier', {domain: 'timeframe', field: 'multiplier'}],
+      ['timeframe.isseconds', {domain: 'timeframe', field: 'isseconds'}],
+      ['timeframe.isminutes', {domain: 'timeframe', field: 'isminutes'}],
+      ['timeframe.isintraday', {domain: 'timeframe', field: 'isintraday'}],
+      ['timeframe.isdaily', {domain: 'timeframe', field: 'isdaily'}],
+      ['timeframe.isweekly', {domain: 'timeframe', field: 'isweekly'}],
+      ['timeframe.ismonthly', {domain: 'timeframe', field: 'ismonthly'}],
+      ['timeframe.isdwm', {domain: 'timeframe', field: 'isdwm'}],
+      ['barstate.isfirst', {domain: 'barstate', field: 'isfirst'}],
+      ['barstate.islast', {domain: 'barstate', field: 'islast'}],
+      ['barstate.ishistory', {domain: 'barstate', field: 'ishistory'}],
+      ['barstate.isrealtime', {domain: 'barstate', field: 'isrealtime'}],
+      ['barstate.isconfirmed', {domain: 'barstate', field: 'isconfirmed'}],
+      ['barstate.isnew', {domain: 'barstate', field: 'isnew'}],
+    ]);
+  });
+
+  test('context builtin occurrences resolve to canonical BuiltinObjects', () => {
     const r = checkText('a = close + close\nb = syminfo.tickerid');
     expect(r.errors).toEqual([]);
     const close = [...r.info.uses.values()].filter(
       (object): object is BuiltinObject =>
-        object.kind === ObjectKind.Builtin && object.hostId === 'close',
+        object.kind === ObjectKind.Builtin &&
+        object.binding?.kind === 'series' &&
+        object.binding.id === 'close',
     );
     expect(close).toHaveLength(2);
     expect(close[0].qualifier).toBe(Qualifier.Series);
@@ -391,12 +459,65 @@ describe('ambient series', () => {
     const tickerid = [...r.info.selections.values()].find(
       selection =>
         selection.kind === SelectionKind.Builtin &&
-        selection.builtin.hostId === 'syminfo.tickerid',
+        selection.builtin.binding?.kind === 'execution' &&
+        selection.builtin.binding.source.domain === 'syminfo' &&
+        selection.builtin.binding.source.field === 'tickerid',
     );
     expect(tickerid?.kind).toBe(SelectionKind.Builtin);
     if (tickerid?.kind === SelectionKind.Builtin) {
       expect(tickerid.builtin.qualifier).toBe(Qualifier.Simple);
     }
+  });
+
+  test('catalog bindings distinguish numeric series from typed execution inputs', () => {
+    const r = checkText(
+      [
+        'price = close',
+        'opened = time',
+        'closed = time_close',
+        'index = bar_index',
+        'first = barstate.isfirst',
+        'symbol = syminfo.tickerid',
+        'period = timeframe.period',
+      ].join('\n'),
+    );
+    expect(r.errors).toEqual([]);
+    const builtins = [
+      ...r.info.uses.values(),
+      ...[...r.info.selections.values()].flatMap(selection =>
+        selection.kind === SelectionKind.Builtin ? [selection.builtin] : [],
+      ),
+    ].filter(
+      (object): object is BuiltinObject => object.kind === ObjectKind.Builtin,
+    );
+    const bindings = new Map(
+      builtins.map(builtin => [builtin.name, builtin.binding]),
+    );
+    expect(bindings.get('close')).toEqual({kind: 'series', id: 'close'});
+    expect(bindings.get('time')).toEqual({
+      kind: 'execution',
+      source: {domain: 'time', field: 'time'},
+    });
+    expect(bindings.get('time_close')).toEqual({
+      kind: 'execution',
+      source: {domain: 'time', field: 'time_close'},
+    });
+    expect(bindings.get('bar_index')).toEqual({
+      kind: 'execution',
+      source: {domain: 'bar', field: 'bar_index'},
+    });
+    expect(bindings.get('barstate.isfirst')).toEqual({
+      kind: 'execution',
+      source: {domain: 'barstate', field: 'isfirst'},
+    });
+    expect(bindings.get('syminfo.tickerid')).toEqual({
+      kind: 'execution',
+      source: {domain: 'syminfo', field: 'tickerid'},
+    });
+    expect(bindings.get('timeframe.period')).toEqual({
+      kind: 'execution',
+      source: {domain: 'timeframe', field: 'period'},
+    });
   });
 });
 
@@ -591,6 +712,9 @@ describe('native calls', () => {
       ['x = input.int(1, step=0)', 'greater than zero'],
       ['x = input.int(1, display=display.pane)', 'display must be'],
       ['x = input.source(volume)', 'source default must be'],
+      ['x = input.source(time)', 'source default must be'],
+      ['x = input.source(time_close)', 'source default must be'],
+      ['x = input.source(bar_index)', 'source default must be'],
       ['x = input.source(close + 1)', 'source default must be'],
       ['x = input.int(1, active=close > 0)', 'accepts at most input'],
     ] as const;
@@ -599,6 +723,54 @@ describe('native calls', () => {
       expect(r.errors.map(error => error.msg)).toContainEqual(
         expect.stringContaining(diagnostic),
       );
+    }
+  });
+
+  test('request bind options accept simple expressions and reject invalid contracts', () => {
+    const valid = checkText(
+      [
+        'gaps = syminfo.type == "stock"',
+        'ignore = input.bool(false)',
+        'bars = input.int(25)',
+        'x = request.security("X", "D", close, gaps=gaps, ignore_invalid_symbol=ignore, calc_bars_count=bars)',
+      ].join('\n'),
+    );
+    expect(valid.errors).toEqual([]);
+
+    const cases = [
+      [
+        'x = request.security("X", "D", close, calc_bars_count=-1)',
+        'must be between 0',
+      ],
+      [
+        'x = request.security("X", "D", close, calc_bars_count=int(na))',
+        'cannot be na',
+      ],
+      [
+        [
+          'fetch(bool gaps) => request.security("X", "D", close, gaps=gaps)',
+          'x = fetch(true)',
+        ].join('\n'),
+        "request option 'gaps' cannot depend on local execution state",
+      ],
+    ] as const;
+    for (const [source, diagnostic] of cases) {
+      const r = checkText(source);
+      expect(r.errors.map(error => error.msg)).toContainEqual(
+        expect.stringContaining(diagnostic),
+      );
+    }
+  });
+
+  test('staged native arguments are rejected before type matching and publish no call resolution', () => {
+    for (const value of ['1', '"USD"']) {
+      const r = checkText(
+        `x = request.security("X", "D", close, currency=${value})`,
+      );
+      expect(r.errors.map(error => error.msg)).toEqual([
+        "argument 'currency' to 'request.security' is not supported yet",
+      ]);
+      expect(r.info.calls.size).toBe(0);
     }
   });
 

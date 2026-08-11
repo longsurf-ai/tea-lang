@@ -937,7 +937,7 @@ class Checker {
       this.blockDepth === 0 &&
       this.funcBoundary === null &&
       this.captureDepth === 0 &&
-      qualifierLE(name.qualifier, Qualifier.Input)
+      qualifierLE(name.qualifier, Qualifier.Simple)
     ) {
       this.rootBindNames.add(name);
     }
@@ -1806,18 +1806,29 @@ class Checker {
   }
 
   // Native variables resolve to semantic builtin objects. Noding projects a
-  // non-const builtin into one SeriesInput per Program context.
+  // bound builtin into the matching SeriesInput or ExecutionInput in each
+  // Program context.
   private nativeVarTv(nv: NativeVar, node: syntax.Expr): TypeAndValue {
     let builtin = this.builtins.get(nv.name);
     if (builtin === undefined) {
-      builtin = {
-        kind: ObjectKind.Builtin,
-        name: nv.name,
-        hostId: nv.name,
-        type: nv.type,
-        qualifier: nv.qualifier,
-        value: nv.value,
-      };
+      builtin =
+        nv.binding === null
+          ? {
+              kind: ObjectKind.Builtin,
+              name: nv.name,
+              binding: null,
+              type: nv.type,
+              qualifier: nv.qualifier,
+              value: nv.value,
+            }
+          : {
+              kind: ObjectKind.Builtin,
+              name: nv.name,
+              binding: nv.binding,
+              type: nv.type,
+              qualifier: nv.qualifier,
+              value: null,
+            };
       this.builtins.set(nv.name, builtin);
     }
     if (node.kind === NodeKind.Name) {
@@ -3030,6 +3041,15 @@ class Checker {
       return INVALID_TV;
     }
     if (
+      this.rejectSuppliedStagedNativeArguments(
+        c,
+        candidates,
+        methodReceiver?.expr ?? null,
+      )
+    ) {
+      return INVALID_TV;
+    }
+    if (
       (methodReceiver !== null &&
         methodReceiver.tv.type.kind === TypeKind.Invalid) ||
       c.args.some(arg => this.tvOf(arg.value).type.kind === TypeKind.Invalid)
@@ -3368,6 +3388,21 @@ class Checker {
     args: readonly (syntax.Expr | null)[],
     argumentEvaluationOrder: readonly number[],
   ): TypeAndValue {
+    for (const optionName of [
+      'gaps',
+      'lookahead',
+      'ignore_invalid_symbol',
+      'calc_bars_count',
+    ]) {
+      const index = native.params.findIndex(param => param.name === optionName);
+      const option = index === -1 ? null : (args[index] ?? null);
+      if (option !== null && this.bindExpressionNeedsUnavailableFrame(option)) {
+        this.error(
+          option.pos,
+          `request option '${optionName}' cannot depend on local execution state because it is evaluated at bind time`,
+        );
+      }
+    }
     const captureIndex = native.params.findIndex(p => p.capture);
     const expr = args[captureIndex];
     if (expr === null || expr === undefined) {
@@ -3401,6 +3436,65 @@ class Checker {
       resultType: captureTv.type,
     });
     return {type: captureTv.type, qualifier: Qualifier.Series, value: null};
+  }
+
+  private rejectSuppliedStagedNativeArguments(
+    c: syntax.CallExpr,
+    candidates: readonly NativeFunc[],
+    methodReceiver: syntax.Expr | null,
+  ): boolean {
+    const rejected = new Map<
+      syntax.Expr,
+      {readonly native: NativeFunc; readonly paramName: string}
+    >();
+    for (const native of candidates) {
+      const params = native.params;
+      const variadic = params.at(-1)?.variadic === true;
+      const fixedCount = variadic ? params.length - 1 : params.length;
+      let position = 0;
+      if (methodReceiver !== null) {
+        const receiverParam = params[0];
+        if (receiverParam?.name !== 'self') {
+          continue;
+        }
+        if (receiverParam.availability === 'staged') {
+          rejected.set(methodReceiver, {
+            native,
+            paramName: receiverParam.name,
+          });
+        }
+        position = 1;
+      }
+
+      for (const arg of c.args) {
+        let index: number;
+        if (arg.name !== null) {
+          index = params.findIndex(param => param.name === arg.name!.value);
+          if (index === -1 || params[index].variadic) {
+            continue;
+          }
+        } else if (position < fixedCount) {
+          index = position;
+          position += 1;
+        } else if (variadic) {
+          index = params.length - 1;
+        } else {
+          continue;
+        }
+        const param = params[index];
+        if (param.availability === 'staged') {
+          rejected.set(arg.value, {native, paramName: param.name});
+        }
+      }
+    }
+
+    for (const [arg, {native, paramName}] of rejected) {
+      this.error(
+        arg.pos,
+        `argument '${paramName}' to '${native.name}' is not supported yet`,
+      );
+    }
+    return rejected.size > 0;
   }
 
   private checkPlacement(native: NativeFunc, pos: Pos): void {
@@ -3473,7 +3567,7 @@ class Checker {
     const activeExpr = arg('active');
     if (
       activeExpr !== null &&
-      this.inputActiveNeedsUnavailableFrame(activeExpr)
+      this.bindExpressionNeedsUnavailableFrame(activeExpr)
     ) {
       this.error(
         activeExpr.pos,
@@ -3596,7 +3690,8 @@ class Checker {
       }
       if (
         object?.kind !== ObjectKind.Builtin ||
-        !INPUT_SOURCE_DEFAULTS.has(object.hostId)
+        object.binding?.kind !== 'series' ||
+        !INPUT_SOURCE_DEFAULTS.has(object.binding.id)
       ) {
         this.error(
           defvalExpr.pos,
@@ -3606,7 +3701,7 @@ class Checker {
     }
   }
 
-  private inputActiveNeedsUnavailableFrame(expr: syntax.Expr): boolean {
+  private bindExpressionNeedsUnavailableFrame(expr: syntax.Expr): boolean {
     if (this.tvOf(expr).value !== null) {
       return false;
     }
@@ -3626,17 +3721,17 @@ class Checker {
         return true;
       case NodeKind.UnaryExpr:
       case NodeKind.ParenExpr:
-        return this.inputActiveNeedsUnavailableFrame(expr.x);
+        return this.bindExpressionNeedsUnavailableFrame(expr.x);
       case NodeKind.BinaryExpr:
         return (
-          this.inputActiveNeedsUnavailableFrame(expr.x) ||
-          this.inputActiveNeedsUnavailableFrame(expr.y)
+          this.bindExpressionNeedsUnavailableFrame(expr.x) ||
+          this.bindExpressionNeedsUnavailableFrame(expr.y)
         );
       case NodeKind.CondExpr:
         return (
-          this.inputActiveNeedsUnavailableFrame(expr.cond) ||
-          this.inputActiveNeedsUnavailableFrame(expr.then) ||
-          this.inputActiveNeedsUnavailableFrame(expr.else)
+          this.bindExpressionNeedsUnavailableFrame(expr.cond) ||
+          this.bindExpressionNeedsUnavailableFrame(expr.then) ||
+          this.bindExpressionNeedsUnavailableFrame(expr.else)
         );
       case NodeKind.CallExpr:
         if (
@@ -3646,21 +3741,21 @@ class Checker {
           return true;
         }
         return (
-          this.inputActiveNeedsUnavailableFrame(expr.fun) ||
+          this.bindExpressionNeedsUnavailableFrame(expr.fun) ||
           expr.args.some(arg =>
-            this.inputActiveNeedsUnavailableFrame(arg.value),
+            this.bindExpressionNeedsUnavailableFrame(arg.value),
           )
         );
       case NodeKind.SelectorExpr:
-        return this.inputActiveNeedsUnavailableFrame(expr.x);
+        return this.bindExpressionNeedsUnavailableFrame(expr.x);
       case NodeKind.HistoryExpr:
         return (
-          this.inputActiveNeedsUnavailableFrame(expr.x) ||
-          this.inputActiveNeedsUnavailableFrame(expr.offset)
+          this.bindExpressionNeedsUnavailableFrame(expr.x) ||
+          this.bindExpressionNeedsUnavailableFrame(expr.offset)
         );
       case NodeKind.TupleExpr:
         return expr.elems.some(elem =>
-          this.inputActiveNeedsUnavailableFrame(elem),
+          this.bindExpressionNeedsUnavailableFrame(elem),
         );
       case NodeKind.IfExpr:
       case NodeKind.ForExpr:
@@ -4258,6 +4353,7 @@ const CONST_ARG_RANGES: Record<
   Record<string, readonly [number, number]>
 > = {
   indicator: {max_bars_back: [0, 5000]},
+  'request.security': {calc_bars_count: [0, Number.MAX_SAFE_INTEGER]},
   'color.new': {transp: [0, 100]},
   'color.rgb': {
     red: [0, 255],

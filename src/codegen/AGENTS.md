@@ -46,18 +46,23 @@ lowering plus the per-backend rules tables.
   `rt.request(rid, offset)`; a dynamic edge's offset-null read evaluates
   its context args inline and calls `rt.requestFor(rid, sym, tf)` — the
   noder guarantees dynamic reads are offset-null only (history rides
-  materialized Names). Every module's code names its own funcs table via
+  materialized Names). Every edge evaluates its four options once in its
+  Program-owned source order and calls `rt.bindRequestOptions`; option values
+  never duplicate into JSON metadata. Every module's code names its own funcs table via
   its const (`ctx.moduleRef`), never `M`.
+- Typed execution builtins are a distinct ABI 4 carrier: dense eids and exact
+  `{source, layout, depth}` specs publish in `manifest.execution`, reads lower
+  to `rt.execution`, and bound history reports through
+  `rt.bindExecutionDepth`. Numeric provider series remain `rt.series` only.
 - User-value construction/field updates, array/map iteration, and collection
-  calls lower through exact ABI 3 layouts. Const and mutable method calls
+  calls lower through exact ABI 4 layouts. Const and mutable method calls
   capture the hidden receiver before explicit arguments; only mutable methods
   perform one path writeback, and only after success.
 - Output bind arguments and per-bar channels evaluate in their Program-owned
   source order before codegen assembles the canonical host argument order.
-- Staged constructs (matrix iteration, collect merge,
-  request currency/calc_bars_count, unlisted natives) throw
+- Staged constructs (matrix iteration, collect merge, unlisted natives) throw
   UnimplementedError at generation — exit 2, never wrong code.
 - Bound depth expressions may read root-frame immutable aliases and call
-  input-only UDFs. `bind()` evaluates them against the provisional root frame
-  after the immutable input prelude; context-owned or row-varying demands
-  remain capped.
+  input-only UDFs; request options may also read context-constant execution
+  inputs. `bind()` evaluates them against the provisional root frame after the
+  immutable input/simple prelude; row-varying demands remain capped.

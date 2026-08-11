@@ -1,4 +1,4 @@
-// Purpose: Yahoo Finance DataProvider — keyless intraday-capable bars from the unofficial v8 chart API (no contractual stability, an accepted tradeoff for a dev tool); this file owns the normalization from chart-API quote arrays to the ambient series set.
+// Purpose: Yahoo Finance DataProvider — keyless intraday-capable bars from the unofficial v8 chart API; owns numeric series, exact time axis, and typed builtin metadata normalization.
 
 import type {
   ContextError,
@@ -7,6 +7,11 @@ import type {
   SeriesData,
   TimeAxis,
 } from '../../runtime/abi';
+import {
+  providerBuiltinValue,
+  type ProviderSymbolValues,
+} from './builtin-values';
+import {projectProviderRange} from './range';
 
 // Pine timeframe -> yahoo interval, paired with the widest range yahoo
 // serves at that interval (yahoo caps intraday history: ~7 days of 1m,
@@ -14,6 +19,7 @@ import type {
 // bar span for intraday intervals and the nominal LAST-bar span for
 // calendar ones (see yahooAxis).
 interface IntervalSpec {
+  readonly period: string;
   readonly interval: string;
   readonly range: string;
   readonly spanMs: number;
@@ -28,15 +34,69 @@ const TIMEFRAMES: Readonly<Record<string, IntervalSpec>> = {
   // the widest span yahoo serves honestly at these intervals; the
   // granularity guard below refuses the downgrade if yahoo changes again.
   // RangeDemand-driven period1/period2 windows are the later refinement.
-  '': {interval: '1d', range: '10y', spanMs: DAY_MS, intraday: false},
-  D: {interval: '1d', range: '10y', spanMs: DAY_MS, intraday: false},
-  W: {interval: '1wk', range: '10y', spanMs: 7 * DAY_MS, intraday: false},
-  M: {interval: '1mo', range: '10y', spanMs: 30 * DAY_MS, intraday: false},
-  '1': {interval: '1m', range: '7d', spanMs: 60_000, intraday: true},
-  '5': {interval: '5m', range: '60d', spanMs: 300_000, intraday: true},
-  '15': {interval: '15m', range: '60d', spanMs: 900_000, intraday: true},
-  '30': {interval: '30m', range: '60d', spanMs: 1_800_000, intraday: true},
-  '60': {interval: '1h', range: '730d', spanMs: 3_600_000, intraday: true},
+  '': {
+    period: 'D',
+    interval: '1d',
+    range: '10y',
+    spanMs: DAY_MS,
+    intraday: false,
+  },
+  D: {
+    period: 'D',
+    interval: '1d',
+    range: '10y',
+    spanMs: DAY_MS,
+    intraday: false,
+  },
+  W: {
+    period: 'W',
+    interval: '1wk',
+    range: '10y',
+    spanMs: 7 * DAY_MS,
+    intraday: false,
+  },
+  M: {
+    period: 'M',
+    interval: '1mo',
+    range: '10y',
+    spanMs: 30 * DAY_MS,
+    intraday: false,
+  },
+  '1': {
+    period: '1',
+    interval: '1m',
+    range: '7d',
+    spanMs: 60_000,
+    intraday: true,
+  },
+  '5': {
+    period: '5',
+    interval: '5m',
+    range: '60d',
+    spanMs: 300_000,
+    intraday: true,
+  },
+  '15': {
+    period: '15',
+    interval: '15m',
+    range: '60d',
+    spanMs: 900_000,
+    intraday: true,
+  },
+  '30': {
+    period: '30',
+    interval: '30m',
+    range: '60d',
+    spanMs: 1_800_000,
+    intraday: true,
+  },
+  '60': {
+    period: '60',
+    interval: '1h',
+    range: '730d',
+    spanMs: 3_600_000,
+    intraday: true,
+  },
 };
 
 // The quote arrays every chart result carries; destructured in this order.
@@ -48,10 +108,9 @@ export function yahooProvider(
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   return {
     async resolveContext(symbol, timeframe, range) {
-      // Range narrowing is a later refinement: the driver fetches the
-      // widest extent yahoo serves at the interval and answers over all
-      // of it (full-extent slice).
-      void range;
+      // The driver currently fetches the widest extent Yahoo serves at the
+      // interval, then projects the exact demanded tail before returning.
+      // Narrower network windows are a later optimization.
       if (symbol === '') {
         return {
           error: 'unknownSymbol' as const,
@@ -83,7 +142,10 @@ export function yahooProvider(
           detail: `yahoo fetch failed for ${url}: ${String(cause)}`,
         };
       }
-      return yahooContext(symbol, spec, status, payload);
+      const context = yahooContext(symbol, spec, status, payload);
+      return 'error' in context
+        ? context
+        : projectProviderRange(context, range);
     },
   };
 }
@@ -195,11 +257,10 @@ function yahooContext(
   QUOTE_FIELDS.forEach((field, i) => {
     byId.set(field, columnSeries(columns[i]));
   });
-  // Pine exposes `time` as an ambient series: bar OPEN in epoch ms (yahoo
-  // timestamps are epoch seconds).
+  // Yahoo timestamps are epoch seconds; the execution axis owns their
+  // epoch-ms projection. There is deliberately no duplicate `series('time')`.
   const timesMs = timestamp.map(t => t * 1000);
-  byId.set('time', columnSeries(timesMs));
-  // Derived ambient series every host is expected to synthesize (csv.ts
+  // Derived numeric data series every host is expected to synthesize (csv.ts
   // convention); na inputs propagate as NaN.
   const derive = (id: string, at: (index: number) => number): void => {
     byId.set(id, {length: rows, at});
@@ -209,10 +270,34 @@ function yahooContext(
   derive('ohlc4', i => (open[i] + high[i] + low[i] + close[i]) / 4);
   derive('hlcc4', i => (high[i] + low[i] + close[i] + close[i]) / 4);
 
+  const syminfo: ProviderSymbolValues = {
+    tickerid: symbol,
+    ticker: symbol.includes(':')
+      ? symbol.slice(symbol.lastIndexOf(':') + 1)
+      : symbol,
+    prefix:
+      isRecord(meta) && typeof meta.exchangeName === 'string'
+        ? meta.exchangeName
+        : undefined,
+    currency:
+      isRecord(meta) && typeof meta.currency === 'string'
+        ? meta.currency
+        : undefined,
+    type:
+      isRecord(meta) && typeof meta.instrumentType === 'string'
+        ? meta.instrumentType.toLowerCase()
+        : undefined,
+    timezone:
+      isRecord(meta) && typeof meta.exchangeTimezoneName === 'string'
+        ? meta.exchangeTimezoneName
+        : undefined,
+  };
+
   return {
     rows,
     axis: yahooAxis(timesMs, spec),
     series: (id: string) => byId.get(id) ?? null,
+    builtinValue: source => providerBuiltinValue(source, syminfo, spec.period),
   };
 }
 

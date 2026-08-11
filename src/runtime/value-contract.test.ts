@@ -5,6 +5,7 @@ import {Storage} from '../ir/node';
 import {
   BindError,
   type AggregateLayoutManifest,
+  type BindInputs,
   type DataProvider,
   type ManifestValue,
   type OutputSink,
@@ -13,7 +14,19 @@ import {
   type TeaModule,
   type Value,
 } from './abi';
-import {bind} from './js-runtime';
+import {bind as bindRuntime} from './js-runtime';
+
+const TEST_TIME_NOW = 1_800_000_000_000;
+
+function bind(
+  module: TeaModule,
+  inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
+) {
+  return bindRuntime(module, {
+    ...inputs,
+    timeNow: inputs.timeNow ?? TEST_TIME_NOW,
+  });
+}
 
 const NUMBER_LAYOUT = 0;
 const NULLABLE_LAYOUT = 1;
@@ -45,6 +58,7 @@ function context(value: number = 1): ProviderContext {
     rows: 1,
     axis: null,
     series: id => (id === 'close' ? {length: 1, at: () => value} : null),
+    builtinValue: () => undefined,
   };
 }
 
@@ -71,10 +85,11 @@ function param(
 }
 
 const EMPTY_VALUES_MODULE: TeaModule = {
-  abi: 3,
+  abi: 4,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [],
+    execution: [],
     params: [],
     outputs: [
       {
@@ -125,10 +140,11 @@ const EMPTY_VALUES_MODULE: TeaModule = {
 
 function paramModule(spec: ParamSpec): TeaModule {
   return {
-    abi: 3,
+    abi: 4,
     aggregateLayouts: TEST_LAYOUTS,
     manifest: {
       series: [],
+      execution: [],
       params: [spec],
       outputs: [],
       frames: [{locals: [], subs: []}],

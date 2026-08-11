@@ -1,10 +1,11 @@
 // Purpose: Canonical semantic declaration objects stored in checker scopes and referenced by Info definition/use facts.
 
+import {Qualifier} from '../ir/type';
 import type {
   ConstValue,
   EnumType,
   NameStorage,
-  Qualifier,
+  Qualifier as QualifierName,
   Type,
   UserType,
 } from '../ir/type';
@@ -15,6 +16,7 @@ import type {
   MethodDecl,
 } from '../syntax/nodes';
 import type {CheckedDefaultExpression} from './info';
+import type {BuiltinBinding} from './catalog';
 import type {Package} from './package';
 import type {Scope} from './scope';
 
@@ -35,7 +37,7 @@ export interface VariableObject {
   readonly storage: NameStorage;
   readonly constDecl: boolean;
   type: Type;
-  qualifier: Qualifier;
+  qualifier: QualifierName;
   constValue: ConstValue | null;
 }
 
@@ -58,7 +60,7 @@ export interface FreeFunctionObject extends FunctionObjectBase {
   // concrete stencil.
   readonly declaredParams: readonly ({
     readonly type: Type;
-    readonly qualifier: Qualifier | null;
+    readonly qualifier: QualifierName | null;
   } | null)[];
 }
 
@@ -70,7 +72,7 @@ export interface MethodObject extends FunctionObjectBase {
   };
   readonly declaredParams: readonly {
     readonly type: Type;
-    readonly qualifier: Qualifier | null;
+    readonly qualifier: QualifierName | null;
   }[];
   // Defaults rejected by the declaration-owner scan. Calls may still supply
   // those parameters explicitly for poison-resistant checking, but omission
@@ -128,14 +130,25 @@ export interface PackageNameObject {
   readonly pkg: Package;
 }
 
-export interface BuiltinObject {
+interface BuiltinObjectBase {
   readonly kind: typeof ObjectKind.Builtin;
   readonly name: string;
-  readonly hostId: string;
   readonly type: Type;
-  readonly qualifier: Qualifier;
-  readonly value: ConstValue | null;
 }
+
+export interface BuiltinConstObject extends BuiltinObjectBase {
+  readonly binding: null;
+  readonly qualifier: typeof Qualifier.Const;
+  readonly value: ConstValue;
+}
+
+export interface BuiltinBoundObject extends BuiltinObjectBase {
+  readonly binding: BuiltinBinding;
+  readonly qualifier: Exclude<QualifierName, typeof Qualifier.Const>;
+  readonly value: null;
+}
+
+export type BuiltinObject = BuiltinConstObject | BuiltinBoundObject;
 
 export type Object =
   | VariableObject

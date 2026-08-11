@@ -16,7 +16,19 @@ import {
   type TimeAxis,
   type Value,
 } from './abi';
-import {bind} from './js-runtime';
+import {bind as bindRuntime} from './js-runtime';
+
+const TEST_TIME_NOW = 1_800_000_000_000;
+
+function bind(
+  module: TeaModule,
+  inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
+) {
+  return bindRuntime(module, {
+    ...inputs,
+    timeNow: inputs.timeNow ?? TEST_TIME_NOW,
+  });
+}
 
 const INT = 0;
 const ARRAY = 1;
@@ -61,6 +73,7 @@ function context(
     axis: null,
     series: id =>
       id === 'close' ? {length: rows, at: row => values[row]} : null,
+    builtinValue: () => undefined,
   };
 }
 
@@ -76,10 +89,11 @@ const OUTPUT = {
 
 function arrayStateModule(): TeaModule {
   return {
-    abi: 3,
+    abi: 4,
     aggregateLayouts: LAYOUTS,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
+      execution: [],
       params: [],
       outputs: [
         {
@@ -245,10 +259,17 @@ describe('aggregate Ring and commit integration', () => {
       rootIdentityPreserved: boolean;
     }[] = [];
     const module: TeaModule = {
-      abi: 3,
+      abi: 4,
       aggregateLayouts: LAYOUTS,
       manifest: {
-        series: [{id: 'bar_index', depth: {kind: 'none'}}],
+        series: [],
+        execution: [
+          {
+            source: {domain: 'bar', field: 'bar_index'},
+            layout: INT,
+            depth: {kind: 'none'},
+          },
+        ],
         params: [],
         outputs: [
           {
@@ -277,7 +298,7 @@ describe('aggregate Ring and commit integration', () => {
       },
       funcs: {},
       main(rt, fr) {
-        if (rt.series(0, 0) === 1) {
+        if (rt.execution(0, 0) === 1) {
           const before = rt.read(fr, 0, 0);
           let failedCode: string | null = null;
           try {
@@ -346,10 +367,17 @@ describe('aggregate Ring and commit integration', () => {
   test('user-value history holds old collection headers', async () => {
     const sink = new Sink();
     const module: TeaModule = {
-      abi: 3,
+      abi: 4,
       aggregateLayouts: LAYOUTS,
       manifest: {
-        series: [{id: 'bar_index', depth: {kind: 'none'}}],
+        series: [],
+        execution: [
+          {
+            source: {domain: 'bar', field: 'bar_index'},
+            layout: INT,
+            depth: {kind: 'none'},
+          },
+        ],
         params: [],
         outputs: [
           {
@@ -386,7 +414,7 @@ describe('aggregate Ring and commit integration', () => {
         const current = rt.read(fr, 0, 0);
         const values = rt.userField(current, HOLDER, 0);
         const mutation = rt.mutateCollection('array.push', ARRAY, values, [
-          rt.series(0, 0) + 1,
+          (rt.execution(0, 0) as number) + 1,
         ]);
         const replacement = rt.rebuildUserPath(
           current,
@@ -400,7 +428,7 @@ describe('aggregate Ring and commit integration', () => {
           0,
           rt.callCollection('array.size', INT, [mutation.replacement]),
         );
-        if (rt.series(0, 0) > 0) {
+        if ((rt.execution(0, 0) as number) > 0) {
           const prior = rt.userField(rt.read(fr, 0, 1), HOLDER, 0);
           rt.emit(0, 1, rt.callCollection('array.size', INT, [prior]));
         } else {
@@ -427,7 +455,12 @@ describe('aggregate request ownership', () => {
       time: () => 0,
       closeTime: () => 60,
     };
-    const primary: ProviderContext = {rows: 1, axis, series: () => null};
+    const primary: ProviderContext = {
+      rows: 1,
+      axis,
+      series: () => null,
+      builtinValue: () => undefined,
+    };
     const contexts: DataProvider = {
       resolveContext: symbol => {
         if (symbol === '' || symbol === 'MID' || symbol === 'LEAF') {
@@ -442,6 +475,7 @@ describe('aggregate request ownership', () => {
     const leaf: ModuleCode = {
       manifest: {
         series: [],
+        execution: [],
         params: [],
         outputs: [],
         requests: [],
@@ -466,15 +500,13 @@ describe('aggregate request ownership', () => {
     const middle: ModuleCode = {
       manifest: {
         series: [],
+        execution: [],
         params: [],
         outputs: [],
         requests: [
           {
             merge: {
               mode: 'sample',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
             },
             depth: {kind: 'none'},
             resultSlot: 0,
@@ -494,6 +526,7 @@ describe('aggregate request ownership', () => {
       requests: [leaf],
       init() {},
       bind(rt) {
+        rt.bindRequestOptions(0, false, false, false, 0);
         rt.bindRequest(0, 'LEAF', '');
       },
       inits: {},
@@ -503,19 +536,17 @@ describe('aggregate request ownership', () => {
       },
     };
     const root: TeaModule = {
-      abi: 3,
+      abi: 4,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
+        execution: [],
         params: [],
         outputs: [OUTPUT],
         requests: [
           {
             merge: {
               mode: 'sample',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
             },
             depth: {kind: 'none'},
             resultSlot: 0,
@@ -528,6 +559,7 @@ describe('aggregate request ownership', () => {
       requests: [middle],
       init() {},
       bind(rt) {
+        rt.bindRequestOptions(0, false, false, false, 0);
         rt.bindRequest(0, 'MID', '');
       },
       inits: {},
@@ -573,11 +605,13 @@ describe('aggregate request ownership', () => {
       rows: 3,
       axis: parentAxis,
       series: () => null,
+      builtinValue: () => undefined,
     };
     const pair = (value: number): ProviderContext => ({
       rows: 1,
       axis: childAxis,
       series: id => (id === 'close' ? {length: 1, at: () => value} : null),
+      builtinValue: () => undefined,
     });
     const contexts: DataProvider = {
       resolveContext: symbol => {
@@ -599,6 +633,7 @@ describe('aggregate request ownership', () => {
     const child: ModuleCode = {
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
+        execution: [],
         params: [],
         outputs: [],
         requests: [],
@@ -625,19 +660,23 @@ describe('aggregate request ownership', () => {
       },
     };
     const root: TeaModule = {
-      abi: 3,
+      abi: 4,
       aggregateLayouts: LAYOUTS,
       manifest: {
-        series: [{id: 'bar_index', depth: {kind: 'none'}}],
+        series: [],
+        execution: [
+          {
+            source: {domain: 'bar', field: 'bar_index'},
+            layout: INT,
+            depth: {kind: 'none'},
+          },
+        ],
         params: [],
         outputs: [OUTPUT],
         requests: [
           {
             merge: {
               mode: 'sample',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
             },
             depth: {kind: 'none'},
             resultSlot: 0,
@@ -649,11 +688,13 @@ describe('aggregate request ownership', () => {
       },
       requests: [child],
       init() {},
-      bind() {},
+      bind(rt) {
+        rt.bindRequestOptions(0, false, false, false, 0);
+      },
       inits: {},
       funcs: {},
       main(rt) {
-        const symbol = rt.series(0, 0) === 1 ? 'Y' : 'X';
+        const symbol = rt.execution(0, 0) === 1 ? 'Y' : 'X';
         const result = rt.requestFor(0, symbol, '');
         rt.emit(0, 0, rt.callCollection('array.first', INT, [result]));
       },
@@ -683,11 +724,17 @@ describe('aggregate request ownership', () => {
       time: row => row * 60,
       closeTime: row => (row + 1) * 60,
     };
-    const primary: ProviderContext = {rows: 1, axis, series: () => null};
+    const primary: ProviderContext = {
+      rows: 1,
+      axis,
+      series: () => null,
+      builtinValue: () => undefined,
+    };
     const childContext: ProviderContext = {
       rows: 1,
       axis,
       series: id => (id === 'close' ? {length: 1, at: () => 1} : null),
+      builtinValue: () => undefined,
     };
     const contexts: DataProvider = {
       resolveContext: symbol =>
@@ -696,6 +743,7 @@ describe('aggregate request ownership', () => {
     const child: ModuleCode = {
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
+        execution: [],
         params: [],
         outputs: [],
         requests: [],
@@ -720,10 +768,11 @@ describe('aggregate request ownership', () => {
     let requestedSymbol = 'Y';
     let marker = 11;
     const root: TeaModule = {
-      abi: 3,
+      abi: 4,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
+        execution: [],
         params: [],
         outputs: [
           {
@@ -738,9 +787,6 @@ describe('aggregate request ownership', () => {
           {
             merge: {
               mode: 'sample',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
             },
             depth: {kind: 'none'},
             resultSlot: 0,
@@ -759,7 +805,9 @@ describe('aggregate request ownership', () => {
       },
       requests: [child],
       init() {},
-      bind() {},
+      bind(rt) {
+        rt.bindRequestOptions(0, false, false, false, 0);
+      },
       inits: {
         '0:0': rt => rt.callCollection('array.from', ARRAY, [0]),
       },
@@ -833,11 +881,13 @@ describe('aggregate request ownership', () => {
       rows: 2,
       axis,
       series: () => null,
+      builtinValue: () => undefined,
     };
     const childContext: ProviderContext = {
       rows: 2,
       axis,
       series: id => (id === 'close' ? {length: 2, at: row => row + 10} : null),
+      builtinValue: () => undefined,
     };
     const contexts: DataProvider = {
       resolveContext: symbol =>
@@ -846,6 +896,7 @@ describe('aggregate request ownership', () => {
     const child: ModuleCode = {
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
+        execution: [],
         params: [],
         outputs: [],
         requests: [],
@@ -872,10 +923,11 @@ describe('aggregate request ownership', () => {
       },
     };
     const root: TeaModule = {
-      abi: 3,
+      abi: 4,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
+        execution: [],
         params: [],
         outputs: [
           {
@@ -891,9 +943,6 @@ describe('aggregate request ownership', () => {
           {
             merge: {
               mode: 'sample',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
             },
             depth: {kind: 'none'},
             resultSlot: 0,
@@ -903,9 +952,6 @@ describe('aggregate request ownership', () => {
           {
             merge: {
               mode: 'sample',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
             },
             depth: {kind: 'none'},
             resultSlot: 0,
@@ -917,6 +963,8 @@ describe('aggregate request ownership', () => {
       requests: [child, child],
       init() {},
       bind(rt) {
+        rt.bindRequestOptions(0, false, false, false, 0);
+        rt.bindRequestOptions(1, false, false, false, 0);
         rt.bindRequest(0, 'X', '');
         rt.bindRequest(1, 'X', '');
       },
@@ -952,6 +1000,7 @@ describe('aggregate request ownership', () => {
       rows: 1,
       axis: stableAxis,
       series: () => null,
+      builtinValue: () => undefined,
     };
     let childResolutions = 0;
     const contexts: DataProvider = {
@@ -974,12 +1023,18 @@ describe('aggregate request ownership', () => {
                 },
               }
             : stableAxis;
-        return Promise.resolve({rows: 1, axis, series: () => null});
+        return Promise.resolve({
+          rows: 1,
+          axis,
+          series: () => null,
+          builtinValue: () => undefined,
+        });
       },
     };
     const child: ModuleCode = {
       manifest: {
         series: [],
+        execution: [],
         params: [],
         outputs: [],
         requests: [],
@@ -1002,19 +1057,17 @@ describe('aggregate request ownership', () => {
       },
     };
     const root: TeaModule = {
-      abi: 3,
+      abi: 4,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
+        execution: [],
         params: [],
         outputs: [OUTPUT],
         requests: [
           {
             merge: {
               mode: 'sample',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
             },
             depth: {kind: 'none'},
             resultSlot: 0,
@@ -1026,7 +1079,9 @@ describe('aggregate request ownership', () => {
       },
       requests: [child],
       init() {},
-      bind() {},
+      bind(rt) {
+        rt.bindRequestOptions(0, false, false, false, 0);
+      },
       inits: {},
       funcs: {},
       main(rt) {
@@ -1063,11 +1118,17 @@ describe('aggregate request ownership', () => {
       time: () => 0,
       closeTime: () => 60,
     };
-    const primary: ProviderContext = {rows: 1, axis, series: () => null};
+    const primary: ProviderContext = {
+      rows: 1,
+      axis,
+      series: () => null,
+      builtinValue: () => undefined,
+    };
     const childContext: ProviderContext = {
       rows: 1,
       axis,
       series: id => (id === 'close' ? {length: 1, at: () => 10} : null),
+      builtinValue: () => undefined,
     };
     const contexts: DataProvider = {
       resolveContext: symbol =>
@@ -1076,6 +1137,7 @@ describe('aggregate request ownership', () => {
     const child: ModuleCode = {
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
+        execution: [],
         params: [],
         outputs: [],
         requests: [],
@@ -1112,19 +1174,17 @@ describe('aggregate request ownership', () => {
       },
     };
     const root: TeaModule = {
-      abi: 3,
+      abi: 4,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
+        execution: [],
         params: [],
         outputs: [OUTPUT],
         requests: [
           {
             merge: {
               mode: 'sample',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
             },
             depth: {kind: 'none'},
             resultSlot: 0,
@@ -1148,6 +1208,7 @@ describe('aggregate request ownership', () => {
       requests: [child],
       init() {},
       bind(rt) {
+        rt.bindRequestOptions(0, false, false, false, 0);
         rt.bindRequest(0, 'X', '');
       },
       inits: {},
@@ -1176,10 +1237,11 @@ describe('runtime boundaries', () => {
     let escaped: Value | undefined;
     let rejection = '';
     const module: TeaModule = {
-      abi: 3,
+      abi: 4,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
+        execution: [],
         params: [],
         outputs: [OUTPUT],
         requests: [],
@@ -1286,10 +1348,11 @@ describe('runtime boundaries', () => {
   test('a partially allocated lazy frame rolls its Ring leases back', async () => {
     let requestLargeFrame = true;
     const module: TeaModule = {
-      abi: 3,
+      abi: 4,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
+        execution: [],
         params: [],
         outputs: [],
         requests: [],

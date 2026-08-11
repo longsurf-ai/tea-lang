@@ -1,5 +1,6 @@
 // Purpose: Native catalog — the single declaration surface for host primitives: signatures, qualifier caps, const-literal requirements, effect classes. A builtin is listed here only if it is inexpressible in Tea; all of ta.* is prelude code, never catalog.
 
+import type {DataSeriesId, ExecutionSource} from '../ir/builtin';
 import {
   BoolType,
   ColorType,
@@ -85,6 +86,10 @@ export interface NativeParam {
   // Program instead of evaluating it in place.
   readonly capture: boolean;
   readonly mode: 'value' | 'inout';
+  // Staged parameters retain their positional ABI slot and appear in the
+  // reference, but any supplied argument is rejected by the checker until
+  // the owning runtime model exists.
+  readonly availability: 'supported' | 'staged';
 }
 
 // The effect class selects the compilation and runtime protocol of a call:
@@ -129,15 +134,33 @@ export interface NativeFunc {
   readonly inputDefaultDisplay: InputDisplay | null;
 }
 
-// An ambient variable (close, syminfo.tickerid) or const namespace member
-// (color.red, plot.style_line, math.pi). Non-const vars are context series
-// provided by the runtime, never declared by the Program.
-export interface NativeVar {
+// The catalog classifies every non-const builtin explicitly. No downstream
+// pass may infer its runtime carrier by parsing the source spelling.
+export type BuiltinBinding =
+  | {readonly kind: 'series'; readonly id: DataSeriesId}
+  | {readonly kind: 'execution'; readonly source: ExecutionSource};
+
+interface NativeVarBase {
   readonly name: string;
   readonly type: Type;
-  readonly qualifier: Qualifier;
-  readonly value: ConstValue | null;
 }
+
+export interface NativeConstVar extends NativeVarBase {
+  readonly qualifier: typeof Qualifier.Const;
+  readonly value: ConstValue;
+  readonly binding: null;
+}
+
+export interface NativeBoundVar extends NativeVarBase {
+  readonly qualifier: Exclude<Qualifier, typeof Qualifier.Const>;
+  readonly value: null;
+  readonly binding: BuiltinBinding;
+}
+
+// A host-provided context builtin (close, syminfo.tickerid) or const namespace
+// member (color.red, plot.style_line, math.pi). Constants have no runtime
+// binding; all other entries carry one explicit series/execution binding.
+export type NativeVar = NativeConstVar | NativeBoundVar;
 
 export interface Catalog {
   readonly funcs: ReadonlyMap<string, readonly NativeFunc[]>;
@@ -152,6 +175,7 @@ interface NativeParamOptions {
   readonly capture?: boolean;
   readonly acceptsNa?: boolean;
   readonly mode?: 'value' | 'inout';
+  readonly availability?: 'supported' | 'staged';
 }
 
 function req(
@@ -170,6 +194,7 @@ function req(
     variadic: opts.variadic ?? false,
     capture: opts.capture ?? false,
     mode: opts.mode ?? 'value',
+    availability: opts.availability ?? 'supported',
   };
 }
 
@@ -212,16 +237,40 @@ function genericFunc(
   return {...func(name, params, result, resultQualifier), typeParams};
 }
 
-function variable(
+function constantVariable(
   name: string,
   type: Type,
-  qualifier: Qualifier,
-  value: ConstValue | null = null,
+  value: ConstValue,
 ): NativeVar {
-  return {name, type, qualifier, value};
+  return {name, type, qualifier: Qualifier.Const, value, binding: null};
 }
 
-// ---- ambient variables ------------------------------------------------------
+function seriesVariable(name: string, type: Type): NativeVar {
+  return {
+    name,
+    type,
+    qualifier: Qualifier.Series,
+    value: null,
+    binding: {kind: 'series', id: name},
+  };
+}
+
+function executionVariable(
+  name: string,
+  type: Type,
+  qualifier: Exclude<Qualifier, typeof Qualifier.Const>,
+  source: ExecutionSource,
+): NativeVar {
+  return {
+    name,
+    type,
+    qualifier,
+    value: null,
+    binding: {kind: 'execution', source},
+  };
+}
+
+// ---- context builtins -------------------------------------------------------
 
 const SERIES_FLOAT_VARS = [
   'open',
@@ -235,14 +284,14 @@ const SERIES_FLOAT_VARS = [
   'hlcc4',
 ];
 
-const BARSTATE_VARS = [
-  'barstate.isfirst',
-  'barstate.islast',
-  'barstate.ishistory',
-  'barstate.isrealtime',
-  'barstate.isconfirmed',
-  'barstate.isnew',
-];
+const BARSTATE_FIELDS = [
+  'isfirst',
+  'islast',
+  'ishistory',
+  'isrealtime',
+  'isconfirmed',
+  'isnew',
+] satisfies readonly Extract<ExecutionSource, {domain: 'barstate'}>['field'][];
 
 // Tea's palette (Tea-owned hues, not host-owned).
 const COLORS: Record<string, string> = {
@@ -324,52 +373,125 @@ const STRING_CONSTS: Record<string, readonly string[]> = {
 function buildVars(): NativeVar[] {
   const vars: NativeVar[] = [
     // Literal-like names the scanner deliberately leaves as plain names.
-    variable('true', BoolType, Qualifier.Const, true),
-    variable('false', BoolType, Qualifier.Const, false),
-    variable('na', NaType, Qualifier.Const, NA_VALUE),
-    variable('bar_index', IntType, Qualifier.Series),
-    variable('last_bar_index', IntType, Qualifier.Series),
-    variable('time', IntType, Qualifier.Series),
-    variable('timenow', IntType, Qualifier.Series),
-    variable('barmerge.gaps_on', BoolType, Qualifier.Const, true),
-    variable('barmerge.gaps_off', BoolType, Qualifier.Const, false),
-    variable('barmerge.lookahead_on', BoolType, Qualifier.Const, true),
-    variable('barmerge.lookahead_off', BoolType, Qualifier.Const, false),
-    variable('math.pi', FloatType, Qualifier.Const, Math.PI),
-    variable('math.e', FloatType, Qualifier.Const, Math.E),
-    variable('syminfo.tickerid', StringType, Qualifier.Simple),
-    variable('syminfo.ticker', StringType, Qualifier.Simple),
-    variable('syminfo.prefix', StringType, Qualifier.Simple),
-    variable('syminfo.currency', StringType, Qualifier.Simple),
-    variable('syminfo.basecurrency', StringType, Qualifier.Simple),
-    variable('syminfo.type', StringType, Qualifier.Simple),
-    variable('syminfo.timezone', StringType, Qualifier.Simple),
-    variable('syminfo.mintick', FloatType, Qualifier.Simple),
-    variable('syminfo.pointvalue', FloatType, Qualifier.Simple),
-    variable('timeframe.period', StringType, Qualifier.Simple),
-    variable('timeframe.multiplier', IntType, Qualifier.Simple),
-    variable('timeframe.isseconds', BoolType, Qualifier.Simple),
-    variable('timeframe.isminutes', BoolType, Qualifier.Simple),
-    variable('timeframe.isintraday', BoolType, Qualifier.Simple),
-    variable('timeframe.isdaily', BoolType, Qualifier.Simple),
-    variable('timeframe.isweekly', BoolType, Qualifier.Simple),
-    variable('timeframe.ismonthly', BoolType, Qualifier.Simple),
-    variable('timeframe.isdwm', BoolType, Qualifier.Simple),
+    constantVariable('true', BoolType, true),
+    constantVariable('false', BoolType, false),
+    constantVariable('na', NaType, NA_VALUE),
+    executionVariable('bar_index', IntType, Qualifier.Series, {
+      domain: 'bar',
+      field: 'bar_index',
+    }),
+    executionVariable('last_bar_index', IntType, Qualifier.Series, {
+      domain: 'bar',
+      field: 'last_bar_index',
+    }),
+    executionVariable('time', IntType, Qualifier.Series, {
+      domain: 'time',
+      field: 'time',
+    }),
+    executionVariable('time_close', IntType, Qualifier.Series, {
+      domain: 'time',
+      field: 'time_close',
+    }),
+    executionVariable('timenow', IntType, Qualifier.Series, {
+      domain: 'time',
+      field: 'timenow',
+    }),
+    constantVariable('barmerge.gaps_on', BoolType, true),
+    constantVariable('barmerge.gaps_off', BoolType, false),
+    constantVariable('barmerge.lookahead_on', BoolType, true),
+    constantVariable('barmerge.lookahead_off', BoolType, false),
+    constantVariable('math.pi', FloatType, Math.PI),
+    constantVariable('math.e', FloatType, Math.E),
+    executionVariable('syminfo.tickerid', StringType, Qualifier.Simple, {
+      domain: 'syminfo',
+      field: 'tickerid',
+    }),
+    executionVariable('syminfo.ticker', StringType, Qualifier.Simple, {
+      domain: 'syminfo',
+      field: 'ticker',
+    }),
+    executionVariable('syminfo.prefix', StringType, Qualifier.Simple, {
+      domain: 'syminfo',
+      field: 'prefix',
+    }),
+    executionVariable('syminfo.currency', StringType, Qualifier.Simple, {
+      domain: 'syminfo',
+      field: 'currency',
+    }),
+    executionVariable('syminfo.basecurrency', StringType, Qualifier.Simple, {
+      domain: 'syminfo',
+      field: 'basecurrency',
+    }),
+    executionVariable('syminfo.type', StringType, Qualifier.Simple, {
+      domain: 'syminfo',
+      field: 'type',
+    }),
+    executionVariable('syminfo.timezone', StringType, Qualifier.Simple, {
+      domain: 'syminfo',
+      field: 'timezone',
+    }),
+    executionVariable('syminfo.mintick', FloatType, Qualifier.Simple, {
+      domain: 'syminfo',
+      field: 'mintick',
+    }),
+    executionVariable('syminfo.pointvalue', FloatType, Qualifier.Simple, {
+      domain: 'syminfo',
+      field: 'pointvalue',
+    }),
+    executionVariable('timeframe.period', StringType, Qualifier.Simple, {
+      domain: 'timeframe',
+      field: 'period',
+    }),
+    executionVariable('timeframe.multiplier', IntType, Qualifier.Simple, {
+      domain: 'timeframe',
+      field: 'multiplier',
+    }),
+    executionVariable('timeframe.isseconds', BoolType, Qualifier.Simple, {
+      domain: 'timeframe',
+      field: 'isseconds',
+    }),
+    executionVariable('timeframe.isminutes', BoolType, Qualifier.Simple, {
+      domain: 'timeframe',
+      field: 'isminutes',
+    }),
+    executionVariable('timeframe.isintraday', BoolType, Qualifier.Simple, {
+      domain: 'timeframe',
+      field: 'isintraday',
+    }),
+    executionVariable('timeframe.isdaily', BoolType, Qualifier.Simple, {
+      domain: 'timeframe',
+      field: 'isdaily',
+    }),
+    executionVariable('timeframe.isweekly', BoolType, Qualifier.Simple, {
+      domain: 'timeframe',
+      field: 'isweekly',
+    }),
+    executionVariable('timeframe.ismonthly', BoolType, Qualifier.Simple, {
+      domain: 'timeframe',
+      field: 'ismonthly',
+    }),
+    executionVariable('timeframe.isdwm', BoolType, Qualifier.Simple, {
+      domain: 'timeframe',
+      field: 'isdwm',
+    }),
   ];
   for (const name of SERIES_FLOAT_VARS) {
-    vars.push(variable(name, FloatType, Qualifier.Series));
+    vars.push(seriesVariable(name, FloatType));
   }
-  for (const name of BARSTATE_VARS) {
-    vars.push(variable(name, BoolType, Qualifier.Series));
+  for (const field of BARSTATE_FIELDS) {
+    vars.push(
+      executionVariable(`barstate.${field}`, BoolType, Qualifier.Series, {
+        domain: 'barstate',
+        field,
+      }),
+    );
   }
   for (const [name, hex] of Object.entries(COLORS)) {
-    vars.push(variable(`color.${name}`, ColorType, Qualifier.Const, hex));
+    vars.push(constantVariable(`color.${name}`, ColorType, hex));
   }
   for (const [prefix, members] of Object.entries(STRING_CONSTS)) {
     for (const member of members) {
-      vars.push(
-        variable(`${prefix}${member}`, StringType, Qualifier.Const, member),
-      );
+      vars.push(constantVariable(`${prefix}${member}`, StringType, member));
     }
   }
   return vars;
@@ -897,9 +1019,13 @@ function buildFuncs(): NativeFunc[] {
         req('expression', TypeRef.Any, Qualifier.Series, {capture: true}),
         opt('gaps', BoolType, Qualifier.Simple),
         opt('lookahead', BoolType, Qualifier.Simple),
-        opt('ignore_invalid_symbol', BoolType, Qualifier.Const),
-        opt('currency', StringType, Qualifier.Const),
-        opt('calc_bars_count', IntType, Qualifier.Const),
+        opt('ignore_invalid_symbol', BoolType, Qualifier.Simple, {
+          acceptsNa: false,
+        }),
+        opt('currency', StringType, Qualifier.Const, {
+          availability: 'staged',
+        }),
+        opt('calc_bars_count', IntType, Qualifier.Simple, {acceptsNa: false}),
       ],
       FloatType,
       Qualifier.Series,

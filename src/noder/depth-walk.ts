@@ -1,4 +1,4 @@
-// Purpose: Lexical IR child traversal and single-write input-name discovery shared by the depth policy pass.
+// Purpose: Lexical IR child traversal and single-write bind-known name discovery shared by the depth policy pass.
 
 import {fatal} from '../base/print';
 import {
@@ -12,13 +12,13 @@ import {
 import type {IrFunc} from '../ir/program';
 import {Qualifier, qualifierLE} from '../ir/type';
 
-export function immutableInputLocals(func: IrFunc): ReadonlySet<Name> {
+export function immutableBindLocals(func: IrFunc): ReadonlySet<Name> {
   const writes = new Map<Name, number>();
   countWritesExpr(func.body, writes);
-  return immutableInputNamesFromCounts(func.locals, writes);
+  return immutableBindNamesFromCounts(func.locals, writes);
 }
 
-export function immutableInputNames(
+export function immutableBindNames(
   names: readonly Name[],
   stmts: readonly IrStmt[],
 ): ReadonlySet<Name> {
@@ -26,10 +26,10 @@ export function immutableInputNames(
   for (const stmt of stmts) {
     countWritesStmt(stmt, writes);
   }
-  return immutableInputNamesFromCounts(names, writes);
+  return immutableBindNamesFromCounts(names, writes);
 }
 
-function immutableInputNamesFromCounts(
+function immutableBindNamesFromCounts(
   names: readonly Name[],
   writes: ReadonlyMap<Name, number>,
 ): ReadonlySet<Name> {
@@ -37,7 +37,7 @@ function immutableInputNamesFromCounts(
     names.filter(
       name =>
         name.storage === Storage.PerBar &&
-        qualifierLE(name.qualifier, Qualifier.Input) &&
+        qualifierLE(name.qualifier, Qualifier.Simple) &&
         writes.get(name) === 1,
     ),
   );
@@ -99,9 +99,10 @@ export function exprChildren(
         ...children,
         edge.symbol,
         edge.timeframe,
-        ...(edge.merge.calcBarsCount === null
-          ? []
-          : [edge.merge.calcBarsCount]),
+        edge.merge.gaps,
+        edge.merge.lookahead,
+        edge.merge.ignoreInvalidSymbol,
+        edge.merge.calcBarsCount,
       ];
     }
     case IrKind.Binary:

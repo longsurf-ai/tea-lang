@@ -10,10 +10,10 @@ range)` → a fixed-extent `ProviderContext` (or a typed `ContextError`,
   never a thrown string). All asynchrony — pagination, rate limits,
   caching — lives inside `resolveContext`; a returned context answers
   synchronously.
-- `csv.ts` maps CSV header names to ambient series ids, synthesizes the
-  derived ambients (`hl2`, `hlc3`, `ohlc4`, `hlcc4`), and serves exactly
+- `csv.ts` maps numeric CSV header names to series ids, synthesizes the
+  derived numeric sources (`hl2`, `hlc3`, `ohlc4`, `hlcc4`), and serves exactly
   one context (the empty pair). An epoch-ms `time` column provides the
-  merge axis (bar opens; a bar closes when the next opens); without it the
+  merge/execution axis only — it is never also a numeric series. Without it the
   context is axis-less. It is the offline, deterministic substrate for
   `tea run` and the run goldens; `csvContext` is exported for drivers and
   tests that assemble multi-context providers from csv-shaped payloads.
@@ -41,3 +41,10 @@ range)` → a fixed-extent `ProviderContext` (or a typed `ContextError`,
 - Drivers normalize (single-valued sources map to `close`, collapsing
   OHLC), resample in-driver or report `unsupportedTimeframe`, and keep
   axes honest — the runtime never guesses session calendars.
+- Every resolved context exposes one exact `builtinValue` accessor for
+  `syminfo`/`timeframe` keys. Missing metadata is `undefined`; typed empty
+  values remain values. `ExecutionSource.domain` is identifier taxonomy only
+  and must never grow corresponding runtime context classes.
+- `RangeDemand` is either full or an exact positive trailing-bar count.
+  Drivers may project the requested tail, but runtime independently clamps
+  over-returned contexts before child execution.

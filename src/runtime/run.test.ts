@@ -32,6 +32,7 @@ async function runSource(
     params,
     provider: provider ?? csvProvider(csv),
     sink,
+    timeNow: 1_800_000_000_000,
   });
   await bound.runAll();
   return lines;
@@ -317,10 +318,23 @@ describe('hand-checked vectors', () => {
     expect(lines.filter(line => !line.startsWith('#'))).toEqual(['0 0 2']);
   });
 
-  test('simple ambient output values execute per row, not during bind', async () => {
+  test('simple context builtins execute per row, not during bind', async () => {
+    const context = csvContext('close\n1\n2');
+    const provider: DataProvider = {
+      resolveContext: () =>
+        Promise.resolve({
+          ...context,
+          builtinValue: source =>
+            source.domain === 'timeframe' && source.field === 'multiplier'
+              ? 5
+              : undefined,
+        }),
+    };
     const lines = await runSource(
       'plot(timeframe.multiplier)',
-      ['timeframe.multiplier', '5', '5', ''].join(chr10()),
+      'close\n1\n2',
+      {},
+      provider,
     );
     expect(lines.slice(1)).toEqual(['0 0 5', '1 0 5']);
   });
@@ -598,6 +612,7 @@ describe('the input family end to end', () => {
       params: {},
       provider: csvProvider(seriesCsv([1, 2])),
       sink,
+      timeNow: 1_800_000_000_000,
     });
     await bound.runAll();
     expect(lines.some(line => line.includes('bound{series=500}'))).toBe(true);
@@ -734,6 +749,7 @@ describe('the input family end to end', () => {
         params,
         provider: csvProvider(seriesCsv([1])),
         sink: new TraceSink(() => {}),
+        timeNow: 1_800_000_000_000,
       });
 
     const disabled = await bindWith({enabled: false, mode: 'slow'});
@@ -754,6 +770,7 @@ describe('the input family end to end', () => {
       params: {enabled: false, mode: 'slow'},
       provider: csvProvider(seriesCsv([1])),
       sink: new TraceSink(line => lines.push(line)),
+      timeNow: 1_800_000_000_000,
     });
     await titled.runAll();
     expect(lines).toHaveLength(1);
@@ -811,6 +828,7 @@ describe('the input family end to end', () => {
       params,
       provider: csvProvider(seriesCsv([-1, 1])),
       sink: new TraceSink(line => lines.push(line)),
+      timeNow: 1_800_000_000_000,
     });
     await bound.runAll();
     expect(lines.slice(1)).toEqual(['0 0 70', '1 0 60']);

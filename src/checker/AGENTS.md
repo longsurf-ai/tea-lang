@@ -17,6 +17,9 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   checker never creates or mutates `IrName`, `SeriesInput`, `ParamInput`,
   `RequestEdge`, `HistoryDepth`, slots, or frames; those are noder/IR
   projections.
+- Checker may import only the shared `ir/type.ts` and `ir/builtin.ts`
+  vocabularies. It must never import backend `ir/node.ts` or `ir/program.ts`;
+  noder remains the sole semantic-to-Program projection.
 - `Info` contains only facts about syntax occurrences in one semantic context:
   expression types, definitions, uses, selections, scopes, calls, and
   reassignment. The package root, every function instance, and every request
@@ -126,14 +129,17 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   `TypeKind.Invalid` (assignable both ways, unify-absorbed) so one error
   never cascades; the checker never throws on user input and silently
   tolerates Bad syntax nodes the parser already reported.
-- Ambient names resolve to semantic `BuiltinObject`s. They carry host identity,
-  type, qualifier, and any fold value, but no backend depth or buffer state.
-  The noder interns one `SeriesInput` per builtin in each Program projection.
+- Context builtin names resolve to semantic `BuiltinObject`s. The catalog owns their
+  explicit discriminated binding: numeric sources are `series`, typed context
+  values are `execution`, and constants have no binding. They carry type,
+  qualifier, and any fold value, but no backend depth or buffer state. The
+  noder interns the matching `SeriesInput` or `ExecutionInput` independently
+  in each Program projection; no pass parses a builtin spelling to classify it.
 - Request captures re-check in a CHILD semantic context with fresh `Info`:
   only constant values and direct scalar input bindings cross contexts;
   computed root aliases fail closed because no child-frame projection exists
   for them. Each `FunctionInstance` records the exact transitive set of
-  non-local `VariableObject` and `BuiltinObject` dependencies. Ambient
+  non-local `VariableObject` and `BuiltinObject` dependencies. Context
   builtins reproject safely per Program; outer variables are accepted only
   when they are constants or direct scalar input bindings, otherwise rejected
   cleanly. Scalar input declarations remain compilation-global across the

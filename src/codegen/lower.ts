@@ -14,6 +14,7 @@ import {
 } from '../ir/node';
 import type {
   IrFunc,
+  ExecutionInput,
   OutputDecl,
   ParamInput,
   RequestEdge,
@@ -34,6 +35,7 @@ import {ValueClass, type ValueClass as ValueClassType} from '../runtime/abi';
 export interface LowerCtx {
   readonly nameSlots: Map<Name, {fid: number; slot: number}>;
   readonly seriesIds: Map<SeriesInput, number>;
+  readonly executionIds: Map<ExecutionInput, number>;
   readonly paramIds: Map<ParamInput, number>;
   // input.source params read as series through their bound slot.
   readonly paramSeriesIds: Map<ParamInput, number>;
@@ -344,6 +346,15 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
             return fatal(`unmapped series '${e.place.series.id}'`);
           }
           return `rt.series(${sid}, ${off})`;
+        }
+        case PlaceKind.Execution: {
+          const eid = ctx.executionIds.get(e.place.execution);
+          if (eid === undefined) {
+            return fatal(
+              `unmapped execution input '${e.place.execution.source.domain}.${e.place.execution.source.field}'`,
+            );
+          }
+          return `rt.execution(${eid}, ${off})`;
         }
         case PlaceKind.Param: {
           const sid = ctx.paramSeriesIds.get(e.place.param);

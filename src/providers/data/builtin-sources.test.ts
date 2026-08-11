@@ -9,10 +9,15 @@ import type {
 import {isContextError} from '../../runtime/abi';
 import {builtinSources} from './builtin-sources';
 
-const FULL_RANGE: RangeDemand = {from: null, to: null, bars: null};
+const FULL_RANGE: RangeDemand = {kind: 'full'};
 
 function primaryDouble(log: string[]): DataProvider {
-  const context: ProviderContext = {rows: 0, axis: null, series: () => null};
+  const context: ProviderContext = {
+    rows: 0,
+    axis: null,
+    series: () => null,
+    builtinValue: () => undefined,
+  };
   return {
     resolveContext(symbol) {
       log.push(`primary:${symbol}`);

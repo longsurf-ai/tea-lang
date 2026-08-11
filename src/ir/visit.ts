@@ -1,4 +1,4 @@
-// Purpose: IR traversal and derived enumerations — Program declares its external needs (params, requests) and emissions (outputs); ambient series usage, names, funcs, and slot counts are projections computed by walking, and requestsOf is how the noder fills the interface field.
+// Purpose: IR traversal and derived enumerations — Program declares its external needs (params, requests) and emissions (outputs); context-input usage, names, funcs, and slot counts are projections computed by walking, and requestsOf is how the noder fills the interface field.
 
 import {fatal} from '../base/print';
 import {
@@ -13,11 +13,13 @@ import {
 } from './node';
 import {
   ParamDefaultKind,
+  type ExecutionInput,
   type IrFunc,
   type Program,
   type RequestEdge,
   type SeriesInput,
 } from './program';
+import {Qualifier, qualifierLE} from './type';
 
 // One traversal, deterministic first-reachable order. Visited sets make
 // shared declaration objects (Names, funcs, edges) count once; request
@@ -28,6 +30,7 @@ interface Reach {
   readonly funcs: Set<IrFunc>;
   readonly requests: Set<RequestEdge>;
   readonly series: Set<SeriesInput>;
+  readonly execution: Set<ExecutionInput>;
   readonly reads: HistReadExpr[];
   maxSlot: number;
 }
@@ -38,6 +41,7 @@ function reachProgram(program: Program): Reach {
     funcs: new Set(),
     requests: new Set(),
     series: new Set(),
+    execution: new Set(),
     reads: [],
     maxSlot: -1,
   };
@@ -94,8 +98,13 @@ function noteRequest(request: RequestEdge, reach: Reach): void {
   reach.requests.add(request);
   visitExpr(request.symbol, reach);
   visitExpr(request.timeframe, reach);
-  if (request.merge.calcBarsCount !== null) {
-    visitExpr(request.merge.calcBarsCount, reach);
+  for (const option of [
+    request.merge.gaps,
+    request.merge.lookahead,
+    request.merge.ignoreInvalidSymbol,
+    request.merge.calcBarsCount,
+  ]) {
+    visitExpr(option, reach);
   }
   visitDepth(request.depth, reach);
   // request.resultName and request.child belong to the child Program.
@@ -148,6 +157,8 @@ function visitExpr(expr: IrExpr, reach: Reach): void {
         noteName(place.name, reach);
       } else if (place.kind === PlaceKind.Series) {
         visitSeries(place.series, reach);
+      } else if (place.kind === PlaceKind.Execution) {
+        visitExecution(place.execution, reach);
       } else if (place.kind === PlaceKind.Request) {
         noteRequest(place.request, reach);
       }
@@ -279,6 +290,14 @@ function visitSeries(series: SeriesInput, reach: Reach): void {
   visitDepth(series.depth, reach);
 }
 
+function visitExecution(execution: ExecutionInput, reach: Reach): void {
+  if (reach.execution.has(execution)) {
+    return;
+  }
+  reach.execution.add(execution);
+  visitDepth(execution.depth, reach);
+}
+
 // Whether an expression can evaluate without any frame: only constants,
 // scalar param reads, and pure combinations qualify. This is the strict
 // subset used when no owner-proven root bind frame is available.
@@ -288,11 +307,15 @@ export function bindEvaluable(e: IrExpr): boolean {
       return true;
     case IrKind.HistRead:
       // Source params are excluded: their reads are series (a bound host
-      // series), not bind-time scalars, and would lower to rt.series.
+      // series), not bind-time scalars, and would lower to rt.series. A typed
+      // execution input is bind-visible only when its Tea qualifier is no
+      // later than simple; row-varying execution inputs remain per-row reads.
       return (
-        e.place.kind === PlaceKind.Param &&
         e.offset === null &&
-        e.place.param.defaultValue?.kind !== ParamDefaultKind.Series
+        ((e.place.kind === PlaceKind.Param &&
+          e.place.param.defaultValue?.kind !== ParamDefaultKind.Series) ||
+          (e.place.kind === PlaceKind.Execution &&
+            qualifierLE(e.qualifier, Qualifier.Simple)))
       );
     case IrKind.Binary:
       return bindEvaluable(e.x) && bindEvaluable(e.y);
@@ -334,6 +357,10 @@ export function requestsOf(program: Program): readonly RequestEdge[] {
 
 export function seriesInputsOf(program: Program): readonly SeriesInput[] {
   return [...reachProgram(program).series];
+}
+
+export function executionInputsOf(program: Program): readonly ExecutionInput[] {
+  return [...reachProgram(program).execution];
 }
 
 export function slotCountOf(program: Program): number {

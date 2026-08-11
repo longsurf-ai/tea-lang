@@ -10,7 +10,7 @@ import type {
 import {isContextError} from '../../runtime/abi';
 import {yahooProvider} from './yahoo';
 
-const FULL_RANGE: RangeDemand = {from: null, to: null, bars: null};
+const FULL_RANGE: RangeDemand = {kind: 'full'};
 
 const DAY_S = 86_400;
 
@@ -102,10 +102,9 @@ describe('yahooProvider', () => {
     expect(values(series(context, 'open'))).toEqual([10, 11, 12]);
     expect(values(series(context, 'close'))).toEqual([12, 13, 14]);
     expect(values(series(context, 'volume'))).toEqual([100, 200, 300]);
-    // `time` serves bar opens in epoch ms (yahoo timestamps are seconds).
-    expect(values(series(context, 'time'))).toEqual([
-      86_400_000, 172_800_000, 259_200_000,
-    ]);
+    // Time is owned only by the execution axis, never duplicated as a
+    // provider numeric series.
+    expect(context.series('time')).toBeNull();
     const axis = context.axis;
     if (axis === null) {
       throw new Error('expected an axis');
@@ -117,6 +116,44 @@ describe('yahooProvider', () => {
     expect(axis.closeTime(0)).toBe(172_800_000);
     expect(axis.closeTime(1)).toBe(259_200_000);
     expect(axis.closeTime(2)).toBe(259_200_000 + 86_400_000);
+
+    expect(context.builtinValue({domain: 'syminfo', field: 'tickerid'})).toBe(
+      'AAPL',
+    );
+    expect(context.builtinValue({domain: 'timeframe', field: 'period'})).toBe(
+      'D',
+    );
+    expect(
+      context.builtinValue({domain: 'timeframe', field: 'multiplier'}),
+    ).toBe(1);
+    expect(context.builtinValue({domain: 'timeframe', field: 'isdaily'})).toBe(
+      true,
+    );
+    // Yahoo owns the syminfo plane. Known but unreported fields are typed
+    // empty values, not an unavailable-key `undefined`.
+    expect(
+      context.builtinValue({domain: 'syminfo', field: 'basecurrency'}),
+    ).toBeNull();
+    expect(
+      context.builtinValue({domain: 'syminfo', field: 'mintick'}),
+    ).toBeNaN();
+  });
+
+  test('projects an exact trailing range while keeping the original identity', async () => {
+    const {fetchImpl} = fetchStub(DAILY);
+    const provider = yahooProvider({fetchImpl});
+    const context = expectContext(
+      await provider.resolveContext('AAPL', 'D', {
+        kind: 'trailing-bars',
+        bars: 2,
+      }),
+    );
+    expect(context.rows).toBe(2);
+    expect(values(series(context, 'close'))).toEqual([13, 14]);
+    expect(context.axis?.time(0)).toBe(172_800_000);
+    expect(context.builtinValue({domain: 'syminfo', field: 'tickerid'})).toBe(
+      'AAPL',
+    );
   });
 
   test("timeframe 'W' requests interval=1wk over yahoo's max range", async () => {
@@ -304,11 +341,7 @@ describe('granularity honesty', () => {
         new Response(JSON.stringify(payload)),
       )) as unknown as typeof fetch;
     const provider = yahooProvider({fetchImpl: impl});
-    const result = await provider.resolveContext('SPY', 'D', {
-      from: null,
-      to: null,
-      bars: null,
-    });
+    const result = await provider.resolveContext('SPY', 'D', FULL_RANGE);
     if (!isContextError(result)) {
       throw new Error('expected a ContextError');
     }

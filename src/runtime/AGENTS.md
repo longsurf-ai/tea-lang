@@ -12,6 +12,17 @@ provisional/commit protocol, and emission flushing.
   the injected DataProvider and OutputSink.
 - The manifest is the runtime's single input besides code: ids (sid/pid/oid/
   fid/slots) are never re-derived from the Program.
+- Numeric provider series and typed execution inputs are separate carriers.
+  `ExecutionSource.domain` classifies builtin identifiers only; it never
+  implies a domain-shaped runtime object. A demanded provider metadata key
+  returning `undefined` is a bind error, while `null`, `NaN`, and `false` are
+  legitimate typed-empty/value results validated against the manifest layout.
+- Fixed historical execution has one required host `timeNow`: a finite safe
+  epoch-ms integer shared by the root and every request child. The runtime
+  never consults wall-clock time. `timenow` remains series-qualified: only
+  simple syminfo/timeframe inputs are visible during bind. Historical
+  `barstate` is derived solely from the target row/extent and never invents a
+  realtime update object.
 - execute always runs the full row from its storage-class baseline — no
   incremental update paths exist. perBar scratch resets to na; var/varip seed
   from the last committed value, re-running their init thunks until something
@@ -77,6 +88,13 @@ provisional/commit protocol, and emission flushing.
 - Every cached `(edge, symbol, timeframe)` pair consumes the shared request
   context budget, including ignored-invalid pairs cached as na; an uncached
   hard resolution failure releases its reservation.
+- Every request edge reports its four evaluated options exactly once during
+  bind. Zero `calc_bars_count` selects the full range; a positive safe integer
+  selects an exact trailing child extent. Providers receive that demand, and
+  the runtime clamps an over-returned context again at its own trust boundary.
+  Child row indices restart at zero, pre-window history/merge prefixes are the
+  result layout's typed empty, and empty nested pair components inherit the
+  current context's provider-normalized symbol/timeframe identity.
 - A dynamic edge's history lives in its result ring — "whatever the
   request returned per parent row", whichever pair served it; merged
   views are cached per (edge, pair) and never rebuilt.

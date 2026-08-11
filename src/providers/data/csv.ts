@@ -1,4 +1,4 @@
-// Purpose: CSV DataProvider — one context per file; header names map to ambient series ids, an optional epoch-ms `time` column provides the merge axis. Deterministic and offline, the substrate for golden traces and `tea run`.
+// Purpose: CSV DataProvider — one context per file; numeric headers map to data-series ids while an optional epoch-ms `time` column exclusively builds the merge/execution axis.
 
 import type {
   DataProvider,
@@ -6,6 +6,7 @@ import type {
   SeriesData,
   TimeAxis,
 } from '../../runtime/abi';
+import {projectProviderRange} from './range';
 
 export function csvProvider(text: string): DataProvider {
   const context = csvContext(text);
@@ -13,7 +14,6 @@ export function csvProvider(text: string): DataProvider {
     // A csv file has exactly one context: the default pair. Requests for a
     // named symbol belong to a registry with network drivers.
     async resolveContext(symbol, timeframe, range) {
-      void range;
       if (symbol !== '') {
         return {
           error: 'unknownSymbol' as const,
@@ -26,7 +26,7 @@ export function csvProvider(text: string): DataProvider {
           detail: `csv provider cannot resample to '${timeframe}'`,
         };
       }
-      return context;
+      return projectProviderRange(context, range);
     },
   };
 }
@@ -50,13 +50,16 @@ export function csvContext(text: string): ProviderContext {
   const rows = columns.length === 0 ? 0 : columns[0].length;
   const byId = new Map<string, SeriesData>();
   headers.forEach((header, i) => {
+    if (header === 'time') {
+      return;
+    }
     byId.set(header, {
       length: columns[i].length,
       at: (index: number) => columns[i][index],
     });
   });
 
-  // Derived ambient series every host is expected to synthesize.
+  // Derived numeric data series every host is expected to synthesize.
   const col = (id: string): SeriesData | undefined => byId.get(id);
   const derive = (
     id: string,
@@ -89,6 +92,7 @@ export function csvContext(text: string): ProviderContext {
     rows,
     axis: csvAxis(headers.indexOf('time'), columns, rows),
     series: (id: string) => byId.get(id) ?? null,
+    builtinValue: () => undefined,
   };
 }
 

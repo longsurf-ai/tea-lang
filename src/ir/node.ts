@@ -9,14 +9,12 @@ import type {
   OutputDecl,
   ParamInput,
   RequestEdge,
+  ExecutionInput,
   SeriesInput,
 } from './program';
 export {Storage} from './type';
+export type {DataSeriesId} from './builtin';
 export type {NameStorage} from './type';
-
-// Data series are bound by host name ('close', 'syminfo.tickerid'), unlike
-// compiler-internal objects which are identified by reference.
-export type DataSeriesId = string;
 
 // Minted per stateful call site: the slot selects that call site's
 // sub-frame within the caller's frame. Frames nest along the static call
@@ -134,14 +132,15 @@ export type IrBinaryOp = (typeof BINARY_OPS)[number];
 export const UNARY_OPS = [IrOp.Neg, IrOp.Not] as const;
 export type IrUnaryOp = (typeof UNARY_OPS)[number];
 
-// A readable location, referencing its declaration object directly. Names
-// are script/function variables; params are bind-time inputs; series are
-// runtime-provided per-bar sources; requests are merged child-Program
+// A readable location, referencing its declaration object directly. Names are
+// script/function variables; params are bind-time inputs; series are numeric
+// data; execution places are typed builtins; requests are merged child-Program
 // results. Only names are writable.
 export const PlaceKind = {
   Name: 'name',
   Param: 'param',
   Series: 'series',
+  Execution: 'execution',
   Request: 'request',
 } as const;
 
@@ -149,6 +148,10 @@ export type Place =
   | {readonly kind: typeof PlaceKind.Name; readonly name: Name}
   | {readonly kind: typeof PlaceKind.Param; readonly param: ParamInput}
   | {readonly kind: typeof PlaceKind.Series; readonly series: SeriesInput}
+  | {
+      readonly kind: typeof PlaceKind.Execution;
+      readonly execution: ExecutionInput;
+    }
   | {readonly kind: typeof PlaceKind.Request; readonly request: RequestEdge};
 
 // A current writable root plus canonical user-type field indices. It carries

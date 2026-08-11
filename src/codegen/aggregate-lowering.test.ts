@@ -1,4 +1,4 @@
-// Purpose: Aggregate codegen contract tests — ABI 3 layouts and rooted value updates must preserve exact types, evaluation order, and copy-out semantics.
+// Purpose: Aggregate codegen contract tests — layouts and rooted value updates must preserve exact types, evaluation order, and copy-out semantics.
 
 import {describe, expect, test} from 'bun:test';
 import {DEFAULT_COMPILE_CONFIG} from '../base/config';

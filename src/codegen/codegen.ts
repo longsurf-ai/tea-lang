@@ -16,6 +16,7 @@ import {
   ParamConstraintKind,
   ParamDefaultKind,
   type IrFunc,
+  type ExecutionInput,
   type OutputDecl,
   type ParamInput,
   type Program,
@@ -32,9 +33,16 @@ import {
   type ConstValue,
   type Type,
 } from '../ir/type';
-import {funcsOf, namesOf, requestsOf, seriesInputsOf} from '../ir/visit';
+import {
+  executionInputsOf,
+  funcsOf,
+  namesOf,
+  requestsOf,
+  seriesInputsOf,
+} from '../ir/visit';
 import type {
   DepthSpec,
+  ExecutionSpec,
   FrameLayout,
   ManifestValue,
   ModuleManifest,
@@ -76,7 +84,7 @@ export function generate(
   // arrays — code cannot live inside the JSON manifest.
   out.push(...emitter.childDecls);
   out.push('const M = {');
-  out.push('  abi: 3,');
+  out.push('  abi: 4,');
   out.push(
     `  aggregateLayouts: ${json({layouts: emitter.layouts} satisfies AggregateLayoutManifest)},`,
   );
@@ -194,9 +202,11 @@ class ModuleEmitter {
 class Generator {
   private readonly funcs: readonly IrFunc[];
   private readonly series: readonly SeriesInput[];
+  private readonly executions: readonly ExecutionInput[];
   private readonly requests: readonly RequestEdge[];
   private readonly nameSlots = new Map<Name, {fid: number; slot: number}>();
   private readonly seriesIds = new Map<SeriesInput, number>();
+  private readonly executionIds = new Map<ExecutionInput, number>();
   private readonly paramIds = new Map<ParamInput, number>();
   private readonly paramSeriesIds = new Map<ParamInput, number>();
   private readonly outputIds = new Map<OutputDecl, number>();
@@ -217,6 +227,7 @@ class Generator {
   ) {
     this.funcs = funcsOf(program);
     this.series = seriesInputsOf(program);
+    this.executions = executionInputsOf(program);
     this.requests = requestsOf(program);
     this.requests.forEach((edge, rid) => {
       this.requestIds.set(edge, rid);
@@ -228,6 +239,9 @@ class Generator {
     });
 
     this.series.forEach((s, sid) => this.seriesIds.set(s, sid));
+    this.executions.forEach((execution, eid) =>
+      this.executionIds.set(execution, eid),
+    );
     let nextSid = this.series.length;
     // Bind-time params are compilation-global: a request child declares no
     // params of its own and references the PARENT's ParamInput objects, so
@@ -293,6 +307,7 @@ class Generator {
     return {
       nameSlots: this.nameSlots,
       seriesIds: this.seriesIds,
+      executionIds: this.executionIds,
       paramIds: this.paramIds,
       paramSeriesIds: this.paramSeriesIds,
       outputIds: this.outputIds,
@@ -383,7 +398,8 @@ class Generator {
     return [];
   }
 
-  // Input-time expressions may use ordinary immutable aliases and UDFs.
+  // Bind-time expressions may use immutable input/simple aliases and the
+  // context-constant execution inputs those aliases depend on.
   // Evaluate their top-level writes against a provisional program frame,
   // report the resulting depths, then consume them for the remaining
   // host-facing bind contracts. The runtime rebuilds the final frame with
@@ -391,16 +407,22 @@ class Generator {
   private lowerBind(): string[] {
     const ctx = this.ctxFor(0);
     const lines: string[] = [];
-    const inputPrelude = this.program.body.filter(
+    const bindPrelude = this.program.body.filter(
       (stmt): stmt is IrStmt =>
         stmt.kind === IrKind.WriteName &&
-        qualifierLE(stmt.name.qualifier, Qualifier.Input),
+        qualifierLE(stmt.name.qualifier, Qualifier.Simple),
     );
-    lowerStmts(inputPrelude, lines, ctx);
+    lowerStmts(bindPrelude, lines, ctx);
     this.series.forEach((s, sid) => {
       if (s.depth.kind === DepthKind.Bound) {
         const expr = lowerExpr(s.depth.expr, lines, ctx);
         lines.push(`rt.bindSeriesDepth(${sid}, (${expr}));`);
+      }
+    });
+    this.executions.forEach((execution, eid) => {
+      if (execution.depth.kind === DepthKind.Bound) {
+        const expr = lowerExpr(execution.depth.expr, lines, ctx);
+        lines.push(`rt.bindExecutionDepth(${eid}, (${expr}));`);
       }
     });
     for (const [param, sid] of this.paramSeriesIds) {
@@ -412,8 +434,8 @@ class Generator {
     for (const [name, where] of this.nameSlots) {
       if (name.depth.kind === DepthKind.Bound) {
         const expr = lowerExpr(name.depth.expr, lines, ctx);
-        // The depth pass normalizes function-frame input dependencies back to
-        // root bind expressions, including root-owned UDF call slots.
+        // The depth pass normalizes function-frame bind dependencies back to
+        // root expressions, including root-owned UDF call slots.
         lines.push(`rt.bindDepth(${where.fid}, ${where.slot}, (${expr}));`);
       }
     }
@@ -439,16 +461,25 @@ class Generator {
         );
       });
     });
-    // Static request contexts: bind resolves the pair, runs the child, and
-    // prepares the merged view before row 0. Dynamic edges declare nothing
-    // here — their pairs are runtime values.
+    // Every edge binds its options exactly once. A static edge separately
+    // binds its context pair; a dynamic edge evaluates that pair per row.
     this.requests.forEach((edge, rid) => {
-      if (edge.merge.currency !== null) {
-        return unimplemented('codegen: request currency conversion');
-      }
-      if (edge.merge.calcBarsCount !== null) {
-        return unimplemented('codegen: request calc_bars_count');
-      }
+      const [gaps, lookahead, ignoreInvalidSymbol, calcBarsCount] =
+        captureArguments(
+          [
+            edge.merge.gaps,
+            edge.merge.lookahead,
+            edge.merge.ignoreInvalidSymbol,
+            edge.merge.calcBarsCount,
+          ],
+          edge.optionArgumentEvaluationOrder,
+          lines,
+          ctx,
+          'request options',
+        );
+      lines.push(
+        `rt.bindRequestOptions(${rid}, (${gaps}), (${lookahead}), (${ignoreInvalidSymbol}), (${calcBarsCount}));`,
+      );
       if (this.dynamicRequests.has(edge)) {
         return;
       }
@@ -538,6 +569,12 @@ class Generator {
       series.push({id: null, depth: depthSpec(param.depth)});
     }
 
+    const execution: ExecutionSpec[] = this.executions.map(input => ({
+      source: input.source,
+      layout: this.emitter.layoutOf(input.type),
+      depth: depthSpec(input.depth),
+    }));
+
     const params: ParamSpec[] = this.program.params.map(param => ({
       name: param.name,
       title: param.title,
@@ -600,9 +637,6 @@ class Generator {
       return {
         merge: {
           mode: MergeMode.Sample,
-          gaps: edge.merge.gaps,
-          lookahead: edge.merge.lookahead,
-          ignoreInvalidSymbol: edge.merge.ignoreInvalidSymbol,
         },
         depth: depthSpec(edge.depth),
         resultSlot: children[rid].resultSlot,
@@ -611,7 +645,7 @@ class Generator {
       };
     });
 
-    return {series, params, outputs, frames, requests};
+    return {series, execution, params, outputs, frames, requests};
   }
 }
 

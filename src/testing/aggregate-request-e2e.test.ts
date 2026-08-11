@@ -91,7 +91,7 @@ describe('aggregate requests end to end', () => {
     }
 
     const module = loadModule(result.js);
-    expect(module.abi).toBe(3);
+    expect(module.abi).toBe(4);
     const request = module.manifest.requests[0];
     const child = module.requests[0];
     if (request === undefined || child === undefined) {
@@ -116,6 +116,7 @@ describe('aggregate requests end to end', () => {
         X: csvContext(CHILD),
       }),
       sink,
+      timeNow: 0,
       // The child allocates exactly three array backings. The parent can read
       // all of them only if the merged view owns those refs in the shared Heap.
       maxHeapStorageCells: 3,
@@ -171,6 +172,7 @@ describe('aggregate requests end to end', () => {
       params: {},
       provider,
       sink,
+      timeNow: 0,
     });
     await bound.runAll();
 
@@ -220,7 +222,12 @@ describe('aggregate requests end to end', () => {
       },
     };
     const sink = new Sink();
-    const bound = await bind(module, {params: {}, provider, sink});
+    const bound = await bind(module, {
+      params: {},
+      provider,
+      sink,
+      timeNow: 0,
+    });
     await bound.runAll();
 
     expect(resolvedPairs).toEqual([

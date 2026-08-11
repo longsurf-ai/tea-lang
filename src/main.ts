@@ -130,6 +130,9 @@ tea
           : new TableSink(text => console.log(text));
       const sink = table ?? new TraceSink(line => console.log(line));
       try {
+        // The CLI is the sole wall-clock boundary. Runtime execution receives
+        // this frozen value so historical replay never calls Date.now().
+        const timeNow = Date.now();
         const exec = await bind(module, {
           params: {},
           provider: builtinSources({
@@ -137,6 +140,7 @@ tea
             config: process.env,
           }),
           sink,
+          timeNow,
         });
         await exec.runAll();
         table?.flush();

@@ -5,16 +5,31 @@ import {Storage} from '../ir/node';
 import {
   BindError,
   type AggregateLayoutManifest,
+  type BindInputs,
   type DataProvider,
+  type ExecutionSpec,
   type ModuleCode,
   type OutputSink,
   type ProviderContext,
+  type RangeDemand,
   type SeriesData,
   type TeaModule,
   type TimeAxis,
   type Value,
 } from './abi';
-import {bind} from './js-runtime';
+import {bind as bindRuntime} from './js-runtime';
+
+const TEST_TIME_NOW = 1_800_000_000_000;
+
+function bind(
+  module: TeaModule,
+  inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
+) {
+  return bindRuntime(module, {
+    ...inputs,
+    timeNow: inputs.timeNow ?? TEST_TIME_NOW,
+  });
+}
 
 const NUMBER_LAYOUT = 0;
 const TEST_LAYOUTS = {
@@ -42,7 +57,12 @@ function provider(
     rows,
     axis,
     series: (id: string) => series[id] ?? null,
+    builtinValue: () => undefined,
   };
+  return {resolveContext: () => Promise.resolve(context)};
+}
+
+function providerFromContext(context: ProviderContext): DataProvider {
   return {resolveContext: () => Promise.resolve(context)};
 }
 
@@ -85,10 +105,11 @@ function num(v: Value): number {
 // plot(e)
 
 const EMA_MODULE: TeaModule = {
-  abi: 3,
+  abi: 4,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
+    execution: [],
     params: [],
     outputs: [PLOT_OUTPUT],
     requests: [],
@@ -137,10 +158,11 @@ describe('historical execution', () => {
 // counter() => var c = 0; c := c + 1; c
 
 const COUNTER_MODULE: TeaModule = {
-  abi: 3,
+  abi: 4,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
+    execution: [],
     params: [],
     outputs: [
       {
@@ -206,10 +228,11 @@ describe('frames', () => {
 // x = close; plot(x[2])
 
 const HISTORY_MODULE: TeaModule = {
-  abi: 3,
+  abi: 4,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
+    execution: [],
     params: [],
     outputs: [PLOT_OUTPUT],
     requests: [],
@@ -260,10 +283,11 @@ describe('rings', () => {
 // x = close                       (perBar)
 
 const TICK_MODULE: TeaModule = {
-  abi: 3,
+  abi: 4,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
+    execution: [],
     params: [],
     outputs: [
       {
@@ -385,10 +409,11 @@ describe('provisional protocol', () => {
 // hline(level)  +  a bound-depth local read at offset len
 
 const BIND_MODULE: TeaModule = {
-  abi: 3,
+  abi: 4,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
+    execution: [],
     params: [
       {
         name: 'level',
@@ -496,6 +521,293 @@ describe('binding', () => {
   });
 });
 
+describe('typed execution inputs', () => {
+  const INT_LAYOUT = 0;
+  const BOOL_LAYOUT = 1;
+  const STRING_LAYOUT = 2;
+  const layouts = {
+    layouts: [
+      {kind: 'number', numeric: 'int'},
+      {kind: 'boolean'},
+      {kind: 'nullable-scalar', scalar: 'string'},
+    ],
+  } as const satisfies AggregateLayoutManifest;
+  const execution = [
+    {
+      source: {domain: 'time', field: 'time'},
+      layout: INT_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'time', field: 'time_close'},
+      layout: INT_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'time', field: 'timenow'},
+      layout: INT_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'bar', field: 'bar_index'},
+      layout: INT_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'bar', field: 'last_bar_index'},
+      layout: INT_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'barstate', field: 'isfirst'},
+      layout: BOOL_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'barstate', field: 'islast'},
+      layout: BOOL_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'barstate', field: 'ishistory'},
+      layout: BOOL_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'barstate', field: 'isrealtime'},
+      layout: BOOL_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'barstate', field: 'isconfirmed'},
+      layout: BOOL_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'barstate', field: 'isnew'},
+      layout: BOOL_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'syminfo', field: 'tickerid'},
+      layout: STRING_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+    {
+      source: {domain: 'timeframe', field: 'period'},
+      layout: STRING_LAYOUT,
+      depth: {kind: 'const', bars: 1},
+    },
+  ] as const satisfies readonly ExecutionSpec[];
+
+  function executionContext(
+    builtinValue: ProviderContext['builtinValue'] = source =>
+      source.domain === 'syminfo' && source.field === 'tickerid'
+        ? 'NASDAQ:AAPL'
+        : source.domain === 'timeframe' && source.field === 'period'
+          ? 'D'
+          : undefined,
+  ): ProviderContext {
+    return {
+      rows: 3,
+      axis: regularAxis(100, 10, 3),
+      series: () => null,
+      builtinValue,
+    };
+  }
+
+  function executionModule(): TeaModule {
+    return {
+      abi: 4,
+      aggregateLayouts: layouts,
+      manifest: {
+        series: [],
+        execution,
+        params: [],
+        outputs: [
+          {
+            effect: 'probe',
+            staticArgs: [],
+            channels: execution.map((_, index) => ({
+              name: `value${index}`,
+              type: 'value',
+            })),
+          },
+          {
+            effect: 'history',
+            staticArgs: [],
+            channels: [
+              {name: 'time', type: 'int'},
+              {name: 'barstate', type: 'bool'},
+              {name: 'tickerid', type: 'string'},
+              {name: 'timenow', type: 'int'},
+            ],
+          },
+        ],
+        requests: [],
+        frames: [{locals: [], subs: []}],
+      },
+      requests: [],
+      init() {},
+      bind() {},
+      inits: {},
+      funcs: {},
+      main(rt) {
+        execution.forEach((_, eid) => rt.emit(0, eid, rt.execution(eid, 0)));
+        rt.emit(1, 0, rt.execution(0, 1));
+        rt.emit(1, 1, rt.execution(7, 1));
+        rt.emit(1, 2, rt.execution(11, 1));
+        rt.emit(1, 3, rt.execution(2, 1));
+      },
+    };
+  }
+
+  test('resolves row, extent, context, and fixed-history values exactly', async () => {
+    const sink = new RecordingSink();
+    const bound = await bind(executionModule(), {
+      params: {},
+      provider: providerFromContext(executionContext()),
+      sink,
+      timeNow: 1_777_777_777_777,
+    });
+    await bound.runAll();
+    const current = sink.emits.filter(event => event.oid === 0);
+    expect(current.map(event => event.channels.slice(0, 5))).toEqual([
+      [100, 110, 1_777_777_777_777, 0, 2],
+      [110, 120, 1_777_777_777_777, 1, 2],
+      [120, 130, 1_777_777_777_777, 2, 2],
+    ]);
+    expect(current.map(event => event.channels.slice(5, 11))).toEqual([
+      [true, false, true, false, true, true],
+      [false, false, true, false, true, true],
+      [false, true, true, false, true, true],
+    ]);
+    expect(current.map(event => event.channels.slice(11))).toEqual([
+      ['NASDAQ:AAPL', 'D'],
+      ['NASDAQ:AAPL', 'D'],
+      ['NASDAQ:AAPL', 'D'],
+    ]);
+    const history = sink.emits.filter(event => event.oid === 1);
+    expect(history[0].channels[0]).toBeNaN();
+    expect(history[0].channels.slice(1, 3)).toEqual([false, null]);
+    expect(history[0].channels[3]).toBeNaN();
+    expect(history.slice(1).map(event => event.channels)).toEqual([
+      [100, true, 'NASDAQ:AAPL', 1_777_777_777_777],
+      [110, true, 'NASDAQ:AAPL', 1_777_777_777_777],
+    ]);
+  });
+
+  test('simple context metadata is available during bind', async () => {
+    const seen: Value[] = [];
+    const base = executionModule();
+    const module: TeaModule = {
+      ...base,
+      bind(rt) {
+        seen.push(rt.execution(11, 0), rt.execution(12, 0));
+      },
+    };
+    await bind(module, {
+      params: {},
+      provider: providerFromContext(executionContext()),
+      sink: new RecordingSink(),
+      timeNow: 1_777_777_777_777,
+    });
+    expect(seen).toEqual(['NASDAQ:AAPL', 'D']);
+  });
+
+  test('series-qualified execution inputs fail loudly during bind', async () => {
+    for (const eid of [0, 2, 3, 5]) {
+      const base = executionModule();
+      const module: TeaModule = {
+        ...base,
+        bind(rt) {
+          rt.execution(eid, 0);
+        },
+      };
+      await expect(
+        bind(module, {
+          params: {},
+          provider: providerFromContext(executionContext()),
+          sink: new RecordingSink(),
+          timeNow: 1_777_777_777_777,
+        }),
+      ).rejects.toThrow('is not bind-visible');
+    }
+  });
+
+  test('missing demanded metadata and a missing demanded axis fail at bind', async () => {
+    await expect(
+      bind(executionModule(), {
+        params: {},
+        provider: providerFromContext(executionContext(() => undefined)),
+        sink: new RecordingSink(),
+      }),
+    ).rejects.toThrow("builtin 'syminfo.tickerid' is not provided");
+
+    const withoutAxis = {...executionContext(), axis: null};
+    await expect(
+      bind(executionModule(), {
+        params: {},
+        provider: providerFromContext(withoutAxis),
+        sink: new RecordingSink(),
+      }),
+    ).rejects.toThrow("builtin 'time' requires a time axis");
+  });
+
+  test('provider typed empty metadata is a value, not missing', async () => {
+    const base = executionModule();
+    const module: TeaModule = {
+      ...base,
+      manifest: {
+        ...base.manifest,
+        execution: [execution[11]],
+        outputs: [
+          {
+            effect: 'probe',
+            staticArgs: [],
+            channels: [{name: 'tickerid', type: 'string'}],
+          },
+        ],
+      },
+      main(rt) {
+        rt.emit(0, 0, rt.execution(0, 0));
+      },
+    };
+    const sink = new RecordingSink();
+    const bound = await bind(module, {
+      params: {},
+      provider: providerFromContext(executionContext(() => null)),
+      sink,
+    });
+    await bound.runAll();
+    expect(sink.emits.map(event => event.channels[0])).toEqual([
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  test('timeNow rejects na, infinities, fractions, and unsafe integers', async () => {
+    for (const invalid of [
+      undefined as unknown as number,
+      NaN,
+      Infinity,
+      -Infinity,
+      1.5,
+      2 ** 53,
+    ]) {
+      await expect(
+        bindRuntime(executionModule(), {
+          params: {},
+          provider: providerFromContext(executionContext()),
+          sink: new RecordingSink(),
+          timeNow: invalid,
+        }),
+      ).rejects.toThrow('timeNow must be a finite safe epoch-ms integer');
+    }
+  });
+});
+
 // ---- requests ---------------------------------------------------------------
 // r = request.security("X", "", close * scale)   (child reads a parent param)
 // plot(r), plot(r[1])
@@ -513,7 +825,12 @@ function context(
   axis: ReturnType<typeof regularAxis> | null,
 ): ProviderContext {
   const rows = Math.max(0, ...Object.values(series).map(s => s.length));
-  return {rows, axis, series: (id: string) => series[id] ?? null};
+  return {
+    rows,
+    axis,
+    series: (id: string) => series[id] ?? null,
+    builtinValue: () => undefined,
+  };
 }
 
 // Routes by symbol; unknown symbols are typed context errors.
@@ -532,6 +849,7 @@ function contexts(byId: Record<string, ProviderContext>): DataProvider {
 const CHILD_MODULE = {
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
+    execution: [],
     params: [],
     outputs: [],
     requests: [],
@@ -562,16 +880,27 @@ const CHILD_MODULE = {
   },
 } satisfies ModuleCode;
 
-function requestModule(merge: {
-  gaps: boolean;
-  lookahead: boolean;
-  ignoreInvalidSymbol: boolean;
-}): TeaModule {
+function requestModule(
+  overrides: Partial<{
+    gaps: boolean;
+    lookahead: boolean;
+    ignoreInvalidSymbol: boolean;
+    calcBarsCount: number;
+  }>,
+): TeaModule {
+  const options = {
+    gaps: false,
+    lookahead: false,
+    ignoreInvalidSymbol: false,
+    calcBarsCount: 0,
+    ...overrides,
+  };
   return {
-    abi: 3,
+    abi: 4,
     aggregateLayouts: TEST_LAYOUTS,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
+      execution: [],
       params: [
         {
           name: 'scale',
@@ -601,7 +930,7 @@ function requestModule(merge: {
       ],
       requests: [
         {
-          merge: {mode: 'sample', ...merge},
+          merge: {mode: 'sample'},
           depth: {kind: 'const', bars: 1},
           resultSlot: 0,
           layout: NUMBER_LAYOUT,
@@ -613,6 +942,13 @@ function requestModule(merge: {
     requests: [CHILD_MODULE],
     init() {},
     bind(rt) {
+      rt.bindRequestOptions(
+        0,
+        options.gaps,
+        options.lookahead,
+        options.ignoreInvalidSymbol,
+        options.calcBarsCount,
+      );
       rt.bindRequest(0, 'X', '');
     },
     inits: {},
@@ -632,14 +968,11 @@ describe('requests', () => {
 
   test('a child runs on its own context and merges committed results', async () => {
     const sink = new RecordingSink();
-    const bound = await bind(
-      requestModule({
-        gaps: false,
-        lookahead: false,
-        ignoreInvalidSymbol: false,
-      }),
-      {params: {}, provider: contexts({'': parent(), X: child()}), sink},
-    );
+    const bound = await bind(requestModule({}), {
+      params: {},
+      provider: contexts({'': parent(), X: child()}),
+      sink,
+    });
     await bound.runAll();
     // Child values scale by the PARENT's param default (10): 100, 200, 300.
     // lookahead_off over 2-span child bars: closed at t=2,4,6.
@@ -659,6 +992,171 @@ describe('requests', () => {
       100,
       200,
       200,
+    ]);
+  });
+
+  test('calc_bars_count zero is full; positive is an exact defensively-clamped tail; oversized stays full', async () => {
+    async function valuesFor(calcBarsCount: number): Promise<{
+      readonly values: readonly Value[];
+      readonly ranges: readonly RangeDemand[];
+    }> {
+      const ranges: RangeDemand[] = [];
+      const byId = {'': parent(), X: child()};
+      const provider: DataProvider = {
+        resolveContext(symbol, _timeframe, range) {
+          ranges.push(range);
+          // Deliberately over-return every context. JSRuntime must still
+          // expose the exact trailing child extent it requested.
+          return Promise.resolve(
+            byId[symbol as keyof typeof byId] ?? {
+              error: 'unknownSymbol' as const,
+              detail: `no context '${symbol}'`,
+            },
+          );
+        },
+      };
+      const sink = new RecordingSink();
+      const bound = await bind(requestModule({calcBarsCount}), {
+        params: {},
+        provider,
+        sink,
+      });
+      await bound.runAll();
+      return {
+        values: sink.emits.map(event => event.channels[0]),
+        ranges,
+      };
+    }
+
+    const full = await valuesFor(0);
+    expect(full.values).toEqual([NaN, 100, 100, 200, 200, 300]);
+    expect(full.ranges).toEqual([{kind: 'full'}, {kind: 'full'}]);
+
+    const trailing = await valuesFor(2);
+    expect(trailing.values).toEqual([NaN, NaN, NaN, 200, 200, 300]);
+    expect(trailing.ranges).toEqual([
+      {kind: 'full'},
+      {kind: 'trailing-bars', bars: 2},
+    ]);
+
+    const oversized = await valuesFor(10);
+    expect(oversized.values).toEqual(full.values);
+    expect(oversized.ranges).toEqual([
+      {kind: 'full'},
+      {kind: 'trailing-bars', bars: 10},
+    ]);
+  });
+
+  test('request options are mandatory, exact, and reject invalid bound values before child resolution', async () => {
+    const invalidCounts = [NaN, Infinity, -Infinity, -1, 1.5, 2 ** 53];
+    for (const calcBarsCount of invalidCounts) {
+      const calls: string[] = [];
+      const provider: DataProvider = {
+        resolveContext(symbol) {
+          calls.push(symbol);
+          return Promise.resolve(symbol === '' ? parent() : child());
+        },
+      };
+      await expect(
+        bind(requestModule({calcBarsCount}), {
+          params: {},
+          provider,
+          sink: new RecordingSink(),
+        }),
+      ).rejects.toThrow(
+        'calc_bars_count must bind to a non-negative safe integer',
+      );
+      expect(calls).toEqual(['']);
+    }
+
+    const base = requestModule({});
+    const missingOptions: TeaModule = {
+      ...base,
+      bind(rt) {
+        rt.bindRequest(0, 'X', '');
+      },
+    };
+    await expect(
+      bind(missingOptions, {
+        params: {},
+        provider: contexts({'': parent(), X: child()}),
+        sink: new RecordingSink(),
+      }),
+    ).rejects.toThrow('request 0 was never given bind options');
+
+    const invalidBoolean: TeaModule = {
+      ...base,
+      bind(rt) {
+        rt.bindRequestOptions(0, 'false', false, false, 0);
+        rt.bindRequest(0, 'X', '');
+      },
+    };
+    await expect(
+      bind(invalidBoolean, {
+        params: {},
+        provider: contexts({'': parent(), X: child()}),
+        sink: new RecordingSink(),
+      }),
+    ).rejects.toThrow(
+      'gaps, lookahead, and ignore_invalid_symbol must bind to bool values',
+    );
+  });
+
+  test('a bounded child restarts bar_index at zero inside the retained tail', async () => {
+    const barIndexChild = {
+      manifest: {
+        series: [],
+        execution: [
+          {
+            source: {domain: 'bar', field: 'bar_index'},
+            layout: NUMBER_LAYOUT,
+            depth: {kind: 'none'},
+          },
+        ],
+        params: [],
+        outputs: [],
+        requests: [],
+        frames: [
+          {
+            locals: [
+              {
+                storage: Storage.PerBar,
+                depth: {kind: 'none'},
+                layout: NUMBER_LAYOUT,
+              },
+            ],
+            subs: [],
+          },
+        ],
+      },
+      requests: [],
+      init() {},
+      bind() {},
+      inits: {},
+      funcs: {},
+      main(
+        rt: Parameters<TeaModule['main']>[0],
+        fr: Parameters<TeaModule['main']>[1],
+      ) {
+        rt.write(fr, 0, rt.execution(0, 0));
+      },
+    } as const satisfies ModuleCode;
+    const base = requestModule({calcBarsCount: 2});
+    const module: TeaModule = {...base, requests: [barIndexChild]};
+    const sink = new RecordingSink();
+    const bound = await bind(module, {
+      params: {},
+      provider: contexts({'': parent(), X: child()}),
+      sink,
+    });
+    await bound.runAll();
+    expect(sink.emits.map(event => event.channels[0])).toEqual([
+      NaN,
+      NaN,
+      NaN,
+      0,
+      0,
+      1,
     ]);
   });
 
@@ -685,16 +1183,7 @@ describe('requests', () => {
       provider: contexts({'': parent()}),
       sink: new RecordingSink(),
     };
-    expect(() =>
-      bind(
-        requestModule({
-          gaps: false,
-          lookahead: false,
-          ignoreInvalidSymbol: false,
-        }),
-        inputs,
-      ),
-    ).toThrow(BindError);
+    expect(() => bind(requestModule({}), inputs)).toThrow(BindError);
 
     const sink = new RecordingSink();
     const bound = await bind(
@@ -706,11 +1195,7 @@ describe('requests', () => {
   });
 
   test('invalid request offsets cannot expose future or undefined values', async () => {
-    const module = requestModule({
-      gaps: false,
-      lookahead: false,
-      ignoreInvalidSymbol: false,
-    });
+    const module = requestModule({});
     const probing: TeaModule = {
       ...module,
       main(rt) {
@@ -732,19 +1217,138 @@ describe('requests', () => {
   test('merge without a time axis on either context is a BindError', async () => {
     const noAxis = context({close: new ArraySeries([1, 2, 3])}, null);
     expect(() =>
-      bind(
-        requestModule({
-          gaps: false,
-          lookahead: false,
-          ignoreInvalidSymbol: false,
-        }),
-        {
-          params: {},
-          provider: contexts({'': noAxis, X: child()}),
-          sink: new RecordingSink(),
-        },
-      ),
+      bind(requestModule({}), {
+        params: {},
+        provider: contexts({'': noAxis, X: child()}),
+        sink: new RecordingSink(),
+      }),
     ).toThrow('time axis');
+  });
+
+  test('nested empty request args inherit the child provider-normalized identity', async () => {
+    const innerChild = {
+      manifest: {
+        series: [{id: 'close', depth: {kind: 'none'}}],
+        execution: [],
+        params: [],
+        outputs: [],
+        requests: [],
+        frames: [
+          {
+            locals: [
+              {
+                storage: Storage.PerBar,
+                depth: {kind: 'none'},
+                layout: NUMBER_LAYOUT,
+              },
+            ],
+            subs: [],
+          },
+        ],
+      },
+      requests: [],
+      init() {},
+      bind() {},
+      inits: {},
+      funcs: {},
+      main(
+        rt: Parameters<TeaModule['main']>[0],
+        fr: Parameters<TeaModule['main']>[1],
+      ) {
+        rt.write(fr, 0, rt.series(0, 0));
+      },
+    } as const satisfies ModuleCode;
+    const outerChild = {
+      manifest: {
+        series: [],
+        execution: [],
+        params: [],
+        outputs: [],
+        requests: [
+          {
+            merge: {mode: 'sample'},
+            depth: {kind: 'none'},
+            resultSlot: 0,
+            layout: NUMBER_LAYOUT,
+            dynamic: false,
+          },
+        ],
+        frames: [
+          {
+            locals: [
+              {
+                storage: Storage.PerBar,
+                depth: {kind: 'none'},
+                layout: NUMBER_LAYOUT,
+              },
+            ],
+            subs: [],
+          },
+        ],
+      },
+      requests: [innerChild],
+      init() {},
+      bind(rt: Parameters<TeaModule['bind']>[0]) {
+        rt.bindRequestOptions(0, false, false, false, 0);
+        rt.bindRequest(0, '', '');
+      },
+      inits: {},
+      funcs: {},
+      main(
+        rt: Parameters<TeaModule['main']>[0],
+        fr: Parameters<TeaModule['main']>[1],
+      ) {
+        rt.write(fr, 0, rt.request(0, 0));
+      },
+    } as const satisfies ModuleCode;
+    const base = requestModule({});
+    const module: TeaModule = {...base, requests: [outerChild]};
+    const calls: string[] = [];
+    const rootContext = context(
+      {close: new ArraySeries([1])},
+      regularAxis(0, 1, 1),
+    );
+    const outerContext: ProviderContext = {
+      rows: 1,
+      axis: regularAxis(0, 1, 1),
+      series: () => null,
+      builtinValue(source) {
+        if (source.domain === 'syminfo' && source.field === 'tickerid') {
+          return 'CANON:X';
+        }
+        if (source.domain === 'timeframe' && source.field === 'period') {
+          return 'M';
+        }
+        return undefined;
+      },
+    };
+    const innerContext = context(
+      {close: new ArraySeries([7])},
+      regularAxis(0, 1, 1),
+    );
+    const provider: DataProvider = {
+      resolveContext(symbol, timeframe) {
+        calls.push(`${symbol}|${timeframe}`);
+        if (symbol === '') {
+          return Promise.resolve(rootContext);
+        }
+        if (symbol === 'X' && timeframe === '') {
+          return Promise.resolve(outerContext);
+        }
+        if (symbol === 'CANON:X' && timeframe === 'M') {
+          return Promise.resolve(innerContext);
+        }
+        return Promise.resolve({
+          error: 'unknownSymbol' as const,
+          detail: `unexpected pair '${symbol}','${timeframe}'`,
+        });
+      },
+    };
+    const sink = new RecordingSink();
+    const bound = await bind(module, {params: {}, provider, sink});
+    await bound.runAll();
+    expect(calls).toEqual(['|', 'X|', 'CANON:X|M']);
+    expect(sink.emits.map(event => event.channels[0])).toEqual([7]);
   });
 });
 
@@ -754,6 +1358,7 @@ describe('requests', () => {
 const IDENTITY_CHILD = {
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
+    execution: [],
     params: [],
     outputs: [],
     requests: [],
@@ -784,10 +1389,11 @@ const IDENTITY_CHILD = {
 } satisfies ModuleCode;
 
 const DYNAMIC_MODULE: TeaModule = {
-  abi: 3,
+  abi: 4,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
+    execution: [],
     params: [],
     outputs: [
       {
@@ -803,9 +1409,6 @@ const DYNAMIC_MODULE: TeaModule = {
       {
         merge: {
           mode: 'sample',
-          gaps: false,
-          lookahead: false,
-          ignoreInvalidSymbol: false,
         },
         depth: {kind: 'const', bars: 1},
         resultSlot: 0,
@@ -817,7 +1420,9 @@ const DYNAMIC_MODULE: TeaModule = {
   },
   requests: [IDENTITY_CHILD],
   init() {},
-  bind() {},
+  bind(rt) {
+    rt.bindRequestOptions(0, false, false, false, 0);
+  },
   inits: {},
   funcs: {},
   main(rt) {
@@ -880,12 +1485,8 @@ describe('dynamic requests', () => {
   test('ignored-invalid dynamic pairs still consume the unique-context budget', async () => {
     const invalidPairs: TeaModule = {
       ...DYNAMIC_MODULE,
-      manifest: {
-        ...DYNAMIC_MODULE.manifest,
-        requests: DYNAMIC_MODULE.manifest.requests.map(request => ({
-          ...request,
-          merge: {...request.merge, ignoreInvalidSymbol: true},
-        })),
+      bind(rt) {
+        rt.bindRequestOptions(0, false, false, true, 0);
       },
     };
     const bound = await bind(invalidPairs, {

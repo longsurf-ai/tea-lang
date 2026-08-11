@@ -1,13 +1,17 @@
 Program version=1
 param len: int title="Length" default=9 depth=none
-series syminfo.tickerid: simple string depth=none
 series close: series float depth=none
+execution syminfo.tickerid: simple string depth=none
 output[0] indicator static{title="Request"}
 output[1] plot static{title="Gap"} channels{series: float}
 output[2] plot static{title="PrevDaily"} channels{series: float}
-request[0] mode=sample context_order=0,1 result=float depth=none
-  symbol: HistRead series:syminfo.tickerid: simple string
+request[0] mode=sample context_order=0,1 option_order=0,1,2,3 result=float depth=const(1)
+  symbol: HistRead execution:syminfo.tickerid: simple string
   timeframe: Const "D": const string
+  gaps: Const false: const bool
+  lookahead: Const false: const bool
+  ignore_invalid_symbol: Const false: const bool
+  calc_bars_count: Const 0: const int
   child:
     Program version=1 slots=1
     series close: series float depth=none
@@ -45,18 +49,15 @@ request[0] mode=sample context_order=0,1 result=float depth=none
         CallFunc ta.ema slot=0: series float
           HistRead series:close: series float
           HistRead param:len: input int
-name daily: perBar series float depth=const(1)
 name gap: perBar series float depth=none
 name prev: perBar series float depth=none
 body:
-  WriteName daily
-    HistRead request[0]: series float
   WriteName gap
     Binary Sub: series float
       HistRead series:close: series float
-      HistRead name:daily: series float
+      HistRead request[0]: series float
   WriteName prev
-    HistRead name:daily: series float
+    HistRead request[0]: series float
       offset: Const 1: const int
   Emit output[1] eval=[0]
     HistRead name:gap: series float

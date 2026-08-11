@@ -31,6 +31,14 @@ user-value and collection copying, mutable-method receiver writeback, and
 values derived from [memory-model.md](memory-model.md), not copied runtime
 output.
 
+The `typed-execution-range` compile-through case locks the fixed-history
+contract for `time`, `time_close`, `bar_index`, `last_bar_index`, `timenow`,
+and every `barstate.*` flag, including one-bar historical reads. The harness
+binds a deterministic `timenow` value of `1700000000000`. Its empty
+`request.security` symbol/timeframe pair inherits the CSV context, while
+`calc_bars_count = 2` restricts the child to the final two bars, restarts its
+bar indices at zero, and leaves the parent prefix typed-empty.
+
 ## Reference ownership
 
 Differential references must be independent of Tea. The initial common subset

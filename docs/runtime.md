@@ -45,10 +45,11 @@ runtime artifact (`tea build` output, cacheable, serializable):
 
 ```js
 export default {
-  abi: 3,
+  abi: 4,
   aggregateLayouts: {layouts: [...]},     // root-wide LayoutId registry
   manifest: {
-    series:  ['close', ...],              // sid -> host id (ambient + input.source params)
+    series:  [{id, depth}, ...],          // sid -> numeric provider column
+    execution: [{source, layout, depth}, ...], // eid -> typed execution builtin
     params:  [{name, type, control, defaultValue, constraints, // control = UI flavor
                enumType, group, inline, tooltip, confirm,
                display, seriesSid?}, ...],
@@ -57,14 +58,14 @@ export default {
       {locals: [{storage, depth, layout}, ...], // slot-indexed; exact ValueLayout
        subs:   [{fid}, ...]},             // call-site-slot-indexed
     ],
-    requests: [{merge, depth, resultSlot, layout}, ...], // rid-indexed metadata
+    requests: [{merge: {mode}, depth, resultSlot, layout}, ...], // rid-indexed metadata
   },
   requests: [M1, ...],           // rid-indexed child modules (same shape,
                                  // sibling consts — code cannot live in the
                                  // JSON manifest)
   init(rt) {...},                // reserved frame-free preparation
   bind(rt, fr) {...},            // input aliases/UDFs, depth reports, active,
-                                 // output args, and static request pairs
+                                 // output args, request options, and static pairs
   inits: {(fid, slot): (rt, fr) => v},   // var/varip first-execution thunks
   funcs: {fid: (rt, fr, ...args) => v},
   main(rt, fr) {...},            // the per-row body (fr = program frame)
@@ -76,9 +77,10 @@ is a `ModuleCode` that inherits the same registry, Heap, and request-context
 budget from `SharedExecutionState`; a child cannot define a second layout-id
 namespace or move storage references across arenas.
 
-Dense ids (`sid`, `pid`, `oid`, `fid`, local slots) are assigned by the
+Dense ids (`sid`, `eid`, `pid`, `oid`, `fid`, local slots) are assigned by the
 lowering walk; the manifest is their single source of truth — the runtime
-never re-derives ids from the Program.
+never re-derives ids from the Program. Series and execution inputs use
+separate id spaces; numeric Tea type alone never moves a builtin between them.
 
 **Portability contract.** The emitted source is a strict-mode ECMAScript
 **2015 (ES6)** FunctionBody: no module syntax (import/export/require), no
@@ -98,7 +100,8 @@ seam: JS renders these natively; another backend supplies another table).
 
 ```ts
 // reads and writes (offset 0 = current row)
-rt.series(sid, offset); // ambient series and input.source params
+rt.series(sid, offset); // numeric provider series and input.source params
+rt.execution(eid, offset); // typed time/bar/barstate/syminfo/timeframe value
 rt.param(pid); // bind-time scalar
 rt.read(fr, slot, offset); // a name's history
 rt.write(fr, slot, v);
@@ -116,8 +119,10 @@ rt.emit(oid, channel, v);
 rt.historyDepth(offset); // invalid history offsets normalize to zero
 rt.bindDepth(fid, slot, bars); // a name's bound history depth
 rt.bindSeriesDepth(sid, bars); // a series/input.source bound depth
+rt.bindExecutionDepth(eid, bars); // a typed execution input's bound depth
 rt.bindParamActive(pid, active); // resolved input enablement
 rt.bindOutput(oid, argName, v); // an output's bind-time argument
+rt.bindRequestOptions(rid, gaps, lookahead, ignoreInvalid, calcBars);
 rt.bindRequest(rid, sym, tf); // a static request edge's context pair
 // user values and collections
 rt.newUser(layout, fields);
@@ -180,7 +185,42 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
   explicit root lease; a sink cannot silently retain an unregistered
   `StorageRef`.
 
-## Series access: one interface
+## Typed execution inputs
+
+`ExecutionSpec.source` is a closed `{domain, field}` key. Its domain is only
+the builtin namespace — `time`, `bar`, `barstate`, `syminfo`, or `timeframe` —
+and never causes a corresponding runtime object to be constructed. One
+exhaustive runtime switch resolves the exact source key:
+
+- `time.time` and `time.time_close` read the context's existing `TimeAxis`;
+  `time.timenow` reads the one host-injected clock value for this historical
+  binding.
+- `bar.bar_index`, `bar.last_bar_index`, and `barstate.*` derive from the
+  runtime cursor and fixed context extent.
+- `syminfo.*` and `timeframe.*` come from the resolved provider context's
+  typed builtin accessor. A missing demanded value is a `BindError`; a value
+  that is legitimately typed empty remains distinct from missing metadata.
+
+Every read first computes `target = cursor - offset`. An invalid history
+offset or a target outside the context extent returns the spec layout's typed
+empty. Otherwise open/close time, bar index, and historical bar state are
+row-indexed; `last_bar_index` is extent-constant; symbol/timeframe metadata and
+historical `timenow` are context-constant. For fixed historical execution,
+`ishistory`, `isnew`, and `isconfirmed` are true, `isrealtime` is false, and
+`isfirst`/`islast` derive from the target row. This does not define a live-tick
+update object; realtime state remains a separate host-protocol design.
+
+Only simple symbol/timeframe metadata may be read at offset zero during module
+bind, before a row cursor exists. Although the host-injected `timeNow` value is
+fixed and context-constant across one historical run, source-level `timenow`
+remains series-qualified and is not a bind expression; `time`, `timenow`,
+`bar`, and `barstate` reads during bind are malformed generated-code protocol
+and fail loudly. `BindInputs.timeNow` is a required finite safe
+epoch-millisecond value shared by the root and every request child; only the
+CLI obtains it from `Date.now()`. Generated modules and the runtime never read
+the wall clock.
+
+## History access: one interface
 
 ```ts
 interface SeriesView {
@@ -249,13 +289,16 @@ become published Heap storage.
 ## Main loop and the provisional protocol
 
 ```
-bind(module, params, provider, sink):        # async — awaits live here only
-  await provider.resolveContext('', '')      # the primary context
-  validate params; run module.init           # frame-free preparation
-  resolve manifest.series from the context   # a missing id is a bind error
+bind(module, params, provider, sink, timeNow): # async — awaits live here only
+  await provider.resolveContext('', '', full) # the primary context
+  validate params
+  resolve manifest.series from the context    # a missing id is a bind error
+  validate demanded execution metadata/axis   # exact typed sources only
+  run module.init                              # frame-free preparation after
+                                               # context carriers are bound
   build scratch-only provisional frame
   run module.bind                            # aliases/UDFs, depths, active,
-                                             # output args, request pairs
+                                             # output args, request options/pairs
   discard it; allocate final rings/frame tree from reported depths
   per request edge: await resolveContext(pair); bind + run the child
   (recursively, same machinery, null sink); build the merged view
@@ -298,11 +341,19 @@ on commit only.
 
 ```ts
 interface DataProvider {
-  series(id: string): SeriesData | null;
+  resolveContext(
+    symbol: string,
+    timeframe: string,
+    range: RangeDemand,
+  ): Promise<ProviderContext | ContextError>;
 }
-interface SeriesData {
-  readonly length: number;
-  at(index: number): number;
+interface ProviderContext {
+  readonly rows: number;
+  readonly axis: TimeAxis | null;
+  series(id: string): SeriesData | null;
+  builtinValue(
+    source: Extract<ExecutionSource, {domain: 'syminfo' | 'timeframe'}>,
+  ): Value | undefined;
 }
 interface OutputSink {
   declare(outputs): void; // before the first row
@@ -310,10 +361,10 @@ interface OutputSink {
 }
 ```
 
-Historical csv execution uses exactly this. The request slice
-(`docs/requests.md`) supersedes `series()` with async
-`resolveContext(symbol, timeframe, range)` — one resolution path for the
-primary and every request context — without changing the rt surface.
+The same resolution path supplies the primary context and every request
+child. Provider series remain numeric and aligned to `rows`; typed execution
+metadata uses `builtinValue`. `undefined` means that the provider cannot
+supply a demanded builtin and is never coerced to a Tea empty value.
 
 ## Immutable Heap arena
 
@@ -356,9 +407,10 @@ limits, so behavior never depends on host-GC timing.
 ## Determinism
 
 A module is a pure function of its Program; execution is a pure function of
-(module, params, provider data). Generated code contains no `Date`, no
-`Math.random`, no host I/O — enforced by an emitter-level guard and a test
-grep. Replay of the same rows and ticks is byte-identical, which is what
+(module, params, provider data, injected historical `timeNow`). Generated code
+contains no `Date`, no `Math.random`, no host I/O — enforced by an emitter-level
+guard and a test grep. The runtime also never reads the clock. Replay of the
+same rows and injected time is byte-identical, which is what
 makes golden traces and the tick/rollback property tests
 (provisional-then-rollback ≡ never-executed; varip persistence) valid.
 

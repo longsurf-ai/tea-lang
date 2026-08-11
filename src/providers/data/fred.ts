@@ -1,4 +1,4 @@
-// Purpose: FRED DataProvider — one context per series id, served at its native frequency; the single observation value normalizes to the standard ambient set (value = close, OHLC collapsed, volume na).
+// Purpose: FRED DataProvider — one native-frequency context per series id, normalized into numeric series, an exact time axis, and typed builtin metadata.
 
 import type {
   ContextError,
@@ -7,6 +7,8 @@ import type {
   SeriesData,
   TimeAxis,
 } from '../../runtime/abi';
+import {providerBuiltinValue} from './builtin-values';
+import {projectProviderRange} from './range';
 
 const API = 'https://api.stlouisfed.org/fred';
 const DAY = 86_400_000;
@@ -49,7 +51,6 @@ export function fredProvider(options: {
     async resolveContext(symbol, timeframe, range) {
       // A FRED series fits in one response (the API caps a page at 100k
       // observations, beyond any FRED series), so range never forces paging.
-      void range;
       if (symbol === '') {
         return {
           error: 'unknownSymbol' as const,
@@ -99,7 +100,16 @@ export function fredProvider(options: {
           detail: `malformed FRED observations for '${symbol}'`,
         };
       }
-      return fredContext(observations, frequency.span, frequency.openShift);
+      return projectProviderRange(
+        fredContext(
+          symbol,
+          frequency.timeframe,
+          observations,
+          frequency.span,
+          frequency.openShift,
+        ),
+        range,
+      );
     },
   };
 }
@@ -209,6 +219,8 @@ function isRecord(x: unknown): x is Record<string, unknown> {
 }
 
 function fredContext(
+  symbol: string,
+  timeframePeriod: string,
   observations: readonly FredObservation[],
   span: number,
   openShift: number,
@@ -230,13 +242,12 @@ function fredContext(
   const low = value;
   const close = value;
   const byId = new Map<string, SeriesData>([
-    ['time', series(index => times[index])],
     ['open', open],
     ['high', high],
     ['low', low],
     ['close', close],
     ['volume', series(() => NaN)],
-    // The derived ambients all equal close here, but deriving them from the
+    // The derived numeric values all equal close here, but deriving them from the
     // standard set keeps normalization uniform across drivers (csv.ts is
     // the pattern).
     ['hl2', series(i => (high.at(i) + low.at(i)) / 2)],
@@ -254,6 +265,18 @@ function fredContext(
     rows,
     axis: fredAxis(times, span),
     series: id => byId.get(id) ?? null,
+    builtinValue: source =>
+      providerBuiltinValue(
+        source,
+        {
+          tickerid: symbol,
+          ticker: symbol,
+          prefix: 'FRED',
+          type: 'economic',
+          timezone: 'Etc/UTC',
+        },
+        timeframePeriod,
+      ),
   };
 }
 
