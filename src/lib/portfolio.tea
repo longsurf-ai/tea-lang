@@ -1,0 +1,106 @@
+//@version=1
+// Canonical portfolio contract and deterministic long-only accounting.
+// A Basic value consumes broker.Fill values but never matches orders.
+library("portfolio")
+
+import broker
+
+export interface Portfolio
+	bool is_flat() const
+	float buying_power() const
+	float position_quantity() const
+	int apply(broker.Fill execution)
+	float mark(float price)
+	float cash() const
+	float equity() const
+	float realized_pnl() const
+	float total_fees() const
+	int fill_count() const
+	int round_trip_count() const
+	float max_drawdown() const
+	float total_return() const
+
+export type Basic
+	float initialCash
+	float cashValue = 0.0
+	float positionQuantityValue = 0.0
+	float entryPrice = na
+	float entryNotional = 0.0
+	float entryFee = 0.0
+	float realizedPnlValue = 0.0
+	float totalFeesValue = 0.0
+	float equityValue = 0.0
+	float peakEquity = 0.0
+	float maxDrawdownValue = 0.0
+	int fillCountValue = 0
+	int roundTripCountValue = 0
+
+	bool is_flat() const =>
+		this.positionQuantityValue == 0.0
+
+	float buying_power() const =>
+		this.cashValue
+
+	float position_quantity() const =>
+		this.positionQuantityValue
+
+	int apply(broker.Fill execution) =>
+		if not na(execution)
+			isBuy = execution.side == broker.Side.buy
+			canApply = isBuy ? this.positionQuantityValue == 0.0 : this.positionQuantityValue > 0.0
+			if canApply and isBuy
+				this.cashValue := this.cashValue - execution.notional - execution.fee
+				this.positionQuantityValue := execution.quantity
+				this.entryPrice := execution.price
+				this.entryNotional := execution.notional
+				this.entryFee := execution.fee
+			if canApply and not isBuy
+				grossPnl = execution.quantity * (execution.price - this.entryPrice)
+				tradeFees = this.entryFee + execution.fee
+				this.cashValue := this.cashValue + execution.notional - execution.fee
+				this.realizedPnlValue := this.realizedPnlValue + grossPnl - tradeFees
+				this.positionQuantityValue := 0.0
+				this.entryPrice := na
+				this.entryNotional := 0.0
+				this.entryFee := 0.0
+				this.roundTripCountValue := this.roundTripCountValue + 1
+			if canApply
+				this.totalFeesValue := this.totalFeesValue + execution.fee
+				this.fillCountValue := this.fillCountValue + 1
+		this.fillCountValue
+
+	float mark(float price) =>
+		this.equityValue := this.cashValue + this.positionQuantityValue * price
+		if this.equityValue > this.peakEquity
+			this.peakEquity := this.equityValue
+		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - this.equityValue) / this.peakEquity
+		if drawdown > this.maxDrawdownValue
+			this.maxDrawdownValue := drawdown
+		this.equityValue
+
+	float cash() const =>
+		this.cashValue
+
+	float equity() const =>
+		this.equityValue
+
+	float realized_pnl() const =>
+		this.realizedPnlValue
+
+	float total_fees() const =>
+		this.totalFeesValue
+
+	int fill_count() const =>
+		this.fillCountValue
+
+	int round_trip_count() const =>
+		this.roundTripCountValue
+
+	float max_drawdown() const =>
+		this.maxDrawdownValue
+
+	float total_return() const =>
+		this.initialCash == 0.0 ? na : (this.equityValue - this.initialCash) / this.initialCash
+
+export basic(float initialCash) =>
+	Basic.new(initialCash = initialCash, cashValue = initialCash, equityValue = initialCash, peakEquity = initialCash)

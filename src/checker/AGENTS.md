@@ -46,6 +46,14 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   `ta.*` is prelude source compiled by the ordinary pipeline; a new builtin
   family is a catalog entry plus at most a noding policy, never new checker
   architecture.
+- `strategy(title, shorttitle?, overlay?)` is a script header: when present it
+  is the first source statement, appears exactly once, and excludes
+  `indicator()` and `library()`. Its arguments stay ordinary declaration
+  catalog policy; broker and portfolio configuration never enters this call.
+  An exact unaliased `import strategy` may bind the shipped source package:
+  only the header call retains native resolution, while later
+  `strategy.configure` selectors use the package. No lifecycle call order is
+  checker policy.
 - Qualifier propagation takes the later-known operand: expression results
   join their operands, native results follow the catalog (`'join'` or a
   fixed qualifier), control structures yield series, and writes join the
@@ -111,9 +119,12 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   checker positions loader errors and recursively elaborates each source once
   into a semantic `Package`; it alone interprets `library()`, validates the
   package root and declaration conflicts, and checks types, enums, defaults,
-  methods, and imports. A library root permits imports, declarations, and
-  single-name `const` values only; tuple constants, mutable values, and
-  executable statements are rejected. Where sources come from and how paths
+  methods, and imports. A library root additionally permits private,
+  single-name, explicitly typed `var` package globals. Their canonical
+  `VariableObject`s live in Package.Scope and never Package.exports; checker
+  execution metadata records initializer facts/order without creating a
+  second declaration namespace. All other mutable root forms and executable
+  statements are rejected. Where sources come from and how paths
   form a dependency DAG remain `src/loader` concerns.
 - `Package.imports` contains unique direct dependency identities, never local
   spellings. Each import alias is a `PackageNameObject` in the importing

@@ -4,6 +4,7 @@ import type {Pos} from '../base/pos';
 import type {ConstValue, NameStorage, Qualifier, Type, UserType} from './type';
 import type {
   ConstMethodIrFunc,
+  EffectDecl,
   FreeIrFunc,
   MutableMethodIrFunc,
   OutputDecl,
@@ -84,6 +85,7 @@ export const IrKind = {
   WriteName: 'WriteName',
   UpdateValuePath: 'UpdateValuePath',
   Emit: 'Emit',
+  EmitEffect: 'EmitEffect',
   Break: 'Break',
   Continue: 'Continue',
 } as const;
@@ -377,6 +379,7 @@ export type IrStmt =
   | WriteNameStmt
   | UpdateValuePathStmt
   | EmitStmt
+  | EmitEffectStmt
   | BreakStmt
   | ContinueStmt;
 
@@ -411,6 +414,14 @@ export interface EmitStmt extends IrNode {
   // Canonical channel indices in source evaluation order. Output metadata and
   // the ABI remain canonical; only evaluation follows the source call.
   readonly argumentEvaluationOrder: readonly number[];
+}
+
+// One ordered append into a sparse effect stream. The declaration lives in
+// Program.effects and owns the stable effect id plus payload schema.
+export interface EmitEffectStmt extends IrNode {
+  readonly kind: typeof IrKind.EmitEffect;
+  readonly effect: EffectDecl;
+  readonly payload: IrExpr;
 }
 
 export interface BreakStmt extends IrNode {

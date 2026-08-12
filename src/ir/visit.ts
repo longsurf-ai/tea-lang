@@ -45,6 +45,9 @@ function reachProgram(program: Program): Reach {
     reads: [],
     maxSlot: -1,
   };
+  for (const global of program.packageGlobals) {
+    noteName(global, reach);
+  }
   for (const param of program.params) {
     if (param.defaultValue?.kind === ParamDefaultKind.Series) {
       reach.series.add(param.defaultValue.series);
@@ -135,6 +138,9 @@ function visitStmt(stmt: IrStmt, reach: Reach): void {
       for (const arg of stmt.args) {
         visitExpr(arg, reach);
       }
+      return;
+    case IrKind.EmitEffect:
+      visitExpr(stmt.payload, reach);
       return;
     case IrKind.Break:
     case IrKind.Continue:

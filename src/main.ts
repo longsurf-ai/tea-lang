@@ -3,21 +3,48 @@
 
 import {readFileSync, writeFileSync} from 'node:fs';
 import {Command, InvalidArgumentError} from 'commander';
-import {DEFAULT_COMPILE_CONFIG} from './base/config';
 import {configureLog, parseLogLevel} from './base/log';
 import {formatPos, newFileBase} from './base/pos';
 import {Errors, type ErrorMsg} from './base/print';
 import {UnimplementedError} from './base/unimplemented';
-import {compile, compileToAst, compileToIr} from './compile';
+import {
+  CliParameterError,
+  expandSweepParameters,
+  parseRunParameters,
+} from './cli/parameters';
+import {compile, compileToProgram, parseFile} from './compile';
 import {startDocsServer} from './docs/server';
+import {
+  executeProgram,
+  type ExecutionSummary,
+  UnsupportedExecutionTargetError,
+} from './execute';
 import {dumpProgram} from './ir/dumper';
 import {builtinSources} from './providers/data/builtin-sources';
 import {csvProvider} from './providers/data/csv';
-import {TableSink} from './providers/sinks/table-sink';
+import {createDawnDevice, GpuDeviceError} from './providers/gpu/dawn';
+import {relayGpuCliToNode} from './providers/gpu/node-host';
+import {
+  RunReportSink,
+  SweepReportSink,
+  sweepReportSections,
+} from './providers/sinks/report-sink';
 import {TraceSink} from './providers/sinks/trace-sink';
-import {BindError, RequestError} from './runtime/abi';
-import {bind} from './runtime/js-runtime';
-import {loadModule} from './runtime/load';
+import {
+  parameterReportSection,
+  renderReport,
+  systemReportSection,
+  type ReportSection,
+} from './reporting';
+import {
+  BindError,
+  ExecutionError,
+  RequestError,
+  type BindInputs,
+  type OutputSink,
+} from './runtime/abi';
+import {GpuBindingError, GpuExecutionError} from './runtime/gpu';
+import {paramSpecsOf} from './runtime/params';
 import {dumpFile, dumpTokens} from './syntax/dumper';
 import {tokenize} from './syntax/syntax';
 
@@ -73,6 +100,20 @@ if (teaLogLevel !== undefined && teaLogLevel !== '') {
   }
 }
 
+try {
+  const relayed = await relayGpuCliToNode(
+    process.argv.slice(2),
+    import.meta.url,
+  );
+  if (relayed !== null) process.exit(relayed);
+} catch (error) {
+  if (error instanceof GpuDeviceError) {
+    console.error(`tea: ${error.message}`);
+    process.exit(1);
+  }
+  throw error;
+}
+
 const tea = new Command('tea')
   .description('Tea language compiler and runner')
   .version('0.1.0');
@@ -83,6 +124,109 @@ function parsePort(value: string): number {
     throw new InvalidArgumentError('port must be an integer from 0 to 65535');
   }
   return port;
+}
+
+function parsePositiveInteger(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new InvalidArgumentError('value must be a positive integer');
+  }
+  return parsed;
+}
+
+const RUN_RESERVED_PARAMETERS = new Set([
+  'input',
+  'i',
+  'trace',
+  'gpu',
+  'help',
+  'h',
+  'version',
+  'V',
+]);
+
+const SWEEP_RESERVED_PARAMETERS = new Set([
+  'input',
+  'i',
+  'cpu',
+  'max-scenarios',
+  'help',
+  'h',
+  'version',
+  'V',
+]);
+
+function dynamicTokens(command: Command): readonly string[] {
+  return command.args.slice(1);
+}
+
+function exitWithExecutionError(error: unknown): never {
+  if (
+    error instanceof CliParameterError ||
+    error instanceof BindError ||
+    error instanceof RequestError ||
+    error instanceof ExecutionError ||
+    error instanceof UnsupportedExecutionTargetError ||
+    error instanceof GpuBindingError ||
+    error instanceof GpuExecutionError ||
+    error instanceof GpuDeviceError
+  ) {
+    console.error(`tea: ${error.message}`);
+    process.exit(1);
+  }
+  throw error;
+}
+
+async function executeCliTarget(
+  program: NonNullable<ReturnType<typeof compileToProgram>>,
+  bindings: readonly BindInputs[],
+  backend: 'cpu' | 'gpu',
+): Promise<{
+  readonly summary: ExecutionSummary;
+  readonly device?: string;
+  dispose(): Promise<void>;
+}> {
+  if (backend === 'cpu') {
+    return {
+      summary: await executeProgram(program, bindings, {kind: 'cpu'}),
+      dispose: async () => {},
+    };
+  }
+  const lease = await createDawnDevice();
+  try {
+    const summary = await executeProgram(program, bindings, {
+      kind: 'gpu',
+      device: lease.device,
+    });
+    return {
+      summary,
+      device: lease.device.label || 'Dawn WebGPU',
+      dispose: () => lease.dispose(),
+    };
+  } catch (error) {
+    await lease.dispose();
+    throw error;
+  }
+}
+
+function readCsvProvider(filename: string) {
+  return builtinSources({
+    primary: csvProvider(readFileSync(filename, 'utf8')),
+    config: process.env,
+  });
+}
+
+function reportSectionsForRun(
+  summary: ExecutionSummary,
+  sink: RunReportSink,
+  device?: string,
+): readonly ReportSection[] {
+  return [
+    systemReportSection(summary, {device}),
+    parameterReportSection(summary),
+    sink.denseSection(),
+    sink.effectsSection(),
+  ].filter(section => section.rows.length > 0);
 }
 
 tea
@@ -113,46 +257,139 @@ tea
     '--trace',
     'print the machine trace format (golden-compatible) instead of a table',
   )
-  .action(async (file: string, options: {input?: string; trace?: boolean}) => {
-    await runStageAsync(async () => {
-      const result = compile([file], DEFAULT_COMPILE_CONFIG);
-      if (!result.ok) {
-        exitWithErrors(result.errors);
-      }
-      if (options.input === undefined) {
-        console.error('tea: run requires --input <csv>');
-        process.exit(1);
-      }
-      const module = loadModule(result.js);
-      const table =
-        options.trace === true
-          ? null
-          : new TableSink(text => console.log(text));
-      const sink = table ?? new TraceSink(line => console.log(line));
-      try {
-        // The CLI is the sole wall-clock boundary. Runtime execution receives
-        // this frozen value so historical replay never calls Date.now().
-        const timeNow = Date.now();
-        const exec = await bind(module, {
-          params: {},
-          provider: builtinSources({
-            primary: csvProvider(readFileSync(options.input, 'utf8')),
-            config: process.env,
-          }),
-          sink,
-          timeNow,
-        });
-        await exec.runAll();
-        table?.flush();
-      } catch (error) {
-        if (error instanceof BindError || error instanceof RequestError) {
-          console.error(`tea: ${error.message}`);
+  .option('--gpu', 'execute with WebGPU instead of the JavaScript CPU runtime')
+  .allowUnknownOption()
+  .allowExcessArguments()
+  .action(
+    async (
+      file: string,
+      options: {input?: string; trace?: boolean; gpu?: boolean},
+      command: Command,
+    ) => {
+      await runStageAsync(async () => {
+        if (options.input === undefined) {
+          console.error('tea: run requires --input <csv>');
           process.exit(1);
         }
-        throw error;
-      }
-    });
-  });
+        const errors = new Errors();
+        const program = compileToProgram([file], errors);
+        if (program === null) {
+          exitWithErrors(errors.flushErrors());
+        }
+        try {
+          const params = parseRunParameters(
+            paramSpecsOf(program.params),
+            dynamicTokens(command),
+            RUN_RESERVED_PARAMETERS,
+          );
+          const reportSink =
+            options.trace === true ? null : new RunReportSink();
+          const sink: OutputSink =
+            reportSink ?? new TraceSink(line => console.log(line));
+          const timeNow = Date.now();
+          const execution = await executeCliTarget(
+            program,
+            [
+              {
+                params,
+                provider: readCsvProvider(options.input),
+                sink,
+                timeNow,
+              },
+            ],
+            options.gpu === true ? 'gpu' : 'cpu',
+          );
+          try {
+            if (reportSink !== null) {
+              const rendered = renderReport(
+                reportSectionsForRun(
+                  execution.summary,
+                  reportSink,
+                  execution.device,
+                ),
+              );
+              if (rendered.length > 0) console.log(rendered);
+            }
+          } finally {
+            await execution.dispose();
+          }
+        } catch (error) {
+          exitWithExecutionError(error);
+        }
+      });
+    },
+  );
+
+tea
+  .command('sweep')
+  .description('Run a Cartesian parameter sweep over a CSV dataset')
+  .argument('<file>', 'Tea source file')
+  .option('-i, --input <file>', 'CSV dataset to bind as the input series')
+  .option('--cpu', 'use the JavaScript CPU runtime instead of WebGPU')
+  .option(
+    '--max-scenarios <count>',
+    'reject sweeps larger than this many bindings',
+    parsePositiveInteger,
+    10_000,
+  )
+  .allowUnknownOption()
+  .allowExcessArguments()
+  .action(
+    async (
+      file: string,
+      options: {input?: string; cpu?: boolean; maxScenarios: number},
+      command: Command,
+    ) => {
+      await runStageAsync(async () => {
+        if (options.input === undefined) {
+          console.error('tea: sweep requires --input <csv>');
+          process.exit(1);
+        }
+        const errors = new Errors();
+        const program = compileToProgram([file], errors);
+        if (program === null) {
+          exitWithErrors(errors.flushErrors());
+        }
+        try {
+          const parameterSets = expandSweepParameters(
+            paramSpecsOf(program.params),
+            dynamicTokens(command),
+            {
+              maxScenarios: options.maxScenarios,
+              reservedNames: SWEEP_RESERVED_PARAMETERS,
+            },
+          );
+          const provider = readCsvProvider(options.input);
+          const timeNow = Date.now();
+          const sinks = parameterSets.map(() => new SweepReportSink());
+          const bindings: BindInputs[] = parameterSets.map((params, index) => ({
+            params,
+            provider,
+            sink: sinks[index]!,
+            timeNow,
+          }));
+          const execution = await executeCliTarget(
+            program,
+            bindings,
+            options.cpu === true ? 'cpu' : 'gpu',
+          );
+          try {
+            const rendered = renderReport([
+              systemReportSection(execution.summary, {
+                device: execution.device,
+              }),
+              ...sweepReportSections(execution.summary, sinks),
+            ]);
+            if (rendered.length > 0) console.log(rendered);
+          } finally {
+            await execution.dispose();
+          }
+        } catch (error) {
+          exitWithExecutionError(error);
+        }
+      });
+    },
+  );
 
 tea
   .command('build')
@@ -160,7 +397,7 @@ tea
   .argument('<file>', 'Tea source file')
   .option('-o, --out <file>', 'write emitted JavaScript here instead of stdout')
   .action((file: string, options: {out?: string}) => {
-    const result = runStage(() => compile([file], DEFAULT_COMPILE_CONFIG));
+    const result = runStage(() => compile([file]));
     if (!result.ok) {
       exitWithErrors(result.errors);
     }
@@ -197,10 +434,10 @@ tea
           console.log(dumpTokens(tokens));
         }
         if (wantAst) {
-          console.log(dumpFile(compileToAst(file, errors)));
+          console.log(dumpFile(parseFile(file, errors)));
         }
         if (wantIr) {
-          const program = compileToIr(file, errors);
+          const program = compileToProgram([file], errors);
           if (program !== null) {
             console.log(dumpProgram(program));
           }

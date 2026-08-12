@@ -222,6 +222,10 @@ class NameBinder {
       case NodeKind.FuncDecl:
         // Templates own fresh binding tables per concrete instantiation.
         return;
+      case NodeKind.InterfaceDecl:
+        // Interfaces contain signatures only; there are no value names or
+        // executable defaults for the lexical binder to visit.
+        return;
       case NodeKind.UserTypeDecl:
         for (const member of stmt.members) {
           if (
@@ -271,6 +275,7 @@ class NameBinder {
       type: InvalidType,
       qualifier: Qualifier.Const,
       constDecl,
+      packageGlobal: null,
       constValue: null,
     };
     this.tables.defs.set(node, object);

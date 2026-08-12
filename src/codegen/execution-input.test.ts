@@ -1,8 +1,6 @@
-// Purpose: Typed execution-input codegen tests — ABI 4 manifests and reads must preserve source identity, value layout, depth, and the distinct execution carrier.
+// Purpose: Typed execution-input codegen tests — current-ABI manifests and reads must preserve source identity, value layout, depth, and the distinct execution carrier.
 
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_COMPILE_CONFIG} from '../base/config';
-import {Errors} from '../base/print';
 import {
   DepthKind,
   IrKind,
@@ -13,6 +11,7 @@ import {
 import type {ExecutionInput, Program} from '../ir/program';
 import {BoolType, IntType, Qualifier, StringType, type Type} from '../ir/type';
 import {mustBuild} from '../noder/testing';
+import {RUNTIME_ABI_VERSION} from '../runtime/abi';
 import {generate} from './codegen';
 
 const pos = {
@@ -52,7 +51,7 @@ function read(execution: ExecutionInput, offset: IrExpr | null): HistReadExpr {
 }
 
 describe('typed execution input lowering', () => {
-  test('publishes dense ABI 4 specs and lowers history through rt.execution', () => {
+  test('publishes dense current-ABI specs and lowers history through rt.execution', () => {
     const time = input(
       {domain: 'time', field: 'time'},
       IntType,
@@ -74,6 +73,8 @@ describe('typed execution input lowering', () => {
       params: [],
       requests: [],
       outputs: [],
+      effects: [],
+      packageGlobals: [],
       init: [],
       body: [
         {kind: IrKind.ExprStmt, pos, x: read(time, constant(2))},
@@ -82,7 +83,7 @@ describe('typed execution input lowering', () => {
       ],
     };
 
-    const source = generate(program, DEFAULT_COMPILE_CONFIG, new Errors());
+    const source = generate(program);
     const module = new Function(source)() as {
       readonly abi: number;
       readonly manifest: {
@@ -91,7 +92,7 @@ describe('typed execution input lowering', () => {
       };
     };
 
-    expect(module.abi).toBe(4);
+    expect(module.abi).toBe(RUNTIME_ABI_VERSION);
     expect(module.manifest.series).toEqual([]);
     expect(module.manifest.execution).toEqual([
       {
@@ -119,8 +120,6 @@ describe('typed execution input lowering', () => {
   test('restarts execution ids in a request child module', () => {
     const source = generate(
       mustBuild('value = request.security("X", "D", bar_index)\nplot(value)'),
-      DEFAULT_COMPILE_CONFIG,
-      new Errors(),
     );
     const module = new Function(source)() as {
       readonly manifest: {

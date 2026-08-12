@@ -188,8 +188,30 @@
     "type-declarations": {
       "patterns": [
         {
-          "match": "^(\\s*)(?:(export)(\\s+))?(type)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(\\s*)(=)(\\s*)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(?=\\s*(?://|/\\*|$))",
-          "captures": {
+          "name": "meta.declaration.interface.tea",
+          "begin": "^(\\s*)(?:(export)(\\s+))?(interface)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "beginCaptures": {
+            "2": {
+              "name": "storage.modifier.export.tea"
+            },
+            "4": {
+              "name": "storage.type.interface.declaration.tea"
+            },
+            "6": {
+              "name": "entity.name.type.interface.tea"
+            }
+          },
+          "end": "(?=$)",
+          "patterns": [
+            {
+              "include": "#comments"
+            }
+          ]
+        },
+        {
+          "name": "meta.declaration.type.alias.tea",
+          "begin": "^(\\s*)(?:(export)(\\s+))?(type)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b(?=\\s*=)",
+          "beginCaptures": {
             "2": {
               "name": "storage.modifier.export.tea"
             },
@@ -198,18 +220,31 @@
             },
             "6": {
               "name": "entity.name.type.alias.tea"
-            },
-            "8": {
-              "name": "keyword.operator.assignment.tea"
-            },
-            "10": {
-              "name": "entity.name.type.tea"
             }
-          }
+          },
+          "end": "(?=$)",
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#type-parameter-list"
+            },
+            {
+              "include": "#type-references"
+            },
+            {
+              "include": "#operators"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
         },
         {
-          "match": "^(\\s*)(?:(export)(\\s+))?((?:struct|type))(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*(?://|/\\*|$))",
-          "captures": {
+          "name": "meta.declaration.type.tea",
+          "begin": "^(\\s*)(?:(export)(\\s+))?((?:struct|type))(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "beginCaptures": {
             "2": {
               "name": "storage.modifier.export.tea"
             },
@@ -219,11 +254,21 @@
             "6": {
               "name": "entity.name.type.tea"
             }
-          }
+          },
+          "end": "(?=$)",
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#type-parameter-list"
+            }
+          ]
         },
         {
-          "match": "^(\\s*)(?:(export)(\\s+))?(enum)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*(?://|/\\*|$))",
-          "captures": {
+          "name": "meta.declaration.enum.tea",
+          "begin": "^(\\s*)(?:(export)(\\s+))?(enum)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "beginCaptures": {
             "2": {
               "name": "storage.modifier.export.tea"
             },
@@ -233,42 +278,240 @@
             "6": {
               "name": "entity.name.type.enum.tea"
             }
+          },
+          "end": "(?=$)",
+          "patterns": [
+            {
+              "include": "#comments"
+            }
+          ]
+        }
+      ]
+    },
+    "type-parameter-list": {
+      "name": "meta.type.parameters.tea",
+      "begin": "<",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.typeparameters.begin.tea"
+        }
+      },
+      "end": ">|(?=$)",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.typeparameters.end.tea"
+        }
+      },
+      "patterns": [
+        {
+          "match": "(?:(?<=<)|(?<=,))(\\s*)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*:)",
+          "captures": {
+            "2": {
+              "name": "entity.name.type.parameter.tea"
+            }
           }
+        },
+        {
+          "match": ":",
+          "name": "punctuation.separator.constraint.tea"
+        },
+        {
+          "include": "#type-parameter-list"
+        },
+        {
+          "include": "#type-references"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    },
+    "type-references": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(\\.)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "entity.name.namespace.tea"
+            },
+            "2": {
+              "name": "punctuation.accessor.tea"
+            },
+            "3": {
+              "name": "entity.name.type.tea"
+            }
+          }
+        },
+        {
+          "match": "\\b(?:array|bool|box|color|float|int|label|line|linefill|map|matrix|polyline|string|table)\\b",
+          "name": "support.type.builtin.tea"
+        },
+        {
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b",
+          "name": "entity.name.type.tea"
         }
       ]
     },
     "function-declarations": {
       "patterns": [
         {
-          "match": "^(\\s+)(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\([^\\r\\n]*\\)\\s*(?:const\\s*)?=>)",
-          "captures": {
+          "name": "meta.declaration.method.tea",
+          "begin": "^(\\s+)(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "beginCaptures": {
             "2": {
               "name": "storage.modifier.qualifier.tea"
             },
             "4": {
-              "name": "meta.type.return.tea"
+              "name": "meta.type.return.tea",
+              "patterns": [
+                {
+                  "include": "#type-parameter-list"
+                },
+                {
+                  "include": "#type-references"
+                },
+                {
+                  "include": "#punctuation"
+                }
+              ]
             },
             "6": {
               "name": "entity.name.function.tea"
             }
-          }
+          },
+          "end": "(=>)|(?=$)",
+          "endCaptures": {
+            "1": {
+              "name": "keyword.operator.function.tea"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#strings"
+            },
+            {
+              "include": "#parameter-declarations"
+            },
+            {
+              "include": "#type-parameter-list"
+            },
+            {
+              "include": "#method-receiver-modifier"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
         },
         {
-          "match": "^(\\s*)(export)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
-          "captures": {
+          "name": "meta.declaration.function.exported.tea",
+          "begin": "^(\\s*)(export)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "beginCaptures": {
             "2": {
               "name": "storage.modifier.export.tea"
             },
             "4": {
               "name": "entity.name.function.tea"
             }
-          }
+          },
+          "end": "(=>)|(?=$)",
+          "endCaptures": {
+            "1": {
+              "name": "keyword.operator.function.tea"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#strings"
+            },
+            {
+              "include": "#parameter-declarations"
+            },
+            {
+              "include": "#type-parameter-list"
+            },
+            {
+              "include": "#punctuation"
+            }
+          ]
         },
         {
           "match": "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\([^\\r\\n]*\\)\\s*=>)",
           "captures": {
             "2": {
               "name": "entity.name.function.tea"
+            }
+          }
+        }
+      ]
+    },
+    "parameter-declarations": {
+      "patterns": [
+        {
+          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(\\.)([A-Za-z_][A-Za-z0-9_]*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "2": {
+              "name": "storage.modifier.qualifier.tea"
+            },
+            "4": {
+              "name": "entity.name.namespace.tea"
+            },
+            "5": {
+              "name": "punctuation.accessor.tea"
+            },
+            "6": {
+              "name": "entity.name.type.tea"
+            },
+            "8": {
+              "name": "variable.parameter.tea"
+            }
+          }
+        },
+        {
+          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:simple|series)\\b)(\\s+))?(\\b(?:array|bool|box|color|float|int|label|line|linefill|map|matrix|polyline|string|table)\\b)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "2": {
+              "name": "storage.modifier.qualifier.tea"
+            },
+            "4": {
+              "name": "support.type.builtin.tea"
+            },
+            "6": {
+              "name": "variable.parameter.tea"
+            }
+          }
+        },
+        {
+          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "2": {
+              "name": "storage.modifier.qualifier.tea"
+            },
+            "4": {
+              "name": "entity.name.type.tea"
+            },
+            "6": {
+              "name": "variable.parameter.tea"
+            }
+          }
+        },
+        {
+          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "2": {
+              "name": "storage.modifier.qualifier.tea"
+            },
+            "4": {
+              "name": "meta.type.annotation.tea"
+            },
+            "6": {
+              "name": "variable.parameter.tea"
             }
           }
         }
@@ -285,8 +528,12 @@
     "method-receiver-modifier": {
       "patterns": [
         {
-          "match": "\\b(?:const)\\b(?=\\s*=>)",
-          "name": "storage.modifier.receiver.tea"
+          "match": "(?<=\\))(\\s*)(\\b(?:const)\\b)(?=\\s*(?:=>)?\\s*(?://.*)?$)",
+          "captures": {
+            "2": {
+              "name": "storage.modifier.receiver.tea"
+            }
+          }
         }
       ]
     },
@@ -372,7 +619,7 @@
     "script-declarations": {
       "patterns": [
         {
-          "match": "\\b(?:indicator|library)\\b(?=\\s*\\()",
+          "match": "\\b(?:indicator|library|strategy)\\b(?=\\s*\\()",
           "name": "support.function.declaration.tea"
         }
       ]
@@ -388,30 +635,64 @@
     "type-annotations": {
       "patterns": [
         {
-          "match": "\\b(?:simple|series)\\b(?=\\s+[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
-          "name": "storage.modifier.qualifier.tea"
-        },
-        {
-          "match": "\\b(?:array|bool|box|color|float|int|label|line|linefill|map|matrix|polyline|string|table)\\b(?=(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
-          "name": "support.type.builtin.tea"
-        },
-        {
-          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?=(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
-          "name": "entity.name.type.tea"
-        },
-        {
-          "match": "(?<=[<,])(\\s*)(\\b(?:array|bool|box|color|float|int|label|line|linefill|map|matrix|polyline|string|table)\\b)",
+          "match": "^(\\s*)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:simple|series)\\b)(\\s+))?(\\b(?:array|bool|box|color|float|int|label|line|linefill|map|matrix|polyline|string|table)\\b)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
           "captures": {
             "2": {
+              "name": "storage.modifier.declaration.tea"
+            },
+            "4": {
+              "name": "storage.modifier.qualifier.tea"
+            },
+            "6": {
               "name": "support.type.builtin.tea"
             }
           }
         },
         {
-          "match": "(?<=[<,])(\\s*)([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?)",
+          "match": "^(\\s*)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(\\.)([A-Za-z_][A-Za-z0-9_]*)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
           "captures": {
             "2": {
+              "name": "storage.modifier.declaration.tea"
+            },
+            "4": {
+              "name": "storage.modifier.qualifier.tea"
+            },
+            "6": {
+              "name": "entity.name.namespace.tea"
+            },
+            "7": {
+              "name": "punctuation.accessor.tea"
+            },
+            "8": {
               "name": "entity.name.type.tea"
+            }
+          }
+        },
+        {
+          "match": "^(\\s*)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
+          "captures": {
+            "2": {
+              "name": "storage.modifier.declaration.tea"
+            },
+            "4": {
+              "name": "storage.modifier.qualifier.tea"
+            },
+            "6": {
+              "name": "entity.name.type.tea"
+            }
+          }
+        },
+        {
+          "match": "^(\\s*)(?!(?:export|type|struct|interface|enum|import)\\b)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
+          "captures": {
+            "2": {
+              "name": "storage.modifier.declaration.tea"
+            },
+            "4": {
+              "name": "storage.modifier.qualifier.tea"
+            },
+            "6": {
+              "name": "meta.type.annotation.tea"
             }
           }
         }

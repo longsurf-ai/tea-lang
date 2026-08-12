@@ -1,9 +1,9 @@
 # codegen
 
-Program → self-describing JS module (code + manifest) against the rt ABI;
-`docs/runtime.md` owns the module contract. `codegen.ts` assigns dense ids
-and assembles sections; `lower.ts` is the emitter — expression/statement
-lowering plus the per-backend rules tables.
+Bind-independent target lowering from the one canonical `Program`.
+`codegen.ts` + `lower.ts` emit a self-describing JS module against the Runtime
+ABI; `wgsl/` audits the supported generic Program subset and emits a complete
+WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
 
 ## Invariants
 
@@ -12,6 +12,15 @@ lowering plus the per-backend rules tables.
   ownership is explicit: a method owns its hidden receiver, and every func
   owns its explicit params + locals; the program frame owns every remaining
   Name — never ownership by reachability.
+- Both targets consume `Program` directly. There is no strategy wrapper IR and
+  no strategy-only lowering entry. A backend may reject unsupported Program
+  constructs, but it must not reconstruct source semantics from output effect
+  spellings or recognize `broker`, `portfolio`, `strategy`, or another Tea library by
+  package/type name.
+- Target lowering is pure and bind-independent. JS/WGSL generation receives no
+  provider, series payload, parameter sweep, job list, result capacity, GPU
+  device, or dispatch policy. CPU/GPU runtimes own those physical inputs after
+  codegen.
 - Only Time-Machine ops lower to rt calls; arithmetic, comparisons, math
   intrinsics, and na()/nz() expand inline via the rules tables in lower.ts.
   Backend-specific rendering decisions live only in those tables.
@@ -50,12 +59,12 @@ lowering plus the per-backend rules tables.
   Program-owned source order and calls `rt.bindRequestOptions`; option values
   never duplicate into JSON metadata. Every module's code names its own funcs table via
   its const (`ctx.moduleRef`), never `M`.
-- Typed execution builtins are a distinct ABI 4 carrier: dense eids and exact
+- Typed execution builtins are a distinct runtime carrier: dense eids and exact
   `{source, layout, depth}` specs publish in `manifest.execution`, reads lower
   to `rt.execution`, and bound history reports through
   `rt.bindExecutionDepth`. Numeric provider series remain `rt.series` only.
 - User-value construction/field updates, array/map iteration, and collection
-  calls lower through exact ABI 4 layouts. Const and mutable method calls
+  calls lower through exact manifest layouts. Const and mutable method calls
   capture the hidden receiver before explicit arguments; only mutable methods
   perform one path writeback, and only after success.
 - Output bind arguments and per-bar channels evaluate in their Program-owned

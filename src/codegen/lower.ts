@@ -13,6 +13,7 @@ import {
   type Name,
 } from '../ir/node';
 import type {
+  EffectDecl,
   IrFunc,
   ExecutionInput,
   OutputDecl,
@@ -40,6 +41,7 @@ export interface LowerCtx {
   // input.source params read as series through their bound slot.
   readonly paramSeriesIds: Map<ParamInput, number>;
   readonly outputIds: Map<OutputDecl, number>;
+  readonly effectIds: Map<EffectDecl, number>;
   readonly funcIds: Map<IrFunc, number>;
   readonly requestIds: Map<RequestEdge, number>;
   // Dynamic edges (series context args): the offset-0 read evaluates the
@@ -986,6 +988,15 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       args.forEach((arg, channel) => {
         out.push(`rt.emit(${oid}, ${channel}, (${arg}));`);
       });
+      return;
+    }
+    case IrKind.EmitEffect: {
+      const effectId = ctx.effectIds.get(stmt.effect);
+      if (effectId === undefined) {
+        return fatal('lowering reached an unmapped effect');
+      }
+      const payload = lowerExpr(stmt.payload, out, ctx);
+      out.push(`rt.emitEffect(${effectId}, (${payload}));`);
       return;
     }
     case IrKind.Break:

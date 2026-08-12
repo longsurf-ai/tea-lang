@@ -28,12 +28,18 @@ export type ValueLayout =
   | {
       readonly kind: 'enum';
       readonly name: string;
+      // Present when this physical layout backs a host-declared logical
+      // value. It is checker-owned nominal identity, never a layout id.
+      readonly typeId?: string;
       readonly members: readonly string[];
     }
   | {readonly kind: 'resource'; readonly handle: string}
   | {
       readonly kind: 'user-type';
       readonly name: string;
+      // See the enum case above. Ordinary internal-only layouts need no
+      // nominal host identity.
+      readonly typeId?: string;
       readonly fields: readonly {
         readonly name: string;
         readonly layout: LayoutId;
@@ -70,6 +76,7 @@ function sealLayout(layout: ValueLayout): ValueLayout {
       return Object.freeze({
         kind: 'enum',
         name: layout.name,
+        ...(layout.typeId === undefined ? {} : {typeId: layout.typeId}),
         members: Object.freeze([...layout.members]),
       });
     case 'resource':
@@ -78,6 +85,7 @@ function sealLayout(layout: ValueLayout): ValueLayout {
       return Object.freeze({
         kind: 'user-type',
         name: layout.name,
+        ...(layout.typeId === undefined ? {} : {typeId: layout.typeId}),
         fields: Object.freeze(
           layout.fields.map(field =>
             Object.freeze({name: field.name, layout: field.layout}),

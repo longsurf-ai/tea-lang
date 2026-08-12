@@ -143,6 +143,8 @@ const child: Program = {
   params: [],
   requests: [],
   outputs: [],
+  effects: [],
+  packageGlobals: [],
   init: [],
   body: [],
 };
@@ -184,6 +186,8 @@ const program: Program = {
   params: [],
   requests: [edge],
   outputs: [],
+  effects: [],
+  packageGlobals: [],
   init: [],
   body: [
     {
@@ -269,6 +273,8 @@ const mutationProgram: Program = {
   params: [],
   requests: [],
   outputs: [],
+  effects: [],
+  packageGlobals: [],
   init: [],
   body: [
     {

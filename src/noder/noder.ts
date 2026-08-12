@@ -14,6 +14,7 @@ import {
   PlaceKind,
   Storage,
   type IrBinaryOp,
+  type EmitEffectStmt,
   type IrExpr,
   type IrStmt,
   type IrUnaryOp,
@@ -30,6 +31,8 @@ import {
   ParamConstraintKind,
   ParamDefaultKind,
   type ExecutionInput,
+  type EffectDecl,
+  type EffectValueSchema,
   type IrFunc,
   type MergePolicy,
   type OutputDecl,
@@ -78,7 +81,7 @@ import {
   type BuiltinObject,
   type VariableObject,
 } from '../checker/object';
-import type {CheckedPackage} from '../checker/package';
+import type {CheckedPackage, Package} from '../checker/package';
 import {resolveDepths} from './depth';
 
 // Build the Program from checked syntax ("noding"). Requires a clean check —
@@ -88,7 +91,7 @@ export function buildProgram(checked: CheckedPackage, errors: Errors): Program {
   if (file === undefined) {
     return fatal('checked package has no source file');
   }
-  return new Noder(checked.info, errors).build(file);
+  return new Noder(checked, errors).build(file);
 }
 
 // Surface lexeme vocabulary → semantic operation vocabulary.
@@ -123,6 +126,8 @@ class ProgramLoweringContext {
   readonly outputRefs = new Map<VariableObject, OutputDecl>();
   readonly aliasRefs = new Map<VariableObject, Place>();
   readonly requests: RequestEdge[] = [];
+  readonly effects: EffectDecl[] = [];
+  readonly effectsByCall = new Map<NativeCall, EffectDecl>();
   readonly requestsByCall = new Map<RequestCall, RequestEdge>();
   readonly rootFrame: FrameLoweringContext;
 
@@ -159,11 +164,11 @@ class Noder {
   private frame: FrameLoweringContext;
 
   constructor(
-    info: Info,
+    private readonly checked: CheckedPackage,
     private readonly errors: Errors,
   ) {
-    this.info = info;
-    this.program = new ProgramLoweringContext(info, null);
+    this.info = checked.info;
+    this.program = new ProgramLoweringContext(checked.info, null);
     this.frame = this.program.rootFrame;
   }
 
@@ -183,19 +188,179 @@ class Noder {
       const stmts = this.nodeStmt(stmt);
       body.push(...this.hoisted, ...stmts, ...this.emitted);
     }
+    const packageGlobals: IrName[] = [];
     const program: Program = {
       version: this.version,
       params: this.params,
       requests: this.program.requests,
       outputs: this.outputs,
+      effects: this.program.effects,
+      packageGlobals,
       // Hoisting const/input/simple work out of the bar loop is a later
       // optimization; everything runs in the per-bar body for now.
       init: [],
       body,
     };
+    this.nodePackageGlobals(this.program, packageGlobals);
     resolveDepths(program);
     this.checkDynamicRequestsFlag(program);
     return program;
+  }
+
+  private nodePackageGlobals(
+    context: ProgramLoweringContext,
+    out: IrName[],
+  ): void {
+    const required = new Set<VariableObject>();
+    this.notePackageGlobalsFromInfo(context.info, required);
+    for (const instance of context.funcs.keys()) {
+      for (const dependency of instance.dependencies) {
+        if (
+          dependency.kind === ObjectKind.Variable &&
+          dependency.packageGlobal !== null
+        ) {
+          required.add(dependency);
+        }
+      }
+    }
+
+    // Close over initializer dependencies. A package import or exported type
+    // alone never seeds runtime state.
+    const pending = [...required];
+    while (pending.length > 0) {
+      const global = pending.pop()!;
+      const owner = global.packageGlobal?.pkg;
+      if (owner === undefined) {
+        continue;
+      }
+      const initializer = this.checked.packageContexts
+        .get(owner)
+        ?.info.packageGlobalInitializers.get(global);
+      if (initializer === undefined) {
+        return fatal(
+          `package global '${owner.path}.${global.name}' has no initializer fact`,
+        );
+      }
+      for (const dependency of initializer.dependencies) {
+        if (
+          dependency.kind === ObjectKind.Variable &&
+          dependency.packageGlobal !== null &&
+          !required.has(dependency)
+        ) {
+          required.add(dependency);
+          pending.push(dependency);
+        }
+      }
+    }
+
+    const packages = new Set(
+      [...required].map(global => global.packageGlobal!.pkg),
+    );
+    const ordered: Package[] = [];
+    const visited = new Set<Package>();
+    const visit = (pkg: Package): void => {
+      if (visited.has(pkg)) {
+        return;
+      }
+      visited.add(pkg);
+      for (const dependency of pkg.imports) {
+        if (packages.has(dependency)) {
+          visit(dependency);
+        }
+      }
+      ordered.push(pkg);
+    };
+    for (const pkg of packages) {
+      visit(pkg);
+    }
+
+    const orderedGlobals: VariableObject[] = [];
+    const placed = new Set<VariableObject>();
+    const place = (global: VariableObject): void => {
+      if (placed.has(global)) {
+        return;
+      }
+      const owner = global.packageGlobal!.pkg;
+      const initializer = this.checked.packageContexts
+        .get(owner)
+        ?.info.packageGlobalInitializers.get(global);
+      if (initializer === undefined) {
+        return fatal(
+          `package global '${owner.path}.${global.name}' has no initializer fact`,
+        );
+      }
+      for (const dependency of initializer.dependencies) {
+        if (
+          dependency.kind === ObjectKind.Variable &&
+          dependency.packageGlobal !== null &&
+          required.has(dependency)
+        ) {
+          place(dependency);
+        }
+      }
+      placed.add(global);
+      orderedGlobals.push(global);
+    };
+    for (const pkg of ordered) {
+      const packageContext = this.checked.packageContexts.get(pkg);
+      if (packageContext === undefined) {
+        return fatal(`package '${pkg.path}' has no checked context`);
+      }
+      for (const global of packageContext.initOrder) {
+        if (required.has(global)) {
+          place(global);
+        }
+      }
+    }
+
+    const savedInfo = this.info;
+    const savedProgram = this.program;
+    const savedFrame = this.frame;
+    this.program = context;
+    this.frame = context.rootFrame;
+    for (const object of orderedGlobals) {
+      const pkg = object.packageGlobal!.pkg;
+      const initializer = this.checked.packageContexts
+        .get(pkg)!
+        .info.packageGlobalInitializers.get(object)!;
+      const name = this.nameOf(object);
+      if (name.init === null) {
+        this.info = initializer.info;
+        name.init = this.nodeExpr(initializer.expr, object.type);
+      }
+      if (!out.includes(name)) {
+        out.push(name);
+      }
+    }
+    this.info = savedInfo;
+    this.program = savedProgram;
+    this.frame = savedFrame;
+  }
+
+  private notePackageGlobalsFromInfo(
+    info: Info,
+    out: Set<VariableObject>,
+  ): void {
+    for (const object of info.uses.values()) {
+      if (
+        object.kind === ObjectKind.Variable &&
+        object.packageGlobal !== null
+      ) {
+        out.add(object);
+      }
+    }
+    for (const call of info.calls.values()) {
+      if (call.kind === CallKind.Function) {
+        for (const dependency of call.instance.dependencies) {
+          if (
+            dependency.kind === ObjectKind.Variable &&
+            dependency.packageGlobal !== null
+          ) {
+            out.add(dependency);
+          }
+        }
+      }
+    }
   }
 
   // Pine v6 dynamic_requests defaults to true; an explicit false on the
@@ -418,6 +583,7 @@ class Noder {
       case NodeKind.AssignStmt:
         return this.nodeAssign(stmt);
       case NodeKind.FuncDecl:
+      case NodeKind.InterfaceDecl:
       case NodeKind.UserTypeDecl:
       case NodeKind.TypeAliasDecl:
       case NodeKind.EnumDecl:
@@ -450,6 +616,9 @@ class Noder {
         if (resolved.native.effect === Effect.Param) {
           this.ensureParam(call, resolved, null);
           return [];
+        }
+        if (resolved.native.effect === Effect.Emit) {
+          return [this.nodeEffectCall(call, resolved)];
         }
       }
     }
@@ -1005,6 +1174,8 @@ class Noder {
         return this.nodeOutputCall(c, resolved);
       case Effect.Request:
         return fatal('request native lacks request semantics');
+      case Effect.Emit:
+        return fatal('effect.emit in expression position reached the noder');
       case Effect.Declaration:
         return fatal(
           'declaration call in expression position reached the noder',
@@ -1386,6 +1557,7 @@ class Noder {
     this.program = parentProgram;
     this.frame = savedFrame;
 
+    const childPackageGlobals: IrName[] = [];
     const child: Program = {
       version: this.version,
       // Bind-time params are compilation-global: a child references the
@@ -1393,6 +1565,8 @@ class Noder {
       params: [],
       requests: childContext.requests,
       outputs: [],
+      effects: childContext.effects,
+      packageGlobals: childPackageGlobals,
       init: [],
       body: [
         {
@@ -1403,6 +1577,7 @@ class Noder {
         },
       ],
     };
+    this.nodePackageGlobals(childContext, childPackageGlobals);
 
     // In the program frame, bind-known context expressions may use immutable
     // input/simple aliases and pure UDFs because module.bind owns a real root
@@ -1716,6 +1891,84 @@ class Noder {
       qualifier: Qualifier.Const,
       output,
     };
+  }
+
+  private nodeEffectCall(
+    c: syntax.CallExpr,
+    resolved: NativeCall,
+  ): EmitEffectStmt {
+    let effect = this.program.effectsByCall.get(resolved);
+    if (effect === undefined) {
+      const payloadType = resolved.argTypes[0];
+      if (payloadType === undefined) {
+        return fatal('effect.emit lacks its checked payload type');
+      }
+      effect = {
+        payloadType,
+        payloadSchema: this.effectValueSchema(payloadType),
+        sourcePosition: c.pos,
+      };
+      this.program.effectsByCall.set(resolved, effect);
+      this.program.effects.push(effect);
+    }
+    const lowered = this.nodeNativeArgs(c, resolved);
+    if (
+      lowered.args.length !== 1 ||
+      lowered.argumentEvaluationOrder.length !== 1 ||
+      lowered.argumentEvaluationOrder[0] !== 0
+    ) {
+      return fatal('effect.emit lost its single payload evaluation contract');
+    }
+    return {
+      kind: IrKind.EmitEffect,
+      pos: c.pos,
+      effect,
+      payload: lowered.args[0],
+    };
+  }
+
+  private effectValueSchema(type: Type): EffectValueSchema {
+    switch (type.kind) {
+      case TypeKind.Int:
+        return {kind: 'int'};
+      case TypeKind.Float:
+        return {kind: 'float'};
+      case TypeKind.Bool:
+        return {kind: 'bool'};
+      case TypeKind.String:
+        return {kind: 'string'};
+      case TypeKind.Color:
+        return {kind: 'color'};
+      case TypeKind.Enum:
+        return {
+          kind: 'enum',
+          typeId: this.nominalTypeId(type),
+          displayName: type.name,
+          members: type.members.map(member => ({...member})),
+        };
+      case TypeKind.UserType:
+        return {
+          kind: 'user-type',
+          typeId: this.nominalTypeId(type),
+          displayName: type.name,
+          fields: type.fields.map(field => ({
+            name: field.name,
+            value: this.effectValueSchema(field.type),
+          })),
+        };
+      default:
+        return fatal(
+          `non-fixed type '${type.kind}' reached effect schema projection`,
+        );
+    }
+  }
+
+  private nominalTypeId(type: Type): string {
+    if (type.kind !== TypeKind.UserType && type.kind !== TypeKind.Enum) {
+      return fatal(`non-nominal type '${type.kind}' has no nominal identity`);
+    }
+    const id = this.checked.nominalTypeIds.get(type);
+    return id ?? fatal(`nominal type '${type.name}' has no checker identity`);
   }
 
   // Split a declarative call's provided args into the three buckets:

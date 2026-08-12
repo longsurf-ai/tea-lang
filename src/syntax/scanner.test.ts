@@ -116,9 +116,10 @@ describe('keywords', () => {
     });
   }
 
-  test('this is reserved while struct is contextual', () => {
+  test('this is reserved while struct and interface are contextual', () => {
     expect(RESERVED_KEYWORDS).toContain('this');
     expect(CONTEXTUAL_KEYWORDS).toContain('struct');
+    expect(CONTEXTUAL_KEYWORDS).toContain('interface');
     expect(CONTEXTUAL_KEYWORDS).not.toContain('method');
     expect(kinds(scanText('method inout'))).toEqual([
       'name',

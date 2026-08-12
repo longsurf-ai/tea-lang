@@ -1,8 +1,6 @@
 // Purpose: Request context lowering preserves the Program-owned source order while assembling the canonical symbol/timeframe ABI pair.
 
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_COMPILE_CONFIG} from '../base/config';
-import {Errors} from '../base/print';
 import {mustBuild} from '../noder/testing';
 import {generate} from './codegen';
 
@@ -17,7 +15,7 @@ describe('request context evaluation order', () => {
         'plot(d)',
       ].join('\n'),
     );
-    const js = generate(program, DEFAULT_COMPILE_CONFIG, new Errors());
+    const js = generate(program);
     const bind = js.indexOf('bind(rt, fr)');
     const timeframe = js.indexOf('"TIMEFRAME_SENTINEL"', bind);
     const symbol = js.indexOf('"SYMBOL_SENTINEL"', bind);
@@ -61,7 +59,7 @@ describe('request context evaluation order', () => {
     expect(edge.optionArgumentEvaluationOrder).toEqual([3, 1, 2, 0]);
     expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
 
-    const js = generate(program, DEFAULT_COMPILE_CONFIG, new Errors());
+    const js = generate(program);
     const bind = js.slice(js.indexOf('bind(rt, fr)'));
     const optionCall = bind.match(
       /rt\.bindRequestOptions\(0, \((t\d+)\), \((t\d+)\), \((t\d+)\), \((t\d+)\)\);/,
@@ -101,7 +99,7 @@ describe('request context evaluation order', () => {
     );
     expect(program.requests[0].dynamic).toBe(true);
 
-    const js = generate(program, DEFAULT_COMPILE_CONFIG, new Errors());
+    const js = generate(program);
     const rootBind = js.lastIndexOf('bind(rt, fr)');
     const bind = js.slice(rootBind, js.indexOf('inits:', rootBind));
     expect(bind).toContain('rt.bindRequestOptions(0,');
@@ -118,7 +116,7 @@ describe('request context evaluation order', () => {
       ].join('\n'),
     );
 
-    const js = generate(program, DEFAULT_COMPILE_CONFIG, new Errors());
+    const js = generate(program);
     const rootBind = js.lastIndexOf('bind(rt, fr)');
     const bind = js.slice(rootBind, js.indexOf('inits:', rootBind));
     const executionRead = bind.indexOf('rt.execution(0, 0)');
@@ -148,7 +146,7 @@ describe('request context evaluation order', () => {
     };
     invalidEdge.contextArgumentEvaluationOrder = [0, 0];
 
-    expect(() => generate(valid, DEFAULT_COMPILE_CONFIG, new Errors())).toThrow(
+    expect(() => generate(valid)).toThrow(
       'request context has an invalid argument evaluation order',
     );
   });
@@ -165,7 +163,7 @@ describe('request context evaluation order', () => {
     };
     invalidEdge.optionArgumentEvaluationOrder = [0, 0, 2, 3];
 
-    expect(() => generate(valid, DEFAULT_COMPILE_CONFIG, new Errors())).toThrow(
+    expect(() => generate(valid)).toThrow(
       'request options has an invalid argument evaluation order',
     );
   });

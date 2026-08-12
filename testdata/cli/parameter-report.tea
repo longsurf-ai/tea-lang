@@ -1,0 +1,11 @@
+//@version=1
+strategy("CLI parameter report")
+
+type Sample
+	float value
+
+scale = input.float(2.0, "Scale", minval=-4.0, maxval=4.0)
+initial_cash = input.float(0.0, "Initial cash", minval=-10.0, maxval=10.0)
+value = close * scale + initial_cash
+effect.emit(Sample.new(value))
+plot(value, "scaled close")

@@ -30,6 +30,7 @@ order is preserved because it is part of compiler matching behavior.
 - [`bgcolor`](#function-bgcolor)
 - [`color.new`](#function-color-new)
 - [`color.rgb`](#function-color-rgb)
+- [`effect.emit`](#function-effect-emit)
 - [`fill`](#function-fill)
 - [`float`](#function-float)
 - [`hline`](#function-hline)
@@ -91,6 +92,7 @@ order is preserved because it is part of compiler matching behavior.
 - [`plotshape`](#function-plotshape)
 - [`request.security`](#function-request-security)
 - [`str.tostring`](#function-str-tostring)
+- [`strategy`](#function-strategy)
 
 ## `alertcondition` {#function-alertcondition}
 
@@ -360,6 +362,20 @@ _No parameters._
 **Result qualifier:** `joined from arguments`
 
 **Native effect class:** `none`
+
+## `effect.emit` {#function-effect-emit}
+
+### Signature
+
+`effect.emit<T: effect-payload>(value: T) → void`
+
+| Parameter | Type | Qualifier cap | Required | Rules |
+| --------- | ---- | ------------- | -------- | ----- |
+| `value`   | `T`  | `series`      | Yes      | —     |
+
+**Result qualifier:** `const`
+
+**Native effect class:** `emit`
 
 ## `fill` {#function-fill}
 
@@ -1690,3 +1706,19 @@ _No parameters._
 **Result qualifier:** `joined from arguments`
 
 **Native effect class:** `none`
+
+## `strategy` {#function-strategy}
+
+### Signature
+
+`strategy(title: string, shorttitle?: string, overlay?: bool) → void`
+
+| Parameter    | Type     | Qualifier cap | Required | Rules            |
+| ------------ | -------- | ------------- | -------- | ---------------- |
+| `title`      | `string` | `const`       | Yes      | constant literal |
+| `shorttitle` | `string` | `const`       | No       | constant literal |
+| `overlay`    | `bool`   | `const`       | No       | constant literal |
+
+**Result qualifier:** `const`
+
+**Native effect class:** `declaration`

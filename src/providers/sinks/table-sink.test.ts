@@ -16,7 +16,7 @@ describe('TableSink', () => {
   test('prints a headed table and a preamble for channel-less outputs', () => {
     const chunks: string[] = [];
     const sink = new TableSink(text => chunks.push(text));
-    sink.declare([
+    sink.declare({outputs: [
       {
         spec: spec(
           'indicator',
@@ -33,8 +33,8 @@ describe('TableSink', () => {
           'plot',
           [{name: 'title', value: 'Histogram'}],
           [
-            {name: 'series', type: 'float'},
-            {name: 'color', type: 'color'},
+            {name: 'series', type: 'float', transport: {kind: 'float'}},
+            {name: 'color', type: 'color', transport: {kind: 'color'}},
           ],
         ),
         boundArgs: [],
@@ -43,15 +43,29 @@ describe('TableSink', () => {
         spec: spec(
           'plot',
           [{name: 'title', value: 'MACD'}],
-          [{name: 'series', type: 'float'}],
+          [{name: 'series', type: 'float', transport: {kind: 'float'}}],
         ),
         boundArgs: [],
       },
-    ]);
-    sink.emit(0, 1, [0, '#B2DFDB'], false);
-    sink.emit(0, 2, [0], false);
-    sink.emit(1, 1, [0.5, '#26A69A'], false);
-    sink.emit(1, 2, [0.6], false);
+    ], effects: []});
+    sink.publish({
+      row: 0,
+      outputs: [
+        {outputId: 1, channels: [0, '#B2DFDB']},
+        {outputId: 2, channels: [0]},
+      ],
+      effects: [],
+      provisional: false,
+    });
+    sink.publish({
+      row: 1,
+      outputs: [
+        {outputId: 1, channels: [0.5, '#26A69A']},
+        {outputId: 2, channels: [0.6]},
+      ],
+      effects: [],
+      provisional: false,
+    });
     sink.flush();
 
     expect(chunks.join('\n')).toBe(

@@ -81,8 +81,14 @@ describe('canonical user types', () => {
       index: 0,
       name: 'x',
     });
-    expect(wrapper.type.fields[0]).toBe(wrapper.fields[0]);
-    expect(point.type.fields[0]).toBe(point.fields[0]);
+    expect(wrapper.type.fields[0]).toEqual({
+      name: wrapper.fields[0].name,
+      type: wrapper.fields[0].type,
+    });
+    expect(point.type.fields[0]).toEqual({
+      name: point.fields[0].name,
+      type: point.fields[0].type,
+    });
 
     const fieldType = wrapperField.fieldType.name;
     expect(fieldType.kind).toBe(NodeKind.Name);

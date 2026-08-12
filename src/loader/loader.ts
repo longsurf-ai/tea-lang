@@ -1,7 +1,8 @@
 // Purpose: Source loading and import resolution — the driver-side half of the import seam: parses entry files, resolves import paths through a registry, loads source packages recursively with cycle detection, and hands the checker an Importer. Never reports user errors; the checker positions them.
 
 import {readFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {formatPos, newFileBase} from '../base/pos';
 import {fatal, type Errors} from '../base/print';
 import {
@@ -34,11 +35,19 @@ export interface PackageSource {
 
 export type Registry = (path: string) => PackageSource | 'external' | null;
 
-// Builtin libraries ship with the compiler; single-segment import paths only.
-const BUILTIN_FILES: ReadonlyMap<string, string> = new Map([['ta', 'ta.tea']]);
+// Compiler-shipped libraries use single-segment import paths. Shipping a
+// library and placing it in the implicit prelude are separate decisions:
+// strategy components stay visible as explicit source imports.
+const BUILTIN_FILES: ReadonlyMap<string, string> = new Map([
+  ['ta', 'ta.tea'],
+  ['broker', 'broker.tea'],
+  ['portfolio', 'portfolio.tea'],
+  ['strategy', 'strategy.tea'],
+]);
 
-// Every builtin library is implicitly imported into every script.
-const DEFAULT_IMPLICIT: readonly string[] = [...BUILTIN_FILES.keys()];
+// Pine-compatible technical analysis remains the sole implicit library.
+const DEFAULT_IMPLICIT: readonly string[] = ['ta'];
+const LOADER_DIR = dirname(fileURLToPath(import.meta.url));
 
 export function defaultRegistry(
   path: string,
@@ -52,7 +61,7 @@ export function defaultRegistry(
   }
   return {
     filename: `lib/${filename}`,
-    source: readFileSync(join(import.meta.dir, '../lib', filename), 'utf8'),
+    source: readFileSync(join(LOADER_DIR, '../lib', filename), 'utf8'),
   };
 }
 

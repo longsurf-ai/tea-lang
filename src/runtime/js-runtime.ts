@@ -13,6 +13,7 @@ import {
   isTupleValue,
   isUserTypeValue,
   RequestError,
+  RUNTIME_ABI_VERSION,
   type BindInputs,
   type BoundInput,
   type BoundProgram,
@@ -23,7 +24,11 @@ import {
   type ContextBudget,
   type ContextError,
   type DataProvider,
+  type DenseEmission,
   type DepthSpec,
+  type EffectEmission,
+  type EffectValue,
+  type EffectValueSchema,
   type ExecutionSource,
   ExecutionError,
   type FixedValueStorageBudget,
@@ -35,6 +40,7 @@ import {
   type ProviderContext,
   type RangeDemand,
   type RequestSpec,
+  type RowPublication,
   type Runtime,
   type SeriesData,
   type TeaModule,
@@ -49,6 +55,7 @@ import {
   type StorageRef,
 } from './heap';
 import {assertMergeAxis, sampleMergeMap} from './merge';
+import {resolveParamValues} from './params';
 import {isHistoryOffset, Ring, type RingPublicationMode} from './ring';
 import {rebuildUserPath, newUserValue, userField} from './user-value';
 import {type LayoutId, ValueLayoutRegistry} from './value-layout';
@@ -110,8 +117,10 @@ export async function bind(
     typeof module === 'object' && module !== null
       ? (module as {readonly abi?: unknown}).abi
       : undefined;
-  if (abi !== 4) {
-    throw new BindError(`unsupported module ABI ${String(abi)}`);
+  if (abi !== RUNTIME_ABI_VERSION) {
+    throw new BindError(
+      `unsupported module ABI ${String(abi)}; expected ${RUNTIME_ABI_VERSION}`,
+    );
   }
   const timeNow = bindTimeNow(inputs.timeNow);
   const maxRequestContexts = requestContextLimit(inputs.maxRequestContexts);
@@ -147,7 +156,7 @@ export async function bind(
     throw new BindError(formatContextError('primary context', context));
   }
   const contextIdentity = effectiveContextIdentity(context, symbol, timeframe);
-  const params = resolveParams(module.manifest, inputs.params);
+  const params = resolveParamValues(module.manifest.params, inputs.params);
   const layouts = new ValueLayoutRegistry(module.aggregateLayouts);
   const shared: SharedRuntimeState = {
     aggregateLayouts: layouts,
@@ -282,112 +291,6 @@ async function runChildRows(
 
 function formatContextError(what: string, error: ContextError): string {
   return `${what}: ${error.error} (${error.detail})`;
-}
-
-// Param resolution is a pure function of the manifest and the host's raw
-// values; request children skip it — bind-time params are compilation-global
-// and children inherit the parent's resolved values.
-function resolveParams(
-  manifest: ModuleManifest,
-  raw: Readonly<Record<string, unknown>>,
-): Value[] {
-  const specs = manifest.params;
-  const known = new Set(specs.map(spec => spec.name));
-  for (const name of Object.keys(raw)) {
-    if (!known.has(name)) {
-      throw new BindError(`unknown parameter '${name}'`);
-    }
-  }
-  const values: Value[] = [];
-  for (const spec of specs) {
-    const provided = raw[spec.name];
-    const candidate = provided !== undefined ? provided : spec.defaultValue;
-    let value: Value;
-    if (spec.type === 'int' || spec.type === 'float') {
-      if (typeof candidate !== 'number') {
-        throw new BindError(`parameter '${spec.name}' expects a number`);
-      }
-      if (!Number.isFinite(candidate)) {
-        throw new BindError(`parameter '${spec.name}' expects a finite number`);
-      }
-      if (spec.type === 'int' && !Number.isSafeInteger(candidate)) {
-        throw new BindError(`parameter '${spec.name}' expects a safe integer`);
-      }
-      value = candidate;
-    } else if (spec.type === 'bool') {
-      if (typeof candidate !== 'boolean') {
-        throw new BindError(`parameter '${spec.name}' expects a boolean`);
-      }
-      value = candidate;
-    } else if (spec.type === 'color') {
-      if (typeof candidate !== 'string') {
-        throw new BindError(`parameter '${spec.name}' expects a color`);
-      }
-      const color = canonicalInputColor(candidate);
-      if (color === null) {
-        throw new BindError(
-          `parameter '${spec.name}' expects #RRGGBB or #RRGGBBAA`,
-        );
-      }
-      value = color;
-    } else if (spec.type === 'enum') {
-      if (typeof candidate !== 'string') {
-        throw new BindError(`parameter '${spec.name}' expects an enum member`);
-      }
-      const enumType = spec.enumType;
-      if (enumType === null) {
-        return fatal(`enum parameter '${spec.name}' has no enum metadata`);
-      }
-      if (!enumType.members.some(member => member.name === candidate)) {
-        throw new BindError(
-          `parameter '${spec.name}' is not a member of enum '${enumType.name}'`,
-        );
-      }
-      value = candidate;
-    } else {
-      if (typeof candidate !== 'string') {
-        throw new BindError(`parameter '${spec.name}' expects a string`);
-      }
-      value = candidate;
-    }
-    const c = spec.constraints;
-    if (c?.kind === 'range') {
-      if (typeof value !== 'number') {
-        return fatal(
-          `non-numeric parameter '${spec.name}' has range constraints`,
-        );
-      }
-      if (c.minval !== null && value < c.minval) {
-        throw new BindError(
-          `parameter '${spec.name}' below minval ${c.minval}`,
-        );
-      }
-      if (c.maxval !== null && value > c.maxval) {
-        throw new BindError(
-          `parameter '${spec.name}' above maxval ${c.maxval}`,
-        );
-      }
-    } else if (
-      c?.kind === 'options' &&
-      !c.options.some(option => option === value)
-    ) {
-      throw new BindError(
-        `parameter '${spec.name}' must be one of ${c.options.map(String).join(', ')}`,
-      );
-    }
-    values.push(value);
-  }
-  return values;
-}
-
-function canonicalInputColor(value: string): string | null {
-  const match = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(value);
-  if (match === null) {
-    return null;
-  }
-  const base = `#${match[1].toUpperCase()}`;
-  const alpha = match[2]?.toUpperCase();
-  return alpha === undefined || alpha === 'FF' ? base : `${base}${alpha}`;
 }
 
 interface FrameImpl extends Frame {
@@ -543,7 +446,12 @@ function reserveFixedValueStorage(
 
 interface PendingFinalCommit {
   readonly heap: PreparedHeapPublication;
-  readonly emissions: ReadonlyMap<number, readonly Value[]>;
+  readonly publication: AttemptPublication;
+}
+
+interface AttemptPublication {
+  readonly outputs: readonly DenseEmission[];
+  readonly effects: readonly EffectEmission[];
 }
 
 type Phase = 'binding' | 'executing';
@@ -602,6 +510,8 @@ class JSRuntime implements Runtime, BoundProgram {
   private committedRows = 0;
   private executedRow = -1;
   private emitBuf = new Map<number, Value[]>();
+  private effectBuf: EffectEmission[] = [];
+  private terminalSinkFailure: {readonly cause: unknown} | null = null;
 
   // The runtime instance for one module against one resolved context —
   // request children recurse through the same class with a null sink, the
@@ -636,6 +546,7 @@ class JSRuntime implements Runtime, BoundProgram {
     this.rows = context.rows;
     this.paramActive = module.manifest.params.map(() => true);
     this.boundOutputArgs = module.manifest.outputs.map(() => []);
+    this.validateEffectSchemas();
     this.collections = new CollectionRuntime(
       shared.heap,
       shared.aggregateLayouts,
@@ -980,12 +891,13 @@ class JSRuntime implements Runtime, BoundProgram {
   finishBind(): void {
     this.phase = 'executing';
     if (this.sink !== null) {
-      this.sink.declare(
-        this.module.manifest.outputs.map((spec, oid) => ({
+      this.sink.declare({
+        outputs: this.module.manifest.outputs.map((spec, oid) => ({
           spec,
           boundArgs: this.boundOutputArgs[oid],
         })),
-      );
+        effects: this.module.manifest.effects.map(effect => effect.declaration),
+      });
     }
   }
 
@@ -1053,6 +965,94 @@ class JSRuntime implements Runtime, BoundProgram {
         }
       }
     });
+  }
+
+  private validateEffectSchemas(): void {
+    const active = new Set<LayoutId>();
+    const validate = (
+      layoutId: LayoutId,
+      schema: (typeof this.module.manifest.effects)[number]['declaration']['payload'],
+    ): void => {
+      if (active.has(layoutId)) {
+        return fatal(`effect payload layout ${layoutId} is recursively sized`);
+      }
+      active.add(layoutId);
+      const layout = this.shared.aggregateLayouts.layout(layoutId);
+      switch (layout.kind) {
+        case 'number':
+          if (schema.kind !== layout.numeric) {
+            return fatal(
+              `effect payload layout ${layoutId} disagrees with logical ${schema.kind} schema`,
+            );
+          }
+          break;
+        case 'boolean':
+          if (schema.kind !== 'bool') {
+            return fatal(
+              `effect payload layout ${layoutId} disagrees with logical ${schema.kind} schema`,
+            );
+          }
+          break;
+        case 'nullable-scalar':
+          if (schema.kind !== layout.scalar) {
+            return fatal(
+              `effect payload layout ${layoutId} disagrees with logical ${schema.kind} schema`,
+            );
+          }
+          break;
+        case 'enum':
+          if (
+            schema.kind !== 'enum' ||
+            schema.typeId !== layout.typeId ||
+            schema.displayName !== layout.name ||
+            schema.members.length !== layout.members.length ||
+            schema.members.some(
+              (member, index) => member.name !== layout.members[index],
+            )
+          ) {
+            return fatal(
+              `effect payload layout ${layoutId} disagrees with logical enum schema`,
+            );
+          }
+          break;
+        case 'user-type':
+          if (
+            schema.kind !== 'user-type' ||
+            schema.typeId !== layout.typeId ||
+            schema.displayName !== layout.name ||
+            schema.fields.length !== layout.fields.length
+          ) {
+            return fatal(
+              `effect payload layout ${layoutId} disagrees with logical user-type schema`,
+            );
+          }
+          for (const [index, field] of layout.fields.entries()) {
+            const logicalField = schema.fields[index];
+            if (
+              logicalField === undefined ||
+              logicalField.name !== field.name
+            ) {
+              return fatal(
+                `effect payload layout ${layoutId} disagrees at field ${index}`,
+              );
+            }
+            validate(field.layout, logicalField.value);
+          }
+          break;
+        case 'resource':
+        case 'array':
+        case 'matrix':
+        case 'map':
+        case 'tuple':
+          return fatal(
+            `effect payload layout ${layoutId} has unsupported ${layout.kind} transport`,
+          );
+      }
+      active.delete(layoutId);
+    };
+    this.module.manifest.effects.forEach(effect =>
+      validate(effect.layout, effect.declaration.payload),
+    );
   }
 
   // ---- frames ---------------------------------------------------------------
@@ -1215,8 +1215,7 @@ class JSRuntime implements Runtime, BoundProgram {
         sameRow,
       );
     }
-    let provisionalEmissions: ReadonlyMap<number, readonly Value[]> | null =
-      null;
+    let provisionalPublication: AttemptPublication | null = null;
     try {
       this.resetFrameScratch(this.mustRoot(), sameRow);
       if (retryAfterAbort) {
@@ -1226,20 +1225,24 @@ class JSRuntime implements Runtime, BoundProgram {
         ring?.resetScratch(ring.emptyValue);
       }
       this.emitBuf = new Map();
+      this.effectBuf = [];
       this.module.main(this, this.mustRoot());
       const publication = attempt.preparePublication(
         this.publicationRoots(
           provisional ? 'provisional-candidate' : 'final-candidate',
         ),
       );
-      const emissions = this.snapshotEmissions();
+      const rowPublication = this.snapshotPublication();
       if (provisional) {
         publication.publish();
         this.heapAttempt = null;
         this.varipSnapshot = null;
-        provisionalEmissions = emissions;
+        provisionalPublication = rowPublication;
       } else {
-        this.pendingFinalCommit = {heap: publication, emissions};
+        this.pendingFinalCommit = {
+          heap: publication,
+          publication: rowPublication,
+        };
       }
     } catch (error) {
       if (this.heapAttempt !== null) {
@@ -1252,13 +1255,14 @@ class JSRuntime implements Runtime, BoundProgram {
       }
       this.pendingFinalCommit = null;
       this.emitBuf = new Map();
+      this.effectBuf = [];
       throw error;
     }
-    if (provisionalEmissions === null) {
+    if (provisionalPublication === null) {
       return;
     }
     try {
-      this.flushEmissions(row, true, provisionalEmissions);
+      this.publishRow(row, true, provisionalPublication);
     } finally {
       this.discardProvisionalScratch(this.mustRoot());
       for (const ring of this.requestRings) {
@@ -1347,7 +1351,7 @@ class JSRuntime implements Runtime, BoundProgram {
     this.varipSnapshot = null;
     this.committedRows = row + 1;
     try {
-      this.flushEmissions(row, false, pending.emissions);
+      this.publishRow(row, false, pending.publication);
     } finally {
       // Delivery is outside Tea's atomic transition. Even a failing sink
       // cannot skip post-commit reclamation or roll back published state.
@@ -1453,25 +1457,35 @@ class JSRuntime implements Runtime, BoundProgram {
     this.varipSnapshot = null;
   }
 
-  private snapshotEmissions(): ReadonlyMap<number, readonly Value[]> {
-    return new Map(
-      [...this.emitBuf].map(([oid, channels]) => [
-        oid,
-        Object.freeze([...channels]),
-      ]),
-    );
+  private snapshotPublication(): AttemptPublication {
+    return {
+      outputs: [...this.emitBuf].map(([outputId, channels]) => ({
+        outputId,
+        channels: Object.freeze([...channels]),
+      })),
+      effects: this.effectBuf.map(effect => ({...effect})),
+    };
   }
 
-  private flushEmissions(
+  private publishRow(
     row: number,
     provisional: boolean,
-    emissions: ReadonlyMap<number, readonly Value[]>,
+    publication: AttemptPublication,
   ): void {
     if (this.sink === null) {
       return;
     }
-    for (const [oid, channels] of emissions) {
-      this.sink.emit(row, oid, channels, provisional);
+    const rowPublication: RowPublication = {
+      row,
+      outputs: publication.outputs,
+      effects: publication.effects,
+      provisional,
+    };
+    try {
+      this.sink.publish(rowPublication);
+    } catch (cause) {
+      this.terminalSinkFailure = {cause};
+      throw cause;
     }
   }
 
@@ -1897,6 +1911,53 @@ class JSRuntime implements Runtime, BoundProgram {
     channels[channel] = v;
   }
 
+  emitEffect(effectId: number, payload: Value): void {
+    if (this.phase !== 'executing') {
+      return fatal('emitEffect outside the module execution phase');
+    }
+    const spec = this.module.manifest.effects[effectId];
+    if (spec === undefined) {
+      return fatal(`effect emission references unknown effect ${effectId}`);
+    }
+    this.shared.aggregateLayouts.assertValue(
+      spec.layout,
+      payload,
+      `effect ${effectId} payload`,
+    );
+    this.effectBuf.push({
+      effectId,
+      payload: this.logicalEffectValue(spec.declaration.payload, payload),
+    });
+  }
+
+  private logicalEffectValue(
+    schema: EffectValueSchema,
+    value: Value,
+  ): EffectValue {
+    if (schema.kind !== 'user-type' || value === null) {
+      if (
+        typeof value === 'number' ||
+        typeof value === 'string' ||
+        typeof value === 'boolean' ||
+        value === null
+      ) {
+        return value;
+      }
+      return fatal(`non-scalar value reached logical ${schema.kind} effect`);
+    }
+    if (!isUserTypeValue(value)) {
+      return fatal(`non-user value reached logical ${schema.typeId} effect`);
+    }
+    return Object.freeze({
+      kind: 'user-type' as const,
+      fields: Object.freeze(
+        schema.fields.map((field, index) =>
+          this.logicalEffectValue(field.value, value.fields[index]),
+        ),
+      ),
+    });
+  }
+
   bindDepth(fid: number, slot: number, bars: number): void {
     this.assertBinding('bindDepth');
     this.boundLocalDepths.set(`${fid}:${slot}`, retentionForOffset(bars));
@@ -2043,6 +2104,9 @@ class JSRuntime implements Runtime, BoundProgram {
   private assertLive(): void {
     if (this.disposed || this.shared.disposed) {
       fatal('runtime is disposed');
+    }
+    if (this.terminalSinkFailure !== null) {
+      throw this.terminalSinkFailure.cause;
     }
   }
 }

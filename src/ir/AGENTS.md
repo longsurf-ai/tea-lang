@@ -9,6 +9,11 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
 - The compiler describes; the runtime implements. The Program is a pure
   static description — it never encodes Time Machine mechanics (ring buffers,
   copy-on-write, rollback, provisional overlays), which are runtime-owned.
+- `Program` is the only post-check static program contract for every source
+  kind and backend. Indicator and strategy declarations remain ordinary
+  `Program.outputs` facts. Do not introduce an execution-mode wrapper,
+  strategy-specific Program, copied result schema, or paired compiler artifact;
+  JS and WGSL codegen consume the same Program directly.
 - One type system. Checker, IR, and Program all share `type.ts`; no parallel
   spec-vs-backend type representations. Qualifiers
   (`const < input < simple < series`) are an orthogonal axis; combining values
@@ -50,7 +55,8 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   calls carry the rooted path used by success-only copy-out.
 - `visit.ts` owns IR traversal; its switches are exhaustive over `IrKind`
   (a new kind fails compilation there until handled). Program fields are
-  the external-needs interface (params, requests) plus emissions (outputs)
+  the external-needs interface (params, requests) plus dense and sparse
+  emissions (outputs, effects)
   — explicit even where derivable, so codegen/runtime never walk trees to
   learn what a program needs. Numeric context data uses `SeriesInput`; typed
   builtins use `ExecutionInput`, whose closed `ExecutionSource.domain` is only

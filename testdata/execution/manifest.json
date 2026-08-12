@@ -38,6 +38,18 @@
       }
     },
     {
+      "id": "strategy-components",
+      "kind": "compile-through",
+      "source": "compile/strategy-components/source.tea",
+      "data": "compile/strategy-components/data.csv",
+      "reference": "compile/strategy-components/reference.json",
+      "sha256": {
+        "source": "de668389292d81714d42b97aa1ee284de8e1ecd826c899f3634283d98af321d5",
+        "data": "e1e088513ef236556ec9f781dfec7aa0df1ceae7b93683320391039f0a985a9b",
+        "reference": "21cf63ec07a18f8671153c30a05a77725d6cdf917551bf37101d194461696084"
+      }
+    },
+    {
       "id": "moving-averages",
       "kind": "differential",
       "source": "differential/moving-averages/source.tea",

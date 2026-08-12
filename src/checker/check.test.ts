@@ -235,7 +235,10 @@ describe('user-defined types', () => {
     if (sample?.kind === ObjectKind.UserType) {
       // As in Go structs, the declared type and semantic declaration graph
       // refer to the same canonical field objects.
-      expect(sample.type.fields[0]).toBe(sample.fields[0]);
+      expect(sample.type.fields[0]).toEqual({
+        name: 'value',
+        type: sample.fields[0].type,
+      });
       expect(sample.fields[0].defaultValue?.tv.qualifier).toBe(
         Qualifier.Series,
       );
@@ -610,6 +613,69 @@ describe('native calls', () => {
     }
 
     expect(checkText('indicator("t", max_bars_back=5000)').errors).toEqual([]);
+  });
+
+  test('strategy has the exact minimal declaration surface', () => {
+    const overloads = CATALOG.funcs.get('strategy');
+    expect(overloads).toHaveLength(1);
+    expect(overloads?.[0]?.params.map(param => param.name)).toEqual([
+      'title',
+      'shorttitle',
+      'overlay',
+    ]);
+    expect(overloads?.[0]?.effect).toBe('declaration');
+
+    expect(
+      checkText('strategy("Strategy", "Short", overlay=true)').errors,
+    ).toEqual([]);
+    expect(
+      checkText('strategy("Strategy", format="price")').errors.map(
+        error => error.msg,
+      ),
+    ).toContainEqual(expect.stringContaining("unknown argument 'format'"));
+  });
+
+  test('strategy is one exclusive first-statement declaration', () => {
+    const late = checkText('value = 1\nstrategy("Late")');
+    expect(late.errors.map(error => error.msg)).toContain(
+      'strategy() declaration must be the first statement in a strategy script',
+    );
+
+    const duplicate = checkText('strategy("First")\nstrategy("Second")');
+    expect(duplicate.errors.map(error => error.msg)).toContain(
+      'duplicate strategy() declaration',
+    );
+
+    for (const other of ['indicator("Indicator")', 'library("library")']) {
+      const conflict = checkText(`strategy("Strategy")\n${other}`);
+      expect(conflict.errors.map(error => error.msg)).toContain(
+        `strategy() cannot be combined with ${other.slice(0, other.indexOf('('))}()`,
+      );
+    }
+
+    const nested = checkText(['if true', '    strategy("Nested")'].join('\n'));
+    expect(nested.errors.map(error => error.msg)).toContain(
+      "'strategy' can only be called at the top level of the script",
+    );
+  });
+
+  test('parentheses do not bypass strategy declaration placement rules', () => {
+    const late = checkText('value = 1\n(strategy("Late"))');
+    expect(late.errors.map(error => error.msg)).toContain(
+      'strategy() declaration must be the first statement in a strategy script',
+    );
+
+    const duplicate = checkText('strategy("First")\n((strategy("Second")))');
+    expect(duplicate.errors.map(error => error.msg)).toContain(
+      'duplicate strategy() declaration',
+    );
+
+    const conflict = checkText(
+      'strategy("Strategy")\n(indicator("Indicator"))',
+    );
+    expect(conflict.errors.map(error => error.msg)).toContain(
+      'strategy() cannot be combined with indicator()',
+    );
   });
 
   test('input overloads preserve their exact positional and nominal types', () => {

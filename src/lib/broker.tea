@@ -1,0 +1,104 @@
+//@version=1
+// Canonical order/fill vocabulary and the deterministic reference broker.
+// Every Basic value is explicit scenario state; the package hides no broker.
+library("broker")
+
+export enum Side
+	buy
+	sell
+
+export enum Rejection
+	pendingOrder
+	invalidAccountState
+
+export type Order
+	int id
+	string commandId
+	Side side
+	int signalBarIndex
+
+export type Fill
+	int id
+	int orderId
+	string commandId
+	Side side
+	int barIndex
+	float referencePrice
+	float price
+	float quantity
+	float notional
+	float fee
+
+export type OrderSubmitted
+	Order order
+
+export type FillExecuted
+	Fill fill
+
+export type OrderExpired
+	Order order
+
+export type OrderRejected
+	string commandId
+	Side side
+	int barIndex
+	Rejection reason
+
+export interface Broker
+	bool has_pending() const
+	Order submit(string commandId, Side side, int signalBarIndex)
+	Fill on_open(float referencePrice, float buyingPower, float positionQuantity, int barIndex)
+	Order finish()
+
+export type Basic
+	float adverseSlippageRate
+	float takerFeeRate
+	int nextOrderId = 1
+	int nextFillId = 1
+	Order pending = na
+
+	bool has_pending() const =>
+		not na(this.pending)
+
+	Order submit(string commandId, Side side, int signalBarIndex) =>
+		Order order = na
+		if na(this.pending)
+			order := Order.new(this.nextOrderId, commandId, side, signalBarIndex)
+			this.nextOrderId := this.nextOrderId + 1
+			this.pending := order
+			effect.emit(OrderSubmitted.new(order))
+		else
+			effect.emit(OrderRejected.new(commandId, side, signalBarIndex, Rejection.pendingOrder))
+		order
+
+	Fill on_open(float referencePrice, float buyingPower, float positionQuantity, int barIndex) =>
+		Fill execution = na
+		if not na(this.pending)
+			order = this.pending
+			if barIndex > order.signalBarIndex
+				isBuy = order.side == Side.buy
+				priceMultiplier = isBuy ? 1.0 + this.adverseSlippageRate : 1.0 - this.adverseSlippageRate
+				price = referencePrice * priceMultiplier
+				canExecute = isBuy ? positionQuantity == 0.0 and buyingPower > 0.0 : positionQuantity > 0.0
+				quantity = canExecute ? (isBuy ? buyingPower / (price * (1.0 + this.takerFeeRate)) : positionQuantity) : 0.0
+				if quantity > 0
+					notional = quantity * price
+					fee = notional * this.takerFeeRate
+					execution := Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, referencePrice, price, quantity, notional, fee)
+					this.nextFillId := this.nextFillId + 1
+					effect.emit(FillExecuted.new(execution))
+				else
+					effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState))
+				this.pending := na
+				execution
+		execution
+
+	Order finish() =>
+		expired = this.pending
+		this.pending := na
+		if not na(expired)
+			effect.emit(OrderExpired.new(expired))
+		expired
+
+export basic(float adverseSlippageRate = 0.0, float takerFeeRate = 0.0) =>
+	Basic.new(adverseSlippageRate, takerFeeRate)

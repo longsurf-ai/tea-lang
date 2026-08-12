@@ -2,7 +2,7 @@
 
 import type {HistoryDepth, NameStorage} from '../ir/node';
 import type {ExecutionSource} from '../ir/builtin';
-import type {ParamDisplay} from '../ir/program';
+import type {EffectValueSchema, ParamDisplay} from '../ir/program';
 import type {Heap, HeapLimits, StorageRef} from './heap';
 import type {
   AggregateLayoutManifest,
@@ -10,6 +10,9 @@ import type {
   UserTypeLayoutId,
   ValueLayoutRegistry,
 } from './value-layout';
+
+export const RUNTIME_ABI_VERSION = 1 as const;
+export type {EffectValueSchema} from '../ir/program';
 
 export interface ResourceHandle {
   readonly kind: 'resource';
@@ -21,6 +24,28 @@ export interface UserTypeValue {
   readonly kind: 'user-type';
   readonly layout: UserTypeLayoutId;
   readonly fields: readonly Value[];
+}
+
+// Sink-facing sparse-effect aggregate. Runtime/backend layout identity is
+// intentionally absent; EffectSpec.payload supplies the logical field schema.
+export interface EffectUserTypeValue {
+  readonly kind: 'user-type';
+  readonly fields: readonly EffectValue[];
+}
+
+export type EffectValue =
+  | number
+  | string
+  | boolean
+  | null
+  | EffectUserTypeValue;
+
+export function isEffectUserTypeValue(
+  value: EffectValue,
+): value is EffectUserTypeValue {
+  return (
+    typeof value === 'object' && value !== null && value.kind === 'user-type'
+  );
 }
 
 export interface ArrayValue {
@@ -195,13 +220,64 @@ export interface ParamSpec {
   readonly seriesSid: number | null;
 }
 
+// Machine-readable value shape for an output channel. `OutputChannelSpec.type`
+// remains the human Tea spelling; runtime transports must branch on this
+// discriminant instead of trying to recover semantics from that spelling.
+export type OutputChannelTransport =
+  | {readonly kind: 'int'}
+  | {readonly kind: 'float'}
+  | {readonly kind: 'bool'}
+  | {readonly kind: 'string'}
+  | {readonly kind: 'color'}
+  | {
+      readonly kind: 'enum';
+      readonly name: string;
+      readonly members: readonly string[];
+    }
+  | {
+      readonly kind: 'resource';
+      readonly handle:
+        | 'line'
+        | 'label'
+        | 'box'
+        | 'table'
+        | 'polyline'
+        | 'linefill';
+    }
+  | {readonly kind: 'output-ref'; readonly output: 'plot' | 'hline'}
+  | {readonly kind: 'user-type'; readonly name: string}
+  | {readonly kind: 'array'}
+  | {readonly kind: 'matrix'}
+  | {readonly kind: 'map'}
+  | {readonly kind: 'tuple'};
+
+export interface OutputChannelSpec {
+  readonly name: string;
+  // Presentation/debugging only. It is deliberately not a runtime type tag.
+  readonly type: string;
+  readonly transport: OutputChannelTransport;
+}
+
 export interface OutputSpec {
   readonly effect: string;
   readonly staticArgs: readonly {
     readonly name: string;
     readonly value: ManifestValue;
   }[];
-  readonly channels: readonly {readonly name: string; readonly type: string}[];
+  readonly channels: readonly OutputChannelSpec[];
+}
+
+// One sparse effect call-site declaration exposed to sinks. Physical target
+// layouts deliberately do not cross this host boundary.
+export interface EffectSpec {
+  readonly payload: EffectValueSchema;
+}
+
+// JS-backend manifest entry. The runtime uses layout only to validate the
+// generated payload; sinks receive declaration alone.
+export interface EffectManifestSpec {
+  readonly layout: LayoutId;
+  readonly declaration: EffectSpec;
 }
 
 // The manifest half of a RequestEdge (JSON-safe; the child's code lives in
@@ -229,6 +305,7 @@ export interface ModuleManifest {
   readonly execution: readonly ExecutionSpec[]; // eid-indexed
   readonly params: readonly ParamSpec[]; // pid-indexed
   readonly outputs: readonly OutputSpec[]; // oid-indexed
+  readonly effects: readonly EffectManifestSpec[]; // effect-id-indexed
   readonly frames: readonly FrameLayout[]; // fid-indexed; 0 = program frame
   readonly requests: readonly RequestSpec[]; // rid-indexed
 }
@@ -280,7 +357,7 @@ export interface MutableMethodCallResult {
 // The complete runtime artifact (`tea build` output). The runtime never
 // re-derives ids from the Program.
 export interface TeaModule extends ModuleCode {
-  readonly abi: 4;
+  readonly abi: typeof RUNTIME_ABI_VERSION;
   readonly aggregateLayouts: AggregateLayoutManifest;
 }
 
@@ -331,6 +408,7 @@ export interface Runtime {
   // cross-frame access).
   root(): Frame;
   emit(oid: number, channel: number, v: Value): void;
+  emitEffect(effectId: number, payload: Value): void;
   // Binding phase only. Frame-aware bind reports these against a provisional
   // scratch-only frame before final allocation.
   historyDepth(offset: number): number;
@@ -496,23 +574,44 @@ export interface DataProvider {
   ): Promise<ProviderContext | ContextError>;
 }
 
+export interface DeclaredOutput {
+  readonly spec: OutputSpec;
+  readonly boundArgs: readonly {
+    readonly name: string;
+    readonly value: Value;
+  }[];
+}
+
+export interface ExecutionDeclaration {
+  readonly outputs: readonly DeclaredOutput[];
+  readonly effects: readonly EffectSpec[];
+}
+
+export interface DenseEmission {
+  readonly outputId: number;
+  readonly channels: readonly Value[];
+}
+
+export interface EffectEmission {
+  readonly effectId: number;
+  readonly payload: EffectValue;
+}
+
+export interface RowPublication {
+  readonly row: number;
+  readonly outputs: readonly DenseEmission[];
+  readonly effects: readonly EffectEmission[];
+  readonly provisional: boolean;
+}
+
 export interface OutputSink {
-  // Everything known before the first row: static args plus bind-time args.
-  declare(
-    outputs: readonly {
-      readonly spec: OutputSpec;
-      readonly boundArgs: readonly {
-        readonly name: string;
-        readonly value: Value;
-      }[];
-    }[],
-  ): void;
-  emit(
-    row: number,
-    oid: number,
-    channels: readonly Value[],
-    provisional: boolean,
-  ): void;
+  // Everything known before the first row: dense output metadata including
+  // bind-time args, plus sparse effect payload schemas.
+  declare(declaration: ExecutionDeclaration): void;
+  // One atomic publication boundary for all externally visible work produced
+  // by a successful row attempt. The runtime calls this at most once per
+  // completed provisional/final transition.
+  publish(publication: RowPublication): void;
 }
 
 // ---- binding ----------------------------------------------------------------

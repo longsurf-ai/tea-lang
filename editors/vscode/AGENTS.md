@@ -13,6 +13,14 @@ editors such as Cursor.
   editing the grammar directly.
 - Contextual keywords are highlighted only in their governing declaration,
   import, or loop shapes. They remain ordinary identifiers elsewhere.
+- TextMate scopes are the editor contract; themes own colors. Equivalent roles
+  use one canonical scope in every declaration form, and declaration regions
+  recover at line end so incomplete source cannot leak scopes into later lines.
+- Scope tests run the generated grammar through `vscode-textmate` with
+  Oniguruma. Direct JavaScript-regex tests alone are insufficient because they
+  do not exercise TextMate rule precedence, captures, or begin/end state.
+- VSIX files are ignored build artifacts. Packaging and editor-install scripts
+  must regenerate and check the grammar before creating or installing one.
 - This extension targets the clean-room `tea-lang` grammar. Do not merge in
   legacy TSGraph/Monaco keywords, operators, braces, or semicolons.
 - The extension stays declarative: syntax highlighting must not require an

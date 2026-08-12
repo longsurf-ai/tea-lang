@@ -12,6 +12,7 @@ import {
   type ModuleCode,
   type OutputSink,
   type ProviderContext,
+  RUNTIME_ABI_VERSION,
   type TeaModule,
   type TimeAxis,
   type Value,
@@ -54,13 +55,14 @@ class Sink implements OutputSink {
 
   declare(): void {}
 
-  emit(
-    row: number,
-    _oid: number,
-    values: readonly Value[],
-    provisional: boolean,
-  ): void {
-    this.values.push({row, values: [...values], provisional});
+  publish(publication: Parameters<OutputSink['publish']>[0]): void {
+    for (const output of publication.outputs) {
+      this.values.push({
+        row: publication.row,
+        values: [...output.channels],
+        provisional: publication.provisional,
+      });
+    }
   }
 }
 
@@ -84,12 +86,12 @@ function provider(value: ProviderContext = context()): DataProvider {
 const OUTPUT = {
   effect: 'probe',
   staticArgs: [],
-  channels: [{name: 'value', type: 'int'}],
+  channels: [{name: 'value', type: 'int', transport: {kind: 'int'}}],
 } as const;
 
 function arrayStateModule(): TeaModule {
   return {
-    abi: 4,
+    abi: RUNTIME_ABI_VERSION,
     aggregateLayouts: LAYOUTS,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
@@ -99,11 +101,12 @@ function arrayStateModule(): TeaModule {
         {
           ...OUTPUT,
           channels: [
-            {name: 'var', type: 'int'},
-            {name: 'varip', type: 'int'},
+            {name: 'var', type: 'int', transport: {kind: 'int'}},
+            {name: 'varip', type: 'int', transport: {kind: 'int'}},
           ],
         },
       ],
+      effects: [],
       requests: [],
       frames: [
         {
@@ -169,17 +172,17 @@ describe('aggregate Ring and commit integration', () => {
     ]);
   });
 
-  test('a provisional sink failure cannot roll back published varip state', async () => {
+  test('a provisional sink failure makes the binding terminal', async () => {
     const recorded = new Sink();
     let failed = false;
     const sink: OutputSink = {
       declare() {},
-      emit(row, oid, values, provisional) {
-        if (provisional && !failed) {
+      publish(publication) {
+        if (publication.provisional && !failed) {
           failed = true;
           throw new Error('sink failed');
         }
-        recorded.emit(row, oid, values, provisional);
+        recorded.publish(publication);
       },
     };
     const bound = await bind(arrayStateModule(), {
@@ -189,9 +192,8 @@ describe('aggregate Ring and commit integration', () => {
     });
 
     expect(() => bound.executeRow(0, true)).toThrow('sink failed');
-    bound.executeRow(0, false);
-    bound.commitRow(0);
-    expect(recorded.values[0].values).toEqual([2, 3]);
+    expect(() => bound.executeRow(0, false)).toThrow('sink failed');
+    expect(recorded.values).toEqual([]);
   });
 
   test('an aborted ordinary attempt restores the last completed varip header', async () => {
@@ -259,7 +261,7 @@ describe('aggregate Ring and commit integration', () => {
       rootIdentityPreserved: boolean;
     }[] = [];
     const module: TeaModule = {
-      abi: 4,
+      abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
@@ -275,11 +277,12 @@ describe('aggregate Ring and commit integration', () => {
           {
             ...OUTPUT,
             channels: [
-              {name: 'size', type: 'int'},
-              {name: 'first', type: 'int'},
+              {name: 'size', type: 'int', transport: {kind: 'int'}},
+              {name: 'first', type: 'int', transport: {kind: 'int'}},
             ],
           },
         ],
+        effects: [],
         requests: [],
         frames: [
           {
@@ -345,7 +348,7 @@ describe('aggregate Ring and commit integration', () => {
     let throws = true;
     const sink: OutputSink = {
       declare() {},
-      emit() {
+      publish() {
         if (throws) {
           throws = false;
           throw new Error('delivery failed');
@@ -359,15 +362,15 @@ describe('aggregate Ring and commit integration', () => {
     });
     bound.executeRow(0, false);
     expect(() => bound.commitRow(0)).toThrow('delivery failed');
-    // Row 0 is already committed, so row 1 is the next legal execution.
-    bound.executeRow(1, false);
-    bound.commitRow(1);
+    // Row 0 is committed, but delivery failure terminally closes execution so
+    // the runtime can never retry or duplicate externally visible work.
+    expect(() => bound.executeRow(1, false)).toThrow('delivery failed');
   });
 
   test('user-value history holds old collection headers', async () => {
     const sink = new Sink();
     const module: TeaModule = {
-      abi: 4,
+      abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
@@ -383,11 +386,12 @@ describe('aggregate Ring and commit integration', () => {
           {
             ...OUTPUT,
             channels: [
-              {name: 'current', type: 'int'},
-              {name: 'prior', type: 'int'},
+              {name: 'current', type: 'int', transport: {kind: 'int'}},
+              {name: 'prior', type: 'int', transport: {kind: 'int'}},
             ],
           },
         ],
+        effects: [],
         requests: [],
         frames: [
           {
@@ -478,6 +482,7 @@ describe('aggregate request ownership', () => {
         execution: [],
         params: [],
         outputs: [],
+        effects: [],
         requests: [],
         frames: [
           {
@@ -503,6 +508,7 @@ describe('aggregate request ownership', () => {
         execution: [],
         params: [],
         outputs: [],
+        effects: [],
         requests: [
           {
             merge: {
@@ -536,13 +542,14 @@ describe('aggregate request ownership', () => {
       },
     };
     const root: TeaModule = {
-      abi: 4,
+      abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
         execution: [],
         params: [],
         outputs: [OUTPUT],
+        effects: [],
         requests: [
           {
             merge: {
@@ -636,6 +643,7 @@ describe('aggregate request ownership', () => {
         execution: [],
         params: [],
         outputs: [],
+        effects: [],
         requests: [],
         frames: [
           {
@@ -660,7 +668,7 @@ describe('aggregate request ownership', () => {
       },
     };
     const root: TeaModule = {
-      abi: 4,
+      abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
@@ -673,6 +681,7 @@ describe('aggregate request ownership', () => {
         ],
         params: [],
         outputs: [OUTPUT],
+        effects: [],
         requests: [
           {
             merge: {
@@ -746,6 +755,7 @@ describe('aggregate request ownership', () => {
         execution: [],
         params: [],
         outputs: [],
+        effects: [],
         requests: [],
         frames: [
           {
@@ -768,7 +778,7 @@ describe('aggregate request ownership', () => {
     let requestedSymbol = 'Y';
     let marker = 11;
     const root: TeaModule = {
-      abi: 4,
+      abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
@@ -778,11 +788,12 @@ describe('aggregate request ownership', () => {
           {
             ...OUTPUT,
             channels: [
-              {name: 'size', type: 'int'},
-              {name: 'last', type: 'int'},
+              {name: 'size', type: 'int', transport: {kind: 'int'}},
+              {name: 'last', type: 'int', transport: {kind: 'int'}},
             ],
           },
         ],
+        effects: [],
         requests: [
           {
             merge: {
@@ -899,6 +910,7 @@ describe('aggregate request ownership', () => {
         execution: [],
         params: [],
         outputs: [],
+        effects: [],
         requests: [],
         frames: [
           {
@@ -923,7 +935,7 @@ describe('aggregate request ownership', () => {
       },
     };
     const root: TeaModule = {
-      abi: 4,
+      abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
@@ -933,12 +945,13 @@ describe('aggregate request ownership', () => {
           {
             ...OUTPUT,
             channels: [
-              {name: 'first', type: 'int'},
-              {name: 'second', type: 'int'},
+              {name: 'first', type: 'int', transport: {kind: 'int'}},
+              {name: 'second', type: 'int', transport: {kind: 'int'}},
             ],
           },
         ],
         frames: [{locals: [], subs: []}],
+        effects: [],
         requests: [
           {
             merge: {
@@ -1037,6 +1050,7 @@ describe('aggregate request ownership', () => {
         execution: [],
         params: [],
         outputs: [],
+        effects: [],
         requests: [],
         frames: [
           {
@@ -1057,13 +1071,14 @@ describe('aggregate request ownership', () => {
       },
     };
     const root: TeaModule = {
-      abi: 4,
+      abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
         execution: [],
         params: [],
         outputs: [OUTPUT],
+        effects: [],
         requests: [
           {
             merge: {
@@ -1140,6 +1155,7 @@ describe('aggregate request ownership', () => {
         execution: [],
         params: [],
         outputs: [],
+        effects: [],
         requests: [],
         frames: [
           {
@@ -1174,13 +1190,14 @@ describe('aggregate request ownership', () => {
       },
     };
     const root: TeaModule = {
-      abi: 4,
+      abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
         execution: [],
         params: [],
         outputs: [OUTPUT],
+        effects: [],
         requests: [
           {
             merge: {
@@ -1237,13 +1254,14 @@ describe('runtime boundaries', () => {
     let escaped: Value | undefined;
     let rejection = '';
     const module: TeaModule = {
-      abi: 4,
+      abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
         execution: [],
         params: [],
         outputs: [OUTPUT],
+        effects: [],
         requests: [],
         frames: [
           {
@@ -1348,13 +1366,14 @@ describe('runtime boundaries', () => {
   test('a partially allocated lazy frame rolls its Ring leases back', async () => {
     let requestLargeFrame = true;
     const module: TeaModule = {
-      abi: 4,
+      abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
         execution: [],
         params: [],
         outputs: [],
+        effects: [],
         requests: [],
         frames: [
           {locals: [], subs: [{fid: 1}, {fid: 2}]},
@@ -1399,7 +1418,7 @@ describe('runtime boundaries', () => {
     bound.dispose();
   });
 
-  test('ABI 2 is rejected before init or bind code runs', async () => {
+  test('a non-current ABI is rejected before init or bind code runs', async () => {
     let initialized = false;
     const old = {
       ...arrayStateModule(),
@@ -1410,7 +1429,7 @@ describe('runtime boundaries', () => {
     } as unknown as TeaModule;
     await expect(
       bind(old, {params: {}, provider: provider(), sink: new Sink()}),
-    ).rejects.toThrow(BindError);
+    ).rejects.toThrow('unsupported module ABI 2; expected 1');
     expect(initialized).toBe(false);
   });
 

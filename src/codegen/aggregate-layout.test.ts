@@ -1,10 +1,9 @@
 // Purpose: Aggregate-layout projection tests — layouts remain exact, nominal, deterministic, and finite through collection recursion.
 
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_COMPILE_CONFIG} from '../base/config';
-import {Errors} from '../base/print';
 import {DepthKind, IrKind, Storage, type Name} from '../ir/node';
 import type {Program} from '../ir/program';
+import {RUNTIME_ABI_VERSION} from '../runtime/abi';
 import {
   BoolType,
   ColorType,
@@ -84,6 +83,8 @@ describe('aggregate layout projection', () => {
       params: [],
       requests: [],
       outputs: [],
+      effects: [],
+      packageGlobals: [],
       init: [],
       body: [
         {
@@ -111,7 +112,7 @@ describe('aggregate layout projection', () => {
       ],
     };
 
-    const source = generate(ir, DEFAULT_COMPILE_CONFIG, new Errors());
+    const source = generate(ir);
     const module = new Function(source)() as {
       readonly abi: number;
       readonly aggregateLayouts: {readonly layouts: readonly unknown[]};
@@ -122,7 +123,7 @@ describe('aggregate layout projection', () => {
       };
     };
 
-    expect(module.abi).toBe(4);
+    expect(module.abi).toBe(RUNTIME_ABI_VERSION);
     expect(module.manifest.frames[0].locals).toEqual([
       {storage: Storage.PerBar, depth: {kind: 'none'}, layout: 0},
     ]);

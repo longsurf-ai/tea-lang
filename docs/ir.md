@@ -2,21 +2,25 @@
 
 How Tea represents semantics between the syntax tree and generated code. This
 document is the source of truth for the middle end; `src/ir/` implements it.
-Execution — the Runtime ABI, the JS runtime, and generated-module contract — is owned by
-[runtime.md](runtime.md).
+Execution — JS/GPU binding, runtime state, batching, physical buffers, and
+publication — is owned by [runtime.md](runtime.md).
 
 ## Pipeline vocabulary
 
-```
-Compilation                                  Lowering       Binding        Execution
-source ─ parse ─ check ─ buildProgram ─▶ Program ─▶ JS module ─▶ bound instance ─▶ bar loop
-         syntax  typecheck   noder                  codegen       runtime          runtime
+```text
+Compilation                                  Bind-independent lowering
+source ─ parse ─ check ─ buildProgram ─▶ Program ─┬─▶ JS module
+         syntax  typecheck   noder                └─▶ WGSL module + layouts
+                                                       codegen
+
+JS module   + runtime inputs ─▶ JSRuntime instance ─▶ bar loop / CPU batch
+WGSL module + runtime jobs   ─▶ physical GPU plan  ─▶ dispatch / readback
 ```
 
 - **Noding** (`noder.buildProgram`) turns checked syntax into the Program.
-- **Lowering** is reserved for Program → JS (codegen), per [runtime.md](runtime.md)'s
-  Compilation → Lowering → Binding → Execution flow. Lowering is bind-independent;
-  the generated module evaluates bind-time expressions when the runtime binds it.
+- **Lowering** is Program → target artifact in `src/codegen/`. Both JS and WGSL
+  lowering are bind-independent: they receive no dataset, job grid, result
+  capacity, or device. The target runtime supplies those facts later.
 - The checker is a separate semantic pass over syntax (the types2 shape); the
   noder consumes the checked package and its exact per-context facts and never
   re-checks.
@@ -302,10 +306,10 @@ runtime protocol:
 | -------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | none                 | `math.*`                           | pure call                                                                                                        |
 | param                | `input.*`                          | extracts one global `ParamInput` per call site; local blocks, non-exported UDFs, scalar request captures allowed |
-| declaration          | `indicator`, `strategy`            | script metadata; top-level placement                                                                             |
+| declaration          | `indicator`, `strategy`            | script metadata; top-level placement; `strategy` is first, unique, and excludes other script declarations        |
 | output (declarative) | `plot*`, `hline`, `alertcondition` | hoisted to `Program.outputs`; per-bar `Emit`; top-level/unconditional placement                                  |
 | handle-object        | `line.*`, `label.*`, `box.*`       | per-bar host object ops; handle values; rollback participation                                                   |
-| host-service         | `strategy.*` orders                | effects with host feedback readable next bar                                                                     |
+| host-service         | reserved; no strategy order API    | future host services with feedback                                                                               |
 | async-host-call      | `llm()` (Tea)                      | awaited/batched host call                                                                                        |
 | request              | `request.*`                        | expression capture; compiles a child Program (`RequestEdge`)                                                     |
 
@@ -358,9 +362,11 @@ unreachable never enter `requests` — dead-request elimination by construction.
 - Libraries link at check time through the import seam (Go's
   types2.Importer split): the loader's registry decides what a path means
   and loads libraries recursively (cycle detection included); the checker
-  consumes the injected `Importer` and is provenance-blind. Builtins are
-  implicitly imported; external `owner/name/version` paths error until a
-  distribution story exists. The Program is always a closed script; a
+  consumes the injected `Importer` and is provenance-blind. Compiler-shipped
+  libraries and the implicit prelude are separate sets: `ta` is implicit,
+  while strategy components such as `broker`, `portfolio`, and `strategy` are
+  explicit imports. External `owner/name/version` paths error until a distribution
+  story exists. The Program is always a closed script; a
   distributable compiled-library artifact, if ever needed, is a separate
   contract — never a bent Program.
 - Reference bindings are compile-time only: a never-reassigned declaration
@@ -379,6 +385,10 @@ unreachable never enter `requests` — dead-request elimination by construction.
   applies defaults); omitted middles node as `na` constants.
 - `Program.init` stays empty for now — hoisting const/input/simple work out
   of the bar loop is a later optimization, not a correctness requirement.
+- `Program.packageGlobals` is the explicit dependency-ordered list of reachable
+  imported package-state Names. Each uses the ordinary rollback-aware
+  `Name.init` protocol; it is per Program context/binding, not process state.
+  Import-only, type-only, and unreachable package globals are absent.
 - Depth resolution walks UDF bodies in call-site context. Constant and
   immutable root-safe offsets no later than `simple` are substituted through
   parameters and single-write root locals, including aliases of `ParamInput`
@@ -387,6 +397,28 @@ unreachable never enter `requests` — dead-request elimination by construction.
   per-bar or unresolved frame state is `capped` by
   `indicator(max_bars_back=…)` or the engine default (500). Interval analysis
   over loop bounds refines dynamic demands later.
+
+## One Program, multiple targets
+
+There is no strategy-specific IR or compiler path. `compileToProgram()` owns
+the one load → import resolution/check → noding sequence, and both target
+backends consume its `Program` directly. `indicator()` and `strategy()` remain
+ordinary declaration `OutputDecl`s; downstream code does not copy them into a
+second semantic object.
+
+The broker, portfolio, configured strategy, and their reachable methods are
+ordinary Tea code in the closed Program graph. WGSL codegen neither inspects
+their package names nor gives them privileged nodes or ABI slots. Its
+fail-closed audit describes only which generic Program constructs its current
+target profile can represent.
+
+Scenario jobs are not Program facts. After codegen, the CPU runtime may bind
+one ordinary JS module repeatedly to isolated providers/parameters and capture
+committed emissions through an `OutputSink`. The GPU runtime binds one ordinary
+WGSL artifact to concrete jobs, packs buffers, constructs dispatch/readback
+metadata, and submits it to an injected device. Those runtime contracts do not
+change the Program or reinterpret Tea matching/accounting semantics. See
+[GPU Lowering](advanced/gpu-lowering.md).
 
 ## Open items
 

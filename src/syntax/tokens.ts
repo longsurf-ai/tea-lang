@@ -46,6 +46,7 @@ export const Tok = {
   Export: 'export',
   Struct: 'struct',
   Type: 'type',
+  Interface: 'interface',
   Enum: 'enum',
   This: 'this',
   Break: 'break',
@@ -81,6 +82,7 @@ export const CONTEXTUAL_KEYWORDS = [
   Tok.Export,
   Tok.Struct,
   Tok.Type,
+  Tok.Interface,
   Tok.Enum,
 ] as const;
 

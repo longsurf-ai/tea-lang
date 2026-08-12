@@ -160,6 +160,8 @@ export function stmtExprs(stmt: IrStmt): readonly IrExpr[] {
       return [stmt.value];
     case IrKind.Emit:
       return stmt.args;
+    case IrKind.EmitEffect:
+      return [stmt.payload];
     case IrKind.Break:
     case IrKind.Continue:
       return [];

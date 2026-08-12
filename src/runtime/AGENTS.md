@@ -1,15 +1,41 @@
 # runtime
 
-The Tea runtime: `JSRuntime` implements the Runtime ABI (`abi.ts` is the contract
-surface, `docs/runtime.md` the authority) and owns the main loop — binding,
-exact value layouts, frame trees, rings, immutable collection storage, the
-provisional/commit protocol, and emission flushing.
+Tea execution after bind-independent codegen. `JSRuntime` implements the JS
+Runtime ABI (`abi.ts` is the contract surface, `docs/runtime.md` the authority)
+and owns the main loop — binding, exact value layouts, frame trees, rings,
+immutable collection storage, provisional/commit, and emission flushing.
+Generic batch execution and GPU binding/execution also live here because bindings,
+datasets, buffers, devices, dispatch, and readback are runtime facts.
+The target-neutral `executeProgram()` host harness lives one level above in
+`src/execute.ts`; CLI reporting and Dawn process selection are host concerns.
 
 ## Invariants
 
 - Only Time-Machine-relevant operations cross the ABI; generated code never
   sees ring indices, scratch heads, or storage layout. Hosts differ only in
   the injected DataProvider and OutputSink.
+- `RUNTIME_ABI_VERSION` is the only JavaScript Runtime ABI version source and
+  remains `1` before launch; do not add migration branches or legacy readers.
+- CPU batch execution is not a second compiler or strategy runtime. It loads
+  one ordinary generated JS module and passes each caller-ordered `BindInputs`
+  element through the ordinary `bind()` / `runAll()` / `dispose()` lifecycle.
+  Every binding owns its own `OutputSink`; `runCpuBatch` neither captures
+  outputs nor imposes capacity, job ids, or sweep metadata. `MemorySink` is an
+  optional caller policy for structured in-memory capture.
+- Batch execution has no plan or journal abstraction. Caller array order is
+  binding identity, and retention, bounds, and transactions belong to the
+  injected sink.
+- GPU execution consumes a bind-independent WGSL artifact, an injected
+  `GPUDevice`, and an ordered `BindInputs[]`. It resolves providers, validates
+  and normalizes required inputs, derives dense capacity, bounds sparse effect
+  storage, and packs private buffers while creating one resumable session.
+  `runChunk()` keeps lane state on-device and publishes decoded absolute rows
+  through each binding's `OutputSink`; `runAll()` is only repetition over that
+  lifecycle. Neither runtime method owns Tea broker or portfolio semantics.
+- `createGpuExecution()` is the sole public GPU binding/execution entry. Do not
+  restore separate physical-plan surfaces, GPU-specific job wrappers, caller-owned
+  result-cell capacity, materialized-series bindings, or a second compilation
+  path.
 - The manifest is the runtime's single input besides code: ids (sid/pid/oid/
   fid/slots) are never re-derived from the Program.
 - Numeric provider series and typed execution inputs are separate carriers.

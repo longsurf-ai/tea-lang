@@ -1,8 +1,6 @@
 // Purpose: Codegen's final static-boundary tests — malformed hand-built aggregate Programs fail before becoming untyped generated JavaScript.
 
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_COMPILE_CONFIG} from '../base/config';
-import {Errors} from '../base/print';
 import {
   DepthKind,
   IrKind,
@@ -93,13 +91,15 @@ function program(body: readonly IrStmt[]): Program {
     params: [],
     requests: [],
     outputs: [],
+    effects: [],
+    packageGlobals: [],
     init: [],
     body,
   };
 }
 
 function compile(ir: Program): void {
-  generate(ir, DEFAULT_COMPILE_CONFIG, new Errors());
+  generate(ir);
 }
 
 function userType(name: string, fields: readonly UserField[]): UserType {

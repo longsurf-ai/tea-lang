@@ -2,15 +2,15 @@
 
 import {join} from 'node:path';
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_COMPILE_CONFIG} from '../base/config';
 import {formatPos} from '../base/pos';
 import {compile} from '../compile';
 import {csvContext} from '../providers/data/csv';
-import type {
-  DataProvider,
-  OutputSink,
-  ProviderContext,
-  Value,
+import {
+  RUNTIME_ABI_VERSION,
+  type DataProvider,
+  type OutputSink,
+  type ProviderContext,
+  type Value,
 } from '../runtime/abi';
 import {bind} from '../runtime/js-runtime';
 import {loadModule} from '../runtime/load';
@@ -55,13 +55,15 @@ class Sink implements OutputSink {
 
   declare(): void {}
 
-  emit(
-    row: number,
-    oid: number,
-    channels: readonly Value[],
-    provisional: boolean,
-  ): void {
-    this.emissions.push({row, oid, channels: [...channels], provisional});
+  publish(publication: Parameters<OutputSink['publish']>[0]): void {
+    for (const output of publication.outputs) {
+      this.emissions.push({
+        row: publication.row,
+        oid: output.outputId,
+        channels: [...output.channels],
+        provisional: publication.provisional,
+      });
+    }
   }
 }
 
@@ -81,7 +83,7 @@ function contexts(
 
 describe('aggregate requests end to end', () => {
   test('a keep-zero child result remains live in parent current and history views', async () => {
-    const result = compile([SOURCE], DEFAULT_COMPILE_CONFIG);
+    const result = compile([SOURCE]);
     if (!result.ok) {
       throw new Error(
         result.errors
@@ -91,7 +93,7 @@ describe('aggregate requests end to end', () => {
     }
 
     const module = loadModule(result.js);
-    expect(module.abi).toBe(4);
+    expect(module.abi).toBe(RUNTIME_ABI_VERSION);
     const request = module.manifest.requests[0];
     const child = module.requests[0];
     if (request === undefined || child === undefined) {
@@ -142,7 +144,7 @@ describe('aggregate requests end to end', () => {
   });
 
   test('named dynamic context arguments execute in source order', async () => {
-    const result = compile([CONTEXT_ORDER_SOURCE], DEFAULT_COMPILE_CONFIG);
+    const result = compile([CONTEXT_ORDER_SOURCE]);
     if (!result.ok) {
       throw new Error(
         result.errors
@@ -189,10 +191,7 @@ describe('aggregate requests end to end', () => {
   });
 
   test('a suspended mutable method writes its receiver back once per completed row', async () => {
-    const result = compile(
-      [MUTABLE_METHOD_SUSPENSION_SOURCE],
-      DEFAULT_COMPILE_CONFIG,
-    );
+    const result = compile([MUTABLE_METHOD_SUSPENSION_SOURCE]);
     if (!result.ok) {
       throw new Error(
         result.errors

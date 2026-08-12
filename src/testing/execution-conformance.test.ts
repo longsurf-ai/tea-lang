@@ -3,12 +3,12 @@
 import {readdirSync, readFileSync, statSync} from 'node:fs';
 import {join, relative, resolve} from 'node:path';
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_COMPILE_CONFIG} from '../base/config';
 import {formatPos} from '../base/pos';
 import {compile} from '../compile';
 import {csvProvider} from '../providers/data/csv';
 import {TraceSink} from '../providers/sinks/trace-sink';
-import type {BoundInput, OutputSink, Value} from '../runtime/abi';
+import type {BoundInput, EffectValue, OutputSink, Value} from '../runtime/abi';
+import {isEffectUserTypeValue} from '../runtime/abi';
 import {bind} from '../runtime/js-runtime';
 import {loadModule} from '../runtime/load';
 import {
@@ -42,31 +42,49 @@ function allFiles(root: string): string[] {
 class ConformanceSink implements OutputSink {
   readonly traceLines: string[] = [];
   readonly trace = new TraceSink(line => this.traceLines.push(line));
-  declared: Parameters<OutputSink['declare']>[0] = [];
+  declared: Parameters<OutputSink['declare']>[0]['outputs'] = [];
+  declaredEffects: Parameters<OutputSink['declare']>[0]['effects'] = [];
   readonly emissions: {
     readonly row: number;
     readonly oid: number;
     readonly channels: readonly Value[];
     readonly provisional: boolean;
   }[] = [];
+  readonly effects: {
+    readonly row: number;
+    readonly effectId: number;
+    readonly payload: EffectValue;
+    readonly provisional: boolean;
+  }[] = [];
 
-  declare(outputs: Parameters<OutputSink['declare']>[0]): void {
-    this.declared = outputs;
-    this.trace.declare(outputs);
+  declare(declaration: Parameters<OutputSink['declare']>[0]): void {
+    this.declared = declaration.outputs;
+    this.declaredEffects = declaration.effects;
+    this.trace.declare(declaration);
   }
 
-  emit(
-    row: number,
-    oid: number,
-    channels: readonly Value[],
-    provisional: boolean,
-  ): void {
-    this.emissions.push({row, oid, channels: [...channels], provisional});
-    this.trace.emit(row, oid, channels, provisional);
+  publish(publication: Parameters<OutputSink['publish']>[0]): void {
+    for (const output of publication.outputs) {
+      this.emissions.push({
+        row: publication.row,
+        oid: output.outputId,
+        channels: [...output.channels],
+        provisional: publication.provisional,
+      });
+    }
+    for (const effect of publication.effects) {
+      this.effects.push({
+        row: publication.row,
+        effectId: effect.effectId,
+        payload: effect.payload,
+        provisional: publication.provisional,
+      });
+    }
+    this.trace.publish(publication);
   }
 }
 
-function expectFiniteOrNa(value: Value, label: string): void {
+function expectFiniteOrNa(value: Value | EffectValue, label: string): void {
   if (typeof value === 'number') {
     expect(
       Number.isFinite(value) || Number.isNaN(value),
@@ -76,6 +94,13 @@ function expectFiniteOrNa(value: Value, label: string): void {
   }
   if (Array.isArray(value)) {
     value.forEach((entry, i) => expectFiniteOrNa(entry, `${label}[${i}]`));
+    return;
+  }
+  const effectValue = value as EffectValue;
+  if (isEffectUserTypeValue(effectValue)) {
+    effectValue.fields.forEach((entry, i) =>
+      expectFiniteOrNa(entry, `${label}.fields[${i}]`),
+    );
   }
 }
 
@@ -93,6 +118,9 @@ function expectSinkFiniteOrNa(sink: ConformanceSink, label: string): void {
       expectFiniteOrNa(value, `${label}.emissions[${i}].channels[${channel}]`),
     );
   });
+  sink.effects.forEach((effect, i) =>
+    expectFiniteOrNa(effect.payload, `${label}.effects[${i}].payload`),
+  );
 }
 
 function expectInputs(
@@ -180,10 +208,7 @@ async function runCase(entry: CorpusCase): Promise<{
       `${entry.id} must use an independent oracle`,
     ).not.toBe('tea-contract');
   }
-  const result = compile(
-    [resolve(EXECUTION_ROOT, entry.source)],
-    DEFAULT_COMPILE_CONFIG,
-  );
+  const result = compile([resolve(EXECUTION_ROOT, entry.source)]);
   if (!result.ok) {
     throw new Error(
       `${entry.id} did not compile:\n${result.errors
@@ -305,7 +330,10 @@ async function runCase(entry: CorpusCase): Promise<{
   });
 
   expect(sink.traceLines.length, `${entry.id} TraceSink line count`).toBe(
-    reference.outputs.length + expectedEmissions.length,
+    reference.outputs.length +
+      sink.declaredEffects.length +
+      expectedEmissions.length +
+      sink.effects.length,
   );
   expectSinkFiniteOrNa(sink, entry.id);
   return {reference, sink};

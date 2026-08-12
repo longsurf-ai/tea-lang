@@ -32,6 +32,7 @@ describe('finite-or-na helpers', () => {
       paramIds: new Map(),
       paramSeriesIds: new Map(),
       outputIds: new Map(),
+      effectIds: new Map(),
       funcIds: new Map(),
       requestIds: new Map(),
       dynamicRequests: new Set(),

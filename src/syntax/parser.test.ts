@@ -144,6 +144,112 @@ describe('user types and methods', () => {
   });
 });
 
+describe('static interfaces and generic user types', () => {
+  test('interface declarations retain ordered method-only signatures', () => {
+    const out = dump(
+      [
+        'export interface Broker',
+        '    bool has_pending() const',
+        '    broker.Order submit(broker.Side side, array<map<string, broker.Order>> orders)',
+        '    broker.Order submit(broker.Side side, int signalBarIndex)',
+        'interface Portfolio',
+        '    float equity() const',
+        '',
+      ].join('\n'),
+    );
+
+    expect(out).toContain(
+      'stmtList[0]: InterfaceDecl @1:1 exported=true',
+    );
+    expect(out).toContain('name: Name @1:18 value="Broker"');
+    expect(out).toContain(
+      'methods[0]: InterfaceMethodDecl @2:5 receiverMode="const"',
+    );
+    expect(out).toContain('name: Name @2:10 value="has_pending"');
+    expect(out).toContain(
+      'methods[1]: InterfaceMethodDecl @3:5 receiverMode="mutable"',
+    );
+    expect(out).toContain('result: TypeAnnotation @3:5');
+    expect(out).toContain('name: GenericType @3:43');
+    expect(out).toContain('args[0]: GenericType @3:49');
+    expect(out).toContain(
+      'methods[2]: InterfaceMethodDecl @4:5 receiverMode="mutable"',
+    );
+    expect(out).toContain(
+      'stmtList[1]: InterfaceDecl @5:1 exported=false',
+    );
+    expect(out).toContain(
+      'methods[0]: InterfaceMethodDecl @6:5 receiverMode="const"',
+    );
+  });
+
+  test('constrained type parameters preserve qualified constraints', () => {
+    const out = dump(
+      [
+        'export type Strategy<B: broker.Broker, P: portfolio.Portfolio>',
+        '    B broker',
+        '    P portfolio',
+        '    array<map<string, broker.Order>> orders',
+        '',
+      ].join('\n'),
+    );
+
+    expect(out).toContain(
+      'stmtList[0]: UserTypeDecl @1:1 exported=true writtenKeyword="type"',
+    );
+    expect(out).toContain('typeParams[0]: TypeParam @1:22');
+    expect(out).toContain('constraint: SelectorExpr @1:25');
+    expect(out).toContain('typeParams[1]: TypeParam @1:40');
+    expect(out).toContain('constraint: SelectorExpr @1:43');
+    expect(out).toContain('members[2]: FieldDecl @4:5');
+    expect(out).toContain('name: GenericType @4:5');
+    expect(out).toContain('args[1]: SelectorExpr @4:23');
+  });
+
+  test('interface remains contextual outside declaration shape', () => {
+    const out = dump(
+      ['interface(x) => x', 'interface = 1', 'export interface(x) => x', ''].join(
+        '\n',
+      ),
+    );
+    expect(out).toContain('stmtList[0]: FuncDecl @1:1 exported=false');
+    expect(out).toContain('stmtList[1]: DeclStmt @2:1 mode="none"');
+    expect(out).toContain('target: Name @2:1 value="interface"');
+    expect(out).toContain('stmtList[2]: FuncDecl @3:1 exported=true');
+  });
+
+  test('rejects interface fields, method bodies, and parameter defaults', () => {
+    const {file, errors} = parseText(
+      [
+        'interface Broken',
+        '    int field',
+        '    int with_default(int value = 1)',
+        '    int body() => 1',
+        '',
+      ].join('\n'),
+    );
+
+    expect(errors.map(error => error.msg)).toContain(
+      'interface members must be method signatures',
+    );
+    expect(errors.map(error => error.msg)).toContain(
+      'interface method parameters cannot have defaults',
+    );
+    expect(errors.map(error => error.msg)).toContain(
+      'interface methods cannot have bodies',
+    );
+    expect(dumpFile(file)).toContain('methods[0]: InterfaceMethodDecl @3:5');
+    expect(dumpFile(file)).toContain('methods[1]: InterfaceMethodDecl @4:5');
+  });
+
+  test('rejects unconstrained generic parameters', () => {
+    const {errors} = parseText(
+      ['type Broken<T>', '    T value', ''].join('\n'),
+    );
+    expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
 describe('expressions', () => {
   test('precedence: * binds tighter than +', () => {
     expect(dump('r = a + b * c\n')).toBe(

@@ -1147,8 +1147,164 @@ describe('program surface', () => {
     expect(program.body.every(s => s.kind === IrKind.Emit)).toBe(true);
   });
 
+  test('strategy() reuses declaration noding with only minimal metadata', () => {
+    const program = mustBuild(
+      'strategy("Strategy", shorttitle="Short", overlay=true)',
+    );
+    expect(program.outputs).toHaveLength(1);
+    expect(program.outputs[0]).toMatchObject({
+      effect: 'strategy',
+      staticArgs: [
+        {name: 'title', value: 'Strategy'},
+        {name: 'shorttitle', value: 'Short'},
+        {name: 'overlay', value: true},
+      ],
+    });
+    expect(program.body).toEqual([]);
+  });
+
   test('version comes from the declared //@version', () => {
     expect(mustBuild('//@version=1\nplot(close)').version).toBe(1);
     expect(mustBuild('plot(close)').version).toBe(1);
+  });
+});
+
+describe('sparse effects', () => {
+  test('one semantic call site owns one stable effect across call sites', () => {
+    const program = mustBuild(
+      [
+        'emitValue(int value) =>',
+        '    effect.emit(value)',
+        '    value',
+        'first = emitValue(1)',
+        'second = emitValue(2)',
+      ].join('\n'),
+    );
+
+    expect(program.effects).toHaveLength(1);
+    expect(program.effects[0].payloadType.kind).toBe(TypeKind.Int);
+    const emitters = funcsOf(program).filter(func => func.name === 'emitValue');
+    expect(emitters).toHaveLength(1);
+    expect(emitters[0].body.kind).toBe(IrKind.BlockExpr);
+    if (emitters[0].body.kind === IrKind.BlockExpr) {
+      const emission = emitters[0].body.stmts[0];
+      expect(emission.kind).toBe(IrKind.EmitEffect);
+      if (emission.kind === IrKind.EmitEffect) {
+        expect(emission.effect).toBe(program.effects[0]);
+      }
+    }
+  });
+
+  test('an imported UDT method emits its nominal payload through ordinary noding', () => {
+    const program = mustBuildWithLibraries(
+      [
+        'import events',
+        'event = events.Event.new("entry", 3)',
+        'value = event.publish()',
+      ].join('\n'),
+      {
+        events: [
+          'library("events")',
+          'export type Event',
+          '    string commandId',
+          '    int barIndex',
+          '    int publish() const =>',
+          '        effect.emit(Event.new(this.commandId, this.barIndex))',
+          '        this.barIndex',
+        ].join('\n'),
+      },
+    );
+
+    expect(program.effects).toHaveLength(1);
+    expect(program.effects[0].payloadType.kind).toBe(TypeKind.UserType);
+    if (program.effects[0].payloadType.kind === TypeKind.UserType) {
+      expect(program.effects[0].payloadType.name).toBe('Event');
+    }
+    expect(program.effects[0].payloadSchema).toEqual({
+      kind: 'user-type',
+      typeId: 'events.Event',
+      displayName: 'Event',
+      fields: [
+        {name: 'commandId', value: {kind: 'string'}},
+        {name: 'barIndex', value: {kind: 'int'}},
+      ],
+    });
+    const publish = funcsOf(program).find(
+      func => func.name === 'Event.publish',
+    );
+    expect(publish?.callMode).toBe('const-method');
+    expect(publish?.body.kind).toBe(IrKind.BlockExpr);
+    if (publish?.body.kind === IrKind.BlockExpr) {
+      expect(publish.body.stmts[0].kind).toBe(IrKind.EmitEffect);
+    }
+  });
+
+  test('generic effect schemas recursively use canonical type argument identities', () => {
+    const program = mustBuild(
+      [
+        'interface Identified',
+        '    int id() const',
+        'type Order',
+        '    int value',
+        '    int id() const => this.value',
+        'type Envelope<T: Identified>',
+        '    T value',
+        'event = Envelope.new(Order.new(7))',
+        'effect.emit(event)',
+      ].join('\n'),
+    );
+
+    expect(program.effects[0].payloadSchema).toEqual({
+      kind: 'user-type',
+      typeId: '@entry.Envelope<@entry.Order>',
+      displayName: 'Envelope<Order>',
+      fields: [
+        {
+          name: 'value',
+          value: {
+            kind: 'user-type',
+            typeId: '@entry.Order',
+            displayName: 'Order',
+            fields: [{name: 'value', value: {kind: 'int'}}],
+          },
+        },
+      ],
+    });
+  });
+
+  test('entry nominal ids do not depend on caller file-path spelling', () => {
+    const source = [
+      'type Event',
+      '    int id',
+      'effect.emit(Event.new(1))',
+    ].join('\n');
+    const ids = ['strategy.tea', './strategy.tea', '/tmp/strategy.tea'].map(
+      filename => {
+        const result = buildText(source, filename);
+        expect(result.errors).toEqual([]);
+        return result.program?.effects[0]?.payloadSchema;
+      },
+    );
+
+    expect(ids).toEqual([
+      {
+        kind: 'user-type',
+        typeId: '@entry.Event',
+        displayName: 'Event',
+        fields: [{name: 'id', value: {kind: 'int'}}],
+      },
+      {
+        kind: 'user-type',
+        typeId: '@entry.Event',
+        displayName: 'Event',
+        fields: [{name: 'id', value: {kind: 'int'}}],
+      },
+      {
+        kind: 'user-type',
+        typeId: '@entry.Event',
+        displayName: 'Event',
+        fields: [{name: 'id', value: {kind: 'int'}}],
+      },
+    ]);
   });
 });

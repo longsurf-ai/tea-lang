@@ -20,6 +20,10 @@
     "tea": "./src/main.ts"
   },
   "exports": {
+    "./codegen/wgsl": "./src/codegen/wgsl/index.ts",
+    "./reporting": "./src/reporting/index.ts",
+    "./runtime/batch": "./src/runtime/batch/index.ts",
+    "./runtime/gpu": "./src/runtime/gpu/index.ts",
     "./*": "./src/*.ts"
   },
   "scripts": {
@@ -32,12 +36,17 @@
     "docs:serve": "node node_modules/@docusaurus/core/bin/docusaurus.mjs serve website",
     "docs:typecheck": "tsc --noEmit -p website/tsconfig.json",
     "prepack": "bun run docs:build",
+    "test:gpu": "bun run src/providers/gpu/run-dawn-tests.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
   "dependencies": {
     "commander": "14.0.2",
     "open": "10.0.0"
+  },
+  "optionalDependencies": {
+    "tsx": "4.23.10",
+    "webgpu": "0.4.0"
   },
   "devDependencies": {
     "@docusaurus/core": "3.10.2",
@@ -51,11 +60,14 @@
     "@types/node": "25.0.10",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
+    "@webgpu/types": "0.1.71",
     "acorn": "8.18.0",
     "prettier": "3.8.1",
     "prism-react-renderer": "2.4.1",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "typescript": "5.8.3"
+    "typescript": "5.8.3",
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.3.2"
   }
 }

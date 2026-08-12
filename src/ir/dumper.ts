@@ -1,6 +1,7 @@
 // Purpose: Human-readable Program dumps behind `tea parse --ir` and the IR goldens — formatting only, no semantic logic; shared declaration objects print as stable labels.
 
 import {fatal} from '../base/print';
+import {formatPos} from '../base/pos';
 import {
   DepthKind,
   IrKind,
@@ -136,6 +137,12 @@ export function dumpProgram(program: Program): string {
     for (const bind of output.bindArgs) {
       dumpExpr(bind.expr, `bind ${bind.name}: `, '  ', out, labels);
     }
+  });
+
+  program.effects.forEach((effect, i) => {
+    out.push(
+      `effect[${i}]: ${formatType(effect.payloadType)} @ ${formatPos(effect.sourcePosition)}`,
+    );
   });
 
   requestsOf(program).forEach((edge, i) => {
@@ -277,6 +284,10 @@ function dumpStmt(
       for (const arg of stmt.args) {
         dumpExpr(arg, '', `${indent}  `, out, labels);
       }
+      return;
+    case IrKind.EmitEffect:
+      out.push(`${indent}${label}EmitEffect`);
+      dumpExpr(stmt.payload, 'payload: ', `${indent}  `, out, labels);
       return;
     case IrKind.Break:
       out.push(`${indent}${label}Break`);

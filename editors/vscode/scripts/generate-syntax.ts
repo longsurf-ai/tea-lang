@@ -25,6 +25,29 @@ const TYPE_SYNTAX =
 const MODES = [Tok.Var, Tok.Varip, Tok.Const] as const;
 const LOOP_KEYWORDS = [Tok.In, Tok.To, Tok.By] as const;
 const QUALIFIERS = [Qualifier.Simple, Qualifier.Series] as const;
+
+// The grammar owns scopes, never colors. Keeping each syntactic role behind
+// one canonical constant prevents equivalent declaration forms from drifting
+// into theme-dependent aliases.
+export const TEA_SCOPES = {
+  exportModifier: 'storage.modifier.export.tea',
+  declarationKeyword: 'storage.type.declaration.tea',
+  interfaceKeyword: 'storage.type.interface.declaration.tea',
+  enumKeyword: 'storage.type.enum.declaration.tea',
+  aliasKeyword: 'storage.type.alias.declaration.tea',
+  typeName: 'entity.name.type.tea',
+  interfaceName: 'entity.name.type.interface.tea',
+  enumName: 'entity.name.type.enum.tea',
+  aliasName: 'entity.name.type.alias.tea',
+  typeParameter: 'entity.name.type.parameter.tea',
+  namespace: 'entity.name.namespace.tea',
+  functionName: 'entity.name.function.tea',
+  functionCall: 'entity.name.function.call.tea',
+  parameter: 'variable.parameter.tea',
+  builtinType: 'support.type.builtin.tea',
+  receiverModifier: 'storage.modifier.receiver.tea',
+} as const;
+
 function words(values: readonly string[]): string {
   return '\\b(?:' + values.join('|') + ')\\b';
 }
@@ -37,6 +60,7 @@ function verifyContextualCoverage(): void {
   const handled: ReadonlySet<string> = new Set([
     Tok.Struct,
     Tok.Type,
+    Tok.Interface,
     Tok.Enum,
     Tok.Import,
     Tok.Export,
@@ -200,26 +224,50 @@ export function generateGrammar() {
       'type-declarations': {
         patterns: [
           {
-            match:
+            name: 'meta.declaration.interface.tea',
+            begin:
+              '^(\\s*)(?:(' +
+              Tok.Export +
+              ')(\\s+))?(' +
+              Tok.Interface +
+              ')(\\s+)(' +
+              IDENTIFIER +
+              ')\\b',
+            beginCaptures: {
+              '2': {name: TEA_SCOPES.exportModifier},
+              '4': {name: TEA_SCOPES.interfaceKeyword},
+              '6': {name: TEA_SCOPES.interfaceName},
+            },
+            end: '(?=$)',
+            patterns: [{include: '#comments'}],
+          },
+          {
+            name: 'meta.declaration.type.alias.tea',
+            begin:
               '^(\\s*)(?:(' +
               Tok.Export +
               ')(\\s+))?(' +
               Tok.Type +
               ')(\\s+)(' +
               IDENTIFIER +
-              ')(\\s*)(=)(\\s*)(' +
-              TYPE_SYNTAX +
-              ')(?=\\s*(?://|/\\*|$))',
-            captures: {
-              '2': {name: 'storage.modifier.export.tea'},
-              '4': {name: 'storage.type.alias.declaration.tea'},
-              '6': {name: 'entity.name.type.alias.tea'},
-              '8': {name: 'keyword.operator.assignment.tea'},
-              '10': {name: 'entity.name.type.tea'},
+              ')\\b(?=\\s*=)',
+            beginCaptures: {
+              '2': {name: TEA_SCOPES.exportModifier},
+              '4': {name: TEA_SCOPES.aliasKeyword},
+              '6': {name: TEA_SCOPES.aliasName},
             },
+            end: '(?=$)',
+            patterns: [
+              {include: '#comments'},
+              {include: '#type-parameter-list'},
+              {include: '#type-references'},
+              {include: '#operators'},
+              {include: '#punctuation'},
+            ],
           },
           {
-            match:
+            name: 'meta.declaration.type.tea',
+            begin:
               '^(\\s*)(?:(' +
               Tok.Export +
               ')(\\s+))?(' +
@@ -230,65 +278,208 @@ export function generateGrammar() {
               ')' +
               ')(\\s+)(' +
               IDENTIFIER +
-              ')(?=\\s*(?://|/\\*|$))',
-            captures: {
-              '2': {name: 'storage.modifier.export.tea'},
-              '4': {name: 'storage.type.declaration.tea'},
-              '6': {name: 'entity.name.type.tea'},
+              ')\\b',
+            beginCaptures: {
+              '2': {name: TEA_SCOPES.exportModifier},
+              '4': {name: TEA_SCOPES.declarationKeyword},
+              '6': {name: TEA_SCOPES.typeName},
             },
+            end: '(?=$)',
+            patterns: [
+              {include: '#comments'},
+              {include: '#type-parameter-list'},
+            ],
           },
           {
-            match:
+            name: 'meta.declaration.enum.tea',
+            begin:
               '^(\\s*)(?:(' +
               Tok.Export +
               ')(\\s+))?(' +
               Tok.Enum +
               ')(\\s+)(' +
               IDENTIFIER +
-              ')(?=\\s*(?://|/\\*|$))',
+              ')\\b',
+            beginCaptures: {
+              '2': {name: TEA_SCOPES.exportModifier},
+              '4': {name: TEA_SCOPES.enumKeyword},
+              '6': {name: TEA_SCOPES.enumName},
+            },
+            end: '(?=$)',
+            patterns: [{include: '#comments'}],
+          },
+        ],
+      },
+      'type-parameter-list': {
+        name: 'meta.type.parameters.tea',
+        begin: '<',
+        beginCaptures: {
+          '0': {name: 'punctuation.definition.typeparameters.begin.tea'},
+        },
+        // Angle-bracket type syntax cannot continue across a Tea newline, so
+        // recover at EOL while the user is still typing an incomplete list.
+        end: '>|(?=$)',
+        endCaptures: {
+          '0': {name: 'punctuation.definition.typeparameters.end.tea'},
+        },
+        patterns: [
+          {
+            match: '(?:(?<=<)|(?<=,))(\\s*)(' + IDENTIFIER + ')(?=\\s*:)',
+            captures: {'2': {name: TEA_SCOPES.typeParameter}},
+          },
+          {match: ':', name: 'punctuation.separator.constraint.tea'},
+          {include: '#type-parameter-list'},
+          {include: '#type-references'},
+          {include: '#punctuation'},
+        ],
+      },
+      'type-references': {
+        patterns: [
+          {
+            match: '\\b(' + IDENTIFIER + ')(\\.)(' + IDENTIFIER + ')\\b',
             captures: {
-              '2': {name: 'storage.modifier.export.tea'},
-              '4': {name: 'storage.type.enum.declaration.tea'},
-              '6': {name: 'entity.name.type.enum.tea'},
+              '1': {name: TEA_SCOPES.namespace},
+              '2': {name: 'punctuation.accessor.tea'},
+              '3': {name: TEA_SCOPES.typeName},
             },
           },
+          {match: typeWords, name: TEA_SCOPES.builtinType},
+          {match: '\\b' + IDENTIFIER + '\\b', name: TEA_SCOPES.typeName},
         ],
       },
       'function-declarations': {
         patterns: [
           {
-            match:
+            name: 'meta.declaration.method.tea',
+            begin:
               '^(\\s+)(?:(' +
               words(QUALIFIERS) +
               ')(\\s+))?(' +
               TYPE_SYNTAX +
               ')(\\s+)(' +
               IDENTIFIER +
-              ')(?=\\s*\\([^\\r\\n]*\\)\\s*(?:' +
-              Tok.Const +
-              '\\s*)?=>)',
-            captures: {
+              ')(?=\\s*\\()',
+            beginCaptures: {
               '2': {name: 'storage.modifier.qualifier.tea'},
-              '4': {name: 'meta.type.return.tea'},
-              '6': {name: 'entity.name.function.tea'},
+              '4': {
+                name: 'meta.type.return.tea',
+                patterns: [
+                  {include: '#type-parameter-list'},
+                  {include: '#type-references'},
+                  {include: '#punctuation'},
+                ],
+              },
+              '6': {name: TEA_SCOPES.functionName},
             },
+            end: '(=>)|(?=$)',
+            endCaptures: {
+              '1': {name: 'keyword.operator.function.tea'},
+            },
+            patterns: [
+              {include: '#comments'},
+              {include: '#strings'},
+              {include: '#parameter-declarations'},
+              {include: '#type-parameter-list'},
+              {include: '#method-receiver-modifier'},
+              {include: '#punctuation'},
+            ],
           },
           {
-            match:
+            name: 'meta.declaration.function.exported.tea',
+            begin:
               '^(\\s*)(' +
               Tok.Export +
               ')(\\s+)(' +
               IDENTIFIER +
               ')(?=\\s*\\()',
-            captures: {
-              '2': {name: 'storage.modifier.export.tea'},
-              '4': {name: 'entity.name.function.tea'},
+            beginCaptures: {
+              '2': {name: TEA_SCOPES.exportModifier},
+              '4': {name: TEA_SCOPES.functionName},
             },
+            end: '(=>)|(?=$)',
+            endCaptures: {
+              '1': {name: 'keyword.operator.function.tea'},
+            },
+            patterns: [
+              {include: '#comments'},
+              {include: '#strings'},
+              {include: '#parameter-declarations'},
+              {include: '#type-parameter-list'},
+              {include: '#punctuation'},
+            ],
           },
           {
             match: '^(\\s*)(' + IDENTIFIER + ')(?=\\s*\\([^\\r\\n]*\\)\\s*=>)',
             captures: {
-              '2': {name: 'entity.name.function.tea'},
+              '2': {name: TEA_SCOPES.functionName},
+            },
+          },
+        ],
+      },
+      'parameter-declarations': {
+        patterns: [
+          {
+            match:
+              '(?:(?<=\\()|(?<=,))(\\s*)(?:(' +
+              words(QUALIFIERS) +
+              ')(\\s+))?(' +
+              IDENTIFIER +
+              ')(\\.)(' +
+              IDENTIFIER +
+              ')(\\s+)(' +
+              IDENTIFIER +
+              ')\\b',
+            captures: {
+              '2': {name: 'storage.modifier.qualifier.tea'},
+              '4': {name: TEA_SCOPES.namespace},
+              '5': {name: 'punctuation.accessor.tea'},
+              '6': {name: TEA_SCOPES.typeName},
+              '8': {name: TEA_SCOPES.parameter},
+            },
+          },
+          {
+            match:
+              '(?:(?<=\\()|(?<=,))(\\s*)(?:(' +
+              words(QUALIFIERS) +
+              ')(\\s+))?(' +
+              typeWords +
+              ')(\\s+)(' +
+              IDENTIFIER +
+              ')\\b',
+            captures: {
+              '2': {name: 'storage.modifier.qualifier.tea'},
+              '4': {name: TEA_SCOPES.builtinType},
+              '6': {name: TEA_SCOPES.parameter},
+            },
+          },
+          {
+            match:
+              '(?:(?<=\\()|(?<=,))(\\s*)(?:(' +
+              words(QUALIFIERS) +
+              ')(\\s+))?(' +
+              IDENTIFIER +
+              ')(\\s+)(' +
+              IDENTIFIER +
+              ')\\b',
+            captures: {
+              '2': {name: 'storage.modifier.qualifier.tea'},
+              '4': {name: TEA_SCOPES.typeName},
+              '6': {name: TEA_SCOPES.parameter},
+            },
+          },
+          {
+            match:
+              '(?:(?<=\\()|(?<=,))(\\s*)(?:(' +
+              words(QUALIFIERS) +
+              ')(\\s+))?(' +
+              TYPE_SYNTAX +
+              ')(\\s+)(' +
+              IDENTIFIER +
+              ')\\b',
+            captures: {
+              '2': {name: 'storage.modifier.qualifier.tea'},
+              '4': {name: 'meta.type.annotation.tea'},
+              '6': {name: TEA_SCOPES.parameter},
             },
           },
         ],
@@ -301,8 +492,11 @@ export function generateGrammar() {
       'method-receiver-modifier': {
         patterns: [
           {
-            match: words([Tok.Const]) + '(?=\\s*=>)',
-            name: 'storage.modifier.receiver.tea',
+            match:
+              '(?<=\\))(\\s*)(' +
+              words([Tok.Const]) +
+              ')(?=\\s*(?:=>)?\\s*(?://.*)?$)',
+            captures: {'2': {name: TEA_SCOPES.receiverModifier}},
           },
         ],
       },
@@ -353,7 +547,7 @@ export function generateGrammar() {
         patterns: [
           {
             match: '\\b' + IDENTIFIER + '(?=\\s*(?:<[^>\\r\\n]+>\\s*)?\\()',
-            name: 'entity.name.function.call.tea',
+            name: TEA_SCOPES.functionCall,
           },
         ],
       },
@@ -361,44 +555,83 @@ export function generateGrammar() {
         patterns: [
           {
             match:
+              '^(\\s*)(?:(' +
+              words(MODES) +
+              ')(\\s+))?(?:(' +
               words(QUALIFIERS) +
-              '(?=\\s+' +
-              TYPE_SYNTAX +
-              '\\s+' +
-              IDENTIFIER +
-              '\\b)',
-            name: 'storage.modifier.qualifier.tea',
-          },
-          {
-            match:
+              ')(\\s+))?(' +
               typeWords +
-              '(?=(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*\\s+' +
+              ')(?=\\s+' +
               IDENTIFIER +
               '\\b)',
-            name: 'support.type.builtin.tea',
-          },
-          {
-            match:
-              '\\b' +
-              IDENTIFIER +
-              '(?:\\.' +
-              IDENTIFIER +
-              ')?(?=(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*\\s+' +
-              IDENTIFIER +
-              '\\b)',
-            name: 'entity.name.type.tea',
-          },
-          {
-            match: '(?<=[<,])(\\s*)(' + typeWords + ')',
             captures: {
-              '2': {name: 'support.type.builtin.tea'},
+              '2': {name: 'storage.modifier.declaration.tea'},
+              '4': {name: 'storage.modifier.qualifier.tea'},
+              '6': {name: TEA_SCOPES.builtinType},
             },
           },
           {
             match:
-              '(?<=[<,])(\\s*)(' + IDENTIFIER + '(?:\\.' + IDENTIFIER + ')?)',
+              '^(\\s*)(?:(' +
+              words(MODES) +
+              ')(\\s+))?(?:(' +
+              words(QUALIFIERS) +
+              ')(\\s+))?(' +
+              IDENTIFIER +
+              ')(\\.)(' +
+              IDENTIFIER +
+              ')(?=\\s+' +
+              IDENTIFIER +
+              '\\b)',
             captures: {
-              '2': {name: 'entity.name.type.tea'},
+              '2': {name: 'storage.modifier.declaration.tea'},
+              '4': {name: 'storage.modifier.qualifier.tea'},
+              '6': {name: TEA_SCOPES.namespace},
+              '7': {name: 'punctuation.accessor.tea'},
+              '8': {name: TEA_SCOPES.typeName},
+            },
+          },
+          {
+            match:
+              '^(\\s*)(?:(' +
+              words(MODES) +
+              ')(\\s+))?(?:(' +
+              words(QUALIFIERS) +
+              ')(\\s+))?(' +
+              IDENTIFIER +
+              ')(?=\\s+' +
+              IDENTIFIER +
+              '\\b)',
+            captures: {
+              '2': {name: 'storage.modifier.declaration.tea'},
+              '4': {name: 'storage.modifier.qualifier.tea'},
+              '6': {name: TEA_SCOPES.typeName},
+            },
+          },
+          {
+            match:
+              '^(\\s*)(?!(?:' +
+              [
+                Tok.Export,
+                Tok.Type,
+                Tok.Struct,
+                Tok.Interface,
+                Tok.Enum,
+                Tok.Import,
+              ].join('|') +
+              ')\\b)(?:(' +
+              words(MODES) +
+              ')(\\s+))?(?:(' +
+              words(QUALIFIERS) +
+              ')(\\s+))?(' +
+              TYPE_SYNTAX +
+              ')(?=\\s+' +
+              IDENTIFIER +
+              '\\b)',
+            captures: {
+              '2': {name: 'storage.modifier.declaration.tea'},
+              '4': {name: 'storage.modifier.qualifier.tea'},
+              '6': {name: 'meta.type.annotation.tea'},
             },
           },
         ],

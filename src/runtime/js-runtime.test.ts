@@ -12,6 +12,7 @@ import {
   type OutputSink,
   type ProviderContext,
   type RangeDemand,
+  RUNTIME_ABI_VERSION,
   type SeriesData,
   type TeaModule,
   type TimeAxis,
@@ -67,7 +68,7 @@ function providerFromContext(context: ProviderContext): DataProvider {
 }
 
 class RecordingSink implements OutputSink {
-  declared: Parameters<OutputSink['declare']>[0] = [];
+  declared: Parameters<OutputSink['declare']>[0]['outputs'] = [];
   readonly emits: {
     row: number;
     oid: number;
@@ -75,24 +76,26 @@ class RecordingSink implements OutputSink {
     provisional: boolean;
   }[] = [];
 
-  declare(outputs: Parameters<OutputSink['declare']>[0]): void {
-    this.declared = outputs;
+  declare(declaration: Parameters<OutputSink['declare']>[0]): void {
+    this.declared = declaration.outputs;
   }
 
-  emit(
-    row: number,
-    oid: number,
-    channels: readonly Value[],
-    provisional: boolean,
-  ): void {
-    this.emits.push({row, oid, channels: [...channels], provisional});
+  publish(publication: Parameters<OutputSink['publish']>[0]): void {
+    for (const output of publication.outputs) {
+      this.emits.push({
+        row: publication.row,
+        oid: output.outputId,
+        channels: [...output.channels],
+        provisional: publication.provisional,
+      });
+    }
   }
 }
 
 const PLOT_OUTPUT = {
   effect: 'plot',
   staticArgs: [],
-  channels: [{name: 'series', type: 'float'}],
+  channels: [{name: 'series', type: 'float', transport: {kind: 'float'}}],
 } as const;
 
 function num(v: Value): number {
@@ -105,13 +108,14 @@ function num(v: Value): number {
 // plot(e)
 
 const EMA_MODULE: TeaModule = {
-  abi: 4,
+  abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     execution: [],
     params: [],
     outputs: [PLOT_OUTPUT],
+    effects: [],
     requests: [],
     frames: [
       {
@@ -158,7 +162,7 @@ describe('historical execution', () => {
 // counter() => var c = 0; c := c + 1; c
 
 const COUNTER_MODULE: TeaModule = {
-  abi: 4,
+  abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
@@ -169,11 +173,12 @@ const COUNTER_MODULE: TeaModule = {
         effect: 'plot',
         staticArgs: [],
         channels: [
-          {name: 'a', type: 'int'},
-          {name: 'b', type: 'int'},
+          {name: 'a', type: 'int', transport: {kind: 'int'}},
+          {name: 'b', type: 'int', transport: {kind: 'int'}},
         ],
       },
     ],
+    effects: [],
     requests: [],
     frames: [
       {locals: [], subs: [{fid: 1}, {fid: 1}]},
@@ -228,13 +233,14 @@ describe('frames', () => {
 // x = close; plot(x[2])
 
 const HISTORY_MODULE: TeaModule = {
-  abi: 4,
+  abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     execution: [],
     params: [],
     outputs: [PLOT_OUTPUT],
+    effects: [],
     requests: [],
     frames: [
       {
@@ -283,7 +289,7 @@ describe('rings', () => {
 // x = close                       (perBar)
 
 const TICK_MODULE: TeaModule = {
-  abi: 4,
+  abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
@@ -294,12 +300,13 @@ const TICK_MODULE: TeaModule = {
         effect: 'plot',
         staticArgs: [],
         channels: [
-          {name: 'v', type: 'float'},
-          {name: 'p', type: 'int'},
-          {name: 'x', type: 'float'},
+          {name: 'v', type: 'float', transport: {kind: 'float'}},
+          {name: 'p', type: 'int', transport: {kind: 'int'}},
+          {name: 'x', type: 'float', transport: {kind: 'float'}},
         ],
       },
     ],
+    effects: [],
     requests: [],
     frames: [
       {
@@ -409,7 +416,7 @@ describe('provisional protocol', () => {
 // hline(level)  +  a bound-depth local read at offset len
 
 const BIND_MODULE: TeaModule = {
-  abi: 4,
+  abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
@@ -452,6 +459,7 @@ const BIND_MODULE: TeaModule = {
       },
     ],
     outputs: [{effect: 'hline', staticArgs: [], channels: []}, PLOT_OUTPUT],
+    effects: [],
     requests: [],
     frames: [
       {
@@ -618,7 +626,7 @@ describe('typed execution inputs', () => {
 
   function executionModule(): TeaModule {
     return {
-      abi: 4,
+      abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: layouts,
       manifest: {
         series: [],
@@ -631,19 +639,26 @@ describe('typed execution inputs', () => {
             channels: execution.map((_, index) => ({
               name: `value${index}`,
               type: 'value',
+              transport:
+                index < 5 || index === 13
+                  ? ({kind: 'int'} as const)
+                  : index < 12
+                    ? ({kind: 'bool'} as const)
+                    : ({kind: 'string'} as const),
             })),
           },
           {
             effect: 'history',
             staticArgs: [],
             channels: [
-              {name: 'time', type: 'int'},
-              {name: 'barstate', type: 'bool'},
-              {name: 'tickerid', type: 'string'},
-              {name: 'timenow', type: 'int'},
+              {name: 'time', type: 'int', transport: {kind: 'int'}},
+              {name: 'barstate', type: 'bool', transport: {kind: 'bool'}},
+              {name: 'tickerid', type: 'string', transport: {kind: 'string'}},
+              {name: 'timenow', type: 'int', transport: {kind: 'int'}},
             ],
           },
         ],
+        effects: [],
         requests: [],
         frames: [{locals: [], subs: []}],
       },
@@ -765,7 +780,9 @@ describe('typed execution inputs', () => {
           {
             effect: 'probe',
             staticArgs: [],
-            channels: [{name: 'tickerid', type: 'string'}],
+            channels: [
+              {name: 'tickerid', type: 'string', transport: {kind: 'string'}},
+            ],
           },
         ],
       },
@@ -852,6 +869,7 @@ const CHILD_MODULE = {
     execution: [],
     params: [],
     outputs: [],
+    effects: [],
     requests: [],
     frames: [
       {
@@ -896,7 +914,7 @@ function requestModule(
     ...overrides,
   };
   return {
-    abi: 4,
+    abi: RUNTIME_ABI_VERSION,
     aggregateLayouts: TEST_LAYOUTS,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
@@ -923,11 +941,12 @@ function requestModule(
           effect: 'plot',
           staticArgs: [],
           channels: [
-            {name: 'r', type: 'float'},
-            {name: 'prev', type: 'float'},
+            {name: 'r', type: 'float', transport: {kind: 'float'}},
+            {name: 'prev', type: 'float', transport: {kind: 'float'}},
           ],
         },
       ],
+      effects: [],
       requests: [
         {
           merge: {mode: 'sample'},
@@ -1115,6 +1134,7 @@ describe('requests', () => {
         ],
         params: [],
         outputs: [],
+        effects: [],
         requests: [],
         frames: [
           {
@@ -1232,6 +1252,7 @@ describe('requests', () => {
         execution: [],
         params: [],
         outputs: [],
+        effects: [],
         requests: [],
         frames: [
           {
@@ -1264,6 +1285,7 @@ describe('requests', () => {
         execution: [],
         params: [],
         outputs: [],
+        effects: [],
         requests: [
           {
             merge: {mode: 'sample'},
@@ -1361,6 +1383,7 @@ const IDENTITY_CHILD = {
     execution: [],
     params: [],
     outputs: [],
+    effects: [],
     requests: [],
     frames: [
       {
@@ -1389,7 +1412,7 @@ const IDENTITY_CHILD = {
 } satisfies ModuleCode;
 
 const DYNAMIC_MODULE: TeaModule = {
-  abi: 4,
+  abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
@@ -1400,11 +1423,12 @@ const DYNAMIC_MODULE: TeaModule = {
         effect: 'plot',
         staticArgs: [],
         channels: [
-          {name: 'r', type: 'float'},
-          {name: 'prev', type: 'float'},
+          {name: 'r', type: 'float', transport: {kind: 'float'}},
+          {name: 'prev', type: 'float', transport: {kind: 'float'}},
         ],
       },
     ],
+    effects: [],
     requests: [
       {
         merge: {

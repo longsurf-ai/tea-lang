@@ -1,0 +1,40 @@
+//@version=1
+// One deterministic strategy source for both the JavaScript CPU runtime and
+// the WebGPU runtime. The deliberately large rates keep the three-bar result
+// easy to verify by hand.
+strategy("CPU/GPU next-open strategy", shorttitle="CPU/GPU", overlay=false)
+
+import broker
+import portfolio
+import strategy
+
+slippage = input.float(0.1, "Slippage", minval=0.0)
+fee = input.float(0.1, "Fee", minval=0.0)
+initial_cash = input.float(121.0, "Initial cash", minval=1.0)
+
+var strat = strategy.configure(
+	broker = broker.basic(slippage, fee),
+	portfolio = portfolio.basic(initial_cash)
+)
+
+strat.begin(open, bar_index)
+
+// Orders submitted after begin can only fill at a later bar's open.
+if bar_index == 0
+	strat.entry("Long", strategy.Direction.long)
+if bar_index == 1
+	strat.close("Long")
+if bar_index == 2
+	strat.entry("Long", strategy.Direction.long)
+
+expired = strat.end(close, barstate.islast)
+
+plot(strat.cash(), "cash")
+plot(strat.position_quantity(), "position quantity")
+plot(strat.equity(), "equity")
+plot(strat.realized_pnl(), "realized pnl")
+plot(strat.total_fees(), "total fees")
+plot(strat.fill_count(), "fill count")
+plot(strat.round_trip_count(), "round-trip count")
+plot(strat.max_drawdown(), "maximum drawdown")
+plot(na(expired) ? 0 : expired.id, "expired order id")

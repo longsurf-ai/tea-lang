@@ -73,7 +73,7 @@ testable. Codegen/runtime are out of scope.
      position the resolver's error, or declare the alias binding. No
      `builtinLibrary` calls, no `/` special case in the checker.
 4. **Driver stage** — `src/compile.ts`, `src/main.ts`
-   - `compile`/`compileToIr`: loadPackage → resolveImports (barrier) →
+   - `compile`/`compileToProgram`: loadPackage → resolveImports (barrier) →
      checkPackage(files, importer) → buildProgram. Import updates for the
      loadPackage move.
 5. **Tests** — `src/loader/loader.test.ts`, `src/checker/check.test.ts`

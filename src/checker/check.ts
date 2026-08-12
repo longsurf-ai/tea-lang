@@ -50,6 +50,7 @@ import {
   nativeVar,
   TypeRef,
   type NativeFunc,
+  type NativeEffect,
   type GenericTypeRef,
   type NativeResult,
   type NativeTypeRef,
@@ -73,14 +74,21 @@ import {
 } from './info';
 import {
   ObjectKind,
+  satisfactionError,
   type BuiltinObject,
   type EnumMemberObject,
   type EnumObject,
   type FieldObject,
   type FunctionObject,
+  type GenericInstantiation,
+  type GenericUserTypeObject,
+  type InterfaceMethodObject,
+  type InterfaceObject,
   type MethodObject,
   type Object,
   type PackageNameObject,
+  type TypeParameterObject,
+  type TypeSubstitution,
   type UserTypeObject,
   type VariableObject,
 } from './object';
@@ -135,6 +143,11 @@ const INPUT_SOURCE_DEFAULTS = new Set([
   'hlcc4',
 ]);
 
+// The entry package is a compilation identity, not a filesystem package.
+// Source spelling (`strategy.tea`, `./strategy.tea`, an absolute path) remains
+// exclusively in PosBase diagnostics and cannot change nominal host schemas.
+const ENTRY_PACKAGE_PATH = '@entry';
+
 // ---- checker ----------------------------------------------------------------
 
 type PackagePhase = 'checking' | 'checked' | 'failed';
@@ -155,10 +168,17 @@ interface PackageState {
   readonly imports: Package[];
   readonly exports: Map<string, Object>;
   readonly functionDecls: Map<syntax.FuncDecl, FunctionObject>;
+  readonly interfaceDecls: Map<syntax.InterfaceDecl, InterfaceObject>;
   readonly userTypeDecls: Map<syntax.UserTypeDecl, UserTypeObject>;
+  readonly genericUserTypeDecls: Map<
+    syntax.UserTypeDecl,
+    GenericUserTypeObject
+  >;
   readonly finalizedUserTypes: Set<UserTypeObject>;
+  readonly finalizedGenericUserTypes: Set<GenericUserTypeObject>;
   readonly enumDecls: Map<syntax.EnumDecl, EnumObject>;
   readonly finalizedEnums: Set<EnumObject>;
+  readonly runtimeGlobals: VariableObject[];
   dependencyFailed: boolean;
   phase: PackagePhase;
 }
@@ -189,6 +209,24 @@ class Checker {
   private readonly packageStates = new Map<string, PackageState>();
   private readonly stateByPackage = new Map<Package, PackageState>();
   private readonly userTypeObjectOf = new Map<UserType, UserTypeObject>();
+  private readonly genericFieldConstraint = new WeakMap<
+    FieldObject,
+    TypeParameterObject
+  >();
+  private readonly genericVariableConstraint = new WeakMap<
+    VariableObject,
+    TypeParameterObject
+  >();
+  private readonly symbolicTypeParameter = new WeakMap<
+    UserTypeObject,
+    TypeParameterObject
+  >();
+  private readonly pendingGenericMethodValidation = new Set<UserTypeObject>();
+  private substitutions: ReadonlyMap<string, TypeSubstitution> | null = null;
+  // Exact syntax identity of the root strategy header. An explicit package
+  // named strategy may own every later selector without shadowing this one
+  // contextual declaration call.
+  private strategyHeaderCall: syntax.CallExpr | null = null;
   // Names bound by the implicit imports — the redeclare guard's set; the
   // checker never learns where these libraries come from.
   private readonly implicitNames = new Set<string>();
@@ -218,7 +256,7 @@ class Checker {
   ) {
     const scope = new Scope(this.universe);
     this.rootState = this.newPackageState(
-      files[0]?.pos.base.filename ?? '',
+      ENTRY_PACKAGE_PATH,
       'main',
       files,
       scope,
@@ -257,17 +295,28 @@ class Checker {
   ): PackageState {
     const imports: Package[] = [];
     const exports = new Map<string, Object>();
-    const pkg: Package = {path, name, files, scope, imports, exports};
+    const pkg: Package = {
+      path,
+      name,
+      files,
+      scope,
+      imports,
+      exports,
+    };
     const state: PackageState = {
       pkg,
       info: newInfo(),
       imports,
       exports,
       functionDecls: new Map(),
+      interfaceDecls: new Map(),
       userTypeDecls: new Map(),
+      genericUserTypeDecls: new Map(),
       finalizedUserTypes: new Set(),
+      finalizedGenericUserTypes: new Set(),
       enumDecls: new Map(),
       finalizedEnums: new Set(),
+      runtimeGlobals: [],
       dependencyFailed: false,
       phase: 'checking',
     };
@@ -336,9 +385,12 @@ class Checker {
   checkPackage(): CheckedPackage {
     const file = this.rootState.pkg.files[0];
     this.withPackage(this.rootState, () => {
+      this.checkStrategyDeclaration(file);
       this.checkImports(file);
       this.predeclareNominalTypes(file);
       this.predeclareFunctions(file);
+      this.resolveInterfaceMethods(file);
+      this.resolveGenericUserTypes(file);
       this.resolveUserTypeMembers(file);
       this.rejectDirectUserTypeCycles([
         ...this.currentPackage.userTypeDecls.values(),
@@ -353,9 +405,121 @@ class Checker {
       this.validateMethodDeclarations([
         ...this.currentPackage.userTypeDecls.values(),
       ]);
+      this.validateUnusedGenericTemplates();
     });
     this.rootState.phase = this.errors.count === 0 ? 'checked' : 'failed';
-    return {pkg: this.rootState.pkg, info: this.rootState.info};
+    return {
+      pkg: this.rootState.pkg,
+      info: this.rootState.info,
+      packageContexts: new Map(
+        [...this.stateByPackage.entries()].map(([pkg, state]) => [
+          pkg,
+          {info: state.info, initOrder: state.runtimeGlobals},
+        ]),
+      ),
+      nominalTypeIds: this.nominalTypeIds(),
+    };
+  }
+
+  private nominalTypeIds(): ReadonlyMap<UserType | EnumType, string> {
+    const ids = new Map<UserType | EnumType, string>();
+    const genericInstances = new Map<
+      UserTypeObject,
+      {
+        readonly template: GenericUserTypeObject;
+        readonly typeArgs: readonly UserTypeObject[];
+      }
+    >();
+
+    for (const state of this.stateByPackage.values()) {
+      for (const object of state.enumDecls.values()) {
+        ids.set(object.type, `${object.pkg.path}.${object.name}`);
+      }
+      for (const template of state.genericUserTypeDecls.values()) {
+        for (const instance of template.instances) {
+          genericInstances.set(instance.object, {
+            template,
+            typeArgs: instance.typeArgs,
+          });
+        }
+      }
+    }
+
+    const active = new Set<UserTypeObject>();
+    const userTypeId = (object: UserTypeObject): string => {
+      const existing = ids.get(object.type);
+      if (existing !== undefined) {
+        return existing;
+      }
+      if (active.has(object)) {
+        return fatal(`recursive generic nominal identity for '${object.name}'`);
+      }
+      active.add(object);
+      const instance = genericInstances.get(object);
+      const id =
+        instance === undefined
+          ? `${object.pkg.path}.${object.name}`
+          : `${instance.template.pkg.path}.${instance.template.name}<${instance.typeArgs
+              .map(userTypeId)
+              .join(',')}>`;
+      active.delete(object);
+      ids.set(object.type, id);
+      return id;
+    };
+
+    for (const state of this.stateByPackage.values()) {
+      for (const object of state.userTypeDecls.values()) {
+        userTypeId(object);
+      }
+      for (const template of state.genericUserTypeDecls.values()) {
+        for (const instance of template.instances) {
+          userTypeId(instance.object);
+        }
+      }
+    }
+    return ids;
+  }
+
+  // A strategy declaration is the script header, not an ordinary top-level
+  // effect call. Imports may follow it, but no source statement may precede
+  // it, and one script cannot claim two declaration kinds.
+  private checkStrategyDeclaration(file: syntax.File): void {
+    const declarations = file.stmtList.flatMap(stmt => {
+      const name = scriptDeclarationName(stmt);
+      return name === null ? [] : [{name, stmt}];
+    });
+    const strategies = declarations.filter(
+      declaration => declaration.name === 'strategy',
+    );
+    const header = strategies[0];
+    if (header === undefined) {
+      return;
+    }
+    if (header.stmt.kind === NodeKind.ExprStmt) {
+      const headerExpr = unwrapParens(header.stmt.x);
+      this.strategyHeaderCall =
+        headerExpr.kind === NodeKind.CallExpr ? headerExpr : null;
+    }
+    if (file.stmtList[0] !== header.stmt) {
+      this.error(
+        header.stmt.pos,
+        'strategy() declaration must be the first statement in a strategy script',
+      );
+    }
+    for (const duplicate of strategies.slice(1)) {
+      this.error(duplicate.stmt.pos, 'duplicate strategy() declaration');
+    }
+    for (const declaration of declarations) {
+      if (
+        declaration.name !== 'strategy' &&
+        (declaration.name === 'indicator' || declaration.name === 'library')
+      ) {
+        this.error(
+          declaration.stmt.pos,
+          `strategy() cannot be combined with ${declaration.name}()`,
+        );
+      }
+    }
   }
 
   private checkLibraryFile(
@@ -365,11 +529,37 @@ class Checker {
     this.checkImports(file);
     this.predeclareNominalTypes(file);
     this.predeclareFunctions(file);
+    this.resolveInterfaceMethods(file);
+    this.resolveGenericUserTypes(file);
     this.resolveUserTypeMembers(file);
     const owners = [...this.currentPackage.userTypeDecls.values()];
     this.rejectDirectUserTypeCycles(owners);
     bindFileNames(file, this.scope, this.info);
     this.info.scopes.set(file, this.scope);
+
+    // Package vars are declarations for the whole package, like functions
+    // and nominal types. Publish their canonical objects before checking any
+    // initializer so forward dependency reads resolve by identity.
+    for (const [sourceOrder, stmt] of file.stmtList.entries()) {
+      if (!isLegalPackageGlobal(stmt)) {
+        continue;
+      }
+      const object = this.boundName(stmt.target);
+      object.packageGlobal = {
+        pkg: this.currentPackage.pkg,
+        decl: stmt,
+        sourceOrder,
+      };
+      object.type = this.resolveAnnotation(stmt.declType).type;
+      object.qualifier = Qualifier.Series;
+      if (!this.scope.declare(object)) {
+        this.error(
+          stmt.target.pos,
+          `'${stmt.target.value}' is already declared in this scope`,
+        );
+      }
+      this.currentPackage.runtimeGlobals.push(object);
+    }
 
     const header = headers[0] ?? null;
     for (const stmt of file.stmtList) {
@@ -382,6 +572,7 @@ class Checker {
       }
       if (
         stmt.kind === NodeKind.FuncDecl ||
+        stmt.kind === NodeKind.InterfaceDecl ||
         stmt.kind === NodeKind.UserTypeDecl ||
         stmt.kind === NodeKind.TypeAliasDecl ||
         stmt.kind === NodeKind.EnumDecl
@@ -397,14 +588,35 @@ class Checker {
         this.checkDecl(stmt);
         continue;
       }
+      if (isLegalPackageGlobal(stmt)) {
+        const dependencies = new Set<SemanticDependency>();
+        this.dependencyCollectors.push(dependencies);
+        const object = this.boundName(stmt.target);
+        this.checkDecl(stmt, initTv => {
+          const initializer: CheckedDefaultExpression = {
+            expr: stmt.init,
+            info: this.info,
+            tv: initTv,
+            dependencies,
+          };
+          this.info.packageGlobalInitializers.set(object, initializer);
+          this.checkPackageGlobalInitializer(object, initializer);
+        });
+        this.dependencyCollectors.pop();
+        continue;
+      }
       if (stmt.kind !== NodeKind.BadStmt) {
         this.error(
           stmt.pos,
-          'library packages allow only imports, declarations, and single-name const values at the top level',
+          stmt.kind === NodeKind.DeclStmt
+            ? 'library package runtime globals must be private single-name explicitly typed var declarations'
+            : 'library packages allow only imports, declarations, private explicitly typed vars, and single-name const values at the top level',
         );
       }
     }
+    this.orderPackageGlobals();
     this.validateMethodDeclarations(owners);
+    this.validateUnusedGenericTemplates();
   }
 
   private checkImports(file: syntax.File): void {
@@ -413,6 +625,178 @@ class Checker {
         this.checkImport(stmt);
       }
     }
+  }
+
+  private checkPackageGlobalInitializer(
+    object: VariableObject,
+    initializer: CheckedDefaultExpression,
+  ): void {
+    for (const dependency of initializer.dependencies) {
+      if (dependency.kind === ObjectKind.Builtin) {
+        this.error(
+          initializer.expr.pos,
+          `package global '${object.name}' initializer cannot read runtime builtin '${dependency.name}'`,
+        );
+      }
+    }
+
+    this.checkPackageInitializerExpression(object, initializer, new Set(), {
+      invalidWrite: false,
+    });
+  }
+
+  private checkPackageInitializerExpression(
+    global: VariableObject,
+    expression: CheckedExpression,
+    seen: Set<FunctionInstance>,
+    state: {invalidWrite: boolean},
+  ): void {
+    walkExpression(expression.expr, {
+      call: call => {
+        const resolved = expression.info.calls.get(call);
+        if (resolved !== undefined) {
+          this.checkPackageInitializerCall(global, resolved, seen, state);
+        }
+      },
+      assignment: assignment => {
+        if (!state.invalidWrite) {
+          state.invalidWrite = true;
+          this.error(
+            assignment.pos,
+            `package global '${global.name}' initializer cannot mutate state`,
+          );
+        }
+      },
+    });
+  }
+
+  private checkPackageInitializerCall(
+    global: VariableObject,
+    call: import('./info').CallResolution,
+    seen: Set<FunctionInstance>,
+    state: {invalidWrite: boolean},
+  ): void {
+    if (call.kind === CallKind.Native) {
+      if (
+        call.native.effect !== Effect.None ||
+        call.receiver?.mode === 'inout'
+      ) {
+        this.error(
+          call.args.find((arg): arg is syntax.Expr => arg !== null)?.pos ??
+            global.packageGlobal!.decl.init.pos,
+          `package global '${global.name}' initializer cannot call '${call.native.name}' (${call.native.effect})`,
+        );
+      }
+      return;
+    }
+    if (call.kind === CallKind.Request) {
+      this.error(
+        global.packageGlobal!.decl.init.pos,
+        `package global '${global.name}' initializer cannot make requests`,
+      );
+      return;
+    }
+    if (call.kind === CallKind.Constructor) {
+      for (const arg of call.args) {
+        if (!arg.supplied) {
+          this.checkPackageInitializerExpression(
+            global,
+            arg.value,
+            seen,
+            state,
+          );
+        }
+      }
+      return;
+    }
+    const instance = call.instance;
+    if (seen.has(instance)) {
+      return;
+    }
+    seen.add(instance);
+    if (call.receiver?.mode === 'mutable') {
+      this.error(
+        global.packageGlobal!.decl.init.pos,
+        `package global '${global.name}' initializer cannot call mutable method '${instance.name}'`,
+      );
+    }
+    if (
+      [...instance.info.defs.values()].some(
+        object =>
+          object.kind === ObjectKind.Variable &&
+          (object.storage === Storage.Var || object.storage === Storage.Varip),
+      )
+    ) {
+      this.error(
+        global.packageGlobal!.decl.init.pos,
+        `package global '${global.name}' initializer cannot call function '${instance.name}' with persistent local state`,
+      );
+    }
+    if (
+      [...instance.info.reassigned].some(
+        variable => variable.packageGlobal !== null,
+      )
+    ) {
+      this.error(
+        global.packageGlobal!.decl.init.pos,
+        `package global '${global.name}' initializer cannot call state-mutating function '${instance.name}'`,
+      );
+    }
+    for (const nested of instance.info.calls.values()) {
+      this.checkPackageInitializerCall(global, nested, seen, state);
+    }
+  }
+
+  private orderPackageGlobals(): void {
+    const globals = this.currentPackage.runtimeGlobals;
+    const owned = new Set(globals);
+    const dependencies = new Map<VariableObject, VariableObject[]>();
+    for (const global of globals) {
+      const initializer = this.info.packageGlobalInitializers.get(global);
+      const direct =
+        initializer === undefined
+          ? []
+          : [...initializer.dependencies].filter(
+              (dependency): dependency is VariableObject =>
+                dependency.kind === ObjectKind.Variable &&
+                owned.has(dependency),
+            );
+      dependencies.set(global, direct);
+    }
+
+    const ordered: VariableObject[] = [];
+    const complete = new Set<VariableObject>();
+    const active: VariableObject[] = [];
+    const visit = (global: VariableObject): void => {
+      if (complete.has(global)) {
+        return;
+      }
+      const cycleAt = active.indexOf(global);
+      if (cycleAt >= 0) {
+        const cycle = [...active.slice(cycleAt), global];
+        this.error(
+          global.packageGlobal!.decl.pos,
+          `package global initializer cycle: ${cycle.map(item => item.name).join(' -> ')}`,
+        );
+        return;
+      }
+      active.push(global);
+      for (const dependency of dependencies.get(global) ?? []) {
+        visit(dependency);
+      }
+      active.pop();
+      if (!complete.has(global)) {
+        complete.add(global);
+        ordered.push(global);
+      }
+    };
+    for (const global of [...globals].sort(
+      (left, right) =>
+        left.packageGlobal!.sourceOrder - right.packageGlobal!.sourceOrder,
+    )) {
+      visit(global);
+    }
+    globals.splice(0, globals.length, ...ordered);
   }
 
   private withPackage(state: PackageState, fn: () => void): void {
@@ -432,6 +816,7 @@ class Checker {
       flowQualifier: this.flowQualifier,
       captureDepth: this.captureDepth,
       activeMethod: this.activeMethod,
+      substitutions: this.substitutions,
     };
     this.currentPackage = state;
     this.info = state.info;
@@ -441,6 +826,7 @@ class Checker {
     this.flowQualifier = Qualifier.Const;
     this.captureDepth = 0;
     this.activeMethod = null;
+    this.substitutions = null;
     fn();
     this.currentPackage = saved.package;
     this.info = saved.info;
@@ -450,6 +836,7 @@ class Checker {
     this.flowQualifier = saved.flowQualifier;
     this.captureDepth = saved.captureDepth;
     this.activeMethod = saved.activeMethod;
+    this.substitutions = saved.substitutions;
   }
 
   private addPackageImport(state: PackageState, pkg: Package): void {
@@ -467,11 +854,36 @@ class Checker {
 
   private predeclareNominalTypes(file: syntax.File): void {
     for (const stmt of file.stmtList) {
-      if (stmt.kind === NodeKind.UserTypeDecl) {
-        this.predeclareUserType(stmt);
+      if (stmt.kind === NodeKind.InterfaceDecl) {
+        this.predeclareInterface(stmt);
+      } else if (stmt.kind === NodeKind.UserTypeDecl) {
+        if (stmt.typeParams.length === 0) {
+          this.predeclareUserType(stmt);
+        } else {
+          this.predeclareGenericUserType(stmt);
+        }
       } else if (stmt.kind === NodeKind.EnumDecl) {
         this.predeclareEnum(stmt);
       }
+    }
+  }
+
+  private predeclareInterface(decl: syntax.InterfaceDecl): void {
+    const methods: InterfaceMethodObject[] = [];
+    const object: InterfaceObject = {
+      kind: ObjectKind.Interface,
+      pkg: this.currentPackage.pkg,
+      exported: decl.exported,
+      name: decl.name.value,
+      decl,
+      methods,
+    };
+    if (!this.declare(decl.name, object)) {
+      return;
+    }
+    this.currentPackage.interfaceDecls.set(decl, object);
+    if (decl.exported) {
+      this.currentPackage.exports.set(object.name, object);
     }
   }
 
@@ -485,11 +897,12 @@ class Checker {
 
   private predeclareUserType(decl: syntax.UserTypeDecl): void {
     const fields: FieldObject[] = [];
+    const layoutFields: {name: string; type: Type}[] = [];
     const methods: MethodObject[] = [];
     const type: UserType = {
       kind: TypeKind.UserType,
       name: decl.name.value,
-      fields,
+      fields: layoutFields,
     };
     const object: UserTypeObject = {
       kind: ObjectKind.UserType,
@@ -505,6 +918,29 @@ class Checker {
     }
     this.currentPackage.userTypeDecls.set(decl, object);
     this.userTypeObjectOf.set(type, object);
+    if (decl.exported) {
+      this.currentPackage.exports.set(object.name, object);
+    }
+  }
+
+  private predeclareGenericUserType(decl: syntax.UserTypeDecl): void {
+    const typeParams: TypeParameterObject[] = [];
+    const instances: GenericInstantiation[] = [];
+    const object: GenericUserTypeObject = {
+      kind: ObjectKind.GenericUserType,
+      pkg: this.currentPackage.pkg,
+      exported: decl.exported,
+      name: decl.name.value,
+      decl,
+      base: this.scope,
+      typeParams,
+      instances,
+      validationInfo: newInfo(),
+    };
+    if (!this.declare(decl.name, object)) {
+      return;
+    }
+    this.currentPackage.genericUserTypeDecls.set(decl, object);
     if (decl.exported) {
       this.currentPackage.exports.set(object.name, object);
     }
@@ -606,6 +1042,7 @@ class Checker {
             declaredParams,
             invalidDefaults,
             declaredResult: this.resolveMethodResult(member.result),
+            substitutions: null,
           };
           methods.push(method);
           if (!this.scope.declareMethod(method)) {
@@ -633,9 +1070,136 @@ class Checker {
           defaultValue: null,
         };
         fields.push(object);
+        (owner.type.fields as {name: string; type: Type}[]).push({
+          name: object.name,
+          type: object.type,
+        });
         this.info.defs.set(field.name, object);
       }
     }
+  }
+
+  private resolveInterfaceMethods(file: syntax.File): void {
+    for (const stmt of file.stmtList) {
+      if (stmt.kind !== NodeKind.InterfaceDecl) {
+        continue;
+      }
+      const owner = this.currentPackage.interfaceDecls.get(stmt);
+      if (owner === undefined) {
+        continue;
+      }
+      const methods = owner.methods as InterfaceMethodObject[];
+      const methodNames = new Set<string>();
+      for (const decl of stmt.methods) {
+        const name = decl.name.value;
+        const parameterNames = new Set<string>();
+        const params = decl.params.map(param => {
+          if (parameterNames.has(param.name.value)) {
+            this.error(
+              param.name.pos,
+              `duplicate parameter '${param.name.value}' in interface method '${name}'`,
+            );
+          }
+          parameterNames.add(param.name.value);
+          return this.resolveAnnotation(param.paramType);
+        });
+        const result = this.resolveMethodResult(decl.result);
+        if (methodNames.has(name)) {
+          this.error(
+            decl.name.pos,
+            `duplicate method '${name}' in interface '${owner.name}'`,
+          );
+          continue;
+        }
+        methodNames.add(name);
+        const method: InterfaceMethodObject = {
+          kind: ObjectKind.InterfaceMethod,
+          owner,
+          name,
+          decl,
+          receiverMode: decl.receiverMode,
+          params,
+          result,
+        };
+        methods.push(method);
+        this.info.defs.set(decl.name, method);
+      }
+    }
+  }
+
+  private resolveGenericUserTypes(file: syntax.File): void {
+    for (const stmt of file.stmtList) {
+      if (stmt.kind !== NodeKind.UserTypeDecl || stmt.typeParams.length === 0) {
+        continue;
+      }
+      const owner = this.currentPackage.genericUserTypeDecls.get(stmt);
+      if (owner === undefined) {
+        continue;
+      }
+      const params = owner.typeParams as TypeParameterObject[];
+      const names = new Set<string>();
+      for (const [index, decl] of stmt.typeParams.entries()) {
+        if (names.has(decl.name.value)) {
+          this.error(
+            decl.name.pos,
+            `duplicate type parameter '${decl.name.value}' in type '${owner.name}'`,
+          );
+          continue;
+        }
+        names.add(decl.name.value);
+        const constraint = this.resolveInterfaceName(decl.constraint);
+        if (constraint === null) {
+          continue;
+        }
+        const parameter: TypeParameterObject = {
+          kind: ObjectKind.TypeParameter,
+          owner,
+          index,
+          name: decl.name.value,
+          decl,
+          constraint,
+        };
+        params.push(parameter);
+        this.info.defs.set(decl.name, parameter);
+      }
+      const members = new Set<string>();
+      for (const member of stmt.members) {
+        if (members.has(member.name.value)) {
+          this.error(
+            member.name.pos,
+            `duplicate member '${member.name.value}' in type '${owner.name}'`,
+          );
+        }
+        members.add(member.name.value);
+      }
+    }
+  }
+
+  private resolveInterfaceName(name: syntax.TypeName): InterfaceObject | null {
+    if (name.kind === NodeKind.Name) {
+      const object = this.scope.lookup(name.value);
+      if (object?.kind === ObjectKind.Interface) {
+        this.info.uses.set(name, object);
+        return object;
+      }
+      this.error(name.pos, `unknown interface '${name.value}'`);
+      return null;
+    }
+    if (name.kind === NodeKind.SelectorExpr && name.x.kind === NodeKind.Name) {
+      const member = this.packageMember(name.x, name.sel);
+      if (member.matched) {
+        if (member.object?.kind === ObjectKind.Interface) {
+          return member.object;
+        }
+        this.error(
+          name.pos,
+          `unknown interface '${name.x.value}.${name.sel.value}'`,
+        );
+        return null;
+      }
+    }
+    this.error(name.pos, 'interface constraint must name an interface');
+    return null;
   }
 
   private checkMethodDefaultReferences(
@@ -691,6 +1255,8 @@ class Checker {
               visitExpr(member.body);
             }
           }
+          return;
+        case NodeKind.InterfaceDecl:
           return;
         case NodeKind.EnumDecl:
           for (const member of stmt.members) {
@@ -872,6 +1438,9 @@ class Checker {
       case NodeKind.FuncDecl:
         this.checkFuncDecl(stmt);
         return null;
+      case NodeKind.InterfaceDecl:
+        this.checkInterfaceDecl(stmt);
+        return null;
       case NodeKind.UserTypeDecl:
         this.checkUserTypeDecl(stmt);
         return null;
@@ -899,8 +1468,21 @@ class Checker {
     }
   }
 
-  private checkDecl(d: syntax.DeclStmt): TypeAndValue {
+  private checkDecl(
+    d: syntax.DeclStmt,
+    afterInit?: (tv: TypeAndValue) => void,
+  ): TypeAndValue {
     const initTv = this.checkExpr(d.init);
+    if (
+      (d.mode === Mode.Var || d.mode === Mode.Varip) &&
+      this.expressionCallsEffect(d.init, this.info, Effect.Emit)
+    ) {
+      this.error(
+        d.init.pos,
+        `'effect.emit' cannot execute from a persistent variable initializer`,
+      );
+    }
+    afterInit?.(initTv);
     const declared =
       d.declType !== null ? this.resolveAnnotation(d.declType) : null;
 
@@ -921,7 +1503,16 @@ class Checker {
     name.type = type;
     name.qualifier = qualifier;
     name.constValue = constValue;
-    this.declare(nameNode, name);
+    if (
+      name.packageGlobal === null ||
+      this.scope.lookup(nameNode.value) !== name
+    ) {
+      this.declare(nameNode, name);
+    }
+    const genericOrigin = this.typeParameterOrigin(d.init);
+    if (genericOrigin !== null) {
+      this.genericVariableConstraint.set(name, genericOrigin);
+    }
     const init = unwrapParens(d.init);
     const resolved =
       init.kind === NodeKind.CallExpr ? this.info.calls.get(init) : undefined;
@@ -1147,11 +1738,14 @@ class Checker {
       this.funcBoundary !== null &&
       !this.scope.resolvesWithin(target.value, this.funcBoundary)
     ) {
-      // Pine semantics: functions read the global scope but never write it.
-      this.error(
-        target.pos,
-        `cannot modify global variable '${target.value}' inside a function`,
-      );
+      if (!this.canWriteOuterVariable(entry)) {
+        this.error(
+          target.pos,
+          entry.packageGlobal === null
+            ? `cannot modify global variable '${target.value}' inside a function`
+            : `cannot modify package global '${target.value}' outside its owning package`,
+        );
+      }
     }
     if (
       entry.type.kind === TypeKind.Plot ||
@@ -1271,13 +1865,21 @@ class Checker {
       this.funcBoundary !== null &&
       !this.scope.resolvesWithin(current.value, this.funcBoundary)
     ) {
-      this.error(
-        receiver.pos,
-        `cannot modify global variable '${object.name}' inside a function`,
-      );
-      return null;
+      if (!this.canWriteOuterVariable(object)) {
+        this.error(
+          receiver.pos,
+          object.packageGlobal === null
+            ? `cannot modify global variable '${object.name}' inside a function`
+            : `cannot modify package global '${object.name}' outside its owning package`,
+        );
+        return null;
+      }
     }
     return {receiver: checked, root: object, fields: fields.reverse()};
+  }
+
+  private canWriteOuterVariable(object: VariableObject): boolean {
+    return object.packageGlobal?.pkg === this.currentPackage.pkg;
   }
 
   // An import declaration: resolution belongs to the injected Importer (the
@@ -1322,7 +1924,12 @@ class Checker {
       return;
     }
     if (
-      isNativeRoot(name) ||
+      (isNativeRoot(name) &&
+        !(
+          name === 'strategy' &&
+          stmt.path.value === 'strategy' &&
+          imported.name === 'strategy'
+        )) ||
       (this.currentPackage === this.rootState && this.implicitNames.has(name))
     ) {
       this.error(stmt.path.pos, `cannot redeclare built-in '${name}'`);
@@ -1344,6 +1951,12 @@ class Checker {
       return;
     }
     this.declareFunction(d);
+  }
+
+  private checkInterfaceDecl(d: syntax.InterfaceDecl): void {
+    if (this.blockDepth > 0 || this.funcBoundary !== null) {
+      this.error(d.pos, 'interfaces must be declared at the top level');
+    }
   }
 
   private declareFunction(d: syntax.FuncDecl): void {
@@ -1382,6 +1995,13 @@ class Checker {
   private checkUserTypeDecl(d: syntax.UserTypeDecl): void {
     if (this.blockDepth > 0) {
       this.error(d.pos, 'types must be declared at the top level');
+      return;
+    }
+    if (d.typeParams.length !== 0) {
+      const generic = this.currentPackage.genericUserTypeDecls.get(d);
+      if (generic !== undefined) {
+        this.currentPackage.finalizedGenericUserTypes.add(generic);
+      }
       return;
     }
     const owner = this.currentPackage.userTypeDecls.get(d);
@@ -1450,6 +2070,201 @@ class Checker {
         );
         variants.push(instance);
       }
+    }
+  }
+
+  private validateUnusedGenericTemplates(): void {
+    for (const template of this.currentPackage.genericUserTypeDecls.values()) {
+      if (
+        template.instances.length !== 0 ||
+        template.typeParams.length !== template.decl.typeParams.length
+      ) {
+        continue;
+      }
+      this.validateGenericTemplate(template);
+    }
+  }
+
+  private validateGenericTemplate(template: GenericUserTypeObject): void {
+    const symbolicArgs = template.typeParams.map(parameter => {
+      const fields: {name: string; type: Type}[] = [];
+      const type: UserType = {
+        kind: TypeKind.UserType,
+        name: parameter.name,
+        fields,
+      };
+      const object: UserTypeObject = {
+        kind: ObjectKind.UserType,
+        pkg: template.pkg,
+        exported: false,
+        name: parameter.name,
+        type,
+        fields: [],
+        methods: [],
+      };
+      this.userTypeObjectOf.set(type, object);
+      this.symbolicTypeParameter.set(object, parameter);
+      return object;
+    });
+    const substitutions = new Map<string, TypeSubstitution>();
+    template.typeParams.forEach((parameter, index) =>
+      substitutions.set(parameter.name, {
+        parameter,
+        object: symbolicArgs[index],
+      }),
+    );
+
+    const fields: FieldObject[] = [];
+    const methods: MethodObject[] = [];
+    const layoutFields: {name: string; type: Type}[] = [];
+    const name = `${template.name}<${template.typeParams.map(parameter => parameter.name).join(', ')}>`;
+    const type: UserType = {
+      kind: TypeKind.UserType,
+      name,
+      fields: layoutFields,
+    };
+    const owner: UserTypeObject = {
+      kind: ObjectKind.UserType,
+      pkg: template.pkg,
+      exported: template.exported,
+      name,
+      type,
+      fields,
+      methods,
+    };
+    this.userTypeObjectOf.set(type, owner);
+
+    const saved = {
+      package: this.currentPackage,
+      scope: this.scope,
+      info: this.info,
+      substitutions: this.substitutions,
+      flowQualifier: this.flowQualifier,
+      loopDepth: this.loopDepth,
+      blockDepth: this.blockDepth,
+      boundary: this.funcBoundary,
+      captureDepth: this.captureDepth,
+      activeMethod: this.activeMethod,
+    };
+    this.currentPackage = this.stateOf(template.pkg);
+    this.scope = template.base;
+    this.info = template.validationInfo;
+    this.substitutions = substitutions;
+    this.flowQualifier = Qualifier.Const;
+    this.loopDepth = 0;
+    this.blockDepth = 0;
+    this.funcBoundary = null;
+    this.captureDepth = 0;
+    this.activeMethod = null;
+    try {
+      const memberNames = new Set<string>();
+      for (const member of template.decl.members) {
+        if (memberNames.has(member.name.value)) {
+          continue;
+        }
+        memberNames.add(member.name.value);
+        if (member.kind === NodeKind.FieldDecl) {
+          if (member.fieldType.qualifier !== null) {
+            this.error(
+              member.fieldType.qualifier.pos,
+              `field-level '${member.fieldType.qualifier.value}' is not supported; persistence belongs to the containing variable`,
+            );
+          }
+          const fieldType = this.resolveTypeName(member.fieldType.name);
+          const writtenFieldType = member.fieldType.name;
+          const parameter =
+            writtenFieldType.kind === NodeKind.Name
+              ? template.typeParams.find(
+                  candidate => candidate.name === writtenFieldType.value,
+                )
+              : undefined;
+          const field: FieldObject = {
+            kind: ObjectKind.Field,
+            owner,
+            index: fields.length,
+            name: member.name.value,
+            type: fieldType,
+            decl: member,
+            defaultValue: null,
+          };
+          if (parameter !== undefined) {
+            this.genericFieldConstraint.set(field, parameter);
+          }
+          fields.push(field);
+          layoutFields.push({name: field.name, type: field.type});
+          this.info.defs.set(member.name, field);
+          continue;
+        }
+        const parameterNames = new Set(
+          member.params.map(parameter => parameter.name.value),
+        );
+        const invalidDefaults = new Set<number>();
+        const seenParameters = new Set<string>();
+        const declaredParams = member.params.map(parameter => {
+          if (seenParameters.has(parameter.name.value)) {
+            this.error(
+              parameter.name.pos,
+              `duplicate parameter '${parameter.name.value}' in method '${member.name.value}'`,
+            );
+          }
+          seenParameters.add(parameter.name.value);
+          return this.resolveAnnotation(parameter.paramType);
+        });
+        for (const [index, parameter] of member.params.entries()) {
+          if (parameter.defaultValue !== null) {
+            this.checkMethodDefaultReferences(
+              parameter.defaultValue,
+              parameterNames,
+              () => invalidDefaults.add(index),
+            );
+          }
+        }
+        const method: MethodObject = {
+          kind: ObjectKind.Function,
+          pkg: template.pkg,
+          exported: template.exported,
+          name: member.name.value,
+          displayName: `${name}.${member.name.value}`,
+          decl: member,
+          base: template.base,
+          receiver: {owner, mode: member.receiverMode},
+          declaredParams,
+          invalidDefaults,
+          declaredResult: this.resolveMethodResult(member.result),
+          substitutions,
+        };
+        methods.push(method);
+        this.info.defs.set(member.name, method);
+      }
+
+      this.currentPackage.finalizedUserTypes.add(owner);
+      this.rejectDirectUserTypeCycles([owner]);
+      for (const field of fields) {
+        if (field.decl.defaultValue === null) {
+          continue;
+        }
+        const checked = this.checkDefaultExpression(field.decl.defaultValue);
+        if (!assignable(checked.tv.type, field.type)) {
+          this.error(
+            field.decl.defaultValue.pos,
+            `cannot use ${formatType(checked.tv.type)} as ${formatType(field.type)} default for field '${field.name}'`,
+          );
+        }
+        field.defaultValue = checked;
+      }
+      this.validateMethodDeclarations([owner]);
+    } finally {
+      this.currentPackage.finalizedUserTypes.delete(owner);
+      this.currentPackage = saved.package;
+      this.scope = saved.scope;
+      this.info = saved.info;
+      this.substitutions = saved.substitutions;
+      this.flowQualifier = saved.flowQualifier;
+      this.loopDepth = saved.loopDepth;
+      this.blockDepth = saved.blockDepth;
+      this.funcBoundary = saved.boundary;
+      this.captureDepth = saved.captureDepth;
+      this.activeMethod = saved.activeMethod;
     }
   }
 
@@ -1534,6 +2349,11 @@ class Checker {
   private resolveTypeName(t: syntax.TypeName): Type {
     switch (t.kind) {
       case NodeKind.Name: {
+        const substituted = this.substitutions?.get(t.value);
+        if (substituted !== undefined) {
+          this.info.uses.set(t, substituted.parameter);
+          return substituted.object.type;
+        }
         const builtin = BUILTIN_ANNOTATION_TYPES.get(t.value);
         if (builtin !== undefined) {
           return builtin;
@@ -1546,27 +2366,66 @@ class Checker {
           this.info.uses.set(t, entry);
           return entry.type;
         }
+        if (entry?.kind === ObjectKind.Interface) {
+          this.info.uses.set(t, entry);
+          this.error(
+            t.pos,
+            `interface '${t.value}' cannot be used as a value type`,
+          );
+          return InvalidType;
+        }
+        if (entry?.kind === ObjectKind.GenericUserType) {
+          this.error(
+            t.pos,
+            `generic type '${t.value}' requires ${entry.typeParams.length} type argument${entry.typeParams.length === 1 ? '' : 's'}`,
+          );
+          return InvalidType;
+        }
         this.error(t.pos, `unknown type '${t.value}'`);
         return InvalidType;
       }
       case NodeKind.GenericType: {
-        if (t.name.kind !== NodeKind.Name) {
+        const collection =
+          t.name.kind === NodeKind.Name
+            ? COLLECTION_TYPE_CATALOG.get(t.name.value)
+            : undefined;
+        if (collection === undefined) {
+          let template: GenericUserTypeObject | null = null;
+          let written = '';
+          if (t.name.kind === NodeKind.Name) {
+            const entry = this.scope.lookup(t.name.value);
+            written = t.name.value;
+            if (entry?.kind === ObjectKind.GenericUserType) {
+              this.info.uses.set(t.name, entry);
+              template = entry;
+            }
+          } else if (
+            t.name.kind === NodeKind.SelectorExpr &&
+            t.name.x.kind === NodeKind.Name
+          ) {
+            written = `${t.name.x.value}.${t.name.sel.value}`;
+            const member = this.packageMember(t.name.x, t.name.sel);
+            if (
+              member.matched &&
+              member.object?.kind === ObjectKind.GenericUserType
+            ) {
+              template = member.object;
+            }
+          }
+          if (template !== null) {
+            return this.resolveGenericUserTypeAnnotation(template, t, written);
+          }
           this.error(
             t.name.pos,
-            'qualified collection types are not supported',
+            `unknown generic type '${written || '<invalid>'}'`,
           );
-          return InvalidType;
-        }
-        const collection = COLLECTION_TYPE_CATALOG.get(t.name.value);
-        if (collection === undefined) {
-          this.error(t.name.pos, `unknown generic type '${t.name.value}'`);
           return InvalidType;
         }
         const expected = collection.typeParams.length;
         if (t.args.length !== expected) {
           this.error(
             t.pos,
-            `generic type '${t.name.value}' expects ${expected} type argument${expected === 1 ? '' : 's'}, got ${t.args.length}`,
+            `generic type '${collection.name}' expects ${expected} type argument${expected === 1 ? '' : 's'}, got ${t.args.length}`,
           );
           return InvalidType;
         }
@@ -1615,6 +2474,13 @@ class Checker {
             ) {
               return member.object.type;
             }
+            if (member.object?.kind === ObjectKind.Interface) {
+              this.error(
+                t.pos,
+                `interface '${t.x.value}.${t.sel.value}' cannot be used as a value type`,
+              );
+              return InvalidType;
+            }
             this.error(t.pos, `unknown type '${t.x.value}.${t.sel.value}'`);
             return InvalidType;
           }
@@ -1623,6 +2489,40 @@ class Checker {
         return InvalidType;
       }
     }
+  }
+
+  private resolveGenericUserTypeAnnotation(
+    template: GenericUserTypeObject,
+    written: syntax.GenericType,
+    displayName: string,
+  ): Type {
+    if (written.args.length !== template.typeParams.length) {
+      this.error(
+        written.pos,
+        `generic type '${displayName}' expects ${template.typeParams.length} type argument${template.typeParams.length === 1 ? '' : 's'}, got ${written.args.length}`,
+      );
+      return InvalidType;
+    }
+    const args = written.args.map(arg => this.resolveTypeName(arg));
+    if (args.some(arg => arg.kind === TypeKind.Invalid)) {
+      return InvalidType;
+    }
+    if (args.some(arg => arg.kind !== TypeKind.UserType)) {
+      this.error(
+        written.pos,
+        `generic type '${displayName}' accepts only concrete user types`,
+      );
+      return InvalidType;
+    }
+    const objects = args.map(arg => this.userTypeObjectOf.get(arg as UserType));
+    if (objects.some(object => object === undefined)) {
+      return fatal(`generic type '${displayName}' lost a type argument`);
+    }
+    return this.instantiateGenericUserType(
+      template,
+      objects as UserTypeObject[],
+      written.pos,
+    ).type;
   }
 
   private packageMember(
@@ -1780,6 +2680,14 @@ class Checker {
         case ObjectKind.Function:
           this.error(n.pos, `'${n.value}' is a function; call it`);
           return INVALID_TV;
+        case ObjectKind.Interface:
+          this.error(n.pos, `interface '${n.value}' is not a value`);
+          return INVALID_TV;
+        case ObjectKind.GenericUserType:
+          this.error(n.pos, `'${n.value}' is a generic type, not a value`);
+          return INVALID_TV;
+        case ObjectKind.TypeParameter:
+          return fatal(`type parameter '${n.value}' reached value resolution`);
         case ObjectKind.UserType:
         case ObjectKind.Enum:
           this.error(n.pos, `'${n.value}' is a type, not a value`);
@@ -1788,6 +2696,7 @@ class Checker {
           this.error(n.pos, `'${n.value}' is a package, not a value`);
           return INVALID_TV;
         case ObjectKind.Field:
+        case ObjectKind.InterfaceMethod:
         case ObjectKind.EnumMember:
         case ObjectKind.Builtin:
           return fatal(`invalid lexical object '${entry.name}'`);
@@ -1880,6 +2789,11 @@ class Checker {
   private requestVariableAllowed(
     object: VariableObject,
   ): {readonly ok: true} | {readonly ok: false; readonly computed: boolean} {
+    // Package globals are re-projected into fresh request-child Program state;
+    // they are not captures of the parent's runtime value.
+    if (object.packageGlobal !== null) {
+      return {ok: true};
+    }
     if (!qualifierLE(object.qualifier, Qualifier.Input)) {
       return {ok: false, computed: false};
     }
@@ -1948,6 +2862,14 @@ class Checker {
         this.error(s.pos, `'${s.x.value}' is a type, not a value`);
         return INVALID_TV;
       }
+      if (entry?.kind === ObjectKind.Interface) {
+        this.error(s.pos, `interface '${s.x.value}' is not a value`);
+        return INVALID_TV;
+      }
+      if (entry?.kind === ObjectKind.GenericUserType) {
+        this.error(s.pos, `'${s.x.value}' is a generic type, not a value`);
+        return INVALID_TV;
+      }
       if (entry?.kind === ObjectKind.Function) {
         this.error(s.pos, `'${s.x.value}' is a function, not a value`);
         return INVALID_TV;
@@ -1958,9 +2880,8 @@ class Checker {
       return INVALID_TV;
     }
     if (baseTv.type.kind === TypeKind.UserType) {
-      const field = baseTv.type.fields.find(
-        object => object.name === s.sel.value,
-      ) as FieldObject | undefined;
+      const owner = this.userTypeObjectOf.get(baseTv.type);
+      const field = owner?.fields.find(object => object.name === s.sel.value);
       if (field === undefined) {
         this.error(
           s.sel.pos,
@@ -2510,6 +3431,13 @@ class Checker {
       this.checkExpr(arg.value);
     }
     const fun = c.fun;
+    if (
+      c === this.strategyHeaderCall &&
+      fun.kind === NodeKind.Name &&
+      fun.value === 'strategy'
+    ) {
+      return this.resolveNativeCall(c, 'strategy', fun.pos, null);
+    }
     if (fun.kind === NodeKind.Name) {
       const entry = this.scope.lookup(fun.value);
       if (entry !== null) {
@@ -2527,6 +3455,12 @@ class Checker {
             c.pos,
             `'${fun.value}' is a type; construct it with '${fun.value}.new(...)'`,
           );
+        } else if (entry.kind === ObjectKind.Interface) {
+          this.info.uses.set(fun, entry);
+          this.error(c.pos, `interface '${fun.value}' is not callable`);
+        } else if (entry.kind === ObjectKind.GenericUserType) {
+          this.info.uses.set(fun, entry);
+          this.error(c.pos, `generic type '${fun.value}' is not callable`);
         } else {
           this.error(fun.pos, `'${fun.value}' is not a function`);
         }
@@ -2545,6 +3479,22 @@ class Checker {
           }
           return this.checkNew(c, entry);
         }
+        if (entry?.kind === ObjectKind.GenericUserType) {
+          this.info.uses.set(fun.x, entry);
+          if (c.typeArgs !== null) {
+            this.error(
+              c.pos,
+              'generic constructors infer type arguments and do not accept explicit call type arguments',
+            );
+            return INVALID_TV;
+          }
+          return this.checkGenericNew(c, entry);
+        }
+        if (entry?.kind === ObjectKind.Interface) {
+          this.info.uses.set(fun.x, entry);
+          this.error(c.pos, `interface '${fun.x.value}' cannot be constructed`);
+          return INVALID_TV;
+        }
       }
       if (
         fun.sel.value === 'new' &&
@@ -2554,7 +3504,24 @@ class Checker {
         const qualified = this.packageMember(fun.x.x, fun.x.sel);
         if (qualified.matched) {
           const written = `${fun.x.x.value}.${fun.x.sel.value}.new`;
+          if (qualified.object?.kind === ObjectKind.GenericUserType) {
+            if (c.typeArgs !== null) {
+              this.error(
+                c.pos,
+                'generic constructors infer type arguments and do not accept explicit call type arguments',
+              );
+              return INVALID_TV;
+            }
+            return this.checkGenericNew(c, qualified.object);
+          }
           if (qualified.object?.kind !== ObjectKind.UserType) {
+            if (qualified.object?.kind === ObjectKind.Interface) {
+              this.error(
+                c.pos,
+                `interface '${fun.x.x.value}.${fun.x.sel.value}' cannot be constructed`,
+              );
+              return INVALID_TV;
+            }
             this.error(fun.pos, `unknown constructor '${written}'`);
             return INVALID_TV;
           }
@@ -2571,6 +3538,10 @@ class Checker {
           const written = `${fun.x.value}.${fun.sel.value}`;
           const template = qualified.object;
           if (template?.kind !== ObjectKind.Function) {
+            if (template?.kind === ObjectKind.Interface) {
+              this.error(c.pos, `interface '${written}' is not callable`);
+              return INVALID_TV;
+            }
             this.error(fun.pos, `unknown function '${written}'`);
             return INVALID_TV;
           }
@@ -2606,14 +3577,34 @@ class Checker {
           receiver,
         );
       }
-      if (c.typeArgs !== null) {
-        this.error(c.pos, 'user methods do not accept type arguments');
-        return INVALID_TV;
-      }
+      const selectedBase = unwrapParens(fun.x);
+      const typeParameter = this.typeParameterOrigin(selectedBase);
       const owner =
         receiverTv.type.kind === TypeKind.UserType
           ? this.userTypeObjectOf.get(receiverTv.type)
           : undefined;
+      if (typeParameter !== null) {
+        const required = typeParameter.constraint.methods.find(
+          method => method.name === fun.sel.value,
+        );
+        if (required === undefined) {
+          this.error(
+            fun.sel.pos,
+            `type parameter '${typeParameter.name}' constrained by '${typeParameter.constraint.name}' has no method '${fun.sel.value}'`,
+          );
+          return INVALID_TV;
+        }
+        if (
+          owner !== undefined &&
+          this.symbolicTypeParameter.get(owner) === typeParameter
+        ) {
+          return this.checkSymbolicInterfaceCall(c, required, receiver);
+        }
+      }
+      if (c.typeArgs !== null) {
+        this.error(c.pos, 'user methods do not accept type arguments');
+        return INVALID_TV;
+      }
       const methods =
         owner?.methods.filter(method => method.name === fun.sel.value) ?? [];
       if (methods.length === 0) {
@@ -2638,6 +3629,108 @@ class Checker {
     }
     this.error(fun.pos, 'expression is not callable');
     return INVALID_TV;
+  }
+
+  private typeParameterOrigin(expr: syntax.Expr): TypeParameterObject | null {
+    const base = unwrapParens(expr);
+    if (base.kind === NodeKind.Name || base.kind === NodeKind.ThisExpr) {
+      const object = this.info.uses.get(base);
+      return object?.kind === ObjectKind.Variable
+        ? (this.genericVariableConstraint.get(object) ?? null)
+        : null;
+    }
+    if (base.kind === NodeKind.SelectorExpr) {
+      const selection = this.info.selections.get(base);
+      return selection?.kind === SelectionKind.Field
+        ? (this.genericFieldConstraint.get(selection.field) ?? null)
+        : null;
+    }
+    return null;
+  }
+
+  private checkSymbolicInterfaceCall(
+    call: syntax.CallExpr,
+    method: InterfaceMethodObject,
+    receiver: CheckedExpression,
+  ): TypeAndValue {
+    if (call.typeArgs !== null) {
+      this.error(
+        call.pos,
+        'interface-constrained methods do not accept type arguments',
+      );
+      return INVALID_TV;
+    }
+    const aligned: (syntax.Expr | null)[] = Array(method.params.length).fill(
+      null,
+    );
+    let position = 0;
+    for (const argument of call.args) {
+      const index =
+        argument.name === null
+          ? position++
+          : method.decl.params.findIndex(
+              parameter => parameter.name.value === argument.name!.value,
+            );
+      if (index < 0 || index >= method.params.length) {
+        this.error(
+          argument.pos,
+          argument.name === null
+            ? `too many arguments in call to '${method.owner.name}.${method.name}'`
+            : `unknown argument '${argument.name.value}' in call to '${method.owner.name}.${method.name}'`,
+        );
+        return INVALID_TV;
+      }
+      if (aligned[index] !== null) {
+        this.error(
+          argument.pos,
+          `duplicate argument '${argument.name?.value ?? method.decl.params[index].name.value}'`,
+        );
+        return INVALID_TV;
+      }
+      aligned[index] = argument.value;
+    }
+    let qualifier = receiver.tv.qualifier;
+    for (const [index, parameter] of method.params.entries()) {
+      const argument = aligned[index];
+      if (argument === null) {
+        this.error(
+          call.pos,
+          `missing argument '${method.decl.params[index].name.value}' in call to '${method.owner.name}.${method.name}'`,
+        );
+        return INVALID_TV;
+      }
+      const actual = this.tvOf(argument);
+      if (!assignable(actual.type, parameter.type)) {
+        this.error(
+          argument.pos,
+          `argument '${method.decl.params[index].name.value}' to '${method.owner.name}.${method.name}': cannot use ${formatType(actual.type)} as ${formatType(parameter.type)}`,
+        );
+      }
+      if (
+        parameter.qualifier !== null &&
+        !qualifierLE(actual.qualifier, parameter.qualifier)
+      ) {
+        this.error(
+          argument.pos,
+          `argument '${method.decl.params[index].name.value}' to '${method.owner.name}.${method.name}' accepts at most ${parameter.qualifier}, got ${actual.qualifier}`,
+        );
+      }
+      qualifier = joinQualifiers(qualifier, actual.qualifier);
+    }
+    if (method.receiverMode === 'mutable') {
+      const writeback = this.checkedWritebackTarget(receiver.expr);
+      if (writeback === null) {
+        return INVALID_TV;
+      }
+      this.info.reassigned.add(writeback.root);
+      writeback.root.constValue = null;
+      writeback.root.qualifier = joinQualifiers(
+        writeback.root.qualifier,
+        Qualifier.Series,
+      );
+      qualifier = Qualifier.Series;
+    }
+    return {type: method.result, qualifier, value: null};
   }
 
   // ---- user-function stenciling ---------------------------------------------
@@ -2776,6 +3869,7 @@ class Checker {
         functionSignaturesEqual(candidate.signature, signature) &&
         (candidate.receiver?.qualifier ?? null) === receiverQualifier,
     );
+    const reusedInstance = instance !== undefined;
     if (instance === undefined) {
       instance = this.instantiate(
         template,
@@ -2786,6 +3880,16 @@ class Checker {
         receiverQualifier,
       );
       variants.push(instance);
+    }
+    if (
+      this.captureDepth > 0 &&
+      reusedInstance &&
+      this.infoCallsEffect(instance.info, Effect.Emit, new Set([instance]))
+    ) {
+      this.error(
+        c.pos,
+        `'${displayName}' cannot call 'effect.emit' inside a request expression`,
+      );
     }
     const dependencies = new Set(instance.dependencies);
     for (const [i, arg] of aligned.entries()) {
@@ -2848,6 +3952,7 @@ class Checker {
       loopDepth: this.loopDepth,
       blockDepth: this.blockDepth,
       boundary: this.funcBoundary,
+      substitutions: this.substitutions,
     };
     const info = newInfo();
     bindFunctionNames(
@@ -2866,6 +3971,8 @@ class Checker {
     this.loopDepth = 0;
     this.blockDepth = 0;
     this.funcBoundary = scope;
+    this.substitutions =
+      template.receiver === null ? null : template.substitutions;
     this.instantiating.add(template);
     const savedActiveMethod = this.activeMethod;
     const errorAttemptsBefore = this.methodErrorAttempts;
@@ -2883,6 +3990,7 @@ class Checker {
             qualifier:
               receiverQualifier ??
               fatal(`method '${displayName}' lost its receiver qualifier`),
+            packageGlobal: null,
             constValue: null,
           };
     const params: VariableObject[] = [];
@@ -2963,6 +4071,16 @@ class Checker {
       name.qualifier = this.info.reassigned.has(name)
         ? joinQualifiers(tv.qualifier, Qualifier.Series)
         : tv.qualifier;
+      if (
+        template.receiver !== null &&
+        template.substitutions !== null &&
+        p.paramType?.name.kind === NodeKind.Name
+      ) {
+        const substitution = template.substitutions.get(p.paramType.name.value);
+        if (substitution !== undefined) {
+          this.genericVariableConstraint.set(name, substitution.parameter);
+        }
+      }
       params.push(name);
       this.declare(p.name, name);
     });
@@ -3021,6 +4139,8 @@ class Checker {
     this.loopDepth = saved.loopDepth;
     this.blockDepth = saved.blockDepth;
     this.funcBoundary = saved.boundary;
+    this.substitutions = saved.substitutions;
+    this.drainGenericMethodValidation();
     return instance;
   }
 
@@ -3076,6 +4196,29 @@ class Checker {
       );
       if (outcome.ok) {
         this.checkPlacement(candidate, c.pos);
+        if (
+          candidate.effect === Effect.Declaration ||
+          candidate.effect === Effect.Output
+        ) {
+          outcome.args.forEach((arg, index) => {
+            if (arg === null || this.tvOf(arg).value !== null) {
+              return;
+            }
+            // Output arguments at input-or-earlier qualification execute in
+            // module.bind; series arguments remain ordinary row channels.
+            if (
+              candidate.effect === Effect.Declaration ||
+              qualifierLE(this.tvOf(arg).qualifier, Qualifier.Input)
+            ) {
+              if (this.expressionCallsEffect(arg, this.info, Effect.Emit)) {
+                this.error(
+                  arg.pos,
+                  `'effect.emit' cannot execute from bind-time argument '${candidate.params[index]?.name ?? index}'`,
+                );
+              }
+            }
+          });
+        }
         if (candidate.effect === Effect.Param) {
           this.checkInputContract(
             c,
@@ -3290,7 +4433,9 @@ class Checker {
       }
       if (
         (param.constraint === 'storable' && !isStorableType(binding.type)) ||
-        (param.constraint === 'map-key' && !isMapKeyType(binding.type))
+        (param.constraint === 'map-key' && !isMapKeyType(binding.type)) ||
+        (param.constraint === 'effect-payload' &&
+          !isEffectPayloadType(binding.type))
       ) {
         return fail(
           c.pos,
@@ -3396,6 +4541,15 @@ class Checker {
     ]) {
       const index = native.params.findIndex(param => param.name === optionName);
       const option = index === -1 ? null : (args[index] ?? null);
+      if (
+        option !== null &&
+        this.expressionCallsEffect(option, this.info, Effect.Emit)
+      ) {
+        this.error(
+          option.pos,
+          `'effect.emit' cannot execute from request option '${optionName}'`,
+        );
+      }
       if (option !== null && this.bindExpressionNeedsUnavailableFrame(option)) {
         this.error(
           option.pos,
@@ -3498,6 +4652,15 @@ class Checker {
   }
 
   private checkPlacement(native: NativeFunc, pos: Pos): void {
+    if (native.effect === Effect.Emit) {
+      if (this.captureDepth > 0) {
+        this.error(
+          pos,
+          `'effect.emit' cannot be called inside a request expression`,
+        );
+      }
+      return;
+    }
     if (native.effect === Effect.Param) {
       if (this.instanceStack.some(instance => instance.template.exported)) {
         this.error(
@@ -3530,6 +4693,108 @@ class Checker {
     }
   }
 
+  private resolutionCallsEffect(
+    resolution: import('./info').CallResolution,
+    effect: NativeEffect,
+    seen: Set<FunctionInstance>,
+  ): boolean {
+    if (resolution.kind === CallKind.Native) {
+      return resolution.native.effect === effect;
+    }
+    if (resolution.kind === CallKind.Request) {
+      return this.infoCallsEffect(resolution.capture, effect, seen);
+    }
+    if (resolution.kind === CallKind.Constructor) {
+      return resolution.args.some(
+        arg =>
+          !arg.supplied &&
+          this.expressionInInfoCallsEffect(
+            arg.value.expr,
+            arg.value.info,
+            effect,
+            seen,
+          ),
+      );
+    }
+    const instance = resolution.instance;
+    if (seen.has(instance)) {
+      return false;
+    }
+    seen.add(instance);
+
+    // Method defaults are declaration-scope expressions checked into the
+    // same Info as the body. Keep their syntax occurrences out of the body
+    // scan, then inspect only the defaults this particular call omitted.
+    const defaultCalls = new Set<syntax.CallExpr>();
+    for (const dflt of instance.defaults.values()) {
+      walkExpression(dflt.expr, {
+        call: call => defaultCalls.add(call),
+        assignment: () => {},
+      });
+    }
+    for (const [call, nested] of instance.info.calls) {
+      if (
+        !defaultCalls.has(call) &&
+        this.resolutionCallsEffect(nested, effect, seen)
+      ) {
+        return true;
+      }
+    }
+    for (const [index, arg] of resolution.args.entries()) {
+      const dflt = arg === null ? instance.defaults.get(index) : undefined;
+      if (
+        dflt !== undefined &&
+        this.expressionInInfoCallsEffect(dflt.expr, dflt.info, effect, seen)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private expressionInInfoCallsEffect(
+    expr: syntax.Expr,
+    info: Info,
+    effect: NativeEffect,
+    seen: Set<FunctionInstance>,
+  ): boolean {
+    let found = false;
+    walkExpression(expr, {
+      call: call => {
+        const resolution = info.calls.get(call);
+        if (
+          resolution !== undefined &&
+          this.resolutionCallsEffect(resolution, effect, seen)
+        ) {
+          found = true;
+        }
+      },
+      assignment: () => {},
+    });
+    return found;
+  }
+
+  private infoCallsEffect(
+    info: Info,
+    effect: NativeEffect,
+    seen: Set<FunctionInstance>,
+  ): boolean {
+    for (const resolution of info.calls.values()) {
+      if (this.resolutionCallsEffect(resolution, effect, seen)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private expressionCallsEffect(
+    expr: syntax.Expr,
+    info: Info,
+    effect: NativeEffect,
+  ): boolean {
+    return this.expressionInInfoCallsEffect(expr, info, effect, new Set());
+  }
+
   // input.* has dependent contracts that cannot be expressed by one static
   // parameter type: options adopt defval's exact type, enum identity is
   // nominal, and source defaults are a closed host vocabulary.
@@ -3539,6 +4804,17 @@ class Checker {
     args: readonly (syntax.Expr | null)[],
     resultType: Type,
   ): void {
+    for (const expr of args) {
+      if (
+        expr !== null &&
+        this.expressionCallsEffect(expr, this.info, Effect.Emit)
+      ) {
+        this.error(
+          expr.pos,
+          `'effect.emit' cannot execute from an input binding expression`,
+        );
+      }
+    }
     const arg = (name: string): syntax.Expr | null => {
       const index = native.params.findIndex(param => param.name === name);
       return index === -1 ? null : (args[index] ?? null);
@@ -3790,6 +5066,443 @@ class Checker {
     return {type: resultType, qualifier, value};
   }
 
+  private checkGenericNew(
+    c: syntax.CallExpr,
+    template: GenericUserTypeObject,
+  ): TypeAndValue {
+    if (!this.stateOf(template.pkg).finalizedGenericUserTypes.has(template)) {
+      this.error(
+        c.pos,
+        `constructor '${template.name}.new' cannot be used before type '${template.name}' is declared`,
+      );
+      return INVALID_TV;
+    }
+    const fieldDecls = template.decl.members.filter(
+      (member): member is syntax.FieldDecl =>
+        member.kind === NodeKind.FieldDecl,
+    );
+    const aligned = this.alignConstructorArguments(
+      c,
+      template.name,
+      fieldDecls.map(field => field.name.value),
+    );
+    if (aligned === null) {
+      return INVALID_TV;
+    }
+    const inferred = new Map<string, UserTypeObject>();
+    for (const [index, field] of fieldDecls.entries()) {
+      const argument = aligned.values[index];
+      if (argument === null) {
+        if (field.defaultValue === null) {
+          this.error(
+            c.pos,
+            `missing argument '${field.name.value}' in call to '${template.name}.new'`,
+          );
+        }
+        continue;
+      }
+      this.inferGenericFieldType(
+        template,
+        field.fieldType.name,
+        this.tvOf(argument).type,
+        inferred,
+        argument.pos,
+      );
+    }
+    if (inferred.size !== template.typeParams.length) {
+      for (const parameter of template.typeParams) {
+        if (!inferred.has(parameter.name)) {
+          this.error(
+            c.pos,
+            `cannot infer type parameter '${parameter.name}' in call to '${template.name}.new'`,
+          );
+        }
+      }
+      return INVALID_TV;
+    }
+    const typeArgs = template.typeParams.map(
+      parameter => inferred.get(parameter.name)!,
+    );
+    const concrete = this.instantiateGenericUserType(template, typeArgs, c.pos);
+    return this.checkNew(c, concrete);
+  }
+
+  private inferGenericFieldType(
+    template: GenericUserTypeObject,
+    written: syntax.TypeName,
+    actual: Type,
+    inferred: Map<string, UserTypeObject>,
+    pos: Pos,
+  ): void {
+    if (written.kind === NodeKind.Name) {
+      const parameter = template.typeParams.find(
+        candidate => candidate.name === written.value,
+      );
+      if (parameter === undefined) {
+        return;
+      }
+      const object =
+        actual.kind === TypeKind.UserType
+          ? this.userTypeObjectOf.get(actual)
+          : undefined;
+      if (object === undefined) {
+        this.error(
+          pos,
+          `cannot infer '${parameter.name}' from ${formatType(actual)}; generic constraints require a user type`,
+        );
+        return;
+      }
+      const previous = inferred.get(parameter.name);
+      if (previous !== undefined && previous !== object) {
+        this.error(
+          pos,
+          `cannot infer one type for '${parameter.name}' from ${previous.name} and ${object.name}`,
+        );
+        return;
+      }
+      inferred.set(parameter.name, object);
+      return;
+    }
+    if (written.kind === NodeKind.ArrayType) {
+      if (actual.kind !== TypeKind.Array) {
+        this.error(pos, `cannot infer from ${formatType(actual)} as an array`);
+        return;
+      }
+      this.inferGenericFieldType(
+        template,
+        written.elem,
+        actual.elem,
+        inferred,
+        pos,
+      );
+      return;
+    }
+    if (written.kind === NodeKind.GenericType) {
+      const head =
+        written.name.kind === NodeKind.Name ? written.name.value : null;
+      if (head === 'array' || head === 'matrix') {
+        const actualElem =
+          actual.kind === TypeKind.Array || actual.kind === TypeKind.Matrix
+            ? actual.elem
+            : null;
+        if (actualElem === null || written.args.length !== 1) {
+          this.error(
+            pos,
+            `cannot infer ${head} type parameters from ${formatType(actual)}`,
+          );
+          return;
+        }
+        this.inferGenericFieldType(
+          template,
+          written.args[0],
+          actualElem,
+          inferred,
+          pos,
+        );
+        return;
+      }
+      if (head === 'map') {
+        if (actual.kind !== TypeKind.Map || written.args.length !== 2) {
+          this.error(
+            pos,
+            `cannot infer map type parameters from ${formatType(actual)}`,
+          );
+          return;
+        }
+        this.inferGenericFieldType(
+          template,
+          written.args[0],
+          actual.key,
+          inferred,
+          pos,
+        );
+        this.inferGenericFieldType(
+          template,
+          written.args[1],
+          actual.value,
+          inferred,
+          pos,
+        );
+        return;
+      }
+    }
+    if (this.typeNameMentionsParameter(written, template.typeParams)) {
+      this.error(pos, 'unsupported nested generic constructor inference');
+    }
+  }
+
+  private instantiateGenericUserType(
+    template: GenericUserTypeObject,
+    typeArgs: readonly UserTypeObject[],
+    pos: Pos,
+  ): UserTypeObject {
+    if (typeArgs.length !== template.typeParams.length) {
+      this.error(
+        pos,
+        `generic type '${template.name}' expects ${template.typeParams.length} type argument${template.typeParams.length === 1 ? '' : 's'}, got ${typeArgs.length}`,
+      );
+    }
+    const cache = template.instances as GenericInstantiation[];
+    const cached = cache.find(
+      instance =>
+        instance.typeArgs.length === typeArgs.length &&
+        instance.typeArgs.every((arg, index) => arg === typeArgs[index]),
+    );
+    if (cached !== undefined) {
+      return cached.object;
+    }
+    const substitutions = new Map<string, TypeSubstitution>();
+    template.typeParams.forEach((parameter, index) => {
+      const object = typeArgs[index];
+      if (object !== undefined) {
+        substitutions.set(parameter.name, {parameter, object});
+      }
+    });
+    for (const parameter of template.typeParams) {
+      const object = substitutions.get(parameter.name)?.object;
+      if (object === undefined) {
+        continue;
+      }
+      const mismatch = satisfactionError(object, parameter.constraint);
+      if (mismatch !== null) {
+        this.error(pos, mismatch);
+      }
+    }
+
+    const fields: FieldObject[] = [];
+    const methods: MethodObject[] = [];
+    const layoutFields: {name: string; type: Type}[] = [];
+    const displayName = `${template.name}<${typeArgs.map(arg => arg.name).join(', ')}>`;
+    const type: UserType = {
+      kind: TypeKind.UserType,
+      name: displayName,
+      fields: layoutFields,
+    };
+    const object: UserTypeObject = {
+      kind: ObjectKind.UserType,
+      pkg: template.pkg,
+      exported: template.exported,
+      name: displayName,
+      type,
+      fields,
+      methods,
+    };
+    const info = newInfo();
+    const instance: GenericInstantiation = {
+      template,
+      typeArgs,
+      object,
+      info,
+    };
+    // Publish identity before resolving members so recursive method bodies and
+    // re-entrant free-function inference canonicalize to this same instance.
+    cache.push(instance);
+    this.userTypeObjectOf.set(type, object);
+
+    const saved = {
+      package: this.currentPackage,
+      scope: this.scope,
+      info: this.info,
+      substitutions: this.substitutions,
+      flowQualifier: this.flowQualifier,
+      loopDepth: this.loopDepth,
+      blockDepth: this.blockDepth,
+      boundary: this.funcBoundary,
+      captureDepth: this.captureDepth,
+      activeMethod: this.activeMethod,
+      instanceStack: this.instanceStack.splice(0),
+      dependencyCollectors: this.dependencyCollectors.splice(0),
+    };
+    this.currentPackage = this.stateOf(template.pkg);
+    this.scope = template.base;
+    this.info = info;
+    this.substitutions = substitutions;
+    this.flowQualifier = Qualifier.Const;
+    this.loopDepth = 0;
+    this.blockDepth = 0;
+    this.funcBoundary = null;
+    this.captureDepth = 0;
+    this.activeMethod = null;
+
+    try {
+      const memberNames = new Set<string>();
+      for (const member of template.decl.members) {
+        const memberName = member.name.value;
+        if (memberNames.has(memberName)) {
+          this.error(
+            member.name.pos,
+            `duplicate member '${memberName}' in type '${template.name}'`,
+          );
+          continue;
+        }
+        memberNames.add(memberName);
+        if (member.kind === NodeKind.FieldDecl) {
+          const fieldType = this.resolveTypeName(member.fieldType.name);
+          const writtenFieldType = member.fieldType.name;
+          const writtenParameter =
+            writtenFieldType.kind === NodeKind.Name
+              ? template.typeParams.find(
+                  parameter => parameter.name === writtenFieldType.value,
+                )
+              : undefined;
+          const field: FieldObject = {
+            kind: ObjectKind.Field,
+            owner: object,
+            index: fields.length,
+            name: memberName,
+            type: fieldType,
+            decl: member,
+            defaultValue: null,
+          };
+          if (writtenParameter !== undefined) {
+            this.genericFieldConstraint.set(field, writtenParameter);
+          }
+          fields.push(field);
+          layoutFields.push({name: field.name, type: field.type});
+          info.defs.set(member.name, field);
+          continue;
+        }
+        const seenParams = new Set<string>();
+        const parameterNames = new Set(
+          member.params.map(parameter => parameter.name.value),
+        );
+        const invalidDefaults = new Set<number>();
+        const declaredParams = member.params.map(param => {
+          if (seenParams.has(param.name.value)) {
+            this.error(
+              param.name.pos,
+              `duplicate parameter '${param.name.value}' in method '${memberName}'`,
+            );
+          }
+          seenParams.add(param.name.value);
+          return this.resolveAnnotation(param.paramType);
+        });
+        for (const [index, parameter] of member.params.entries()) {
+          if (parameter.defaultValue === null) {
+            continue;
+          }
+          this.checkMethodDefaultReferences(
+            parameter.defaultValue,
+            parameterNames,
+            () => invalidDefaults.add(index),
+          );
+        }
+        const method: MethodObject = {
+          kind: ObjectKind.Function,
+          pkg: template.pkg,
+          exported: template.exported,
+          name: memberName,
+          displayName: `${displayName}.${memberName}`,
+          decl: member,
+          base: template.base,
+          receiver: {owner: object, mode: member.receiverMode},
+          declaredParams,
+          invalidDefaults,
+          declaredResult: this.resolveMethodResult(member.result),
+          substitutions,
+        };
+        methods.push(method);
+        info.defs.set(member.name, method);
+      }
+      this.currentPackage.finalizedUserTypes.add(object);
+      this.rejectDirectUserTypeCycles([object]);
+
+      for (const field of fields) {
+        if (field.decl.defaultValue === null) {
+          continue;
+        }
+        const checked = this.checkDefaultExpression(field.decl.defaultValue);
+        if (!assignable(checked.tv.type, field.type)) {
+          this.error(
+            field.decl.defaultValue.pos,
+            `cannot use ${formatType(checked.tv.type)} as ${formatType(field.type)} default for field '${field.name}'`,
+          );
+        }
+        field.defaultValue = checked;
+      }
+    } finally {
+      this.currentPackage = saved.package;
+      this.scope = saved.scope;
+      this.info = saved.info;
+      this.substitutions = saved.substitutions;
+      this.flowQualifier = saved.flowQualifier;
+      this.loopDepth = saved.loopDepth;
+      this.blockDepth = saved.blockDepth;
+      this.funcBoundary = saved.boundary;
+      this.captureDepth = saved.captureDepth;
+      this.activeMethod = saved.activeMethod;
+      this.instanceStack.push(...saved.instanceStack);
+      this.dependencyCollectors.push(...saved.dependencyCollectors);
+    }
+    this.pendingGenericMethodValidation.add(object);
+    this.drainGenericMethodValidation();
+    return object;
+  }
+
+  private drainGenericMethodValidation(): void {
+    if (
+      this.instantiating.size !== 0 ||
+      this.pendingGenericMethodValidation.size === 0
+    ) {
+      return;
+    }
+    const owners = [...this.pendingGenericMethodValidation];
+    this.pendingGenericMethodValidation.clear();
+    this.validateMethodDeclarations(owners);
+  }
+
+  private typeNameMentionsParameter(
+    name: syntax.TypeName,
+    params: readonly TypeParameterObject[],
+  ): boolean {
+    if (name.kind === NodeKind.Name) {
+      return params.some(parameter => parameter.name === name.value);
+    }
+    if (name.kind === NodeKind.GenericType) {
+      return name.args.some(arg => this.typeNameMentionsParameter(arg, params));
+    }
+    if (name.kind === NodeKind.ArrayType) {
+      return this.typeNameMentionsParameter(name.elem, params);
+    }
+    return false;
+  }
+
+  private alignConstructorArguments(
+    c: syntax.CallExpr,
+    displayName: string,
+    fieldNames: readonly string[],
+  ): {
+    readonly values: readonly (syntax.Expr | null)[];
+    readonly order: readonly number[];
+  } | null {
+    const values: (syntax.Expr | null)[] = Array(fieldNames.length).fill(null);
+    const order: number[] = [];
+    let position = 0;
+    for (const arg of c.args) {
+      const index =
+        arg.name === null ? position++ : fieldNames.indexOf(arg.name.value);
+      if (index < 0 || index >= fieldNames.length) {
+        this.error(
+          arg.pos,
+          arg.name === null
+            ? `too many arguments in call to '${displayName}.new'`
+            : `'${displayName}' has no field '${arg.name.value}'`,
+        );
+        return null;
+      }
+      if (values[index] !== null) {
+        this.error(
+          arg.pos,
+          `duplicate argument '${arg.name?.value ?? fieldNames[index]}'`,
+        );
+        return null;
+      }
+      values[index] = arg.value;
+      order.push(index);
+    }
+    return {values, order};
+  }
+
   private checkNew(c: syntax.CallExpr, userType: UserTypeObject): TypeAndValue {
     if (!this.stateOf(userType.pkg).finalizedUserTypes.has(userType)) {
       this.error(
@@ -3898,19 +5611,31 @@ class Checker {
 // ---- pure helpers -----------------------------------------------------------
 
 function isLibraryDeclaration(stmt: syntax.Stmt): stmt is syntax.ExprStmt {
-  return (
-    stmt.kind === NodeKind.ExprStmt &&
-    stmt.x.kind === NodeKind.CallExpr &&
-    stmt.x.fun.kind === NodeKind.Name &&
-    stmt.x.fun.value === 'library'
-  );
+  return scriptDeclarationName(stmt) === 'library';
+}
+
+function scriptDeclarationName(
+  stmt: syntax.Stmt,
+): 'indicator' | 'strategy' | 'library' | null {
+  if (stmt.kind !== NodeKind.ExprStmt) {
+    return null;
+  }
+  const expr = unwrapParens(stmt.x);
+  if (expr.kind !== NodeKind.CallExpr || expr.fun.kind !== NodeKind.Name) {
+    return null;
+  }
+  const name = expr.fun.value;
+  return name === 'indicator' || name === 'strategy' || name === 'library'
+    ? name
+    : null;
 }
 
 function libraryDeclarationName(stmt: syntax.ExprStmt): string | null {
-  if (stmt.x.kind !== NodeKind.CallExpr) {
+  const expr = unwrapParens(stmt.x);
+  if (expr.kind !== NodeKind.CallExpr) {
     return null;
   }
-  const title = stmt.x.args[0]?.value;
+  const title = expr.args[0]?.value;
   return title?.kind === NodeKind.BasicLit && title.litKind === LitKind.String
     ? unquoteString(title.value)
     : null;
@@ -3926,6 +5651,51 @@ function isSourcePackageName(name: string): boolean {
     /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) &&
     !RESERVED_KEYWORDS.some(keyword => keyword === name)
   );
+}
+
+// Sparse effects cross an immutable, fixed-layout transport boundary. Keep
+// this semantic admission rule narrower than general storable values:
+// collections and resource identity need separate lifetime protocols.
+function isEffectPayloadType(type: Type, active = new Set<Type>()): boolean {
+  switch (type.kind) {
+    case TypeKind.Int:
+    case TypeKind.Float:
+    case TypeKind.Bool:
+    case TypeKind.String:
+    case TypeKind.Color:
+    case TypeKind.Enum:
+      return true;
+    case TypeKind.UserType:
+      if (active.has(type)) {
+        return false;
+      }
+      active.add(type);
+      for (const field of type.fields) {
+        if (!isEffectPayloadType(field.type, active)) {
+          active.delete(type);
+          return false;
+        }
+      }
+      active.delete(type);
+      return true;
+    case TypeKind.Invalid:
+    case TypeKind.Void:
+    case TypeKind.Na:
+    case TypeKind.Line:
+    case TypeKind.Label:
+    case TypeKind.Box:
+    case TypeKind.Table:
+    case TypeKind.Polyline:
+    case TypeKind.Linefill:
+    case TypeKind.Plot:
+    case TypeKind.Hline:
+    case TypeKind.Array:
+    case TypeKind.Matrix:
+    case TypeKind.Map:
+    case TypeKind.Tuple:
+    case TypeKind.Func:
+      return false;
+  }
 }
 
 interface InferredNativeType {
@@ -4447,4 +6217,147 @@ function dottedPath(
   }
   parts.unshift(x.value);
   return {root: parts[0], path: parts.join('.')};
+}
+
+function isLegalPackageGlobal(stmt: syntax.Stmt): stmt is syntax.DeclStmt & {
+  readonly target: syntax.Name;
+  readonly declType: syntax.TypeAnnotation;
+} {
+  return (
+    stmt.kind === NodeKind.DeclStmt &&
+    stmt.mode === Mode.Var &&
+    stmt.target.kind === NodeKind.Name &&
+    stmt.declType !== null
+  );
+}
+
+function walkExpression(
+  expr: syntax.Expr,
+  visitor: {
+    readonly call: (call: syntax.CallExpr) => void;
+    readonly assignment: (assignment: syntax.AssignStmt) => void;
+  },
+): void {
+  const block = (value: syntax.Block): void => {
+    for (const stmt of value.stmtList) {
+      switch (stmt.kind) {
+        case NodeKind.ExprStmt:
+          walkExpression(stmt.x, visitor);
+          break;
+        case NodeKind.DeclStmt:
+          walkExpression(stmt.init, visitor);
+          break;
+        case NodeKind.AssignStmt:
+          visitor.assignment(stmt);
+          walkExpression(stmt.target, visitor);
+          walkExpression(stmt.value, visitor);
+          break;
+        case NodeKind.UserTypeDecl:
+          for (const member of stmt.members) {
+            if (
+              member.kind === NodeKind.FieldDecl &&
+              member.defaultValue !== null
+            ) {
+              walkExpression(member.defaultValue, visitor);
+            }
+          }
+          break;
+        case NodeKind.EnumDecl:
+          for (const member of stmt.members) {
+            if (member.title !== null) {
+              walkExpression(member.title, visitor);
+            }
+          }
+          break;
+        case NodeKind.FuncDecl:
+        case NodeKind.InterfaceDecl:
+        case NodeKind.TypeAliasDecl:
+        case NodeKind.ImportStmt:
+        case NodeKind.BreakStmt:
+        case NodeKind.ContinueStmt:
+        case NodeKind.BadStmt:
+          break;
+      }
+    }
+  };
+
+  switch (expr.kind) {
+    case NodeKind.Name:
+    case NodeKind.ThisExpr:
+    case NodeKind.BasicLit:
+    case NodeKind.BadExpr:
+      return;
+    case NodeKind.UnaryExpr:
+    case NodeKind.ParenExpr:
+      walkExpression(expr.x, visitor);
+      return;
+    case NodeKind.SelectorExpr:
+      walkExpression(expr.x, visitor);
+      return;
+    case NodeKind.BinaryExpr:
+      walkExpression(expr.x, visitor);
+      walkExpression(expr.y, visitor);
+      return;
+    case NodeKind.CondExpr:
+      walkExpression(expr.cond, visitor);
+      walkExpression(expr.then, visitor);
+      walkExpression(expr.else, visitor);
+      return;
+    case NodeKind.CallExpr:
+      visitor.call(expr);
+      walkExpression(expr.fun, visitor);
+      for (const arg of expr.args) {
+        walkExpression(arg.value, visitor);
+      }
+      return;
+    case NodeKind.HistoryExpr:
+      walkExpression(expr.x, visitor);
+      walkExpression(expr.offset, visitor);
+      return;
+    case NodeKind.TupleExpr:
+      for (const elem of expr.elems) {
+        walkExpression(elem, visitor);
+      }
+      return;
+    case NodeKind.IfExpr:
+      walkExpression(expr.cond, visitor);
+      block(expr.then);
+      if (expr.else?.kind === NodeKind.IfExpr) {
+        walkExpression(expr.else, visitor);
+      } else if (expr.else !== null) {
+        block(expr.else);
+      }
+      return;
+    case NodeKind.ForExpr:
+      walkExpression(expr.from, visitor);
+      walkExpression(expr.to, visitor);
+      if (expr.step !== null) {
+        walkExpression(expr.step, visitor);
+      }
+      block(expr.body);
+      return;
+    case NodeKind.ForInExpr:
+      walkExpression(expr.x, visitor);
+      block(expr.body);
+      return;
+    case NodeKind.WhileExpr:
+      walkExpression(expr.cond, visitor);
+      block(expr.body);
+      return;
+    case NodeKind.SwitchExpr:
+      if (expr.subject !== null) {
+        walkExpression(expr.subject, visitor);
+      }
+      for (const arm of expr.arms) {
+        if (arm.pattern !== null) {
+          walkExpression(arm.pattern, visitor);
+        }
+        if (arm.body.kind === NodeKind.Block) {
+          block(arm.body);
+        } else {
+          walkExpression(arm.body, visitor);
+        }
+      }
+      return;
+  }
 }

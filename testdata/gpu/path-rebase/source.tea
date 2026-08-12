@@ -1,0 +1,15 @@
+//@version=1
+strategy("rooted update rebase")
+
+type Pair
+	float left
+	float right
+
+	float touch(float value) =>
+		this.right := this.right + 1.0
+		value
+
+var Pair pair = Pair.new(0.0, 0.0)
+pair.left := pair.touch(close)
+plot(pair.left)
+plot(pair.right)

@@ -49,6 +49,26 @@ export fa(x) => b.fb(x) + 1
 `;
 
 describe('import resolution', () => {
+  test('separates compiler-shipped libraries from the implicit prelude', () => {
+    const plain = resolveImports([parseText('value = 1').file]);
+    expect(plain.implicit().map(pkg => pkg.path)).toEqual(['ta']);
+
+    const explicit = resolveImports([
+      parseText(
+        [
+          'strategy("components")',
+          'import broker',
+          'import portfolio',
+          'import strategy',
+        ].join('\n'),
+      ).file,
+    ]);
+    expect(explicit.implicit().map(pkg => pkg.path)).toEqual(['ta']);
+    expect(sourcePackage(explicit.import('broker')).path).toBe('broker');
+    expect(sourcePackage(explicit.import('portfolio')).path).toBe('portfolio');
+    expect(sourcePackage(explicit.import('strategy')).path).toBe('strategy');
+  });
+
   test('prewarms raw transitive imports and memoizes source packages', () => {
     const loaded: string[] = [];
     const {file} = parseText('import a');

@@ -114,6 +114,38 @@ export interface OutputDecl {
   readonly channels: readonly {readonly name: string; readonly type: Type}[];
 }
 
+// One statically-known sparse effect call site. Unlike OutputDecl, an effect
+// has no dense row channel: each execution of its EmitEffectStmt appends one
+// payload record, and repeated executions preserve source execution order.
+export interface EffectDecl {
+  readonly payloadType: Type;
+  readonly payloadSchema: EffectValueSchema;
+  readonly sourcePosition: Pos;
+}
+
+// Backend-neutral sparse-effect payload description. Nominal ids come from
+// checker package/object identity; display names are presentation only.
+export type EffectValueSchema =
+  | {readonly kind: 'int' | 'float' | 'bool' | 'string' | 'color'}
+  | {
+      readonly kind: 'enum';
+      readonly typeId: string;
+      readonly displayName: string;
+      readonly members: readonly {
+        readonly name: string;
+        readonly title: string;
+      }[];
+    }
+  | {
+      readonly kind: 'user-type';
+      readonly typeId: string;
+      readonly displayName: string;
+      readonly fields: readonly {
+        readonly name: string;
+        readonly value: EffectValueSchema;
+      }[];
+    };
+
 // How a child Program's bars project onto the parent axis.
 export const MergeMode = {
   Sample: 'sample',
@@ -235,6 +267,10 @@ export interface Program {
   readonly params: readonly ParamInput[];
   readonly requests: readonly RequestEdge[];
   readonly outputs: readonly OutputDecl[];
+  readonly effects: readonly EffectDecl[];
+  // Reachable imported-package runtime globals in deterministic initializer
+  // order. Each is an ordinary program-frame Name with a non-null init.
+  readonly packageGlobals: readonly Name[];
   // Hoisted const/input/simple work, run once when bindings are known.
   readonly init: readonly IrStmt[];
   // The per-bar body — the inner loop of the bar-per-bar execution model.

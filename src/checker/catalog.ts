@@ -31,7 +31,7 @@ export const TypeRef = {
 
 export interface NativeTypeParam {
   readonly name: string;
-  readonly constraint: 'storable' | 'map-key';
+  readonly constraint: 'storable' | 'map-key' | 'effect-payload';
 }
 
 export interface TypeParamRef {
@@ -107,6 +107,7 @@ export const Effect = {
   Host: 'host',
   Async: 'async',
   Request: 'request',
+  Emit: 'emit',
 } as const;
 
 export type NativeEffect = (typeof Effect)[keyof typeof Effect];
@@ -233,8 +234,12 @@ function genericFunc(
   params: readonly NativeParam[],
   result: NativeResult,
   resultQualifier: ResultQualifier,
+  effect: NativeEffect = Effect.None,
 ): NativeFunc {
-  return {...func(name, params, result, resultQualifier), typeParams};
+  return {
+    ...func(name, params, result, resultQualifier, effect),
+    typeParams,
+  };
 }
 
 function constantVariable(
@@ -712,6 +717,21 @@ function mathNum(
 function buildFuncs(): NativeFunc[] {
   const funcs: NativeFunc[] = [];
 
+  // Generic sparse side effects. This is a checker-owned intrinsic namespace,
+  // not a source library; codegen lowers each semantic call site to one typed
+  // Program effect declaration.
+  const effectValue = {kind: 'type-param', name: 'T'} as const;
+  funcs.push(
+    genericFunc(
+      'effect.emit',
+      [{name: 'T', constraint: 'effect-payload'}],
+      [req('value', effectValue, Qualifier.Series)],
+      VoidType,
+      Qualifier.Const,
+      Effect.Emit,
+    ),
+  );
+
   // Script declarations.
   funcs.push(
     func(
@@ -742,6 +762,17 @@ function buildFuncs(): NativeFunc[] {
         opt('max_boxes_count', IntType, Qualifier.Const, {literal: true}),
         opt('max_polylines_count', IntType, Qualifier.Const, {literal: true}),
         opt('calc_bars_count', IntType, Qualifier.Const, {literal: true}),
+      ],
+      VoidType,
+      Qualifier.Const,
+      Effect.Declaration,
+    ),
+    func(
+      'strategy',
+      [
+        req('title', StringType, Qualifier.Const, {literal: true}),
+        opt('shorttitle', StringType, Qualifier.Const, {literal: true}),
+        opt('overlay', BoolType, Qualifier.Const, {literal: true}),
       ],
       VoidType,
       Qualifier.Const,

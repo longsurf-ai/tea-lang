@@ -40,7 +40,7 @@
   ],
   "wordPattern": "[A-Za-z_][A-Za-z0-9_]*",
   "indentationRules": {
-    "increaseIndentPattern": "^\\s*(?:(?:else\\s+)?if\\b.+|else\\b|for\\b.+|while\\b.+|switch(?:\\s+.*)?|(?:export\\s+)?(?:type|enum)\\s+[A-Za-z_][A-Za-z0-9_]*|.*=>)\\s*(?://.*)?$",
+    "increaseIndentPattern": "^\\s*(?:(?:else\\s+)?if\\b.+|else\\b|for\\b.+|while\\b.+|switch(?:\\s+.*)?|(?:export\\s+)?(?:type|struct|interface|enum)\\s+[A-Za-z_][A-Za-z0-9_]*|.*=>)\\s*(?://.*)?$",
     "decreaseIndentPattern": "^\\s*else\\b.*$"
   },
   "folding": {

@@ -134,6 +134,12 @@ export interface Info {
   readonly updates: Map<syntax.AssignStmt, CheckedWritebackTarget>;
   readonly selections: Map<syntax.SelectorExpr, Selection>;
   readonly scopes: Map<syntax.Node, Scope>;
+  // Library-root runtime global initializers, keyed by their canonical
+  // objects. Noder consumes the owning package's Info instead of rechecking.
+  readonly packageGlobalInitializers: Map<
+    VariableObject,
+    CheckedDefaultExpression
+  >;
 }
 
 export function newInfo(): Info {
@@ -146,6 +152,7 @@ export function newInfo(): Info {
     updates: new Map(),
     selections: new Map(),
     scopes: new Map(),
+    packageGlobalInitializers: new Map(),
   };
 }
 

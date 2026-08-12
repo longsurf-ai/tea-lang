@@ -11,6 +11,7 @@ import {
   type OutputSink,
   type ParamSpec,
   type ProviderContext,
+  RUNTIME_ABI_VERSION,
   type TeaModule,
   type Value,
 } from './abi';
@@ -44,8 +45,10 @@ class Sink implements OutputSink {
 
   declare(): void {}
 
-  emit(_row: number, _oid: number, values: readonly Value[]): void {
-    this.values.push([...values]);
+  publish(publication: Parameters<OutputSink['publish']>[0]): void {
+    for (const output of publication.outputs) {
+      this.values.push([...output.channels]);
+    }
   }
 }
 
@@ -85,7 +88,7 @@ function param(
 }
 
 const EMPTY_VALUES_MODULE: TeaModule = {
-  abi: 4,
+  abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [],
@@ -96,9 +99,9 @@ const EMPTY_VALUES_MODULE: TeaModule = {
         effect: 'probe',
         staticArgs: [],
         channels: [
-          {name: 'numeric', type: 'float'},
-          {name: 'nullable', type: 'string'},
-          {name: 'boolean', type: 'bool'},
+          {name: 'numeric', type: 'float', transport: {kind: 'float'}},
+          {name: 'nullable', type: 'string', transport: {kind: 'string'}},
+          {name: 'boolean', type: 'bool', transport: {kind: 'bool'}},
         ],
       },
     ],
@@ -124,6 +127,7 @@ const EMPTY_VALUES_MODULE: TeaModule = {
         subs: [],
       },
     ],
+    effects: [],
     requests: [],
   },
   requests: [],
@@ -140,7 +144,7 @@ const EMPTY_VALUES_MODULE: TeaModule = {
 
 function paramModule(spec: ParamSpec): TeaModule {
   return {
-    abi: 4,
+    abi: RUNTIME_ABI_VERSION,
     aggregateLayouts: TEST_LAYOUTS,
     manifest: {
       series: [],
@@ -148,6 +152,7 @@ function paramModule(spec: ParamSpec): TeaModule {
       params: [spec],
       outputs: [],
       frames: [{locals: [], subs: []}],
+      effects: [],
       requests: [],
     },
     requests: [],

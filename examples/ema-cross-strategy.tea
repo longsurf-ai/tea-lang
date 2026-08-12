@@ -1,0 +1,69 @@
+//@version=1
+// Long-only EMA crossover with next-open execution. The smoothing state and
+// crossover state are ordinary Tea values, so this exact source runs on both
+// the JavaScript and WebGPU targets.
+strategy("EMA crossover strategy", shorttitle="EMA Cross", overlay=true)
+
+import broker
+import portfolio
+import strategy
+
+// An explicit EMA value uses the standard recurrence. Keeping the state in a
+// value makes its ownership visible and gives each sweep binding an isolated
+// fast/slow pair.
+type Ema
+	float alpha
+	float value = na
+
+	float update(float sample) =>
+		this.value := na(this.value) ? sample : this.alpha * sample + (1.0 - this.alpha) * this.value
+		this.value
+
+fast_length = input.int(5, "Fast EMA length", minval=2, maxval=20)
+slow_length = input.int(13, "Slow EMA length", minval=3, maxval=60)
+initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
+slippage = input.float(0.0005, "Adverse slippage rate", minval=0.0, maxval=0.05)
+fee = input.float(0.001, "Taker fee rate", minval=0.0, maxval=0.05)
+
+var Ema fast = Ema.new(2.0 / (fast_length + 1))
+var Ema slow = Ema.new(2.0 / (slow_length + 1))
+var float previous_spread = na
+var strat = strategy.configure(
+	broker = broker.basic(slippage, fee),
+	portfolio = portfolio.basic(initial_cash)
+)
+
+// Resolve orders submitted on an earlier bar before evaluating this bar's
+// signal. Basic broker fills them at this bar's open.
+strat.begin(open, bar_index)
+
+fast_value = fast.update(close)
+slow_value = slow.update(close)
+spread = fast_value - slow_value
+
+valid_lengths = fast_length < slow_length
+crossed_above = valid_lengths and not na(previous_spread) and previous_spread <= 0.0 and spread > 0.0
+crossed_below = valid_lengths and not na(previous_spread) and previous_spread >= 0.0 and spread < 0.0
+
+if crossed_above and strat.position_quantity() == 0.0 and not strat.has_pending()
+	strat.entry("EMA Long", strategy.Direction.long)
+
+if crossed_below and strat.position_quantity() > 0.0 and not strat.has_pending()
+	strat.close("EMA Long")
+
+previous_spread := spread
+strat.end(close, barstate.islast)
+
+plot(close, "close")
+plot(fast_value, "fast ema")
+plot(slow_value, "slow ema")
+plot(crossed_above ? 1.0 : 0.0, "long signal")
+plot(crossed_below ? 1.0 : 0.0, "close signal")
+plot(strat.position_quantity(), "position quantity")
+plot(strat.equity(), "equity")
+plot(strat.realized_pnl(), "realized pnl")
+plot(strat.total_fees(), "total fees")
+plot(strat.fill_count(), "fill count")
+plot(strat.round_trip_count(), "round trips")
+plot(strat.max_drawdown(), "maximum drawdown")
+plot(strat.total_return(), "total return")

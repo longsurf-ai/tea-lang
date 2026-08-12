@@ -2,8 +2,6 @@
 
 import {describe, expect, test} from 'bun:test';
 import {parse} from 'acorn';
-import {DEFAULT_COMPILE_CONFIG} from '../base/config';
-import {Errors} from '../base/print';
 import {mustBuild} from '../noder/testing';
 import {generate} from './codegen';
 
@@ -52,7 +50,7 @@ const DENY = [
 describe('generated-module portability', () => {
   for (const [i, src] of SOURCES.entries()) {
     test(`module ${i} parses as strict ES2015 and avoids denied tokens`, () => {
-      const js = generate(mustBuild(src), DEFAULT_COMPILE_CONFIG, new Errors());
+      const js = generate(mustBuild(src));
       // The artifact is a FunctionBody; parse it in function context.
       expect(() =>
         parse(`(function () {${String.fromCharCode(10)}${js}})`, {

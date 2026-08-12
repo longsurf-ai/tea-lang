@@ -14,6 +14,8 @@ import type {
   File,
   FuncDecl,
   IfExpr,
+  InterfaceDecl,
+  InterfaceMethodDecl,
   MethodDecl,
   Name,
   Param,
@@ -24,6 +26,7 @@ import type {
   TuplePattern,
   TypeAnnotation,
   TypeName,
+  TypeParam,
   UserTypeMember,
 } from './nodes';
 import {AssignOp, COMPOUND_ASSIGN, Mode, NodeKind, ReceiverMode} from './nodes';
@@ -223,9 +226,18 @@ export class Parser {
         return false;
       }
       this.next();
+      const typeParams =
+        keyword === Tok.Struct || keyword === Tok.Type
+          ? this.typeParams()
+          : [];
+      if (typeParams === null) {
+        return false;
+      }
       return (
         this.tok() === Tok.Newline ||
-        (keyword === Tok.Type && this.tok() === Tok.Assign)
+        (keyword === Tok.Type &&
+          typeParams.length === 0 &&
+          this.tok() === Tok.Assign)
       );
     });
   }
@@ -312,6 +324,7 @@ export class Parser {
         break;
       case Tok.Struct:
       case Tok.Type:
+      case Tok.Interface:
       case Tok.Enum: {
         const keyword = this.tok();
         if (this.namedTypeDeclarationFollows(keyword)) {
@@ -321,6 +334,9 @@ export class Parser {
           }
           if (keyword === Tok.Struct) {
             return this.userTypeDecl(pos, false, Tok.Struct);
+          }
+          if (keyword === Tok.Interface) {
+            return this.interfaceDecl(pos, false);
           }
           return this.enumDecl(pos, false);
         }
@@ -333,6 +349,7 @@ export class Parser {
           if (
             keyword === Tok.Struct ||
             keyword === Tok.Type ||
+            keyword === Tok.Interface ||
             keyword === Tok.Enum
           ) {
             if (this.namedTypeDeclarationFollows(keyword)) {
@@ -349,6 +366,7 @@ export class Parser {
         if (
           (keyword === Tok.Struct ||
             keyword === Tok.Type ||
+            keyword === Tok.Interface ||
             keyword === Tok.Enum) &&
           this.namedTypeDeclarationFollows(keyword)
         ) {
@@ -358,6 +376,9 @@ export class Parser {
           }
           if (keyword === Tok.Type) {
             return this.typeOrAliasDecl(pos, true);
+          }
+          if (keyword === Tok.Interface) {
+            return this.interfaceDecl(pos, true);
           }
           return this.enumDecl(pos, true);
         }
@@ -546,6 +567,39 @@ export class Parser {
     return t;
   }
 
+  // Optional `<T: Constraint, ...>` on nominal user types. A present list is
+  // all-or-nothing and every parameter is constrained in this first slice.
+  private typeParams(): TypeParam[] | null {
+    if (this.tok() !== Tok.Operator || this.op() !== Op.Lt) {
+      return [];
+    }
+    this.next();
+    const params: TypeParam[] = [];
+    for (;;) {
+      if (!this.atName()) {
+        return null;
+      }
+      const pos = this.pos();
+      const name = this.name();
+      if (!this.got(Tok.Colon)) {
+        return null;
+      }
+      const constraint = this.typeName();
+      if (constraint === null) {
+        return null;
+      }
+      params.push({kind: NodeKind.TypeParam, pos, name, constraint});
+      if (!this.got(Tok.Comma)) {
+        break;
+      }
+    }
+    if (this.tok() !== Tok.Operator || this.op() !== Op.Gt) {
+      return null;
+    }
+    this.next();
+    return params;
+  }
+
   // ---- expressions ----------------------------------------------------------
 
   private expr(): Expr {
@@ -665,23 +719,15 @@ export class Parser {
 
   private primary(): Expr {
     const pos = this.pos();
+    if (this.atName()) {
+      return this.name();
+    }
     switch (this.tok()) {
       case Tok.If:
       case Tok.For:
       case Tok.While:
       case Tok.Switch:
         return this.controlExpr();
-      case Tok.Name:
-      case Tok.Struct:
-      case Tok.Type:
-      case Tok.Enum:
-      case Tok.Import:
-      case Tok.Export:
-      case Tok.To:
-      case Tok.By:
-      case Tok.In:
-      case Tok.As:
-        return this.name();
       case Tok.This:
         this.next();
         return {kind: NodeKind.ThisExpr, pos};
@@ -1010,6 +1056,74 @@ export class Parser {
     return this.userTypeDeclRest(pos, exported, Tok.Type, name);
   }
 
+  private interfaceDecl(pos: Pos, exported: boolean): InterfaceDecl {
+    const name = this.name();
+    this.want(Tok.Newline);
+    this.want(Tok.Indent);
+    const methods: InterfaceMethodDecl[] = [];
+    while (this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
+      if (this.got(Tok.Newline)) {
+        continue;
+      }
+      if (this.tok() === Tok.Indent) {
+        this.error('interface methods cannot have bodies');
+        this.skipBlock();
+        continue;
+      }
+      this.blockEnded = false;
+      const method = this.interfaceMethodDecl();
+      if (method !== null) {
+        methods.push(method);
+      }
+      this.stmtEnd();
+    }
+    this.want(Tok.Dedent);
+    this.blockEnded = true;
+    return {kind: NodeKind.InterfaceDecl, pos, exported, name, methods};
+  }
+
+  private interfaceMethodDecl(): InterfaceMethodDecl | null {
+    const head = this.typedMemberHead();
+    if (head === null) {
+      this.error('expected interface method signature');
+      this.advance(Tok.Newline, Tok.Dedent);
+      return null;
+    }
+    if (this.tok() !== Tok.Lparen) {
+      this.error('interface members must be method signatures');
+      this.advance(Tok.Newline, Tok.Dedent);
+      return null;
+    }
+    const params = this.typedParams();
+    for (const param of params) {
+      if (param.defaultValue !== null) {
+        this.error('interface method parameters cannot have defaults', param.pos);
+      }
+    }
+    const receiverMode = this.got(Tok.Const)
+      ? ReceiverMode.Const
+      : ReceiverMode.Mutable;
+    if (this.got(Tok.Arrow)) {
+      this.error('interface methods cannot have bodies', head.pos);
+      if (this.got(Tok.Newline)) {
+        if (this.tok() === Tok.Indent) {
+          this.skipBlock();
+        }
+        this.blockEnded = true;
+      } else {
+        this.advance(Tok.Newline, Tok.Dedent);
+      }
+    }
+    return {
+      kind: NodeKind.InterfaceMethodDecl,
+      pos: head.pos,
+      result: head.annotation,
+      name: head.name,
+      params,
+      receiverMode,
+    };
+  }
+
   private userTypeDecl(
     pos: Pos,
     exported: boolean,
@@ -1026,6 +1140,12 @@ export class Parser {
     writtenKeyword: 'struct' | 'type',
     name: Name,
   ): Stmt {
+    const parsedTypeParams = this.typeParams();
+    if (parsedTypeParams === null) {
+      this.error('expected constrained type parameter list');
+      this.advance(Tok.Newline, Tok.Dedent);
+    }
+    const typeParams = parsedTypeParams ?? [];
     this.want(Tok.Newline);
     this.want(Tok.Indent);
     const members: UserTypeMember[] = [];
@@ -1045,6 +1165,7 @@ export class Parser {
       exported,
       writtenKeyword,
       name,
+      typeParams,
       members,
     };
   }

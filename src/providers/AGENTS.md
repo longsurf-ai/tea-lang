@@ -6,4 +6,7 @@ loads series data or formats emissions; it only calls these.
 ## Layout
 
 - `data/` — `DataProvider` implementations (`csv.ts`).
-- `sinks/` — `OutputSink` implementations (`TableSink`, `TraceSink`).
+- `gpu/` — optional host adapters for device ownership and safe process
+  selection; target-independent execution remains in `src/execute.ts`.
+- `sinks/` — `OutputSink` implementations for traces, tables, structured
+  capture, and modular run/sweep reports.

@@ -1,8 +1,6 @@
 // Purpose: Aggregate codegen contract tests — layouts and rooted value updates must preserve exact types, evaluation order, and copy-out semantics.
 
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_COMPILE_CONFIG} from '../base/config';
-import {Errors} from '../base/print';
 import {
   DepthKind,
   IrKind,
@@ -115,6 +113,8 @@ function program(body: readonly IrStmt[]): Program {
     params: [],
     requests: [],
     outputs: [],
+    effects: [],
+    packageGlobals: [],
     init: [],
     body,
   };
@@ -123,7 +123,7 @@ function program(body: readonly IrStmt[]): Program {
 function compile(ir: Program): ModuleCode & {
   readonly abi: number;
 } {
-  const js = generate(ir, DEFAULT_COMPILE_CONFIG, new Errors());
+  const js = generate(ir);
   return new Function(js)() as ModuleCode & {
     readonly abi: number;
   };

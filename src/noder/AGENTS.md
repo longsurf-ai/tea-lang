@@ -103,3 +103,10 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   reference sibling params.
 - Program.init stays empty for now: hoisting const/input/simple work out of
   the bar loop is a later optimization, not a correctness requirement.
+- Reachable imported package globals project as ordinary program-frame Names
+  with `Name.init`. `Program.packageGlobals` carries explicit dependency order
+  (including imported-before-importer) and includes only state reached through
+  actual global reads/function dependencies plus initializer closure; a bare
+  import, exported type use, or unused sibling global never allocates state.
+  Every request child receives a fresh Name projection of the same canonical
+  semantic object.

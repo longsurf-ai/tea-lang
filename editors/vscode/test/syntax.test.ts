@@ -1,11 +1,70 @@
 // Purpose: Lock the generated Tea TextMate grammar to compiler vocabulary and representative lexical forms.
 
 import {describe, expect, test} from 'bun:test';
+import {createRequire} from 'node:module';
+import {createOnigScanner, createOnigString, loadWASM} from 'vscode-oniguruma';
+import {
+  INITIAL,
+  Registry,
+  parseRawGrammar,
+  type StateStack,
+} from 'vscode-textmate';
 import {
   CONTEXTUAL_KEYWORDS,
   RESERVED_KEYWORDS,
 } from '../../../src/syntax/tokens';
-import {generateGrammar, renderGrammar} from '../scripts/generate-syntax';
+import {
+  TEA_SCOPES,
+  generateGrammar,
+  renderGrammar,
+} from '../scripts/generate-syntax';
+
+interface ScopedToken {
+  readonly line: number;
+  readonly text: string;
+  readonly scopes: readonly string[];
+}
+
+const require = createRequire(import.meta.url);
+await loadWASM(
+  await Bun.file(
+    require.resolve('vscode-oniguruma/release/onig.wasm'),
+  ).arrayBuffer(),
+);
+const registry = new Registry({
+  onigLib: Promise.resolve({createOnigScanner, createOnigString}),
+  loadGrammar: async scopeName =>
+    scopeName === 'source.tea'
+      ? parseRawGrammar(renderGrammar(), 'tea.tmLanguage.json')
+      : null,
+});
+const loadedTeaGrammar = await registry.loadGrammar('source.tea');
+if (loadedTeaGrammar === null) {
+  throw new Error('failed to load generated Tea grammar');
+}
+const teaGrammar = loadedTeaGrammar;
+
+function tokenize(source: string): ScopedToken[] {
+  let ruleStack: StateStack = INITIAL;
+  return source.split('\n').flatMap((line, lineIndex) => {
+    const result = teaGrammar.tokenizeLine(line, ruleStack);
+    ruleStack = result.ruleStack;
+    return result.tokens
+      .map(token => ({
+        line: lineIndex + 1,
+        text: line.slice(token.startIndex, token.endIndex),
+        scopes: token.scopes,
+      }))
+      .filter(token => token.text.trim().length > 0);
+  });
+}
+
+function tokensNamed(
+  tokens: readonly ScopedToken[],
+  text: string,
+): ScopedToken[] {
+  return tokens.filter(token => token.text === text);
+}
 
 function matches(
   patterns: readonly {readonly match: string}[],
@@ -78,66 +137,160 @@ describe('Tea TextMate grammar', () => {
     expect(importPattern.test('import = enum')).toBeFalse();
   });
 
-  test('user types, aliases, and nested methods have dedicated scopes', () => {
-    const grammar = generateGrammar();
-    const types = grammar.repository['type-declarations'].patterns;
-    const methods = grammar.repository['function-declarations'].patterns;
-    const alias = new RegExp(types[0].match).exec(
-      'export type Prices = array<float>',
+  test('declaration scopes remain stable across enums, interfaces, aliases, and generic types', () => {
+    const tokens = tokenize(
+      [
+        'export enum Direction',
+        'export interface Broker',
+        'export type Prices = array<float>',
+        'export type Strategy<B: broker.Broker, P: portfolio.Portfolio>',
+      ].join('\n'),
     );
-    const blockType = new RegExp(types[1].match).exec('struct Portfolio');
-    const method = new RegExp(methods[0].match).exec(
-      '    series int add(int qty) const =>',
+    const exports = tokensNamed(tokens, 'export');
+    expect(exports).toHaveLength(4);
+    exports.forEach(token =>
+      expect(token.scopes).toContain(TEA_SCOPES.exportModifier),
     );
-    expect(alias?.[4]).toBe('type');
-    expect(alias?.[6]).toBe('Prices');
-    expect(alias?.[10]).toBe('array<float>');
-    expect(blockType?.[4]).toBe('struct');
-    expect(blockType?.[6]).toBe('Portfolio');
-    expect(method?.[2]).toBe('series');
-    expect(method?.[4]).toBe('int');
-    expect(method?.[6]).toBe('add');
-    expect(methods[0].captures['6']).toEqual({
-      name: 'entity.name.function.tea',
-    });
 
-    const modifier = new RegExp(
-      grammar.repository['method-receiver-modifier'].patterns[0].match,
+    expect(tokensNamed(tokens, 'Direction')[0]?.scopes).toContain(
+      TEA_SCOPES.enumName,
     );
-    const receiver = new RegExp(
-      grammar.repository['receiver-keyword'].patterns[0].match,
+    expect(tokensNamed(tokens, 'Broker')[0]?.scopes).toContain(
+      TEA_SCOPES.interfaceName,
     );
-    expect(modifier.test('const =>')).toBeTrue();
-    expect(receiver.test('this')).toBeTrue();
-    expect(grammar.repository['receiver-keyword'].patterns[0].name).toBe(
-      'variable.language.receiver.tea',
+    expect(tokensNamed(tokens, 'Prices')[0]?.scopes).toContain(
+      TEA_SCOPES.aliasName,
+    );
+    expect(tokensNamed(tokens, 'Strategy')[0]?.scopes).toContain(
+      TEA_SCOPES.typeName,
+    );
+    const typeKeywords = tokensNamed(tokens, 'type');
+    expect(typeKeywords).toHaveLength(2);
+    typeKeywords.forEach(token => {
+      expect(
+        token.scopes.some(scope => scope.startsWith('storage.type.')),
+      ).toBeTrue();
+      expect(token.scopes).not.toContain(TEA_SCOPES.typeName);
+    });
+    for (const parameter of ['B', 'P']) {
+      expect(tokensNamed(tokens, parameter)[0]?.scopes).toContain(
+        TEA_SCOPES.typeParameter,
+      );
+    }
+    for (const namespace of ['broker', 'portfolio']) {
+      expect(tokensNamed(tokens, namespace)[0]?.scopes).toContain(
+        TEA_SCOPES.namespace,
+      );
+    }
+  });
+
+  test('incomplete and nested generic syntax stays inside its declaration line', () => {
+    const tokens = tokenize(
+      [
+        'export type Nested = map<string, array<float>>',
+        'export type Incomplete<T:',
+        'export enum StillSeparate',
+      ].join('\n'),
+    );
+    expect(tokensNamed(tokens, 'export')).toHaveLength(3);
+    tokensNamed(tokens, 'export').forEach(token =>
+      expect(token.scopes).toContain(TEA_SCOPES.exportModifier),
+    );
+    for (const builtin of ['map', 'string', 'array', 'float']) {
+      expect(tokensNamed(tokens, builtin)[0]?.scopes).toContain(
+        TEA_SCOPES.builtinType,
+      );
+    }
+    expect(tokensNamed(tokens, 'T')[0]?.scopes).toContain(
+      TEA_SCOPES.typeParameter,
+    );
+    expect(tokensNamed(tokens, 'StillSeparate')[0]?.scopes).toContain(
+      TEA_SCOPES.enumName,
     );
   });
 
-  test('legacy method and inout have no keyword scopes', () => {
-    const grammar = generateGrammar();
-    const methods = grammar.repository['function-declarations'].patterns;
-    expect(
-      methods.some(pattern =>
-        new RegExp(pattern.match).test(
-          'method append(inout Foo self, float value) =>',
-        ),
-      ),
-    ).toBeFalse();
-    expect(
-      grammar.repository['method-receiver-modifier'].patterns[0].match,
-    ).not.toContain('inout');
-    expect(
-      grammar.repository['receiver-keyword'].patterns[0].match,
-    ).not.toContain('method');
-    expect(
-      grammar.repository['receiver-keyword'].patterns[0].match,
-    ).not.toContain('inout');
-    expect(
-      grammar.repository['type-declarations'].patterns[1].captures['4'],
-    ).toEqual({
-      name: 'storage.type.declaration.tea',
+  test('methods retain syntactic result, parameter, receiver, and function scopes', () => {
+    const tokens = tokenize(
+      '    broker.Fill begin(float openPrice, int barIndex) const =>',
+    );
+    expect(tokensNamed(tokens, 'broker')[0]?.scopes).toContain(
+      'meta.type.return.tea',
+    );
+    expect(tokensNamed(tokens, 'broker')[0]?.scopes).toContain(
+      TEA_SCOPES.namespace,
+    );
+    expect(tokensNamed(tokens, 'Fill')[0]?.scopes).toContain(
+      TEA_SCOPES.typeName,
+    );
+    expect(tokensNamed(tokens, 'begin')[0]?.scopes).toContain(
+      TEA_SCOPES.functionName,
+    );
+    expect(tokensNamed(tokens, 'float')[0]?.scopes).toContain(
+      TEA_SCOPES.builtinType,
+    );
+    expect(tokensNamed(tokens, 'openPrice')[0]?.scopes).toContain(
+      TEA_SCOPES.parameter,
+    );
+    expect(tokensNamed(tokens, 'barIndex')[0]?.scopes).toContain(
+      TEA_SCOPES.parameter,
+    );
+    expect(tokensNamed(tokens, 'const')[0]?.scopes).toContain(
+      TEA_SCOPES.receiverModifier,
+    );
+  });
+
+  test('builtin result types and receiver modifiers are identical in interface and implemented methods', () => {
+    const tokens = tokenize(
+      [
+        'export interface Portfolio',
+        '    bool is_flat() const',
+        '    float mark(float price)',
+        '    int apply(broker.Fill execution)',
+        'export type Basic',
+        '    bool flag',
+        '    bool is_flat() const =>',
+        '        this.flag',
+        '    float mark(float price) =>',
+        '        price',
+        '    int apply(broker.Fill execution) =>',
+        '        1',
+      ].join('\n'),
+    );
+
+    for (const builtin of ['bool', 'float', 'int']) {
+      const occurrences = tokensNamed(tokens, builtin);
+      expect(occurrences.length).toBeGreaterThanOrEqual(2);
+      occurrences.forEach(token =>
+        expect(token.scopes).toContain(TEA_SCOPES.builtinType),
+      );
+    }
+
+    const receiverModifiers = tokensNamed(tokens, 'const');
+    expect(receiverModifiers).toHaveLength(2);
+    receiverModifiers.forEach(token => {
+      expect(token.scopes).toContain(TEA_SCOPES.receiverModifier);
+      expect(token.scopes).not.toContain('storage.modifier.declaration.tea');
     });
+  });
+
+  test('contextual words remain identifiers outside their governing shapes', () => {
+    const tokens = tokenize(
+      [
+        'export = 1',
+        'type = export',
+        'method append(inout Foo self, float value) =>',
+      ].join('\n'),
+    );
+    for (const word of ['export', 'type', 'method', 'inout']) {
+      for (const token of tokensNamed(tokens, word)) {
+        expect(
+          token.scopes.some(scope => scope.startsWith('storage.')),
+        ).toBeFalse();
+        expect(
+          token.scopes.some(scope => scope.startsWith('keyword.')),
+        ).toBeFalse();
+      }
+    }
   });
 
   test('scanner-supported number and color forms are covered', () => {

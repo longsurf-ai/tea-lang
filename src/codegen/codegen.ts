@@ -1,7 +1,6 @@
 // Purpose: Code generator — lowers a Tea Program to a self-describing JS module (code + manifest) against the rt ABI; docs/runtime.md owns the module contract. Dense ids are assigned here and published in the manifest — the runtime never re-derives them.
 
-import type {CompileConfig} from '../base/config';
-import {fatal, type Errors} from '../base/print';
+import {fatal} from '../base/print';
 import {
   DepthKind,
   IrKind,
@@ -13,8 +12,9 @@ import {
 import {unimplemented} from '../base/unimplemented';
 import {
   MergeMode,
-  ParamConstraintKind,
   ParamDefaultKind,
+  type EffectDecl,
+  type EffectValueSchema,
   type IrFunc,
   type ExecutionInput,
   type OutputDecl,
@@ -40,17 +40,19 @@ import {
   requestsOf,
   seriesInputsOf,
 } from '../ir/visit';
+import {RUNTIME_ABI_VERSION} from '../runtime/abi';
 import type {
   DepthSpec,
   ExecutionSpec,
   FrameLayout,
   ManifestValue,
   ModuleManifest,
+  OutputChannelTransport,
   OutputSpec,
-  ParamSpec,
   RequestSpec,
   SeriesSpec,
 } from '../runtime/abi';
+import {paramSpecsOf} from '../runtime/params';
 import type {
   AggregateLayoutManifest,
   LayoutId,
@@ -66,13 +68,7 @@ import {
   type LowerCtx,
 } from './lower';
 
-export function generate(
-  program: Program,
-  config: CompileConfig,
-  errors: Errors,
-): string {
-  void config;
-  void errors;
+export function generate(program: Program): string {
   const emitter = new ModuleEmitter();
   const rootBody = new Generator(program, 'M', emitter).moduleBody();
   const out: string[] = ['"use strict";'];
@@ -84,7 +80,7 @@ export function generate(
   // arrays — code cannot live inside the JSON manifest.
   out.push(...emitter.childDecls);
   out.push('const M = {');
-  out.push('  abi: 4,');
+  out.push(`  abi: ${RUNTIME_ABI_VERSION},`);
   out.push(
     `  aggregateLayouts: ${json({layouts: emitter.layouts} satisfies AggregateLayoutManifest)},`,
   );
@@ -92,6 +88,27 @@ export function generate(
   out.push('};');
   out.push('return M;');
   return `${out.join('\n')}\n`;
+}
+
+function effectScalarMatches(
+  type: Type,
+  schema: Exclude<
+    EffectValueSchema,
+    {readonly kind: 'enum' | 'user-type'}
+  >['kind'],
+): boolean {
+  switch (schema) {
+    case 'int':
+      return type.kind === TypeKind.Int;
+    case 'float':
+      return type.kind === TypeKind.Float;
+    case 'bool':
+      return type.kind === TypeKind.Bool;
+    case 'string':
+      return type.kind === TypeKind.String;
+    case 'color':
+      return type.kind === TypeKind.Color;
+  }
 }
 
 // Shared across the module tree: helper usage, child-module declarations,
@@ -118,6 +135,61 @@ class ModuleEmitter {
     this.layouts.push({kind: 'boolean'});
     this.layouts[id] = this.buildLayout(type);
     return id;
+  }
+
+  // Effect declarations expose canonical nominal identity to hosts. Mirror
+  // that identity onto the independently consumed physical JS layout so the
+  // runtime can reject a manifest whose logical declaration was forged while
+  // retaining the same field shape.
+  registerEffectSchema(type: Type, schema: EffectValueSchema): void {
+    const layoutId = this.layoutOf(type);
+    const layout = this.layouts[layoutId];
+    switch (schema.kind) {
+      case 'enum':
+        if (type.kind !== TypeKind.Enum || layout?.kind !== 'enum') {
+          return fatal('enum effect schema disagrees with its IR type');
+        }
+        this.layouts[layoutId] = {
+          ...layout,
+          typeId: this.sameNominalId(layout.typeId, schema.typeId),
+        };
+        return;
+      case 'user-type':
+        if (
+          type.kind !== TypeKind.UserType ||
+          layout?.kind !== 'user-type' ||
+          type.fields.length !== schema.fields.length
+        ) {
+          return fatal('user-type effect schema disagrees with its IR type');
+        }
+        this.layouts[layoutId] = {
+          ...layout,
+          typeId: this.sameNominalId(layout.typeId, schema.typeId),
+        };
+        type.fields.forEach((field, index) => {
+          const logical = schema.fields[index];
+          if (logical === undefined || logical.name !== field.name) {
+            return fatal(`user-type effect schema disagrees at field ${index}`);
+          }
+          this.registerEffectSchema(field.type, logical.value);
+        });
+        return;
+      default:
+        if (!effectScalarMatches(type, schema.kind)) {
+          return fatal(
+            `${schema.kind} effect schema disagrees with its IR type`,
+          );
+        }
+    }
+  }
+
+  private sameNominalId(existing: string | undefined, next: string): string {
+    if (existing !== undefined && existing !== next) {
+      return fatal(
+        `one physical layout cannot represent nominal effects '${existing}' and '${next}'`,
+      );
+    }
+    return next;
   }
 
   private buildLayout(type: Type): ValueLayout {
@@ -210,6 +282,7 @@ class Generator {
   private readonly paramIds = new Map<ParamInput, number>();
   private readonly paramSeriesIds = new Map<ParamInput, number>();
   private readonly outputIds = new Map<OutputDecl, number>();
+  private readonly effectIds = new Map<EffectDecl, number>();
   private readonly funcIds = new Map<IrFunc, number>();
   private readonly requestIds = new Map<RequestEdge, number>();
   private readonly dynamicRequests = new Set<RequestEdge>();
@@ -265,6 +338,7 @@ class Generator {
       }
     });
     program.outputs.forEach((output, oid) => this.outputIds.set(output, oid));
+    program.effects.forEach((effect, eid) => this.effectIds.set(effect, eid));
     this.funcs.forEach((func, i) => this.funcIds.set(func, i + 1));
 
     // Frame locals: ownership is explicit — a method owns its hidden receiver,
@@ -286,7 +360,14 @@ class Generator {
         owned.add(name);
       }
     }
-    const frame0 = namesOf(this.program).filter(name => !owned.has(name));
+    const reachableRootNames = namesOf(this.program).filter(
+      name => !owned.has(name),
+    );
+    const packageGlobalSet = new Set(this.program.packageGlobals);
+    const frame0 = [
+      ...this.program.packageGlobals,
+      ...reachableRootNames.filter(name => !packageGlobalSet.has(name)),
+    ];
     const locals: (readonly Name[])[] = [frame0];
     for (const func of this.funcs) {
       const receiver = func.callMode === 'free' ? [] : [func.receiver];
@@ -311,6 +392,7 @@ class Generator {
       paramIds: this.paramIds,
       paramSeriesIds: this.paramSeriesIds,
       outputIds: this.outputIds,
+      effectIds: this.effectIds,
       funcIds: this.funcIds,
       requestIds: this.requestIds,
       dynamicRequests: this.dynamicRequests,
@@ -575,26 +657,9 @@ class Generator {
       depth: depthSpec(input.depth),
     }));
 
-    const params: ParamSpec[] = this.program.params.map(param => ({
-      name: param.name,
-      title: param.title,
-      type: paramType(param),
-      control: param.control,
-      group: param.group,
-      inline: param.inline,
-      tooltip: param.tooltip,
-      confirm: param.confirm,
-      display: param.display,
-      defaultValue: paramDefault(param),
-      constraints: paramConstraints(param),
-      enumType:
-        param.type.kind === TypeKind.Enum
-          ? {
-              name: param.type.name,
-              members: param.type.members.map(member => ({...member})),
-            }
-          : null,
-      seriesSid: this.paramSeriesIds.get(param) ?? null,
+    const params = paramSpecsOf(this.program.params).map((spec, pid) => ({
+      ...spec,
+      seriesSid: this.paramSeriesIds.get(this.program.params[pid]) ?? null,
     }));
 
     const outputs: OutputSpec[] = this.program.outputs.map(output => ({
@@ -606,8 +671,20 @@ class Generator {
       channels: output.channels.map(ch => ({
         name: ch.name,
         type: formatType(ch.type),
+        transport: outputChannelTransport(ch.type),
       })),
     }));
+
+    const effects = this.program.effects.map(effect => {
+      this.emitter.registerEffectSchema(
+        effect.payloadType,
+        effect.payloadSchema,
+      );
+      return {
+        layout: this.emitter.layoutOf(effect.payloadType),
+        declaration: {payload: effect.payloadSchema},
+      };
+    });
 
     const frames: FrameLayout[] = this.frameLocals.map((names, fid) => {
       const sites = this.callSites.get(fid) ?? new Map<number, number>();
@@ -645,7 +722,61 @@ class Generator {
       };
     });
 
-    return {series, execution, params, outputs, frames, requests};
+    return {series, execution, params, outputs, effects, frames, requests};
+  }
+}
+
+function outputChannelTransport(type: Type): OutputChannelTransport {
+  switch (type.kind) {
+    case TypeKind.Int:
+      return {kind: 'int'};
+    case TypeKind.Float:
+      return {kind: 'float'};
+    case TypeKind.Bool:
+      return {kind: 'bool'};
+    case TypeKind.String:
+      return {kind: 'string'};
+    case TypeKind.Color:
+      return {kind: 'color'};
+    case TypeKind.Enum:
+      return {
+        kind: 'enum',
+        name: type.name,
+        members: type.members.map(member => member.name),
+      };
+    case TypeKind.Line:
+      return {kind: 'resource', handle: 'line'};
+    case TypeKind.Label:
+      return {kind: 'resource', handle: 'label'};
+    case TypeKind.Box:
+      return {kind: 'resource', handle: 'box'};
+    case TypeKind.Table:
+      return {kind: 'resource', handle: 'table'};
+    case TypeKind.Polyline:
+      return {kind: 'resource', handle: 'polyline'};
+    case TypeKind.Linefill:
+      return {kind: 'resource', handle: 'linefill'};
+    case TypeKind.Plot:
+      return {kind: 'output-ref', output: 'plot'};
+    case TypeKind.Hline:
+      return {kind: 'output-ref', output: 'hline'};
+    case TypeKind.UserType:
+      return {kind: 'user-type', name: type.name};
+    case TypeKind.Array:
+      return {kind: 'array'};
+    case TypeKind.Matrix:
+      return {kind: 'matrix'};
+    case TypeKind.Map:
+      return {kind: 'map'};
+    case TypeKind.Tuple:
+      return {kind: 'tuple'};
+    case TypeKind.Invalid:
+    case TypeKind.Void:
+    case TypeKind.Na:
+    case TypeKind.Func:
+      return fatal(
+        `non-value output channel type ${formatType(type)} reached manifest projection`,
+      );
   }
 }
 
@@ -676,38 +807,6 @@ function capBars(expr: IrExpr): number {
   return fatal('capped depth without a constant cap');
 }
 
-function paramType(param: ParamInput): ParamSpec['type'] {
-  if (param.defaultValue?.kind === ParamDefaultKind.Series) {
-    return 'source';
-  }
-  switch (param.type.kind) {
-    case TypeKind.Int:
-      return 'int';
-    case TypeKind.Float:
-      return 'float';
-    case TypeKind.Bool:
-      return 'bool';
-    case TypeKind.String:
-      return 'string';
-    case TypeKind.Color:
-      return 'color';
-    case TypeKind.Enum:
-      return 'enum';
-    default:
-      return fatal(`param '${param.name}' has no manifest type`);
-  }
-}
-
-function paramDefault(param: ParamInput): ParamSpec['defaultValue'] {
-  if (param.defaultValue === null) {
-    return null;
-  }
-  if (param.defaultValue.kind === ParamDefaultKind.Series) {
-    return param.defaultValue.series.id;
-  }
-  return constValue(param.defaultValue.value);
-}
-
 function constValue(v: ConstValue): ManifestValue {
   if (isNaValue(v)) {
     return null;
@@ -716,34 +815,4 @@ function constValue(v: ConstValue): ManifestValue {
     return fatal('non-finite constant reached manifest construction');
   }
   return v;
-}
-
-function numOrNull(v: ConstValue | null): number | null {
-  if (typeof v !== 'number') {
-    return null;
-  }
-  return Number.isFinite(v)
-    ? v
-    : fatal('non-finite numeric constraint reached manifest construction');
-}
-
-function paramConstraints(param: ParamInput): ParamSpec['constraints'] {
-  const constraints = param.constraints;
-  if (constraints === null) {
-    return null;
-  }
-  switch (constraints.kind) {
-    case ParamConstraintKind.Range:
-      return {
-        kind: ParamConstraintKind.Range,
-        minval: numOrNull(constraints.minval),
-        maxval: numOrNull(constraints.maxval),
-        step: numOrNull(constraints.step),
-      };
-    case ParamConstraintKind.Options:
-      return {
-        kind: ParamConstraintKind.Options,
-        options: constraints.options.map(value => constValue(value)),
-      };
-  }
 }

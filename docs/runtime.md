@@ -1,43 +1,54 @@
 # The Tea runtime ABI (`rt`)
 
-How a compiled Program executes. This document is the source of truth for
-the runtime ABI, the two external seams, and the execution protocol;
-`src/runtime/` implements it (`JSRuntime`) and `src/codegen/` targets the ABI. The
-Program contract stays owned by [ir.md](ir.md); the root `runtime.ts` sketch
-is superseded by this document.
+How target artifacts bind and execute. This document is the source of truth for
+the JS Runtime ABI, its two external seams, generic CPU batching, and the GPU
+binding/dispatch boundary. `src/runtime/` implements execution and
+`src/codegen/` emits bind-independent artifacts. The one Program contract stays
+owned by [ir.md](ir.md); the root `runtime.ts` sketch is superseded by this
+document.
 
 ## Architecture
 
-```
-generated JS module ──rt──▶ Tea runtime (JSRuntime) ──data──▶ DataProvider (injected)
-                            (owns the main loop) ──sink──▶ OutputSink  (injected)
+```text
+generated JS module ──▶ JSRuntime ──data──▶ DataProvider (injected)
+                            │
+                            └────sink────▶ OutputSink (injected)
+
+generated WGSL artifact + BindInputs[] + injected GPUDevice
+                                      │
+                                      ▼
+                         resumable GPU execution
+                                      │
+                                      └─▶ decoded rows ─▶ OutputSink
 ```
 
-One runtime. The runtime owns everything between the two seams: exact value
-layouts, frames, rings, the immutable storage arena, the main loop,
-provisional/commit, and request-child scheduling. Hosts differ only in what
-they inject: the `tea` CLI injects a
-csv provider and a printing sink; OpenChart injects a TSGraph-backed
-provider and the chart/alert sink. A second runtime implementation is not a
-goal; the ABI merely permits one.
+Both branches execute artifacts lowered from the same `Program`; neither owns
+a second execution-mode model. `JSRuntime` owns exact value layouts,
+frames, rings, immutable storage, the main loop, provisional/commit, and
+request-child scheduling. Hosts vary through the injected DataProvider and
+OutputSink. The GPU runtime owns target data validation, physical packing,
+device dispatch, and readback; Tea state transitions remain in the emitted
+WGSL.
 
 ## Pipeline order
 
-```
-Compilation ─▶ Lowering ─▶ Binding ─▶ Execution
-   Program      module      instance    rows
+```text
+Compilation ─▶ Target lowering ─▶ Runtime binding ─▶ Execution
+   Program       JS / WGSL       instance/session      rows/chunks
 ```
 
-Lowering is **bind-independent**: one JS module per Program, reusable across
-bindings (a settings change rebinds without re-lowering). This revises the
-earlier Binding → Lowering sketch, because bind-time expressions (bound
-depths, input metadata, and output bindArgs) are themselves lowered code:
-binding runs frame-free `init`, creates a scratch-only provisional program
-frame, runs frame-aware `bind`, then allocates the final frame tree from its
-depth reports. Baking bound constants into specialized modules is a permitted
-later optimization, not the model.
+Lowering is **bind-independent**: one artifact per Program and target, reusable
+across bindings. A settings, dataset, or binding-grid change does not re-run
+codegen. For JS, bind-time expressions (bound depths, input metadata, and
+output bindArgs) remain lowered code: binding runs frame-free `init`, creates a
+scratch-only provisional program frame, runs frame-aware `bind`, then allocates
+the final frame tree from its depth reports. For WGSL, the runtime combines the
+already-emitted module/layout contract with concrete provider-backed bindings
+and physical resource policy to create a resumable execution session. Baking
+bound constants into specialized artifacts is a permitted later optimization,
+not the model.
 
-## The generated module
+## The generated JS module
 
 Lowering emits one self-describing module — code plus the manifest the
 runtime needs to allocate and bind. The module, not the Program, is the
@@ -45,7 +56,7 @@ runtime artifact (`tea build` output, cacheable, serializable):
 
 ```js
 export default {
-  abi: 4,
+  abi: 1,
   aggregateLayouts: {layouts: [...]},     // root-wide LayoutId registry
   manifest: {
     series:  [{id, depth}, ...],          // sid -> numeric provider column
@@ -53,7 +64,8 @@ export default {
     params:  [{name, type, control, defaultValue, constraints, // control = UI flavor
                enumType, group, inline, tooltip, confirm,
                display, seriesSid?}, ...],
-    outputs: [{effect, staticArgs, channels: [{name, type}]}, ...],
+    outputs: [{effect, staticArgs, channels: [{name, type, transport}]}, ...],
+    effects: [{layout}, ...],              // effect id -> fixed payload layout
     frames:  [                            // fid 0 = the program frame
       {locals: [{storage, depth, layout}, ...], // slot-indexed; exact ValueLayout
        subs:   [{fid}, ...]},             // call-site-slot-indexed
@@ -71,6 +83,17 @@ export default {
   main(rt, fr) {...},            // the per-row body (fr = program frame)
 };
 ```
+
+`RUNTIME_ABI_VERSION` is the single version source and is currently `1`.
+Before launch, this contract evolves in place; the runtime does not carry
+compatibility branches for older generated modules.
+
+An output channel's `type` is the human Tea spelling. The current ABI publishes
+an exhaustive `transport` discriminant projected directly from the checked IR
+type
+(`int`, `float`, `bool`, `string`, `color`, `enum`, resource, output reference,
+user type, or aggregate shape). Runtime transports branch only on that field;
+they never recover machine semantics by parsing the display string.
 
 `aggregateLayouts` appears once on the root `TeaModule`. Every request child
 is a `ModuleCode` that inherits the same registry, Heap, and request-context
@@ -115,6 +138,7 @@ rt.frame(fr, slot); // open the sub-frame at this call site
 rt.root(); // the program frame (globals read from funcs)
 // emissions
 rt.emit(oid, channel, v);
+rt.emitEffect(effectId, payload); // ordered sparse append for this row attempt
 // frame-aware bind section (against a provisional scratch-only frame)
 rt.historyDepth(offset); // invalid history offsets normalize to zero
 rt.bindDepth(fid, slot, bars); // a name's bound history depth
@@ -356,15 +380,111 @@ interface ProviderContext {
   ): Value | undefined;
 }
 interface OutputSink {
-  declare(outputs): void; // before the first row
-  emit(row, oid, channels, provisional): void;
+  declare({outputs, effects}): void; // before the first row
+  publish({row, outputs, effects, provisional}): void;
 }
 ```
+
+Dense output writes and sparse effects are snapshotted together after a
+successful row attempt and cross the sink boundary in one `publish` call.
+Suspended or failed attempts publish nothing. A sink exception makes the
+binding terminal, so committed effects are never retried or duplicated.
+Effect payload layouts admit primitives, strings/colors, enums, and recursively
+fixed user values; collections, tuples, and resource handles are rejected.
 
 The same resolution path supplies the primary context and every request
 child. Provider series remain numeric and aligned to `rows`; typed execution
 metadata uses `builtinValue`. `undefined` means that the provider cannot
 supply a demanded builtin and is never coerced to a Tea empty value.
+
+## Generic CPU batching
+
+Batching is composition over the ordinary JS runtime, not a separate
+compilation or strategy execution path:
+
+```ts
+runCpuBatch(module, bindings: readonly BindInputs[])
+```
+
+Each binding already carries its parameters, provider, deterministic clock,
+limits, and `OutputSink`. Array order is execution and result order; an empty
+array is valid. The runner creates a fresh `JSRuntime` and frame tree per
+binding, calls the same `bind()` and `runAll()` used by `tea run`, always
+disposes the execution, and returns only generic row/input summaries.
+
+Output/effect capture is caller policy. `MemorySink` is the optional structured
+in-memory sink for examples and tests; callers may instead inject table, trace,
+streaming, bounded, or transactional sinks. The runner does not assign job ids,
+own output capacity, or interpret sweep dimensions. There is no batch-plan or
+journal layer between the caller's bindings, their sinks, and `runCpuBatch()`.
+
+## GPU binding and execution
+
+WGSL codegen returns a bind-independent artifact: the complete shader, target
+numeric/layout contract, required inputs, output/effect schemas, persistent
+lane-state layout, and bounded effect analysis. It contains no concrete rows,
+binding identities, resource allocation, or device.
+
+The public runtime is one asynchronous session API:
+
+```ts
+const execution = await createGpuExecution(
+  device,
+  artifact,
+  bindings, // readonly BindInputs[]
+  {maxRowsPerChunk, effectRecordsPerLane, maxGpuBytes},
+);
+
+await execution.runChunk();
+await execution.runAll();
+execution.dispose();
+```
+
+`executeProgram(program, bindings, target)` is the public target-neutral host
+harness. It lowers the already checked Program once, executes the ordered
+bindings, and returns row/input/timing statistics plus GPU chunk counts. Result
+ownership remains with each binding's sink.
+
+GPU and CPU therefore receive the same complete logical binding shape. Each
+element owns its provider, symbol/timeframe, parameters, clock, limits, and
+`OutputSink`; caller array order is lane identity. The GPU runtime resolves
+provider contexts asynchronously, materializes only artifact-required numeric
+series, converts them to the target profile, validates a common row extent per
+context, and packs its private buffers. Fixed-width int/float/bool/enum
+parameters share the ordinary resolver and are packed per lane.
+Source/string/color parameters and requests remain fail-closed exclusions.
+
+`maxRowsPerChunk` is a physical ceiling. Dense result capacity is exact from
+lane count, chosen chunk rows, and artifact schema; callers never allocate it.
+`maxGpuBytes` may reduce the chosen chunk. Sparse effects use one fixed region
+per lane. When `effectRecordsPerLane` is omitted, its size is derived from the
+artifact's conservative maximum effects per row; an explicit value cannot be
+smaller than one row's proven maximum.
+
+Each lane's persistent state, initialization bits, and `nextRow` live in a
+read-write GPU buffer and remain device-resident across `runChunk()` calls.
+Reusable dense/effect buffers cover only the current chunk. Every dispatch
+executes absolute rows from that lane's cursor, so `bar_index`, final-bar
+behavior, row ids, and package-global state are independent of chunk
+boundaries. Completed lanes become inert while longer lanes continue.
+
+After dispatch, the runtime copies dense results, effect status, and sparse
+records into reusable MAP_READ staging buffers. It validates overflow and
+decodes the whole current chunk before publishing one atomic dense/effect unit
+per absolute row to each binding's sink. `runChunk()` reports only binding row
+ranges and `runAll()` only binding row totals; caller sinks own all actual
+results. Rebinding a different provider grid does not regenerate WGSL.
+
+An overflow or decode error publishes none of the current chunk and makes the
+session terminal-failed. A sink exception is also terminal: already advanced
+device state is never retried, so effects cannot duplicate. Earlier successful
+chunks remain published unless the caller supplied a transactional sink.
+`dispose()` releases every device and staging buffer and is idempotent.
+
+Adapter selection and deployment policy stay with the host that injects the
+`GPUDevice`. Broker matching, portfolio accounting, lifecycle calls, and event
+payload construction remain ordinary emitted Tea code inside the shader; the
+GPU runtime recognizes none of them.
 
 ## Immutable Heap arena
 

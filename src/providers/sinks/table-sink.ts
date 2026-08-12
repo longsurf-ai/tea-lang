@@ -1,7 +1,13 @@
 // Purpose: Human-readable OutputSink — pivoted per-row table with column headers; presentation only (TraceSink remains the machine/golden format).
 
 import {TabWriter} from '../../base/tabwriter';
-import type {OutputSink, OutputSpec, Value} from '../../runtime/abi';
+import type {
+  DeclaredOutput,
+  OutputSink,
+  OutputSpec,
+  RowPublication,
+  Value,
+} from '../../runtime/abi';
 
 function formatValue(v: Value): string {
   if (typeof v === 'number') {
@@ -46,7 +52,7 @@ interface Column {
  * emitted channel. Call `flush()` after `runAll()`.
  */
 export class TableSink implements OutputSink {
-  private declared: Parameters<OutputSink['declare']>[0] = [];
+  private declared: readonly DeclaredOutput[] = [];
   // row -> oid -> channels (last write wins within a row)
   private readonly byRow = new Map<
     number,
@@ -55,23 +61,20 @@ export class TableSink implements OutputSink {
 
   constructor(private readonly write: (text: string) => void) {}
 
-  declare(outputs: Parameters<OutputSink['declare']>[0]): void {
-    this.declared = outputs;
+  declare(declaration: Parameters<OutputSink['declare']>[0]): void {
+    this.declared = declaration.outputs;
   }
 
-  emit(
-    row: number,
-    oid: number,
-    channels: readonly Value[],
-    provisional: boolean,
-  ): void {
-    let entry = this.byRow.get(row);
+  publish(publication: RowPublication): void {
+    let entry = this.byRow.get(publication.row);
     if (entry === undefined) {
-      entry = {provisional, values: new Map()};
-      this.byRow.set(row, entry);
+      entry = {provisional: publication.provisional, values: new Map()};
+      this.byRow.set(publication.row, entry);
     }
-    entry.provisional = entry.provisional || provisional;
-    entry.values.set(oid, channels);
+    entry.provisional = entry.provisional || publication.provisional;
+    for (const output of publication.outputs) {
+      entry.values.set(output.outputId, output.channels);
+    }
   }
 
   flush(): void {

@@ -1,0 +1,129 @@
+{
+  "version": 1,
+  "oracle": {
+    "kind": "tea-contract",
+    "description": "Hand-calculated next-open all-in and all-out fills with 10% adverse slippage and fees, followed by deterministic portfolio accounting and final-order expiry.",
+    "references": [
+      "../../../../docs/strategy.md",
+      "../../../../docs/memory-model.md"
+    ]
+  },
+  "tolerance": {"absolute": 1e-12, "relative": 1e-12},
+  "outputs": [
+    {
+      "oid": 0,
+      "effect": "strategy",
+      "staticArgs": [["title", "Tea strategy components"]],
+      "boundArgs": [],
+      "channels": []
+    },
+    {
+      "oid": 1,
+      "effect": "plot",
+      "staticArgs": [["title", "cash"]],
+      "boundArgs": [],
+      "channels": [["series", "float"]]
+    },
+    {
+      "oid": 2,
+      "effect": "plot",
+      "staticArgs": [["title", "position quantity"]],
+      "boundArgs": [],
+      "channels": [["series", "float"]]
+    },
+    {
+      "oid": 3,
+      "effect": "plot",
+      "staticArgs": [["title", "equity"]],
+      "boundArgs": [],
+      "channels": [["series", "float"]]
+    },
+    {
+      "oid": 4,
+      "effect": "plot",
+      "staticArgs": [["title", "realized pnl"]],
+      "boundArgs": [],
+      "channels": [["series", "float"]]
+    },
+    {
+      "oid": 5,
+      "effect": "plot",
+      "staticArgs": [["title", "total fees"]],
+      "boundArgs": [],
+      "channels": [["series", "float"]]
+    },
+    {
+      "oid": 6,
+      "effect": "plot",
+      "staticArgs": [["title", "fill count"]],
+      "boundArgs": [],
+      "channels": [["series", "int"]]
+    },
+    {
+      "oid": 7,
+      "effect": "plot",
+      "staticArgs": [["title", "round-trip count"]],
+      "boundArgs": [],
+      "channels": [["series", "int"]]
+    },
+    {
+      "oid": 8,
+      "effect": "plot",
+      "staticArgs": [["title", "maximum drawdown"]],
+      "boundArgs": [],
+      "channels": [["series", "float"]]
+    },
+    {
+      "oid": 9,
+      "effect": "plot",
+      "staticArgs": [["title", "expired order id"]],
+      "boundArgs": [],
+      "channels": [["series", "int"]]
+    }
+  ],
+  "rows": [
+    {
+      "row": 0,
+      "emissions": [
+        {"oid": 1, "provisional": false, "channels": [121]},
+        {"oid": 2, "provisional": false, "channels": [0]},
+        {"oid": 3, "provisional": false, "channels": [121]},
+        {"oid": 4, "provisional": false, "channels": [0]},
+        {"oid": 5, "provisional": false, "channels": [0]},
+        {"oid": 6, "provisional": false, "channels": [0]},
+        {"oid": 7, "provisional": false, "channels": [0]},
+        {"oid": 8, "provisional": false, "channels": [0]},
+        {"oid": 9, "provisional": false, "channels": [0]}
+      ]
+    },
+    {
+      "row": 1,
+      "emissions": [
+        {"oid": 1, "provisional": false, "channels": [0]},
+        {"oid": 2, "provisional": false, "channels": [10]},
+        {"oid": 3, "provisional": false, "channels": [110]},
+        {"oid": 4, "provisional": false, "channels": [0]},
+        {"oid": 5, "provisional": false, "channels": [11]},
+        {"oid": 6, "provisional": false, "channels": [1]},
+        {"oid": 7, "provisional": false, "channels": [0]},
+        {"oid": 8, "provisional": false, "channels": [0.09090909090909091]},
+        {"oid": 9, "provisional": false, "channels": [0]}
+      ]
+    },
+    {
+      "row": 2,
+      "emissions": [
+        {"oid": 1, "provisional": false, "channels": [162]},
+        {"oid": 2, "provisional": false, "channels": [0]},
+        {"oid": 3, "provisional": false, "channels": [162]},
+        {"oid": 4, "provisional": false, "channels": [41]},
+        {"oid": 5, "provisional": false, "channels": [29]},
+        {"oid": 6, "provisional": false, "channels": [2]},
+        {"oid": 7, "provisional": false, "channels": [1]},
+        {"oid": 8, "provisional": false, "channels": [0.09090909090909091]},
+        {"oid": 9, "provisional": false, "channels": [3]}
+      ]
+    }
+  ],
+  "deviations": []
+}

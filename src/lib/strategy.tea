@@ -1,0 +1,69 @@
+//@version=1
+// Explicit strategy composition. configure(), begin(), entry(), close(), and
+// end() are ordinary Tea calls; their behavior comes only from this source.
+library("strategy")
+
+import broker
+import portfolio
+
+export enum Direction
+	long
+	short
+
+export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
+	B broker
+	P portfolio
+	int currentBarIndex = -1
+
+	broker.Fill begin(float openPrice, int barIndex) =>
+		this.currentBarIndex := barIndex
+		execution = this.broker.on_open(openPrice, this.portfolio.buying_power(), this.portfolio.position_quantity(), barIndex)
+		this.portfolio.apply(execution)
+		execution
+
+	broker.Order entry(string commandId, Direction direction) =>
+		side = direction == Direction.long ? broker.Side.buy : broker.Side.sell
+		this.broker.submit(commandId, side, this.currentBarIndex)
+
+	broker.Order close(string commandId) =>
+		this.broker.submit(commandId, broker.Side.sell, this.currentBarIndex)
+
+	broker.Order end(float closePrice, bool isLast) =>
+		this.portfolio.mark(closePrice)
+		broker.Order expired = na
+		if isLast
+			expired := this.broker.finish()
+		expired
+
+	float cash() const =>
+		this.portfolio.cash()
+
+	float position_quantity() const =>
+		this.portfolio.position_quantity()
+
+	float equity() const =>
+		this.portfolio.equity()
+
+	float realized_pnl() const =>
+		this.portfolio.realized_pnl()
+
+	float total_fees() const =>
+		this.portfolio.total_fees()
+
+	int fill_count() const =>
+		this.portfolio.fill_count()
+
+	int round_trip_count() const =>
+		this.portfolio.round_trip_count()
+
+	float max_drawdown() const =>
+		this.portfolio.max_drawdown()
+
+	float total_return() const =>
+		this.portfolio.total_return()
+
+	bool has_pending() const =>
+		this.broker.has_pending()
+
+export configure(broker, portfolio) =>
+	Strategy.new(broker, portfolio)

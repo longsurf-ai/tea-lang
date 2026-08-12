@@ -1,6 +1,6 @@
 // Purpose: Canonical semantic declaration objects stored in checker scopes and referenced by Info definition/use facts.
 
-import {Qualifier} from '../ir/type';
+import {formatType, Qualifier, typesEqual} from '../ir/type';
 import type {
   ConstValue,
   EnumType,
@@ -13,9 +13,12 @@ import type {
   EnumMember,
   FieldDecl,
   FuncDecl,
+  InterfaceDecl,
+  InterfaceMethodDecl,
   MethodDecl,
 } from '../syntax/nodes';
 import type {CheckedDefaultExpression} from './info';
+import type {Info} from './info';
 import type {BuiltinBinding} from './catalog';
 import type {Package} from './package';
 import type {Scope} from './scope';
@@ -23,6 +26,10 @@ import type {Scope} from './scope';
 export const ObjectKind = {
   Variable: 'variable',
   Function: 'function',
+  Interface: 'interface',
+  InterfaceMethod: 'interfaceMethod',
+  GenericUserType: 'genericUserType',
+  TypeParameter: 'typeParameter',
   UserType: 'userType',
   Field: 'field',
   Enum: 'enum',
@@ -36,6 +43,13 @@ export interface VariableObject {
   readonly name: string;
   readonly storage: NameStorage;
   readonly constDecl: boolean;
+  // Non-null only for a library-root runtime global. Ordinary script globals
+  // and function locals stay context-owned without package privileges.
+  packageGlobal: {
+    readonly pkg: Package;
+    readonly decl: import('../syntax/nodes').DeclStmt;
+    readonly sourceOrder: number;
+  } | null;
   type: Type;
   qualifier: QualifierName;
   constValue: ConstValue | null;
@@ -79,11 +93,75 @@ export interface MethodObject extends FunctionObjectBase {
   // never creates a callable/lowerable resolution.
   readonly invalidDefaults: ReadonlySet<number>;
   readonly declaredResult: Type;
+  // Concrete substitution owned by this specialized method declaration.
+  // Non-generic methods carry null. The map is restored while checking the
+  // method body, so annotation occurrences never publish checker-only types.
+  readonly substitutions: ReadonlyMap<string, TypeSubstitution> | null;
 }
 
 export type FunctionObject = FreeFunctionObject | MethodObject;
 
 export type ReceiverMode = 'mutable' | 'const';
+
+// Interfaces are checker-only method sets. They are declaration objects, but
+// deliberately have no Type: an interface can constrain a generic template
+// without ever becoming a source value or a Program/runtime type.
+export interface InterfaceObject {
+  readonly kind: typeof ObjectKind.Interface;
+  readonly pkg: Package;
+  readonly exported: boolean;
+  readonly name: string;
+  readonly decl: InterfaceDecl;
+  readonly methods: readonly InterfaceMethodObject[];
+}
+
+export interface InterfaceMethodObject {
+  readonly kind: typeof ObjectKind.InterfaceMethod;
+  readonly owner: InterfaceObject;
+  readonly name: string;
+  readonly decl: InterfaceMethodDecl;
+  readonly receiverMode: ReceiverMode;
+  readonly params: readonly {
+    readonly type: Type;
+    readonly qualifier: QualifierName | null;
+  }[];
+  readonly result: Type;
+}
+
+export interface TypeParameterObject {
+  readonly kind: typeof ObjectKind.TypeParameter;
+  readonly owner: GenericUserTypeObject;
+  readonly index: number;
+  readonly name: string;
+  readonly decl: import('../syntax/nodes').TypeParam;
+  readonly constraint: InterfaceObject;
+}
+
+export interface TypeSubstitution {
+  readonly parameter: TypeParameterObject;
+  readonly object: UserTypeObject;
+}
+
+export interface GenericInstantiation {
+  readonly template: GenericUserTypeObject;
+  readonly typeArgs: readonly UserTypeObject[];
+  readonly object: UserTypeObject;
+  readonly info: Info;
+}
+
+export interface GenericUserTypeObject {
+  readonly kind: typeof ObjectKind.GenericUserType;
+  readonly pkg: Package;
+  readonly exported: boolean;
+  readonly name: string;
+  readonly decl: import('../syntax/nodes').UserTypeDecl;
+  readonly base: Scope;
+  readonly typeParams: readonly TypeParameterObject[];
+  readonly instances: readonly GenericInstantiation[];
+  // Checker-only facts for a template that has no concrete specialization in
+  // this compilation. Concrete instances retain their own distinct Info.
+  readonly validationInfo: Info;
+}
 
 export interface UserTypeObject {
   readonly kind: typeof ObjectKind.UserType;
@@ -153,9 +231,68 @@ export type BuiltinObject = BuiltinConstObject | BuiltinBoundObject;
 export type Object =
   | VariableObject
   | FunctionObject
+  | InterfaceObject
+  | InterfaceMethodObject
+  | GenericUserTypeObject
+  | TypeParameterObject
   | UserTypeObject
   | FieldObject
   | EnumObject
   | EnumMemberObject
   | PackageNameObject
   | BuiltinObject;
+
+// V1 interface satisfaction is an exact, static method-set relation. Method
+// parameter names are documentation only; every callable property of the
+// signature must match, and extra concrete methods are allowed.
+export function satisfies(
+  concrete: UserTypeObject,
+  required: InterfaceObject,
+): boolean {
+  return required.methods.every(want => {
+    const got = concrete.methods.find(method => method.name === want.name);
+    return (
+      got !== undefined &&
+      got.receiver.mode === want.receiverMode &&
+      got.declaredParams.length === want.params.length &&
+      got.declaredParams.every(
+        (param, index) =>
+          param.qualifier === want.params[index].qualifier &&
+          typesEqual(param.type, want.params[index].type),
+      ) &&
+      typesEqual(got.declaredResult, want.result)
+    );
+  });
+}
+
+export function satisfactionError(
+  concrete: UserTypeObject,
+  required: InterfaceObject,
+): string | null {
+  for (const want of required.methods) {
+    const got = concrete.methods.find(method => method.name === want.name);
+    const prefix = `${concrete.name} does not satisfy ${required.name}: method '${want.name}'`;
+    if (got === undefined) {
+      return `${concrete.name} does not satisfy ${required.name}: missing method '${want.name}'`;
+    }
+    if (got.declaredParams.length !== want.params.length) {
+      return `${prefix} has ${got.declaredParams.length} parameters, want ${want.params.length}`;
+    }
+    for (const [index, parameter] of got.declaredParams.entries()) {
+      const expected = want.params[index];
+      if (!typesEqual(parameter.type, expected.type)) {
+        return `${prefix} parameter ${index + 1} has type ${formatType(parameter.type)}, want ${formatType(expected.type)}`;
+      }
+      if (parameter.qualifier !== expected.qualifier) {
+        return `${prefix} parameter ${index + 1} has qualifier ${parameter.qualifier ?? 'unqualified'}, want ${expected.qualifier ?? 'unqualified'}`;
+      }
+    }
+    if (!typesEqual(got.declaredResult, want.result)) {
+      return `${prefix} returns ${formatType(got.declaredResult)}, want ${formatType(want.result)}`;
+    }
+    if (got.receiver.mode !== want.receiverMode) {
+      return `${prefix} has ${got.receiver.mode} receiver, want ${want.receiverMode}`;
+    }
+  }
+  return null;
+}

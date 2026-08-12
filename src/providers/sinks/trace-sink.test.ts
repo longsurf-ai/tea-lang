@@ -16,42 +16,62 @@ describe('TraceSink', () => {
   test('prints one declare line per output and one emit line per channel write', () => {
     const lines: string[] = [];
     const sink = new TraceSink(line => lines.push(line));
-    sink.declare([
-      {
-        spec: spec(
-          'indicator',
-          [
-            {name: 'title', value: 'MACD'},
-            {name: 'shorttitle', value: 'MACD'},
-          ],
-          [],
-        ),
-        boundArgs: [],
-      },
-      {
-        spec: spec(
-          'plot',
-          [{name: 'title', value: 'Histogram'}],
-          [
-            {name: 'series', type: 'float'},
-            {name: 'color', type: 'color'},
-          ],
-        ),
-        boundArgs: [{name: 'display', value: 'all'}],
-      },
-      {
-        spec: spec(
-          'plot',
-          [{name: 'title', value: 'MACD'}],
-          [{name: 'series', type: 'float'}],
-        ),
-        boundArgs: [],
-      },
-    ]);
-    sink.emit(0, 1, [NaN, '#B2DFDB'], false);
-    sink.emit(0, 2, [0], false);
-    sink.emit(1, 1, [0.5, '#26A69A'], true);
-    sink.emit(1, 2, [0.6], false);
+    sink.declare({
+      outputs: [
+        {
+          spec: spec(
+            'indicator',
+            [
+              {name: 'title', value: 'MACD'},
+              {name: 'shorttitle', value: 'MACD'},
+            ],
+            [],
+          ),
+          boundArgs: [],
+        },
+        {
+          spec: spec(
+            'plot',
+            [{name: 'title', value: 'Histogram'}],
+            [
+              {name: 'series', type: 'float', transport: {kind: 'float'}},
+              {name: 'color', type: 'color', transport: {kind: 'color'}},
+            ],
+          ),
+          boundArgs: [{name: 'display', value: 'all'}],
+        },
+        {
+          spec: spec(
+            'plot',
+            [{name: 'title', value: 'MACD'}],
+            [{name: 'series', type: 'float', transport: {kind: 'float'}}],
+          ),
+          boundArgs: [],
+        },
+      ],
+      effects: [],
+    });
+    sink.publish({
+      row: 0,
+      outputs: [
+        {outputId: 1, channels: [NaN, '#B2DFDB']},
+        {outputId: 2, channels: [0]},
+      ],
+      effects: [],
+      provisional: false,
+    });
+    sink.publish({
+      row: 1,
+      outputs: [{outputId: 1, channels: [0.5, '#26A69A']}],
+      effects: [],
+      provisional: true,
+    });
+    sink.publish({
+      row: 1,
+      outputs: [{outputId: 2, channels: [0.6]}],
+      effects: [],
+      provisional: false,
+    });
 
     expect(lines).toEqual([
       '# output[0] indicator title=MACD shorttitle=MACD',
@@ -61,6 +81,30 @@ describe('TraceSink', () => {
       '0 2 0',
       '1 1 ? 0.5 #26A69A',
       '1 2 0.6',
+    ]);
+  });
+
+  test('declares sparse effects by logical type instead of physical layout', () => {
+    const lines: string[] = [];
+    const sink = new TraceSink(line => lines.push(line));
+    sink.declare({
+      outputs: [],
+      effects: [
+        {payload: {kind: 'float'}},
+        {
+          payload: {
+            kind: 'user-type',
+            typeId: 'broker.FillExecuted',
+            displayName: 'FillExecuted',
+            fields: [],
+          },
+        },
+      ],
+    });
+
+    expect(lines).toEqual([
+      '# effect[0] type=float',
+      '# effect[1] type=broker.FillExecuted',
     ]);
   });
 });

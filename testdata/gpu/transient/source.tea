@@ -1,0 +1,8 @@
+//@version=1
+strategy("transient user value")
+
+type Point
+	float x
+
+var float keep = 0.0
+plot(Point.new(close).x + keep)

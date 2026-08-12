@@ -3,8 +3,6 @@
 import {existsSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_COMPILE_CONFIG} from '../base/config';
-import {Errors} from '../base/print';
 import {generate} from '../codegen/codegen';
 import {captureSink, configureLog, logConfig} from '../base/log';
 import {buildText, mustBuild} from '../noder/testing';
@@ -24,7 +22,7 @@ async function runSource(
   provider: DataProvider | null = null,
 ): Promise<string[]> {
   const program = mustBuild(src);
-  const js = generate(program, DEFAULT_COMPILE_CONFIG, new Errors());
+  const js = generate(program);
   const module = loadModule(js);
   const lines: string[] = [];
   const sink = new TraceSink(line => lines.push(line));
@@ -383,8 +381,8 @@ describe('hand-checked vectors', () => {
 describe('determinism', () => {
   test('generation is stable and free of impure sources', async () => {
     const program = mustBuild('plot(ta.ema(close, 9))');
-    const a = generate(program, DEFAULT_COMPILE_CONFIG, new Errors());
-    const b = generate(program, DEFAULT_COMPILE_CONFIG, new Errors());
+    const a = generate(program);
+    const b = generate(program);
     expect(a).toBe(b);
     expect(a.includes('Date.')).toBe(false);
     expect(a.includes('Math.random')).toBe(false);
@@ -564,7 +562,7 @@ describe('the input family end to end', () => {
       'shade = input.color(color.new(color.blue, 90), "Shade")',
       'plot(lvl)',
     ].join(chr10());
-    const js = generate(mustBuild(src), DEFAULT_COMPILE_CONFIG, new Errors());
+    const js = generate(mustBuild(src));
     const module = loadModule(js);
     const byName = new Map(module.manifest.params.map(p => [p.name, p]));
     const session = byName.get('session');
@@ -661,9 +659,7 @@ describe('the input family end to end', () => {
       'plot(close, color=color.new(color.blue, math.exp(1000) - math.exp(1000)))',
     ].join(chr10());
     const program = mustBuild(src);
-    const module = loadModule(
-      generate(program, DEFAULT_COMPILE_CONFIG, new Errors()),
-    );
+    const module = loadModule(generate(program));
     expect(module.manifest.outputs[0].staticArgs).toContainEqual({
       name: 'color',
       value: null,
@@ -716,8 +712,6 @@ describe('the input family end to end', () => {
       mustBuild(
         'lvl = input.price(1.5, "Level", "click the chart")\nplot(lvl)',
       ),
-      DEFAULT_COMPILE_CONFIG,
-      new Errors(),
     );
     const module = loadModule(js);
     expect(module.manifest.params[0].tooltip).toBe('click the chart');
@@ -741,9 +735,7 @@ describe('the input family end to end', () => {
       'width = enabled ? 2 : 1',
       'plot(str.tostring(mode) == "Slow" ? 1 : 0, linewidth=width)',
     ].join(chr10());
-    const module = loadModule(
-      generate(mustBuild(source), DEFAULT_COMPILE_CONFIG, new Errors()),
-    );
+    const module = loadModule(generate(mustBuild(source)));
     const bindWith = (params: Record<string, unknown>) =>
       bind(module, {
         params,
@@ -802,9 +794,7 @@ describe('the input family end to end', () => {
       '    0',
       'plot(choose(close > 0) + branch)',
     ].join(chr10());
-    const module = loadModule(
-      generate(mustBuild(source), DEFAULT_COMPILE_CONFIG, new Errors()),
-    );
+    const module = loadModule(generate(mustBuild(source)));
     const names = module.manifest.params.map(param => param.name);
     expect(new Set(names).size).toBe(4);
     expect(names.filter(name => name.startsWith('input@'))).toHaveLength(3);

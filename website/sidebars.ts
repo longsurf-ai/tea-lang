@@ -25,6 +25,11 @@ const sidebars: SidebarsConfig = {
         'language-guide/execution-model',
         {
           type: 'doc',
+          id: 'strategy',
+          label: 'Strategy Model',
+        },
+        {
+          type: 'doc',
           id: 'memory-model',
           label: 'Memory Model',
         },

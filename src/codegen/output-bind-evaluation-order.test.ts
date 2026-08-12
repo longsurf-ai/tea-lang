@@ -1,8 +1,6 @@
 // Purpose: Output bind lowering preserves source evaluation order while assembling canonical host arguments.
 
 import {describe, expect, test} from 'bun:test';
-import {DEFAULT_COMPILE_CONFIG} from '../base/config';
-import {Errors} from '../base/print';
 import {mustBuild} from '../noder/testing';
 import {
   ExecutionError,
@@ -34,7 +32,7 @@ const provider: DataProvider = {
 
 const sink: OutputSink = {
   declare() {},
-  emit() {},
+  publish() {},
 };
 
 describe('output bind evaluation order', () => {
@@ -44,9 +42,7 @@ describe('output bind evaluation order', () => {
     expect(output.bindArgs.map(arg => arg.name)).toEqual(['series', 'color']);
     expect(output.bindArgumentEvaluationOrder).toEqual([1, 0]);
 
-    const module = loadModule(
-      generate(program, DEFAULT_COMPILE_CONFIG, new Errors()),
-    );
+    const module = loadModule(generate(program));
     const failure = await bind(module, {
       params: {},
       provider,
