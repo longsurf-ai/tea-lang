@@ -17,6 +17,30 @@ export interface SweepParameterOptions {
   readonly reservedNames?: ReadonlySet<string>;
 }
 
+export interface SweepAxis {
+  readonly name: string;
+  readonly type: 'int' | 'float';
+  readonly values: readonly number[];
+}
+
+export interface ExpandedParameterSweep {
+  readonly axes: readonly SweepAxis[];
+  readonly parameterSets: readonly Readonly<
+    Record<string, CliParameterValue>
+  >[];
+}
+
+type ParsedParameterAssignment =
+  | {
+      readonly kind: 'scalar';
+      readonly values: readonly [CliParameterValue];
+    }
+  | {
+      readonly kind: 'numericRange';
+      readonly type: 'int' | 'float';
+      readonly values: readonly number[];
+    };
+
 // Dynamic flags deliberately accept both conventional `--length` and the
 // Pine-friendly `-length` spelling. Commander owns fixed host flags first;
 // this parser sees only the tokens it did not recognize.
@@ -27,18 +51,20 @@ export function parseRunParameters(
 ): Readonly<Record<string, CliParameterValue>> {
   const parsed = parseAssignments(specs, tokens, reservedNames, false, 1);
   return Object.fromEntries(
-    [...parsed].map(([name, values]) => [name, values[0]!]),
+    [...parsed].map(([name, assignment]) => [name, assignment.values[0]!]),
   );
 }
 
-// A sweep is just an ordered list of ordinary binding parameter maps. Axes
-// follow source declaration order regardless of CLI flag order; unspecified
-// parameters remain absent so the ordinary runtime applies their defaults.
-export function expandSweepParameters(
+// Parameter sets are ordinary binding maps. Axis provenance is kept separately
+// because a scalar flag is not a swept dimension, even though it participates
+// in every parameter set. Both follow source declaration order regardless of
+// CLI flag order; unspecified parameters remain absent so the runtime applies
+// their defaults.
+export function expandParameterSweep(
   specs: readonly ParamSpec[],
   tokens: readonly string[],
   options: SweepParameterOptions,
-): readonly Readonly<Record<string, CliParameterValue>>[] {
+): ExpandedParameterSweep {
   if (!Number.isSafeInteger(options.maxScenarios) || options.maxScenarios < 1) {
     throw new CliParameterError(
       'max scenarios must be a positive safe integer',
@@ -53,7 +79,7 @@ export function expandSweepParameters(
   );
 
   let scenarioCount = 1;
-  for (const values of parsed.values()) {
+  for (const {values} of parsed.values()) {
     if (scenarioCount > Math.floor(options.maxScenarios / values.length)) {
       throw new CliParameterError(
         `parameter sweep exceeds the ${options.maxScenarios} scenario limit`,
@@ -62,15 +88,35 @@ export function expandSweepParameters(
     scenarioCount *= values.length;
   }
 
-  let scenarios: Readonly<Record<string, CliParameterValue>>[] = [{}];
+  const axes: SweepAxis[] = [];
+  let parameterSets: Readonly<Record<string, CliParameterValue>>[] = [{}];
   for (const spec of specs) {
-    const values = parsed.get(spec.name);
-    if (values === undefined) continue;
-    scenarios = scenarios.flatMap(scenario =>
-      values.map(value => ({...scenario, [spec.name]: value})),
+    const assignment = parsed.get(spec.name);
+    if (assignment === undefined) continue;
+    if (assignment.kind === 'numericRange') {
+      axes.push({
+        name: spec.name,
+        type: assignment.type,
+        values: assignment.values,
+      });
+    }
+    parameterSets = parameterSets.flatMap(parameterSet =>
+      assignment.values.map(value => ({
+        ...parameterSet,
+        [spec.name]: value,
+      })),
     );
   }
-  return scenarios;
+  return {axes, parameterSets};
+}
+
+// Compatibility surface for callers that only need execution parameter sets.
+export function expandSweepParameters(
+  specs: readonly ParamSpec[],
+  tokens: readonly string[],
+  options: SweepParameterOptions,
+): readonly Readonly<Record<string, CliParameterValue>>[] {
+  return expandParameterSweep(specs, tokens, options).parameterSets;
 }
 
 function parseAssignments(
@@ -79,7 +125,7 @@ function parseAssignments(
   reservedNames: ReadonlySet<string>,
   allowRanges: boolean,
   maxAxisValues: number,
-): ReadonlyMap<string, readonly CliParameterValue[]> {
+): ReadonlyMap<string, ParsedParameterAssignment> {
   const byName = new Map(specs.map(spec => [spec.name, spec]));
   for (const spec of specs) {
     if (reservedNames.has(spec.name)) {
@@ -89,7 +135,7 @@ function parseAssignments(
     }
   }
 
-  const parsed = new Map<string, readonly CliParameterValue[]>();
+  const parsed = new Map<string, ParsedParameterAssignment>();
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]!;
     const flag = splitFlag(token);
@@ -114,11 +160,18 @@ function parseAssignments(
       }
     }
 
-    const values =
-      allowRanges && isNumericSpec(spec) && raw.split(':').length === 3
-        ? numericRange(spec, raw, maxAxisValues)
-        : [coerceAndValidate(spec, raw)];
-    parsed.set(spec.name, values);
+    const numericRangeSyntax =
+      allowRanges && isNumericSpec(spec) && raw.split(':').length === 3;
+    parsed.set(
+      spec.name,
+      numericRangeSyntax
+        ? {
+            kind: 'numericRange',
+            type: spec.type,
+            values: numericRange(spec, raw, maxAxisValues),
+          }
+        : {kind: 'scalar', values: [coerceAndValidate(spec, raw)]},
+    );
   }
   return parsed;
 }
@@ -143,7 +196,9 @@ function splitFlag(token: string): {
   return {name, value};
 }
 
-function isNumericSpec(spec: ParamSpec): boolean {
+function isNumericSpec(
+  spec: ParamSpec,
+): spec is ParamSpec & {readonly type: 'int' | 'float'} {
   return spec.type === 'int' || spec.type === 'float';
 }
 
@@ -216,7 +271,7 @@ function numericRange(
   spec: ParamSpec,
   raw: string,
   maxValues: number,
-): readonly CliParameterValue[] {
+): readonly number[] {
   const parts = raw.split(':');
   if (parts.length !== 3 || parts.some(part => part.length === 0)) {
     throw new CliParameterError(
@@ -273,13 +328,13 @@ function numericRange(
     );
   }
 
-  const values: CliParameterValue[] = [];
+  const values: number[] = [];
   for (
     let current = scaledStart;
     scaledStep > 0 ? current <= scaledStop : current >= scaledStop;
     current += scaledStep
   ) {
-    values.push(coerceAndValidate(spec, String(current / scale)));
+    values.push(parseRangeNumber(spec, String(current / scale)));
   }
   return values;
 }

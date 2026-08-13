@@ -120,11 +120,33 @@ tea sweep examples/strategy-cpu-gpu.tea \
   --slippage 0:0.2:0.1 --fee 0 --initial_cash 100 --cpu
 ```
 
+Add `--view` when at least two parameters use range syntax:
+
+```sh
+tea sweep examples/strategy-cpu-gpu.tea \
+  --input examples/strategy-bars.csv \
+  --slippage 0:0.2:0.1 --fee 0:0.2:0.1 \
+  --initial_cash 100 --view
+```
+
+The browser view lets you select X and Y from the numeric range parameters and
+Z from the Program's final numeric outputs. A third or later range parameter
+becomes an explicit slice selector, so every plotted point still represents
+one concrete execution. Auto geometry uses a surface for a complete coordinate
+grid with at least two values per axis and preserves null metrics as holes;
+incomplete or degenerate grids render as points. Selecting Surface explicitly
+keeps missing coordinates as holes rather than interpolating them.
+
 Each binding has isolated runtime state and can eventually vary providers,
 symbols, or other inputs—not just parameters. The sweep reporter requests only
 final dense values and no effect payloads. The Bun CLI relays native Dawn execution
 to Node 22; set `TEA_GPU_NODE` if Node 22 is not discovered automatically.
 No path introduces a strategy compiler or host-side matching/accounting.
+
+The result model and X/Y/Z/slice projection are renderer-neutral. The current
+Plotly adapter is a presentation choice served with pinned local assets on an
+IPv4 loopback address, so opening the view does not send strategy results to a
+CDN.
 
 See [Strategy model](../strategy.md) for the normative source contract and
 [GPU Lowering](../advanced/gpu-lowering.md) for the target boundary.
@@ -132,4 +154,6 @@ See [Strategy model](../strategy.md) for the normative source contract and
 For a fuller signal-driven example, `examples/ema-cross-strategy.tea` uses
 `ta.ema`, `ta.crossover`, and `ta.crossunder` directly, trades the signals with
 next-open execution, and runs unchanged through `tea run`, `tea run --gpu`,
-and `tea sweep` over the synthetic `examples/ema-cross-bars.csv` fixture.
+and `tea sweep` over the checked-in real Binance Spot BTCUSDT daily history in
+`examples/binance-btcusdt-1d.csv`. Its adjacent source record pins the API,
+coverage dates, row count, and SHA-256 for reproducibility.

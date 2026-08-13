@@ -124,7 +124,8 @@ describe('report sinks', () => {
       });
     }
 
-    const snapshot = sink.snapshot();
+    const snapshot = sink.snapshot(0);
+    expect(snapshot.bindingIndex).toBe(0);
     expect(snapshot.rows).toBe(10_000);
     expect(snapshot.finalOutputs).toEqual([
       {row: 9_999, outputId: 0, channels: [9_999]},
@@ -132,6 +133,7 @@ describe('report sinks', () => {
 
     const summary: ExecutionSummary = {
       backend: 'cpu',
+      numericProfile: 'js-f64',
       bindings: [
         {
           bindingIndex: 0,

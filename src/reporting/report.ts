@@ -27,6 +27,7 @@ export function systemReportSection(
   const seconds = summary.timing.executionMs / 1_000;
   const reportRows: ReportCell[][] = [
     ['backend', summary.backend],
+    ['numeric profile', summary.numericProfile],
     ...(options.device === undefined
       ? []
       : [['device', options.device] as ReportCell[]]),

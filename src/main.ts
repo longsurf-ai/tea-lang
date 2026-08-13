@@ -9,7 +9,7 @@ import {Errors, type ErrorMsg} from './base/print';
 import {UnimplementedError} from './base/unimplemented';
 import {
   CliParameterError,
-  expandSweepParameters,
+  expandParameterSweep,
   parseRunParameters,
 } from './cli/parameters';
 import {compile, compileToProgram, parseFile} from './compile';
@@ -25,15 +25,13 @@ import {builtinSources} from './providers/data/builtin-sources';
 import {csvProvider} from './providers/data/csv';
 import {createDawnDevice, GpuDeviceError} from './providers/gpu/dawn';
 import {relayGpuCliToNode} from './providers/gpu/node-host';
-import {
-  RunReportSink,
-  SweepReportSink,
-  sweepReportSections,
-} from './providers/sinks/report-sink';
+import {RunReportSink, SweepReportSink} from './providers/sinks/report-sink';
 import {TraceSink} from './providers/sinks/trace-sink';
 import {
+  buildSweepResult,
   parameterReportSection,
   renderReport,
+  sweepResultSection,
   systemReportSection,
   type ReportSection,
 } from './reporting';
@@ -47,6 +45,11 @@ import {
 import {GpuBindingError, GpuExecutionError} from './runtime/gpu';
 import {dumpFile, dumpTokens} from './syntax/dumper';
 import {tokenize} from './syntax/syntax';
+import {
+  PlotlySweepRenderer,
+  startSweepViewer,
+  SweepProjectionError,
+} from './visualization';
 
 // Exit 1: the Tea source had errors. The batch arrives sorted and deduped
 // from flushErrors(); this is the only place errors are printed.
@@ -149,6 +152,7 @@ const SWEEP_RESERVED_PARAMETERS = new Set([
   'input',
   'i',
   'cpu',
+  'view',
   'max-scenarios',
   'help',
   'h',
@@ -169,7 +173,8 @@ function exitWithExecutionError(error: unknown): never {
     error instanceof UnsupportedExecutionTargetError ||
     error instanceof GpuBindingError ||
     error instanceof GpuExecutionError ||
-    error instanceof GpuDeviceError
+    error instanceof GpuDeviceError ||
+    error instanceof SweepProjectionError
   ) {
     console.error(`tea: ${error.message}`);
     process.exit(1);
@@ -326,6 +331,7 @@ tea
   .argument('<file>', 'Tea source file')
   .option('-i, --input <file>', 'CSV dataset to bind as the input series')
   .option('--cpu', 'use the JavaScript CPU runtime instead of WebGPU')
+  .option('--view', 'open an interactive 3D parameter view')
   .option(
     '--max-scenarios <count>',
     'reject sweeps larger than this many bindings',
@@ -337,7 +343,12 @@ tea
   .action(
     async (
       file: string,
-      options: {input?: string; cpu?: boolean; maxScenarios: number},
+      options: {
+        input?: string;
+        cpu?: boolean;
+        view?: boolean;
+        maxScenarios: number;
+      },
       command: Command,
     ) => {
       await runStageAsync(async () => {
@@ -351,7 +362,7 @@ tea
           exitWithErrors(errors.flushErrors());
         }
         try {
-          const parameterSets = expandSweepParameters(
+          const sweep = expandParameterSweep(
             paramSpecsOf(program.params),
             dynamicTokens(command),
             {
@@ -359,6 +370,12 @@ tea
               reservedNames: SWEEP_RESERVED_PARAMETERS,
             },
           );
+          if (options.view === true && sweep.axes.length < 2) {
+            throw new SweepProjectionError(
+              'sweep visualization requires at least two numeric parameter ranges',
+            );
+          }
+          const parameterSets = sweep.parameterSets;
           const provider = readCsvProvider(options.input);
           const timeNow = Date.now();
           const sinks = parameterSets.map(() => new SweepReportSink());
@@ -373,16 +390,31 @@ tea
             bindings,
             options.cpu === true ? 'cpu' : 'gpu',
           );
+          let result;
           try {
-            const rendered = renderReport([
+            result = buildSweepResult(
+              execution.summary,
+              sinks.map((sink, index) =>
+                sink.snapshot(execution.summary.bindings[index]!.bindingIndex),
+              ),
+              sweep.axes,
+            );
+            const sections = [
               systemReportSection(execution.summary, {
                 device: execution.device,
               }),
-              ...sweepReportSections(execution.summary, sinks),
-            ]);
+              ...(options.view === true ? [] : [sweepResultSection(result)]),
+            ];
+            const rendered = renderReport(sections);
             if (rendered.length > 0) console.log(rendered);
           } finally {
             await execution.dispose();
+          }
+          if (options.view === true) {
+            await startSweepViewer(result, new PlotlySweepRenderer(), {
+              print: line => console.log(line),
+              warn: line => console.error(line),
+            });
           }
         } catch (error) {
           exitWithExecutionError(error);

@@ -4,7 +4,14 @@ import type {ExecutionSummary} from '../../execute';
 import type {ReportCell, ReportSection} from '../../reporting/report';
 import {reportValue} from '../../reporting/report';
 import {
-  type DeclaredOutput,
+  buildSweepResult,
+  denseOutputColumns,
+  sweepResultSection,
+  type SweepDenseValue,
+  type SweepReportSnapshot,
+} from '../../reporting/sweep';
+export type {SweepReportSnapshot} from '../../reporting/sweep';
+import {
   type EffectSpec,
   type EffectValue,
   type EffectValueSchema,
@@ -14,22 +21,12 @@ import {
   type Value,
 } from '../../runtime/abi';
 
-interface DenseValue {
-  readonly row: number;
-  readonly outputId: number;
-  readonly channels: readonly Value[];
-}
+type DenseValue = SweepDenseValue;
 
 interface CapturedEffect {
   readonly row: number;
   readonly effectId: number;
   readonly payload: EffectValue;
-}
-
-export interface SweepReportSnapshot {
-  readonly declaration: ExecutionDeclaration;
-  readonly rows: number;
-  readonly finalOutputs: readonly DenseValue[];
 }
 
 abstract class ReportSinkBase implements OutputSink {
@@ -54,7 +51,7 @@ abstract class ReportSinkBase implements OutputSink {
   protected abstract capture(publication: RowPublication): void;
 
   protected denseSectionFrom(values: readonly DenseValue[]): ReportSection {
-    const columns = denseColumns(this.declaration.outputs);
+    const columns = denseOutputColumns(this.declaration.outputs);
     const byRow = new Map<number, Map<number, readonly Value[]>>();
     for (const value of values) {
       let outputs = byRow.get(value.row);
@@ -138,8 +135,9 @@ export class SweepReportSink extends ReportSinkBase {
   readonly capabilities = {denseRows: 'final', effects: 'none'} as const;
   private readonly finalOutputs = new Map<number, DenseValue>();
 
-  snapshot(): SweepReportSnapshot {
+  snapshot(bindingIndex: number): SweepReportSnapshot {
     return {
+      bindingIndex,
       declaration: cloneDeclaration(this.declaration),
       rows: this.rowCount,
       finalOutputs: [...this.finalOutputs.values()].map(output => ({
@@ -206,77 +204,10 @@ export function sweepReportSections(
       `sweep report has ${sinks.length} sinks for ${summary.bindings.length} bindings`,
     );
   }
-  const snapshots = sinks.map(sink => sink.snapshot());
-  const paramNames = unique(
-    summary.bindings.flatMap(binding =>
-      binding.inputs.map(input => input.spec.name),
-    ),
+  const snapshots = sinks.map((sink, index) =>
+    sink.snapshot(summary.bindings[index]!.bindingIndex),
   );
-  const dense = snapshots[0]?.declaration.outputs ?? [];
-  const denseCols = denseColumns(dense);
-  const results: ReportSection = {
-    title: 'Sweep Results',
-    columns: [
-      'binding',
-      'rows',
-      ...paramNames,
-      ...denseCols.map(column => column.label),
-    ],
-    rows: summary.bindings.map((binding, index) => {
-      const snapshot = snapshots[index]!;
-      const inputs = new Map(
-        binding.inputs.map(input => [
-          input.spec.name,
-          reportValue(input.value),
-        ]),
-      );
-      const outputs = new Map(
-        snapshot.finalOutputs.map(output => [output.outputId, output.channels]),
-      );
-      return [
-        binding.bindingIndex,
-        binding.rows,
-        ...paramNames.map(name => inputs.get(name) ?? ''),
-        ...denseCols.map(column => {
-          const value = outputs.get(column.outputId)?.[column.channel];
-          return value === undefined ? '' : reportValue(value);
-        }),
-      ];
-    }),
-  };
-  return [results];
-}
-
-interface DenseColumn {
-  readonly outputId: number;
-  readonly channel: number;
-  readonly label: string;
-}
-
-function denseColumns(outputs: readonly DeclaredOutput[]): DenseColumn[] {
-  return outputs.flatMap((output, outputId) =>
-    output.spec.channels.map((channel, channelIndex) => ({
-      outputId,
-      channel: channelIndex,
-      label: outputChannelLabel(output, outputId, channelIndex),
-    })),
-  );
-}
-
-function outputChannelLabel(
-  output: DeclaredOutput,
-  outputId: number,
-  channelIndex: number,
-): string {
-  const title = output.spec.staticArgs.find(arg => arg.name === 'title')?.value;
-  const base =
-    typeof title === 'string' && title.length > 0
-      ? title
-      : `${output.spec.effect}[${outputId}]`;
-  const channel = output.spec.channels[channelIndex]!;
-  return output.spec.channels.length === 1 || channel.name === 'series'
-    ? base
-    : `${base}.${channel.name}`;
+  return [sweepResultSection(buildSweepResult(summary, snapshots))];
 }
 
 function effectLabel(effect: EffectSpec, effectId: number): string {
@@ -375,8 +306,4 @@ function cloneEffectPayload(value: EffectValue): EffectValue {
     kind: 'user-type' as const,
     fields: Object.freeze(value.fields.map(cloneEffectPayload)),
   });
-}
-
-function unique(values: readonly string[]): string[] {
-  return [...new Set(values)];
 }

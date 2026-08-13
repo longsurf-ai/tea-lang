@@ -4,6 +4,7 @@
 
 import {generate} from './codegen/codegen';
 import {compileProgramToWgsl, type WgslEligibilityIssue} from './codegen/wgsl';
+import type {WgslNumericContract} from './gpu/contract';
 import type {Program} from './ir/program';
 import type {BindInputs, BoundInput} from './runtime/abi';
 import {runCpuBatch} from './runtime/batch';
@@ -49,17 +50,24 @@ export interface GpuExecutionTiming extends ExecutionTiming, GpuRunTiming {
   readonly preparationMs: number;
 }
 
+export type ExecutionNumericProfile = 'js-f64' | 'wgsl-f32-i32';
+
 interface ExecutionSummaryBase {
   readonly bindings: readonly ExecutionBindingSummary[];
   readonly timing: ExecutionTiming;
+  // The arithmetic profile that produced the published values. Backends may
+  // agree within a local tolerance without taking identical threshold branches.
+  readonly numericProfile: ExecutionNumericProfile;
 }
 
 export interface CpuExecutionSummary extends ExecutionSummaryBase {
   readonly backend: 'cpu';
+  readonly numericProfile: 'js-f64';
 }
 
 export interface GpuExecutionSummary extends ExecutionSummaryBase {
   readonly backend: 'gpu';
+  readonly numericProfile: 'wgsl-f32-i32';
   readonly timing: GpuExecutionTiming;
   readonly chunks: number;
   readonly dispatches: number;
@@ -101,6 +109,7 @@ export async function executeProgram(
     const executionFinished = now();
     return {
       backend: 'cpu',
+      numericProfile: 'js-f64',
       bindings: results.map((result, bindingIndex) => ({
         bindingIndex,
         rows: result.rows,
@@ -133,6 +142,7 @@ export async function executeProgram(
     const executionFinished = now();
     return {
       backend: 'gpu',
+      numericProfile: wgslNumericProfile(compiled.artifact.numeric),
       bindings: result.bindings,
       chunks: result.chunks,
       dispatches: result.dispatches,
@@ -151,6 +161,10 @@ export async function executeProgram(
   } finally {
     session.dispose();
   }
+}
+
+function wgslNumericProfile(numeric: WgslNumericContract): 'wgsl-f32-i32' {
+  return `wgsl-${numeric.float}-${numeric.integer}`;
 }
 
 function now(): number {

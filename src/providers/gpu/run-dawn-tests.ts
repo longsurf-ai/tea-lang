@@ -14,11 +14,18 @@ if (node === null) {
 }
 
 const root = fileURLToPath(new URL('../../..', import.meta.url));
-const test = join(root, 'src/runtime/gpu/dawn.integration.ts');
-const result = spawnSync(node, ['--import', 'tsx', '--test', test], {
-  cwd: root,
-  stdio: 'inherit',
-});
+const tests = [
+  join(root, 'src/runtime/gpu/dawn.integration.ts'),
+  join(root, 'examples.gpu.integration.ts'),
+];
+const result = spawnSync(
+  node,
+  ['--import', 'tsx', '--test', '--test-concurrency=1', ...tests],
+  {
+    cwd: root,
+    stdio: 'inherit',
+  },
+);
 if (result.error !== undefined) {
   throw result.error;
 }

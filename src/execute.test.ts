@@ -38,6 +38,7 @@ describe('executeProgram', () => {
     );
 
     expect(result.backend).toBe('cpu');
+    expect(result.numericProfile).toBe('js-f64');
     expect(result.bindings.map(binding => binding.bindingIndex)).toEqual([
       0, 1,
     ]);
@@ -94,6 +95,7 @@ describe('executeProgram', () => {
     });
 
     expect(result.backend).toBe('gpu');
+    expect(result.numericProfile).toBe('wgsl-f32-i32');
     expect(result.bindings).toEqual([]);
     if (result.backend !== 'gpu') {
       throw new Error('expected GPU execution summary');

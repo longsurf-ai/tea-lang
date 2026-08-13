@@ -29,6 +29,7 @@ describe('generic terminal reports', () => {
   test('prefaces results with backend statistics and effective parameters', () => {
     const summary: ExecutionSummary = {
       backend: 'gpu',
+      numericProfile: 'wgsl-f32-i32',
       bindings: [
         {
           bindingIndex: 0,
@@ -65,6 +66,7 @@ describe('generic terminal reports', () => {
 
     expect(rendered).toContain('# System');
     expect(rendered).toContain('backend                gpu');
+    expect(rendered).toContain('numeric profile        wgsl-f32-i32');
     expect(rendered).toContain('device                 Dawn');
     expect(rendered).toContain('throughput             50000 rows/s');
     expect(rendered).toContain('gpu preparation        0.50 ms');

@@ -20,7 +20,8 @@ describe('CLI execution host', () => {
   test('run discovers a source parameter and renders logical effects', () => {
     const output = cli('run', SOURCE, '-i', DATA, '-scale', '3');
     expect(output).toContain('# System');
-    expect(output).toContain('backend     cpu');
+    expect(output).toMatch(/^backend\s+cpu$/m);
+    expect(output).toMatch(/^numeric profile\s+js-f64$/m);
     expect(output).toContain('# Parameters');
     expect(output).toContain('scale');
     expect(output).toContain('scaled close');
@@ -55,7 +56,7 @@ describe('CLI execution host', () => {
       '--scale',
       '1:2:0.5',
     );
-    expect(output).toContain('bindings    3');
+    expect(output).toMatch(/^bindings\s+3$/m);
     expect(output).toContain('# Sweep Results');
     expect(output).not.toContain('# Sweep Effect Counts');
     expect(output).toMatch(/0\s+2\s+1\s+2/);

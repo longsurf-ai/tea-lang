@@ -2,6 +2,7 @@ import {describe, expect, test} from 'bun:test';
 import type {ParamSpec} from '../runtime/abi';
 import {
   CliParameterError,
+  expandParameterSweep,
   expandSweepParameters,
   parseRunParameters,
 } from './parameters';
@@ -80,6 +81,58 @@ describe('dynamic CLI parameters', () => {
 });
 
 describe('parameter sweeps', () => {
+  test('reports only syntactic numeric ranges as declaration-ordered axes', () => {
+    expect(
+      expandParameterSweep(
+        specs,
+        [
+          '--factor',
+          '1:1.5:0.2',
+          '--enabled',
+          'false',
+          '--length',
+          '1:2:1',
+          '--mode',
+          'slow',
+        ],
+        {maxScenarios: 10},
+      ),
+    ).toEqual({
+      axes: [
+        {name: 'length', type: 'int', values: [1, 2]},
+        {name: 'factor', type: 'float', values: [1, 1.2, 1.4]},
+      ],
+      parameterSets: [
+        {length: 1, factor: 1, enabled: false, mode: 'slow'},
+        {length: 1, factor: 1.2, enabled: false, mode: 'slow'},
+        {length: 1, factor: 1.4, enabled: false, mode: 'slow'},
+        {length: 2, factor: 1, enabled: false, mode: 'slow'},
+        {length: 2, factor: 1.2, enabled: false, mode: 'slow'},
+        {length: 2, factor: 1.4, enabled: false, mode: 'slow'},
+      ],
+    });
+  });
+
+  test('does not report scalar numeric flags as axes', () => {
+    expect(
+      expandParameterSweep(specs, ['--length', '3', '--factor', '1.5'], {
+        maxScenarios: 1,
+      }),
+    ).toEqual({
+      axes: [],
+      parameterSets: [{length: 3, factor: 1.5}],
+    });
+  });
+
+  test('keeps a one-value numeric range as an axis', () => {
+    expect(
+      expandParameterSweep(specs, ['--length', '3:3:1'], {maxScenarios: 1}),
+    ).toEqual({
+      axes: [{name: 'length', type: 'int', values: [3]}],
+      parameterSets: [{length: 3}],
+    });
+  });
+
   test('expands inclusive decimal ranges in declaration order', () => {
     expect(
       expandSweepParameters(

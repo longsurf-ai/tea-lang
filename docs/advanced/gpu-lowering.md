@@ -89,10 +89,12 @@ CPU comparison uses the artifact's declared tolerance, currently:
 max(0.0001, abs(expected) * 0.00002)
 ```
 
-That tolerance is local, not a promise that millions of recursively compounded
-f32 accounting operations remain close to a JavaScript f64 total. Long-horizon
-backtests must report this target precision explicitly; exact decimal or
-f64-equivalent accounting is a separate target capability.
+That tolerance is local. It cannot guarantee identical threshold branches: a
+small f32 difference at a comparison can change a signal and then compound into
+a materially different backtest. Sweep reports therefore identify their
+numeric profile, and GPU-selected candidates should be rerun on CPU `js-f64`
+for the authoritative report. Exact decimal or f64-equivalent GPU accounting is
+a separate target capability.
 
 ## Provider-backed execution sessions
 
@@ -231,8 +233,9 @@ ordinary CLI path:
 
 ```sh
 tea sweep examples/ema-cross-strategy.tea \
-  -i examples/ema-cross-bars.csv \
-  --fast_length 3:7:2 --slow_length 10:14:2
+  -i examples/binance-btcusdt-1d.csv \
+  --fast_length 2:20:2 --slow_length 24:60:4 \
+  --initial_cash 100000 --slippage 0.0005 --fee 0.001
 ```
 
 The source calls `ta.ema`, `ta.crossover`, and `ta.crossunder` directly. Their

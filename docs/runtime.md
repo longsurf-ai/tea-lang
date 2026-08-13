@@ -448,6 +448,27 @@ streaming, bounded, or transactional sinks. The runner does not assign job ids,
 own output capacity, or interpret sweep dimensions. There is no batch-plan or
 journal layer between the caller's bindings, their sinks, and `runCpuBatch()`.
 
+## Sweep reporting and visualization
+
+Sweep presentation remains outside both runtimes. `SweepReportSink` requests
+only each execution's final dense values and no effects. The reporting layer
+combines those snapshots with execution summaries and declared numeric ranges
+into a renderer-neutral `SweepResult`.
+
+The visualization layer projects that result into a `SweepScene` from an
+explicit X parameter, Y parameter, numeric output metric, and one selected
+value for every remaining swept dimension. A complete rectangular coordinate
+grid with at least two values per axis becomes a surface and retains null
+metrics as holes. Auto geometry keeps incomplete or degenerate grids as points;
+an explicitly requested surface retains missing coordinates as holes. It never
+invents scenarios or interpolates results.
+
+Renderer adapters consume a presentation model containing the available axes,
+metrics, current view specification, and its projected `SweepScene`. The
+current Plotly adapter is served with a pinned local asset from an
+IPv4-loopback HTTP server; it does not change execution, reporting, or
+projection semantics and does not fetch code or data from a CDN.
+
 ## GPU binding and execution
 
 WGSL codegen returns a bind-independent artifact: the complete shader, target
@@ -484,10 +505,10 @@ execution.dispose();
 
 `executeProgram(program, bindings, target)` is the public target-neutral host
 harness. It lowers the already checked Program once, executes the ordered
-bindings, and returns row/input/timing statistics. A GPU summary additionally
-reports chunk and dispatch counts plus the selected workgroup-cache placement;
-the CPU summary is unchanged. Result ownership remains with each binding's
-sink.
+bindings, and returns row/input/timing statistics plus the arithmetic profile
+that produced the results (`js-f64` or artifact-derived `wgsl-f32-i32`). A GPU
+summary additionally reports chunk and dispatch counts plus the selected
+workgroup-cache placement. Result ownership remains with each binding's sink.
 
 GPU and CPU therefore receive the same complete logical binding shape. Each
 element owns its provider, symbol/timeframe, parameters, clock, limits, and
