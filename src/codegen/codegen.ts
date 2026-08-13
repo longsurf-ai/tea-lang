@@ -439,7 +439,6 @@ class Generator {
     // discovered during lowering; the manifest is assembled afterwards.
     const initLines = this.lowerInit();
     const bindLines = this.lowerBind();
-    const initThunks = this.lowerInitThunks();
     const funcBodies = this.lowerFuncs();
     const mainLines: string[] = [];
     lowerStmts(this.program.body, mainLines, this.ctxFor(0));
@@ -456,13 +455,6 @@ class Generator {
     out.push(`requests: [${children.map(c => c.ref).join(', ')}],`);
     out.push('init(rt) {', ...indent(initLines), '},');
     out.push('bind(rt, fr) {', ...indent(bindLines), '},');
-    out.push('inits: {');
-    for (const [key, lines] of initThunks) {
-      out.push(`  ${JSON.stringify(key)}: (rt, fr) => {`);
-      out.push(...indent(indent(lines)));
-      out.push('  },');
-    }
-    out.push('},');
     out.push('funcs: {');
     for (const [fid, lines] of funcBodies) {
       out.push(`  ${fid}: ${lines[0]}`);
@@ -575,23 +567,6 @@ class Generator {
       lines.push(`rt.bindRequest(${rid}, (${symbol}), (${timeframe}));`);
     });
     return lines;
-  }
-
-  private lowerInitThunks(): Map<string, string[]> {
-    const thunks = new Map<string, string[]>();
-    this.frameLocals.forEach((names, fid) => {
-      names.forEach((name, slot) => {
-        if (name.init === null) {
-          return;
-        }
-        const ctx = this.ctxFor(fid);
-        const lines: string[] = [];
-        const expr = lowerExpr(name.init, lines, ctx);
-        lines.push(`return (${expr});`);
-        thunks.set(`${fid}:${slot}`, lines);
-      });
-    });
-    return thunks;
   }
 
   private lowerFuncs(): Map<number, string[]> {

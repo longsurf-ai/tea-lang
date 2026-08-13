@@ -79,9 +79,18 @@ describe('executeProgram', () => {
   });
 
   test('reports an empty eligible GPU execution without creating device resources', async () => {
+    const device = {
+      limits: {
+        maxComputeInvocationsPerWorkgroup: 256,
+        maxComputeWorkgroupSizeX: 256,
+        maxComputeWorkgroupStorageSize: 64 * 1024,
+        maxBufferSize: 256 * 1024 * 1024,
+        maxStorageBufferBindingSize: 128 * 1024 * 1024,
+      },
+    } as unknown as GPUDevice;
     const result = await executeProgram(mustBuild('plot(close)'), [], {
       kind: 'gpu',
-      device: null as unknown as GPUDevice,
+      device,
     });
 
     expect(result.backend).toBe('gpu');
@@ -91,5 +100,18 @@ describe('executeProgram', () => {
     }
     expect(result.chunks).toBe(0);
     expect(result.dispatches).toBe(0);
+    expect(result.timing.preparationMs).toBeGreaterThanOrEqual(0);
+    expect(result.timing.encodeSubmitMs).toBe(0);
+    expect(result.timing.completionReadbackMs).toBe(0);
+    expect(result.timing.decodePublicationMs).toBe(0);
+    expect(result.cache).toEqual(
+      expect.objectContaining({
+        mode: expect.stringMatching(/^(storage-only|workgroup-prefix)$/),
+        workgroupSize: expect.any(Number),
+        cachedBytesPerExecution: expect.any(Number),
+        bytesPerWorkgroup: expect.any(Number),
+        segmentIds: expect.any(Array),
+      }),
+    );
   });
 });

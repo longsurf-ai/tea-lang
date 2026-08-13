@@ -78,7 +78,6 @@ export default {
   init(rt) {...},                // reserved frame-free preparation
   bind(rt, fr) {...},            // input aliases/UDFs, depth reports, active,
                                  // output args, request options, and static pairs
-  inits: {(fid, slot): (rt, fr) => v},   // var/varip first-execution thunks
   funcs: {fid: (rt, fr, ...args) => v},
   main(rt, fr) {...},            // the per-row body (fr = program frame)
 };
@@ -128,6 +127,8 @@ rt.execution(eid, offset); // typed time/bar/barstate/syminfo/timeframe value
 rt.param(pid); // bind-time scalar
 rt.read(fr, slot, offset); // a name's history
 rt.write(fr, slot, v);
+rt.needsInit(fr, slot); // persistent declaration has not initialized yet
+rt.initialize(fr, slot, v); // tentatively initialize at this lexical site
 rt.request(rid, offset); // the edge's merged result: static view or
 // dynamic result ring (docs/requests.md)
 rt.requestFor(rid, sym, tf); // dynamic offset-0 read; unresolved pairs
@@ -166,9 +167,10 @@ envelope; const methods and free functions return ordinary Tea values. The
 implicit source receiver `this` is never a runtime pointer or Heap reference.
 
 `rt.frame(fr, slot)` is the seam where per-call-site state materializes:
-fetch the sub-frame at compartment `slot` of `fr`, creating it on first use
-from the callee's manifest layout and running its var-init thunks once. A
-call site lowers to:
+fetch the sub-frame at compartment `slot` of `fr`, creating its physical
+storage on first use and tentatively activating it for this row attempt.
+Persistent initialization remains inside the callee's lexical `InitName`
+statements. A call site lowers to:
 
 ```js
 const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
@@ -287,7 +289,15 @@ Two asymmetries between the runtime's rings and provider series:
 A frame is a call site's persistent box: one Ring per local slot, one
 sub-frame box per call-site slot, materialized lazily by `rt.frame` (frame
 trees can also appear at runtime — dynamic requests instantiate whole trees
-per context). One Ring class serves all layouts; ring capacity comes
+per context). Physical allocation does not mean the call site has executed:
+each frame carries separate committed and scratch activation state. Calling
+`rt.frame` tentatively activates its child for the current row attempt; abort
+or suspension restores the pre-attempt activation tree, while final commit
+promotes it. A successful provisional execution may retain a same-row
+activation candidate so `varip` state survives even when the final execution
+does not revisit that call site.
+
+One Ring class serves all layouts; ring capacity comes
 from the manifest depth (`none` = current cell only, `const
 n` / `capped n` = n + 1 cells, `bound` = the value `bind` reported via
 `rt.bindDepth`). Each local and request manifest entry carries an exact
@@ -339,10 +349,19 @@ there are no incremental update paths, by construction:
 - Every ring has committed cells plus a **scratch head** for the row being
   executed. Reads at offset 0 see this execution's writes (or the storage
   class's start value); offsets ≥ 1 see committed history.
+- A persistent declaration is an ordinary `InitName` statement at its lexical
+  execution site. Generated code first asks `rt.needsInit(frame, slot)` and
+  evaluates the initializer only when that answer is true, then publishes the
+  tentative value through `rt.initialize`. The runtime tracks committed and
+  scratch initialization bits separately; an untaken declaration therefore
+  does not initialize, and an initializer may read current call arguments or
+  perform any other ordinary Tea evaluation in source order.
 - At execution start the scratch head resets: `var` starts from its last
-  committed value, perBar starts unwritten (na until written). **varip**
-  scratch survives across provisional executions of the same row — the one
-  storage class whose writes ticks accumulate.
+  committed value only when its committed initialization bit is set; otherwise
+  it stays typed-empty and eligible for `InitName`. PerBar starts unwritten
+  (na until written). **varip** scratch value and initialization bit survive
+  successful provisional executions of the same row — the one storage class
+  whose writes ticks accumulate.
 - Each execution owns one Heap allocation attempt. Collection mutations may
   allocate tentative sealed cells, readable only by that attempt. A successful
   execution first prepares one row commit: Ring candidates, buffered emission
@@ -357,8 +376,9 @@ there are no incremental update paths, by construction:
   storage policy (`varip` versus ordinary rollback). Immutable backing makes
   mixed aliases harmless: Heap carries no `var`/`varip` policy and replays no
   object edits.
-- A throw or suspension invalidates scratch and buffered emissions, then
-  aborts all tentative allocations. Committed state was never touched.
+- A throw or suspension invalidates scratch values, initialization bits,
+  tentative frame activation, and buffered emissions, then aborts all
+  tentative allocations. Committed state was never touched.
 
 Emissions carry a `provisional` flag to the sink; alert-class outputs fire
 on commit only.
@@ -380,10 +400,20 @@ interface ProviderContext {
   ): Value | undefined;
 }
 interface OutputSink {
+  readonly capabilities?: {
+    readonly denseRows?: 'all' | 'final';
+    readonly effects?: 'all' | 'none';
+  };
   declare({outputs, effects}): void; // before the first row
   publish({row, outputs, effects, provisional}): void;
 }
 ```
+
+Omitted capabilities mean complete dense and effect transport. A sink may
+request only the final committed dense row with `denseRows: 'final'`, or opt
+out of sparse payload transport with `effects: 'none'`. These are generic
+transport requirements, not strategy semantics; composed sinks request the
+union needed by their children.
 
 Dense output writes and sparse effects are snapshotted together after a
 successful row attempt and cross the sink boundary in one `publish` call.
@@ -422,8 +452,8 @@ journal layer between the caller's bindings, their sinks, and `runCpuBatch()`.
 
 WGSL codegen returns a bind-independent artifact: the complete shader, target
 numeric/layout contract, required inputs, output/effect schemas, persistent
-lane-state layout, and bounded effect analysis. It contains no concrete rows,
-binding identities, resource allocation, or device.
+execution-state layout, and bounded effect analysis. It contains no concrete
+rows, binding identities, resource allocation, or device.
 
 The public runtime is one asynchronous session API:
 
@@ -432,7 +462,12 @@ const execution = await createGpuExecution(
   device,
   artifact,
   bindings, // readonly BindInputs[]
-  {maxRowsPerChunk, effectRecordsPerLane, maxGpuBytes},
+  {
+    maxRowsPerChunk,
+    effectRecordsPerExecution,
+    maxGpuBytes,
+    maxCacheBytesPerWorkgroup,
+  },
 );
 
 await execution.runChunk();
@@ -442,38 +477,66 @@ execution.dispose();
 
 `executeProgram(program, bindings, target)` is the public target-neutral host
 harness. It lowers the already checked Program once, executes the ordered
-bindings, and returns row/input/timing statistics plus GPU chunk counts. Result
-ownership remains with each binding's sink.
+bindings, and returns row/input/timing statistics. A GPU summary additionally
+reports chunk and dispatch counts plus the selected workgroup-cache placement;
+the CPU summary is unchanged. Result ownership remains with each binding's
+sink.
 
 GPU and CPU therefore receive the same complete logical binding shape. Each
 element owns its provider, symbol/timeframe, parameters, clock, limits, and
-`OutputSink`; caller array order is lane identity. The GPU runtime resolves
-provider contexts asynchronously, materializes only artifact-required numeric
-series, converts them to the target profile, validates a common row extent per
-context, and packs its private buffers. Fixed-width int/float/bool/enum
-parameters share the ordinary resolver and are packed per lane.
+`OutputSink`; caller array order is execution identity. The GPU runtime
+resolves provider contexts asynchronously, materializes only artifact-required
+numeric series, converts them to the target profile, validates a common row
+extent per context, and packs its private buffers. Fixed-width
+int/float/bool/enum parameters share the ordinary resolver and are packed per
+execution.
 Source/string/color parameters and requests remain fail-closed exclusions.
 
-`maxRowsPerChunk` is a physical ceiling. Dense result capacity is exact from
-lane count, chosen chunk rows, and artifact schema; callers never allocate it.
-`maxGpuBytes` may reduce the chosen chunk. Sparse effects use one fixed region
-per lane. When `effectRecordsPerLane` is omitted, its size is derived from the
+`maxRowsPerChunk` is a physical ceiling whose default is 65,536 rows. Dense
+result capacity is exact from each execution's sink requirements: a complete
+stream reserves the chosen chunk rows, while `denseRows: 'final'` reserves one
+row regardless of chunk size. Callers never allocate it, and `maxGpuBytes` or
+device buffer limits may reduce the chosen chunk. Sparse effects use one fixed
+region per execution when requested; `effects: 'none'` allocates no logical
+effect records for that execution. Otherwise, when
+`effectRecordsPerExecution` is omitted, its size is derived from the
 artifact's conservative maximum effects per row; an explicit value cannot be
 smaller than one row's proven maximum.
 
-Each lane's persistent state, initialization bits, and `nextRow` live in a
-read-write GPU buffer and remain device-resident across `runChunk()` calls.
-Reusable dense/effect buffers cover only the current chunk. Every dispatch
-executes absolute rows from that lane's cursor, so `bar_index`, final-bar
-behavior, row ids, and package-global state are independent of chunk
-boundaries. Completed lanes become inert while longer lanes continue.
+Each Program execution's persistent frame state, initialization bits, and
+`nextRow` live in a disjoint read-write GPU-buffer range and remain
+device-resident across `runChunk()` calls. Reusable dense/effect buffers cover
+only the current chunk. Every dispatch executes absolute rows from that
+execution's cursor, so `bar_index`, final-bar behavior, row ids, and
+package-global state are independent of chunk boundaries. Completed
+executions become inert while longer executions continue.
 
-After dispatch, the runtime copies dense results, effect status, and sparse
-records into reusable MAP_READ staging buffers. It validates overflow and
-decodes the whole current chunk before publishing one atomic dense/effect unit
-per absolute row to each binding's sink. `runChunk()` reports only binding row
-ranges and `runAll()` only binding row totals; caller sinks own all actual
-results. Rebinding a different provider grid does not regenerate WGSL.
+The persistent arena contains only temporally observable slots. A
+history-free per-bar function receiver or parameter stays in a mutable WGSL
+function local; a history-bearing formal is projected into its call-site frame.
+
+Storage remains the authoritative state between dispatches. At session
+creation, the runtime may select a compiler-ranked, whole-segment prefix to
+stage in workgroup memory for one dispatch. The selected workgroup size and
+prefix respect both device limits and `maxCacheBytesPerWorkgroup`; zero budget
+selects the storage-only entry point. The runtime also stays storage-only when
+the workgroup contains one Program execution or the artifact owns more than 16
+cache segments: at those boundaries, cache copying and generated address
+routing cost more than the staged accesses they replace. `GpuRunSummary.cache`,
+and therefore the public GPU `ExecutionSummary`, records the resulting mode,
+workgroup size, cached bytes per execution and workgroup, and selected segment
+ids.
+
+After dispatch, the runtime copies and decodes only the transports requested
+by each execution's sink. Complete dense streams use the current chunk;
+final-only streams read one row on the absolute final bar. Effect-declining
+executions have no logical sparse region, and an all-declining session skips
+effect clear, copy, map, and decode entirely. Mixed capabilities are planned
+independently per execution. The runtime validates all requested data before
+publishing one atomic dense/effect unit per absolute row. `runChunk()` reports
+only binding row ranges and `runAll()` only binding row totals; caller sinks
+own all actual results. Rebinding a different provider grid does not regenerate
+WGSL.
 
 An overflow or decode error publishes none of the current chunk and makes the
 session terminal-failed. A sink exception is also terminal: already advanced
@@ -548,4 +611,5 @@ awaits `resolvePending()` and re-executes the SAME row. Tentative writes,
 buffered emissions, and tentative storage from the failed attempt vanish; the
 retry restores the exact pre-attempt varip candidate, which may come from an
 earlier successful provisional tick. If a first-row varip Ring had no prior
-candidate, retry reruns its initializer. `runAll` runs this loop itself.
+candidate, retry reaches and reruns its declaration-site initializer. `runAll`
+runs this loop itself.

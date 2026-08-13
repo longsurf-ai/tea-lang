@@ -201,7 +201,7 @@ class Noder {
       init: [],
       body,
     };
-    this.nodePackageGlobals(this.program, packageGlobals);
+    body.unshift(...this.nodePackageGlobals(this.program, packageGlobals));
     resolveDepths(program);
     this.checkDynamicRequestsFlag(program);
     return program;
@@ -210,7 +210,7 @@ class Noder {
   private nodePackageGlobals(
     context: ProgramLoweringContext,
     out: IrName[],
-  ): void {
+  ): IrStmt[] {
     const required = new Set<VariableObject>();
     this.notePackageGlobalsFromInfo(context.info, required);
     for (const instance of context.funcs.keys()) {
@@ -316,6 +316,7 @@ class Noder {
     const savedInfo = this.info;
     const savedProgram = this.program;
     const savedFrame = this.frame;
+    const initializers: IrStmt[] = [];
     this.program = context;
     this.frame = context.rootFrame;
     for (const object of orderedGlobals) {
@@ -324,17 +325,21 @@ class Noder {
         .get(pkg)!
         .info.packageGlobalInitializers.get(object)!;
       const name = this.nameOf(object);
-      if (name.init === null) {
-        this.info = initializer.info;
-        name.init = this.nodeExpr(initializer.expr, object.type);
-      }
       if (!out.includes(name)) {
+        this.info = initializer.info;
         out.push(name);
+        initializers.push({
+          kind: IrKind.InitName,
+          pos: initializer.expr.pos,
+          name,
+          value: this.nodeExpr(initializer.expr, object.type),
+        });
       }
     }
     this.info = savedInfo;
     this.program = savedProgram;
     this.frame = savedFrame;
+    return initializers;
   }
 
   private notePackageGlobalsFromInfo(
@@ -428,7 +433,6 @@ class Noder {
         type: object.type,
         qualifier: object.qualifier,
         depth: {kind: DepthKind.None},
-        init: null,
       };
       this.program.names.set(object, name);
     }
@@ -688,9 +692,7 @@ class Noder {
     }
 
     if (name.storage === Storage.Var || name.storage === Storage.Varip) {
-      // First-bar initializer, evaluated once by the runtime.
-      name.init = init;
-      return [];
+      return [{kind: IrKind.InitName, pos: d.pos, name, value: init}];
     }
     return [{kind: IrKind.WriteName, pos: d.pos, name, value: init}];
   }
@@ -713,7 +715,6 @@ class Noder {
       type: initTv.type,
       qualifier: initTv.qualifier,
       depth: {kind: DepthKind.None},
-      init: null,
     };
     const stmts: IrStmt[] = [
       {
@@ -1284,7 +1285,6 @@ class Noder {
       type: xTv.type,
       qualifier: Qualifier.Series,
       depth: {kind: DepthKind.None},
-      init: null,
     };
     this.hoisted.push({
       kind: IrKind.WriteName,
@@ -1537,7 +1537,6 @@ class Noder {
       type: resolved.resultType,
       qualifier: Qualifier.Series,
       depth: {kind: DepthKind.None},
-      init: null,
     };
     const parentProgram = this.program;
     const savedInfo = this.info;
@@ -1558,6 +1557,14 @@ class Noder {
     this.frame = savedFrame;
 
     const childPackageGlobals: IrName[] = [];
+    const childBody: IrStmt[] = [
+      {
+        kind: IrKind.WriteName,
+        pos: captureExpr.pos,
+        name: resultName,
+        value: childValue,
+      },
+    ];
     const child: Program = {
       version: this.version,
       // Bind-time params are compilation-global: a child references the
@@ -1568,16 +1575,11 @@ class Noder {
       effects: childContext.effects,
       packageGlobals: childPackageGlobals,
       init: [],
-      body: [
-        {
-          kind: IrKind.WriteName,
-          pos: captureExpr.pos,
-          name: resultName,
-          value: childValue,
-        },
-      ],
+      body: childBody,
     };
-    this.nodePackageGlobals(childContext, childPackageGlobals);
+    childBody.unshift(
+      ...this.nodePackageGlobals(childContext, childPackageGlobals),
+    );
 
     // In the program frame, bind-known context expressions may use immutable
     // input/simple aliases and pure UDFs because module.bind owns a real root

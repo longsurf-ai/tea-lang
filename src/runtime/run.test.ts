@@ -346,7 +346,7 @@ describe('hand-checked vectors', () => {
       'plot(ta.hma(close, 7))',
       seriesCsv([84, 168, 252, 336, 420, 504, 588, 672, 756, 840]),
     );
-    expect(lines.slice(1)).toEqual([
+    expect(lines.filter(line => !line.startsWith('#'))).toEqual([
       '0 0 na',
       '1 0 na',
       '2 0 na',
@@ -375,6 +375,85 @@ describe('hand-checked vectors', () => {
       seriesCsv([1, 4, 9]),
     );
     expect(lines.slice(1)).toEqual(['0 0 3', '1 0 4', '2 0 5']);
+  });
+
+  test('persistent local initialization observes the current call argument', async () => {
+    const lines = await runSource(
+      [
+        'first(float value) =>',
+        `${String.fromCharCode(9)}var float captured = value`,
+        `${String.fromCharCode(9)}captured`,
+        'plot(first(close))',
+      ].join(chr10()),
+      seriesCsv([10, 20, 30]),
+    );
+    expect(lines.slice(1)).toEqual(['0 0 10', '1 0 10', '2 0 10']);
+  });
+
+  test('an unreached persistent declaration initializes on first later entry', async () => {
+    const lines = await runSource(
+      [
+        'first_when(float value, bool enabled) =>',
+        `${String.fromCharCode(9)}if enabled`,
+        `${String.fromCharCode(9)}${String.fromCharCode(9)}var float captured = value`,
+        `${String.fromCharCode(9)}${String.fromCharCode(9)}captured`,
+        `${String.fromCharCode(9)}else`,
+        `${String.fromCharCode(9)}${String.fromCharCode(9)}na`,
+        'plot(first_when(close, bar_index > 0))',
+      ].join(chr10()),
+      seriesCsv([10, 20, 30]),
+    );
+    expect(lines.slice(1)).toEqual(['0 0 na', '1 0 20', '2 0 20']);
+  });
+
+  test('persistent initialization is independent per written call site', async () => {
+    const lines = await runSource(
+      [
+        'first(float value) =>',
+        `${String.fromCharCode(9)}var float captured = value`,
+        `${String.fromCharCode(9)}captured`,
+        'plot(first(close))',
+        'plot(first(close * 10))',
+      ].join(chr10()),
+      seriesCsv([2, 4]),
+    );
+    expect(lines.filter(line => !line.startsWith('#'))).toEqual([
+      '0 0 2',
+      '0 1 20',
+      '1 0 2',
+      '1 1 20',
+    ]);
+  });
+
+  test('repeated execution of one call site initializes once', async () => {
+    const lines = await runSource(
+      [
+        'first(int value) =>',
+        `${String.fromCharCode(9)}var int captured = value`,
+        `${String.fromCharCode(9)}captured`,
+        'sum = 0',
+        'for i = 1 to 3',
+        `${String.fromCharCode(9)}sum += first(i)`,
+        'plot(sum)',
+      ].join(chr10()),
+      seriesCsv([1]),
+    );
+    expect(lines.slice(1)).toEqual(['0 0 3']);
+  });
+
+  test('an active skipped frame advances parameter history by bar', async () => {
+    const lines = await runSource(
+      [
+        'previous(float value) => value[1]',
+        'sample = if bar_index != 1',
+        `${String.fromCharCode(9)}previous(close)`,
+        'else',
+        `${String.fromCharCode(9)}na`,
+        'plot(sample)',
+      ].join(chr10()),
+      seriesCsv([10, 20, 30, 40]),
+    );
+    expect(lines.slice(1)).toEqual(['0 0 na', '1 0 na', '2 0 na', '3 0 30']);
   });
 });
 

@@ -20,7 +20,6 @@ request[0] mode=sample context_order=0,1 option_order=0,1,2,3 result=float depth
     name length: perBar input int depth=none
     name alpha: perBar input float depth=none
     name e: var series float depth=none
-      init: Const na: const float
     func ta.ema(source: series float, length: input int): series float
       body: BlockExpr: series float
         WriteName alpha
@@ -29,6 +28,8 @@ request[0] mode=sample context_order=0,1 option_order=0,1,2,3 result=float depth
             Binary Add: input int
               HistRead name:length: input int
               Const 1: const int
+        InitName e
+          Const na: const float
         WriteName e
           Cond: series float
             cond: CallNative na: series bool

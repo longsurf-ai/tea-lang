@@ -2,6 +2,7 @@
 
 export {
   createGpuExecution,
+  planGpuWorkgroupCache,
   prepareGpuExecutionInputs,
   GpuBindingError,
   GpuExecutionError,
@@ -10,8 +11,11 @@ export {
   type GpuChunkResult,
   type GpuExecution,
   type GpuExecutionOptions,
+  type GpuCacheDeviceLimits,
+  type GpuCachePlacement,
   type GpuResourceSizes,
   type GpuRunSummary,
+  type GpuRunTiming,
   type PreparedGpuExecution,
-  type PreparedGpuLane,
+  type PreparedGpuExecutionInstance,
 } from './session';

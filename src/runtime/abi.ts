@@ -330,8 +330,6 @@ export interface ModuleCode {
   // input-qualified aliases/functions, input active states, output bind args,
   // and static request contexts.
   bind(rt: Runtime, fr: Frame): void;
-  // var/varip first-execution thunks, keyed `${fid}:${slot}`.
-  readonly inits: Readonly<Record<string, (rt: Runtime, fr: Frame) => Value>>;
   // One function per IrFunc stencil, keyed by fid.
   readonly funcs: Readonly<
     Record<
@@ -391,6 +389,11 @@ export interface Runtime {
   param(pid: number): Value;
   read(fr: Frame, slot: number, offset: number): Value;
   write(fr: Frame, slot: number, v: Value): void;
+  // A persistent declaration evaluates its initializer only after reaching
+  // its lexical InitName statement. Initialization is tentative until the
+  // row commits; varip alone may preserve a successful same-row candidate.
+  needsInit(fr: Frame, slot: number): boolean;
+  initialize(fr: Frame, slot: number, v: Value): void;
   // Reads the edge's merged result at cursor - offset: the static view, or
   // the dynamic edge's result ring. History reads never carry context args
   // — the result is parent-row-indexed regardless of which pair served
@@ -604,7 +607,17 @@ export interface RowPublication {
   readonly provisional: boolean;
 }
 
+export interface OutputSinkCapabilities {
+  // Omitted and `all` preserve the complete row stream. `final` lets a sink
+  // request only the last committed row's dense values.
+  readonly denseRows?: 'all' | 'final';
+  // Omitted and `all` preserve sparse effects. `none` lets a sink opt out of
+  // their payload transport entirely while retaining dense output.
+  readonly effects?: 'all' | 'none';
+}
+
 export interface OutputSink {
+  readonly capabilities?: OutputSinkCapabilities;
   // Everything known before the first row: dense output metadata including
   // bind-time args, plus sparse effect payload schemas.
   declare(declaration: ExecutionDeclaration): void;
@@ -657,7 +670,7 @@ export interface BoundProgram {
   // aborted execution's writes vanish entirely. Retry restores the exact
   // pre-attempt varip candidate (which may be from a prior completed tick),
   // while ordinary scratch re-seeds from committed state. A first-row varip
-  // with no prior candidate reruns its initializer.
+  // with no prior candidate reruns its declaration-site initializer.
   executeRow(row: number, provisional: boolean): void;
   resolvePending(): Promise<void>;
   commitRow(row: number): void;

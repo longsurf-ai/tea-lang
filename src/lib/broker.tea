@@ -50,7 +50,7 @@ export interface Broker
 	Fill on_open(float referencePrice, float buyingPower, float positionQuantity, int barIndex)
 	Order finish()
 
-export type Basic
+export type BasicBroker
 	float adverseSlippageRate
 	float takerFeeRate
 	int nextOrderId = 1
@@ -101,4 +101,4 @@ export type Basic
 		expired
 
 export basic(float adverseSlippageRate = 0.0, float takerFeeRate = 0.0) =>
-	Basic.new(adverseSlippageRate, takerFeeRate)
+	BasicBroker.new(adverseSlippageRate, takerFeeRate)

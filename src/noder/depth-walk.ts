@@ -154,6 +154,7 @@ export function stmtExprs(stmt: IrStmt): readonly IrExpr[] {
   switch (stmt.kind) {
     case IrKind.ExprStmt:
       return [stmt.x];
+    case IrKind.InitName:
     case IrKind.WriteName:
       return [stmt.value];
     case IrKind.UpdateValuePath:

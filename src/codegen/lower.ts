@@ -954,6 +954,17 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       out.push(`void (${x});`);
       return;
     }
+    case IrKind.InitName: {
+      const frame = frameRef(ctx, stmt.name);
+      const slot = slotOf(ctx, stmt.name);
+      const body: string[] = [];
+      const value = lowerExpr(stmt.value, body, ctx);
+      out.push(`if (rt.needsInit(${frame}, ${slot})) {`);
+      out.push(...indent(body));
+      out.push(`  rt.initialize(${frame}, ${slot}, (${value}));`);
+      out.push('}');
+      return;
+    }
     case IrKind.WriteName: {
       const v = lowerExpr(stmt.value, out, ctx);
       out.push(

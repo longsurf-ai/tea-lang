@@ -34,7 +34,12 @@ function buildWith(
     resolveImports([file], registry, []),
   );
   if (errors.count !== 0) {
-    return fatal(errors.flushErrors().map(error => error.msg).join('; '));
+    return fatal(
+      errors
+        .flushErrors()
+        .map(error => error.msg)
+        .join('; '),
+    );
   }
   return buildProgram(checked, errors);
 }
@@ -54,7 +59,10 @@ describe('package runtime global projection', () => {
     });
     const global = namesOf(program).find(name => name.name === 'value');
     expect(global).toBeDefined();
-    expect(global?.init).not.toBeNull();
+    expect(program.body[0]).toMatchObject({
+      kind: IrKind.InitName,
+      name: global,
+    });
     const next = funcsOf(program).find(func => func.name.endsWith('next'));
     expect(next).toBeDefined();
     expect(next?.locals).not.toContain(global);
@@ -138,8 +146,9 @@ describe('package runtime global projection', () => {
         .packageGlobals,
     ).toEqual([]);
     expect(
-      buildWith('import state\nvalue = state.read()', {state: library})
-        .packageGlobals.map(global => global.name),
+      buildWith('import state\nvalue = state.read()', {
+        state: library,
+      }).packageGlobals.map(global => global.name),
     ).toEqual(['used']);
   });
 });

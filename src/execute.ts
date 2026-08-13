@@ -7,7 +7,12 @@ import {compileProgramToWgsl, type WgslEligibilityIssue} from './codegen/wgsl';
 import type {Program} from './ir/program';
 import type {BindInputs, BoundInput} from './runtime/abi';
 import {runCpuBatch} from './runtime/batch';
-import {createGpuExecution, type GpuExecutionOptions} from './runtime/gpu';
+import {
+  createGpuExecution,
+  type GpuCachePlacement,
+  type GpuExecutionOptions,
+  type GpuRunTiming,
+} from './runtime/gpu';
 import {loadModule} from './runtime/load';
 
 export interface CpuExecutionTarget {
@@ -38,6 +43,12 @@ export interface ExecutionTiming {
   readonly totalMs: number;
 }
 
+export interface GpuExecutionTiming extends ExecutionTiming, GpuRunTiming {
+  // Provider resolution, input packing, resource allocation, shader
+  // compilation, and pipeline/bind-group creation owned by the GPU session.
+  readonly preparationMs: number;
+}
+
 interface ExecutionSummaryBase {
   readonly bindings: readonly ExecutionBindingSummary[];
   readonly timing: ExecutionTiming;
@@ -49,8 +60,10 @@ export interface CpuExecutionSummary extends ExecutionSummaryBase {
 
 export interface GpuExecutionSummary extends ExecutionSummaryBase {
   readonly backend: 'gpu';
+  readonly timing: GpuExecutionTiming;
   readonly chunks: number;
   readonly dispatches: number;
+  readonly cache: GpuCachePlacement;
 }
 
 export type ExecutionSummary = CpuExecutionSummary | GpuExecutionSummary;
@@ -107,12 +120,14 @@ export async function executeProgram(
     throw new UnsupportedExecutionTargetError(compiled.eligibility.issues);
   }
   const loweringFinished = now();
+  const preparationStarted = loweringFinished;
   const session = await createGpuExecution(
     target.device,
     compiled.artifact,
     bindings,
     target.options,
   );
+  const preparationFinished = now();
   try {
     const result = await session.runAll();
     const executionFinished = now();
@@ -121,12 +136,17 @@ export async function executeProgram(
       bindings: result.bindings,
       chunks: result.chunks,
       dispatches: result.dispatches,
-      timing: timing(
-        totalStarted,
-        loweringStarted,
-        loweringFinished,
-        executionFinished,
-      ),
+      cache: result.cache,
+      timing: {
+        ...timing(
+          totalStarted,
+          loweringStarted,
+          loweringFinished,
+          executionFinished,
+        ),
+        preparationMs: preparationFinished - preparationStarted,
+        ...result.timing,
+      },
     };
   } finally {
     session.dispose();

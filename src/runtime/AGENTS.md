@@ -29,9 +29,10 @@ The target-neutral `executeProgram()` host harness lives one level above in
   `GPUDevice`, and an ordered `BindInputs[]`. It resolves providers, validates
   and normalizes required inputs, derives dense capacity, bounds sparse effect
   storage, and packs private buffers while creating one resumable session.
-  `runChunk()` keeps lane state on-device and publishes decoded absolute rows
-  through each binding's `OutputSink`; `runAll()` is only repetition over that
-  lifecycle. Neither runtime method owns Tea broker or portfolio semantics.
+  `runChunk()` keeps each Program execution's state on-device and publishes
+  decoded absolute rows through each binding's `OutputSink`; `runAll()` is only
+  repetition over that lifecycle. Neither runtime method owns Tea broker or
+  portfolio semantics.
 - `createGpuExecution()` is the sole public GPU binding/execution entry. Do not
   restore separate physical-plan surfaces, GPU-specific job wrappers, caller-owned
   result-cell capacity, materialized-series bindings, or a second compilation
@@ -51,9 +52,9 @@ The target-neutral `executeProgram()` host harness lives one level above in
   realtime update object.
 - execute always runs the full row from its storage-class baseline — no
   incremental update paths exist. perBar scratch resets to na; var/varip seed
-  from the last committed value, re-running their init thunks until something
-  has committed; varip alone keeps its pre-attempt candidate across completed
-  same-row executions.
+  from the last committed value only after committed initialization;
+  declaration-site `InitName` remains eligible otherwise. varip alone keeps
+  its value and initialization candidate across completed same-row executions.
   Commit pushes scratch into history; rollback is discarding scratch.
 - One Ring class serves all slots. Every local and request result carries an
   exact `LayoutId`; the shared registry validates values, derives typed empty,
@@ -102,8 +103,14 @@ The target-neutral `executeProgram()` host harness lives one level above in
   `resolvePending()`, and the SAME row re-executes — the aborted attempt
   vanishes entirely: tentative writes/storage disappear and retry restores the
   exact pre-attempt varip candidate, including one produced by an earlier
-  successful provisional tick. An absent first-row candidate reruns its
-  initializer. The per-row hot path itself never awaits. Request children
+  successful provisional tick. Persistent initialization happens only when an
+  emitted lexical `InitName` calls `needsInit`/`initialize`; its scratch and
+  committed bits follow the same transaction, so an absent first-row candidate
+  reruns the declaration-site initializer. Physical subframe allocation is
+  separate from scratch/committed activation: a first call activates
+  tentatively, abort/suspension restores the old activation tree, successful
+  provisional execution may retain its same-row candidate, and final commit
+  promotes it. The per-row hot path itself never awaits. Request children
   recurse through the same JSRuntime class with a null sink, the parent's
   resolved params (compilation-global), and the shared unique-context budget
   (maxRequestContexts, default 40), exact layout registry, and Heap arena.

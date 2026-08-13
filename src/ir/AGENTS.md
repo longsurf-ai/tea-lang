@@ -33,8 +33,10 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   `Name` per Program context, and parent/request-child Programs never share
   mutable names. Enumerations (allocation plans, serialized indices) are
   projections derived by walking, produced at the boundary that needs them.
-  Type, qualifier, and storage copy from semantic facts; init and depth are
-  noder/depth working fields, read-only after those passes finish.
+  Type, qualifier, and storage copy from semantic facts; depth is a noder pass
+  working field, read-only after that pass finishes. Persistent initialization
+  is an `InitName` statement at the declaration's lexical body position, never
+  metadata or an eager thunk on `Name`.
 - Every history-readable place's depth is resolvable no later than bind time
   (Names, series inputs, and request results all carry `HistoryDepth`);
   dynamic offsets exist only under a declared cap.

@@ -7,7 +7,6 @@ name source: perBar series float depth=none
 name length: perBar const int depth=none
 name alpha: perBar const float depth=none
 name e: var series float depth=none
-  init: Const na: const float
 name slow: perBar series float depth=none
 name x: perBar series float depth=none
 func ta.ema(source: series float, length: const int): series float
@@ -18,6 +17,8 @@ func ta.ema(source: series float, length: const int): series float
         Binary Add: const int
           HistRead name:length: const int
           Const 1: const int
+    InitName e
+      Const na: const float
     WriteName e
       Cond: series float
         cond: CallNative na: series bool

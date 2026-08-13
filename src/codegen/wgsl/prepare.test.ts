@@ -55,10 +55,6 @@ describe('generic WGSL capability boundary', () => {
         code: 'parameter-packing-unimplemented',
       },
       {
-        source: 'strategy("row init")\nvar float x = close\nplot(x)',
-        code: 'persistent-state-initialization-unimplemented',
-      },
-      {
         source: 'strategy("no series")\nvar float keep = 1.0\nplot(keep)',
         code: 'series-row-count-unavailable',
       },
@@ -69,6 +65,13 @@ describe('generic WGSL capability boundary', () => {
       expect(report.eligible).toBe(false);
       expect(report.issues.map(issue => issue.code)).toContain(entry.code);
     }
+  });
+
+  test('accepts declaration-site persistent initialization from the first active row', () => {
+    const result = compileProgramToWgsl(
+      mustBuild('strategy("row init")\nvar float x = close\nplot(x)'),
+    );
+    expect(result.status).toBe('compiled');
   });
 
   test('accepts fixed-width parameters and parameterized persistent initialization', () => {

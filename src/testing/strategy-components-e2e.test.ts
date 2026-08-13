@@ -235,15 +235,15 @@ describe('Tea strategy components end to end', () => {
 
     expect(funcsOf(program).map(func => func.name)).toEqual(
       expect.arrayContaining([
-        'Basic.on_open',
-        'Basic.submit',
-        'Basic.finish',
-        'Basic.apply',
-        'Basic.mark',
-        'Strategy<Basic, Basic>.begin',
-        'Strategy<Basic, Basic>.entry',
-        'Strategy<Basic, Basic>.close',
-        'Strategy<Basic, Basic>.end',
+        'BasicBroker.on_open',
+        'BasicBroker.submit',
+        'BasicBroker.finish',
+        'BasicPortfolio.apply',
+        'BasicPortfolio.mark',
+        'Strategy<BasicBroker, BasicPortfolio>.begin',
+        'Strategy<BasicBroker, BasicPortfolio>.entry',
+        'Strategy<BasicBroker, BasicPortfolio>.close',
+        'Strategy<BasicBroker, BasicPortfolio>.end',
       ]),
     );
     expect(program.outputs[0]?.effect).toBe('strategy');

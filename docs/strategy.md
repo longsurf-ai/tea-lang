@@ -85,7 +85,7 @@ and result types, but does not require them, insert them, or enforce their
 order. Calling `end` before `begin`, calling either twice, or calling one
 conditionally is valid Tea with the behavior defined by the library source.
 
-The first `broker.Basic` is deliberately small: long-only, flat-or-long,
+The first `broker.BasicBroker` is deliberately small: long-only, flat-or-long,
 one pending market order, next-open eligibility, all-in/all-out sizing, fixed
 adverse slippage, and fixed taker fees. Alternative deterministic or
 probabilistic types can satisfy the same interfaces without changing Strategy
@@ -101,7 +101,7 @@ plot(strat.realized_pnl(), "Realized PnL")
 ```
 
 The canonical broker package also owns nominal order, fill, expiry, and
-rejection event payloads. `broker.Basic` emits those values at the point where
+rejection event payloads. `broker.BasicBroker` emits those values at the point where
 it makes the corresponding execution decision; the generic `Strategy<B, P>`
 does not guess why an arbitrary broker accepted or rejected a command. Sparse,
 non-column records use the generic `effect.emit(value)` path; the host
@@ -118,13 +118,14 @@ load -> check -> node -> Program -> JS or WGSL
 
 There is no simulation compiler or strategy IR. CPU batching repeatedly binds
 one generated JS module to caller-ordered isolated inputs. GPU execution binds
-one reusable WGSL artifact to lanes. Neither codegen nor runtime recognizes
-`broker`, `portfolio`, `Strategy`, `begin`, or `entry` by name.
+one reusable WGSL artifact to independent Program executions. Neither codegen
+nor runtime recognizes `broker`, `portfolio`, `Strategy`, `begin`, or `entry`
+by name.
 
-Each CPU binding, request child, and GPU lane owns fresh runtime state. Imported
-package globals use that same execution-context lifetime when a general Tea
-library needs them, but `strategy.configure` deliberately returns explicit
-state instead of hiding a strategy in a package global.
+Each CPU binding, request child, and GPU Program execution owns fresh runtime
+state. Imported package globals use that same execution-context lifetime when a
+general Tea library needs them, but `strategy.configure` deliberately returns
+explicit state instead of hiding a strategy in a package global.
 
 See [Runtime](runtime.md) for host orchestration and
 [GPU Lowering](advanced/gpu-lowering.md) for the fail-closed target boundary.

@@ -74,9 +74,6 @@ function noteName(name: Name, reach: Reach): void {
     return;
   }
   reach.names.add(name);
-  if (name.init !== null) {
-    visitExpr(name.init, reach);
-  }
   visitDepth(name.depth, reach);
 }
 
@@ -126,6 +123,7 @@ function visitStmt(stmt: IrStmt, reach: Reach): void {
     case IrKind.ExprStmt:
       visitExpr(stmt.x, reach);
       return;
+    case IrKind.InitName:
     case IrKind.WriteName:
       noteName(stmt.name, reach);
       visitExpr(stmt.value, reach);

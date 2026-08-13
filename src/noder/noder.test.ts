@@ -78,16 +78,22 @@ function mustBuildWithLibraries(
 describe('declarations', () => {
   test('plain decls write per bar; var decls initialize once', () => {
     const program = mustBuild('x = close + 1\nvar acc = 0.0\nacc := acc + x');
-    // The var declaration emits no body statement; only x's write and the
-    // reassignment run per bar.
-    expect(program.body.length).toBe(2);
+    // Persistent initialization stays at the declaration's lexical site.
+    expect(program.body.map(stmt => stmt.kind)).toEqual([
+      IrKind.WriteName,
+      IrKind.InitName,
+      IrKind.WriteName,
+    ]);
     const write = program.body[0] as WriteNameStmt;
     expect(write.kind).toBe(IrKind.WriteName);
     expect(write.name.name).toBe('x');
     const acc = namesOf(program).find(n => n.name === 'acc');
     expect(acc).toBeDefined();
     expect(acc!.storage).toBe(Storage.Var);
-    expect(acc!.init).not.toBeNull();
+    expect(program.body[1]).toMatchObject({
+      kind: IrKind.InitName,
+      name: acc,
+    });
   });
 
   test('const declarations vanish; reads fold', () => {

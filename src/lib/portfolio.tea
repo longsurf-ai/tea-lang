@@ -20,7 +20,7 @@ export interface Portfolio
 	float max_drawdown() const
 	float total_return() const
 
-export type Basic
+export type BasicPortfolio
 	float initialCash
 	float cashValue = 0.0
 	float positionQuantityValue = 0.0
@@ -103,4 +103,4 @@ export type Basic
 		this.initialCash == 0.0 ? na : (this.equityValue - this.initialCash) / this.initialCash
 
 export basic(float initialCash) =>
-	Basic.new(initialCash = initialCash, cashValue = initialCash, equityValue = initialCash, peakEquity = initialCash)
+	BasicPortfolio.new(initialCash = initialCash, cashValue = initialCash, equityValue = initialCash, peakEquity = initialCash)

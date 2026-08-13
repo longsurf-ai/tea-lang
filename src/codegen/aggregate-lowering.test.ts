@@ -53,7 +53,6 @@ function name(id: string, type: Type): Name {
     type,
     qualifier: Qualifier.Series,
     depth: {kind: DepthKind.None},
-    init: null,
   };
 }
 

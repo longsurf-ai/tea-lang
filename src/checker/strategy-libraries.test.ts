@@ -32,7 +32,7 @@ const ALTERNATIVE_COMPONENTS = [
 ].join('\n');
 
 describe('Tea-authored strategy libraries', () => {
-  test('exports contracts, canonical vocabulary, and Basic implementations', () => {
+  test('exports contracts, canonical vocabulary, and basic implementations', () => {
     const result = checkText(
       [
         'strategy("component API")',
@@ -56,7 +56,7 @@ describe('Tea-authored strategy libraries', () => {
       pkg => pkg.path === 'strategy',
     );
     expect([...broker!.exports.keys()].sort()).toEqual([
-      'Basic',
+      'BasicBroker',
       'Broker',
       'Fill',
       'FillExecuted',
@@ -69,7 +69,7 @@ describe('Tea-authored strategy libraries', () => {
       'basic',
     ]);
     expect([...portfolio!.exports.keys()].sort()).toEqual([
-      'Basic',
+      'BasicPortfolio',
       'Portfolio',
       'basic',
     ]);
@@ -111,7 +111,7 @@ describe('Tea-authored strategy libraries', () => {
     );
     expect(funcsOf(program).map(func => func.name)).toEqual(
       expect.arrayContaining([
-        'Strategy<Basic, Basic>.begin',
+        'Strategy<BasicBroker, BasicPortfolio>.begin',
         'Strategy<AlternateBroker, AlternatePortfolio>.begin',
       ]),
     );

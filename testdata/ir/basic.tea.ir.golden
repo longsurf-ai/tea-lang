@@ -8,7 +8,6 @@ output[1] plot static{title="Delta" color="#2196F3"} channels{series: float}
 name prev: perBar series float depth=none
 name up: perBar series bool depth=none
 name count: var series int depth=none
-  init: Const 0: const int
 name delta: perBar series float depth=none
 body:
   WriteName prev
@@ -18,6 +17,8 @@ body:
     Binary Gt: series bool
       HistRead series:close: series float
       HistRead series:open: series float
+  InitName count
+    Const 0: const int
   ExprStmt
     IfExpr: series int
       cond: HistRead name:up: series bool

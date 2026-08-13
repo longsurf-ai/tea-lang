@@ -180,9 +180,6 @@ export function dumpProgram(program: Program): string {
       `name ${labels.name(name)}: ${name.storage} ${name.qualifier} ` +
       formatType(name.type);
     dumpDepthLine(line, name.depth, '', out, labels);
-    if (name.init !== null) {
-      dumpExpr(name.init, 'init: ', '  ', out, labels);
-    }
   }
 
   for (const func of funcsOf(program)) {
@@ -266,6 +263,10 @@ function dumpStmt(
     case IrKind.ExprStmt:
       out.push(`${indent}${label}ExprStmt`);
       dumpExpr(stmt.x, '', `${indent}  `, out, labels);
+      return;
+    case IrKind.InitName:
+      out.push(`${indent}${label}InitName ${labels.name(stmt.name)}`);
+      dumpExpr(stmt.value, '', `${indent}  `, out, labels);
       return;
     case IrKind.WriteName:
       out.push(`${indent}${label}WriteName ${labels.name(stmt.name)}`);

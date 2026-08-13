@@ -76,7 +76,6 @@ describe('aggregate layout projection', () => {
       type: envelope,
       qualifier: Qualifier.Series,
       depth: {kind: DepthKind.None},
-      init: null,
     };
     const ir: Program = {
       version: 1,

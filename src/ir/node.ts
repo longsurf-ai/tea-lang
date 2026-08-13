@@ -54,9 +54,6 @@ export interface Name {
   type: Type;
   qualifier: Qualifier;
   depth: HistoryDepth;
-  // First-bar initializer for var/varip storage, evaluated once by the
-  // runtime; null for perBar names, which the body writes every iteration.
-  init: IrExpr | null;
 }
 
 export const IrKind = {
@@ -82,6 +79,7 @@ export const IrKind = {
   WhileExpr: 'WhileExpr',
   BlockExpr: 'BlockExpr',
   ExprStmt: 'ExprStmt',
+  InitName: 'InitName',
   WriteName: 'WriteName',
   UpdateValuePath: 'UpdateValuePath',
   Emit: 'Emit',
@@ -376,6 +374,7 @@ export interface BlockExpr extends IrExprBase {
 
 export type IrStmt =
   | ExprStmt
+  | InitNameStmt
   | WriteNameStmt
   | UpdateValuePathStmt
   | EmitStmt
@@ -386,6 +385,15 @@ export type IrStmt =
 export interface ExprStmt extends IrNode {
   readonly kind: typeof IrKind.ExprStmt;
   readonly x: IrExpr;
+}
+
+// A persistent declaration at its lexical execution site. `value` is
+// evaluated only when the target slot is still semantically uninitialized;
+// the runtime makes that state transactional with the row attempt.
+export interface InitNameStmt extends IrNode {
+  readonly kind: typeof IrKind.InitName;
+  readonly name: Name;
+  readonly value: IrExpr;
 }
 
 // Declarations, reassignments, and compound assignments all become name

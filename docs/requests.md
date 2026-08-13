@@ -309,9 +309,9 @@ Execution:
   and re-executes the same row. **The aborted attempt's tentative work
   vanishes entirely**. Retry restores the exact pre-attempt varip candidate
   (including one from an earlier successful provisional tick); an absent
-  first-row candidate reruns its initializer. `runAll` performs this loop
-  itself; live hosts follow the same protocol per tick. Determinism holds; no
-  async ever touches row code.
+  first-row candidate reruns its declaration-site initializer. `runAll`
+  performs this loop itself; live hosts follow the same protocol per tick.
+  Determinism holds; no async ever touches row code.
 - Empty symbol/timeframe values inherit the current Program context's effective
   identity. At the root that may still be the host's empty/default pair; in a
   nested request it means the surrounding child, never an accidental jump back

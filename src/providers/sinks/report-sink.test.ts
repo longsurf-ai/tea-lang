@@ -111,8 +111,9 @@ describe('report sinks', () => {
     });
   });
 
-  test('sweep collector retains only final channels and effect counts', () => {
+  test('sweep collector retains only final channels and declines effects', () => {
     const sink = new SweepReportSink();
+    expect(sink.capabilities).toEqual({denseRows: 'final', effects: 'none'});
     sink.declare(declaration);
     for (let row = 0; row < 10_000; row += 1) {
       sink.publish({
@@ -128,7 +129,6 @@ describe('report sinks', () => {
     expect(snapshot.finalOutputs).toEqual([
       {row: 9_999, outputId: 0, channels: [9_999]},
     ]);
-    expect(snapshot.effectCounts).toEqual([10_000]);
 
     const summary: ExecutionSummary = {
       backend: 'cpu',
@@ -147,11 +147,6 @@ describe('report sinks', () => {
         columns: ['binding', 'rows', 'scale', 'Equity'],
         rows: [[0, 10_000, 2, 9_999]],
       },
-      {
-        title: 'Sweep Effect Counts',
-        columns: ['binding', 'effect[0] broker.FillExecuted'],
-        rows: [[0, 10_000]],
-      },
     ]);
   });
 
@@ -162,9 +157,32 @@ describe('report sinks', () => {
       publish: () => calls.push(`${name}:publish`),
     });
     const sink = composeOutputSinks(child('a'), child('b'));
+    expect(sink.capabilities).toEqual({denseRows: 'all', effects: 'all'});
     sink.declare(declaration);
     sink.publish({row: 0, outputs: [], effects: [], provisional: false});
 
     expect(calls).toEqual(['a:declare', 'b:declare', 'a:publish', 'b:publish']);
+  });
+
+  test('composes final-dense requests only when every child requests them', () => {
+    const final = (): OutputSink => ({
+      capabilities: {denseRows: 'final', effects: 'none'},
+      declare() {},
+      publish() {},
+    });
+    const all: OutputSink = {declare() {}, publish() {}};
+
+    expect(composeOutputSinks(final(), final()).capabilities).toEqual({
+      denseRows: 'final',
+      effects: 'none',
+    });
+    expect(composeOutputSinks(final(), all).capabilities).toEqual({
+      denseRows: 'all',
+      effects: 'all',
+    });
+    expect(composeOutputSinks().capabilities).toEqual({
+      denseRows: 'all',
+      effects: 'all',
+    });
   });
 });

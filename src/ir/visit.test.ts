@@ -92,7 +92,6 @@ const x: Name = {
   type: FloatType,
   qualifier: Qualifier.Series,
   depth: {kind: DepthKind.None},
-  init: null,
 };
 
 const p: Name = {
@@ -101,7 +100,6 @@ const p: Name = {
   type: FloatType,
   qualifier: Qualifier.Series,
   depth: {kind: DepthKind.None},
-  init: null,
 };
 
 const inc: FreeIrFunc = {
@@ -135,7 +133,6 @@ const childResult: Name = {
   type: FloatType,
   qualifier: Qualifier.Series,
   depth: {kind: DepthKind.None},
-  init: null,
 };
 
 const child: Program = {
@@ -247,7 +244,6 @@ const receiver: Name = {
   type: FloatType,
   qualifier: Qualifier.Series,
   depth: {kind: DepthKind.None},
-  init: null,
 };
 
 const mutate: MutableMethodIrFunc = {

@@ -1,0 +1,320 @@
+// Purpose: Acceptance boundary for generic static call-site frames and constant history in WGSL.
+
+import {describe, expect, test} from 'bun:test';
+import {DepthKind} from '../../ir/node';
+import {mustBuild} from '../../noder/testing';
+import {compileProgramToWgsl} from './lower';
+import type {CompiledWgslProgram} from './types';
+
+function compile(source: string) {
+  const result = compileProgramToWgsl(mustBuild(source));
+  expect(result.status).toBe('compiled');
+  if (result.status !== 'compiled') {
+    throw new Error(JSON.stringify(result.eligibility.issues));
+  }
+  return result.artifact;
+}
+
+function emittedFunction(artifact: CompiledWgslProgram, owner: string): string {
+  const frame = artifact.state.frames.find(
+    candidate => candidate.owner === owner,
+  );
+  if (frame === undefined || frame.id === 0) {
+    throw new Error(`missing WGSL function frame '${owner}'`);
+  }
+  const start = artifact.module.source.indexOf(`fn tea_fn_${frame.id - 1}(`);
+  if (start < 0) throw new Error(`missing WGSL function '${owner}'`);
+  const nextFunction = artifact.module.source.indexOf(
+    '\nfn tea_fn_',
+    start + 1,
+  );
+  const kernel = artifact.module.source.indexOf('\nfn tea_execute', start + 1);
+  return artifact.module.source.slice(
+    start,
+    nextFunction < 0 ? kernel : nextFunction,
+  );
+}
+
+describe('WGSL temporal call-site frames', () => {
+  test('lowers canonical ta.ema and cross functions as ordinary Tea functions', () => {
+    const artifact = compile(
+      [
+        'strategy("canonical EMA cross")',
+        'fast = ta.ema(close, 3)',
+        'slow = ta.ema(close, 5)',
+        'longSignal = ta.crossover(fast, slow)',
+        'closeSignal = ta.crossunder(fast, slow)',
+        'plot(fast)',
+        'plot(slow)',
+        'plotshape(longSignal)',
+        'plotshape(closeSignal)',
+      ].join('\n'),
+    );
+
+    expect(artifact.module.source).not.toContain('ta.ema');
+    expect(artifact.module.source).not.toContain('crossover');
+    expect(artifact.module.source).not.toContain('crossunder');
+    expect(artifact.state.wordsPerExecution).toBe(50);
+    expect(
+      artifact.state.frames
+        .find(frame => frame.owner === 'ta.ema')
+        ?.locals.map(local => local.name),
+    ).toEqual(['alpha', 'e']);
+    expect(emittedFunction(artifact, 'ta.ema')).toContain(
+      'var tea_arg_0: TeaFloat = p0;',
+    );
+  });
+
+  test('one function body serves independent written call-site frames', () => {
+    const artifact = compile(
+      [
+        'indicator("independent sites")',
+        'accumulate(float source) =>',
+        '    var float total = 0.0',
+        '    total := total + source',
+        '    total',
+        'left = accumulate(close)',
+        'right = accumulate(open)',
+        'plot(left)',
+        'plot(right)',
+      ].join('\n'),
+    );
+
+    expect(artifact.module.source.match(/fn tea_fn_0\(/g)).toHaveLength(1);
+  });
+
+  test('supports constant history on a function parameter', () => {
+    const artifact = compile(
+      [
+        'indicator("parameter history")',
+        'previous(float source) => source[1]',
+        'plot(previous(close))',
+      ].join('\n'),
+    );
+
+    const frame = artifact.state.frames.find(
+      candidate => candidate.owner === 'previous',
+    );
+    expect(frame?.locals.map(local => local.name)).toEqual(['source']);
+    expect(frame?.locals[0]?.historyCapacity).toBe(1);
+    expect(emittedFunction(artifact, 'previous')).not.toContain(
+      'var tea_arg_0',
+    );
+  });
+
+  test('keeps history-free const-method receiver and parameter in function locals', () => {
+    const artifact = compile(
+      [
+        'indicator("const method args")',
+        'type Sample',
+        '    float value',
+        '    float add(float other) const =>',
+        '        this.value + other',
+        'sample = Sample.new(close)',
+        'plot(sample.add(1.0))',
+      ].join('\n'),
+    );
+
+    const frame = artifact.state.frames.find(
+      candidate => candidate.owner === 'Sample.add',
+    );
+    expect(frame?.wordCount).toBe(2);
+    expect(frame?.locals).toEqual([]);
+    const source = emittedFunction(artifact, 'Sample.add');
+    expect(source).toContain('var tea_arg_0: TeaU0 = p0;');
+    expect(source).toContain('var tea_arg_1: TeaFloat = p1;');
+    expect(source.match(/tea_state_(?:load|store)\(/g)).toHaveLength(2);
+  });
+
+  test('copies a mutable receiver out of its function-local value', () => {
+    const artifact = compile(
+      [
+        'strategy("mutable receiver locals")',
+        'type Pair',
+        '    float left',
+        '    float right',
+        '    float touch(float value) =>',
+        '        this.right := this.right + 1.0',
+        '        value',
+        'var Pair pair = Pair.new(0.0, 0.0)',
+        'pair.left := pair.touch(close)',
+        'plot(pair.left)',
+        'plot(pair.right)',
+      ].join('\n'),
+    );
+
+    const frame = artifact.state.frames.find(
+      candidate => candidate.owner === 'Pair.touch',
+    );
+    expect(artifact.state.wordsPerExecution).toBe(18);
+    expect(frame?.wordCount).toBe(2);
+    expect(frame?.locals).toEqual([]);
+    const source = emittedFunction(artifact, 'Pair.touch');
+    expect(source).toContain('tea_arg_0 =');
+    expect(source).toContain('return TeaMutableResult0(tea_arg_0, tea_arg_1);');
+    expect(source.match(/tea_state_(?:load|store)\(/g)).toHaveLength(2);
+  });
+
+  test('supports first-late activation and skipped active frames', () => {
+    compile(
+      [
+        'indicator("skipped activation")',
+        'previous(float source) => source[1]',
+        'float value = na',
+        'if bar_index >= 2 and bar_index != 3',
+        '    value := previous(close)',
+        'plot(value)',
+      ].join('\n'),
+    );
+  });
+
+  test('uses a balanced address tree for many cache segments', () => {
+    const localCount = 32;
+    const artifact = compile(
+      [
+        'indicator("cache lookup tree")',
+        ...Array.from(
+          {length: localCount},
+          (_, index) => `value${index} = close + ${index}.0`,
+        ),
+        `plot(value${localCount - 1})`,
+      ].join('\n'),
+    );
+    const source = artifact.module.source;
+    const helper = source.slice(
+      source.indexOf('fn tea_state_cache_index'),
+      source.indexOf('fn tea_state_load'),
+    );
+    const addressBranches = [
+      ...helper.matchAll(/^(\s*)if \(tea_local_word < \d+u\) \{/gm),
+    ];
+    const segmentCount = artifact.cache.segments.length;
+
+    expect(helper).toContain(
+      'if (tea_cache_words_per_execution == 0u) { return 0xffffffffu; }',
+    );
+    expect(helper).not.toContain('tea_word >= tea_execution_state_base');
+    expect(addressBranches).toHaveLength(segmentCount - 1);
+    expect(
+      Math.max(...addressBranches.map(match => match[1]?.length ?? 0)) / 2,
+    ).toBeLessThanOrEqual(Math.ceil(Math.log2(segmentCount)));
+
+    for (const segment of artifact.cache.segments) {
+      expect(helper).toContain(
+        `if (tea_cache_words_per_execution >= ${segment.cacheEnd}u)`,
+      );
+      expect(helper).toContain(
+        `return tea_execution_cache_base + ${segment.cacheWordOffset}u + tea_local_word - ${segment.storageWordOffset}u;`,
+      );
+    }
+  });
+
+  test('loads wide nested state once before reset and commit stores', () => {
+    const artifact = compile(
+      [
+        'indicator("wide state copy")',
+        'type Quad',
+        '    float a',
+        '    float b',
+        '    float c',
+        '    float d',
+        'type Wide',
+        '    Quad left',
+        '    Quad right',
+        'var Wide state = Wide.new(Quad.new(close, open, high, low), Quad.new(open, high, low, close))',
+        'plot(state.left.a)',
+      ].join('\n'),
+    );
+    const local = artifact.state.frames
+      .flatMap(frame => frame.locals)
+      .find(candidate => candidate.name === 'state');
+    expect(local).toBeDefined();
+
+    const captures = artifact.module.source
+      .split('\n')
+      .filter(line => /let state_copy\d+:/.test(line));
+    expect(captures).toHaveLength(2);
+    for (const capture of captures) {
+      expect(capture.match(/tea_state_load\(/g)).toHaveLength(
+        local?.valueWordCount ?? 0,
+      );
+    }
+  });
+
+  test('returns typed empty for invalid and unreachable constant offsets', () => {
+    const artifact = compile(
+      [
+        'indicator("invalid offsets")',
+        'plot(close[-1])',
+        'plot(close[4294967296])',
+      ].join('\n'),
+    );
+    expect(artifact.module.source).not.toContain('4294967296u');
+  });
+
+  test('does not allocate frame history for a target-invalid name offset', () => {
+    const artifact = compile(
+      [
+        'indicator("target-invalid name history")',
+        'flag = close > open',
+        'plotshape(flag[2147483648])',
+      ].join('\n'),
+    );
+    const flag = artifact.state.frames
+      .flatMap(frame => frame.locals)
+      .find(local => local.name === 'flag');
+    expect(flag?.historyCapacity).toBe(0);
+    expect(artifact.module.source).not.toContain('2147483648u');
+  });
+
+  test('keeps execution state metadata compact', () => {
+    const artifact = compile(
+      [
+        'indicator("compact state metadata")',
+        'flag = close > open',
+        'plotshape(flag[10000])',
+      ].join('\n'),
+    );
+    const layout = artifact.layouts[artifact.executionStateLayout];
+    expect(layout?.byteSize).toBeGreaterThan(10000 * 4);
+    expect(layout?.fields.map(field => field.path)).toEqual([
+      'initialized',
+      'next_row',
+    ]);
+  });
+
+  test('ignores target-invalid depth annotations with no valid read site', () => {
+    const program = mustBuild(
+      [
+        'indicator("oversized history")',
+        'var float value = close',
+        'value := close',
+        'plot(value)',
+      ].join('\n'),
+    );
+    const root = program.body.find(stmt => stmt.kind === 'WriteName');
+    if (root?.kind !== 'WriteName') throw new Error('expected root name');
+    root.name.depth = {kind: DepthKind.Const, bars: 0x1_0000_0000};
+    const result = compileProgramToWgsl(program);
+    expect(result.status).toBe('compiled');
+  });
+
+  test('fails quickly when valid history exceeds the u32 byte layout', () => {
+    const result = compileProgramToWgsl(
+      mustBuild(
+        [
+          'indicator("oversized valid history")',
+          'flag = close > open',
+          'plotshape(flag[1500000000])',
+        ].join('\n'),
+      ),
+    );
+    expect(result.status).toBe('staged-unsupported');
+    expect(result.eligibility.issues[0]?.code).toBe(
+      'history-layout-unimplemented',
+    );
+    expect(result.eligibility.issues[0]?.message).toContain(
+      'u32 physical-layout limit',
+    );
+  });
+});

@@ -55,7 +55,6 @@ function effectModule(main: TeaModule['main']): TeaModule {
     requests: [],
     init() {},
     bind() {},
-    inits: {},
     funcs: {},
     main,
   };
@@ -140,7 +139,6 @@ describe('effect row transactions', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {},
       funcs: {},
       main(rt, fr) {
         rt.write(fr, 0, rt.series(0, 0));
@@ -278,6 +276,102 @@ describe('effect row transactions', () => {
     ]);
     expect(() => execution.executeRow(1, false)).toThrow('delivery failed');
     expect(publications).toHaveLength(1);
+    execution.dispose();
+  });
+
+  test('final-dense sinks receive effect rows and only the final dense row', async () => {
+    let row = 0;
+    const base = effectModule(rt => {
+      const current = row;
+      row += 1;
+      rt.emit(0, 0, current);
+      if (current === 1) rt.emitEffect(0, 101);
+    });
+    const module: TeaModule = {
+      ...base,
+      manifest: {
+        ...base.manifest,
+        outputs: [
+          {
+            effect: 'plot',
+            staticArgs: [],
+            channels: [{name: 'series', type: 'int', transport: {kind: 'int'}}],
+          },
+        ],
+      },
+    };
+    const publications: Parameters<OutputSink['publish']>[0][] = [];
+    const sink: OutputSink = {
+      capabilities: {denseRows: 'final'},
+      declare() {},
+      publish(publication) {
+        publications.push(publication);
+      },
+    };
+    const execution = await bind(module, {
+      params: {},
+      provider: {resolveContext: () => Promise.resolve(context(4))},
+      sink,
+      timeNow: 0,
+    });
+
+    await execution.runAll();
+
+    expect(publications).toEqual([
+      {
+        row: 1,
+        outputs: [],
+        effects: [{effectId: 0, payload: 101}],
+        provisional: false,
+      },
+      {
+        row: 3,
+        outputs: [{outputId: 0, channels: [3]}],
+        effects: [],
+        provisional: false,
+      },
+    ]);
+    execution.dispose();
+  });
+
+  test('effect-disabled sinks receive dense output without effect publications', async () => {
+    const base = effectModule(rt => {
+      rt.emit(0, 0, 17);
+      rt.emitEffect(0, 101);
+    });
+    const module: TeaModule = {
+      ...base,
+      manifest: {
+        ...base.manifest,
+        outputs: [
+          {
+            effect: 'plot',
+            staticArgs: [],
+            channels: [{name: 'series', type: 'int', transport: {kind: 'int'}}],
+          },
+        ],
+      },
+    };
+    const publications: Parameters<OutputSink['publish']>[0][] = [];
+    const sink: OutputSink = {
+      capabilities: {effects: 'none'},
+      declare() {},
+      publish(publication) {
+        publications.push(publication);
+      },
+    };
+    const execution = await bind(module, {params: {}, provider, sink, timeNow: 0});
+
+    await execution.runAll();
+
+    expect(publications).toEqual([
+      {
+        row: 0,
+        outputs: [{outputId: 0, channels: [17]}],
+        effects: [],
+        provisional: false,
+      },
+    ]);
     execution.dispose();
   });
 });

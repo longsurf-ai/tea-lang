@@ -34,20 +34,11 @@ export function csvProvider(text: string): DataProvider {
 // Exported for hosts and drivers that assemble multi-context providers from
 // csv-shaped payloads (test fixtures, csv-shaped driver payloads).
 export function csvContext(text: string): ProviderContext {
-  const lines = text.trim().split(/\r?\n/);
-  const headers = lines[0].split(',').map(h => h.trim());
-  const columns: number[][] = headers.map(() => []);
-  for (const line of lines.slice(1)) {
-    if (line.trim() === '') {
-      continue;
-    }
-    const cells = line.split(',');
-    headers.forEach((_, i) => {
-      const raw = cells[i]?.trim() ?? '';
-      columns[i].push(raw === '' ? NaN : Number(raw));
-    });
-  }
-  const rows = columns.length === 0 ? 0 : columns[0].length;
+  const shape = scanCsvShape(text);
+  const headers = parseHeaders(text, shape.headerStart, shape.headerEnd);
+  const columns = headers.map(() => new Float64Array(shape.rows));
+  fillColumns(text, shape.dataStart, columns);
+  const rows = shape.rows;
   const byId = new Map<string, SeriesData>();
   headers.forEach((header, i) => {
     if (header === 'time') {
@@ -103,7 +94,7 @@ export function csvContext(text: string): ProviderContext {
 // fixture format, not one.
 function csvAxis(
   timeColumn: number,
-  columns: readonly (readonly number[])[],
+  columns: readonly Float64Array[],
   rows: number,
 ): TimeAxis | null {
   if (timeColumn < 0) {
@@ -115,4 +106,137 @@ function csvAxis(
     time: row => times[row],
     closeTime: row => (row + 1 < rows ? times[row + 1] : times[row] + lastSpan),
   };
+}
+
+interface CsvShape {
+  readonly headerStart: number;
+  readonly headerEnd: number;
+  readonly dataStart: number;
+  readonly rows: number;
+}
+
+// This provider intentionally accepts only simple, unquoted numeric csv. Scan
+// the source string instead of splitting it: a large input therefore retains
+// one source string plus fixed-width columns, rather than lines, cells and
+// boxed-number arrays proportional to the file size.
+function scanCsvShape(text: string): CsvShape {
+  let headerStart = -1;
+  let headerEnd = -1;
+  let dataStart = text.length;
+  let rows = 0;
+  forEachLine(text, 0, (start, end, next) => {
+    if (isBlank(text, start, end)) {
+      return;
+    }
+    if (headerStart < 0) {
+      headerStart = start;
+      headerEnd = end;
+      dataStart = next;
+      return;
+    }
+    rows++;
+  });
+  if (headerStart < 0) {
+    // Preserve the old empty-input shape: one empty header and no rows.
+    return {headerStart: 0, headerEnd: 0, dataStart: text.length, rows: 0};
+  }
+  return {headerStart, headerEnd, dataStart, rows};
+}
+
+function parseHeaders(text: string, start: number, end: number): string[] {
+  const headers: string[] = [];
+  let cellStart = start;
+  for (let cursor = start; cursor <= end; cursor++) {
+    if (cursor !== end && text.charCodeAt(cursor) !== 44 /* , */) {
+      continue;
+    }
+    headers.push(text.slice(cellStart, cursor).trim());
+    cellStart = cursor + 1;
+  }
+  return headers;
+}
+
+function fillColumns(
+  text: string,
+  dataStart: number,
+  columns: readonly Float64Array[],
+): void {
+  let row = 0;
+  forEachLine(text, dataStart, (start, end) => {
+    if (isBlank(text, start, end)) {
+      return;
+    }
+    let cellStart = start;
+    let cursor = start;
+    for (let column = 0; column < columns.length; column++) {
+      while (cursor < end && text.charCodeAt(cursor) !== 44 /* , */) {
+        cursor++;
+      }
+      columns[column][row] = parseNumericCell(text, cellStart, cursor);
+      if (cursor < end) {
+        cursor++;
+        cellStart = cursor;
+      } else {
+        // Missing cells have the same meaning as present-but-blank cells.
+        cellStart = end;
+      }
+    }
+    row++;
+  });
+}
+
+function parseNumericCell(text: string, start: number, end: number): number {
+  while (start < end && isSpace(text.charCodeAt(start))) {
+    start++;
+  }
+  while (end > start && isSpace(text.charCodeAt(end - 1))) {
+    end--;
+  }
+  return start === end ? NaN : Number(text.slice(start, end));
+}
+
+function forEachLine(
+  text: string,
+  start: number,
+  visit: (start: number, end: number, next: number) => void,
+): void {
+  let lineStart = start;
+  for (let cursor = start; cursor <= text.length; cursor++) {
+    if (cursor !== text.length && text.charCodeAt(cursor) !== 10 /* \n */) {
+      continue;
+    }
+    const end =
+      cursor > lineStart && text.charCodeAt(cursor - 1) === 13
+        ? cursor - 1
+        : cursor;
+    visit(lineStart, end, cursor < text.length ? cursor + 1 : cursor);
+    lineStart = cursor + 1;
+  }
+}
+
+function isBlank(text: string, start: number, end: number): boolean {
+  for (let cursor = start; cursor < end; cursor++) {
+    if (!isSpace(text.charCodeAt(cursor))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Matches the whitespace stripped by String.prototype.trim without allocating
+// a substring for every blank-line check.
+function isSpace(code: number): boolean {
+  return (
+    code === 0x20 ||
+    (code >= 0x09 && code <= 0x0d) ||
+    code === 0x00a0 ||
+    code === 0x1680 ||
+    (code >= 0x2000 && code <= 0x200a) ||
+    code === 0x2028 ||
+    code === 0x2029 ||
+    code === 0x202f ||
+    code === 0x205f ||
+    code === 0x3000 ||
+    code === 0xfeff
+  );
 }

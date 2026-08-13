@@ -133,7 +133,6 @@ const EMPTY_VALUES_MODULE: TeaModule = {
   requests: [],
   init() {},
   bind() {},
-  inits: {},
   funcs: {},
   main(rt, fr) {
     rt.emit(0, 0, rt.read(fr, 0, 0));
@@ -158,7 +157,6 @@ function paramModule(spec: ParamSpec): TeaModule {
     requests: [],
     init() {},
     bind() {},
-    inits: {},
     funcs: {},
     main() {},
   };

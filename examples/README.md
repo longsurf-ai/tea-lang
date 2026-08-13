@@ -5,9 +5,9 @@
 `ema-cross-strategy.tea` is a parameterized long-only EMA crossover over the
 43-bar synthetic OHLCV fixture in `ema-cross-bars.csv`. Its deliberate
 rise/fall/rise/fall shape produces two completed round trips with the default
-5/13 lengths. The script uses ordinary Tea values for the two EMA recurrences
-and prior spread, then delegates next-open fills, fees, and accounting to the
-shipped broker/portfolio/strategy packages.
+5/13 lengths. The script uses the shipped `ta.ema`, `ta.crossover`, and
+`ta.crossunder` functions directly, then delegates next-open fills, fees, and
+accounting to the shipped broker/portfolio/strategy packages.
 
 Run one backtest with defaults or overrides:
 
@@ -73,8 +73,8 @@ The CLI compiles once to the same generic `Program`, then `executeProgram()`
 selects JS or WGSL lowering. Both targets receive the same ordered
 `BindInputs[]` and publish through generic sinks. `run` prints system
 statistics, effective parameters, full dense rows, and typed sparse effects.
-`sweep` keeps only each binding's final dense values and effect counts, so
-reporting memory does not grow with bar history. The Bun launcher safely
+`sweep` requests only each binding's final dense values and no effect payloads,
+so reporting and transport memory do not grow with bar history. The Bun launcher safely
 relays Dawn execution to an installed Node 22 process (`TEA_GPU_NODE` may
 select it); compilation and runtime semantics stay on the same public path.
 

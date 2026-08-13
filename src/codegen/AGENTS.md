@@ -24,6 +24,9 @@ WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
 - Only Time-Machine ops lower to rt calls; arithmetic, comparisons, math
   intrinsics, and na()/nz() expand inline via the rules tables in lower.ts.
   Backend-specific rendering decisions live only in those tables.
+- Persistent declarations are lexical `InitName` statements. JS lowering must
+  place initializer evaluation inside a `rt.needsInit` guard and publish it
+  with `rt.initialize`; modules have no detached initializer-thunk table.
 - Division and modulo by zero are na (the $div/$mod helpers), int division
   truncates, And/Or stay lazy (statement-lowered when the right side needs
   statements), ternaries evaluate all operands (Pine semantics).

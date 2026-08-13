@@ -150,6 +150,14 @@ backing remains immutable.
 storage. `varip` selects which current root survives a provisional retry;
 immutable sharing requires no per-object persistence metadata or edit replay.
 
+A persistent declaration initializes when execution first reaches that source
+location, not when its frame is allocated. Its initializer therefore observes
+the current call arguments and surrounding control flow. Initialization is
+transactional with the row attempt: an error or request suspension erases a
+tentative first initialization; final commit makes it durable. `varip` may
+retain both its value and initialized state after a successful provisional
+execution of the same row.
+
 ## Empty values and errors
 
 V1 retains Tea's typed-empty model rather than Go zero initialization. A `na`

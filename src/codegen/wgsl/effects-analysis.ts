@@ -6,14 +6,12 @@ import {fatal} from '../../base/print';
 import {
   IrKind,
   PlaceKind,
-  Storage,
   type IrExpr,
   type IrStmt,
   type Name,
 } from '../../ir/node';
 import type {IrFunc, Program} from '../../ir/program';
 import {TypeKind} from '../../ir/type';
-import {funcsOf, namesOf} from '../../ir/visit';
 
 export interface WgslEffectAnalysis {
   readonly maxEffectsPerRow: number;
@@ -48,7 +46,6 @@ export function collectLiteralStrings(program: Program): readonly string[] {
   const visitName = (name: Name): void => {
     if (names.has(name)) return;
     names.add(name);
-    if (name.init !== null) visitExpr(name.init);
   };
 
   const visitFunc = (func: IrFunc): void => {
@@ -73,6 +70,7 @@ export function collectLiteralStrings(program: Program): readonly string[] {
       case IrKind.ExprStmt:
         visitExpr(stmt.x);
         return;
+      case IrKind.InitName:
       case IrKind.WriteName:
         visitExpr(stmt.value);
         return;
@@ -207,11 +205,11 @@ class EffectBound {
         'GPU effect transport cannot size initialization-time emissions',
       );
     }
-    for (const root of persistentInitializationRoots(this.program)) {
-      if (root.init !== null && this.expr(root.init) !== 0) {
+    for (const stmt of this.program.body) {
+      if (stmt.kind === IrKind.InitName && this.expr(stmt.value) !== 0) {
         throw new WgslEffectAnalysisError(
-          `GPU effect transport cannot execute emissions from persistent initializer '${root.name}'`,
-          root.init.pos,
+          `GPU effect transport cannot execute emissions from persistent initializer '${stmt.name.name}'`,
+          stmt.value.pos,
         );
       }
     }
@@ -222,6 +220,16 @@ class EffectBound {
     switch (stmt.kind) {
       case IrKind.ExprStmt:
         return this.expr(stmt.x);
+      case IrKind.InitName: {
+        const bound = this.expr(stmt.value);
+        if (bound !== 0) {
+          throw new WgslEffectAnalysisError(
+            `GPU effect transport cannot execute emissions from persistent initializer '${stmt.name.name}'`,
+            stmt.value.pos,
+          );
+        }
+        return 0;
+      }
       case IrKind.WriteName:
       case IrKind.UpdateValuePath:
         return this.expr(stmt.value);
@@ -411,31 +419,6 @@ class EffectBound {
   }
 }
 
-// Program.init is not the whole initialization graph: persistent script roots
-// and imported package globals carry their initializer directly on Name.init.
-// Function/default/constructor expansion is already explicit in those IrExprs,
-// so EffectBound.expr follows the same ordinary call and argument graph used by
-// per-row sizing.
-function persistentInitializationRoots(program: Program): readonly Name[] {
-  const functionNames = new Set<Name>();
-  for (const func of funcsOf(program)) {
-    if (func.callMode !== 'free') functionNames.add(func.receiver);
-    func.params.forEach(name => functionNames.add(name));
-    func.locals.forEach(name => functionNames.add(name));
-  }
-
-  const roots = new Set<Name>(program.packageGlobals);
-  for (const name of namesOf(program)) {
-    if (
-      !functionNames.has(name) &&
-      (name.storage === Storage.Var || name.storage === Storage.Varip)
-    ) {
-      roots.add(name);
-    }
-  }
-  return [...roots];
-}
-
 function validateEvaluationOrder(
   args: readonly IrExpr[],
   order: readonly number[],
@@ -490,5 +473,7 @@ function unreachableExpr(expr: never): never {
 }
 
 function unreachableStmt(stmt: never): never {
-  return fatal(`unhandled WGSL effect-analysis statement ${JSON.stringify(stmt)}`);
+  return fatal(
+    `unhandled WGSL effect-analysis statement ${JSON.stringify(stmt)}`,
+  );
 }

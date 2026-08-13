@@ -63,15 +63,28 @@ import {
   WgslEffectAnalysisError,
   type WgslEffectAnalysis,
 } from './effects-analysis';
+import {
+  MAX_WGSL_HISTORY_OFFSET,
+  projectWgslFrames,
+  WgslFrameProjectionError,
+  type WgslFrameProjection,
+  type WgslFrameLocalLayout,
+  type WgslFrameTemplateLayout,
+} from './frames';
 
 const WORKGROUP_SIZE = 64;
+const STORAGE_ENTRY_POINT = 'tea_main_storage';
+const CACHED_ENTRY_POINT = 'tea_main_cached';
+const WORKGROUP_SIZE_OVERRIDE = 'tea_workgroup_size';
+const CACHE_WORDS_OVERRIDE = 'tea_cache_words_per_execution';
+const CACHE_ALLOCATION_OVERRIDE = 'tea_cache_allocation_words';
 const JOB_DESCRIPTOR_BYTES = 32;
 const RESULT_CELL_BYTES = 8;
 const EFFECT_STATUS_BYTES = 16;
 const GPU_BUFFER_GROUP = 0;
 const GPU_JOBS_BINDING = 0;
 const GPU_SERIES_BINDING = 1;
-const GPU_LANE_STATES_BINDING = 2;
+const GPU_EXECUTION_STATES_BINDING = 2;
 const GPU_RESULTS_BINDING = 3;
 const GPU_EFFECT_STATUS_BINDING = 4;
 const GPU_EFFECT_RECORDS_BINDING = 5;
@@ -86,6 +99,8 @@ const JOB_CHUNK_ROWS_OFFSET = 24;
 const JOB_PARAMS_OFFSET = 28;
 const F32_ABSOLUTE_TOLERANCE = 0.0001;
 const F32_RELATIVE_TOLERANCE = 0.00002;
+const MAX_GPU_ROW = MAX_WGSL_HISTORY_OFFSET;
+const MAX_U32 = 0xffff_ffff;
 
 export const WGSL_F32_NUMERIC_CONTRACT: WgslNumericContract = Object.freeze({
   float: 'f32',
@@ -207,13 +222,14 @@ class WgslEmitter {
   private readonly effectAnalysis: WgslEffectAnalysis;
   private temp = 0;
   private jobDescriptorLayout = -1;
-  private laneStateLayout = -1;
+  private executionStateLayout = -1;
   private seriesScalarLayout = -1;
   private parameterLayout = -1;
   private resultCellLayout = -1;
   private effectStatusLayout = -1;
   private effectRecordLayout = -1;
   private maxEffectPayloadWords = 0;
+  private frames: WgslFrameProjection | null = null;
 
   constructor(program: Program) {
     this.program = program;
@@ -286,38 +302,23 @@ class WgslEmitter {
     const packageGlobals = new Set(this.program.packageGlobals);
     this.persistentRoots = [
       ...this.program.packageGlobals,
-      ...roots
-        .filter(name => name.storage === 'var' && !packageGlobals.has(name))
-        .sort(compareInitializers),
+      ...roots.filter(
+        name => name.storage === 'var' && !packageGlobals.has(name),
+      ),
     ];
     this.perBarRoots = roots.filter(name => name.storage === 'perBar');
-    for (const root of this.persistentRoots) {
-      if (root.init !== null && initializerDependsOnCurrentRow(root.init)) {
-        this.unsupported(
-          'persistent-state-initialization-unimplemented',
-          `persistent root '${root.name}' initializer depends on current-row data`,
-          root.init.pos,
-        );
-      }
-    }
     for (const name of roots) {
       if (name.storage === 'varip') {
         this.unsupported(
           'persistent-state-initialization-unimplemented',
           'varip execution is not part of the historical one-pass GPU subset',
-          name.init?.pos,
         );
       }
-      this.requireDepthNone(name.depth.kind, `name '${name.name}'`);
+      this.requireStaticDepth(name.depth, `name '${name.name}'`);
       this.collectType(name.type);
     }
     for (const func of this.funcs) {
       this.collectFunctionTypes(func);
-    }
-    for (const root of roots) {
-      if (root.init !== null) {
-        this.collectExpressionTypes(root.init);
-      }
     }
     for (const func of this.funcs) {
       this.collectExpressionTypes(func.body);
@@ -336,7 +337,7 @@ class WgslEmitter {
           `GPU numeric series '${series.id}' has unsupported type ${formatType(series.type)}`,
         );
       }
-      this.requireDepthNone(series.depth.kind, `series '${series.id}'`);
+      this.requireStaticDepth(series.depth, `series '${series.id}'`);
     }
     this.validateOutputs();
     this.validateCallGraph();
@@ -360,7 +361,7 @@ class WgslEmitter {
     const module: WgslModule = {
       language: 'wgsl',
       source,
-      entryPoint: 'tea_main',
+      entryPoint: STORAGE_ENTRY_POINT,
     };
     return {
       target: 'webgpu-wgsl',
@@ -372,7 +373,7 @@ class WgslEmitter {
         group: GPU_BUFFER_GROUP,
         jobsBinding: GPU_JOBS_BINDING,
         seriesBinding: GPU_SERIES_BINDING,
-        laneStatesBinding: GPU_LANE_STATES_BINDING,
+        executionStatesBinding: GPU_EXECUTION_STATES_BINDING,
         resultsBinding: GPU_RESULTS_BINDING,
         effectStatusBinding: GPU_EFFECT_STATUS_BINDING,
         effectRecordsBinding: GPU_EFFECT_RECORDS_BINDING,
@@ -392,8 +393,11 @@ class WgslEmitter {
       },
       parameterLayout: this.parameterLayout,
       parameterByteStride: this.layouts[this.parameterLayout].byteSize,
-      laneStateLayout: this.laneStateLayout,
-      laneStateByteStride: this.layouts[this.laneStateLayout].byteSize,
+      executionStateLayout: this.executionStateLayout,
+      executionStateByteStride:
+        this.layouts[this.executionStateLayout].byteSize,
+      state: this.stateManifest(),
+      cache: this.cacheManifest(),
       seriesScalarLayout: this.seriesScalarLayout,
       seriesScalarByteStride: 4,
       resultCellLayout: this.resultCellLayout,
@@ -429,13 +433,201 @@ class WgslEmitter {
     throw new UnsupportedGpuSubsetError(code, message, pos);
   }
 
-  private requireDepthNone(kind: string, owner: string): void {
-    if (kind !== DepthKind.None) {
-      this.unsupported(
-        'history-layout-unimplemented',
-        `${owner} requires history; the executable GPU subset is current-row only`,
+  private mustFrames(): WgslFrameProjection {
+    return this.frames ?? fatal('WGSL frame projection is not built');
+  }
+
+  private stateManifest(): CompiledWgslProgram['state'] {
+    const frames = this.mustFrames();
+    return {
+      initializedWordOffset: 0,
+      nextRowWordOffset: 1,
+      rootFrameWordOffset: 2,
+      wordsPerExecution: 2 + frames.root.wordCount,
+      frames: frames.templates.map(template => ({
+        id: template.id,
+        owner: template.ownerName,
+        committedActivationWordOffset: template.committedActivationWordOffset,
+        tentativeActivationWordOffset: template.tentativeActivationWordOffset,
+        activationEncoding: template.activationEncoding,
+        wordCount: template.wordCount,
+        locals: template.locals.map(local => ({
+          name: local.name.name,
+          storage: local.name.storage === 'perBar' ? 'perBar' : 'var',
+          scratchWordOffset: local.scratchWordOffset,
+          valueWordCount: local.valueWordCount,
+          committedInitWordOffset: local.committedInitWordOffset,
+          tentativeInitWordOffset: local.tentativeInitWordOffset,
+          historyWordOffset: local.historyWordOffset,
+          historyCapacity: local.historyCapacity,
+        })),
+        children: template.children.map(child => ({
+          slot: child.slot,
+          templateId: child.templateId,
+          wordOffset: child.wordOffset,
+        })),
+      })),
+    };
+  }
+
+  private cacheManifest(): CompiledWgslProgram['cache'] {
+    const frames = this.mustFrames();
+    type PendingSegment = Omit<
+      CompiledWgslProgram['cache']['segments'][number],
+      'rank' | 'cacheWordOffset' | 'cacheEnd'
+    >;
+    const pending: PendingSegment[] = [];
+    const add = (
+      id: string,
+      owner: string,
+      kind: 'header' | 'activation' | 'local',
+      storageWordOffset: number,
+      wordCount: number,
+      estimatedReadsPerRow: number,
+      estimatedWritesPerRow: number,
+    ): void => {
+      if (wordCount <= 0) fatal(`empty WGSL cache segment '${id}'`);
+      pending.push({
+        id,
+        owner,
+        kind,
+        storageWordOffset,
+        wordCount,
+        estimatedReadsPerRow,
+        estimatedWritesPerRow,
+      });
+    };
+    add('execution.header', '<execution>', 'header', 0, 2, 1, 1);
+    const visit = (
+      frame: WgslFrameTemplateLayout,
+      frameBase: number,
+      path: string,
+    ): void => {
+      add(
+        `${path}.activation`,
+        frame.ownerName,
+        'activation',
+        frameBase + frame.committedActivationWordOffset,
+        2,
+        2,
+        2,
+      );
+      frame.locals.forEach((local, localIndex) => {
+        let end = local.scratchWordOffset + local.valueWordCount;
+        if (
+          local.committedInitWordOffset !== null &&
+          local.tentativeInitWordOffset !== null
+        ) {
+          end = Math.max(
+            end,
+            local.committedInitWordOffset + 1,
+            local.tentativeInitWordOffset + 1,
+          );
+        }
+        if (local.historyWordOffset !== null) {
+          end = Math.max(
+            end,
+            local.historyWordOffset +
+              local.historyCapacity * local.valueWordCount,
+          );
+        }
+        const persistent = local.name.storage !== 'perBar';
+        add(
+          `${path}.local.${localIndex}`,
+          `${frame.ownerName}.${local.name.name}`,
+          'local',
+          frameBase + local.scratchWordOffset,
+          end - local.scratchWordOffset,
+          persistent ? 4 : local.historyCapacity > 0 ? 2 : 1,
+          persistent ? 4 : local.historyCapacity > 0 ? 2 : 1,
+        );
+      });
+      frame.children.forEach(child => {
+        const childFrame = frames.templates[child.templateId];
+        if (childFrame === undefined) {
+          fatal(`unmapped WGSL child frame template ${child.templateId}`);
+        }
+        visit(
+          childFrame,
+          frameBase + child.wordOffset,
+          `${path}.call.${child.slot}`,
+        );
+      });
+    };
+    visit(frames.root, 2, 'root');
+    const state = this.stateManifest();
+    let storageEnd = 0;
+    for (const segment of [...pending].sort(
+      (left, right) => left.storageWordOffset - right.storageWordOffset,
+    )) {
+      if (segment.storageWordOffset !== storageEnd) {
+        fatal(`non-contiguous WGSL state segment '${segment.id}'`);
+      }
+      storageEnd += segment.wordCount;
+    }
+    if (storageEnd !== state.wordsPerExecution) {
+      fatal(
+        `WGSL cache segments cover ${storageEnd} words; state owns ${state.wordsPerExecution}`,
       );
     }
+    let cacheEnd = 0;
+    const segments = pending
+      .sort((left, right) => {
+        const leftAccesses =
+          left.estimatedReadsPerRow + left.estimatedWritesPerRow;
+        const rightAccesses =
+          right.estimatedReadsPerRow + right.estimatedWritesPerRow;
+        return (
+          rightAccesses - leftAccesses ||
+          left.wordCount - right.wordCount ||
+          left.storageWordOffset - right.storageWordOffset
+        );
+      })
+      .map((segment, rank) => {
+        const cacheWordOffset = cacheEnd;
+        cacheEnd += segment.wordCount;
+        return {...segment, rank, cacheWordOffset, cacheEnd};
+      });
+    return {
+      storageEntryPoint: STORAGE_ENTRY_POINT,
+      cachedEntryPoint: CACHED_ENTRY_POINT,
+      overrides: {
+        workgroupSize: {
+          numericId: 0,
+          id: WORKGROUP_SIZE_OVERRIDE,
+          defaultValue: WORKGROUP_SIZE,
+        },
+        cacheWordsPerExecution: {
+          numericId: 1,
+          id: CACHE_WORDS_OVERRIDE,
+          defaultValue: 0,
+        },
+        cacheAllocationWords: {
+          numericId: 2,
+          id: CACHE_ALLOCATION_OVERRIDE,
+          defaultValue: 1,
+        },
+      },
+      segments,
+    };
+  }
+
+  private requireStaticDepth(
+    depth: Name['depth'] | SeriesInput['depth'],
+    owner: string,
+  ): void {
+    if (depth.kind === DepthKind.None) return;
+    if (
+      depth.kind === DepthKind.Const &&
+      Number.isSafeInteger(depth.bars) &&
+      depth.bars >= 0
+    ) {
+      return;
+    }
+    this.unsupported(
+      'history-layout-unimplemented',
+      `${owner} requires bind-computed or invalid history depth`,
+    );
   }
 
   private collectFunctionTypes(func: IrFunc): void {
@@ -444,14 +636,13 @@ class WgslEmitter {
     }
     for (const name of [...func.params, ...func.locals]) {
       this.collectType(name.type);
-      if (name.storage !== 'perBar' || name.init !== null) {
+      if (name.storage === 'varip') {
         this.unsupported(
           'function-frame-lowering-unimplemented',
-          'inlined GPU functions cannot own persistent locals or initializers',
-          name.init?.pos,
+          'varip function locals are outside the historical GPU subset',
         );
       }
-      this.requireDepthNone(name.depth.kind, `function name '${name.name}'`);
+      this.requireStaticDepth(name.depth, `function name '${name.name}'`);
     }
     this.collectType(func.resultType);
   }
@@ -637,9 +828,7 @@ class WgslEmitter {
     for (const type of this.userTypes) {
       this.physicalLayoutOf(type);
     }
-    for (const root of this.persistentRoots) {
-      this.physicalLayoutOf(root.type);
-    }
+    for (const name of namesOf(this.program)) this.physicalLayoutOf(name.type);
     for (const effect of this.program.effects) {
       const layout = this.layouts[this.physicalLayoutOf(effect.payloadType)];
       this.maxEffectPayloadWords = Math.max(
@@ -647,26 +836,44 @@ class WgslEmitter {
         layout.byteSize / 4,
       );
     }
-    const laneFields: WgslPhysicalField[] = [
+    try {
+      this.frames = projectWgslFrames(
+        this.program,
+        name => this.layouts[this.physicalLayoutOf(name.type)].byteSize / 4,
+      );
+    } catch (error) {
+      if (error instanceof WgslFrameProjectionError) {
+        this.unsupported(
+          error.message.includes('history')
+            ? 'history-layout-unimplemented'
+            : 'function-frame-lowering-unimplemented',
+          error.message,
+        );
+      }
+      throw error;
+    }
+    const frames = this.frames;
+    const wordsPerExecution = 2 + frames.root.wordCount;
+    const executionStateByteSize = wordsPerExecution * 4;
+    if (
+      !Number.isSafeInteger(wordsPerExecution) ||
+      wordsPerExecution > MAX_U32 ||
+      !Number.isSafeInteger(executionStateByteSize) ||
+      executionStateByteSize > MAX_U32
+    ) {
+      this.unsupported(
+        'history-layout-unimplemented',
+        `GPU execution history state requires ${wordsPerExecution} words (${executionStateByteSize} bytes), exceeding the u32 physical-layout limit`,
+      );
+    }
+    const stateFields: WgslPhysicalField[] = [
       {path: 'initialized', scalar: 'u32', byteOffset: 0},
       {path: 'next_row', scalar: 'u32', byteOffset: 4},
     ];
-    let laneOffset = 8;
-    this.persistentRoots.forEach((root, index) => {
-      const layout = this.layouts[this.physicalLayoutOf(root.type)];
-      for (const field of layout.fields) {
-        laneFields.push({
-          path: `r${index}.${field.path}`,
-          scalar: field.scalar,
-          byteOffset: laneOffset + field.byteOffset,
-        });
-      }
-      laneOffset += layout.byteSize;
-    });
-    this.laneStateLayout = this.addLayout(
-      'TeaLaneState',
-      laneOffset,
-      laneFields,
+    this.executionStateLayout = this.addLayout(
+      'TeaExecutionState',
+      executionStateByteSize,
+      stateFields,
     );
     this.jobDescriptorLayout = this.addLayout(
       'TeaJobDescriptor',
@@ -864,13 +1071,7 @@ class WgslEmitter {
         '}',
       );
     }
-    out.push('struct TeaLaneState {');
-    out.push('  initialized: u32,', '  next_row: u32,');
-    this.persistentRoots.forEach((root, index) => {
-      out.push(`  r${index}: ${this.wgslType(root.type)},`);
-    });
     out.push(
-      '}',
       'struct TeaJobDescriptor {',
       '  series_offset: u32,',
       '  row_count: u32,',
@@ -886,7 +1087,7 @@ class WgslEmitter {
       `struct TeaEffectRecord { row: u32, effect_id: u32, payload: array<u32, ${Math.max(1, this.maxEffectPayloadWords)}>, }`,
       `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_JOBS_BINDING}) var<storage, read> tea_jobs: array<TeaJobDescriptor>;`,
       `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_SERIES_BINDING}) var<storage, read> tea_series: array<f32>;`,
-      `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_LANE_STATES_BINDING}) var<storage, read_write> tea_lane_states: array<TeaLaneState>;`,
+      `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_EXECUTION_STATES_BINDING}) var<storage, read_write> tea_execution_states: array<u32>;`,
       `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_RESULTS_BINDING}) var<storage, read_write> tea_results: array<TeaResultCell>;`,
       `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_EFFECT_STATUS_BINDING}) var<storage, read_write> tea_effect_status: array<TeaEffectStatus>;`,
       `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_EFFECT_RECORDS_BINDING}) var<storage, read_write> tea_effect_records: array<TeaEffectRecord>;`,
@@ -895,13 +1096,108 @@ class WgslEmitter {
         : [
             `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_PARAMS_BINDING}) var<storage, read> tea_params: array<u32>;`,
           ]),
+      `@id(0) override ${WORKGROUP_SIZE_OVERRIDE}: u32 = ${WORKGROUP_SIZE}u;`,
+      `@id(1) override ${CACHE_WORDS_OVERRIDE}: u32 = 0u;`,
+      `@id(2) override ${CACHE_ALLOCATION_OVERRIDE}: u32 = 1u;`,
+      `var<workgroup> tea_execution_state_cache: array<u32, ${CACHE_ALLOCATION_OVERRIDE}>;`,
+      'var<private> tea_execution_state_base: u32;',
+      'var<private> tea_execution_cache_base: u32;',
+      ...this.emitCacheHelpers(),
       ...this.emitHelpers(),
+      ...this.emitFrameHelpers(),
     );
     for (const func of this.funcs) {
       out.push(...this.emitFunction(func));
     }
     out.push(...this.emitKernel());
     return `${out.join('\n')}\n`;
+  }
+
+  private emitCacheHelpers(): string[] {
+    const segments = this.cacheManifest().segments;
+    const storageSegments = [...segments].sort(
+      (left, right) => left.storageWordOffset - right.storageWordOffset,
+    );
+    const storageWords = storageSegments.reduce(
+      (end, segment) =>
+        Math.max(end, segment.storageWordOffset + segment.wordCount),
+      0,
+    );
+    const out = [
+      'fn tea_state_cache_index(tea_word: u32) -> u32 {',
+      `  if (${CACHE_WORDS_OVERRIDE} == 0u) { return 0xffffffffu; }`,
+      '  if (tea_word < tea_execution_state_base) { return 0xffffffffu; }',
+      '  let tea_local_word = tea_word - tea_execution_state_base;',
+      `  if (tea_local_word >= ${storageWords}u) { return 0xffffffffu; }`,
+    ];
+    const emitLookup = (
+      candidates: typeof storageSegments,
+      indentLevel: number,
+    ): void => {
+      if (candidates.length === 1) {
+        const segment = candidates[0];
+        if (segment === undefined) fatal('empty WGSL cache lookup leaf');
+        const padding = '  '.repeat(indentLevel);
+        out.push(
+          `${padding}if (${CACHE_WORDS_OVERRIDE} >= ${segment.cacheEnd}u) {`,
+          `${padding}  return tea_execution_cache_base + ${segment.cacheWordOffset}u + tea_local_word - ${segment.storageWordOffset}u;`,
+          `${padding}}`,
+        );
+        return;
+      }
+      const middle = Math.floor(candidates.length / 2);
+      const right = candidates.slice(middle);
+      const boundary = right[0]?.storageWordOffset;
+      if (boundary === undefined) fatal('empty WGSL cache lookup branch');
+      const padding = '  '.repeat(indentLevel);
+      out.push(`${padding}if (tea_local_word < ${boundary}u) {`);
+      emitLookup(candidates.slice(0, middle), indentLevel + 1);
+      out.push(`${padding}} else {`);
+      emitLookup(right, indentLevel + 1);
+      out.push(`${padding}}`);
+    };
+    emitLookup(storageSegments, 1);
+    out.push(
+      '  return 0xffffffffu;',
+      '}',
+      'fn tea_state_load(tea_word: u32) -> u32 {',
+      '  let tea_cache_index = tea_state_cache_index(tea_word);',
+      '  if (tea_cache_index != 0xffffffffu) {',
+      '    return tea_execution_state_cache[tea_cache_index];',
+      '  }',
+      '  return tea_execution_states[tea_word];',
+      '}',
+      'fn tea_state_store(tea_word: u32, tea_value: u32) {',
+      '  let tea_cache_index = tea_state_cache_index(tea_word);',
+      '  if (tea_cache_index != 0xffffffffu) {',
+      '    tea_execution_state_cache[tea_cache_index] = tea_value;',
+      '  } else {',
+      '    tea_execution_states[tea_word] = tea_value;',
+      '  }',
+      '}',
+      'fn tea_cache_load() {',
+    );
+    segments.forEach((segment, index) => {
+      out.push(
+        `  if (${CACHE_WORDS_OVERRIDE} >= ${segment.cacheEnd}u) {`,
+        `    for (var tea_segment_word_${index} = 0u; tea_segment_word_${index} < ${segment.wordCount}u; tea_segment_word_${index} = tea_segment_word_${index} + 1u) {`,
+        `      tea_execution_state_cache[tea_execution_cache_base + ${segment.cacheWordOffset}u + tea_segment_word_${index}] = tea_execution_states[tea_execution_state_base + ${segment.storageWordOffset}u + tea_segment_word_${index}];`,
+        '    }',
+        '  }',
+      );
+    });
+    out.push('}', 'fn tea_cache_flush() {');
+    segments.forEach((segment, index) => {
+      out.push(
+        `  if (${CACHE_WORDS_OVERRIDE} >= ${segment.cacheEnd}u) {`,
+        `    for (var tea_segment_word_${index} = 0u; tea_segment_word_${index} < ${segment.wordCount}u; tea_segment_word_${index} = tea_segment_word_${index} + 1u) {`,
+        `      tea_execution_states[tea_execution_state_base + ${segment.storageWordOffset}u + tea_segment_word_${index}] = tea_execution_state_cache[tea_execution_cache_base + ${segment.cacheWordOffset}u + tea_segment_word_${index}];`,
+        '    }',
+        '  }',
+      );
+    });
+    out.push('}');
+    return out;
   }
 
   private emitHelpers(): string[] {
@@ -950,14 +1246,119 @@ class WgslEmitter {
       '  if (x.value == -2147483648 && y.value == -1) { return TeaInt(1u, -2147483648); }',
       '  return TeaInt(1u, x.value / y.value);',
       '}',
-      'fn tea_note_effect_overflow(lane: u32, row: u32, effect_id: u32) {',
-      '  if (tea_effect_status[lane].overflow == 0u) {',
-      '    tea_effect_status[lane].first_overflow_row = row;',
-      '    tea_effect_status[lane].first_overflow_effect = effect_id;',
+      'fn tea_note_effect_overflow(execution_index: u32, row: u32, effect_id: u32) {',
+      '  if (tea_effect_status[execution_index].overflow == 0u) {',
+      '    tea_effect_status[execution_index].first_overflow_row = row;',
+      '    tea_effect_status[execution_index].first_overflow_effect = effect_id;',
       '  }',
-      '  tea_effect_status[lane].overflow = 1u;',
+      '  tea_effect_status[execution_index].overflow = 1u;',
       '}',
     ];
+  }
+
+  private emitFrameHelpers(): string[] {
+    const out: string[] = [];
+    for (const frame of [...this.mustFrames().templates].reverse()) {
+      out.push(
+        `fn tea_reset_frame_${frame.id}(tea_frame_base: u32, tea_row: u32) {`,
+        `  let tea_activation: u32 = tea_state_load(tea_frame_base + ${frame.committedActivationWordOffset}u);`,
+        `  tea_state_store(tea_frame_base + ${frame.tentativeActivationWordOffset}u, tea_activation);`,
+        '  if (tea_activation != 0u) {',
+      );
+      for (const local of frame.locals) {
+        if (
+          local.committedInitWordOffset !== null &&
+          local.tentativeInitWordOffset !== null
+        ) {
+          out.push(
+            `    tea_state_store(tea_frame_base + ${local.tentativeInitWordOffset}u, tea_state_load(tea_frame_base + ${local.committedInitWordOffset}u));`,
+          );
+        }
+        if (local.name.storage === 'perBar') {
+          this.emitStateStore(
+            local.name.type,
+            `tea_frame_base + ${local.scratchWordOffset}u`,
+            this.empty(local.name.type),
+            out,
+            2,
+          );
+          continue;
+        }
+        const reset: string[] = [];
+        this.emitStateStore(
+          local.name.type,
+          `tea_frame_base + ${local.scratchWordOffset}u`,
+          this.empty(local.name.type),
+          reset,
+          0,
+        );
+        if (
+          local.committedInitWordOffset === null ||
+          local.historyWordOffset === null ||
+          local.historyCapacity < 1
+        ) {
+          return fatal(
+            `persistent WGSL local '${local.name.name}' lacks state`,
+          );
+        }
+        out.push(
+          `    if (tea_state_load(tea_frame_base + ${local.committedInitWordOffset}u) != 0u && tea_row > 0u) {`,
+          `      let tea_ring_${frame.id}_${local.scratchWordOffset}: u32 = (tea_row - 1u) % ${local.historyCapacity}u;`,
+        );
+        this.emitStateCopy(
+          local.name.type,
+          `tea_frame_base + ${local.scratchWordOffset}u`,
+          `tea_frame_base + ${local.historyWordOffset}u + tea_ring_${frame.id}_${local.scratchWordOffset} * ${local.valueWordCount}u`,
+          out,
+          3,
+        );
+        out.push('    } else {', ...indent(reset, 3), '    }');
+      }
+      out.push('  }');
+      for (const child of frame.children) {
+        out.push(
+          `  tea_reset_frame_${child.templateId}(tea_frame_base + ${child.wordOffset}u, tea_row);`,
+        );
+      }
+      out.push('}');
+
+      out.push(
+        `fn tea_commit_frame_${frame.id}(tea_frame_base: u32, tea_row: u32) {`,
+        `  let tea_activation: u32 = tea_state_load(tea_frame_base + ${frame.tentativeActivationWordOffset}u);`,
+        '  if (tea_activation != 0u) {',
+        `    tea_state_store(tea_frame_base + ${frame.committedActivationWordOffset}u, tea_activation);`,
+      );
+      for (const local of frame.locals) {
+        if (
+          local.committedInitWordOffset !== null &&
+          local.tentativeInitWordOffset !== null
+        ) {
+          out.push(
+            `    tea_state_store(tea_frame_base + ${local.committedInitWordOffset}u, tea_state_load(tea_frame_base + ${local.tentativeInitWordOffset}u));`,
+          );
+        }
+        if (local.historyWordOffset !== null && local.historyCapacity > 0) {
+          out.push(
+            `    let tea_ring_${frame.id}_${local.scratchWordOffset}: u32 = tea_row % ${local.historyCapacity}u;`,
+          );
+          this.emitStateCopy(
+            local.name.type,
+            `tea_frame_base + ${local.historyWordOffset}u + tea_ring_${frame.id}_${local.scratchWordOffset} * ${local.valueWordCount}u`,
+            `tea_frame_base + ${local.scratchWordOffset}u`,
+            out,
+            2,
+          );
+        }
+      }
+      out.push('  }');
+      for (const child of frame.children) {
+        out.push(
+          `  tea_commit_frame_${child.templateId}(tea_frame_base + ${child.wordOffset}u, tea_row);`,
+        );
+      }
+      out.push('}');
+    }
+    return out;
   }
 
   private emitFunction(func: IrFunc): string[] {
@@ -970,8 +1371,9 @@ class WgslEmitter {
       .map((name, index) => `p${index}: ${this.wgslType(name.type)}`)
       .join(', ');
     const signature = [
-      'tea_state: ptr<storage, TeaLaneState, read_write>',
-      'tea_lane: u32',
+      'tea_root_base: u32',
+      'tea_frame_base: u32',
+      'tea_execution_index: u32',
       'tea_job: TeaJobDescriptor',
       'tea_row: u32',
       explicitSignature,
@@ -983,42 +1385,56 @@ class WgslEmitter {
         ? this.mutableResultName(func)
         : this.wgslType(func.resultType);
     const out = [`fn ${fn}(${signature}) -> ${resultType} {`];
-    const env = this.rootEnvironment('(*tea_state)');
-    parameters.forEach((name, index) => {
-      const local = this.fresh('v');
-      env.set(name, local);
-      out.push(`  var ${local}: ${this.wgslType(name.type)} = p${index};`);
-    });
-    for (const local of func.locals) {
-      if (env.has(local)) {
-        continue;
-      }
-      const variable = this.fresh('v');
-      env.set(local, variable);
-      out.push(
-        `  var ${variable}: ${this.wgslType(local.type)} = ${this.empty(local.type)};`,
-      );
-    }
-    const body: string[] = [];
-    const value = this.emitExpr(
-      func.body,
-      {
-        env,
-        allowDenseEmit: false,
-        allowEffect: true,
-        state: 'tea_state',
-        lane: 'tea_lane',
-        job: 'tea_job',
-        row: 'tea_row',
-        chunkRow: '0u',
-      },
-      body,
+    const frame =
+      this.mustFrames().templateByFunc.get(func) ??
+      fatal(`unmapped frame template for '${func.name}'`);
+    const ephemeralFormals =
+      this.mustFrames().ephemeralFormalsByFunc.get(func) ??
+      fatal(`unmapped ephemeral formals for '${func.name}'`);
+    const functionLocals = new Map<Name, string>();
+    out.push(
+      `  if (tea_state_load(tea_frame_base + ${frame.tentativeActivationWordOffset}u) == 0u) {`,
+      `    tea_state_store(tea_frame_base + ${frame.tentativeActivationWordOffset}u, tea_row + 1u);`,
+      '  }',
     );
+    parameters.forEach((name, index) => {
+      if (ephemeralFormals.has(name)) {
+        const localName = `tea_arg_${index}`;
+        functionLocals.set(name, localName);
+        out.push(
+          `  var ${localName}: ${this.wgslType(name.type)} = p${index};`,
+        );
+        return;
+      }
+      const local =
+        frame.locals.find(candidate => candidate.name === name) ??
+        fatal(`unmapped frame parameter '${name.name}'`);
+      this.emitStateStore(
+        name.type,
+        `tea_frame_base + ${local.scratchWordOffset}u`,
+        `p${index}`,
+        out,
+        1,
+      );
+    });
+    const body: string[] = [];
+    const ctx: WgslContext = {
+      frame,
+      frameBase: 'tea_frame_base',
+      rootBase: 'tea_root_base',
+      functionLocals,
+      allowDenseEmit: false,
+      allowEffect: true,
+      executionIndex: 'tea_execution_index',
+      job: 'tea_job',
+      row: 'tea_row',
+      chunkRow: '0u',
+    };
+    const value = this.emitExpr(func.body, ctx, body);
     out.push(...indent(body, 1));
     const result = this.coerce(value, func.body.type, func.resultType);
     if (func.callMode === 'mutable-method') {
-      const receiver =
-        env.get(func.receiver) ?? fatal('unmapped method receiver');
+      const receiver = this.emitCurrentNameRead(func.receiver, ctx);
       out.push(`  return ${resultType}(${receiver}, ${result});`);
     } else {
       out.push(`  return ${result};`);
@@ -1027,71 +1443,95 @@ class WgslEmitter {
     return out;
   }
 
+  private locateName(name: Name, ctx: WgslContext): WgslNameLocation {
+    const local = ctx.frame.locals.find(candidate => candidate.name === name);
+    if (local !== undefined) {
+      return {frame: ctx.frame, frameBase: ctx.frameBase, local};
+    }
+    const root = this.mustFrames().root;
+    const rootLocal = root.locals.find(candidate => candidate.name === name);
+    if (rootLocal !== undefined) {
+      return {frame: root, frameBase: ctx.rootBase, local: rootLocal};
+    }
+    return this.unsupported(
+      'function-frame-lowering-unimplemented',
+      `name '${name.name}' is outside the active GPU frame`,
+    );
+  }
+
+  private emitCurrentNameRead(name: Name, ctx: WgslContext): string {
+    const functionLocal = ctx.functionLocals.get(name);
+    if (functionLocal !== undefined) return functionLocal;
+    const location = this.locateName(name, ctx);
+    return this.emitStateLoad(
+      name.type,
+      `${location.frameBase} + ${location.local.scratchWordOffset}u`,
+    );
+  }
+
+  private emitCurrentNameStore(
+    name: Name,
+    value: string,
+    ctx: WgslContext,
+    out: string[],
+    indentLevel = 0,
+  ): void {
+    const functionLocal = ctx.functionLocals.get(name);
+    if (functionLocal !== undefined) {
+      out.push(`${'  '.repeat(indentLevel)}${functionLocal} = ${value};`);
+      return;
+    }
+    const location = this.locateName(name, ctx);
+    this.emitStateStore(
+      name.type,
+      `${location.frameBase} + ${location.local.scratchWordOffset}u`,
+      value,
+      out,
+      indentLevel,
+    );
+  }
+
   private emitKernel(): string[] {
+    const frames = this.mustFrames();
+    const state = this.stateManifest();
     const out = [
-      `@compute @workgroup_size(${WORKGROUP_SIZE}, 1, 1)`,
-      'fn tea_main(@builtin(global_invocation_id) tea_gid: vec3<u32>) {',
-      '  let tea_job_index = tea_gid.x;',
-      '  if (tea_job_index >= arrayLength(&tea_jobs) || tea_job_index >= arrayLength(&tea_lane_states) || tea_job_index >= arrayLength(&tea_effect_status)) { return; }',
+      'fn tea_execute(tea_job_index: u32) {',
+      '  if (tea_job_index >= arrayLength(&tea_jobs) || tea_job_index >= arrayLength(&tea_effect_status)) { return; }',
+      '  let tea_execution_base: u32 = tea_execution_state_base;',
+      `  let tea_root_base: u32 = tea_execution_base + ${state.rootFrameWordOffset}u;`,
       '  let tea_job = tea_jobs[tea_job_index];',
       '  if (tea_job.chunk_rows == 0u) { return; }',
       ...(this.outputCells.size === 0
         ? ['  if (tea_job.result_count != 0u) { return; }']
         : [
-            `  if (tea_job.result_count / ${this.outputCells.size}u < tea_job.chunk_rows) { return; }`,
+            `  let tea_final_dense_only = tea_job.result_count == ${this.outputCells.size}u;`,
+            `  if (!tea_final_dense_only && tea_job.result_count / ${this.outputCells.size}u < tea_job.chunk_rows) { return; }`,
           ]),
       '  tea_effect_status[tea_job_index] = TeaEffectStatus(0u, 0u, 0u, 0u);',
-    ];
-    const rootEnv = this.rootEnvironment('tea_lane_states[tea_job_index]');
-    const initCtx: WgslContext = {
-      env: rootEnv,
-      allowDenseEmit: false,
-      allowEffect: false,
-      state: '&tea_lane_states[tea_job_index]',
-      lane: 'tea_job_index',
-      job: 'tea_job',
-      row: 'tea_lane_states[tea_job_index].next_row',
-      chunkRow: '0u',
-    };
-    out.push('  if (tea_lane_states[tea_job_index].initialized == 0u) {');
-    for (const root of this.persistentRoots) {
-      if (root.init === null) {
-        this.unsupported(
-          'persistent-state-initialization-unimplemented',
-          `persistent root '${root.name}' has no initializer`,
-        );
-      }
-      const lines: string[] = [];
-      const value = this.emitExpr(root.init, initCtx, lines);
-      out.push(...indent(lines, 2));
-      out.push(
-        `    ${rootEnv.get(root) ?? fatal('unmapped persistent root')} = ${this.coerce(value, root.init.type, root.type)};`,
-      );
-    }
-    out.push(
-      '    tea_lane_states[tea_job_index].initialized = 1u;',
+      `  if (tea_state_load(tea_execution_base + ${state.initializedWordOffset}u) == 0u) {`,
+      `    tea_state_store(tea_execution_base + ${state.initializedWordOffset}u, 1u);`,
+      `    tea_state_store(tea_execution_base + ${state.nextRowWordOffset}u, 0u);`,
+      `    tea_state_store(tea_root_base + ${frames.root.committedActivationWordOffset}u, 1u);`,
+      `    tea_state_store(tea_root_base + ${frames.root.tentativeActivationWordOffset}u, 1u);`,
       '  }',
-      '  let tea_start_row = tea_lane_states[tea_job_index].next_row;',
+    ];
+    out.push(
+      `  let tea_start_row = tea_state_load(tea_execution_base + ${state.nextRowWordOffset}u);`,
       '  if (tea_start_row >= tea_job.row_count) { return; }',
       '  let tea_chunk_count = min(tea_job.chunk_rows, tea_job.row_count - tea_start_row);',
       '  for (var tea_chunk_row = 0u; tea_chunk_row < tea_chunk_count; tea_chunk_row = tea_chunk_row + 1u) {',
       '    let tea_row = tea_start_row + tea_chunk_row;',
+      `    tea_reset_frame_${frames.root.id}(tea_root_base, tea_row);`,
     );
-    const env = new Map(rootEnv);
-    for (const root of this.perBarRoots) {
-      const variable = this.fresh('v');
-      env.set(root, variable);
-      out.push(
-        `    var ${variable}: ${this.wgslType(root.type)} = ${this.empty(root.type)};`,
-      );
-    }
     const body: string[] = [];
     const ctx: WgslContext = {
-      env,
+      frame: frames.root,
+      frameBase: 'tea_root_base',
+      rootBase: 'tea_root_base',
+      functionLocals: new Map(),
       allowDenseEmit: true,
       allowEffect: true,
-      state: '&tea_lane_states[tea_job_index]',
-      lane: 'tea_job_index',
+      executionIndex: 'tea_job_index',
       job: 'tea_job',
       row: 'tea_row',
       chunkRow: 'tea_chunk_row',
@@ -1101,8 +1541,30 @@ class WgslEmitter {
     }
     out.push(
       ...indent(body, 2),
+      `    tea_commit_frame_${frames.root.id}(tea_root_base, tea_row);`,
       '  }',
-      '  tea_lane_states[tea_job_index].next_row = tea_start_row + tea_chunk_count;',
+      `  tea_state_store(tea_execution_base + ${state.nextRowWordOffset}u, tea_start_row + tea_chunk_count);`,
+      '}',
+      `@compute @workgroup_size(${WORKGROUP_SIZE_OVERRIDE}, 1, 1)`,
+      `fn ${STORAGE_ENTRY_POINT}(@builtin(global_invocation_id) tea_gid: vec3<u32>) {`,
+      `  tea_execution_state_base = tea_gid.x * ${state.wordsPerExecution}u;`,
+      '  tea_execution_cache_base = 0u;',
+      '  if (tea_execution_state_base > arrayLength(&tea_execution_states) || arrayLength(&tea_execution_states) - tea_execution_state_base < ' +
+        `${state.wordsPerExecution}u) { return; }`,
+      '  tea_execute(tea_gid.x);',
+      '}',
+      `@compute @workgroup_size(${WORKGROUP_SIZE_OVERRIDE}, 1, 1)`,
+      `fn ${CACHED_ENTRY_POINT}(`,
+      '  @builtin(global_invocation_id) tea_gid: vec3<u32>,',
+      '  @builtin(local_invocation_id) tea_local_id: vec3<u32>,',
+      ') {',
+      `  tea_execution_state_base = tea_gid.x * ${state.wordsPerExecution}u;`,
+      `  tea_execution_cache_base = tea_local_id.x * ${CACHE_WORDS_OVERRIDE};`,
+      '  if (tea_execution_state_base > arrayLength(&tea_execution_states) || arrayLength(&tea_execution_states) - tea_execution_state_base < ' +
+        `${state.wordsPerExecution}u) { return; }`,
+      '  tea_cache_load();',
+      '  tea_execute(tea_gid.x);',
+      '  tea_cache_flush();',
       '}',
     );
     return out;
@@ -1311,18 +1773,39 @@ class WgslEmitter {
       case IrKind.ExprStmt:
         this.emitExpr(stmt.x, ctx, out);
         return;
-      case IrKind.WriteName: {
-        const target = ctx.env.get(stmt.name);
-        if (target === undefined) {
-          this.unsupported(
-            'function-frame-lowering-unimplemented',
-            `name '${stmt.name.name}' is outside the active GPU frame`,
-            stmt.pos,
+      case IrKind.InitName: {
+        const location = this.locateName(stmt.name, ctx);
+        if (location.local.tentativeInitWordOffset === null) {
+          return fatal(
+            `per-bar name '${stmt.name.name}' reached persistent WGSL initialization`,
           );
         }
-        const value = this.emitExpr(stmt.value, ctx, out);
         out.push(
-          `${target} = ${this.coerce(value, stmt.value.type, stmt.name.type)};`,
+          `if (tea_state_load(${location.frameBase} + ${location.local.tentativeInitWordOffset}u) == 0u) {`,
+        );
+        const initializer: string[] = [];
+        const value = this.emitExpr(stmt.value, ctx, initializer);
+        out.push(...indent(initializer, 1));
+        this.emitCurrentNameStore(
+          stmt.name,
+          this.coerce(value, stmt.value.type, stmt.name.type),
+          ctx,
+          out,
+          1,
+        );
+        out.push(
+          `  tea_state_store(${location.frameBase} + ${location.local.tentativeInitWordOffset}u, 1u);`,
+          '}',
+        );
+        return;
+      }
+      case IrKind.WriteName: {
+        const value = this.emitExpr(stmt.value, ctx, out);
+        this.emitCurrentNameStore(
+          stmt.name,
+          this.coerce(value, stmt.value.type, stmt.name.type),
+          ctx,
+          out,
         );
         return;
       }
@@ -1346,13 +1829,10 @@ class WgslEmitter {
           );
           return;
         }
-        const root = ctx.env.get(stmt.path.root);
-        if (
-          root === undefined ||
-          stmt.path.root.type.kind !== TypeKind.UserType
-        ) {
+        if (stmt.path.root.type.kind !== TypeKind.UserType) {
           return fatal('malformed rooted user update reached WGSL lowering');
         }
+        const root = this.emitCurrentNameRead(stmt.path.root, ctx);
         const fieldIndex = stmt.path.fieldIndices[0];
         const field = stmt.path.root.type.fields[fieldIndex];
         if (field === undefined || !assignable(stmt.value.type, field.type)) {
@@ -1371,8 +1851,8 @@ class WgslEmitter {
         rhs.push(
           `var ${rebuilt}: ${this.wgslType(stmt.path.root.type)} = ${root};`,
           `${rebuilt}.f${fieldIndex} = ${this.coerce(value, stmt.value.type, field.type)};`,
-          `${root} = ${rebuilt};`,
         );
+        this.emitCurrentNameStore(stmt.path.root, rebuilt, ctx, rhs);
         out.push(`if (${capturedRoot}.valid != 0u) {`, ...indent(rhs, 1), '}');
         return;
       }
@@ -1402,11 +1882,13 @@ class WgslEmitter {
           fatal('unmapped GPU output emission');
         }
         const slot = this.fresh();
+        const resultRow = this.fresh();
         out.push(
-          `let ${slot}: u32 = ${ctx.job}.result_offset + ${ctx.chunkRow} * ${this.outputCells.size}u + ${rowCell}u;`,
+          `let ${resultRow}: u32 = select(${ctx.chunkRow}, 0u, ${ctx.job}.result_count == ${this.outputCells.size}u);`,
+          `let ${slot}: u32 = ${ctx.job}.result_offset + ${resultRow} * ${this.outputCells.size}u + ${rowCell}u;`,
         );
         out.push(
-          `if (${slot} < arrayLength(&tea_results) && ${slot} < ${ctx.job}.result_offset + ${ctx.job}.result_count) {`,
+          `if ((${ctx.job}.result_count != ${this.outputCells.size}u || ${ctx.row} + 1u == ${ctx.job}.row_count) && ${slot} < arrayLength(&tea_results) && ${slot} < ${ctx.job}.result_offset + ${ctx.job}.result_count) {`,
         );
         const encoded = this.encodeResult(values[0], stmt.args[0].type);
         out.push(`  tea_results[${slot}] = ${encoded};`, '}');
@@ -1458,8 +1940,9 @@ class WgslEmitter {
     const record = this.fresh('effect_record');
     const payloadWords = Math.max(1, this.maxEffectPayloadWords);
     out.push(
-      `let ${cursor}: u32 = tea_effect_status[${ctx.lane}].count;`,
-      `if (${cursor} < ${ctx.job}.effect_capacity) {`,
+      `let ${cursor}: u32 = tea_effect_status[${ctx.executionIndex}].count;`,
+      `if (${ctx.job}.effect_capacity > 0u) {`,
+      `  if (${cursor} < ${ctx.job}.effect_capacity) {`,
       `  let ${slot}: u32 = ${ctx.job}.effect_offset + ${cursor};`,
       `  if (${slot} >= ${ctx.job}.effect_offset && ${slot} < arrayLength(&tea_effect_records)) {`,
       `    var ${record}: TeaEffectRecord = TeaEffectRecord(${ctx.row}, ${effectId}u, array<u32, ${payloadWords}>(${new Array(payloadWords).fill('0u').join(', ')}));`,
@@ -1469,12 +1952,13 @@ class WgslEmitter {
     out.push(
       ...indent(assignments, 2),
       `    tea_effect_records[${slot}] = ${record};`,
-      `    tea_effect_status[${ctx.lane}].count = ${cursor} + 1u;`,
+      `    tea_effect_status[${ctx.executionIndex}].count = ${cursor} + 1u;`,
       '  } else {',
-      `    tea_note_effect_overflow(${ctx.lane}, ${ctx.row}, ${effectId}u);`,
+      `    tea_note_effect_overflow(${ctx.executionIndex}, ${ctx.row}, ${effectId}u);`,
       '  }',
       '} else {',
-      `  tea_note_effect_overflow(${ctx.lane}, ${ctx.row}, ${effectId}u);`,
+      `  tea_note_effect_overflow(${ctx.executionIndex}, ${ctx.row}, ${effectId}u);`,
+      '  }',
       '}',
     );
   }
@@ -1530,26 +2014,37 @@ class WgslEmitter {
     ctx: WgslContext,
     out: string[],
   ): string {
-    // Scalar parameters are constant over the full row axis, so their history
-    // reads are the same bound value (the JS lowering has the same rule).
-    if (expr.offset !== null && expr.place.kind !== PlaceKind.Param) {
-      return this.unsupported(
-        'history-layout-unimplemented',
-        'only current-row reads lower to WGSL',
-        expr.pos,
-      );
-    }
+    const offset = this.historyOffset(expr.offset, expr.pos);
+    if (offset === null) return this.empty(expr.type);
     switch (expr.place.kind) {
       case PlaceKind.Name: {
-        const value = ctx.env.get(expr.place.name);
-        if (value === undefined) {
-          return this.unsupported(
-            'function-frame-lowering-unimplemented',
-            `name '${expr.place.name.name}' is outside the active GPU frame`,
-            expr.pos,
+        if (offset === 0) {
+          return this.emitCurrentNameRead(expr.place.name, ctx);
+        }
+        const location = this.locateName(expr.place.name, ctx);
+        if (
+          location.local.historyWordOffset === null ||
+          location.local.historyCapacity < offset
+        ) {
+          return fatal(
+            `WGSL history layout for '${expr.place.name.name}' is shallower than offset ${offset}`,
           );
         }
-        return value;
+        const result = this.fresh('history');
+        const activation = this.fresh('activation');
+        const ring = this.fresh('ring');
+        out.push(
+          `var ${result}: ${this.wgslType(expr.type)} = ${this.empty(expr.type)};`,
+          `let ${activation}: u32 = tea_state_load(${location.frameBase} + ${location.frame.committedActivationWordOffset}u);`,
+          `if (${activation} != 0u && ${ctx.row} + 1u >= ${activation} + ${offset}u) {`,
+          `  let ${ring}: u32 = (${ctx.row} - ${offset}u) % ${location.local.historyCapacity}u;`,
+          `  ${result} = ${this.emitStateLoad(
+            expr.place.name.type,
+            `${location.frameBase} + ${location.local.historyWordOffset}u + ${ring} * ${location.local.valueWordCount}u`,
+          )};`,
+          '}',
+        );
+        return result;
       }
       case PlaceKind.Series: {
         const ordinal = this.seriesIds.get(expr.place.series);
@@ -1557,14 +2052,32 @@ class WgslEmitter {
           return fatal(`unmapped series '${expr.place.series.id}'`);
         }
         const result = this.fresh();
-        out.push(
-          `let ${result}: TeaFloat = tea_float(tea_series[${ctx.job}.series_offset + ${ordinal}u * ${ctx.job}.row_count + ${ctx.row}]);`,
-        );
+        if (offset === 0) {
+          out.push(
+            `let ${result}: TeaFloat = tea_float(tea_series[${ctx.job}.series_offset + ${ordinal}u * ${ctx.job}.row_count + ${ctx.row}]);`,
+          );
+        } else {
+          out.push(
+            `var ${result}: TeaFloat = TeaFloat(0u, 0.0);`,
+            `if (${ctx.row} >= ${offset}u) {`,
+            `  ${result} = tea_float(tea_series[${ctx.job}.series_offset + ${ordinal}u * ${ctx.job}.row_count + ${ctx.row} - ${offset}u]);`,
+            '}',
+          );
+        }
         return result;
       }
       case PlaceKind.Execution:
+        if (offset > 0) {
+          return this.unsupported(
+            'history-layout-unimplemented',
+            'historical execution-input reads are outside the current GPU subset',
+            expr.pos,
+          );
+        }
         return this.emitExecution(expr.place.execution, expr.pos, ctx, out);
       case PlaceKind.Param: {
+        // Bind-time parameters are constant over the full row axis, so every
+        // valid historical read is the same fixed value.
         const pid = this.paramIds.get(expr.place.param);
         if (pid === undefined) {
           return fatal(`unmapped GPU parameter '${expr.place.param.name}'`);
@@ -1596,6 +2109,28 @@ class WgslEmitter {
       default:
         return unreachableGpuPlace(expr.place);
     }
+  }
+
+  private historyOffset(offset: IrExpr | null, pos: Pos): number | null {
+    if (offset === null) return 0;
+    if (offset.kind !== IrKind.Const) {
+      return this.unsupported(
+        'history-layout-unimplemented',
+        'GPU history offsets require a non-negative const int',
+        pos,
+      );
+    }
+    if (
+      offset.type.kind !== TypeKind.Int ||
+      isNaValue(offset.value) ||
+      typeof offset.value !== 'number' ||
+      !Number.isSafeInteger(offset.value) ||
+      offset.value < 0 ||
+      offset.value > MAX_GPU_ROW
+    ) {
+      return null;
+    }
+    return offset.value;
   }
 
   private emitExecution(
@@ -1666,7 +2201,23 @@ class WgslEmitter {
       out,
     );
     const explicitArgs = receiver === null ? args : [receiver, ...args];
-    const callArgs = [ctx.state, ctx.lane, ctx.job, ctx.row, ...explicitArgs];
+    const child = ctx.frame.children.find(
+      candidate =>
+        candidate.slot === expr.slot && candidate.callee === expr.func,
+    );
+    if (child === undefined) {
+      return fatal(
+        `WGSL call slot ${expr.slot} for '${expr.func.name}' has no child frame`,
+      );
+    }
+    const callArgs = [
+      ctx.rootBase,
+      `${ctx.frameBase} + ${child.wordOffset}u`,
+      ctx.executionIndex,
+      ctx.job,
+      ctx.row,
+      ...explicitArgs,
+    ];
     const result = this.fresh();
     if (expr.kind === IrKind.CallMutableMethod) {
       if (path === null) {
@@ -1830,15 +2381,23 @@ class WgslEmitter {
     out: string[],
     pos: Pos,
   ): void {
-    const root = ctx.env.get(path.root);
-    if (root === undefined) {
-      this.unsupported(
-        'mutable-method-copyout-unimplemented',
-        `path root '${path.root.name}' is outside the active GPU frame`,
-        pos,
-      );
-    }
     let type = path.root.type;
+    if (path.fieldIndices.length === 0) {
+      if (!assignable(valueType, type)) {
+        fatal('ill-typed root write reached GPU lowering');
+      }
+      this.emitCurrentNameStore(
+        path.root,
+        this.coerce(value, valueType, type),
+        ctx,
+        out,
+      );
+      return;
+    }
+    const root = this.fresh('path_root');
+    out.push(
+      `var ${root}: ${this.wgslType(path.root.type)} = ${this.emitCurrentNameRead(path.root, ctx)};`,
+    );
     let target = root;
     const guards: string[] = [];
     for (const index of path.fieldIndices) {
@@ -1853,11 +2412,9 @@ class WgslEmitter {
       fatal('ill-typed user path write reached GPU lowering');
     }
     const assignment = `${target} = ${this.coerce(value, valueType, type)};`;
-    if (guards.length === 0) {
-      out.push(assignment);
-    } else {
-      out.push(`if (${guards.join(' && ')}) { ${assignment} }`);
-    }
+    const update = [assignment];
+    this.emitCurrentNameStore(path.root, root, ctx, update);
+    out.push(`if (${guards.join(' && ')}) {`, ...indent(update, 1), '}');
   }
 
   private constant(type: Type, value: unknown, pos: Pos): string {
@@ -1975,6 +2532,113 @@ class WgslEmitter {
           `no empty GPU value for ${formatType(type)}`,
         );
     }
+  }
+
+  private stateIndex(base: string, offset: number): string {
+    return offset === 0 ? base : `${base} + ${offset}u`;
+  }
+
+  private emitStateLoad(type: Type, base: string, wordOffset = 0): string {
+    const word = (offset: number): string =>
+      `tea_state_load(${this.stateIndex(base, wordOffset + offset)})`;
+    switch (type.kind) {
+      case TypeKind.Bool:
+      case TypeKind.Void:
+        return word(0);
+      case TypeKind.Int:
+        return `TeaInt(${word(0)}, bitcast<i32>(${word(1)}))`;
+      case TypeKind.Float:
+        return `TeaFloat(${word(0)}, bitcast<f32>(${word(1)}))`;
+      case TypeKind.Enum:
+        return `TeaEnum(${word(0)}, ${word(1)})`;
+      case TypeKind.String:
+        return `TeaString(${word(0)}, ${word(1)})`;
+      case TypeKind.Color:
+        return `TeaColor(${word(0)}, ${word(1)})`;
+      case TypeKind.UserType: {
+        let nestedOffset = wordOffset + 1;
+        const fields = type.fields.map(field => {
+          const value = this.emitStateLoad(field.type, base, nestedOffset);
+          nestedOffset +=
+            this.layouts[this.physicalLayoutOf(field.type)].byteSize / 4;
+          return value;
+        });
+        return `${this.userName(type)}(${word(0)}${fields.map(value => `, ${value}`).join('')})`;
+      }
+      default:
+        return this.unsupported(
+          'host-value-type-unsupported',
+          `cannot load ${formatType(type)} from GPU frame state`,
+        );
+    }
+  }
+
+  private emitStateStore(
+    type: Type,
+    base: string,
+    value: string,
+    out: string[],
+    indentLevel = 0,
+    wordOffset = 0,
+  ): void {
+    const line = (text: string): void => {
+      out.push(`${'  '.repeat(indentLevel)}${text}`);
+    };
+    const target = (offset: number): string =>
+      this.stateIndex(base, wordOffset + offset);
+    switch (type.kind) {
+      case TypeKind.Bool:
+      case TypeKind.Void:
+        line(`tea_state_store(${target(0)}, ${value});`);
+        return;
+      case TypeKind.Int:
+      case TypeKind.Float:
+        line(`tea_state_store(${target(0)}, ${value}.valid);`);
+        line(`tea_state_store(${target(1)}, bitcast<u32>(${value}.value));`);
+        return;
+      case TypeKind.Enum:
+      case TypeKind.String:
+      case TypeKind.Color:
+        line(`tea_state_store(${target(0)}, ${value}.valid);`);
+        line(`tea_state_store(${target(1)}, ${value}.value);`);
+        return;
+      case TypeKind.UserType: {
+        line(`tea_state_store(${target(0)}, ${value}.valid);`);
+        let nestedOffset = wordOffset + 1;
+        type.fields.forEach((field, index) => {
+          this.emitStateStore(
+            field.type,
+            base,
+            `${value}.f${index}`,
+            out,
+            indentLevel,
+            nestedOffset,
+          );
+          nestedOffset +=
+            this.layouts[this.physicalLayoutOf(field.type)].byteSize / 4;
+        });
+        return;
+      }
+      default:
+        this.unsupported(
+          'host-value-type-unsupported',
+          `cannot store ${formatType(type)} in GPU frame state`,
+        );
+    }
+  }
+
+  private emitStateCopy(
+    type: Type,
+    targetBase: string,
+    sourceBase: string,
+    out: string[],
+    indentLevel = 0,
+  ): void {
+    const value = this.fresh('state_copy');
+    out.push(
+      `${'  '.repeat(indentLevel)}let ${value}: ${this.wgslType(type)} = ${this.emitStateLoad(type, sourceBase)};`,
+    );
+    this.emitStateStore(type, targetBase, value, out, indentLevel);
   }
 
   private coerce(value: string, from: Type, to: Type): string {
@@ -2213,12 +2877,6 @@ class WgslEmitter {
     return id;
   }
 
-  private rootEnvironment(owner: string): Map<Name, string> {
-    return new Map(
-      this.persistentRoots.map((root, index) => [root, `${owner}.r${index}`]),
-    );
-  }
-
   private mutableResultName(func: IrFunc): string {
     return (
       this.mutableResultNames.get(func) ??
@@ -2232,27 +2890,22 @@ class WgslEmitter {
 }
 
 interface WgslContext {
-  readonly env: Map<Name, string>;
+  readonly frame: WgslFrameTemplateLayout;
+  readonly frameBase: string;
+  readonly rootBase: string;
+  readonly functionLocals: ReadonlyMap<Name, string>;
   readonly allowDenseEmit: boolean;
   readonly allowEffect: boolean;
-  readonly state: string;
-  readonly lane: string;
+  readonly executionIndex: string;
   readonly job: string;
   readonly row: string;
   readonly chunkRow: string;
 }
 
-function compareInitializers(left: Name, right: Name): number {
-  const a = left.init?.pos;
-  const b = right.init?.pos;
-  if (a === undefined || b === undefined) {
-    return a === b ? 0 : a === undefined ? 1 : -1;
-  }
-  return (
-    a.base.filename.localeCompare(b.base.filename) ||
-    a.line - b.line ||
-    a.col - b.col
-  );
+interface WgslNameLocation {
+  readonly frame: WgslFrameTemplateLayout;
+  readonly frameBase: string;
+  readonly local: WgslFrameLocalLayout;
 }
 
 function isGpuResultType(type: Type): boolean {
@@ -2408,6 +3061,7 @@ function walkStmt(stmt: IrStmt, visit: (stmt: IrStmt) => void): void {
     case IrKind.ExprStmt:
       walkExpr(stmt.x, () => {}, visit);
       return;
+    case IrKind.InitName:
     case IrKind.WriteName:
       walkExpr(stmt.value, () => {}, visit);
       return;
@@ -2537,6 +3191,7 @@ function walkStmtChildren(
     case IrKind.ExprStmt:
       child(stmt.x);
       return;
+    case IrKind.InitName:
     case IrKind.WriteName:
     case IrKind.UpdateValuePath:
       child(stmt.value);
@@ -2553,50 +3208,6 @@ function walkStmtChildren(
     default:
       return unreachableGpuStmt(stmt);
   }
-}
-
-function initializerDependsOnCurrentRow(
-  expr: IrExpr,
-  allowedNames: ReadonlySet<Name> = new Set(),
-  activeFuncs: ReadonlySet<IrFunc> = new Set(),
-): boolean {
-  let depends = false;
-  walkExpr(expr, node => {
-    if (node.kind === IrKind.HistRead) {
-      if (
-        node.place.kind === PlaceKind.Series ||
-        node.place.kind === PlaceKind.Execution ||
-        node.place.kind === PlaceKind.Request ||
-        (node.place.kind === PlaceKind.Name &&
-          node.place.name.storage === 'perBar' &&
-          !allowedNames.has(node.place.name))
-      ) {
-        depends = true;
-      }
-      return;
-    }
-    if (
-      node.kind !== IrKind.CallFunc &&
-      node.kind !== IrKind.CallConstMethod &&
-      node.kind !== IrKind.CallMutableMethod
-    ) {
-      return;
-    }
-    if (activeFuncs.has(node.func)) {
-      depends = true;
-      return;
-    }
-    const nextFuncs = new Set(activeFuncs);
-    nextFuncs.add(node.func);
-    const names = new Set<Name>([...node.func.params, ...node.func.locals]);
-    if (node.func.callMode !== 'free') {
-      names.add(node.func.receiver);
-    }
-    if (initializerDependsOnCurrentRow(node.func.body, names, nextFuncs)) {
-      depends = true;
-    }
-  });
-  return depends;
 }
 
 function unreachableGpuExpr(expr: never): never {

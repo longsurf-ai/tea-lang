@@ -121,12 +121,14 @@ function arrayStateModule(): TeaModule {
     requests: [],
     init() {},
     bind() {},
-    inits: {
-      '0:0': rt => rt.callCollection('array.from', ARRAY, [0]),
-      '0:1': rt => rt.callCollection('array.from', ARRAY, [0]),
-    },
     funcs: {},
     main(rt, fr) {
+      if (rt.needsInit(fr, 0)) {
+        rt.initialize(fr, 0, rt.callCollection('array.from', ARRAY, [0]));
+      }
+      if (rt.needsInit(fr, 1)) {
+        rt.initialize(fr, 1, rt.callCollection('array.from', ARRAY, [0]));
+      }
       for (let slot = 0; slot < 2; slot += 1) {
         const mutation = rt.mutateCollection(
           'array.push',
@@ -296,11 +298,11 @@ describe('aggregate Ring and commit integration', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {
-        '0:0': rt => rt.callCollection('array.from', ARRAY, [7]),
-      },
       funcs: {},
       main(rt, fr) {
+        if (rt.needsInit(fr, 0)) {
+          rt.initialize(fr, 0, rt.callCollection('array.from', ARRAY, [7]));
+        }
         if (rt.execution(0, 0) === 1) {
           const before = rt.read(fr, 0, 0);
           let failedCode: string | null = null;
@@ -409,12 +411,15 @@ describe('aggregate Ring and commit integration', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {
-        '0:0': rt =>
-          rt.newUser(HOLDER, [rt.callCollection('array.from', ARRAY, [0])]),
-      },
       funcs: {},
       main(rt, fr) {
+        if (rt.needsInit(fr, 0)) {
+          rt.initialize(
+            fr,
+            0,
+            rt.newUser(HOLDER, [rt.callCollection('array.from', ARRAY, [0])]),
+          );
+        }
         const current = rt.read(fr, 0, 0);
         const values = rt.userField(current, HOLDER, 0);
         const mutation = rt.mutateCollection('array.push', ARRAY, values, [
@@ -496,7 +501,6 @@ describe('aggregate request ownership', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {},
       funcs: {},
       main(rt, fr) {
         rt.write(fr, 0, rt.callCollection('array.from', ARRAY, [41]));
@@ -535,7 +539,6 @@ describe('aggregate request ownership', () => {
         rt.bindRequestOptions(0, false, false, false, 0);
         rt.bindRequest(0, 'LEAF', '');
       },
-      inits: {},
       funcs: {},
       main(rt, fr) {
         rt.write(fr, 0, rt.request(0, 0));
@@ -569,7 +572,6 @@ describe('aggregate request ownership', () => {
         rt.bindRequestOptions(0, false, false, false, 0);
         rt.bindRequest(0, 'MID', '');
       },
-      inits: {},
       funcs: {},
       main(rt) {
         rt.emit(
@@ -657,7 +659,6 @@ describe('aggregate request ownership', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {},
       funcs: {},
       main(rt, fr) {
         rt.write(
@@ -700,7 +701,6 @@ describe('aggregate request ownership', () => {
       bind(rt) {
         rt.bindRequestOptions(0, false, false, false, 0);
       },
-      inits: {},
       funcs: {},
       main(rt) {
         const symbol = rt.execution(0, 0) === 1 ? 'Y' : 'X';
@@ -769,7 +769,6 @@ describe('aggregate request ownership', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {},
       funcs: {},
       main(rt, fr) {
         rt.write(fr, 0, rt.series(0, 0));
@@ -819,11 +818,11 @@ describe('aggregate request ownership', () => {
       bind(rt) {
         rt.bindRequestOptions(0, false, false, false, 0);
       },
-      inits: {
-        '0:0': rt => rt.callCollection('array.from', ARRAY, [0]),
-      },
       funcs: {},
       main(rt, fr) {
+        if (rt.needsInit(fr, 0)) {
+          rt.initialize(fr, 0, rt.callCollection('array.from', ARRAY, [0]));
+        }
         const mutation = rt.mutateCollection(
           'array.push',
           ARRAY,
@@ -924,7 +923,6 @@ describe('aggregate request ownership', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {},
       funcs: {},
       main(rt, fr) {
         rt.write(
@@ -981,7 +979,6 @@ describe('aggregate request ownership', () => {
         rt.bindRequest(0, 'X', '');
         rt.bindRequest(1, 'X', '');
       },
-      inits: {},
       funcs: {},
       main(rt) {
         rt.emit(0, 0, rt.callCollection('array.size', INT, [rt.request(0, 0)]));
@@ -1064,7 +1061,6 @@ describe('aggregate request ownership', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {},
       funcs: {},
       main(rt, fr) {
         rt.write(fr, 0, rt.callCollection('array.from', ARRAY, [7]));
@@ -1097,7 +1093,6 @@ describe('aggregate request ownership', () => {
       bind(rt) {
         rt.bindRequestOptions(0, false, false, false, 0);
       },
-      inits: {},
       funcs: {},
       main(rt) {
         rt.emit(
@@ -1170,11 +1165,11 @@ describe('aggregate request ownership', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {
-        '0:1': rt => rt.callCollection('array.from', ARRAY, [99]),
-      },
       funcs: {},
       main(rt, fr) {
+        if (rt.needsInit(fr, 1)) {
+          rt.initialize(fr, 1, rt.callCollection('array.from', ARRAY, [99]));
+        }
         rt.write(
           fr,
           0,
@@ -1228,7 +1223,6 @@ describe('aggregate request ownership', () => {
         rt.bindRequestOptions(0, false, false, false, 0);
         rt.bindRequest(0, 'X', '');
       },
-      inits: {},
       funcs: {},
       main(rt, fr) {
         rt.write(fr, 0, rt.callCollection('array.from', ARRAY, [7]));
@@ -1278,7 +1272,6 @@ describe('runtime boundaries', () => {
         escaped = rt.callCollection('array.from', ARRAY, [7]);
         rt.write(fr, 0, escaped);
       },
-      inits: {},
       funcs: {},
       main(rt, fr) {
         if (escaped === undefined) {
@@ -1395,7 +1388,6 @@ describe('runtime boundaries', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {},
       funcs: {},
       main(rt, fr) {
         rt.frame(fr, requestLargeFrame ? 0 : 1);

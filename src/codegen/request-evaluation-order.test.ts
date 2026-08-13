@@ -101,7 +101,7 @@ describe('request context evaluation order', () => {
 
     const js = generate(program);
     const rootBind = js.lastIndexOf('bind(rt, fr)');
-    const bind = js.slice(rootBind, js.indexOf('inits:', rootBind));
+    const bind = js.slice(rootBind, js.indexOf('funcs:', rootBind));
     expect(bind).toContain('rt.bindRequestOptions(0,');
     expect(bind).not.toContain('rt.bindRequest(0,');
     expect(js).toContain('rt.requestFor(0,');
@@ -118,7 +118,7 @@ describe('request context evaluation order', () => {
 
     const js = generate(program);
     const rootBind = js.lastIndexOf('bind(rt, fr)');
-    const bind = js.slice(rootBind, js.indexOf('inits:', rootBind));
+    const bind = js.slice(rootBind, js.indexOf('funcs:', rootBind));
     const executionRead = bind.indexOf('rt.execution(0, 0)');
     const optionCall = bind.indexOf('rt.bindRequestOptions(0,');
     expect(executionRead).toBeGreaterThanOrEqual(0);

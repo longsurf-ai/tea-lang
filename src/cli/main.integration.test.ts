@@ -57,7 +57,7 @@ describe('CLI execution host', () => {
     );
     expect(output).toContain('bindings    3');
     expect(output).toContain('# Sweep Results');
-    expect(output).toContain('# Sweep Effect Counts');
+    expect(output).not.toContain('# Sweep Effect Counts');
     expect(output).toMatch(/0\s+2\s+1\s+2/);
     expect(output).toMatch(/2\s+2\s+2\s+0\s+4/);
   });

@@ -297,7 +297,22 @@ interface FrameImpl extends Frame {
   readonly fid: number;
   readonly layout: FrameLayout;
   readonly rings: Ring[];
+  // Physical allocation is independent from semantic activation. Root starts
+  // active; a child call marks scratchActive tentatively, and final commit
+  // promotes it to committedActive.
+  committedActive: boolean;
+  scratchActive: boolean;
+  // Persistent initialization has a durable committed bit and a tentative
+  // scratch bit. The latter follows row rollback/provisional semantics just
+  // like the Ring scratch value it qualifies.
+  readonly committedInitialization: boolean[];
+  readonly scratchInitialization: boolean[];
   readonly subs: (FrameImpl | null)[];
+}
+
+interface VaripSnapshot {
+  readonly value: Value;
+  readonly initialized: boolean;
 }
 
 interface ResultBuilder {
@@ -493,7 +508,8 @@ class JSRuntime implements Runtime, BoundProgram {
   // the data upfront — including varip accumulated by prior COMPLETED
   // provisional ticks of the same row.
   private suspendedRow = -1;
-  private varipSnapshot: Map<Ring, Value> | null = null;
+  private varipSnapshot: Map<Ring, VaripSnapshot> | null = null;
+  private activationSnapshot: Map<FrameImpl, boolean> | null = null;
   private rootFrame: FrameImpl | null = null;
   // module.bind needs real frame identity for input aliases/UDFs before bound
   // capacities are known. Its frames therefore use scratch-only rings and are
@@ -579,12 +595,12 @@ class JSRuntime implements Runtime, BoundProgram {
         // bound depth reports can size rings. These scratch-only Rings are a
         // temporary fixed-value owner and are released before final sizing.
         this.provisionalBindFrames = true;
-        this.rootFrame = this.newFrame(0);
+        this.rootFrame = this.newFrame(0, true);
         this.module.bind(this, this.rootFrame);
         this.provisionalBindFrames = false;
         this.rootFrame = null;
         this.releaseRingStorage();
-        this.rootFrame = this.newFrame(0);
+        this.rootFrame = this.newFrame(0, true);
         this.inputs = module.manifest.params.map((spec, pid) => ({
           spec,
           value: this.paramValues[pid],
@@ -1057,7 +1073,7 @@ class JSRuntime implements Runtime, BoundProgram {
 
   // ---- frames ---------------------------------------------------------------
 
-  private newFrame(fid: number): FrameImpl {
+  private newFrame(fid: number, active = false): FrameImpl {
     const layout = this.module.manifest.frames[fid];
     if (layout === undefined) {
       return fatal(`module has no frame layout ${fid}`);
@@ -1068,16 +1084,15 @@ class JSRuntime implements Runtime, BoundProgram {
         kind: 'frame',
         fid,
         layout,
+        committedActive: active,
+        scratchActive: active,
         rings: layout.locals.map((local, slot) =>
           this.newRing(fid, slot, local.layout, local.storage, local.depth),
         ),
+        committedInitialization: layout.locals.map(() => false),
+        scratchInitialization: layout.locals.map(() => false),
         subs: layout.subs.map(() => null),
       };
-      // A frame created mid-execution seeds its scratch immediately (its
-      // first execution is the current one).
-      if (this.phase === 'executing' && this.cursor >= 0) {
-        this.resetFrameScratch(frame, false);
-      }
       return frame;
     } catch (error) {
       this.releaseRingStorageSince(leaseCheckpoint);
@@ -1139,44 +1154,84 @@ class JSRuntime implements Runtime, BoundProgram {
   }
 
   // Execution-start scratch protocol (docs/runtime.md): perBar resets to na;
-  // var/varip seed from the last committed value — and until anything is
-  // committed, their init thunks re-run each execution (a provisional first
-  // row rolls back to its initializer). varip alone keeps its scratch
-  // across same-row re-executions.
+  // initialized var/varip seed from their last committed value. An
+  // uninitialized persistent slot stays empty and eligible for its lexical
+  // InitName statement. varip alone keeps a successful same-row candidate.
   private resetFrameScratch(frame: FrameImpl, sameRow: boolean): void {
+    if (!frame.scratchActive) {
+      return;
+    }
     frame.layout.locals.forEach((local, slot) => {
       const ring = frame.rings[slot];
       if (local.storage === Storage.Varip && sameRow) {
         return;
       }
       if (local.storage === Storage.Var || local.storage === Storage.Varip) {
-        if (ring.hasCommitted()) {
+        if (frame.committedInitialization[slot]) {
           ring.resetScratch(ring.lastCommitted());
+          frame.scratchInitialization[slot] = true;
           return;
         }
         ring.resetScratch(ring.emptyValue);
-        const thunk = this.module.inits[`${frame.fid}:${slot}`];
-        if (thunk !== undefined) {
-          ring.setScratch(thunk(this, frame));
-        }
+        frame.scratchInitialization[slot] = false;
         return;
       }
       ring.resetScratch(ring.emptyValue);
+      frame.scratchInitialization[slot] = false;
     });
     for (const sub of frame.subs) {
       if (sub !== null) {
-        this.resetFrameScratch(sub, sameRow);
+        sub.scratchActive =
+          sub.committedActive || (sameRow && sub.scratchActive);
+        if (sub.scratchActive) {
+          this.resetFrameScratch(sub, sameRow);
+        }
       }
     }
   }
 
   private commitFrame(frame: FrameImpl): void {
-    for (const ring of frame.rings) {
-      ring.commit();
+    if (!frame.scratchActive) {
+      return;
     }
+    frame.committedActive = true;
+    frame.rings.forEach((ring, slot) => {
+      const storage = frame.layout.locals[slot]?.storage;
+      if (storage === Storage.Var || storage === Storage.Varip) {
+        frame.committedInitialization[slot] = frame.scratchInitialization[slot];
+      }
+      ring.commit();
+      frame.scratchInitialization[slot] = false;
+    });
     for (const sub of frame.subs) {
       if (sub !== null) {
         this.commitFrame(sub);
+      }
+    }
+    frame.scratchActive = frame.fid === 0;
+  }
+
+  private captureActivation(
+    frame: FrameImpl,
+    out: Map<FrameImpl, boolean>,
+  ): Map<FrameImpl, boolean> {
+    out.set(frame, frame.scratchActive);
+    for (const sub of frame.subs) {
+      if (sub !== null) {
+        this.captureActivation(sub, out);
+      }
+    }
+    return out;
+  }
+
+  private restoreActivation(
+    frame: FrameImpl,
+    snapshot: ReadonlyMap<FrameImpl, boolean>,
+  ): void {
+    frame.scratchActive = snapshot.get(frame) ?? frame.committedActive;
+    for (const sub of frame.subs) {
+      if (sub !== null) {
+        this.restoreActivation(sub, snapshot);
       }
     }
   }
@@ -1204,6 +1259,10 @@ class JSRuntime implements Runtime, BoundProgram {
     this.executedRow = row;
     const attempt = this.shared.heap.beginAttempt(`row:${row}`);
     this.heapAttempt = attempt;
+    this.activationSnapshot = this.captureActivation(
+      this.mustRoot(),
+      new Map(),
+    );
     const retryAfterAbort = sameRow && this.varipSnapshot !== null;
     if (!retryAfterAbort) {
       // Capture the state that existed before this attempt. On a new row,
@@ -1232,11 +1291,14 @@ class JSRuntime implements Runtime, BoundProgram {
           provisional ? 'provisional-candidate' : 'final-candidate',
         ),
       );
-      const rowPublication = this.snapshotPublication();
+      const rowPublication = this.snapshotPublication(
+        this.wantsDenseOutputs(row),
+      );
       if (provisional) {
         publication.publish();
         this.heapAttempt = null;
         this.varipSnapshot = null;
+        this.activationSnapshot = null;
         provisionalPublication = rowPublication;
       } else {
         this.pendingFinalCommit = {
@@ -1250,6 +1312,10 @@ class JSRuntime implements Runtime, BoundProgram {
         this.heapAttempt = null;
       }
       this.discardAttemptScratch(this.mustRoot());
+      if (this.activationSnapshot !== null) {
+        this.restoreActivation(this.mustRoot(), this.activationSnapshot);
+        this.activationSnapshot = null;
+      }
       for (const ring of this.requestRings) {
         ring?.resetScratch(ring.emptyValue);
       }
@@ -1274,16 +1340,25 @@ class JSRuntime implements Runtime, BoundProgram {
 
   private captureVarip(
     frame: FrameImpl,
-    out: Map<Ring, Value>,
+    out: Map<Ring, VaripSnapshot>,
     sameRow: boolean,
-  ): Map<Ring, Value> {
+  ): Map<Ring, VaripSnapshot> {
+    if (!frame.scratchActive) {
+      return out;
+    }
     frame.layout.locals.forEach((local, slot) => {
       if (local.storage === Storage.Varip) {
         const ring = frame.rings[slot];
         if (sameRow) {
-          out.set(ring, ring.peek());
+          out.set(ring, {
+            value: ring.peek(),
+            initialized: frame.scratchInitialization[slot],
+          });
         } else if (ring.hasCommitted()) {
-          out.set(ring, ring.lastCommitted());
+          out.set(ring, {
+            value: ring.lastCommitted(),
+            initialized: frame.committedInitialization[slot],
+          });
         }
       }
     });
@@ -1296,6 +1371,9 @@ class JSRuntime implements Runtime, BoundProgram {
   }
 
   private restoreVarip(frame: FrameImpl): void {
+    if (!frame.scratchActive) {
+      return;
+    }
     frame.layout.locals.forEach((local, slot) => {
       if (local.storage !== Storage.Varip) {
         return;
@@ -1303,20 +1381,19 @@ class JSRuntime implements Runtime, BoundProgram {
       const ring = frame.rings[slot];
       const snapshot = this.varipSnapshot?.get(ring);
       if (snapshot !== undefined) {
-        ring.setScratch(snapshot);
+        ring.setScratch(snapshot.value);
+        frame.scratchInitialization[slot] = snapshot.initialized;
         return;
       }
-      // The ring was born during the aborted attempt: re-seed exactly as a
-      // fresh execution would.
-      if (ring.hasCommitted()) {
+      // The ring was born during the aborted attempt, or had no pre-attempt
+      // candidate: re-seed exactly as a fresh execution would.
+      if (frame.committedInitialization[slot]) {
         ring.resetScratch(ring.lastCommitted());
+        frame.scratchInitialization[slot] = true;
         return;
       }
       ring.resetScratch(ring.emptyValue);
-      const thunk = this.module.inits[`${frame.fid}:${slot}`];
-      if (thunk !== undefined) {
-        ring.setScratch(thunk(this, frame));
-      }
+      frame.scratchInitialization[slot] = false;
     });
     for (const sub of frame.subs) {
       if (sub !== null) {
@@ -1349,6 +1426,7 @@ class JSRuntime implements Runtime, BoundProgram {
     this.heapAttempt = null;
     this.pendingFinalCommit = null;
     this.varipSnapshot = null;
+    this.activationSnapshot = null;
     this.committedRows = row + 1;
     try {
       this.publishRow(row, false, pending.publication);
@@ -1455,15 +1533,30 @@ class JSRuntime implements Runtime, BoundProgram {
     this.requestRings.length = 0;
     this.pairViews.clear();
     this.varipSnapshot = null;
+    this.activationSnapshot = null;
   }
 
-  private snapshotPublication(): AttemptPublication {
+  private wantsDenseOutputs(row: number): boolean {
+    return (
+      this.sink?.capabilities?.denseRows !== 'final' || row === this.rows - 1
+    );
+  }
+
+  private wantsEffects(): boolean {
+    return this.sink !== null && this.sink.capabilities?.effects !== 'none';
+  }
+
+  private snapshotPublication(includeOutputs: boolean): AttemptPublication {
     return {
-      outputs: [...this.emitBuf].map(([outputId, channels]) => ({
-        outputId,
-        channels: Object.freeze([...channels]),
-      })),
-      effects: this.effectBuf.map(effect => ({...effect})),
+      outputs: includeOutputs
+        ? [...this.emitBuf].map(([outputId, channels]) => ({
+            outputId,
+            channels: Object.freeze([...channels]),
+          }))
+        : [],
+      effects: this.wantsEffects()
+        ? this.effectBuf.map(effect => ({...effect}))
+        : [],
     };
   }
 
@@ -1473,6 +1566,13 @@ class JSRuntime implements Runtime, BoundProgram {
     publication: AttemptPublication,
   ): void {
     if (this.sink === null) {
+      return;
+    }
+    if (
+      this.sink.capabilities?.denseRows === 'final' &&
+      row !== this.rows - 1 &&
+      publication.effects.length === 0
+    ) {
       return;
     }
     const rowPublication: RowPublication = {
@@ -1521,8 +1621,8 @@ class JSRuntime implements Runtime, BoundProgram {
         this.visitValueStorage(ring.layout, value, visit),
       );
     }
-    for (const [ring, value] of this.varipSnapshot ?? []) {
-      this.visitValueStorage(ring.layout, value, visit);
+    for (const [ring, snapshot] of this.varipSnapshot ?? []) {
+      this.visitValueStorage(ring.layout, snapshot.value, visit);
     }
   }
 
@@ -1617,9 +1717,10 @@ class JSRuntime implements Runtime, BoundProgram {
   }
 
   private discardAttemptScratch(frame: FrameImpl): void {
-    for (const ring of frame.rings) {
+    frame.rings.forEach((ring, slot) => {
       ring.resetScratch(ring.emptyValue);
-    }
+      frame.scratchInitialization[slot] = false;
+    });
     for (const sub of frame.subs) {
       if (sub !== null) {
         this.discardAttemptScratch(sub);
@@ -1631,6 +1732,7 @@ class JSRuntime implements Runtime, BoundProgram {
     frame.layout.locals.forEach((local, slot) => {
       if (local.storage !== Storage.Varip) {
         frame.rings[slot].resetScratch(frame.rings[slot].emptyValue);
+        frame.scratchInitialization[slot] = false;
       }
     });
     for (const sub of frame.subs) {
@@ -1759,6 +1861,45 @@ class JSRuntime implements Runtime, BoundProgram {
     ring.setScratch(v);
   }
 
+  needsInit(fr: Frame, slot: number): boolean {
+    const frame = fr as FrameImpl;
+    const local = frame.layout.locals[slot];
+    if (
+      local === undefined ||
+      (local.storage !== Storage.Var && local.storage !== Storage.Varip)
+    ) {
+      return fatal(
+        `needsInit requires a persistent slot; frame ${frame.fid} slot ${slot}`,
+      );
+    }
+    return !frame.scratchInitialization[slot];
+  }
+
+  initialize(fr: Frame, slot: number, v: Value): void {
+    const frame = fr as FrameImpl;
+    const local = frame.layout.locals[slot];
+    const ring = frame.rings[slot];
+    if (
+      local === undefined ||
+      ring === undefined ||
+      (local.storage !== Storage.Var && local.storage !== Storage.Varip)
+    ) {
+      return fatal(
+        `initialize requires a persistent slot; frame ${frame.fid} slot ${slot}`,
+      );
+    }
+    if (frame.scratchInitialization[slot]) {
+      return fatal(`frame ${frame.fid} slot ${slot} is already initialized`);
+    }
+    this.shared.aggregateLayouts.assertValue(
+      ring.layout,
+      v,
+      'Persistent initialization',
+    );
+    ring.setScratch(v);
+    frame.scratchInitialization[slot] = true;
+  }
+
   newUser(layout: LayoutId, fields: readonly Value[]): UserTypeValue {
     return newUserValue(this.shared.aggregateLayouts, layout, fields);
   }
@@ -1879,17 +2020,20 @@ class JSRuntime implements Runtime, BoundProgram {
 
   frame(fr: Frame, slot: number): Frame {
     const impl = fr as FrameImpl;
-    const existing = impl.subs[slot];
-    if (existing !== null) {
-      return existing;
-    }
     const spec = impl.layout.subs[slot];
     if (spec === undefined) {
       return fatal(`frame ${impl.fid} has no call-site slot ${slot}`);
     }
-    const created = this.newFrame(spec.fid);
-    impl.subs[slot] = created;
-    return created;
+    let child = impl.subs[slot];
+    if (child === null) {
+      child = this.newFrame(spec.fid);
+      impl.subs[slot] = child;
+    }
+    if (!child.scratchActive) {
+      child.scratchActive = true;
+      this.resetFrameScratch(child, false);
+    }
+    return child;
   }
 
   emit(oid: number, channel: number, v: Value): void {
@@ -1924,6 +2068,9 @@ class JSRuntime implements Runtime, BoundProgram {
       payload,
       `effect ${effectId} payload`,
     );
+    if (!this.wantsEffects()) {
+      return;
+    }
     this.effectBuf.push({
       effectId,
       payload: this.logicalEffectValue(spec.declaration.payload, payload),

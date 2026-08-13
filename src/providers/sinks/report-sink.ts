@@ -30,7 +30,6 @@ export interface SweepReportSnapshot {
   readonly declaration: ExecutionDeclaration;
   readonly rows: number;
   readonly finalOutputs: readonly DenseValue[];
-  readonly effectCounts: readonly number[];
 }
 
 abstract class ReportSinkBase implements OutputSink {
@@ -133,11 +132,11 @@ export class RunReportSink extends ReportSinkBase {
   }
 }
 
-// Retains O(outputs + effect schemas) state regardless of history length:
-// only each channel's latest final value and an integer count per effect id.
+// Retains O(outputs) state regardless of history length: only each channel's
+// latest final value. Sweeps intentionally decline sparse effect payloads.
 export class SweepReportSink extends ReportSinkBase {
+  readonly capabilities = {denseRows: 'final', effects: 'none'} as const;
   private readonly finalOutputs = new Map<number, DenseValue>();
-  private effectCounts: number[] = [];
 
   snapshot(): SweepReportSnapshot {
     return {
@@ -147,7 +146,6 @@ export class SweepReportSink extends ReportSinkBase {
         ...output,
         channels: [...output.channels],
       })),
-      effectCounts: [...this.effectCounts],
     };
   }
 
@@ -155,20 +153,8 @@ export class SweepReportSink extends ReportSinkBase {
     return this.denseSectionFrom([...this.finalOutputs.values()]);
   }
 
-  effectsSection(): ReportSection {
-    return {
-      title: 'Effect Counts',
-      columns: ['effect', 'count'],
-      rows: this.declaration.effects.map((effect, effectId) => [
-        effectLabel(effect, effectId),
-        this.effectCounts[effectId] ?? 0,
-      ]),
-    };
-  }
-
   protected reset(): void {
     this.finalOutputs.clear();
-    this.effectCounts = this.declaration.effects.map(() => 0);
   }
 
   protected capture(publication: RowPublication): void {
@@ -179,10 +165,6 @@ export class SweepReportSink extends ReportSinkBase {
         channels: [...output.channels],
       });
     }
-    for (const effect of publication.effects) {
-      this.effectCounts[effect.effectId] =
-        (this.effectCounts[effect.effectId] ?? 0) + 1;
-    }
   }
 }
 
@@ -190,6 +172,18 @@ export function composeOutputSinks(
   ...sinks: readonly OutputSink[]
 ): OutputSink {
   return {
+    capabilities: {
+      denseRows:
+        sinks.length > 0 &&
+        sinks.every(sink => sink.capabilities?.denseRows === 'final')
+          ? 'final'
+          : 'all',
+      effects:
+        sinks.length > 0 &&
+        sinks.every(sink => sink.capabilities?.effects === 'none')
+          ? 'none'
+          : 'all',
+    },
     declare(declaration) {
       for (const sink of sinks) {
         sink.declare(declaration);
@@ -250,21 +244,7 @@ export function sweepReportSections(
       ];
     }),
   };
-  const effects = snapshots[0]?.declaration.effects ?? [];
-  const counts: ReportSection = {
-    title: 'Sweep Effect Counts',
-    columns: [
-      'binding',
-      ...effects.map((effect, effectId) => effectLabel(effect, effectId)),
-    ],
-    rows: summary.bindings.map((binding, index) => [
-      binding.bindingIndex,
-      ...effects.map(
-        (_, effectId) => snapshots[index]?.effectCounts[effectId] ?? 0,
-      ),
-    ]),
-  };
-  return effects.length === 0 ? [results] : [results, counts];
+  return [results];
 }
 
 interface DenseColumn {

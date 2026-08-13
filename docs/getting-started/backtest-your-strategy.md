@@ -121,15 +121,15 @@ tea sweep examples/strategy-cpu-gpu.tea \
 ```
 
 Each binding has isolated runtime state and can eventually vary providers,
-symbols, or other inputs—not just parameters. The sweep reporter retains only
-final dense values and effect counts. The Bun CLI relays native Dawn execution
+symbols, or other inputs—not just parameters. The sweep reporter requests only
+final dense values and no effect payloads. The Bun CLI relays native Dawn execution
 to Node 22; set `TEA_GPU_NODE` if Node 22 is not discovered automatically.
 No path introduces a strategy compiler or host-side matching/accounting.
 
 See [Strategy model](../strategy.md) for the normative source contract and
 [GPU Lowering](../advanced/gpu-lowering.md) for the target boundary.
 
-For a fuller signal-driven example, `examples/ema-cross-strategy.tea` keeps
-two explicit EMA states, trades their crossovers with next-open execution,
-and runs unchanged through `tea run`, `tea run --gpu`, and `tea sweep` over
-the synthetic `examples/ema-cross-bars.csv` fixture.
+For a fuller signal-driven example, `examples/ema-cross-strategy.tea` uses
+`ta.ema`, `ta.crossover`, and `ta.crossunder` directly, trades the signals with
+next-open execution, and runs unchanged through `tea run`, `tea run --gpu`,
+and `tea sweep` over the synthetic `examples/ema-cross-bars.csv` fixture.

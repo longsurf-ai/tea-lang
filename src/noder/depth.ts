@@ -189,11 +189,6 @@ function collectDemands(
       scope: 'function',
       active,
     };
-    for (const local of expr.func.locals) {
-      if (local.init !== null) {
-        walkExpr(local.init, callee);
-      }
-    }
     walkExpr(expr.func.body, callee);
   };
 
@@ -225,11 +220,6 @@ function collectDemands(
     scope: 'root',
     active: new Set(),
   };
-  for (const name of rootNames) {
-    if (name.init !== null) {
-      walkExpr(name.init, root);
-    }
-  }
   for (const param of program.params) {
     walkExpr(param.active, root);
   }

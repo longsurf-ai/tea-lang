@@ -44,6 +44,21 @@ export function systemReportSection(
     reportRows.push(
       ['chunks', summary.chunks],
       ['dispatches', summary.dispatches],
+      ['gpu preparation', milliseconds(summary.timing.preparationMs)],
+      ['encode + submit', milliseconds(summary.timing.encodeSubmitMs)],
+      [
+        'completion + readback',
+        milliseconds(summary.timing.completionReadbackMs),
+      ],
+      [
+        'decode + publication',
+        milliseconds(summary.timing.decodePublicationMs),
+      ],
+      ['cache mode', summary.cache.mode],
+      ['workgroup size', summary.cache.workgroupSize],
+      ['cache / execution', bytes(summary.cache.cachedBytesPerExecution)],
+      ['cache / workgroup', bytes(summary.cache.bytesPerWorkgroup)],
+      ['cached segments', summary.cache.segmentIds.length],
     );
   }
   return {title: 'System', columns: ['stat', 'value'], rows: reportRows};
@@ -85,6 +100,10 @@ export function reportValue(value: Value): ReportCell {
 
 function milliseconds(value: number): string {
   return `${value.toFixed(2)} ms`;
+}
+
+function bytes(value: number): string {
+  return `${value} B`;
 }
 
 function renderSection(section: ReportSection): string {

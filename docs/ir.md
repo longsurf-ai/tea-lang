@@ -14,12 +14,12 @@ source ─ parse ─ check ─ buildProgram ─▶ Program ─┬─▶ JS modul
                                                        codegen
 
 JS module   + runtime inputs ─▶ JSRuntime instance ─▶ bar loop / CPU batch
-WGSL module + runtime jobs   ─▶ physical GPU plan  ─▶ dispatch / readback
+WGSL module + BindInputs[]   ─▶ physical GPU plan  ─▶ dispatch / readback
 ```
 
 - **Noding** (`noder.buildProgram`) turns checked syntax into the Program.
 - **Lowering** is Program → target artifact in `src/codegen/`. Both JS and WGSL
-  lowering are bind-independent: they receive no dataset, job grid, result
+  lowering are bind-independent: they receive no dataset, binding grid, result
   capacity, or device. The target runtime supplies those facts later.
 - The checker is a separate semantic pass over syntax (the types2 shape); the
   noder consumes the checked package and its exact per-context facts and never
@@ -164,16 +164,19 @@ places to its depth pass for annotation.
   by walking, produced at the boundary that needs them — exactly how Go keeps
   a pointer graph in memory and lets the unified-IR writer assign indices at
   the boundary). A Name carries storage (`perBar` | `var` | `varip` — the
-  persistence axis, orthogonal to qualifiers), a first-bar `init` expression
-  for var/varip storage (evaluated once by the runtime; no synthetic first-bar
-  guards in the body), type and qualifier copied from the semantic object, and
-  a **history depth resolvable no later than bind time** (non-negotiable):
+  persistence axis, orthogonal to qualifiers), type and qualifier copied from
+  the semantic object, and a **history depth resolvable no later than bind
+  time** (non-negotiable):
   `none` (no buffer materializes), `const`, `bound` (an immutable root-safe
   expression no later than `simple`, evaluated at bind), or `capped` (dynamic
-  offsets under an explicit bind-resolvable `max_bars_back` cap). Init is owned
-  by noding and depth by the noder's depth pass. Series inputs, execution
-  inputs, params, and request results carry the same depth field, so every
-  history demand is resolved before execution.
+  offsets under an explicit bind-resolvable `max_bars_back` cap). A persistent
+  declaration is represented separately by `InitName` at its lexical position
+  in a body. This keeps evaluation order and control flow explicit: the value
+  is evaluated only after execution reaches the statement and the runtime
+  reports that the slot is still semantically uninitialized. Depth is owned by
+  the noder's depth pass. Series inputs, execution inputs, params, and request
+  results carry the same depth field, so every history demand is resolved
+  before execution.
 - **outputs**: statically-declared effect channels (plot/hline/
   alertcondition), hoisted so the host knows every channel before the first
   bar. Three argument buckets: `staticArgs` (compile-time constants),
@@ -221,8 +224,9 @@ places to its depth pass for annotation.
   IrFunc's frame layout is its hidden receiver (for methods), explicit params,
   and local Names plus one sub-frame per stateful call site (selected by that
   site's `SlotId`); frames nest along the static call graph (acyclic —
-  recursion is rejected), so the runtime enumerates and pre-allocates every
-  frame at bind time. Two `ma(close, 10)` call sites share one compiled body
+  recursion is rejected), so the manifest enumerates the complete physical
+  layout while the runtime may materialize subframes lazily. Physical presence
+  is distinct from transactional activation. Two `ma(close, 10)` call sites share one compiled body
   but own two frames — and two `ema` sub-frames within. `ta.*` rides this exact
   path as prelude code; nothing is specialized for technical-analysis
   builtins.
@@ -386,9 +390,11 @@ unreachable never enter `requests` — dead-request elimination by construction.
 - `Program.init` stays empty for now — hoisting const/input/simple work out
   of the bar loop is a later optimization, not a correctness requirement.
 - `Program.packageGlobals` is the explicit dependency-ordered list of reachable
-  imported package-state Names. Each uses the ordinary rollback-aware
-  `Name.init` protocol; it is per Program context/binding, not process state.
-  Import-only, type-only, and unreachable package globals are absent.
+  imported package-state Names. Their dependency-ordered `InitName` statements
+  are prepended to that Program context's body and use the ordinary
+  rollback-aware declaration protocol; the state is per Program
+  context/binding, not process state. Import-only, type-only, and unreachable
+  package globals are absent.
 - Depth resolution walks UDF bodies in call-site context. Constant and
   immutable root-safe offsets no later than `simple` are substituted through
   parameters and single-write root locals, including aliases of `ParamInput`
@@ -412,10 +418,10 @@ their package names nor gives them privileged nodes or ABI slots. Its
 fail-closed audit describes only which generic Program constructs its current
 target profile can represent.
 
-Scenario jobs are not Program facts. After codegen, the CPU runtime may bind
+Concrete bindings are not Program facts. After codegen, the CPU runtime may bind
 one ordinary JS module repeatedly to isolated providers/parameters and capture
 committed emissions through an `OutputSink`. The GPU runtime binds one ordinary
-WGSL artifact to concrete jobs, packs buffers, constructs dispatch/readback
+WGSL artifact to ordered `BindInputs[]`, packs buffers, constructs dispatch/readback
 metadata, and submits it to an injected device. Those runtime contracts do not
 change the Program or reinterpret Tea matching/accounting semantics. See
 [GPU Lowering](advanced/gpu-lowering.md).

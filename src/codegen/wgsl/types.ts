@@ -124,6 +124,64 @@ export interface WgslEffectSchema {
   readonly declaration: EffectSpec;
 }
 
+export interface WgslStateLocalLayout {
+  readonly name: string;
+  readonly storage: 'perBar' | 'var';
+  readonly scratchWordOffset: number;
+  readonly valueWordCount: number;
+  readonly committedInitWordOffset: number | null;
+  readonly tentativeInitWordOffset: number | null;
+  readonly historyWordOffset: number | null;
+  readonly historyCapacity: number;
+}
+
+export interface WgslStateFrameLayout {
+  readonly id: number;
+  readonly owner: string;
+  readonly committedActivationWordOffset: number;
+  readonly tentativeActivationWordOffset: number;
+  readonly activationEncoding: 'absolute-row-plus-one';
+  readonly wordCount: number;
+  readonly locals: readonly WgslStateLocalLayout[];
+  readonly children: readonly {
+    readonly slot: number;
+    readonly templateId: number;
+    readonly wordOffset: number;
+  }[];
+}
+
+export interface WgslOverrideSpec {
+  readonly numericId: number;
+  readonly id: string;
+  readonly defaultValue: number;
+}
+
+export interface WgslCacheSegment {
+  readonly id: string;
+  readonly rank: number;
+  readonly owner: string;
+  readonly kind: 'header' | 'activation' | 'local';
+  readonly storageWordOffset: number;
+  readonly cacheWordOffset: number;
+  readonly wordCount: number;
+  readonly cacheEnd: number;
+  readonly estimatedReadsPerRow: number;
+  readonly estimatedWritesPerRow: number;
+}
+
+export interface WgslCacheContract {
+  readonly storageEntryPoint: string;
+  readonly cachedEntryPoint: string;
+  readonly overrides: {
+    readonly workgroupSize: WgslOverrideSpec;
+    readonly cacheWordsPerExecution: WgslOverrideSpec;
+    readonly cacheAllocationWords: WgslOverrideSpec;
+  };
+  // Runtime selects only a complete ranked prefix. Physical storage offsets
+  // may be discontiguous; scratch/init/history for one local move together.
+  readonly segments: readonly WgslCacheSegment[];
+}
+
 export interface CompiledWgslProgram {
   readonly target: 'webgpu-wgsl';
   readonly numeric: WgslNumericContract;
@@ -134,7 +192,7 @@ export interface CompiledWgslProgram {
     readonly group: number;
     readonly jobsBinding: number;
     readonly seriesBinding: number;
-    readonly laneStatesBinding: number;
+    readonly executionStatesBinding: number;
     readonly resultsBinding: number;
     readonly effectStatusBinding: number;
     readonly effectRecordsBinding: number;
@@ -157,8 +215,16 @@ export interface CompiledWgslProgram {
   readonly parameterByteStride: number;
   readonly seriesScalarLayout: number;
   readonly seriesScalarByteStride: number;
-  readonly laneStateLayout: number;
-  readonly laneStateByteStride: number;
+  readonly executionStateLayout: number;
+  readonly executionStateByteStride: number;
+  readonly state: {
+    readonly initializedWordOffset: 0;
+    readonly nextRowWordOffset: 1;
+    readonly rootFrameWordOffset: 2;
+    readonly wordsPerExecution: number;
+    readonly frames: readonly WgslStateFrameLayout[];
+  };
+  readonly cache: WgslCacheContract;
   readonly resultCellLayout: number;
   readonly resultCellByteStride: number;
   readonly effectStatusLayout: number;
@@ -168,7 +234,7 @@ export interface CompiledWgslProgram {
   readonly effectPayloadWordCapacity: number;
   readonly maxEffectsPerRow: number;
   readonly literalStrings: readonly string[];
-  // The backend-neutral binding schema, in pid order. Each physical lane
+  // The backend-neutral binding schema, in pid order. Each execution
   // carries one fixed-width slot for every entry.
   readonly params: readonly ParamSpec[];
   readonly paramActive: readonly boolean[];

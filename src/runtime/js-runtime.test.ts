@@ -133,9 +133,9 @@ const EMA_MODULE: TeaModule = {
   requests: [],
   init() {},
   bind() {},
-  inits: {'0:0': () => NaN},
   funcs: {},
   main(rt, fr) {
+    if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, NaN);
     const e = num(rt.read(fr, 0, 0));
     const close = rt.series(0, 0);
     rt.write(fr, 0, Number.isNaN(e) ? close : 0.5 * close + 0.5 * e);
@@ -197,9 +197,9 @@ const COUNTER_MODULE: TeaModule = {
   requests: [],
   init() {},
   bind() {},
-  inits: {'1:0': () => 0},
   funcs: {
     1(rt, fr) {
+      if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, 0);
       rt.write(fr, 0, num(rt.read(fr, 0, 0)) + 1);
       return rt.read(fr, 0, 0);
     },
@@ -226,6 +226,31 @@ describe('frames', () => {
       [2, 2],
       [3, 3],
     ]);
+  });
+
+  test('first activation is discarded when the row attempt throws', async () => {
+    let shouldThrow = true;
+    const module: TeaModule = {
+      ...COUNTER_MODULE,
+      main(rt, fr) {
+        if (shouldThrow) {
+          COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0));
+          throw new Error('after first call');
+        }
+        rt.emit(0, 0, COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0)) as Value);
+      },
+    };
+    const sink = new RecordingSink();
+    const bound = await bind(module, {
+      params: {},
+      provider: provider({close: new ArraySeries([1])}),
+      sink,
+    });
+    expect(() => bound.executeRow(0, false)).toThrow('after first call');
+    shouldThrow = false;
+    bound.executeRow(0, false);
+    bound.commitRow(0);
+    expect(sink.emits.map(emit => emit.channels[0])).toEqual([1]);
   });
 });
 
@@ -258,7 +283,6 @@ const HISTORY_MODULE: TeaModule = {
   requests: [],
   init() {},
   bind() {},
-  inits: {},
   funcs: {},
   main(rt, fr) {
     rt.write(fr, 0, rt.series(0, 0));
@@ -334,9 +358,10 @@ const TICK_MODULE: TeaModule = {
   requests: [],
   init() {},
   bind() {},
-  inits: {'0:0': () => 0, '0:1': () => 0},
   funcs: {},
   main(rt, fr) {
+    if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, 0);
+    if (rt.needsInit(fr, 1)) rt.initialize(fr, 1, 0);
     rt.write(fr, 0, num(rt.read(fr, 0, 0)) + rt.series(0, 0));
     rt.write(fr, 1, num(rt.read(fr, 1, 0)) + 1);
     rt.write(fr, 2, rt.series(0, 0));
@@ -408,6 +433,54 @@ describe('provisional protocol', () => {
     expect(ticked.map(e => [e.channels[0], e.channels[2]])).toEqual(
       clean.map(e => [e.channels[0], e.channels[2]]),
     );
+  });
+
+  test('provisional activation survives a final same-row skip', async () => {
+    let invoke = true;
+    const sink = new RecordingSink();
+    const module: TeaModule = {
+      ...COUNTER_MODULE,
+      manifest: {
+        ...COUNTER_MODULE.manifest,
+        frames: [
+          COUNTER_MODULE.manifest.frames[0],
+          {
+            locals: [
+              {
+                storage: Storage.Varip,
+                depth: {kind: 'none'},
+                layout: NUMBER_LAYOUT,
+              },
+            ],
+            subs: [],
+          },
+        ],
+      },
+      main(rt, fr) {
+        if (invoke) {
+          const value = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0)) as Value;
+          rt.emit(0, 0, value);
+        }
+      },
+    };
+    const bound = await bind(module, {
+      params: {},
+      provider: provider({close: new ArraySeries([1, 1])}),
+      sink,
+    });
+    bound.executeRow(0, true);
+    invoke = false;
+    bound.executeRow(0, false);
+    bound.commitRow(0);
+    invoke = true;
+    bound.executeRow(1, false);
+    bound.commitRow(1);
+    expect(
+      sink.emits.map(emit => [emit.channels[0], emit.provisional]),
+    ).toEqual([
+      [1, true],
+      [2, false],
+    ]);
   });
 });
 
@@ -481,7 +554,6 @@ const BIND_MODULE: TeaModule = {
   bind(rt) {
     rt.bindOutput(0, 'price', rt.param(0));
   },
-  inits: {},
   funcs: {},
   main(rt, fr) {
     rt.write(fr, 0, rt.series(0, 0));
@@ -665,7 +737,6 @@ describe('typed execution inputs', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {},
       funcs: {},
       main(rt) {
         execution.forEach((_, eid) => rt.emit(0, eid, rt.execution(eid, 0)));
@@ -887,7 +958,6 @@ const CHILD_MODULE = {
   requests: [],
   init() {},
   bind() {},
-  inits: {},
   funcs: {},
   main(
     rt: Parameters<TeaModule['main']>[0],
@@ -970,7 +1040,6 @@ function requestModule(
       );
       rt.bindRequest(0, 'X', '');
     },
-    inits: {},
     funcs: {},
     main(rt) {
       rt.emit(0, 0, rt.request(0, 0));
@@ -1152,7 +1221,6 @@ describe('requests', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {},
       funcs: {},
       main(
         rt: Parameters<TeaModule['main']>[0],
@@ -1270,7 +1338,6 @@ describe('requests', () => {
       requests: [],
       init() {},
       bind() {},
-      inits: {},
       funcs: {},
       main(
         rt: Parameters<TeaModule['main']>[0],
@@ -1314,7 +1381,6 @@ describe('requests', () => {
         rt.bindRequestOptions(0, false, false, false, 0);
         rt.bindRequest(0, '', '');
       },
-      inits: {},
       funcs: {},
       main(
         rt: Parameters<TeaModule['main']>[0],
@@ -1401,7 +1467,6 @@ const IDENTITY_CHILD = {
   requests: [],
   init() {},
   bind() {},
-  inits: {},
   funcs: {},
   main(
     rt: Parameters<TeaModule['main']>[0],
@@ -1447,7 +1512,6 @@ const DYNAMIC_MODULE: TeaModule = {
   bind(rt) {
     rt.bindRequestOptions(0, false, false, false, 0);
   },
-  inits: {},
   funcs: {},
   main(rt) {
     const sym = rt.series(0, 0) > 3 ? 'X' : 'Y';
@@ -1540,8 +1604,8 @@ const VARIP_DYNAMIC_MODULE: TeaModule = {
       },
     ],
   },
-  inits: {'0:0': () => 0},
   main(rt, fr) {
+    if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, 0);
     // varip increments BEFORE the request read, so an aborted attempt
     // would contaminate it without the snapshot restore.
     rt.write(fr, 0, num(rt.read(fr, 0, 0)) + 1);
@@ -1571,6 +1635,49 @@ describe('suspension protocol', () => {
     await bound.resolvePending();
     bound.executeRow(0, false);
     bound.commitRow(0);
+  });
+
+  test('first child activation vanishes across suspension and retry', async () => {
+    const module: TeaModule = {
+      ...DYNAMIC_MODULE,
+      manifest: {
+        ...DYNAMIC_MODULE.manifest,
+        frames: [
+          {locals: [], subs: [{fid: 1}]},
+          {
+            locals: [
+              {
+                storage: Storage.Var,
+                depth: {kind: 'none'},
+                layout: NUMBER_LAYOUT,
+              },
+            ],
+            subs: [],
+          },
+        ],
+      },
+      funcs: COUNTER_MODULE.funcs,
+      main(rt, fr) {
+        const count = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0)) as Value;
+        const result = rt.requestFor(0, 'Y', '');
+        rt.emit(0, 0, count);
+        rt.emit(0, 1, result);
+      },
+    };
+    const sink = new RecordingSink();
+    const bound = await bind(module, {
+      params: {},
+      provider: contexts({
+        '': context({close: new ArraySeries([1])}, regularAxis(0, 1, 1)),
+        Y: twoSpan([100]),
+      }),
+      sink,
+    });
+    expect(() => bound.executeRow(0, false)).toThrow('unresolved');
+    await bound.resolvePending();
+    bound.executeRow(0, false);
+    bound.commitRow(0);
+    expect(sink.emits.map(emit => emit.channels[0])).toEqual([1]);
   });
 
   test('varip survives completed ticks but not aborted attempts', async () => {

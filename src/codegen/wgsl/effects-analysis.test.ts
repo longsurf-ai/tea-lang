@@ -1,7 +1,7 @@
 // Purpose: Lock deterministic literal-string interning to the reachable WGSL Program graph.
 
 import {describe, expect, test} from 'bun:test';
-import {IrKind, type IrExpr} from '../../ir/node';
+import {IrKind} from '../../ir/node';
 import type {Program} from '../../ir/program';
 import {namesOf} from '../../ir/visit';
 import {mustBuild} from '../../noder/testing';
@@ -113,25 +113,21 @@ describe('WGSL effect artifact analysis', () => {
   test('rejects an effect transitively reached from a forged persistent root initializer', () => {
     const program = defaultedConstructorFixture();
     const root = namesOf(program).find(name => name.name === 'state');
-    const assignment = program.body[0];
+    const initializer = program.body[0];
+    const assignment = program.body[1];
     if (
       root === undefined ||
-      root.init === null ||
+      initializer?.kind !== IrKind.InitName ||
       assignment?.kind !== IrKind.WriteName ||
       assignment.value.kind !== IrKind.NewUserValue
     ) {
       throw new Error('malformed persistent-initializer fixture');
     }
 
-    const safeInit = root.init;
-    (root as {init: IrExpr | null}).init = assignment.value;
     const forged: Program = {
       ...program,
       packageGlobals: [],
-      // Keep the root reachable without leaving the effectful constructor in
-      // the per-row body. Its omitted field default is already expanded into
-      // assignment.value.args by the noder.
-      body: [{...assignment, value: safeInit}, ...program.body.slice(1)],
+      body: [{...initializer, value: assignment.value}],
     };
 
     expect(() => analyzeWgslEffects(forged)).toThrow(
@@ -142,7 +138,7 @@ describe('WGSL effect artifact analysis', () => {
   test('rejects an effect transitively reached from a forged package-global initializer', () => {
     const program = defaultedConstructorFixture();
     const root = namesOf(program).find(name => name.name === 'state');
-    const assignment = program.body[0];
+    const assignment = program.body[1];
     if (
       root === undefined ||
       assignment?.kind !== IrKind.WriteName ||
@@ -153,12 +149,18 @@ describe('WGSL effect artifact analysis', () => {
     const global = {
       ...root,
       name: 'libraryState',
-      init: assignment.value,
     };
     const forged: Program = {
       ...program,
       packageGlobals: [global],
-      body: [],
+      body: [
+        {
+          kind: IrKind.InitName,
+          pos: assignment.pos,
+          name: global,
+          value: assignment.value,
+        },
+      ],
     };
 
     expect(() => analyzeWgslEffects(forged)).toThrow(
