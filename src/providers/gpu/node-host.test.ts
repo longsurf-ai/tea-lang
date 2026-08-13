@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {needsNodeGpuHost} from './node-host';
+import {expectedRelayedConfigHash, needsNodeGpuHost} from './node-host';
 
 describe('Node GPU CLI host selection', () => {
   test('relays only GPU execution verbs', () => {
@@ -9,6 +9,28 @@ describe('Node GPU CLI host selection', () => {
     );
     expect(needsNodeGpuHost(['run', 'x.tea', '--gpu'])).toBe(true);
     expect(needsNodeGpuHost(['run', 'x.tea'])).toBe(false);
+    expect(
+      needsNodeGpuHost(['execute', 'run.yaml'], {
+        executionRuntime: 'webgpu',
+      }),
+    ).toBe(true);
+    expect(
+      needsNodeGpuHost(['execute', 'run.yaml'], {
+        executionRuntime: 'javascript',
+      }),
+    ).toBe(false);
+    expect(
+      needsNodeGpuHost(['execute', '--help'], {
+        executionRuntime: 'webgpu',
+      }),
+    ).toBe(false);
     expect(needsNodeGpuHost(['sweep', '--help'])).toBe(false);
+  });
+
+  test('exposes the private relayed config hash', () => {
+    expect(
+      expectedRelayedConfigHash({TEA_GPU_CONFIG_SHA256: 'a'.repeat(64)}),
+    ).toBe('a'.repeat(64));
+    expect(expectedRelayedConfigHash({})).toBeNull();
   });
 });

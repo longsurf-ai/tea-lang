@@ -9,6 +9,21 @@ document.
 
 ## Architecture
 
+Configured execution has three owners and one stable handoff between each:
+
+1. **Tea Core** compiles source once through `compileToProgram()` and owns the
+   target-independent `Program`.
+2. **The selected runtime** specializes execution for its platform: JavaScript
+   on CPU or WGSL/WebGPU on GPU.
+3. **The execution context** owns host-supplied providers, parameter
+   selections, inputs, bindings, `timeNow`, and whether this is one run or a
+   sweep. It resolves those choices into the existing ordered `BindInputs[]`.
+
+The versioned execution config is the durable specification for parts 2 and 3;
+it points at Core source but is not another Program, IR, or compilation path.
+This keeps future scan and live hosts free to add context kinds without
+changing the language-to-Program boundary.
+
 ```text
 generated JS module ──▶ JSRuntime ──data──▶ DataProvider (injected)
                             │

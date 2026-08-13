@@ -1,0 +1,24 @@
+schema: tea.execution/v1
+
+program:
+  source: ./ema-cross-strategy.tea
+
+runtime:
+  kind: webgpu
+
+execution:
+  kind: sweep
+  provider:
+    kind: csv
+    path: ./binance-btcusdt-1d.csv
+    sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
+  parameters:
+    fast_length:
+      range: {start: 2, stop: 20, step: 2}
+    slow_length:
+      range: {start: 24, stop: 60, step: 4}
+    initial_cash: 100000
+    slippage: 0.0005
+    fee: 0.001
+  maxExecutions: 100
+  timeNow: 1786579200000

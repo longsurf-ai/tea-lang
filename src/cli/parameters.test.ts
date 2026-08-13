@@ -165,6 +165,9 @@ describe('parameter sweeps', () => {
   test('keeps defaults implicit and enforces the scenario ceiling', () => {
     expect(expandSweepParameters(specs, [], {maxScenarios: 1})).toEqual([{}]);
     expect(() =>
+      expandSweepParameters(specs, [], {maxScenarios: 10_001}),
+    ).toThrow('maxExecutions must not exceed 10000');
+    expect(() =>
       expandSweepParameters(specs, ['--length', '1:3:1'], {
         maxScenarios: 2,
       }),

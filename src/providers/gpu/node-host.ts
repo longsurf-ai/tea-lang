@@ -8,13 +8,23 @@ import {fileURLToPath} from 'node:url';
 import {GpuDeviceError} from './dawn';
 
 const RELAY_ENV = 'TEA_GPU_RELAYED';
+const RELAY_CONFIG_HASH_ENV = 'TEA_GPU_CONFIG_SHA256';
 
-export function needsNodeGpuHost(args: readonly string[]): boolean {
+export interface GpuCliHostSelection {
+  readonly executionRuntime?: 'javascript' | 'webgpu';
+  readonly configBytesHash?: string;
+}
+
+export function needsNodeGpuHost(
+  args: readonly string[],
+  selection: GpuCliHostSelection = {},
+): boolean {
   const verb = args[0];
   if (args.includes('--help') || args.includes('-h')) return false;
   return (
     (verb === 'sweep' && !args.includes('--cpu')) ||
-    (verb === 'run' && args.includes('--gpu'))
+    (verb === 'run' && args.includes('--gpu')) ||
+    (verb === 'execute' && selection.executionRuntime === 'webgpu')
   );
 }
 
@@ -23,11 +33,12 @@ export function needsNodeGpuHost(args: readonly string[]): boolean {
 export async function relayGpuCliToNode(
   args: readonly string[],
   mainModuleUrl: string,
+  selection: GpuCliHostSelection = {},
 ): Promise<number | null> {
   if (
     process.versions.bun === undefined ||
     process.env[RELAY_ENV] === '1' ||
-    !needsNodeGpuHost(args)
+    !needsNodeGpuHost(args, selection)
   ) {
     return null;
   }
@@ -43,7 +54,13 @@ export async function relayGpuCliToNode(
       ['--import', 'tsx', fileURLToPath(mainModuleUrl), ...args],
       {
         stdio: 'inherit',
-        env: {...process.env, [RELAY_ENV]: '1'},
+        env: {
+          ...process.env,
+          [RELAY_ENV]: '1',
+          ...(selection.configBytesHash === undefined
+            ? {}
+            : {[RELAY_CONFIG_HASH_ENV]: selection.configBytesHash}),
+        },
       },
     );
     child.once('error', reject);
@@ -57,6 +74,13 @@ export async function relayGpuCliToNode(
       resolve(code ?? 1);
     });
   });
+}
+
+export function expectedRelayedConfigHash(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): string | null {
+  const value = environment[RELAY_CONFIG_HASH_ENV];
+  return value === undefined || value === '' ? null : value;
 }
 
 export function findNode22Executable(): string | null {

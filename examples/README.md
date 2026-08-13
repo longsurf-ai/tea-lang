@@ -10,7 +10,21 @@ in `binance-btcusdt-1d.source.json`. The script uses the shipped `ta.ema`,
 next-open fills, fees, and accounting to the shipped
 broker/portfolio/strategy packages.
 
-Run one backtest with defaults or overrides:
+The checked-in execution configuration runs a 100-scenario WebGPU sweep over
+that exact dataset:
+
+```sh
+tea execute examples/ema-cross-sweep.yaml
+tea execute examples/ema-cross-sweep.yaml --view
+```
+
+`program.source` and `execution.provider.path` are relative to the YAML file,
+not the shell's working directory. The provider SHA-256 is copied from the
+source record and checked against the exact CSV bytes before execution. The
+fixed `timeNow` makes this historical execution independent of the host clock.
+
+The direct commands remain available for one-off use. Run one backtest with
+defaults or overrides:
 
 ```sh
 tea run examples/ema-cross-strategy.tea -i examples/binance-btcusdt-1d.csv
@@ -23,8 +37,8 @@ tea run examples/ema-cross-strategy.tea -i examples/binance-btcusdt-1d.csv --gpu
   --fast_length 10 --slow_length 32 --initial_cash 100000
 ```
 
-Run the same Program as a GPU-default Cartesian sweep, or add `--cpu` to use
-the JavaScript runtime:
+Run the same Program through the legacy GPU-default sweep spelling, or add
+`--cpu` to use the JavaScript runtime:
 
 ```sh
 tea sweep examples/ema-cross-strategy.tea -i examples/binance-btcusdt-1d.csv \

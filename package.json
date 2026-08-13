@@ -21,6 +21,7 @@
   },
   "exports": {
     "./codegen/wgsl": "./src/codegen/wgsl/index.ts",
+    "./execution": "./src/execution/index.ts",
     "./reporting": "./src/reporting/index.ts",
     "./runtime/batch": "./src/runtime/batch/index.ts",
     "./runtime/gpu": "./src/runtime/gpu/index.ts",
@@ -44,7 +45,8 @@
   "dependencies": {
     "commander": "14.0.2",
     "open": "10.0.0",
-    "plotly.js-gl3d-dist-min": "3.7.0"
+    "plotly.js-gl3d-dist-min": "3.7.0",
+    "yaml": "2.9.0"
   },
   "optionalDependencies": {
     "tsx": "4.23.10",

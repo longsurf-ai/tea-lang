@@ -1,0 +1,28 @@
+{
+  "schema": "tea.execution/v1",
+  "program": {
+    "source": "../parameter-report.tea"
+  },
+  "runtime": {
+    "kind": "javascript"
+  },
+  "execution": {
+    "kind": "sweep",
+    "provider": {
+      "kind": "csv",
+      "path": "../data.csv"
+    },
+    "parameters": {
+      "scale": {
+        "range": {
+          "start": 1,
+          "stop": 2,
+          "step": 0.5
+        }
+      },
+      "initial_cash": 1
+    },
+    "maxExecutions": 3,
+    "timeNow": 1700000000000
+  }
+}

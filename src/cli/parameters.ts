@@ -1,9 +1,15 @@
 // Purpose: Parse source-declared parameter flags after Commander has parsed the fixed CLI surface.
 
-import type {ParamSpec, Value} from '../runtime/abi';
-import {resolveParamValues} from '../runtime/params';
+import {
+  ExecutionParameterError,
+  resolveExecutionParameters,
+  type ParameterExecutionConfig,
+  type ResolvedParameterAxis,
+} from '../execution/parameters';
+import type {ParameterScalar, ParameterSelection} from '../execution/config';
+import type {ParamSpec} from '../runtime/abi';
 
-export type CliParameterValue = number | string | boolean;
+export type CliParameterValue = ParameterScalar;
 
 export class CliParameterError extends Error {
   constructor(message: string) {
@@ -17,11 +23,7 @@ export interface SweepParameterOptions {
   readonly reservedNames?: ReadonlySet<string>;
 }
 
-export interface SweepAxis {
-  readonly name: string;
-  readonly type: 'int' | 'float';
-  readonly values: readonly number[];
-}
+export type SweepAxis = ResolvedParameterAxis;
 
 export interface ExpandedParameterSweep {
   readonly axes: readonly SweepAxis[];
@@ -29,17 +31,6 @@ export interface ExpandedParameterSweep {
     Record<string, CliParameterValue>
   >[];
 }
-
-type ParsedParameterAssignment =
-  | {
-      readonly kind: 'scalar';
-      readonly values: readonly [CliParameterValue];
-    }
-  | {
-      readonly kind: 'numericRange';
-      readonly type: 'int' | 'float';
-      readonly values: readonly number[];
-    };
 
 // Dynamic flags deliberately accept both conventional `--length` and the
 // Pine-friendly `-length` spelling. Commander owns fixed host flags first;
@@ -49,10 +40,31 @@ export function parseRunParameters(
   tokens: readonly string[],
   reservedNames: ReadonlySet<string> = new Set(),
 ): Readonly<Record<string, CliParameterValue>> {
-  const parsed = parseAssignments(specs, tokens, reservedNames, false, 1);
+  const parameters = parseRunParameterSelections(specs, tokens, reservedNames);
+  const execution = {
+    kind: 'run',
+    parameters,
+  } as const;
+  const resolved = invokeResolver(specs, execution).parameterSets[0]!;
   return Object.fromEntries(
-    [...parsed].map(([name, assignment]) => [name, assignment.values[0]!]),
+    Object.keys(parameters).map(name => [name, resolved[name]!]),
   );
+}
+
+export function parseRunParameterSelections(
+  specs: readonly ParamSpec[],
+  tokens: readonly string[],
+  reservedNames: ReadonlySet<string> = new Set(),
+): Readonly<Record<string, ParameterSelection>> {
+  return parseAssignments(specs, tokens, reservedNames, false);
+}
+
+export function parseSweepParameterSelections(
+  specs: readonly ParamSpec[],
+  tokens: readonly string[],
+  reservedNames: ReadonlySet<string> = new Set(),
+): Readonly<Record<string, ParameterSelection>> {
+  return parseAssignments(specs, tokens, reservedNames, true);
 }
 
 // Parameter sets are ordinary binding maps. Axis provenance is kept separately
@@ -70,44 +82,17 @@ export function expandParameterSweep(
       'max scenarios must be a positive safe integer',
     );
   }
-  const parsed = parseAssignments(
+  const parameters = parseSweepParameterSelections(
     specs,
     tokens,
     options.reservedNames ?? new Set(),
-    true,
-    options.maxScenarios,
   );
-
-  let scenarioCount = 1;
-  for (const {values} of parsed.values()) {
-    if (scenarioCount > Math.floor(options.maxScenarios / values.length)) {
-      throw new CliParameterError(
-        `parameter sweep exceeds the ${options.maxScenarios} scenario limit`,
-      );
-    }
-    scenarioCount *= values.length;
-  }
-
-  const axes: SweepAxis[] = [];
-  let parameterSets: Readonly<Record<string, CliParameterValue>>[] = [{}];
-  for (const spec of specs) {
-    const assignment = parsed.get(spec.name);
-    if (assignment === undefined) continue;
-    if (assignment.kind === 'numericRange') {
-      axes.push({
-        name: spec.name,
-        type: assignment.type,
-        values: assignment.values,
-      });
-    }
-    parameterSets = parameterSets.flatMap(parameterSet =>
-      assignment.values.map(value => ({
-        ...parameterSet,
-        [spec.name]: value,
-      })),
-    );
-  }
-  return {axes, parameterSets};
+  const execution = {
+    kind: 'sweep',
+    parameters,
+    maxExecutions: options.maxScenarios,
+  } as const;
+  return invokeResolver(specs, execution);
 }
 
 // Compatibility surface for callers that only need execution parameter sets.
@@ -119,13 +104,26 @@ export function expandSweepParameters(
   return expandParameterSweep(specs, tokens, options).parameterSets;
 }
 
+function invokeResolver(
+  specs: readonly ParamSpec[],
+  execution: ParameterExecutionConfig,
+): ExpandedParameterSweep {
+  try {
+    return resolveExecutionParameters(specs, execution);
+  } catch (error) {
+    if (error instanceof ExecutionParameterError) {
+      throw new CliParameterError(error.message);
+    }
+    throw error;
+  }
+}
+
 function parseAssignments(
   specs: readonly ParamSpec[],
   tokens: readonly string[],
   reservedNames: ReadonlySet<string>,
   allowRanges: boolean,
-  maxAxisValues: number,
-): ReadonlyMap<string, ParsedParameterAssignment> {
+): Readonly<Record<string, ParameterSelection>> {
   const byName = new Map(specs.map(spec => [spec.name, spec]));
   for (const spec of specs) {
     if (reservedNames.has(spec.name)) {
@@ -135,7 +133,8 @@ function parseAssignments(
     }
   }
 
-  const parsed = new Map<string, ParsedParameterAssignment>();
+  const parsed = Object.create(null) as Record<string, ParameterSelection>;
+  const seen = new Set<string>();
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]!;
     const flag = splitFlag(token);
@@ -143,7 +142,7 @@ function parseAssignments(
     if (spec === undefined) {
       throw new CliParameterError(`unknown parameter option '${token}'`);
     }
-    if (parsed.has(flag.name)) {
+    if (seen.has(flag.name)) {
       throw new CliParameterError(
         `parameter '${flag.name}' was specified more than once`,
       );
@@ -162,16 +161,10 @@ function parseAssignments(
 
     const numericRangeSyntax =
       allowRanges && isNumericSpec(spec) && raw.split(':').length === 3;
-    parsed.set(
-      spec.name,
-      numericRangeSyntax
-        ? {
-            kind: 'numericRange',
-            type: spec.type,
-            values: numericRange(spec, raw, maxAxisValues),
-          }
-        : {kind: 'scalar', values: [coerceAndValidate(spec, raw)]},
-    );
+    parsed[spec.name] = numericRangeSyntax
+      ? parseNumericRange(spec, raw)
+      : coerceCliScalar(spec, raw);
+    seen.add(spec.name);
   }
   return parsed;
 }
@@ -202,8 +195,7 @@ function isNumericSpec(
   return spec.type === 'int' || spec.type === 'float';
 }
 
-function coerceAndValidate(spec: ParamSpec, raw: string): CliParameterValue {
-  let candidate: CliParameterValue;
+function coerceCliScalar(spec: ParamSpec, raw: string): ParameterScalar {
   switch (spec.type) {
     case 'int': {
       if (!/^[+-]?\d+$/.test(raw)) {
@@ -217,8 +209,7 @@ function coerceAndValidate(spec: ParamSpec, raw: string): CliParameterValue {
           `parameter '${spec.name}' expects a safe integer`,
         );
       }
-      candidate = value;
-      break;
+      return value;
     }
     case 'float': {
       if (raw.trim() === '') {
@@ -232,8 +223,7 @@ function coerceAndValidate(spec: ParamSpec, raw: string): CliParameterValue {
           `parameter '${spec.name}' expects a finite number`,
         );
       }
-      candidate = value;
-      break;
+      return value;
     }
     case 'bool':
       if (raw !== 'true' && raw !== 'false') {
@@ -241,37 +231,16 @@ function coerceAndValidate(spec: ParamSpec, raw: string): CliParameterValue {
           `parameter '${spec.name}' expects true or false`,
         );
       }
-      candidate = raw === 'true';
-      break;
+      return raw === 'true';
     default:
-      candidate = raw;
-      break;
-  }
-
-  try {
-    const value = resolveParamValues([spec], {[spec.name]: candidate})[0];
-    if (
-      typeof value !== 'number' &&
-      typeof value !== 'string' &&
-      typeof value !== 'boolean'
-    ) {
-      throw new CliParameterError(
-        `parameter '${spec.name}' cannot be supplied through the CLI`,
-      );
-    }
-    return value;
-  } catch (error) {
-    if (error instanceof CliParameterError) throw error;
-    if (error instanceof Error) throw new CliParameterError(error.message);
-    throw error;
+      return raw;
   }
 }
 
-function numericRange(
-  spec: ParamSpec,
+function parseNumericRange(
+  spec: ParamSpec & {readonly type: 'int' | 'float'},
   raw: string,
-  maxValues: number,
-): readonly number[] {
+): ParameterSelection {
   const parts = raw.split(':');
   if (parts.length !== 3 || parts.some(part => part.length === 0)) {
     throw new CliParameterError(
@@ -279,9 +248,9 @@ function numericRange(
     );
   }
   const [startText, stopText, stepText] = parts as [string, string, string];
-  const start = parseRangeNumber(spec, startText);
-  const stop = parseRangeNumber(spec, stopText);
-  const step = parseRangeNumber(spec, stepText, false);
+  const start = coerceCliScalar(spec, startText) as number;
+  const stop = coerceCliScalar(spec, stopText) as number;
+  const step = coerceCliScalar(spec, stepText) as number;
   if (step === 0) {
     throw new CliParameterError(
       `parameter '${spec.name}' range step must not be zero`,
@@ -292,7 +261,6 @@ function numericRange(
       `parameter '${spec.name}' range step points away from its stop`,
     );
   }
-
   const precision = Math.max(
     decimalPlaces(startText),
     decimalPlaces(stopText),
@@ -303,57 +271,13 @@ function numericRange(
       `parameter '${spec.name}' range has more than 12 decimal places`,
     );
   }
-  const scale = 10 ** precision;
-  const scaledStart = Math.round(start * scale);
-  const scaledStop = Math.round(stop * scale);
-  const scaledStep = Math.round(step * scale);
-  if (
-    !Number.isSafeInteger(scaledStart) ||
-    !Number.isSafeInteger(scaledStop) ||
-    !Number.isSafeInteger(scaledStep)
-  ) {
-    throw new CliParameterError(
-      `parameter '${spec.name}' range exceeds safe numeric precision`,
-    );
-  }
-
-  const distance =
-    BigInt(scaledStop) >= BigInt(scaledStart)
-      ? BigInt(scaledStop) - BigInt(scaledStart)
-      : BigInt(scaledStart) - BigInt(scaledStop);
-  const count = distance / BigInt(Math.abs(scaledStep)) + 1n;
-  if (count > BigInt(maxValues)) {
-    throw new CliParameterError(
-      `parameter '${spec.name}' range has ${count.toString()} values, exceeding the ${maxValues} scenario limit`,
-    );
-  }
-
-  const values: number[] = [];
-  for (
-    let current = scaledStart;
-    scaledStep > 0 ? current <= scaledStop : current >= scaledStop;
-    current += scaledStep
-  ) {
-    values.push(parseRangeNumber(spec, String(current / scale)));
-  }
-  return values;
-}
-
-function parseRangeNumber(
-  spec: ParamSpec,
-  raw: string,
-  applyConstraints = true,
-): number {
-  const value = coerceAndValidate(
-    applyConstraints ? spec : {...spec, constraints: null},
-    raw,
-  );
-  if (typeof value !== 'number') {
-    throw new CliParameterError(
-      `parameter '${spec.name}' does not support numeric ranges`,
-    );
-  }
-  return value;
+  return {
+    range: {
+      start,
+      stop,
+      step,
+    },
+  };
 }
 
 function decimalPlaces(raw: string): number {

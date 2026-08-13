@@ -2,6 +2,7 @@
 // Purpose: CLI entry point — Commander argument parsing and process I/O only; all compilation lives in compile.ts. Sole owner of error printing and exit codes; run presentation is delegated to providers sinks.
 
 import {readFileSync, writeFileSync} from 'node:fs';
+import {resolve} from 'node:path';
 import {Command, InvalidArgumentError} from 'commander';
 import {configureLog, parseLogLevel} from './base/log';
 import {formatPos, newFileBase} from './base/pos';
@@ -9,22 +10,34 @@ import {Errors, type ErrorMsg} from './base/print';
 import {UnimplementedError} from './base/unimplemented';
 import {
   CliParameterError,
-  expandParameterSweep,
-  parseRunParameters,
+  parseRunParameterSelections,
+  parseSweepParameterSelections,
 } from './cli/parameters';
 import {compile, compileToProgram, parseFile} from './compile';
 import {paramSpecsOf} from './codegen/params';
 import {startDocsServer} from './docs/server';
 import {
-  executeProgram,
   type ExecutionSummary,
   UnsupportedExecutionTargetError,
 } from './execute';
+import {
+  ExecutionConfigError,
+  loadExecutionConfig,
+  type ExecutionConfig,
+  type LoadedExecutionConfig,
+} from './execution/config';
+import {ExecutionParameterError} from './execution/parameters';
+import {
+  executeConfiguredProgram,
+  executeLoadedConfig,
+  type ConfiguredExecutionResult,
+} from './execution/run';
 import {dumpProgram} from './ir/dumper';
-import {builtinSources} from './providers/data/builtin-sources';
-import {csvProvider} from './providers/data/csv';
-import {createDawnDevice, GpuDeviceError} from './providers/gpu/dawn';
-import {relayGpuCliToNode} from './providers/gpu/node-host';
+import {GpuDeviceError} from './providers/gpu/dawn';
+import {
+  expectedRelayedConfigHash,
+  relayGpuCliToNode,
+} from './providers/gpu/node-host';
 import {RunReportSink, SweepReportSink} from './providers/sinks/report-sink';
 import {TraceSink} from './providers/sinks/trace-sink';
 import {
@@ -39,7 +52,6 @@ import {
   BindError,
   ExecutionError,
   RequestError,
-  type BindInputs,
   type OutputSink,
 } from './runtime/abi';
 import {GpuBindingError, GpuExecutionError} from './runtime/gpu';
@@ -103,18 +115,69 @@ if (teaLogLevel !== undefined && teaLogLevel !== '') {
   }
 }
 
+const cliArguments = process.argv.slice(2);
+let preloadedExecutionConfig: LoadedExecutionConfig | null = null;
 try {
+  const configArgument = executeConfigArgument(cliArguments);
+  if (configArgument !== null) {
+    preloadedExecutionConfig = loadExecutionConfig(configArgument);
+    const expectedHash = expectedRelayedConfigHash();
+    if (
+      expectedHash !== null &&
+      preloadedExecutionConfig.bytesHash !== expectedHash
+    ) {
+      throw new ExecutionConfigError(
+        'execution config changed after GPU host selection',
+      );
+    }
+  }
   const relayed = await relayGpuCliToNode(
-    process.argv.slice(2),
+    cliArguments,
     import.meta.url,
+    preloadedExecutionConfig === null
+      ? {}
+      : {
+          executionRuntime: preloadedExecutionConfig.config.runtime.kind,
+          configBytesHash: preloadedExecutionConfig.bytesHash,
+        },
   );
   if (relayed !== null) process.exit(relayed);
 } catch (error) {
-  if (error instanceof GpuDeviceError) {
+  if (
+    error instanceof GpuDeviceError ||
+    error instanceof ExecutionConfigError
+  ) {
     console.error(`tea: ${error.message}`);
     process.exit(1);
   }
   throw error;
+}
+
+function executeConfigArgument(args: readonly string[]): string | null {
+  if (args[0] !== 'execute') return null;
+  const separator = args.indexOf('--');
+  const options = args.slice(1, separator < 0 ? undefined : separator);
+  if (
+    options.includes('--help') ||
+    options.includes('-h') ||
+    options.includes('--version') ||
+    options.includes('-V')
+  )
+    return null;
+  let optionsEnded = false;
+  for (const argument of args.slice(1)) {
+    if (argument === '--') {
+      optionsEnded = true;
+      continue;
+    }
+    if (optionsEnded) return argument;
+    if (argument === '--view' || argument === '--trace') continue;
+    if (argument.startsWith('-')) {
+      throw new ExecutionConfigError(`unknown execute option '${argument}'`);
+    }
+    return argument;
+  }
+  return null;
 }
 
 const tea = new Command('tea')
@@ -167,6 +230,8 @@ function dynamicTokens(command: Command): readonly string[] {
 function exitWithExecutionError(error: unknown): never {
   if (
     error instanceof CliParameterError ||
+    error instanceof ExecutionConfigError ||
+    error instanceof ExecutionParameterError ||
     error instanceof BindError ||
     error instanceof RequestError ||
     error instanceof ExecutionError ||
@@ -182,45 +247,6 @@ function exitWithExecutionError(error: unknown): never {
   throw error;
 }
 
-async function executeCliTarget(
-  program: NonNullable<ReturnType<typeof compileToProgram>>,
-  bindings: readonly BindInputs[],
-  backend: 'cpu' | 'gpu',
-): Promise<{
-  readonly summary: ExecutionSummary;
-  readonly device?: string;
-  dispose(): Promise<void>;
-}> {
-  if (backend === 'cpu') {
-    return {
-      summary: await executeProgram(program, bindings, {kind: 'cpu'}),
-      dispose: async () => {},
-    };
-  }
-  const lease = await createDawnDevice();
-  try {
-    const summary = await executeProgram(program, bindings, {
-      kind: 'gpu',
-      device: lease.device,
-    });
-    return {
-      summary,
-      device: lease.device.label || 'Dawn WebGPU',
-      dispose: () => lease.dispose(),
-    };
-  } catch (error) {
-    await lease.dispose();
-    throw error;
-  }
-}
-
-function readCsvProvider(filename: string) {
-  return builtinSources({
-    primary: csvProvider(readFileSync(filename, 'utf8')),
-    config: process.env,
-  });
-}
-
 function reportSectionsForRun(
   summary: ExecutionSummary,
   sink: RunReportSink,
@@ -232,6 +258,102 @@ function reportSectionsForRun(
     sink.denseSection(),
     sink.effectsSection(),
   ].filter(section => section.rows.length > 0);
+}
+
+function legacyConfig(
+  kind: 'run' | 'sweep',
+  source: string,
+  input: string,
+  runtime: ExecutionConfig['runtime'],
+  parameters: ExecutionConfig['execution']['parameters'],
+  maxExecutions?: number,
+): ExecutionConfig {
+  const provider = {kind: 'csv' as const, path: resolve(input)};
+  const execution =
+    kind === 'run'
+      ? ({kind, provider, parameters} as const)
+      : ({
+          kind,
+          provider,
+          parameters,
+          ...(maxExecutions === undefined ? {} : {maxExecutions}),
+        } as const);
+  return {
+    schema: 'tea.execution/v1',
+    program: {source: resolve(source)},
+    runtime,
+    execution,
+  };
+}
+
+function contextDependencies(
+  sinkForExecution: (executionIndex: number) => OutputSink,
+) {
+  return {
+    environment: process.env,
+    fetchImpl: fetch,
+    now: Date.now,
+    sinkForExecution,
+  };
+}
+
+function rangeSelectionCount(config: ExecutionConfig): number {
+  return Object.values(config.execution.parameters).filter(
+    selection =>
+      typeof selection === 'object' &&
+      selection !== null &&
+      Object.prototype.hasOwnProperty.call(selection, 'range'),
+  ).length;
+}
+
+function loadedConfigForArgument(argument: string): LoadedExecutionConfig {
+  const configPath = resolve(argument);
+  if (preloadedExecutionConfig === null) {
+    return loadExecutionConfig(configPath);
+  }
+  if (preloadedExecutionConfig.configPath !== configPath) {
+    throw new ExecutionConfigError(
+      'execution config argument changed after preflight',
+    );
+  }
+  return preloadedExecutionConfig;
+}
+
+function renderRunExecution(
+  execution: ConfiguredExecutionResult,
+  sink: RunReportSink | null,
+): void {
+  if (sink === null) return;
+  const rendered = renderReport(
+    reportSectionsForRun(execution.summary, sink, execution.device),
+  );
+  if (rendered.length > 0) console.log(rendered);
+}
+
+async function renderSweepExecution(
+  execution: ConfiguredExecutionResult,
+  sinks: readonly SweepReportSink[],
+  view: boolean,
+): Promise<void> {
+  const result = buildSweepResult(
+    execution.summary,
+    sinks.map((sink, index) =>
+      sink.snapshot(execution.summary.bindings[index]!.bindingIndex),
+    ),
+    execution.axes,
+  );
+  const sections = [
+    systemReportSection(execution.summary, {device: execution.device}),
+    ...(view ? [] : [sweepResultSection(result)]),
+  ];
+  const rendered = renderReport(sections);
+  if (rendered.length > 0) console.log(rendered);
+  if (view) {
+    await startSweepViewer(result, new PlotlySweepRenderer(), {
+      print: line => console.log(line),
+      warn: line => console.error(line),
+    });
+  }
 }
 
 tea
@@ -252,6 +374,89 @@ tea
       warn: line => console.error(line),
     });
   });
+
+tea
+  .command('execute')
+  .description('Execute a Tea program from a YAML or JSON configuration')
+  .argument('<config>', 'execution configuration file')
+  .option('--view', 'open an interactive 3D parameter view for a sweep')
+  .option(
+    '--trace',
+    'print the machine trace format for a run instead of a table',
+  )
+  .action(
+    async (
+      configArgument: string,
+      options: {view?: boolean; trace?: boolean},
+    ) => {
+      await runStageAsync(async () => {
+        try {
+          const loaded = loadedConfigForArgument(configArgument);
+          if (options.view === true && options.trace === true) {
+            throw new ExecutionConfigError(
+              '--view and --trace cannot be used together',
+            );
+          }
+          if (
+            options.view === true &&
+            loaded.config.execution.kind !== 'sweep'
+          ) {
+            throw new ExecutionConfigError(
+              '--view requires a sweep execution config',
+            );
+          }
+          if (
+            options.trace === true &&
+            loaded.config.execution.kind !== 'run'
+          ) {
+            throw new ExecutionConfigError(
+              '--trace requires a run execution config',
+            );
+          }
+          if (options.view === true && rangeSelectionCount(loaded.config) < 2) {
+            throw new SweepProjectionError(
+              'sweep visualization requires at least two numeric parameter ranges',
+            );
+          }
+
+          const errors = new Errors();
+          if (loaded.config.execution.kind === 'run') {
+            const reportSink =
+              options.trace === true ? null : new RunReportSink();
+            const sink: OutputSink =
+              reportSink ?? new TraceSink(line => console.log(line));
+            const result = await executeLoadedConfig(
+              loaded,
+              errors,
+              contextDependencies(() => sink),
+            );
+            if (!result.ok) exitWithErrors(result.errors);
+            renderRunExecution(result.execution, reportSink);
+            return;
+          }
+
+          const sinks: SweepReportSink[] = [];
+          const result = await executeLoadedConfig(
+            loaded,
+            errors,
+            contextDependencies(executionIndex => {
+              const sink = new SweepReportSink();
+              sinks[executionIndex] = sink;
+              return sink;
+            }),
+          );
+          if (!result.ok) exitWithErrors(result.errors);
+          await renderSweepExecution(
+            result.execution,
+            sinks,
+            options.view === true,
+          );
+        } catch (error) {
+          exitWithExecutionError(error);
+        }
+      });
+    },
+  );
 
 tea
   .command('run')
@@ -282,7 +487,7 @@ tea
           exitWithErrors(errors.flushErrors());
         }
         try {
-          const params = parseRunParameters(
+          const parameters = parseRunParameterSelections(
             paramSpecsOf(program.params),
             dynamicTokens(command),
             RUN_RESERVED_PARAMETERS,
@@ -291,33 +496,18 @@ tea
             options.trace === true ? null : new RunReportSink();
           const sink: OutputSink =
             reportSink ?? new TraceSink(line => console.log(line));
-          const timeNow = Date.now();
-          const execution = await executeCliTarget(
+          const execution = await executeConfiguredProgram(
             program,
-            [
-              {
-                params,
-                provider: readCsvProvider(options.input),
-                sink,
-                timeNow,
-              },
-            ],
-            options.gpu === true ? 'gpu' : 'cpu',
+            legacyConfig(
+              'run',
+              file,
+              options.input,
+              {kind: options.gpu === true ? 'webgpu' : 'javascript'},
+              parameters,
+            ),
+            contextDependencies(() => sink),
           );
-          try {
-            if (reportSink !== null) {
-              const rendered = renderReport(
-                reportSectionsForRun(
-                  execution.summary,
-                  reportSink,
-                  execution.device,
-                ),
-              );
-              if (rendered.length > 0) console.log(rendered);
-            }
-          } finally {
-            await execution.dispose();
-          }
+          renderRunExecution(execution, reportSink);
         } catch (error) {
           exitWithExecutionError(error);
         }
@@ -362,60 +552,35 @@ tea
           exitWithErrors(errors.flushErrors());
         }
         try {
-          const sweep = expandParameterSweep(
+          const parameters = parseSweepParameterSelections(
             paramSpecsOf(program.params),
             dynamicTokens(command),
-            {
-              maxScenarios: options.maxScenarios,
-              reservedNames: SWEEP_RESERVED_PARAMETERS,
-            },
+            SWEEP_RESERVED_PARAMETERS,
           );
-          if (options.view === true && sweep.axes.length < 2) {
+          const config = legacyConfig(
+            'sweep',
+            file,
+            options.input,
+            {kind: options.cpu === true ? 'javascript' : 'webgpu'},
+            parameters,
+            options.maxScenarios,
+          );
+          if (options.view === true && rangeSelectionCount(config) < 2) {
             throw new SweepProjectionError(
               'sweep visualization requires at least two numeric parameter ranges',
             );
           }
-          const parameterSets = sweep.parameterSets;
-          const provider = readCsvProvider(options.input);
-          const timeNow = Date.now();
-          const sinks = parameterSets.map(() => new SweepReportSink());
-          const bindings: BindInputs[] = parameterSets.map((params, index) => ({
-            params,
-            provider,
-            sink: sinks[index]!,
-            timeNow,
-          }));
-          const execution = await executeCliTarget(
+          const sinks: SweepReportSink[] = [];
+          const execution = await executeConfiguredProgram(
             program,
-            bindings,
-            options.cpu === true ? 'cpu' : 'gpu',
+            config,
+            contextDependencies(executionIndex => {
+              const sink = new SweepReportSink();
+              sinks[executionIndex] = sink;
+              return sink;
+            }),
           );
-          let result;
-          try {
-            result = buildSweepResult(
-              execution.summary,
-              sinks.map((sink, index) =>
-                sink.snapshot(execution.summary.bindings[index]!.bindingIndex),
-              ),
-              sweep.axes,
-            );
-            const sections = [
-              systemReportSection(execution.summary, {
-                device: execution.device,
-              }),
-              ...(options.view === true ? [] : [sweepResultSection(result)]),
-            ];
-            const rendered = renderReport(sections);
-            if (rendered.length > 0) console.log(rendered);
-          } finally {
-            await execution.dispose();
-          }
-          if (options.view === true) {
-            await startSweepViewer(result, new PlotlySweepRenderer(), {
-              print: line => console.log(line),
-              warn: line => console.error(line),
-            });
-          }
+          await renderSweepExecution(execution, sinks, options.view === true);
         } catch (error) {
           exitWithExecutionError(error);
         }
