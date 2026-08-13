@@ -2,7 +2,6 @@
 
 import {fatal} from '../base/print';
 import {
-  ExecutionError,
   isArrayValue,
   isMapValue,
   isMatrixValue,
@@ -12,7 +11,8 @@ import {
   ValueClass,
   type Value,
   type ValueClass as ValueClassType,
-} from './abi';
+} from './value';
+import {ExecutionError} from './errors';
 import type {StorageRef} from './heap';
 
 export type LayoutId = number;

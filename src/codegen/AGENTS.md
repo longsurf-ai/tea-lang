@@ -11,7 +11,12 @@ WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
   manifest; the runtime never re-derives them from the Program. Frame
   ownership is explicit: a method owns its hidden receiver, and every func
   owns its explicit params + locals; the program frame owns every remaining
-  Name — never ownership by reachability.
+  Name — never ownership by reachability. `ir/frames.ts` is the one
+  target-neutral ownership + call-site topology projection; JS and WGSL add
+  only their physical frame representations.
+- `gpu/contract.ts` is the one versioned physical WebGPU artifact contract.
+  WGSL lowering consumes its fixed bindings/offsets/strides and produces it;
+  runtime validates the same constants instead of importing codegen modules.
 - Both targets consume `Program` directly. There is no strategy wrapper IR and
   no strategy-only lowering entry. A backend may reject unsupported Program
   constructs, but it must not reconstruct source semantics from output effect

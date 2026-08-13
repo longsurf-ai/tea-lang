@@ -1,7 +1,7 @@
 // Purpose: Type-neutral immutable storage arena with one explicit execution attempt, prepared publication, deterministic reachability accounting, and stale-reference guards.
 
 import {fatal} from '../base/print';
-import {ExecutionError} from './abi';
+import {ExecutionError} from './errors';
 
 declare const storageRefBrand: unique symbol;
 

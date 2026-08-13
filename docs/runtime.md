@@ -455,6 +455,13 @@ numeric/layout contract, required inputs, output/effect schemas, persistent
 execution-state layout, and bounded effect analysis. It contains no concrete
 rows, binding identities, resource allocation, or device.
 
+That physical boundary is the versioned `CompiledWgslProgram` contract in
+`src/gpu/contract.ts`. Its `abi` is currently `1`; the same module owns every
+fixed bind-group index, descriptor offset, and scalar stride used by both
+WGSL lowering and runtime validation. Codegen produces this contract and the
+GPU runtime consumes it without importing codegen implementation modules or
+reconstructing physical constants.
+
 The public runtime is one asynchronous session API:
 
 ```ts

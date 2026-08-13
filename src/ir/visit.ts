@@ -21,6 +21,134 @@ import {
 } from './program';
 import {Qualifier, qualifierLE} from './type';
 
+// Canonical lexical child enumeration. This deliberately does not enter a
+// called function body, a request child Program, or metadata such as a Name's
+// depth; analyses that own those semantic edges add them explicitly.
+export function visitStmtChildren(
+  stmt: IrStmt,
+  visitExprChild: (expr: IrExpr) => void,
+): void {
+  switch (stmt.kind) {
+    case IrKind.ExprStmt:
+      visitExprChild(stmt.x);
+      return;
+    case IrKind.InitName:
+    case IrKind.WriteName:
+    case IrKind.UpdateValuePath:
+      visitExprChild(stmt.value);
+      return;
+    case IrKind.Emit:
+      stmt.args.forEach(visitExprChild);
+      return;
+    case IrKind.EmitEffect:
+      visitExprChild(stmt.payload);
+      return;
+    case IrKind.Break:
+    case IrKind.Continue:
+      return;
+    default:
+      return unreachableStmt(stmt);
+  }
+}
+
+export function visitExprChildren(
+  expr: IrExpr,
+  visitExprChild: (expr: IrExpr) => void,
+  visitStmtChild: (stmt: IrStmt) => void,
+): void {
+  switch (expr.kind) {
+    case IrKind.Const:
+    case IrKind.OutputRef:
+      return;
+    case IrKind.HistRead:
+      if (expr.offset !== null) visitExprChild(expr.offset);
+      return;
+    case IrKind.Binary:
+      visitExprChild(expr.x);
+      visitExprChild(expr.y);
+      return;
+    case IrKind.Unary:
+      visitExprChild(expr.x);
+      return;
+    case IrKind.Cond:
+      visitExprChild(expr.cond);
+      visitExprChild(expr.then);
+      visitExprChild(expr.else);
+      return;
+    case IrKind.CallFunc:
+    case IrKind.CallNative:
+      expr.args.forEach(visitExprChild);
+      return;
+    case IrKind.CallConstMethod:
+    case IrKind.CallMutableMethod:
+    case IrKind.MutateCollection:
+      visitExprChild(expr.receiver);
+      expr.args.forEach(visitExprChild);
+      return;
+    case IrKind.NewUserValue:
+      expr.args.forEach(visitExprChild);
+      return;
+    case IrKind.MakeTuple:
+      expr.elems.forEach(visitExprChild);
+      return;
+    case IrKind.TupleGet:
+    case IrKind.FieldGet:
+      visitExprChild(expr.x);
+      return;
+    case IrKind.IfExpr:
+      visitExprChild(expr.cond);
+      visitExprChild(expr.then);
+      if (expr.else !== null) visitExprChild(expr.else);
+      return;
+    case IrKind.SwitchExpr:
+      if (expr.subject !== null) visitExprChild(expr.subject);
+      expr.arms.forEach(arm => {
+        if (arm.pattern !== null) visitExprChild(arm.pattern);
+        visitExprChild(arm.body);
+      });
+      return;
+    case IrKind.ForExpr:
+      visitExprChild(expr.from);
+      visitExprChild(expr.to);
+      if (expr.step !== null) visitExprChild(expr.step);
+      visitExprChild(expr.body);
+      return;
+    case IrKind.ForInExpr:
+      visitExprChild(expr.x);
+      visitExprChild(expr.body);
+      return;
+    case IrKind.WhileExpr:
+      visitExprChild(expr.cond);
+      visitExprChild(expr.body);
+      return;
+    case IrKind.BlockExpr:
+      expr.stmts.forEach(visitStmtChild);
+      if (expr.value !== null) visitExprChild(expr.value);
+      return;
+    default:
+      return unreachableExpr(expr);
+  }
+}
+
+export interface IrVisitor {
+  readonly expr?: (expr: IrExpr) => void;
+  readonly stmt?: (stmt: IrStmt) => void;
+}
+
+export function walkIrStmt(stmt: IrStmt, visitor: IrVisitor): void {
+  visitor.stmt?.(stmt);
+  visitStmtChildren(stmt, expr => walkIrExpr(expr, visitor));
+}
+
+export function walkIrExpr(expr: IrExpr, visitor: IrVisitor): void {
+  visitor.expr?.(expr);
+  visitExprChildren(
+    expr,
+    child => walkIrExpr(child, visitor),
+    stmt => walkIrStmt(stmt, visitor),
+  );
+}
+
 // One traversal, deterministic first-reachable order. Visited sets make
 // shared declaration objects (Names, funcs, edges) count once; request
 // children are separate Programs and are NOT entered — enumerate them with
@@ -119,171 +247,51 @@ function visitDepth(depth: HistoryDepth, reach: Reach): void {
 }
 
 function visitStmt(stmt: IrStmt, reach: Reach): void {
-  switch (stmt.kind) {
-    case IrKind.ExprStmt:
-      visitExpr(stmt.x, reach);
-      return;
-    case IrKind.InitName:
-    case IrKind.WriteName:
-      noteName(stmt.name, reach);
-      visitExpr(stmt.value, reach);
-      return;
-    case IrKind.UpdateValuePath:
-      noteName(stmt.path.root, reach);
-      visitExpr(stmt.value, reach);
-      return;
-    case IrKind.Emit:
-      for (const arg of stmt.args) {
-        visitExpr(arg, reach);
-      }
-      return;
-    case IrKind.EmitEffect:
-      visitExpr(stmt.payload, reach);
-      return;
-    case IrKind.Break:
-    case IrKind.Continue:
-      return;
-    default:
-      return unreachableStmt(stmt);
+  if (stmt.kind === IrKind.InitName || stmt.kind === IrKind.WriteName) {
+    noteName(stmt.name, reach);
+  } else if (stmt.kind === IrKind.UpdateValuePath) {
+    noteName(stmt.path.root, reach);
   }
+  visitStmtChildren(stmt, child => visitExpr(child, reach));
 }
 
 function visitExpr(expr: IrExpr, reach: Reach): void {
-  switch (expr.kind) {
-    case IrKind.Const:
-    case IrKind.OutputRef:
-      // Output declarations live on Program.outputs; a ref has no children.
-      return;
-    case IrKind.HistRead: {
-      reach.reads.push(expr);
-      const place = expr.place;
-      if (place.kind === PlaceKind.Name) {
-        noteName(place.name, reach);
-      } else if (place.kind === PlaceKind.Series) {
-        visitSeries(place.series, reach);
-      } else if (place.kind === PlaceKind.Execution) {
-        visitExecution(place.execution, reach);
-      } else if (place.kind === PlaceKind.Request) {
-        noteRequest(place.request, reach);
-      }
-      // params are host-contract declarations already listed on the Program
-      if (expr.offset !== null) {
-        visitExpr(expr.offset, reach);
-      }
-      return;
+  if (expr.kind === IrKind.HistRead) {
+    reach.reads.push(expr);
+    const place = expr.place;
+    if (place.kind === PlaceKind.Name) {
+      noteName(place.name, reach);
+    } else if (place.kind === PlaceKind.Series) {
+      visitSeries(place.series, reach);
+    } else if (place.kind === PlaceKind.Execution) {
+      visitExecution(place.execution, reach);
+    } else if (place.kind === PlaceKind.Request) {
+      noteRequest(place.request, reach);
     }
-    case IrKind.Binary:
-      visitExpr(expr.x, reach);
-      visitExpr(expr.y, reach);
-      return;
-    case IrKind.Unary:
-      visitExpr(expr.x, reach);
-      return;
-    case IrKind.Cond:
-      visitExpr(expr.cond, reach);
-      visitExpr(expr.then, reach);
-      visitExpr(expr.else, reach);
-      return;
-    case IrKind.CallFunc:
-      noteFunc(expr.func, reach);
-      reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
-      for (const arg of expr.args) {
-        visitExpr(arg, reach);
-      }
-      return;
-    case IrKind.CallConstMethod:
-      noteFunc(expr.func, reach);
-      reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
-      visitExpr(expr.receiver, reach);
-      for (const arg of expr.args) {
-        visitExpr(arg, reach);
-      }
-      return;
-    case IrKind.CallMutableMethod:
-      noteFunc(expr.func, reach);
+  } else if (
+    expr.kind === IrKind.CallFunc ||
+    expr.kind === IrKind.CallConstMethod ||
+    expr.kind === IrKind.CallMutableMethod
+  ) {
+    noteFunc(expr.func, reach);
+    reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
+    if (expr.kind === IrKind.CallMutableMethod) {
       noteName(expr.path.root, reach);
-      reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
-      visitExpr(expr.receiver, reach);
-      for (const arg of expr.args) {
-        visitExpr(arg, reach);
-      }
-      return;
-    case IrKind.CallNative:
-      if (expr.slot !== null) {
-        reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
-      }
-      for (const arg of expr.args) {
-        visitExpr(arg, reach);
-      }
-      return;
-    case IrKind.MutateCollection:
-      noteName(expr.path.root, reach);
-      visitExpr(expr.receiver, reach);
-      for (const arg of expr.args) {
-        visitExpr(arg, reach);
-      }
-      return;
-    case IrKind.NewUserValue:
-    case IrKind.MakeTuple:
-      for (const arg of expr.kind === IrKind.NewUserValue
-        ? expr.args
-        : expr.elems) {
-        visitExpr(arg, reach);
-      }
-      return;
-    case IrKind.TupleGet:
-    case IrKind.FieldGet:
-      visitExpr(expr.x, reach);
-      return;
-    case IrKind.IfExpr:
-      visitExpr(expr.cond, reach);
-      visitExpr(expr.then, reach);
-      if (expr.else !== null) {
-        visitExpr(expr.else, reach);
-      }
-      return;
-    case IrKind.SwitchExpr:
-      if (expr.subject !== null) {
-        visitExpr(expr.subject, reach);
-      }
-      for (const arm of expr.arms) {
-        if (arm.pattern !== null) {
-          visitExpr(arm.pattern, reach);
-        }
-        visitExpr(arm.body, reach);
-      }
-      return;
-    case IrKind.ForExpr:
-      noteName(expr.index, reach);
-      visitExpr(expr.from, reach);
-      visitExpr(expr.to, reach);
-      if (expr.step !== null) {
-        visitExpr(expr.step, reach);
-      }
-      visitExpr(expr.body, reach);
-      return;
-    case IrKind.ForInExpr:
-      for (const target of expr.targets) {
-        noteName(target, reach);
-      }
-      visitExpr(expr.x, reach);
-      visitExpr(expr.body, reach);
-      return;
-    case IrKind.WhileExpr:
-      visitExpr(expr.cond, reach);
-      visitExpr(expr.body, reach);
-      return;
-    case IrKind.BlockExpr:
-      for (const stmt of expr.stmts) {
-        visitStmt(stmt, reach);
-      }
-      if (expr.value !== null) {
-        visitExpr(expr.value, reach);
-      }
-      return;
-    default:
-      return unreachableExpr(expr);
+    }
+  } else if (expr.kind === IrKind.CallNative && expr.slot !== null) {
+    reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
+  } else if (expr.kind === IrKind.MutateCollection) {
+    noteName(expr.path.root, reach);
+  } else if (expr.kind === IrKind.ForExpr) {
+    noteName(expr.index, reach);
+  } else if (expr.kind === IrKind.ForInExpr) {
+    expr.targets.forEach(target => noteName(target, reach));
   }
+  visitExprChildren(
+    expr,
+    child => visitExpr(child, reach),
+    stmt => visitStmt(stmt, reach),
+  );
 }
 
 function visitSeries(series: SeriesInput, reach: Reach): void {

@@ -28,7 +28,7 @@ import {
   typesEqual,
   type Type,
 } from '../ir/type';
-import {ValueClass, type ValueClass as ValueClassType} from '../runtime/abi';
+import {ValueClass, type ValueClass as ValueClassType} from '../runtime/value';
 
 // Everything the walk needs to address program objects as dense ids. The
 // driver (codegen.ts) builds it; call sites discovered during lowering are

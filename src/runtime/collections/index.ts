@@ -1,17 +1,14 @@
 // Purpose: Collection ABI dispatcher — routes catalog operations into array, matrix, and ordered-map value implementations under the current Heap attempt.
 
 import {fatal} from '../../base/print';
+import {ExecutionError} from '../errors';
 import {
-  ExecutionError,
-  isArrayValue,
-  isMapValue,
-  isMatrixValue,
   type CollectionEntries,
   type CollectionMutation,
   type CollectionMutationOperation,
   type CollectionOperation,
-  type Value,
-} from '../abi';
+} from '../module-abi';
+import {isArrayValue, isMapValue, isMatrixValue, type Value} from '../value';
 import type {Heap, HeapAttempt} from '../heap';
 import {type LayoutId, ValueLayoutRegistry} from '../value-layout';
 import {arrayCall, arrayMutate, arraySnapshot} from './array';

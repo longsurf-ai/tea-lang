@@ -1,7 +1,7 @@
 // Purpose: Ring — one history buffer for every runtime layout: committed cells plus the scratch head the provisional protocol executes against.
 
 import {fatal} from '../base/print';
-import type {Value} from './abi';
+import type {Value} from './value';
 import {type LayoutId, ValueLayoutRegistry} from './value-layout';
 
 // History is strictly backward-looking. Non-integer, non-finite, negative,

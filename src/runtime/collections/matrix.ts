@@ -1,13 +1,9 @@
 // Purpose: Fixed-shape matrix values backed by sealed row-major storage; row/column projections allocate independent array headers.
 
 import {fatal} from '../../base/print';
-import {
-  ExecutionError,
-  isMatrixValue,
-  type CollectionMutation,
-  type MatrixValue,
-  type Value,
-} from '../abi';
+import {ExecutionError} from '../errors';
+import type {CollectionMutation} from '../module-abi';
+import {isMatrixValue, type MatrixValue, type Value} from '../value';
 import type {StorageDescriptor} from '../heap';
 import {visitRuntimeValueStorageRefs, type LayoutId} from '../value-layout';
 import {createArray} from './array';

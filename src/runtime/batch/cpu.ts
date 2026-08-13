@@ -1,6 +1,7 @@
 // Purpose: Sequential CPU execution of one loaded Tea module across independent bindings.
 
-import type {BindInputs, BoundInput, TeaModule} from '../abi';
+import type {BindInputs, BoundInput} from '../binding';
+import type {TeaModule} from '../module-abi';
 import {bind} from '../js-runtime';
 
 export interface CpuBatchResult {

@@ -1,6 +1,8 @@
 // Purpose: Code generator — lowers a Tea Program to a self-describing JS module (code + manifest) against the rt ABI; docs/runtime.md owns the module contract. Dense ids are assigned here and published in the manifest — the runtime never re-derives them.
 
 import {fatal} from '../base/print';
+import {paramSpecsOf} from './params';
+import {frameTopologyOf, type FrameTopology} from '../ir/frames';
 import {
   DepthKind,
   IrKind,
@@ -33,26 +35,19 @@ import {
   type ConstValue,
   type Type,
 } from '../ir/type';
-import {
-  executionInputsOf,
-  funcsOf,
-  namesOf,
-  requestsOf,
-  seriesInputsOf,
-} from '../ir/visit';
-import {RUNTIME_ABI_VERSION} from '../runtime/abi';
+import {executionInputsOf, requestsOf, seriesInputsOf} from '../ir/visit';
+import {RUNTIME_ABI_VERSION} from '../runtime/module-abi';
 import type {
   DepthSpec,
   ExecutionSpec,
   FrameLayout,
-  ManifestValue,
   ModuleManifest,
   OutputChannelTransport,
   OutputSpec,
   RequestSpec,
   SeriesSpec,
-} from '../runtime/abi';
-import {paramSpecsOf} from '../runtime/params';
+} from '../runtime/module-abi';
+import type {ManifestValue} from '../runtime/value';
 import type {
   AggregateLayoutManifest,
   LayoutId,
@@ -272,6 +267,7 @@ class ModuleEmitter {
 }
 
 class Generator {
+  private readonly topology: FrameTopology;
   private readonly funcs: readonly IrFunc[];
   private readonly series: readonly SeriesInput[];
   private readonly executions: readonly ExecutionInput[];
@@ -286,10 +282,6 @@ class Generator {
   private readonly funcIds = new Map<IrFunc, number>();
   private readonly requestIds = new Map<RequestEdge, number>();
   private readonly dynamicRequests = new Set<RequestEdge>();
-  // fid → slot → callee fid, discovered while lowering call sites.
-  private readonly callSites = new Map<number, Map<number, number>>();
-  // fid → its locals in slot order.
-  private readonly frameLocals: readonly (readonly Name[])[];
   private tempCounter = 0;
 
   constructor(
@@ -298,7 +290,10 @@ class Generator {
     private readonly emitter: ModuleEmitter,
     parent: Generator | null = null,
   ) {
-    this.funcs = funcsOf(program);
+    this.topology = frameTopologyOf(program);
+    this.funcs = this.topology.frames.flatMap(frame =>
+      frame.owner === null ? [] : [frame.owner],
+    );
     this.series = seriesInputsOf(program);
     this.executions = executionInputsOf(program);
     this.requests = requestsOf(program);
@@ -339,48 +334,11 @@ class Generator {
     });
     program.outputs.forEach((output, oid) => this.outputIds.set(output, oid));
     program.effects.forEach((effect, eid) => this.effectIds.set(effect, eid));
-    this.funcs.forEach((func, i) => this.funcIds.set(func, i + 1));
-
-    // Frame locals: ownership is explicit — a method owns its hidden receiver,
-    // then every function owns its source-visible params and declared locals;
-    // the program frame owns every remaining Name.
-    const owned = new Set<Name>();
-    for (const func of this.funcs) {
-      const receiver = func.callMode === 'free' ? [] : [func.receiver];
-      if (
-        func.callMode !== 'free' &&
-        (func.params.includes(func.receiver) ||
-          func.locals.includes(func.receiver))
-      ) {
-        fatal(
-          `method '${func.name}' hidden receiver also appears in explicit params or locals`,
-        );
-      }
-      for (const name of [...receiver, ...func.params, ...func.locals]) {
-        owned.add(name);
-      }
-    }
-    const reachableRootNames = namesOf(this.program).filter(
-      name => !owned.has(name),
-    );
-    const packageGlobalSet = new Set(this.program.packageGlobals);
-    const frame0 = [
-      ...this.program.packageGlobals,
-      ...reachableRootNames.filter(name => !packageGlobalSet.has(name)),
-    ];
-    const locals: (readonly Name[])[] = [frame0];
-    for (const func of this.funcs) {
-      const receiver = func.callMode === 'free' ? [] : [func.receiver];
-      locals.push([...receiver, ...func.params, ...func.locals]);
-    }
-    this.frameLocals = locals;
-    locals.forEach((names, fid) => {
-      names.forEach((name, slot) => {
-        if (this.nameSlots.has(name)) {
-          fatal(`name '${name.name}' owned by two frames`);
-        }
-        this.nameSlots.set(name, {fid, slot});
-      });
+    this.topology.frameByFunc.forEach((frame, func) => {
+      this.funcIds.set(func, frame.id);
+    });
+    this.topology.nameLocations.forEach((where, name) => {
+      this.nameSlots.set(name, {fid: where.frameId, slot: where.slot});
     });
   }
 
@@ -400,20 +358,15 @@ class Generator {
       layoutOf: type => this.emitter.layoutOf(type),
       currentFid: fid,
       noteCallSite: (siteFid, slot, callee) => {
-        const calleeFid = this.funcIds.get(callee);
-        if (calleeFid === undefined) {
-          return fatal(`call site to unmapped function '${callee.name}'`);
+        const frame = this.topology.frames[siteFid];
+        const child = frame?.children.find(
+          candidate => candidate.slot === slot,
+        );
+        if (child === undefined || child.callee !== callee) {
+          return fatal(
+            `lowered call site ${siteFid}:${slot} disagrees with frame topology`,
+          );
         }
-        let slots = this.callSites.get(siteFid);
-        if (slots === undefined) {
-          slots = new Map();
-          this.callSites.set(siteFid, slots);
-        }
-        const existing = slots.get(slot);
-        if (existing !== undefined && existing !== calleeFid) {
-          return fatal(`slot ${slot} of frame ${siteFid} has two callees`);
-        }
-        slots.set(slot, calleeFid);
       },
       useHelper: name => {
         this.emitter.usedHelpers.add(name);
@@ -661,19 +614,23 @@ class Generator {
       };
     });
 
-    const frames: FrameLayout[] = this.frameLocals.map((names, fid) => {
-      const sites = this.callSites.get(fid) ?? new Map<number, number>();
-      const slotCount = sites.size === 0 ? 0 : Math.max(...sites.keys()) + 1;
+    const frames: FrameLayout[] = this.topology.frames.map(frame => {
+      const slotCount =
+        frame.children.length === 0
+          ? 0
+          : Math.max(...frame.children.map(child => child.slot)) + 1;
       const subs: {fid: number}[] = [];
       for (let slot = 0; slot < slotCount; slot += 1) {
-        const callee = sites.get(slot);
-        if (callee === undefined) {
-          return fatal(`frame ${fid} call-site slot ${slot} never lowered`);
+        const child = frame.children.find(candidate => candidate.slot === slot);
+        if (child === undefined) {
+          return fatal(
+            `frame ${frame.id} call-site slot ${slot} is not a frame`,
+          );
         }
-        subs.push({fid: callee});
+        subs.push({fid: child.frameId});
       }
       return {
-        locals: names.map(name => ({
+        locals: frame.locals.map(name => ({
           storage: name.storage,
           depth: depthSpec(name.depth),
           layout: this.emitter.layoutOf(name.type),

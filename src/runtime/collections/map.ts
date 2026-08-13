@@ -1,13 +1,9 @@
 // Purpose: Insertion-ordered immutable maps with static-domain key canonicalization and sealed eager-copy backing.
 
 import {fatal} from '../../base/print';
-import {
-  ExecutionError,
-  isMapValue,
-  type CollectionMutation,
-  type MapValue,
-  type Value,
-} from '../abi';
+import {ExecutionError} from '../errors';
+import type {CollectionMutation} from '../module-abi';
+import {isMapValue, type MapValue, type Value} from '../value';
 import type {StorageDescriptor} from '../heap';
 import {
   visitRuntimeValueStorageRefs,

@@ -1,17 +1,17 @@
 // Purpose: Deterministic static call-site frame projection for WGSL state.
 
 import {fatal} from '../../base/print';
+import {frameTopologyOf} from '../../ir/frames';
 import {
   DepthKind,
   IrKind,
   PlaceKind,
   type IrExpr,
-  type IrStmt,
   type Name,
 } from '../../ir/node';
 import {TypeKind} from '../../ir/type';
 import type {IrFunc, Program} from '../../ir/program';
-import {funcsOf, namesOf} from '../../ir/visit';
+import {walkIrExpr, walkIrStmt} from '../../ir/visit';
 
 const MAX_U32 = 0xffff_ffff;
 export const MAX_WGSL_HISTORY_OFFSET = 0x7fff_ffff;
@@ -82,7 +82,10 @@ export function projectWgslFrames(
   program: Program,
   valueWords: (name: Name) => number,
 ): WgslFrameProjection {
-  const funcs = funcsOf(program);
+  const topology = frameTopologyOf(program);
+  const funcs = topology.frames.flatMap(frame =>
+    frame.owner === null ? [] : [frame.owner],
+  );
   // The Program depth is target-independent and can include a constant read
   // that WGSL intentionally lowers to typed empty (for example an offset that
   // cannot be represented by the GPU row cursor). Derive the physical demand
@@ -109,52 +112,10 @@ export function projectWgslFrames(
       Math.max(historyDemand.get(expr.place.name) ?? 0, offset.value),
     );
   };
-  program.init.forEach(stmt => walkStmt(stmt, noteHistoryDemand));
-  program.body.forEach(stmt => walkStmt(stmt, noteHistoryDemand));
-  funcs.forEach(func => walkExpr(func.body, noteHistoryDemand));
-  const functionNames = new Set<Name>();
-  funcs.forEach(func => {
-    if (func.callMode !== 'free') functionNames.add(func.receiver);
-    func.params.forEach(name => functionNames.add(name));
-    func.locals.forEach(name => functionNames.add(name));
-  });
-  const packageGlobals = new Set(program.packageGlobals);
-  const rootNames = [
-    ...program.packageGlobals,
-    ...namesOf(program).filter(
-      name => !functionNames.has(name) && !packageGlobals.has(name),
-    ),
-  ];
-  const owners: Array<IrFunc | null> = [null, ...funcs];
-  const ownerIds = new Map<IrFunc | null, number>(
-    owners.map((owner, id) => [owner, id]),
-  );
-  const directChildren = new Map<IrFunc | null, Map<number, IrFunc>>();
-  owners.forEach(owner => {
-    const children = new Map<number, IrFunc>();
-    const note = (expr: IrExpr): void => {
-      if (
-        expr.kind !== IrKind.CallFunc &&
-        expr.kind !== IrKind.CallConstMethod &&
-        expr.kind !== IrKind.CallMutableMethod
-      ) {
-        return;
-      }
-      const existing = children.get(expr.slot);
-      if (existing !== undefined && existing !== expr.func) {
-        throw new WgslFrameProjectionError(
-          `frame slot ${expr.slot} has two callees`,
-        );
-      }
-      children.set(expr.slot, expr.func);
-    };
-    if (owner === null) {
-      program.body.forEach(stmt => walkStmt(stmt, note));
-    } else {
-      walkExpr(owner.body, note);
-    }
-    directChildren.set(owner, children);
-  });
+  program.init.forEach(stmt => walkIrStmt(stmt, {expr: noteHistoryDemand}));
+  program.body.forEach(stmt => walkIrStmt(stmt, {expr: noteHistoryDemand}));
+  funcs.forEach(func => walkIrExpr(func.body, {expr: noteHistoryDemand}));
+  const owners = topology.frames.map(frame => frame.owner);
 
   const layouts = new Map<IrFunc | null, WgslFrameTemplateLayout>();
   const ephemeralFormalsByFunc = new Map<IrFunc, ReadonlySet<Name>>();
@@ -170,7 +131,7 @@ export function projectWgslFrames(
     visiting.add(owner);
     let names: readonly Name[];
     if (owner === null) {
-      names = rootNames;
+      names = topology.root.locals;
     } else {
       const parameters = [
         ...(owner.callMode === 'free' ? [] : [owner.receiver]),
@@ -249,9 +210,14 @@ export function projectWgslFrames(
       };
     });
     const children: WgslFrameChildLayout[] = [];
-    for (const [slot, callee] of [...(directChildren.get(owner) ?? [])].sort(
-      ([left], [right]) => left - right,
-    )) {
+    const semanticFrame =
+      owner === null ? topology.root : topology.frameByFunc.get(owner);
+    if (semanticFrame === undefined) {
+      return fatal(
+        `missing semantic frame for '${owner?.name ?? '<program>'}'`,
+      );
+    }
+    for (const {slot, callee} of semanticFrame.children) {
       const child = build(callee);
       children.push({
         slot,
@@ -262,10 +228,8 @@ export function projectWgslFrames(
       words = addWords(words, child.wordCount, `frame child slot ${slot}`);
     }
     visiting.delete(owner);
-    const id = ownerIds.get(owner);
-    if (id === undefined) return fatal('unmapped WGSL frame owner');
     const layout: WgslFrameTemplateLayout = {
-      id,
+      id: semanticFrame.id,
       owner,
       ownerName: owner?.name ?? '<program>',
       committedActivationWordOffset: 0,
@@ -303,118 +267,4 @@ export function projectWgslFrames(
     localByName,
     ephemeralFormalsByFunc,
   };
-}
-
-function walkStmt(stmt: IrStmt, visit: (expr: IrExpr) => void): void {
-  switch (stmt.kind) {
-    case IrKind.ExprStmt:
-      walkExpr(stmt.x, visit);
-      return;
-    case IrKind.InitName:
-    case IrKind.WriteName:
-      walkExpr(stmt.value, visit);
-      return;
-    case IrKind.UpdateValuePath:
-      walkExpr(stmt.value, visit);
-      return;
-    case IrKind.Emit:
-      stmt.args.forEach(arg => walkExpr(arg, visit));
-      return;
-    case IrKind.EmitEffect:
-      walkExpr(stmt.payload, visit);
-      return;
-    case IrKind.Break:
-    case IrKind.Continue:
-      return;
-    default:
-      return unreachableStmt(stmt);
-  }
-}
-
-function walkExpr(expr: IrExpr, visit: (expr: IrExpr) => void): void {
-  visit(expr);
-  const child = (nested: IrExpr): void => walkExpr(nested, visit);
-  switch (expr.kind) {
-    case IrKind.Const:
-    case IrKind.OutputRef:
-      return;
-    case IrKind.HistRead:
-      if (expr.offset !== null) child(expr.offset);
-      return;
-    case IrKind.Binary:
-      child(expr.x);
-      child(expr.y);
-      return;
-    case IrKind.Unary:
-      child(expr.x);
-      return;
-    case IrKind.Cond:
-      child(expr.cond);
-      child(expr.then);
-      child(expr.else);
-      return;
-    case IrKind.CallFunc:
-    case IrKind.CallNative:
-      expr.args.forEach(child);
-      return;
-    case IrKind.CallConstMethod:
-    case IrKind.CallMutableMethod:
-      child(expr.receiver);
-      expr.args.forEach(child);
-      return;
-    case IrKind.MutateCollection:
-      child(expr.receiver);
-      expr.args.forEach(child);
-      return;
-    case IrKind.NewUserValue:
-      expr.args.forEach(child);
-      return;
-    case IrKind.MakeTuple:
-      expr.elems.forEach(child);
-      return;
-    case IrKind.TupleGet:
-    case IrKind.FieldGet:
-      child(expr.x);
-      return;
-    case IrKind.IfExpr:
-      child(expr.cond);
-      child(expr.then);
-      if (expr.else !== null) child(expr.else);
-      return;
-    case IrKind.SwitchExpr:
-      if (expr.subject !== null) child(expr.subject);
-      expr.arms.forEach(arm => {
-        if (arm.pattern !== null) child(arm.pattern);
-        child(arm.body);
-      });
-      return;
-    case IrKind.ForExpr:
-      child(expr.from);
-      child(expr.to);
-      if (expr.step !== null) child(expr.step);
-      child(expr.body);
-      return;
-    case IrKind.ForInExpr:
-      child(expr.x);
-      child(expr.body);
-      return;
-    case IrKind.WhileExpr:
-      child(expr.cond);
-      child(expr.body);
-      return;
-    case IrKind.BlockExpr:
-      expr.stmts.forEach(stmt => walkStmt(stmt, visit));
-      if (expr.value !== null) child(expr.value);
-      return;
-    default:
-      return unreachableExpr(expr);
-  }
-}
-
-function unreachableExpr(expr: never): never {
-  return fatal(`unhandled WGSL frame expression ${JSON.stringify(expr)}`);
-}
-
-function unreachableStmt(stmt: never): never {
-  return fatal(`unhandled WGSL frame statement ${JSON.stringify(stmt)}`);
 }

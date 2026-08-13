@@ -1,7 +1,9 @@
 # runtime
 
 Tea execution after bind-independent codegen. `JSRuntime` implements the JS
-Runtime ABI (`abi.ts` is the contract surface, `docs/runtime.md` the authority)
+Runtime ABI (`abi.ts` is the stable facade; `value.ts`, `schema.ts`,
+`module-abi.ts`, `provider.ts`, `output.ts`, `binding.ts`, and `errors.ts` own
+the internal contracts; `docs/runtime.md` is the authority)
 and owns the main loop — binding, exact value layouts, frame trees, rings,
 immutable collection storage, provisional/commit, and emission flushing.
 Generic batch execution and GPU binding/execution also live here because bindings,
@@ -16,6 +18,10 @@ The target-neutral `executeProgram()` host harness lives one level above in
   the injected DataProvider and OutputSink.
 - `RUNTIME_ABI_VERSION` is the only JavaScript Runtime ABI version source and
   remains `1` before launch; do not add migration branches or legacy readers.
+- Runtime implementation files import the narrow internal contract they use,
+  never their own `abi.ts` facade. The versioned physical GPU artifact lives
+  in `gpu/contract.ts`; runtime/gpu must not import codegen implementation
+  modules or duplicate fixed physical constants.
 - CPU batch execution is not a second compiler or strategy runtime. It loads
   one ordinary generated JS module and passes each caller-ordered `BindInputs`
   element through the ordinary `bind()` / `runAll()` / `dispose()` lifecycle.

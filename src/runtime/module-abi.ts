@@ -1,0 +1,259 @@
+// Purpose: Versioned generated-JavaScript module manifest and Runtime operation contract.
+
+import type {ExecutionSource} from '../ir/builtin';
+import type {NameStorage} from '../ir/node';
+import type {Heap} from './heap';
+import type {EffectSpec, ParamSpec} from './schema';
+import type {
+  AggregateLayoutManifest,
+  LayoutId,
+  ValueLayoutRegistry,
+} from './value-layout';
+import type {
+  CollectionValue,
+  ExecutionResult,
+  ManifestValue,
+  UserTypeValue,
+  Value,
+} from './value';
+
+export const RUNTIME_ABI_VERSION = 1 as const;
+
+export type DepthSpec =
+  | {readonly kind: 'none'}
+  | {readonly kind: 'const'; readonly bars: number}
+  | {readonly kind: 'bound'}
+  | {readonly kind: 'capped'; readonly bars: number};
+
+export interface LocalSpec {
+  readonly storage: NameStorage;
+  readonly depth: DepthSpec;
+  readonly layout: LayoutId;
+}
+
+export interface FrameLayout {
+  readonly locals: readonly LocalSpec[];
+  readonly subs: readonly {readonly fid: number}[];
+}
+
+export interface SeriesSpec {
+  readonly id: string | null;
+  readonly depth: DepthSpec;
+}
+
+export interface ExecutionSpec {
+  readonly source: ExecutionSource;
+  readonly layout: LayoutId;
+  readonly depth: DepthSpec;
+}
+
+export type OutputChannelTransport =
+  | {readonly kind: 'int'}
+  | {readonly kind: 'float'}
+  | {readonly kind: 'bool'}
+  | {readonly kind: 'string'}
+  | {readonly kind: 'color'}
+  | {
+      readonly kind: 'enum';
+      readonly name: string;
+      readonly members: readonly string[];
+    }
+  | {
+      readonly kind: 'resource';
+      readonly handle:
+        | 'line'
+        | 'label'
+        | 'box'
+        | 'table'
+        | 'polyline'
+        | 'linefill';
+    }
+  | {readonly kind: 'output-ref'; readonly output: 'plot' | 'hline'}
+  | {readonly kind: 'user-type'; readonly name: string}
+  | {readonly kind: 'array'}
+  | {readonly kind: 'matrix'}
+  | {readonly kind: 'map'}
+  | {readonly kind: 'tuple'};
+
+export interface OutputChannelSpec {
+  readonly name: string;
+  readonly type: string;
+  readonly transport: OutputChannelTransport;
+}
+
+export interface OutputSpec {
+  readonly effect: string;
+  readonly staticArgs: readonly {
+    readonly name: string;
+    readonly value: ManifestValue;
+  }[];
+  readonly channels: readonly OutputChannelSpec[];
+}
+
+export interface EffectManifestSpec {
+  readonly layout: LayoutId;
+  readonly declaration: EffectSpec;
+}
+
+export interface RequestSpec {
+  readonly merge: {readonly mode: 'sample'};
+  readonly depth: DepthSpec;
+  readonly resultSlot: number;
+  readonly layout: LayoutId;
+  readonly dynamic: boolean;
+}
+
+export interface ModuleManifest {
+  readonly series: readonly SeriesSpec[];
+  readonly execution: readonly ExecutionSpec[];
+  readonly params: readonly ParamSpec[];
+  readonly outputs: readonly OutputSpec[];
+  readonly effects: readonly EffectManifestSpec[];
+  readonly frames: readonly FrameLayout[];
+  readonly requests: readonly RequestSpec[];
+}
+
+export interface Frame {
+  readonly kind: 'frame';
+}
+
+export interface ModuleCode {
+  readonly manifest: ModuleManifest;
+  readonly requests: readonly ModuleCode[];
+  init(rt: Runtime): void;
+  bind(rt: Runtime, fr: Frame): void;
+  readonly funcs: Readonly<
+    Record<
+      number,
+      (
+        rt: Runtime,
+        fr: Frame,
+        ...args: Value[]
+      ) => ExecutionResult | MutableMethodCallResult
+    >
+  >;
+  main(rt: Runtime, fr: Frame): void;
+}
+
+export interface MutableMethodCallResult {
+  readonly receiver: Value;
+  readonly result: ExecutionResult;
+}
+
+export interface TeaModule extends ModuleCode {
+  readonly abi: typeof RUNTIME_ABI_VERSION;
+  readonly aggregateLayouts: AggregateLayoutManifest;
+}
+
+export interface ContextBudget {
+  used: number;
+  readonly max: number;
+}
+
+export interface FixedValueStorageBudget {
+  usedLogicalBytes: number;
+  readonly maxLogicalBytes: number;
+}
+
+export interface SharedExecutionState {
+  readonly aggregateLayouts: ValueLayoutRegistry;
+  readonly heap: Heap;
+  readonly contextBudget: ContextBudget;
+  readonly fixedValueStorage: FixedValueStorageBudget;
+}
+
+export interface Runtime {
+  series(sid: number, offset: number): number;
+  execution(eid: number, offset: number): Value;
+  param(pid: number): Value;
+  read(fr: Frame, slot: number, offset: number): Value;
+  write(fr: Frame, slot: number, v: Value): void;
+  needsInit(fr: Frame, slot: number): boolean;
+  initialize(fr: Frame, slot: number, v: Value): void;
+  request(rid: number, offset: number): Value;
+  requestFor(rid: number, symbol: Value, timeframe: Value): Value;
+  frame(fr: Frame, slot: number): Frame;
+  root(): Frame;
+  emit(oid: number, channel: number, v: Value): void;
+  emitEffect(effectId: number, payload: Value): void;
+  historyDepth(offset: number): number;
+  bindDepth(fid: number, slot: number, bars: number): void;
+  bindSeriesDepth(sid: number, bars: number): void;
+  bindExecutionDepth(eid: number, bars: number): void;
+  bindOutput(oid: number, argName: string, v: Value): void;
+  bindParamActive(pid: number, active: Value): void;
+  bindRequestOptions(
+    rid: number,
+    gaps: Value,
+    lookahead: Value,
+    ignoreInvalidSymbol: Value,
+    calcBarsCount: Value,
+  ): void;
+  bindRequest(rid: number, symbol: Value, timeframe: Value): void;
+  newUser(layout: LayoutId, fields: readonly Value[]): UserTypeValue;
+  userField(value: Value, ownerLayout: LayoutId, index: number): Value;
+  rebuildUserPath(
+    root: Value,
+    rootLayout: LayoutId,
+    fieldIndices: readonly number[],
+    leaf: Value,
+  ): Value;
+  callCollection(
+    operation: CollectionOperation,
+    resultLayout: LayoutId,
+    args: readonly Value[],
+  ): Value;
+  mutateCollection(
+    operation: CollectionMutationOperation,
+    collectionLayout: LayoutId,
+    receiver: Value,
+    args: readonly Value[],
+  ): CollectionMutation;
+  collectionEntries(value: Value): CollectionEntries;
+}
+
+export type CollectionOperation =
+  | 'array.new'
+  | 'array.from'
+  | 'array.size'
+  | 'array.is_empty'
+  | 'array.get'
+  | 'array.first'
+  | 'array.last'
+  | 'array.copy'
+  | 'matrix.new'
+  | 'matrix.rows'
+  | 'matrix.columns'
+  | 'matrix.elements_count'
+  | 'matrix.get'
+  | 'matrix.row'
+  | 'matrix.column'
+  | 'matrix.copy'
+  | 'map.new'
+  | 'map.size'
+  | 'map.is_empty'
+  | 'map.contains'
+  | 'map.get'
+  | 'map.keys'
+  | 'map.values'
+  | 'map.copy';
+
+export type CollectionMutationOperation =
+  | 'array.set'
+  | 'array.push'
+  | 'array.pop'
+  | 'array.clear'
+  | 'matrix.set'
+  | 'matrix.fill'
+  | 'map.put'
+  | 'map.remove'
+  | 'map.clear';
+
+export interface CollectionMutation {
+  readonly replacement: CollectionValue;
+  readonly result: ExecutionResult;
+}
+
+export type CollectionEntries =
+  | readonly Value[]
+  | readonly (readonly [Value, Value])[];

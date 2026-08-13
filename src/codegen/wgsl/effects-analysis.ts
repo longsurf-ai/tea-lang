@@ -12,6 +12,7 @@ import {
 } from '../../ir/node';
 import type {IrFunc, Program} from '../../ir/program';
 import {TypeKind} from '../../ir/type';
+import {visitExprChildren, visitStmtChildren} from '../../ir/visit';
 
 export interface WgslEffectAnalysis {
   readonly maxEffectsPerRow: number;
@@ -66,120 +67,46 @@ export function collectLiteralStrings(program: Program): readonly string[] {
   };
 
   const visitStmt = (stmt: IrStmt): void => {
-    switch (stmt.kind) {
-      case IrKind.ExprStmt:
-        visitExpr(stmt.x);
-        return;
-      case IrKind.InitName:
-      case IrKind.WriteName:
-        visitExpr(stmt.value);
-        return;
-      case IrKind.UpdateValuePath:
-        visitExpr(stmt.value);
-        return;
-      case IrKind.Emit:
-        visitArgs(stmt.args, stmt.argumentEvaluationOrder);
-        return;
-      case IrKind.EmitEffect:
-        visitExpr(stmt.payload);
-        return;
-      case IrKind.Break:
-      case IrKind.Continue:
-        return;
-      default:
-        return unreachableStmt(stmt);
+    if (stmt.kind === IrKind.Emit) {
+      visitArgs(stmt.args, stmt.argumentEvaluationOrder);
+      return;
     }
+    visitStmtChildren(stmt, visitExpr);
   };
 
   function visitExpr(expr: IrExpr): void {
-    switch (expr.kind) {
-      case IrKind.Const:
-        if (
-          expr.type.kind === TypeKind.String &&
-          typeof expr.value === 'string'
-        ) {
-          strings.add(expr.value);
-        }
-        return;
-      case IrKind.OutputRef:
-        return;
-      case IrKind.HistRead:
-        if (expr.place.kind === PlaceKind.Name) visitName(expr.place.name);
-        if (expr.offset !== null) visitExpr(expr.offset);
-        return;
-      case IrKind.Binary:
-        visitExpr(expr.x);
-        visitExpr(expr.y);
-        return;
-      case IrKind.Unary:
-        visitExpr(expr.x);
-        return;
-      case IrKind.Cond:
-        // Tea Cond is eager: both value arms execute.
-        visitExpr(expr.cond);
-        visitExpr(expr.then);
-        visitExpr(expr.else);
-        return;
-      case IrKind.CallFunc:
-        visitArgs(expr.args, expr.argumentEvaluationOrder);
-        visitFunc(expr.func);
-        return;
-      case IrKind.CallConstMethod:
-      case IrKind.CallMutableMethod:
-        visitExpr(expr.receiver);
-        visitArgs(expr.args, expr.argumentEvaluationOrder);
-        visitFunc(expr.func);
-        return;
-      case IrKind.CallNative:
-        visitArgs(expr.args, expr.argumentEvaluationOrder);
-        return;
-      case IrKind.MutateCollection:
-        visitExpr(expr.receiver);
-        visitArgs(expr.args, expr.argumentEvaluationOrder);
-        return;
-      case IrKind.NewUserValue:
-        visitArgs(expr.args, expr.argumentEvaluationOrder);
-        return;
-      case IrKind.MakeTuple:
-        expr.elems.forEach(visitExpr);
-        return;
-      case IrKind.TupleGet:
-      case IrKind.FieldGet:
-        visitExpr(expr.x);
-        return;
-      case IrKind.IfExpr:
-        visitExpr(expr.cond);
-        visitExpr(expr.then);
-        if (expr.else !== null) visitExpr(expr.else);
-        return;
-      case IrKind.SwitchExpr:
-        if (expr.subject !== null) visitExpr(expr.subject);
-        expr.arms.forEach(arm => {
-          if (arm.pattern !== null) visitExpr(arm.pattern);
-          visitExpr(arm.body);
-        });
-        return;
-      case IrKind.ForExpr:
-        visitExpr(expr.from);
-        visitExpr(expr.to);
-        if (expr.step !== null) visitExpr(expr.step);
-        visitExpr(expr.body);
-        return;
-      case IrKind.ForInExpr:
-        visitExpr(expr.x);
-        visitExpr(expr.body);
-        return;
-      case IrKind.WhileExpr:
-        visitExpr(expr.cond);
-        visitExpr(expr.body);
-        return;
-      case IrKind.BlockExpr:
-        expr.stmts.forEach(visitStmt);
-        if (expr.value !== null) visitExpr(expr.value);
-        return;
-      default:
-        return unreachableExpr(expr);
+    if (
+      expr.kind === IrKind.Const &&
+      expr.type.kind === TypeKind.String &&
+      typeof expr.value === 'string'
+    ) {
+      strings.add(expr.value);
+    } else if (expr.kind === IrKind.HistRead) {
+      if (expr.place.kind === PlaceKind.Name) visitName(expr.place.name);
+    } else if (expr.kind === IrKind.CallFunc) {
+      visitArgs(expr.args, expr.argumentEvaluationOrder);
+      visitFunc(expr.func);
+      return;
+    } else if (
+      expr.kind === IrKind.CallConstMethod ||
+      expr.kind === IrKind.CallMutableMethod
+    ) {
+      visitExpr(expr.receiver);
+      visitArgs(expr.args, expr.argumentEvaluationOrder);
+      visitFunc(expr.func);
+      return;
+    } else if (expr.kind === IrKind.CallNative) {
+      visitArgs(expr.args, expr.argumentEvaluationOrder);
+      return;
+    } else if (expr.kind === IrKind.MutateCollection) {
+      visitExpr(expr.receiver);
+      visitArgs(expr.args, expr.argumentEvaluationOrder);
+      return;
+    } else if (expr.kind === IrKind.NewUserValue) {
+      visitArgs(expr.args, expr.argumentEvaluationOrder);
+      return;
     }
+    visitExprChildren(expr, visitExpr, visitStmt);
   }
 
   program.packageGlobals.forEach(visitName);

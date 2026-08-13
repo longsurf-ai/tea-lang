@@ -49,14 +49,19 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   ownership. The noder projects an instance to a distinct `IrFunc` and name
   graph in each Program context. Each stateful call site's `SlotId` selects a
   sub-frame in the caller's frame; the frame tree is statically enumerable
-  from the call graph and pre-allocated at bind — for user functions, the Tea
-  prelude, and stateful natives alike.
+  from the call graph. Backends choose its physical representation: JS may
+  materialize child frames lazily, while WGSL reserves a static execution
+  arena. The topology is identical for user functions and Tea prelude code.
 - Free functions, const methods, and mutable methods are an exhaustive
   Program union. A method owns one hidden receiver Name separate from every
   source-visible param; const calls carry no writeback path, while mutable
   calls carry the rooted path used by success-only copy-out.
-- `visit.ts` owns IR traversal; its switches are exhaustive over `IrKind`
-  (a new kind fails compilation there until handled). Program fields are
+- `visit.ts` owns canonical lexical child enumeration and recursive IR
+  traversal; specialized analyses add only semantic edges such as function
+  bodies, request metadata, or history-depth expressions. Its switches are
+  exhaustive over `IrKind` (a new kind fails compilation there until handled).
+  `frames.ts` derives the one target-neutral Name ownership and call-site frame
+  topology consumed by every backend. Program fields are
   the external-needs interface (params, requests) plus dense and sparse
   emissions (outputs, effects)
   — explicit even where derivable, so codegen/runtime never walk trees to

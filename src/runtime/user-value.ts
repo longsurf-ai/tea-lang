@@ -1,12 +1,8 @@
 // Purpose: Nominal user-value construction, typed-empty field reads, and immutable rooted field-path rebuilding.
 
 import {fatal} from '../base/print';
-import {
-  ExecutionError,
-  isUserTypeValue,
-  type UserTypeValue,
-  type Value,
-} from './abi';
+import {ExecutionError} from './errors';
+import {isUserTypeValue, type UserTypeValue, type Value} from './value';
 import {type LayoutId, ValueLayoutRegistry} from './value-layout';
 
 export function newUserValue(

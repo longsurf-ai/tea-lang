@@ -3,7 +3,7 @@
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {describe, expect, test} from 'bun:test';
-import type {CompiledWgslProgram} from '../../codegen/wgsl/types';
+import type {CompiledWgslProgram} from '../../gpu/contract';
 import {compileProgramToWgsl} from '../../codegen/wgsl';
 import {mustBuild} from '../../noder/testing';
 import {MemorySink} from '../../providers/sinks/memory-sink';
@@ -298,11 +298,13 @@ describe('GPU execution preparation', () => {
       {maxRowsPerChunk: 3},
     );
     const channels = artifact.resultChannels.length;
-    expect(prepared.executions.map(execution => ({
-      final: execution.finalDenseOnly,
-      offset: execution.resultOffset,
-      capacity: execution.resultCapacity,
-    }))).toEqual([
+    expect(
+      prepared.executions.map(execution => ({
+        final: execution.finalDenseOnly,
+        offset: execution.resultOffset,
+        capacity: execution.resultCapacity,
+      })),
+    ).toEqual([
       {final: false, offset: 0, capacity: 3 * channels},
       {final: true, offset: 3 * channels, capacity: channels},
     ]);
@@ -339,9 +341,9 @@ describe('GPU execution preparation', () => {
     );
     const channels = artifact.resultChannels.length;
     expect(prepared.chunkRows).toBe(8);
-    expect(prepared.executions.map(execution => execution.resultCapacity)).toEqual(
-      Array(4).fill(channels),
-    );
+    expect(
+      prepared.executions.map(execution => execution.resultCapacity),
+    ).toEqual(Array(4).fill(channels));
     expect(prepared.resources.results).toBe(
       4 * channels * artifact.resultCellByteStride,
     );
@@ -798,6 +800,12 @@ describe('GPU execution preparation', () => {
 
   test('rejects malformed physical strides and effect schema ids', async () => {
     const artifact = strategyArtifact();
+    await expect(
+      prepareGpuExecutionInputs(
+        {...artifact, abi: 2} as unknown as CompiledWgslProgram,
+        [],
+      ),
+    ).rejects.toThrow(/unsupported GPU artifact ABI 2; expected 1/);
     await expect(
       prepareGpuExecutionInputs({...artifact, executionStateByteStride: 4}, []),
     ).rejects.toThrow(/executionStateByteStride 4 is below minimum 8/);

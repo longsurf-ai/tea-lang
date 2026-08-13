@@ -2,27 +2,37 @@
 
 /// <reference types="@webgpu/types" />
 
-import type {
-  CompiledWgslProgram,
-  WgslResultChannel,
-  WgslValueSchema,
-} from '../../codegen/wgsl/types';
+import {
+  GPU_ARTIFACT_ABI_VERSION,
+  GPU_BUFFER_GROUP,
+  GPU_EFFECT_STATUS_BYTE_STRIDE,
+  GPU_EXECUTION_STATE_MIN_BYTE_STRIDE,
+  GPU_EXTERNAL_BUFFER_BINDINGS,
+  GPU_JOB_DESCRIPTOR_BYTE_STRIDE,
+  GPU_JOB_DESCRIPTOR_OFFSETS,
+  GPU_PARAMETER_BYTE_STRIDE,
+  GPU_RESULT_CELL_BYTE_STRIDE,
+  GPU_SERIES_SCALAR_BYTE_STRIDE,
+  type CompiledWgslProgram,
+  type WgslResultChannel,
+  type WgslValueSchema,
+} from '../../gpu/contract';
+import type {BindInputs, BoundInput} from '../binding';
 import {
   isContextError,
-  type BindInputs,
-  type BoundInput,
   type ContextError,
   type DataProvider,
-  type DenseEmission,
-  type EffectEmission,
-  type EffectValue,
-  type ExecutionDeclaration,
   type ProviderContext,
-  type RowPublication,
   type SeriesData,
-  type Value,
-} from '../abi';
+} from '../provider';
+import type {
+  DenseEmission,
+  EffectEmission,
+  ExecutionDeclaration,
+  RowPublication,
+} from '../output';
 import {resolveParamValues} from '../params';
+import type {EffectValue, Value} from '../value';
 
 const MAX_U32 = 0xffff_ffff;
 const MAX_I32 = 0x7fff_ffff;
@@ -659,8 +669,7 @@ class DeviceGpuExecution implements GpuExecution {
       );
     }
     this.device.queue.submit([encoder.finish()]);
-    this.encodeSubmitMs +=
-      globalThis.performance.now() - encodeSubmitStarted;
+    this.encodeSubmitMs += globalThis.performance.now() - encodeSubmitStarted;
     const completionReadbackStarted = globalThis.performance.now();
     const [results, effectStatus, effectRecords] = await Promise.all([
       readback(this.buffers.readbackResults),
@@ -1826,16 +1835,8 @@ function packInitialDescriptors(
     const offsets = artifact.jobDescriptorOffsets;
     view.setUint32(base + offsets.seriesOffset, execution.seriesOffset, true);
     view.setUint32(base + offsets.rowCount, execution.rows, true);
-    view.setUint32(
-      base + offsets.resultOffset,
-      execution.resultOffset,
-      true,
-    );
-    view.setUint32(
-      base + offsets.resultCount,
-      execution.resultCapacity,
-      true,
-    );
+    view.setUint32(base + offsets.resultOffset, execution.resultOffset, true);
+    view.setUint32(base + offsets.resultCount, execution.resultCapacity, true);
     view.setUint32(base + offsets.effectOffset, execution.effectOffset, true);
     view.setUint32(
       base + offsets.effectCapacity,
@@ -1862,13 +1863,27 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
     artifact.externalBuffers.effectRecordsBinding,
     artifact.externalBuffers.paramsBinding,
   ];
+  const expectedBindings = [
+    GPU_EXTERNAL_BUFFER_BINDINGS.jobs,
+    GPU_EXTERNAL_BUFFER_BINDINGS.series,
+    GPU_EXTERNAL_BUFFER_BINDINGS.executionStates,
+    GPU_EXTERNAL_BUFFER_BINDINGS.results,
+    GPU_EXTERNAL_BUFFER_BINDINGS.effectStatus,
+    GPU_EXTERNAL_BUFFER_BINDINGS.effectRecords,
+    GPU_EXTERNAL_BUFFER_BINDINGS.params,
+  ];
+  if (artifact.abi !== GPU_ARTIFACT_ABI_VERSION) {
+    throw new GpuBindingError(
+      `unsupported GPU artifact ABI ${artifact.abi}; expected ${GPU_ARTIFACT_ABI_VERSION}`,
+    );
+  }
   if (
     artifact.target !== 'webgpu-wgsl' ||
     artifact.module.language !== 'wgsl' ||
     artifact.module.entryPoint.length === 0 ||
-    artifact.externalBuffers.group !== 0 ||
+    artifact.externalBuffers.group !== GPU_BUFFER_GROUP ||
     bindings.some(value => !Number.isSafeInteger(value) || value < 0) ||
-    new Set(bindings).size !== bindings.length
+    bindings.some((value, index) => value !== expectedBindings[index])
   ) {
     throw new GpuBindingError(
       'compiled WGSL has an invalid external buffer ABI',
@@ -1904,12 +1919,12 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
     );
   }
   const minimumStrides = {
-    jobDescriptorByteStride: 32,
-    seriesScalarByteStride: 4,
-    parameterByteStride: 4,
-    executionStateByteStride: 8,
-    resultCellByteStride: 8,
-    effectStatusByteStride: 16,
+    jobDescriptorByteStride: GPU_JOB_DESCRIPTOR_BYTE_STRIDE,
+    seriesScalarByteStride: GPU_SERIES_SCALAR_BYTE_STRIDE,
+    parameterByteStride: GPU_PARAMETER_BYTE_STRIDE,
+    executionStateByteStride: GPU_EXECUTION_STATE_MIN_BYTE_STRIDE,
+    resultCellByteStride: GPU_RESULT_CELL_BYTE_STRIDE,
+    effectStatusByteStride: GPU_EFFECT_STATUS_BYTE_STRIDE,
     effectRecordByteStride:
       8 + Math.max(1, artifact.effectPayloadWordCapacity) * 4,
   } as const;
@@ -1934,6 +1949,12 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
   }
   const offsets = Object.values(artifact.jobDescriptorOffsets);
   if (
+    Object.entries(GPU_JOB_DESCRIPTOR_OFFSETS).some(
+      ([name, expected]) =>
+        artifact.jobDescriptorOffsets[
+          name as keyof typeof GPU_JOB_DESCRIPTOR_OFFSETS
+        ] !== expected,
+    ) ||
     offsets.some(
       offset =>
         !Number.isSafeInteger(offset) ||

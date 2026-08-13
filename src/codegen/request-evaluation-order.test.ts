@@ -107,6 +107,30 @@ describe('request context evaluation order', () => {
     expect(js).toContain('rt.requestFor(0,');
   });
 
+  test('owns dynamic request context calls in the lexical function frame', () => {
+    const program = mustBuild(
+      [
+        'id(string s) => s',
+        'fetch(string s) => request.security(id(s), "D", close)',
+        'a = fetch(close > 3 ? "X" : "Y")',
+        'plot(a)',
+      ].join('\n'),
+    );
+
+    const module = new Function(generate(program))() as {
+      readonly manifest: {
+        readonly frames: readonly {
+          readonly subs: readonly {readonly fid: number}[];
+        }[];
+      };
+    };
+    expect(module.manifest.frames.map(frame => frame.subs)).toEqual([
+      [{fid: 1}],
+      [{fid: 2}],
+      [],
+    ]);
+  });
+
   test('evaluates a root Simple alias before binding request options', () => {
     const program = mustBuild(
       [

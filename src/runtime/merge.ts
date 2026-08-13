@@ -1,6 +1,7 @@
 // Purpose: Sample-merge alignment — a pure function from two time axes and a merge policy to a parent→child row mapping; never copies child data (docs/requests.md: merge is alignment, not data movement).
 
-import {BindError, type TimeAxis} from './abi';
+import {BindError} from './errors';
+import type {TimeAxis} from './provider';
 
 // A merge axis must be finite and strictly time-ordered: NaN comparisons
 // are silently false and a shuffled axis would corrupt the mapping without

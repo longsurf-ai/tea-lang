@@ -13,6 +13,7 @@ import {
   parseRunParameters,
 } from './cli/parameters';
 import {compile, compileToProgram, parseFile} from './compile';
+import {paramSpecsOf} from './codegen/params';
 import {startDocsServer} from './docs/server';
 import {
   executeProgram,
@@ -44,7 +45,6 @@ import {
   type OutputSink,
 } from './runtime/abi';
 import {GpuBindingError, GpuExecutionError} from './runtime/gpu';
-import {paramSpecsOf} from './runtime/params';
 import {dumpFile, dumpTokens} from './syntax/dumper';
 import {tokenize} from './syntax/syntax';
 

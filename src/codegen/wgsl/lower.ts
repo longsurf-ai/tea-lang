@@ -3,6 +3,26 @@
 import type {Pos} from '../../base/pos';
 import {formatPos} from '../../base/pos';
 import {fatal} from '../../base/print';
+import {paramSpecsOf} from '../params';
+import {
+  GPU_ARTIFACT_ABI_VERSION,
+  GPU_BUFFER_GROUP,
+  GPU_EFFECT_STATUS_BYTE_STRIDE,
+  GPU_EXTERNAL_BUFFER_BINDINGS,
+  GPU_JOB_DESCRIPTOR_BYTE_STRIDE,
+  GPU_JOB_DESCRIPTOR_OFFSETS,
+  GPU_RESULT_CELL_BYTE_STRIDE,
+  GPU_SERIES_SCALAR_BYTE_STRIDE,
+  type CompiledWgslProgram,
+  type WgslEffectSchema,
+  type WgslModule,
+  type WgslNumericContract,
+  type WgslOutputSchema,
+  type WgslPhysicalField,
+  type WgslPhysicalLayout,
+  type WgslResultChannel,
+  type WgslValueSchema,
+} from '../../gpu/contract';
 import {
   DepthKind,
   IrKind,
@@ -41,22 +61,14 @@ import {
   namesOf,
   seriesInputsOf,
   slotCountOf,
+  walkIrExpr,
+  walkIrStmt,
 } from '../../ir/visit';
-import {paramSpecsOf} from '../../runtime/params';
 import type {
-  CompiledWgslProgram,
   WgslCompilationResult,
   WgslEligibilityIssue,
   WgslEligibilityIssueCode,
-  WgslNumericContract,
-  WgslPhysicalField,
-  WgslPhysicalLayout,
   WgslProgramInventory,
-  WgslResultChannel,
-  WgslEffectSchema,
-  WgslModule,
-  WgslOutputSchema,
-  WgslValueSchema,
 } from './types';
 import {
   analyzeWgslEffects,
@@ -78,25 +90,28 @@ const CACHED_ENTRY_POINT = 'tea_main_cached';
 const WORKGROUP_SIZE_OVERRIDE = 'tea_workgroup_size';
 const CACHE_WORDS_OVERRIDE = 'tea_cache_words_per_execution';
 const CACHE_ALLOCATION_OVERRIDE = 'tea_cache_allocation_words';
-const JOB_DESCRIPTOR_BYTES = 32;
-const RESULT_CELL_BYTES = 8;
-const EFFECT_STATUS_BYTES = 16;
-const GPU_BUFFER_GROUP = 0;
-const GPU_JOBS_BINDING = 0;
-const GPU_SERIES_BINDING = 1;
-const GPU_EXECUTION_STATES_BINDING = 2;
-const GPU_RESULTS_BINDING = 3;
-const GPU_EFFECT_STATUS_BINDING = 4;
-const GPU_EFFECT_RECORDS_BINDING = 5;
-const GPU_PARAMS_BINDING = 6;
-const JOB_SERIES_OFFSET = 0;
-const JOB_ROW_COUNT_OFFSET = 4;
-const JOB_RESULT_OFFSET = 8;
-const JOB_RESULT_COUNT_OFFSET = 12;
-const JOB_EFFECT_OFFSET = 16;
-const JOB_EFFECT_CAPACITY_OFFSET = 20;
-const JOB_CHUNK_ROWS_OFFSET = 24;
-const JOB_PARAMS_OFFSET = 28;
+const JOB_DESCRIPTOR_BYTES = GPU_JOB_DESCRIPTOR_BYTE_STRIDE;
+const RESULT_CELL_BYTES = GPU_RESULT_CELL_BYTE_STRIDE;
+const EFFECT_STATUS_BYTES = GPU_EFFECT_STATUS_BYTE_STRIDE;
+const {
+  jobs: GPU_JOBS_BINDING,
+  series: GPU_SERIES_BINDING,
+  executionStates: GPU_EXECUTION_STATES_BINDING,
+  results: GPU_RESULTS_BINDING,
+  effectStatus: GPU_EFFECT_STATUS_BINDING,
+  effectRecords: GPU_EFFECT_RECORDS_BINDING,
+  params: GPU_PARAMS_BINDING,
+} = GPU_EXTERNAL_BUFFER_BINDINGS;
+const {
+  seriesOffset: JOB_SERIES_OFFSET,
+  rowCount: JOB_ROW_COUNT_OFFSET,
+  resultOffset: JOB_RESULT_OFFSET,
+  resultCount: JOB_RESULT_COUNT_OFFSET,
+  effectOffset: JOB_EFFECT_OFFSET,
+  effectCapacity: JOB_EFFECT_CAPACITY_OFFSET,
+  chunkRows: JOB_CHUNK_ROWS_OFFSET,
+  paramsOffset: JOB_PARAMS_OFFSET,
+} = GPU_JOB_DESCRIPTOR_OFFSETS;
 const F32_ABSOLUTE_TOLERANCE = 0.0001;
 const F32_RELATIVE_TOLERANCE = 0.00002;
 const MAX_GPU_ROW = MAX_WGSL_HISTORY_OFFSET;
@@ -324,11 +339,7 @@ class WgslEmitter {
       this.collectExpressionTypes(func.body);
     }
     for (const stmt of [...this.program.init, ...this.program.body]) {
-      walkStmtChildren(
-        stmt,
-        expr => this.collectExpressionType(expr),
-        () => {},
-      );
+      walkIrStmt(stmt, {expr: expr => this.collectExpressionType(expr)});
     }
     for (const series of this.series) {
       if (series.type.kind !== TypeKind.Float) {
@@ -364,6 +375,7 @@ class WgslEmitter {
       entryPoint: STORAGE_ENTRY_POINT,
     };
     return {
+      abi: GPU_ARTIFACT_ABI_VERSION,
       target: 'webgpu-wgsl',
       numeric: WGSL_F32_NUMERIC_CONTRACT,
       module,
@@ -371,26 +383,17 @@ class WgslEmitter {
       workgroupSize: [WORKGROUP_SIZE, 1, 1],
       externalBuffers: {
         group: GPU_BUFFER_GROUP,
-        jobsBinding: GPU_JOBS_BINDING,
-        seriesBinding: GPU_SERIES_BINDING,
-        executionStatesBinding: GPU_EXECUTION_STATES_BINDING,
-        resultsBinding: GPU_RESULTS_BINDING,
-        effectStatusBinding: GPU_EFFECT_STATUS_BINDING,
-        effectRecordsBinding: GPU_EFFECT_RECORDS_BINDING,
-        paramsBinding: GPU_PARAMS_BINDING,
+        jobsBinding: GPU_EXTERNAL_BUFFER_BINDINGS.jobs,
+        seriesBinding: GPU_EXTERNAL_BUFFER_BINDINGS.series,
+        executionStatesBinding: GPU_EXTERNAL_BUFFER_BINDINGS.executionStates,
+        resultsBinding: GPU_EXTERNAL_BUFFER_BINDINGS.results,
+        effectStatusBinding: GPU_EXTERNAL_BUFFER_BINDINGS.effectStatus,
+        effectRecordsBinding: GPU_EXTERNAL_BUFFER_BINDINGS.effectRecords,
+        paramsBinding: GPU_EXTERNAL_BUFFER_BINDINGS.params,
       },
       jobDescriptorLayout: this.jobDescriptorLayout,
-      jobDescriptorByteStride: JOB_DESCRIPTOR_BYTES,
-      jobDescriptorOffsets: {
-        seriesOffset: JOB_SERIES_OFFSET,
-        rowCount: JOB_ROW_COUNT_OFFSET,
-        resultOffset: JOB_RESULT_OFFSET,
-        resultCount: JOB_RESULT_COUNT_OFFSET,
-        effectOffset: JOB_EFFECT_OFFSET,
-        effectCapacity: JOB_EFFECT_CAPACITY_OFFSET,
-        chunkRows: JOB_CHUNK_ROWS_OFFSET,
-        paramsOffset: JOB_PARAMS_OFFSET,
-      },
+      jobDescriptorByteStride: GPU_JOB_DESCRIPTOR_BYTE_STRIDE,
+      jobDescriptorOffsets: GPU_JOB_DESCRIPTOR_OFFSETS,
       parameterLayout: this.parameterLayout,
       parameterByteStride: this.layouts[this.parameterLayout].byteSize,
       executionStateLayout: this.executionStateLayout,
@@ -399,11 +402,11 @@ class WgslEmitter {
       state: this.stateManifest(),
       cache: this.cacheManifest(),
       seriesScalarLayout: this.seriesScalarLayout,
-      seriesScalarByteStride: 4,
+      seriesScalarByteStride: GPU_SERIES_SCALAR_BYTE_STRIDE,
       resultCellLayout: this.resultCellLayout,
-      resultCellByteStride: RESULT_CELL_BYTES,
+      resultCellByteStride: GPU_RESULT_CELL_BYTE_STRIDE,
       effectStatusLayout: this.effectStatusLayout,
-      effectStatusByteStride: EFFECT_STATUS_BYTES,
+      effectStatusByteStride: GPU_EFFECT_STATUS_BYTE_STRIDE,
       effectRecordLayout: this.effectRecordLayout,
       effectRecordByteStride: this.layouts[this.effectRecordLayout].byteSize,
       effectPayloadWordCapacity: Math.max(1, this.maxEffectPayloadWords),
@@ -648,7 +651,7 @@ class WgslEmitter {
   }
 
   private collectExpressionTypes(expr: IrExpr): void {
-    walkExpr(expr, node => this.collectExpressionType(node));
+    walkIrExpr(expr, {expr: node => this.collectExpressionType(node)});
   }
 
   private collectExpressionType(expr: IrExpr): void {
@@ -773,14 +776,16 @@ class WgslEmitter {
   }
 
   private rejectNestedEmit(stmt: IrStmt): void {
-    walkStmt(stmt, node => {
-      if (node.kind === IrKind.Emit) {
-        this.unsupported(
-          'result-transport-lowering-unimplemented',
-          'conditional or nested GPU result emissions are unsupported',
-          node.pos,
-        );
-      }
+    walkIrStmt(stmt, {
+      stmt: node => {
+        if (node.kind === IrKind.Emit) {
+          this.unsupported(
+            'result-transport-lowering-unimplemented',
+            'conditional or nested GPU result emissions are unsupported',
+            node.pos,
+          );
+        }
+      },
     });
   }
 
@@ -798,21 +803,23 @@ class WgslEmitter {
         );
       }
       state.set(func, 'visiting');
-      walkExpr(func.body, expr => {
-        if (
-          expr.kind === IrKind.CallFunc ||
-          expr.kind === IrKind.CallConstMethod ||
-          expr.kind === IrKind.CallMutableMethod
-        ) {
-          if (!this.funcNames.has(expr.func)) {
-            this.unsupported(
-              'function-frame-lowering-unimplemented',
-              `call to '${expr.func.name}' is outside the closed Program call graph`,
-              expr.pos,
-            );
+      walkIrExpr(func.body, {
+        expr: expr => {
+          if (
+            expr.kind === IrKind.CallFunc ||
+            expr.kind === IrKind.CallConstMethod ||
+            expr.kind === IrKind.CallMutableMethod
+          ) {
+            if (!this.funcNames.has(expr.func)) {
+              this.unsupported(
+                'function-frame-lowering-unimplemented',
+                `call to '${expr.func.name}' is outside the closed Program call graph`,
+                expr.pos,
+              );
+            }
+            visit(expr.func);
           }
-          visit(expr.func);
-        }
+        },
       });
       state.set(func, 'done');
     };
@@ -3053,161 +3060,6 @@ function manifestValue(value: ConstValue): number | string | boolean | null {
     return fatal('non-finite constant reached WGSL output schema');
   }
   return value;
-}
-
-function walkStmt(stmt: IrStmt, visit: (stmt: IrStmt) => void): void {
-  visit(stmt);
-  switch (stmt.kind) {
-    case IrKind.ExprStmt:
-      walkExpr(stmt.x, () => {}, visit);
-      return;
-    case IrKind.InitName:
-    case IrKind.WriteName:
-      walkExpr(stmt.value, () => {}, visit);
-      return;
-    case IrKind.UpdateValuePath:
-      walkExpr(stmt.value, () => {}, visit);
-      return;
-    case IrKind.Emit:
-      stmt.args.forEach(arg => walkExpr(arg, () => {}, visit));
-      return;
-    case IrKind.EmitEffect:
-      walkExpr(stmt.payload, () => {}, visit);
-      return;
-    case IrKind.Break:
-    case IrKind.Continue:
-      return;
-    default:
-      return unreachableGpuStmt(stmt);
-  }
-}
-
-function walkExpr(
-  expr: IrExpr,
-  visit: (expr: IrExpr) => void,
-  visitStmt: (stmt: IrStmt) => void = () => {},
-): void {
-  visit(expr);
-  const child = (value: IrExpr): void => walkExpr(value, visit, visitStmt);
-  switch (expr.kind) {
-    case IrKind.Const:
-    case IrKind.OutputRef:
-      return;
-    case IrKind.HistRead:
-      if (expr.offset !== null) {
-        child(expr.offset);
-      }
-      return;
-    case IrKind.Binary:
-      child(expr.x);
-      child(expr.y);
-      return;
-    case IrKind.Unary:
-      child(expr.x);
-      return;
-    case IrKind.Cond:
-      child(expr.cond);
-      child(expr.then);
-      child(expr.else);
-      return;
-    case IrKind.CallFunc:
-    case IrKind.CallNative:
-      expr.args.forEach(child);
-      return;
-    case IrKind.CallConstMethod:
-    case IrKind.CallMutableMethod:
-      child(expr.receiver);
-      expr.args.forEach(child);
-      return;
-    case IrKind.MutateCollection:
-      child(expr.receiver);
-      expr.args.forEach(child);
-      return;
-    case IrKind.NewUserValue:
-      expr.args.forEach(child);
-      return;
-    case IrKind.MakeTuple:
-      expr.elems.forEach(child);
-      return;
-    case IrKind.TupleGet:
-    case IrKind.FieldGet:
-      child(expr.x);
-      return;
-    case IrKind.IfExpr:
-      child(expr.cond);
-      child(expr.then);
-      if (expr.else !== null) {
-        child(expr.else);
-      }
-      return;
-    case IrKind.SwitchExpr:
-      if (expr.subject !== null) {
-        child(expr.subject);
-      }
-      expr.arms.forEach(arm => {
-        if (arm.pattern !== null) {
-          child(arm.pattern);
-        }
-        child(arm.body);
-      });
-      return;
-    case IrKind.ForExpr:
-      child(expr.from);
-      child(expr.to);
-      if (expr.step !== null) {
-        child(expr.step);
-      }
-      child(expr.body);
-      return;
-    case IrKind.ForInExpr:
-      child(expr.x);
-      child(expr.body);
-      return;
-    case IrKind.WhileExpr:
-      child(expr.cond);
-      child(expr.body);
-      return;
-    case IrKind.BlockExpr:
-      for (const stmt of expr.stmts) {
-        visitStmt(stmt);
-        walkStmtChildren(stmt, visit, visitStmt);
-      }
-      if (expr.value !== null) {
-        child(expr.value);
-      }
-      return;
-    default:
-      return unreachableGpuExpr(expr);
-  }
-}
-
-function walkStmtChildren(
-  stmt: IrStmt,
-  visitExpr: (expr: IrExpr) => void,
-  visitStmt: (stmt: IrStmt) => void,
-): void {
-  const child = (expr: IrExpr): void => walkExpr(expr, visitExpr, visitStmt);
-  switch (stmt.kind) {
-    case IrKind.ExprStmt:
-      child(stmt.x);
-      return;
-    case IrKind.InitName:
-    case IrKind.WriteName:
-    case IrKind.UpdateValuePath:
-      child(stmt.value);
-      return;
-    case IrKind.Emit:
-      stmt.args.forEach(child);
-      return;
-    case IrKind.EmitEffect:
-      child(stmt.payload);
-      return;
-    case IrKind.Break:
-    case IrKind.Continue:
-      return;
-    default:
-      return unreachableGpuStmt(stmt);
-  }
 }
 
 function unreachableGpuExpr(expr: never): never {

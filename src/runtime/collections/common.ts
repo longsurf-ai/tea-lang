@@ -1,8 +1,8 @@
 // Purpose: Shared collection runtime guards, deterministic limits, and sealed-payload tracing helpers.
 
 import {fatal} from '../../base/print';
+import {ExecutionError} from '../errors';
 import {
-  ExecutionError,
   isArrayValue,
   isMapValue,
   isMatrixValue,
@@ -11,7 +11,7 @@ import {
   type MapValue,
   type MatrixValue,
   type Value,
-} from '../abi';
+} from '../value';
 import type {Heap, HeapAttempt} from '../heap';
 import {
   type LayoutId,

@@ -3,6 +3,7 @@
 import {describe, expect, test} from 'bun:test';
 import {newFileBase, type Pos} from '../base/pos';
 import {dumpProgram} from './dumper';
+import {frameTopologyOf} from './frames';
 import {
   DepthKind,
   IrKind,
@@ -238,6 +239,39 @@ const program: Program = {
   ],
 };
 
+const bindOnlyProgram: Program = {
+  version: 1,
+  params: [],
+  requests: [],
+  outputs: [
+    {
+      effect: 'plot',
+      staticArgs: [],
+      bindArgs: [
+        {
+          name: 'linewidth',
+          expr: {
+            kind: IrKind.CallFunc,
+            pos,
+            type: FloatType,
+            qualifier: Qualifier.Series,
+            func: inc,
+            slot: 0,
+            args: [num(1)],
+            argumentEvaluationOrder: [0],
+          },
+        },
+      ],
+      bindArgumentEvaluationOrder: [0],
+      channels: [],
+    },
+  ],
+  effects: [],
+  packageGlobals: [],
+  init: [],
+  body: [],
+};
+
 const receiver: Name = {
   name: 'receiver',
   storage: Storage.PerBar,
@@ -328,6 +362,25 @@ const mutationProgram: Program = {
 };
 
 describe('derived enumerations', () => {
+  test('one topology owns frame names and call-site children for every target', () => {
+    const topology = frameTopologyOf(program);
+    expect(topology.frames).toHaveLength(2);
+    expect(topology.root.locals).toEqual([x]);
+    expect(topology.root.children).toEqual([
+      {slot: 0, callee: inc, frameId: 1},
+    ]);
+    expect(topology.frameByFunc.get(inc)?.locals).toEqual([p]);
+    expect(topology.nameLocations.get(x)).toEqual({frameId: 0, slot: 0});
+    expect(topology.nameLocations.get(p)).toEqual({frameId: 1, slot: 0});
+  });
+
+  test('root topology includes bind-only call sites', () => {
+    const topology = frameTopologyOf(bindOnlyProgram);
+    expect(topology.root.children).toEqual([
+      {slot: 0, callee: inc, frameId: 1},
+    ]);
+  });
+
   test('call kinds admit only their matching function mode', () => {
     expect(CALL_MODE_TYPES).toEqual([true, true, true]);
   });

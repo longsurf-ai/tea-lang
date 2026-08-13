@@ -224,9 +224,11 @@ places to its depth pass for annotation.
   IrFunc's frame layout is its hidden receiver (for methods), explicit params,
   and local Names plus one sub-frame per stateful call site (selected by that
   site's `SlotId`); frames nest along the static call graph (acyclic —
-  recursion is rejected), so the manifest enumerates the complete physical
-  layout while the runtime may materialize subframes lazily. Physical presence
-  is distinct from transactional activation. Two `ma(close, 10)` call sites share one compiled body
+  recursion is rejected). `src/ir/frames.ts` is the single target-neutral
+  projection of that Name ownership and `(parent frame, call-site slot)`
+  topology. JS and WGSL consume it and add only target-specific physical
+  layout; the JS runtime may still materialize subframes lazily. Physical
+  presence is distinct from transactional activation. Two `ma(close, 10)` call sites share one compiled body
   but own two frames — and two `ema` sub-frames within. `ta.*` rides this exact
   path as prelude code; nothing is specialized for technical-analysis
   builtins.

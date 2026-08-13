@@ -9,7 +9,7 @@ import {create, globals} from 'webgpu';
 import {Errors} from '../../base/print';
 import {generate} from '../../codegen/codegen';
 import {compileProgramToWgsl} from '../../codegen/wgsl';
-import type {CompiledWgslProgram} from '../../codegen/wgsl/types';
+import type {CompiledWgslProgram} from '../../gpu/contract';
 import {compileToProgram} from '../../compile';
 import type {Program} from '../../ir/program';
 import {mustBuild} from '../../noder/testing';

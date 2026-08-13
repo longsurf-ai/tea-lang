@@ -2,51 +2,57 @@
 
 import {log} from '../base/log';
 import {fatal} from '../base/print';
+import type {ExecutionSource} from '../ir/builtin';
 import {Storage} from '../ir/node';
+import type {EffectValueSchema} from '../ir/program';
+import type {BindInputs, BoundInput, BoundProgram} from './binding';
 import {
   BindError,
   ContextSuspension,
-  isArrayValue,
-  isContextError,
-  isMapValue,
-  isMatrixValue,
-  isTupleValue,
-  isUserTypeValue,
+  ExecutionError,
   RequestError,
+} from './errors';
+import {
   RUNTIME_ABI_VERSION,
-  type BindInputs,
-  type BoundInput,
-  type BoundProgram,
   type CollectionEntries,
   type CollectionMutation,
   type CollectionMutationOperation,
   type CollectionOperation,
   type ContextBudget,
-  type ContextError,
-  type DataProvider,
-  type DenseEmission,
   type DepthSpec,
-  type EffectEmission,
-  type EffectValue,
-  type EffectValueSchema,
-  type ExecutionSource,
-  ExecutionError,
   type FixedValueStorageBudget,
   type Frame,
   type FrameLayout,
   type ModuleCode,
   type ModuleManifest,
-  type OutputSink,
+  type RequestSpec,
+  type Runtime,
+  type TeaModule,
+} from './module-abi';
+import type {
+  DenseEmission,
+  EffectEmission,
+  OutputSink,
+  RowPublication,
+} from './output';
+import {
+  isContextError,
+  type ContextError,
+  type DataProvider,
   type ProviderContext,
   type RangeDemand,
-  type RequestSpec,
-  type RowPublication,
-  type Runtime,
   type SeriesData,
-  type TeaModule,
+} from './provider';
+import {
+  isArrayValue,
+  isMapValue,
+  isMatrixValue,
+  isTupleValue,
+  isUserTypeValue,
+  type EffectValue,
   type UserTypeValue,
   type Value,
-} from './abi';
+} from './value';
 import {CollectionRuntime} from './collections';
 import {
   HeapArena,

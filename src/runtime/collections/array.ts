@@ -1,13 +1,9 @@
 // Purpose: Immutable array headers and sealed eager-copy backing operations; every mutator returns a replacement and never edits existing storage.
 
 import {fatal} from '../../base/print';
-import {
-  ExecutionError,
-  isArrayValue,
-  type ArrayValue,
-  type CollectionMutation,
-  type Value,
-} from '../abi';
+import {ExecutionError} from '../errors';
+import type {CollectionMutation} from '../module-abi';
+import {isArrayValue, type ArrayValue, type Value} from '../value';
 import type {StorageDescriptor} from '../heap';
 import {visitRuntimeValueStorageRefs, type LayoutId} from '../value-layout';
 import {
