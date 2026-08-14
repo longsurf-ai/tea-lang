@@ -101,6 +101,7 @@ export class MemorySink implements OutputSink {
   publish(publication: RowPublication): void {
     const cloned: RowPublication = {
       row: publication.row,
+      ...(publication.time === undefined ? {} : {time: publication.time}),
       outputs: publication.outputs.map(output => ({
         outputId: output.outputId,
         channels: [...output.channels],

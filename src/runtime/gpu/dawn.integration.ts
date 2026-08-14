@@ -22,6 +22,7 @@ import type {
   ProviderContext,
   RowPublication,
   SeriesData,
+  TimeAxis,
   Value,
 } from '../abi';
 import {isEffectUserTypeValue, isUserTypeValue} from '../abi';
@@ -122,6 +123,93 @@ test('Dawn resumes independent executions and publishes dense values and effects
     );
   } finally {
     execution.dispose();
+    device.destroy();
+  }
+});
+
+test('Dawn validates a complete chunk before publishing its first dense row', async () => {
+  const program = mustBuild('indicator("late invalid result")\nplot(close)');
+  const result = compileProgramToWgsl(program);
+  assert.equal(result.status, 'compiled');
+  if (result.status !== 'compiled') return;
+  const corruptedSource = result.artifact.module.source.replace(
+    /(tea_results\[(t\d+)\] = TeaResultCell\([^\n]+\);)/,
+    '$1\n      if (tea_row == 1u) { tea_results[$2] = TeaResultCell(0u, 2u); }',
+  );
+  assert.notEqual(corruptedSource, result.artifact.module.source);
+  const corruptedArtifact: CompiledWgslProgram = {
+    ...result.artifact,
+    module: {...result.artifact.module, source: corruptedSource},
+  };
+
+  Object.assign(globalThis, globals);
+  const gpu = create([]);
+  const adapter = await gpu.requestAdapter();
+  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
+  const device = await adapter.requestDevice();
+  const sink = new MemorySink();
+  const execution = await createGpuExecution(
+    device,
+    corruptedArtifact,
+    [binding(provider({close: [10, 11]}), sink)],
+    {maxRowsPerChunk: 2},
+  );
+  try {
+    await assert.rejects(execution.runChunk(), /invalid validity 2/);
+    assert.equal(sink.publications.length, 0);
+  } finally {
+    execution.dispose();
+    device.destroy();
+  }
+});
+
+test('Dawn validates every chunk timestamp before publishing its first row', async () => {
+  const program = mustBuild('indicator("timestamp transaction")\nplot(close)');
+  const result = compileProgramToWgsl(program);
+  assert.equal(result.status, 'compiled');
+  if (result.status !== 'compiled') return;
+
+  Object.assign(globalThis, globals);
+  const gpu = create([]);
+  const adapter = await gpu.requestAdapter();
+  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
+  const device = await adapter.requestDevice();
+  try {
+    const cases: readonly {axis: TimeAxis; error: RegExp}[] = [
+      {
+        axis: {
+          time(row) {
+            if (row === 1) throw new Error('timestamp projection failed');
+            return 1_000 + row;
+          },
+          closeTime: row => 1_001 + row,
+        },
+        error: /timestamp projection failed/,
+      },
+      {
+        axis: {
+          time: row => (row === 1 ? NaN : 1_000 + row),
+          closeTime: row => 1_001 + row,
+        },
+        error: /timestamp at row 1 is not a safe integer/,
+      },
+    ];
+    for (const item of cases) {
+      const sink = new MemorySink();
+      const execution = await createGpuExecution(
+        device,
+        result.artifact,
+        [binding(provider({close: [10, 11]}, item.axis), sink)],
+        {maxRowsPerChunk: 2},
+      );
+      try {
+        await assert.rejects(execution.runChunk(), item.error);
+        assert.equal(sink.publications.length, 0);
+      } finally {
+        execution.dispose();
+      }
+    }
+  } finally {
     device.destroy();
   }
 });
@@ -356,7 +444,13 @@ test('Dawn publishes every sparse effect but only final dense output when reques
   assert.equal(result.status, 'compiled');
   if (result.status !== 'compiled') return;
 
-  const source = provider({close: [10, 11, 12, 13]});
+  const source = provider(
+    {close: [10, 11, 12, 13]},
+    {
+      time: row => 1_000 + row * 100,
+      closeTime: row => 1_100 + row * 100,
+    },
+  );
   const cpuFullSink = new MemorySink();
   const cpuSink = new FinalDenseSink();
   await runCpuBatch(loadModule(generate(program)), [
@@ -392,6 +486,10 @@ test('Dawn publishes every sparse effect but only final dense output when reques
     );
     assertSinkParity(cpuFullSink, gpuFullSink, result.artifact);
     assertSinkParity(cpuSink, gpuSink, result.artifact);
+    assert.deepEqual(
+      gpuFullSink.publications.map(publication => publication.time),
+      [1_000, 1_100, 1_200, 1_300],
+    );
   } finally {
     execution.dispose();
     device.destroy();
@@ -491,17 +589,19 @@ function binding(source: DataProvider, sink: OutputSink): BindInputs {
 
 function provider(
   columns: Readonly<Record<string, readonly number[]>>,
+  axis: TimeAxis | null = null,
 ): DataProvider {
-  return {resolveContext: async () => providerContext(columns)};
+  return {resolveContext: async () => providerContext(columns, axis)};
 }
 
 function providerContext(
   columns: Readonly<Record<string, readonly number[]>>,
+  axis: TimeAxis | null = null,
 ): ProviderContext {
   const rows = Object.values(columns)[0]?.length ?? 0;
   return {
     rows,
-    axis: null,
+    axis,
     series(id): SeriesData | null {
       const values = columns[id];
       return values === undefined
@@ -542,6 +642,7 @@ function assertSinkParity(
   expected.publications.forEach((row, rowIndex) => {
     const received = actual.publications[rowIndex];
     assert.equal(received?.row, row.row);
+    assert.equal(received?.time, row.time);
     assert.equal(received?.provisional, false);
     assert.deepEqual(
       received?.outputs.map(output => output.outputId),

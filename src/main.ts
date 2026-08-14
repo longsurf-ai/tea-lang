@@ -3,7 +3,8 @@
 
 import {readFileSync, writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
-import {Command, InvalidArgumentError} from 'commander';
+import {createInterface} from 'node:readline';
+import {Command, InvalidArgumentError, Option} from 'commander';
 import {configureLog, parseLogLevel} from './base/log';
 import {formatPos, newFileBase} from './base/pos';
 import {Errors, type ErrorMsg} from './base/print';
@@ -30,6 +31,7 @@ import {ExecutionParameterError} from './execution/parameters';
 import {
   executeConfiguredProgram,
   executeLoadedConfig,
+  executeLoadedSweepScenario,
   type ConfiguredExecutionResult,
 } from './execution/run';
 import {dumpProgram} from './ir/dumper';
@@ -39,15 +41,29 @@ import {
   relayGpuCliToNode,
 } from './providers/gpu/node-host';
 import {RunReportSink, SweepReportSink} from './providers/sinks/report-sink';
+import {
+  TrajectoryArchive,
+  TrajectoryArchiveBudgetError,
+  TrajectoryArchiveProjectionBudgetError,
+  TrajectoryArchiveUnsupportedTransportError,
+  type TrajectoryArchiveSink,
+} from './providers/sinks/trajectory-archive';
 import {TraceSink} from './providers/sinks/trace-sink';
 import {
   buildSweepResult,
+  buildExecutionSystemResult,
+  buildTrajectoryResult,
+  DASHBOARD_TRAJECTORY_RESULT_SCHEMA,
+  EXECUTION_RESULT_SCHEMA,
   parameterReportSection,
   renderReport,
   sweepResultSection,
   systemReportSection,
   type ReportSection,
+  type ExecutionSnapshotResult,
+  type SweepResult,
 } from './reporting';
+import type {SweepReportSnapshot} from './reporting/sweep';
 import {
   BindError,
   ExecutionError,
@@ -165,13 +181,33 @@ function executeConfigArgument(args: readonly string[]): string | null {
   )
     return null;
   let optionsEnded = false;
-  for (const argument of args.slice(1)) {
+  const valueOptions = new Set([
+    '--scenario',
+    '--expected-config-sha256',
+    '--expected-program-sha256',
+    '--expected-provider-sha256',
+    '--replay-time-now',
+  ]);
+  for (let index = 1; index < args.length; index += 1) {
+    const argument = args[index]!;
     if (argument === '--') {
       optionsEnded = true;
       continue;
     }
     if (optionsEnded) return argument;
-    if (argument === '--view' || argument === '--trace') continue;
+    if (
+      argument === '--view' ||
+      argument === '--trace' ||
+      argument === '--json' ||
+      argument === '--dashboard-session'
+    )
+      continue;
+    if (valueOptions.has(argument)) {
+      index += 1;
+      continue;
+    }
+    if ([...valueOptions].some(option => argument.startsWith(`${option}=`)))
+      continue;
     if (argument.startsWith('-')) {
       throw new ExecutionConfigError(`unknown execute option '${argument}'`);
     }
@@ -196,6 +232,14 @@ function parsePositiveInteger(value: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
     throw new InvalidArgumentError('value must be a positive integer');
+  }
+  return parsed;
+}
+
+function parsePositiveOrZeroInteger(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new InvalidArgumentError('value must be a non-negative safe integer');
   }
   return parsed;
 }
@@ -228,7 +272,15 @@ function dynamicTokens(command: Command): readonly string[] {
 }
 
 function exitWithExecutionError(error: unknown): never {
-  if (
+  if (isExecutionHostError(error)) {
+    console.error(`tea: ${error.message}`);
+    process.exit(1);
+  }
+  throw error;
+}
+
+function isExecutionHostError(error: unknown): error is Error {
+  return (
     error instanceof CliParameterError ||
     error instanceof ExecutionConfigError ||
     error instanceof ExecutionParameterError ||
@@ -239,12 +291,11 @@ function exitWithExecutionError(error: unknown): never {
     error instanceof GpuBindingError ||
     error instanceof GpuExecutionError ||
     error instanceof GpuDeviceError ||
-    error instanceof SweepProjectionError
-  ) {
-    console.error(`tea: ${error.message}`);
-    process.exit(1);
-  }
-  throw error;
+    error instanceof SweepProjectionError ||
+    error instanceof TrajectoryArchiveBudgetError ||
+    error instanceof TrajectoryArchiveProjectionBudgetError ||
+    error instanceof TrajectoryArchiveUnsupportedTransportError
+  );
 }
 
 function reportSectionsForRun(
@@ -288,12 +339,16 @@ function legacyConfig(
 
 function contextDependencies(
   sinkForExecution: (executionIndex: number) => OutputSink,
+  expectedProviderBytesHash?: string,
 ) {
   return {
     environment: process.env,
     fetchImpl: fetch,
     now: Date.now,
     sinkForExecution,
+    ...(expectedProviderBytesHash === undefined
+      ? {}
+      : {expectedProviderBytesHash}),
   };
 }
 
@@ -356,6 +411,167 @@ async function renderSweepExecution(
   }
 }
 
+function sweepResultForExecution(
+  execution: ConfiguredExecutionResult,
+  sinks: readonly {snapshot(bindingIndex: number): SweepReportSnapshot}[],
+): SweepResult {
+  return buildSweepResult(
+    execution.summary,
+    sinks.map((sink, index) =>
+      sink.snapshot(execution.summary.bindings[index]!.bindingIndex),
+    ),
+    execution.axes,
+  );
+}
+
+function machineResultBase(
+  loaded: LoadedExecutionConfig,
+  execution: ConfiguredExecutionResult,
+  programBytesHash: string,
+) {
+  if (execution.providerBytesHash === undefined) {
+    throw new ExecutionConfigError(
+      'machine execution did not capture provider bytes',
+    );
+  }
+  return {
+    schema: EXECUTION_RESULT_SCHEMA,
+    config: {
+      bytesHash: loaded.bytesHash,
+      programSource: loaded.config.program.source,
+      programBytesHash,
+      providerBytesHash: execution.providerBytesHash,
+      effectiveTimeNow: execution.timeNow,
+    },
+    system: buildExecutionSystemResult(execution),
+  } as const;
+}
+
+function printMachineResult(value: unknown): void {
+  console.log(JSON.stringify(value));
+}
+
+const DASHBOARD_SCENARIO_SCHEMA = 'tea.dashboard-scenario/v1' as const;
+// Enough for the checked-in 100-execution daily BTC sweep while remaining a
+// fail-closed retained-data bound. Minute-scale histories need a different,
+// display-tier archive rather than silently exhausting the host.
+const DASHBOARD_TRAJECTORY_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
+
+interface DashboardScenarioRequest {
+  readonly schema: typeof DASHBOARD_SCENARIO_SCHEMA;
+  readonly bindingIndex: number;
+  readonly configBytesHash: string;
+  readonly programBytesHash: string;
+  readonly providerBytesHash: string;
+  readonly effectiveTimeNow: number;
+}
+
+async function serveDashboardScenarios(
+  snapshot: ExecutionSnapshotResult,
+  execution: ConfiguredExecutionResult,
+  sinks: readonly TrajectoryArchiveSink[],
+  archive: TrajectoryArchive,
+): Promise<void> {
+  const archived = new Map(
+    execution.summary.bindings.map((binding, index) => [
+      binding.bindingIndex,
+      {binding, sink: sinks[index]!},
+    ]),
+  );
+  const lines = createInterface({input: process.stdin, crlfDelay: Infinity});
+  try {
+    for await (const line of lines) {
+      if (line.trim().length === 0) continue;
+      try {
+        const request = dashboardScenarioRequest(line);
+        assertDashboardSnapshot(request, snapshot);
+        const selected = archived.get(request.bindingIndex);
+        if (selected === undefined) {
+          throw new ExecutionConfigError(
+            `scenario ${request.bindingIndex} is outside the archived sweep`,
+          );
+        }
+        printMachineResult({
+          schema: DASHBOARD_TRAJECTORY_RESULT_SCHEMA,
+          config: snapshot,
+          trajectory: selected.sink.trajectory(
+            selected.binding,
+            request.bindingIndex,
+          ),
+        });
+      } catch (error) {
+        if (!isExecutionHostError(error)) {
+          throw error;
+        }
+        printDashboardScenarioError(error);
+      }
+    }
+  } finally {
+    lines.close();
+    archive.reset();
+  }
+}
+
+function printDashboardScenarioError(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  console.log(
+    JSON.stringify({
+      schema: 'tea.dashboard-error/v1',
+      error: message,
+    }),
+  );
+}
+
+function dashboardScenarioRequest(line: string): DashboardScenarioRequest {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    throw new ExecutionConfigError(
+      'dashboard scenario request must be one JSON object per line',
+    );
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ExecutionConfigError('invalid dashboard scenario request');
+  }
+  const request = value as Partial<DashboardScenarioRequest> &
+    Record<string, unknown>;
+  if (
+    Object.keys(request).sort().join(',') !==
+      'bindingIndex,configBytesHash,effectiveTimeNow,programBytesHash,providerBytesHash,schema' ||
+    request.schema !== DASHBOARD_SCENARIO_SCHEMA ||
+    !Number.isSafeInteger(request.bindingIndex) ||
+    (request.bindingIndex as number) < 0 ||
+    !sha256(request.configBytesHash) ||
+    !sha256(request.programBytesHash) ||
+    !sha256(request.providerBytesHash) ||
+    !Number.isSafeInteger(request.effectiveTimeNow)
+  ) {
+    throw new ExecutionConfigError('invalid dashboard scenario request');
+  }
+  return request as DashboardScenarioRequest;
+}
+
+function assertDashboardSnapshot(
+  request: DashboardScenarioRequest,
+  snapshot: ExecutionSnapshotResult,
+): void {
+  if (
+    request.configBytesHash.toLowerCase() !== snapshot.bytesHash ||
+    request.programBytesHash.toLowerCase() !== snapshot.programBytesHash ||
+    request.providerBytesHash.toLowerCase() !== snapshot.providerBytesHash ||
+    request.effectiveTimeNow !== snapshot.effectiveTimeNow
+  ) {
+    throw new ExecutionConfigError(
+      'dashboard scenario request does not match the sweep snapshot',
+    );
+  }
+}
+
+function sha256(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value);
+}
+
 tea
   .command('docs')
   .description('Serve the documentation website locally')
@@ -380,6 +596,17 @@ tea
   .description('Execute a Tea program from a YAML or JSON configuration')
   .argument('<config>', 'execution configuration file')
   .option('--view', 'open an interactive 3D parameter view for a sweep')
+  .option('--json', 'print a structured machine-readable result')
+  .addOption(new Option('--dashboard-session').hideHelp())
+  .option(
+    '--scenario <binding>',
+    'rerun one sweep binding and return its full trajectory',
+    parsePositiveOrZeroInteger,
+  )
+  .addOption(new Option('--expected-config-sha256 <hash>').hideHelp())
+  .addOption(new Option('--expected-program-sha256 <hash>').hideHelp())
+  .addOption(new Option('--expected-provider-sha256 <hash>').hideHelp())
+  .addOption(new Option('--replay-time-now <epoch-ms>').hideHelp())
   .option(
     '--trace',
     'print the machine trace format for a run instead of a table',
@@ -387,7 +614,17 @@ tea
   .action(
     async (
       configArgument: string,
-      options: {view?: boolean; trace?: boolean},
+      options: {
+        view?: boolean;
+        trace?: boolean;
+        json?: boolean;
+        scenario?: number;
+        expectedConfigSha256?: string;
+        expectedProgramSha256?: string;
+        expectedProviderSha256?: string;
+        replayTimeNow?: string;
+        dashboardSession?: boolean;
+      },
     ) => {
       await runStageAsync(async () => {
         try {
@@ -395,6 +632,41 @@ tea
           if (options.view === true && options.trace === true) {
             throw new ExecutionConfigError(
               '--view and --trace cannot be used together',
+            );
+          }
+          if (
+            options.json === true &&
+            (options.view === true || options.trace === true)
+          ) {
+            throw new ExecutionConfigError(
+              '--json cannot be used with --view or --trace',
+            );
+          }
+          if (options.scenario !== undefined && options.json !== true) {
+            throw new ExecutionConfigError('--scenario requires --json');
+          }
+          if (options.dashboardSession === true && options.json !== true) {
+            throw new ExecutionConfigError(
+              '--dashboard-session requires --json',
+            );
+          }
+          if (
+            options.dashboardSession === true &&
+            options.scenario !== undefined
+          ) {
+            throw new ExecutionConfigError(
+              '--dashboard-session cannot be used with --scenario',
+            );
+          }
+          if (
+            (options.expectedConfigSha256 !== undefined ||
+              options.expectedProgramSha256 !== undefined ||
+              options.expectedProviderSha256 !== undefined ||
+              options.replayTimeNow !== undefined) &&
+            (options.json !== true || options.scenario === undefined)
+          ) {
+            throw new ExecutionConfigError(
+              'replay snapshot options require --json --scenario',
             );
           }
           if (
@@ -418,6 +690,96 @@ tea
               'sweep visualization requires at least two numeric parameter ranges',
             );
           }
+          if (
+            options.dashboardSession === true &&
+            loaded.config.execution.kind !== 'sweep'
+          ) {
+            throw new ExecutionConfigError(
+              '--dashboard-session requires a sweep execution config',
+            );
+          }
+
+          if (options.scenario !== undefined) {
+            if (loaded.config.execution.kind !== 'sweep') {
+              throw new ExecutionConfigError(
+                '--scenario requires a sweep execution config',
+              );
+            }
+            if (
+              options.expectedConfigSha256 === undefined ||
+              options.expectedProgramSha256 === undefined ||
+              options.expectedProviderSha256 === undefined ||
+              options.replayTimeNow === undefined
+            ) {
+              throw new ExecutionConfigError(
+                '--scenario requires --expected-config-sha256, --expected-program-sha256, --expected-provider-sha256, and --replay-time-now from the sweep result',
+              );
+            }
+            if (!/^[0-9a-f]{64}$/i.test(options.expectedProviderSha256)) {
+              throw new ExecutionConfigError(
+                '--expected-provider-sha256 must be a 64-digit hexadecimal SHA-256',
+              );
+            }
+            if (!/^[0-9a-f]{64}$/i.test(options.expectedProgramSha256)) {
+              throw new ExecutionConfigError(
+                '--expected-program-sha256 must be a 64-digit hexadecimal SHA-256',
+              );
+            }
+            if (
+              !/^[0-9a-f]{64}$/i.test(options.expectedConfigSha256) ||
+              options.expectedConfigSha256.toLowerCase() !== loaded.bytesHash
+            ) {
+              throw new ExecutionConfigError(
+                'execution config does not match the selected sweep snapshot',
+              );
+            }
+            const replayTimeNow = Number(options.replayTimeNow);
+            if (!Number.isSafeInteger(replayTimeNow)) {
+              throw new ExecutionConfigError(
+                '--replay-time-now must be a finite safe epoch-ms integer',
+              );
+            }
+            if (
+              loaded.config.execution.timeNow !== undefined &&
+              loaded.config.execution.timeNow !== replayTimeNow
+            ) {
+              throw new ExecutionConfigError(
+                '--replay-time-now does not match execution.timeNow',
+              );
+            }
+            const sink = new RunReportSink();
+            const result = await executeLoadedSweepScenario(
+              loaded,
+              options.scenario,
+              replayTimeNow,
+              options.expectedProgramSha256.toLowerCase(),
+              new Errors(),
+              contextDependencies(
+                () => sink,
+                options.expectedProviderSha256.toLowerCase(),
+              ),
+            );
+            if (!result.ok) exitWithErrors(result.errors);
+            const binding = result.execution.summary.bindings[0];
+            if (binding === undefined) {
+              throw new ExecutionConfigError(
+                `scenario ${options.scenario} produced no execution`,
+              );
+            }
+            printMachineResult({
+              ...machineResultBase(
+                loaded,
+                result.execution,
+                result.programBytesHash,
+              ),
+              trajectory: buildTrajectoryResult(
+                binding,
+                sink.snapshot(),
+                options.scenario,
+              ),
+            });
+            return;
+          }
 
           const errors = new Errors();
           if (loaded.config.execution.kind === 'run') {
@@ -431,24 +793,77 @@ tea
               contextDependencies(() => sink),
             );
             if (!result.ok) exitWithErrors(result.errors);
+            if (options.json === true) {
+              const binding = result.execution.summary.bindings[0];
+              if (reportSink === null || binding === undefined) {
+                throw new ExecutionConfigError(
+                  'run execution produced no trajectory',
+                );
+              }
+              printMachineResult({
+                ...machineResultBase(
+                  loaded,
+                  result.execution,
+                  result.programBytesHash,
+                ),
+                trajectory: buildTrajectoryResult(
+                  binding,
+                  reportSink.snapshot(),
+                ),
+              });
+              return;
+            }
             renderRunExecution(result.execution, reportSink);
             return;
           }
 
-          const sinks: SweepReportSink[] = [];
+          const reportSinks: SweepReportSink[] = [];
+          const archiveSinks: TrajectoryArchiveSink[] = [];
+          const archive =
+            options.dashboardSession === true
+              ? new TrajectoryArchive({
+                  maxBytes: DASHBOARD_TRAJECTORY_ARCHIVE_MAX_BYTES,
+                })
+              : null;
           const result = await executeLoadedConfig(
             loaded,
             errors,
             contextDependencies(executionIndex => {
+              if (archive !== null) {
+                const sink = archive.createSink();
+                archiveSinks[executionIndex] = sink;
+                return sink;
+              }
               const sink = new SweepReportSink();
-              sinks[executionIndex] = sink;
+              reportSinks[executionIndex] = sink;
               return sink;
             }),
           );
           if (!result.ok) exitWithErrors(result.errors);
+          const sinks = archive === null ? reportSinks : archiveSinks;
+          if (options.json === true) {
+            const base = machineResultBase(
+              loaded,
+              result.execution,
+              result.programBytesHash,
+            );
+            printMachineResult({
+              ...base,
+              sweep: sweepResultForExecution(result.execution, sinks),
+            });
+            if (archive !== null) {
+              await serveDashboardScenarios(
+                base.config,
+                result.execution,
+                archiveSinks,
+                archive,
+              );
+            }
+            return;
+          }
           await renderSweepExecution(
             result.execution,
-            sinks,
+            reportSinks,
             options.view === true,
           );
         } catch (error) {

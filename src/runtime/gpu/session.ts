@@ -135,6 +135,16 @@ interface ActiveGpuExecutionInstance {
   readonly progress: GpuBindingProgress;
 }
 
+interface DenseOutputDecoder {
+  readonly outputId: number;
+  readonly channels: readonly WgslResultChannel[];
+}
+
+interface DenseDecoderPlan {
+  readonly channelsPerRow: number;
+  readonly outputs: readonly DenseOutputDecoder[];
+}
+
 interface ResolvedContextSeries {
   readonly bindingIndex: number;
   readonly series: readonly SeriesData[];
@@ -537,6 +547,7 @@ class InertGpuExecution implements GpuExecution {
 
 class DeviceGpuExecution implements GpuExecution {
   private readonly cursors: number[];
+  private readonly denseDecoder: DenseDecoderPlan;
   private disposed = false;
   private failed = false;
   private running = false;
@@ -555,6 +566,7 @@ class DeviceGpuExecution implements GpuExecution {
     private readonly cache: GpuCachePlacement,
   ) {
     this.cursors = prepared.executions.map(() => 0);
+    this.denseDecoder = planDenseDecoder(prepared.artifact);
   }
 
   get done(): boolean {
@@ -683,7 +695,14 @@ class DeviceGpuExecution implements GpuExecution {
     this.completionReadbackMs +=
       globalThis.performance.now() - completionReadbackStarted;
     const decodePublicationStarted = globalThis.performance.now();
-    publishChunk(this.prepared, active, results, effectStatus, effectRecords);
+    publishChunk(
+      this.prepared,
+      this.denseDecoder,
+      active,
+      results,
+      effectStatus,
+      effectRecords,
+    );
     this.decodePublicationMs +=
       globalThis.performance.now() - decodePublicationStarted;
     active.forEach(({executionIndex, progress: item}) => {
@@ -714,6 +733,7 @@ async function readback(buffer: GPUBuffer): Promise<Uint8Array> {
 
 function publishChunk(
   prepared: PreparedGpuExecution,
+  denseDecoder: DenseDecoderPlan,
   active: readonly ActiveGpuExecutionInstance[],
   results: Uint8Array,
   effectStatus: Uint8Array,
@@ -734,6 +754,7 @@ function publishChunk(
   const effectsByExecution = prepared.executions.map(
     () => new Map<number, EffectEmission[]>(),
   );
+  const timestampsByExecution: Array<Float64Array | null | undefined> = [];
 
   for (const [executionIndex, execution] of prepared.executions.entries()) {
     if (!execution.capturesEffects) continue;
@@ -803,10 +824,9 @@ function publishChunk(
     }
   }
 
-  const publications: Array<{
-    readonly executionIndex: number;
-    readonly rows: readonly RowPublication[];
-  }> = [];
+  // Validate every dense cell before the first sink call. This preserves the
+  // chunk transaction without retaining a second, object-heavy copy of all
+  // rows while the sinks themselves capture the requested output.
   for (const {executionIndex, progress: item} of active) {
     const execution = prepared.executions[executionIndex];
     if (execution === undefined) {
@@ -814,51 +834,87 @@ function publishChunk(
         `GPU chunk refers to unknown execution ${executionIndex}`,
       );
     }
-    const finalDenseOnly =
-      execution.inputs.sink.capabilities?.denseRows === 'final';
-    const rows: RowPublication[] = [];
+    const timestamps =
+      execution.context.axis === null ? null : new Float64Array(item.rowCount);
+    timestampsByExecution[executionIndex] = timestamps;
+    for (let localRow = 0; localRow < item.rowCount; localRow += 1) {
+      const row = item.rowStart + localRow;
+      const includeOutputs =
+        !execution.finalDenseOnly || row === execution.rows - 1;
+      const includeRow =
+        includeOutputs || effectsByExecution[executionIndex].has(row);
+      if (includeOutputs) {
+        validateDenseOutputs(
+          prepared,
+          denseDecoder,
+          resultView,
+          execution,
+          localRow,
+        );
+      }
+      if (includeRow && timestamps !== null) {
+        const timestamp = execution.context.axis!.time(row) as
+          | number
+          | null
+          | undefined;
+        if (
+          timestamp !== undefined &&
+          timestamp !== null &&
+          !Number.isSafeInteger(timestamp)
+        ) {
+          throw new GpuExecutionError(
+            `GPU binding ${execution.bindingIndex} timestamp at row ${row} is not a safe integer`,
+          );
+        }
+        timestamps[localRow] = timestamp ?? NaN;
+      }
+    }
+  }
+
+  // Nothing externally visible occurs until every execution's complete
+  // readback has passed overflow, range, id, payload, and dense-cell
+  // validation. Publication is then synchronous and row-streaming.
+  for (const {executionIndex, progress: item} of active) {
+    const execution = prepared.executions[executionIndex]!;
+    const sink = execution.inputs.sink;
+    const timestamps = timestampsByExecution[executionIndex]!;
     for (let localRow = 0; localRow < item.rowCount; localRow += 1) {
       const row = item.rowStart + localRow;
       const effects = effectsByExecution[executionIndex].get(row) ?? [];
-      const includeOutputs = !finalDenseOnly || row === execution.rows - 1;
+      const includeOutputs =
+        !execution.finalDenseOnly || row === execution.rows - 1;
       if (!includeOutputs && effects.length === 0) continue;
-      rows.push({
+      const publication: RowPublication = {
         row,
+        ...(timestamps === null
+          ? {}
+          : {
+              time: Number.isNaN(timestamps[localRow])
+                ? null
+                : timestamps[localRow],
+            }),
         outputs: includeOutputs
-          ? decodeOutputs(prepared, resultView, executionIndex, localRow)
+          ? decodeOutputs(
+              prepared,
+              denseDecoder,
+              resultView,
+              execution,
+              localRow,
+            )
           : [],
         effects,
         provisional: false,
-      });
+      };
+      sink.publish(publication);
     }
-    publications.push({executionIndex, rows});
-  }
-  // Nothing externally visible occurs until every execution's complete readback
-  // has passed overflow, range, id, and payload validation.
-  for (const publication of publications) {
-    const sink = prepared.executions[publication.executionIndex].inputs.sink;
-    publication.rows.forEach(row => sink.publish(row));
   }
 }
 
-function decodeOutputs(
-  prepared: PreparedGpuExecution,
-  view: DataView,
-  executionIndex: number,
-  localRow: number,
-): DenseEmission[] {
-  const artifact = prepared.artifact;
-  const execution = prepared.executions[executionIndex];
-  if (execution === undefined) {
-    throw new GpuExecutionError(
-      `GPU result refers to unknown execution ${executionIndex}`,
-    );
-  }
-  const resultRow = execution.finalDenseOnly ? 0 : localRow;
+function planDenseDecoder(artifact: CompiledWgslProgram): DenseDecoderPlan {
   const channelsByCell = new Map(
     artifact.resultChannels.map(channel => [channel.rowCell, channel]),
   );
-  const result: DenseEmission[] = [];
+  const outputs: DenseOutputDecoder[] = [];
   for (const output of artifact.outputSchemas) {
     const cells = output.channels.map(channel => channel.rowCell);
     if (cells.every(cell => cell === null)) continue;
@@ -867,7 +923,7 @@ function decodeOutputs(
         `GPU output ${output.outputId} mixes declaration-only and row channels`,
       );
     }
-    result.push({
+    outputs.push({
       outputId: output.outputId,
       channels: cells.map(cell => {
         const channel = channelsByCell.get(cell as number);
@@ -876,21 +932,80 @@ function decodeOutputs(
             `GPU output ${output.outputId} has an invalid result-cell mapping`,
           );
         }
-        const slot =
-          execution.resultOffset +
-          resultRow * artifact.resultChannels.length +
-          channel.rowCell;
-        if (slot >= execution.resultOffset + execution.resultCapacity) {
-          throw new GpuExecutionError(
-            `GPU binding ${execution.bindingIndex} result cell exceeds its assigned range`,
-          );
-        }
-        const offset = slot * artifact.resultCellByteStride;
-        return decodeResult(channel, view, offset);
+        return channel;
       }),
     });
   }
-  return result;
+  return {channelsPerRow: artifact.resultChannels.length, outputs};
+}
+
+function validateDenseOutputs(
+  prepared: PreparedGpuExecution,
+  decoder: DenseDecoderPlan,
+  view: DataView,
+  execution: PreparedGpuExecutionInstance,
+  localRow: number,
+): void {
+  const rowOffset = denseResultRowOffset(
+    prepared,
+    decoder,
+    execution,
+    localRow,
+  );
+  for (const output of decoder.outputs) {
+    for (const channel of output.channels) {
+      decodeResult(
+        channel,
+        view,
+        rowOffset + channel.rowCell * prepared.artifact.resultCellByteStride,
+      );
+    }
+  }
+}
+
+function decodeOutputs(
+  prepared: PreparedGpuExecution,
+  decoder: DenseDecoderPlan,
+  view: DataView,
+  execution: PreparedGpuExecutionInstance,
+  localRow: number,
+): DenseEmission[] {
+  const rowOffset = denseResultRowOffset(
+    prepared,
+    decoder,
+    execution,
+    localRow,
+  );
+  return decoder.outputs.map(output => ({
+    outputId: output.outputId,
+    channels: output.channels.map(channel =>
+      decodeResult(
+        channel,
+        view,
+        rowOffset + channel.rowCell * prepared.artifact.resultCellByteStride,
+      ),
+    ),
+  }));
+}
+
+function denseResultRowOffset(
+  prepared: PreparedGpuExecution,
+  decoder: DenseDecoderPlan,
+  execution: PreparedGpuExecutionInstance,
+  localRow: number,
+): number {
+  const resultRow = execution.finalDenseOnly ? 0 : localRow;
+  const firstSlot = execution.resultOffset + resultRow * decoder.channelsPerRow;
+  const lastSlot = firstSlot + decoder.channelsPerRow;
+  if (
+    firstSlot < execution.resultOffset ||
+    lastSlot > execution.resultOffset + execution.resultCapacity
+  ) {
+    throw new GpuExecutionError(
+      `GPU binding ${execution.bindingIndex} result row exceeds its assigned range`,
+    );
+  }
+  return firstSlot * prepared.artifact.resultCellByteStride;
 }
 
 function decodeResult(
@@ -915,7 +1030,7 @@ function decodeResult(
   }
   switch (channel.scalar) {
     case 'float': {
-      const value = u32AsF32(bits);
+      const value = view.getFloat32(offset, true);
       if (!Number.isFinite(value)) {
         throw new GpuExecutionError(
           `GPU result cell ${channel.rowCell} contains non-finite valid f32`,

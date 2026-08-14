@@ -26,3 +26,7 @@ parsed package sources and owns their semantics.
 - `src/checker` production code must not import this package; the seam is
   `checker/importer.ts` and the driver (`compile.ts`) injects the instance.
   Test helpers are the sanctioned exception.
+- The loader owns canonical enumeration of the source files that can affect a
+  Program. Until external imports exist, that conservative closure is the
+  ordered entry files plus every compiler-shipped Tea library; `compile.ts`
+  owns the unambiguous exact-byte hash over that enumeration.

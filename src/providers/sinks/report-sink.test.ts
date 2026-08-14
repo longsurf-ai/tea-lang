@@ -79,18 +79,21 @@ describe('report sinks', () => {
     sink.declare(declaration);
     sink.publish({
       row: 0,
+      time: 100,
       outputs: [{outputId: 0, channels: [10]}],
       effects: [{effectId: 0, payload}],
       provisional: true,
     });
     sink.publish({
       row: 0,
+      time: 101,
       outputs: [{outputId: 0, channels: [11]}],
       effects: [{effectId: 0, payload}],
       provisional: false,
     });
     sink.publish({
       row: 1,
+      time: 200,
       outputs: [{outputId: 0, channels: [12]}],
       effects: [],
       provisional: false,
@@ -109,6 +112,7 @@ describe('report sinks', () => {
       columns: ['row', 'effect', 'payload'],
       rows: [[0, 'effect[0] broker.FillExecuted', '{"id":7,"side":"buy"}']],
     });
+    expect(sink.snapshot().times).toEqual([101, 200]);
   });
 
   test('sweep collector retains only final channels and declines effects', () => {

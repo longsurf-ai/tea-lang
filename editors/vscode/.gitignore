@@ -1,1 +1,4 @@
 *.vsix
+dist/
+media/plotly-gl3d.min.js
+media/plotly.LICENSE.txt

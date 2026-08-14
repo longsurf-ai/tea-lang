@@ -1583,6 +1583,9 @@ class JSRuntime implements Runtime, BoundProgram {
     }
     const rowPublication: RowPublication = {
       row,
+      ...(this.context.axis === null
+        ? {}
+        : {time: this.context.axis.time(row)}),
       outputs: publication.outputs,
       effects: publication.effects,
       provisional,

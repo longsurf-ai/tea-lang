@@ -196,6 +196,38 @@ two numeric ranges.
 `--view` and `--trace` cannot be combined, and neither changes the execution
 context stored in the file.
 
+### Explore a sweep in VS Code or Cursor
+
+The Tea editor extension can use the same execution config without adding an
+editor-specific run format. In a trusted local workspace, run
+`Tea: Open Sweep Dashboard` and select the YAML or JSON file. The normal Tea
+editor stays open on the left; the dashboard opens beside it with a restrained
+3D parameter surface above a selected execution's trajectory.
+
+The initial message transports only final numeric outputs, but dashboard mode
+captures each execution's row-aligned scalar outputs and typed effects into a
+compact, bounded archive while the sweep is already running. Clicking a point
+reads the exact archived execution; it does not rerun the strategy. The
+trajectory uses provider timestamps and can annotate `broker.FillExecuted`
+entries and exits.
+The extension calls the versioned `tea execute <config> --json` machine
+interface and never embeds another compiler or runtime.
+
+Because drill-down comes from the completed sweep, Programs using request-backed
+contexts retain the same result they originally produced. Snapshot hashes still
+identify the config, Tea source closure, primary provider, and clock used by the
+sweep session.
+
+If `tea` is not available on the extension host's `PATH`, set the
+application-scoped `tea.executablePath` setting to an absolute executable path.
+The command is intentionally unavailable in untrusted workspaces.
+
+The archive accepts scalar output transports and has a 128 MiB charged-retention
+limit. Use it for daily data and other moderate histories. Multi-million-row
+minute sweeps require an output-selective, viewport-aware, or disk-backed
+archive; the extension fails clearly rather than truncating or silently
+rerunning them.
+
 ### Direct-command compatibility
 
 `tea run` and `tea sweep` remain supported for quick invocations. They translate

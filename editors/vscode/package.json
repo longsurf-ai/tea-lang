@@ -2,10 +2,26 @@
   "name": "tea-language-support",
   "displayName": "Tea Language Support",
   "description": "Syntax highlighting and editor support for the Tea quantitative programming language.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "publisher": "longsurf",
   "license": "MIT",
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onCommand:tea.openSweepDashboard"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Tea syntax highlighting remains available. Executing a strategy requires a trusted workspace.",
+      "restrictedConfigurations": [
+        "tea.executablePath"
+      ]
+    }
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -19,6 +35,34 @@
     "syntax highlighting"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "tea.openSweepDashboard",
+        "title": "Tea: Open Sweep Dashboard",
+        "category": "Tea",
+        "icon": "$(graph)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "tea.openSweepDashboard",
+          "when": "resourceLangId == tea && isWorkspaceTrusted && resourceScheme == file",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Tea",
+      "properties": {
+        "tea.executablePath": {
+          "type": "string",
+          "default": "tea",
+          "scope": "application",
+          "description": "Path to the Tea CLI executable used by the strategy dashboard."
+        }
+      }
+    },
     "languages": [
       {
         "id": "tea",
@@ -42,12 +86,18 @@
   },
   "scripts": {
     "generate": "bun run scripts/generate-syntax.ts",
-    "check": "bun run scripts/generate-syntax.ts --check && bun test test",
+    "build": "bun run scripts/build-extension.ts",
+    "check": "bun run scripts/generate-syntax.ts --check && bun run build && bun test test",
     "package:vsix": "bun run generate && bun run check && bunx @vscode/vsce@3.9.2 package --no-dependencies --out tea-language-support.vsix",
     "install:code": "bun run package:vsix && code --install-extension ./tea-language-support.vsix --force",
     "install:cursor": "bun run package:vsix && cursor --install-extension ./tea-language-support.vsix --force"
   },
   "files": [
+    "dist/extension.js",
+    "media/dashboard.css",
+    "media/dashboard.js",
+    "media/plotly-gl3d.min.js",
+    "media/plotly.LICENSE.txt",
     "syntaxes/tea.tmLanguage.json",
     "language-configuration.json",
     "README.md",

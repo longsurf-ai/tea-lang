@@ -1,13 +1,19 @@
 // Purpose: Loader tests — source-package parsing, recursive import prewarming, cache identity, cycle detection, and staged resolution errors.
 
 import {describe, expect, test} from 'bun:test';
+import {basename} from 'node:path';
 import {
   isImportError,
   type ImportOutcome,
   type SourcePackage,
 } from '../checker/importer';
 import {parseText} from '../syntax/testing';
-import {resolveImports, type PackageSource, type Registry} from './loader';
+import {
+  compilerSourceClosureFiles,
+  resolveImports,
+  type PackageSource,
+  type Registry,
+} from './loader';
 
 // A registry over in-memory sources; '/' paths are external, like the
 // default registry.
@@ -49,6 +55,27 @@ export fa(x) => b.fb(x) + 1
 `;
 
 describe('import resolution', () => {
+  test('enumerates entry files and the full builtin source closure canonically', () => {
+    const files = compilerSourceClosureFiles(['/first.tea', '/second.tea']);
+
+    expect(files.map(file => file.id)).toEqual([
+      'entry:0',
+      'entry:1',
+      'builtin:broker',
+      'builtin:portfolio',
+      'builtin:strategy',
+      'builtin:ta',
+    ]);
+    expect(files.map(file => basename(file.filename))).toEqual([
+      'first.tea',
+      'second.tea',
+      'broker.tea',
+      'portfolio.tea',
+      'strategy.tea',
+      'ta.tea',
+    ]);
+  });
+
   test('separates compiler-shipped libraries from the implicit prelude', () => {
     const plain = resolveImports([parseText('value = 1').file]);
     expect(plain.implicit().map(pkg => pkg.path)).toEqual(['ta']);

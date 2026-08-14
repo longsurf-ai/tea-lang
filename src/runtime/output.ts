@@ -29,6 +29,9 @@ export interface EffectEmission {
 
 export interface RowPublication {
   readonly row: number;
+  // Epoch-ms bar-open time when the provider owns an explicit axis. Hosts may
+  // still publish row-only data, represented to consumers as null.
+  readonly time?: number | null;
   readonly outputs: readonly DenseEmission[];
   readonly effects: readonly EffectEmission[];
   readonly provisional: boolean;

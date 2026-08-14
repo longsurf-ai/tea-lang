@@ -257,8 +257,8 @@ to the future editor host, not to Tea Core or the configuration parser.
 
 ## Deferred
 
-- Editor command and Webview integration;
-- trajectory storage and selected-execution replay;
+- live editor updates beyond the implemented command/Webview dashboard;
+- trajectory comparison across multiple selected executions;
 - network/live provider configurations;
 - multiple binding templates, scans, or live scheduling;
 - CLI overrides layered over a config;

@@ -484,6 +484,30 @@ current Plotly adapter is served with a pinned local asset from an
 IPv4-loopback HTTP server; it does not change execution, reporting, or
 projection semantics and does not fetch code or data from a CDN.
 
+The VS Code/Cursor dashboard consumes the same `SweepResult` through the
+versioned `tea execute <config> --json` process contract. Its Webview loads a
+packaged local Plotly asset and communicates only with the extension host; it
+does not use the loopback browser server. Selecting a projected execution
+projects the exact row-aligned values already captured during that dashboard
+sweep. There is no selected-binding replay. A dedicated compact archive owns
+scalar dense columns and logical typed effects under one 128 MiB
+charged-retention budget; normal CLI sweeps keep their final-row-only capture.
+The initial machine message still carries only the compact `SweepResult`, and
+the CLI sends one selected trajectory on demand.
+
+Archive selection remains pinned to the config bytes, complete Tea source
+closure, primary-provider bytes, effective clock, binding identity, and
+effective parameters of the original sweep. Request-backed executions are safe
+because selection reads their original captured result rather than fetching a
+secondary provider again. Unsupported aggregate/resource output transports or
+an exceeded archive budget fail before a dashboard result is presented.
+
+The resulting `TrajectoryResult` is renderer-neutral: it contains a row-aligned
+provider time axis, declared dense output columns, logical effect schemas, and
+typed effect emissions. Presentation code may recognize a public logical
+schema such as `broker.FillExecuted` to draw entry/exit markers; neither the
+runtime nor the generic reporting layer recognizes strategy packages.
+
 ## GPU binding and execution
 
 WGSL codegen returns a bind-independent artifact: the complete shader, target

@@ -19,6 +19,8 @@ export interface ResolvedExecutionContext {
   readonly axes: readonly ResolvedParameterAxis[];
   readonly bindings: readonly BindInputs[];
   readonly runtime: RuntimeConfig;
+  readonly timeNow: number;
+  readonly providerBytesHash?: string;
 }
 
 export interface ExecutionContextDependencies {
@@ -28,6 +30,7 @@ export interface ExecutionContextDependencies {
   readonly providerFactory?: ExecutionProviderFactory;
   readonly now?: () => number;
   readonly sinkForExecution: (executionIndex: number) => OutputSink;
+  readonly expectedProviderBytesHash?: string;
 }
 
 export interface ExecutionProviderFactoryDependencies {
@@ -41,6 +44,11 @@ export type ExecutionProviderFactory = (
   dependencies: ExecutionProviderFactoryDependencies,
 ) => Promise<DataProvider>;
 
+interface ResolvedProvider {
+  readonly provider: DataProvider;
+  readonly bytesHash?: string;
+}
+
 // Provider construction belongs to this host-side context boundary. One
 // provider instance and one clock value are shared by all isolated bindings.
 export async function resolveExecutionContext(
@@ -52,7 +60,8 @@ export async function resolveExecutionContext(
     paramSpecsOf(program.params),
     config.execution,
   );
-  const provider = await createProvider(config, dependencies);
+  const resolvedProvider = await createProvider(config, dependencies);
+  const provider = resolvedProvider.provider;
   const timeNow = resolveTimeNow(config, dependencies.now ?? Date.now);
   const bindings = parameters.parameterSets.map(
     (params, executionIndex): BindInputs => ({
@@ -67,20 +76,34 @@ export async function resolveExecutionContext(
     axes: parameters.axes,
     bindings,
     runtime: config.runtime,
+    timeNow,
+    ...(resolvedProvider.bytesHash === undefined
+      ? {}
+      : {providerBytesHash: resolvedProvider.bytesHash}),
   };
 }
 
 async function createProvider(
   config: ExecutionConfig,
   dependencies: ExecutionContextDependencies,
-): Promise<DataProvider> {
-  return (dependencies.providerFactory ?? createCsvExecutionProvider)(
+): Promise<ResolvedProvider> {
+  const factoryDependencies = {
+    readFileBytes: dependencies.readFileBytes ?? defaultReadFileBytes,
+    environment: dependencies.environment,
+    fetchImpl: dependencies.fetchImpl,
+  };
+  if (dependencies.providerFactory !== undefined) {
+    return {
+      provider: await dependencies.providerFactory(
+        config.execution.provider,
+        factoryDependencies,
+      ),
+    };
+  }
+  return createCsvExecutionProviderSnapshot(
     config.execution.provider,
-    {
-      readFileBytes: dependencies.readFileBytes ?? defaultReadFileBytes,
-      environment: dependencies.environment,
-      fetchImpl: dependencies.fetchImpl,
-    },
+    factoryDependencies,
+    dependencies.expectedProviderBytesHash,
   );
 }
 
@@ -88,6 +111,15 @@ export async function createCsvExecutionProvider(
   config: CsvProviderConfig,
   dependencies: ExecutionProviderFactoryDependencies,
 ): Promise<DataProvider> {
+  return (await createCsvExecutionProviderSnapshot(config, dependencies))
+    .provider;
+}
+
+async function createCsvExecutionProviderSnapshot(
+  config: CsvProviderConfig,
+  dependencies: ExecutionProviderFactoryDependencies,
+  expectedBytesHash?: string,
+): Promise<ResolvedProvider> {
   let bytes: Uint8Array;
   try {
     bytes = await dependencies.readFileBytes(config.path);
@@ -96,13 +128,18 @@ export async function createCsvExecutionProvider(
       `cannot read CSV provider '${config.path}': ${errorMessage(error)}`,
     );
   }
+  const actual = createHash('sha256').update(bytes).digest('hex');
   if (config.sha256 !== undefined) {
-    const actual = createHash('sha256').update(bytes).digest('hex');
     if (actual !== config.sha256) {
       throw new ExecutionConfigError(
         `CSV provider '${config.path}' has SHA-256 ${actual}, expected ${config.sha256}`,
       );
     }
+  }
+  if (expectedBytesHash !== undefined && actual !== expectedBytesHash) {
+    throw new ExecutionConfigError(
+      `CSV provider '${config.path}' changed after sweep: SHA-256 ${actual}, expected ${expectedBytesHash}`,
+    );
   }
   let text: string;
   try {
@@ -112,11 +149,14 @@ export async function createCsvExecutionProvider(
       `CSV provider '${config.path}' is not valid UTF-8`,
     );
   }
-  return builtinSources({
-    primary: csvProvider(text),
-    config: dependencies.environment,
-    fetchImpl: dependencies.fetchImpl,
-  });
+  return {
+    provider: builtinSources({
+      primary: csvProvider(text),
+      config: dependencies.environment,
+      fetchImpl: dependencies.fetchImpl,
+    }),
+    bytesHash: actual,
+  };
 }
 
 function resolveTimeNow(config: ExecutionConfig, now: () => number): number {

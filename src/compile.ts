@@ -1,11 +1,17 @@
 // Purpose: Pipeline driver — sole owner of stage order, phase barriers, and the per-compilation Errors instance: loadPackage (parse) → checkPackage (typecheck) → buildProgram (noding) → generate (lowering).
 
+import {createHash, type Hash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
 import {log} from './base/log';
 import {Errors, type ErrorMsg} from './base/print';
 import {generate} from './codegen/codegen';
 import type {Program} from './ir/program';
 import {checkPackage} from './checker/check';
-import {loadPackage, resolveImports} from './loader/loader';
+import {
+  compilerSourceClosureFiles,
+  loadPackage,
+  resolveImports,
+} from './loader/loader';
 import {buildProgram} from './noder/noder';
 import type {File} from './syntax/nodes';
 
@@ -24,6 +30,24 @@ export function parseFile(filename: string, errors: Errors): File {
 
 // Compiler performance events, one per phase (TEA_LOG=debug shows them).
 const perf = log.child('compile');
+
+// Hash the exact, canonical source closure that can affect the Program:
+// ordered entry-file bytes plus the conservative full set of compiler-shipped
+// Tea library bytes. Length framing makes the multi-file byte stream
+// unambiguous, while stable logical ids keep host file paths out of identity.
+export function hashProgramSourceClosure(filenames: readonly string[]): string {
+  const hash = createHash('sha256');
+  for (const file of compilerSourceClosureFiles(filenames)) {
+    updateFramed(hash, Buffer.from(file.id, 'utf8'));
+    updateFramed(hash, readFileSync(file.filename));
+  }
+  return hash.digest('hex');
+}
+
+function updateFramed(hash: Hash, bytes: Uint8Array): void {
+  hash.update(`${bytes.byteLength}:`);
+  hash.update(bytes);
+}
 
 // The sole parse -> check -> node implementation. Target lowerers consume its
 // Program directly; no execution mode owns a parallel frontend.

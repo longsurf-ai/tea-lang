@@ -23,7 +23,7 @@ describe('executeProgram', () => {
       [
         {
           params: {},
-          provider: csvProvider('close\n1\n2\n'),
+          provider: csvProvider('time,close\n100,1\n200,2\n'),
           sink: first,
           timeNow: 1_800_000_000_000,
         },
@@ -48,6 +48,12 @@ describe('executeProgram', () => {
     ).toEqual([[2], [3]]);
     expect(first.emissions.map(emission => emission.channels[0])).toEqual([
       2, 4,
+    ]);
+    expect(first.publications.map(publication => publication.time)).toEqual([
+      100, 200,
+    ]);
+    expect(second.publications.map(publication => publication.time)).toEqual([
+      undefined,
     ]);
     expect(second.emissions.map(emission => emission.channels[0])).toEqual([
       12,

@@ -11,6 +11,11 @@ import {
   type SweepReportSnapshot,
 } from '../../reporting/sweep';
 export type {SweepReportSnapshot} from '../../reporting/sweep';
+import type {
+  TrajectoryDenseEmission,
+  TrajectoryEffectEmission,
+  TrajectoryReportSnapshot,
+} from '../../reporting/trajectory';
 import {
   type EffectSpec,
   type EffectValue,
@@ -22,12 +27,6 @@ import {
 } from '../../runtime/abi';
 
 type DenseValue = SweepDenseValue;
-
-interface CapturedEffect {
-  readonly row: number;
-  readonly effectId: number;
-  readonly payload: EffectValue;
-}
 
 abstract class ReportSinkBase implements OutputSink {
   protected declaration: ExecutionDeclaration = {outputs: [], effects: []};
@@ -80,8 +79,27 @@ abstract class ReportSinkBase implements OutputSink {
 // Captures every final dense emission and typed effect for a single ordinary
 // run. Provisional attempts are intentionally excluded from user reports.
 export class RunReportSink extends ReportSinkBase {
-  private readonly dense: DenseValue[] = [];
-  private readonly effects: CapturedEffect[] = [];
+  private readonly dense: TrajectoryDenseEmission[] = [];
+  private readonly effects: TrajectoryEffectEmission[] = [];
+  private readonly times = new Map<number, number | null>();
+
+  snapshot(): TrajectoryReportSnapshot {
+    return {
+      declaration: cloneDeclaration(this.declaration),
+      times: Array.from(
+        {length: this.rowCount},
+        (_, row) => this.times.get(row) ?? null,
+      ),
+      denseOutputs: this.dense.map(output => ({
+        ...output,
+        channels: [...output.channels],
+      })),
+      effects: this.effects.map(effect => ({
+        ...effect,
+        payload: cloneEffectPayload(effect.payload),
+      })),
+    };
+  }
 
   denseSection(): ReportSection {
     return this.denseSectionFrom(this.dense);
@@ -109,9 +127,16 @@ export class RunReportSink extends ReportSinkBase {
   protected reset(): void {
     this.dense.length = 0;
     this.effects.length = 0;
+    this.times.clear();
   }
 
   protected capture(publication: RowPublication): void {
+    this.times.set(
+      publication.row,
+      publication.time !== undefined && publication.time !== null
+        ? publication.time
+        : null,
+    );
     for (const output of publication.outputs) {
       this.dense.push({
         row: publication.row,

@@ -49,6 +49,39 @@ const BUILTIN_FILES: ReadonlyMap<string, string> = new Map([
 const DEFAULT_IMPLICIT: readonly string[] = ['ta'];
 const LOADER_DIR = dirname(fileURLToPath(import.meta.url));
 
+function builtinFilename(filename: string): string {
+  return join(LOADER_DIR, '../lib', filename);
+}
+
+export interface CompilerSourceFile {
+  // Stable logical identity used to frame a multi-file source snapshot. The
+  // host path is deliberately not part of the snapshot: moving an unchanged
+  // entry file must not change the program's source identity.
+  readonly id: string;
+  readonly filename: string;
+}
+
+// Enumerate the conservative source closure whose bytes define a compiled
+// Program today: ordered entry files plus every compiler-shipped Tea library.
+// External imports are not supported, so this full builtin set safely covers
+// both implicit and explicit library dependencies without duplicating the
+// builtin registry in an execution host.
+export function compilerSourceClosureFiles(
+  entryFilenames: readonly string[],
+): readonly CompilerSourceFile[] {
+  const entries = entryFilenames.map((filename, index) => ({
+    id: `entry:${index}`,
+    filename,
+  }));
+  const builtins = [...BUILTIN_FILES.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([path, filename]) => ({
+      id: `builtin:${path}`,
+      filename: builtinFilename(filename),
+    }));
+  return [...entries, ...builtins];
+}
+
 export function defaultRegistry(
   path: string,
 ): PackageSource | 'external' | null {
@@ -61,7 +94,7 @@ export function defaultRegistry(
   }
   return {
     filename: `lib/${filename}`,
-    source: readFileSync(join(LOADER_DIR, '../lib', filename), 'utf8'),
+    source: readFileSync(builtinFilename(filename), 'utf8'),
   };
 }
 
