@@ -2,14 +2,14 @@
 
 Tea has two deliberately separate corpora:
 
-- `testdata/corpus/` is **parse-only**. Its derived real-world scripts contain
+- `tests/fixtures/corpus/` is **parse-only**. Its derived real-world scripts contain
   dropped statement groups and are not programs the checker or runtime promises
   to accept.
-- `testdata/execution/` is the fail-closed executable corpus. Every listed
+- `tests/fixtures/execution/` is the fail-closed executable corpus. Every listed
   source must pass the real `compile → load → bind → runAll` pipeline, and the
   harness observes it through the real `TraceSink`.
 
-`testdata/execution/manifest.json` is the corpus inventory. It names every
+`tests/fixtures/execution/manifest.json` is the corpus inventory. It names every
 source, CSV input, and JSON reference and pins each with SHA-256. The test fails
 on a missing file, an unlisted file, a changed hash, a compilation or binding
 failure, an output-identity change, a missing or extra row, or a value outside

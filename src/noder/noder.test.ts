@@ -853,9 +853,40 @@ describe('function stencils', () => {
     const varLocals = namesOf(program).filter(n => n.storage === Storage.Var);
     expect(varLocals.map(n => n.name)).toEqual(['e']);
     const sma = funcsOf(program).find(f => f.name === 'ta.sma')!;
-    // sma reads source[i] with a loop-index offset → capped depth on the
-    // param Name.
-    expect(sma.params[0].depth.kind).toBe(DepthKind.Capped);
+    // The loop induction range is bind-normalized, so source[i] retains the
+    // exact upper bound instead of falling back to max_bars_back.
+    expect(sma.params[0].depth.kind).toBe(DepthKind.Bound);
+  });
+
+  test('does not substitute a loop endpoint through decreasing offset arithmetic', () => {
+    const program = mustBuild(
+      [
+        'reverse_sum(float source, int length) =>',
+        '    float total = 0.0',
+        '    for i = 0 to length - 1',
+        '        total += source[length - 1 - i]',
+        '    total',
+        'plot(reverse_sum(close, input.int(5)))',
+      ].join('\n'),
+    );
+    const func = funcsOf(program).find(f => f.name === 'reverse_sum')!;
+    expect(func.params[0].depth.kind).toBe(DepthKind.Capped);
+  });
+
+  test('does not use an induction bound after the loop index is reassigned', () => {
+    const program = mustBuild(
+      [
+        'mutated_index(float source, int length) =>',
+        '    float total = 0.0',
+        '    for i = 0 to length - 1',
+        '        i := length + 10',
+        '        total += source[i]',
+        '    total',
+        'plot(mutated_index(close, input.int(5)))',
+      ].join('\n'),
+    );
+    const func = funcsOf(program).find(f => f.name === 'mutated_index')!;
+    expect(func.params[0].depth.kind).toBe(DepthKind.Capped);
   });
 
   test('prelude functions call each other through the prelude scope', () => {

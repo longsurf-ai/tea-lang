@@ -1,4 +1,4 @@
-// Purpose: Golden dump tests — every testdata/*.tea has a committed .tokens.golden, and parseable fixtures also lock a .ast.golden; regenerate with UPDATE_GOLDENS=1 bun test.
+// Purpose: Golden dump tests — every tests/fixtures/*.tea has a committed .tokens.golden, and parseable fixtures also lock a .ast.golden; regenerate with UPDATE_GOLDENS=1 bun test.
 
 import {existsSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -7,7 +7,7 @@ import {formatPos, newFileBase} from '../base/pos';
 import {dumpFile, dumpTokens} from './dumper';
 import {parse, tokenize} from './syntax';
 
-const TESTDATA = join(import.meta.dir, '../../testdata');
+const TESTDATA = join(import.meta.dir, '../../tests/fixtures');
 const UPDATE = process.env['UPDATE_GOLDENS'] === '1';
 
 // Grows as parser slices land; every listed fixture must parse error-free.
@@ -39,10 +39,14 @@ describe('token dump goldens', () => {
   for (const name of files) {
     test(name, () => {
       const src = readFileSync(join(TESTDATA, name), 'utf8');
-      const tokens = tokenize(newFileBase(`testdata/${name}`), src, () => {
-        // Errors are the error-comments harness's concern; goldens lock the
-        // recovered token stream either way.
-      });
+      const tokens = tokenize(
+        newFileBase(`tests/fixtures/${name}`),
+        src,
+        () => {
+          // Errors are the error-comments harness's concern; goldens lock the
+          // recovered token stream either way.
+        },
+      );
       checkGolden(
         join(TESTDATA, `${name}.tokens.golden`),
         `${dumpTokens(tokens)}\n`,
@@ -56,9 +60,13 @@ describe('ast dump goldens', () => {
     test(name, () => {
       const src = readFileSync(join(TESTDATA, name), 'utf8');
       const errors: string[] = [];
-      const file = parse(newFileBase(`testdata/${name}`), src, (pos, msg) => {
-        errors.push(`${formatPos(pos)}: ${msg}`);
-      });
+      const file = parse(
+        newFileBase(`tests/fixtures/${name}`),
+        src,
+        (pos, msg) => {
+          errors.push(`${formatPos(pos)}: ${msg}`);
+        },
+      );
       expect(errors).toEqual([]);
       checkGolden(join(TESTDATA, `${name}.ast.golden`), `${dumpFile(file)}\n`);
     });

@@ -1,0 +1,262 @@
+//@version=1
+// Clean-room implementation of the published Swing Core + Dip profile from
+// Alpha Regime Reversion Pro. Allocation changes fill at the next bar's open.
+strategy("Alpha Regime Reversion - Swing Core + Dip", shorttitle="ARR Swing", overlay=true)
+
+import broker
+
+// Keep Pine's SMA-seeded Wilder RSI state explicit and self-contained in this
+// historical profile.
+type PineRsi
+	float previous = na
+	float gainSum = 0.0
+	float lossSum = 0.0
+	float averageGain = na
+	float averageLoss = na
+	int samples = 0
+
+	float update(float source, int length) =>
+		if not na(this.previous)
+			change = source - this.previous
+			gain = math.max(change, 0.0)
+			loss = math.max(-change, 0.0)
+			nextSamples = this.samples + 1
+			if nextSamples <= length
+				this.gainSum := this.gainSum + gain
+				this.lossSum := this.lossSum + loss
+				if nextSamples == length
+					this.averageGain := this.gainSum / length
+					this.averageLoss := this.lossSum / length
+			else
+				this.averageGain := (this.averageGain * (length - 1.0) + gain) / length
+				this.averageLoss := (this.averageLoss * (length - 1.0) + loss) / length
+			this.samples := nextSamples
+		this.previous := source
+		float result = na
+		if not na(this.averageGain) and not na(this.averageLoss)
+			result := this.averageLoss == 0.0 ? 100.0 : this.averageGain == 0.0 ? 0.0 : 100.0 - 100.0 / (1.0 + this.averageGain / this.averageLoss)
+		result
+
+type AllocationAccount
+	float initialCash
+	float cashValue
+	float quantityValue = 0.0
+	float averagePrice = na
+	float entryFees = 0.0
+	float equityValue
+	float peakEquity
+	float maxDrawdownValue = 0.0
+	float realizedPnlValue = 0.0
+	float totalFeesValue = 0.0
+	int fillCountValue = 0
+	int roundTripsValue = 0
+	int nextOrderId = 1
+	int nextFillId = 1
+	bool pending = false
+	float pendingTargetPercent = 0.0
+
+	float fill(string commandId, broker.Side side, float referencePrice, float requestedQuantity, float feeRate, float tickSize, float slippageTicks, int fillBar) =>
+		isBuy = side == broker.Side.buy
+		price = referencePrice + (isBuy ? 1.0 : -1.0) * tickSize * slippageTicks
+		capacity = isBuy ? this.cashValue / (price * (1.0 + feeRate)) : this.quantityValue
+		quantity = math.max(0.0, math.min(requestedQuantity, capacity))
+		if quantity > 0.0
+			notional = quantity * price
+			fee = notional * feeRate
+			if isBuy
+				oldQuantity = this.quantityValue
+				newQuantity = oldQuantity + quantity
+				this.averagePrice := oldQuantity == 0.0 ? price : (oldQuantity * this.averagePrice + notional) / newQuantity
+				this.cashValue := this.cashValue - notional - fee
+				this.quantityValue := newQuantity
+				this.entryFees := this.entryFees + fee
+			else
+				oldQuantity = this.quantityValue
+				entryFeeShare = oldQuantity == 0.0 ? 0.0 : this.entryFees * quantity / oldQuantity
+				this.cashValue := this.cashValue + notional - fee
+				this.realizedPnlValue := this.realizedPnlValue + quantity * (price - this.averagePrice) - entryFeeShare - fee
+				this.quantityValue := oldQuantity - quantity
+				this.entryFees := this.entryFees - entryFeeShare
+				if this.quantityValue <= 0.0000001
+					float missingPrice = na
+					this.quantityValue := 0.0
+					this.averagePrice := missingPrice
+					this.entryFees := 0.0
+					this.roundTripsValue := this.roundTripsValue + 1
+			this.totalFeesValue := this.totalFeesValue + fee
+			this.fillCountValue := this.fillCountValue + 1
+			orderId = this.nextOrderId
+			fillId = this.nextFillId
+			this.nextOrderId := orderId + 1
+			this.nextFillId := fillId + 1
+			execution = broker.Fill.new(fillId, orderId, commandId, side, fillBar, referencePrice, price, quantity, notional, fee)
+			effect.emit(broker.FillExecuted.new(execution))
+		quantity
+
+	float resolve_target(float referencePrice, float feeRate, float tickSize, float slippageTicks, int fillBar) =>
+		filled = 0.0
+		if this.pending and referencePrice > 0.0
+			equityAtOpen = this.cashValue + this.quantityValue * referencePrice
+			desiredQuantity = equityAtOpen * this.pendingTargetPercent / 100.0 / referencePrice
+			difference = desiredQuantity - this.quantityValue
+			if difference > 0.0000001
+				filled := this.fill("ARR allocation buy", broker.Side.buy, referencePrice, difference, feeRate, tickSize, slippageTicks, fillBar)
+			else if difference < -0.0000001
+				filled := this.fill("ARR allocation reduce", broker.Side.sell, referencePrice, -difference, feeRate, tickSize, slippageTicks, fillBar)
+			this.pending := false
+		filled
+
+	int schedule(float targetPercent) =>
+		this.pendingTargetPercent := targetPercent
+		this.pending := true
+		1
+
+	float mark(float price) =>
+		this.equityValue := this.cashValue + this.quantityValue * price
+		this.peakEquity := math.max(this.peakEquity, this.equityValue)
+		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - this.equityValue) / this.peakEquity
+		this.maxDrawdownValue := math.max(this.maxDrawdownValue, drawdown)
+		this.equityValue
+
+	float total_return() const =>
+		(this.equityValue - this.initialCash) / this.initialCash
+
+benchmark_symbol = input.symbol("QQQ", "Macro regime symbol")
+maximum_allocation = input.float(75.0, "Maximum allocation percent", minval=5.0, maxval=100.0)
+core_allocation = input.float(50.0, "Core allocation percent", minval=0.0, maxval=100.0)
+dip_allocation = input.float(75.0, "Dip allocation percent", minval=0.0, maxval=100.0)
+enforce_risk_cap = input.int(1, "Risk cap: 0 off, 1 on", minval=0, maxval=1)
+account_risk_limit = input.float(6.0, "Maximum planned account risk percent", minval=0.25, maxval=25.0)
+regime_length = input.int(200, "Regime average length", minval=100, maxval=400)
+entry_buffer_percent = input.float(1.0, "Risk-on buffer percent", minval=0.0, maxval=20.0)
+exit_buffer_percent = input.float(1.0, "Risk-off buffer percent", minval=0.0, maxval=20.0)
+require_stock_regime = input.int(1, "Require stock regime: 0 no, 1 yes", minval=0, maxval=1)
+use_liquidity_filter = input.int(1, "Liquidity filter: 0 off, 1 on", minval=0, maxval=1)
+minimum_dollar_volume_millions = input.float(20.0, "Minimum dollar volume millions", minval=0.0)
+swing_fast_length = input.int(20, "Fast trend EMA", minval=5, maxval=100)
+swing_slow_length = input.int(50, "Slow trend EMA", minval=10, maxval=200)
+deep_rsi_length = input.int(2, "Deep dip RSI length", minval=2, maxval=10)
+deep_rsi_level = input.float(15.0, "Deep dip RSI level", minval=1.0, maxval=40.0)
+shallow_rsi_length = input.int(4, "Shallow dip RSI length", minval=2, maxval=20)
+shallow_rsi_level = input.float(40.0, "Shallow dip RSI level", minval=5.0, maxval=60.0)
+rebound_sma_length = input.int(5, "Rebound SMA length", minval=2, maxval=20)
+rebound_rsi_level = input.float(70.0, "Rebound RSI level", minval=50.0, maxval=95.0)
+maximum_dip_bars = input.int(10, "Maximum dip bars", minval=1, maxval=50)
+swing_stop_percent = input.float(8.0, "Emergency stop percent", minval=2.0, maxval=25.0)
+cooldown_bars = input.int(5, "Cooldown bars", minval=0, maxval=50)
+start_time = input.time(1483228800000, "Start time")
+end_time = input.time(4102444800000, "End time")
+initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
+fee_rate = input.float(0.0005, "Fee rate", minval=0.0, maxval=0.05)
+tick_size = input.float(0.01, "Instrument tick size", minval=0.00000001)
+slippage_ticks = input.float(1.0, "Adverse slippage in ticks", minval=0.0, maxval=100.0)
+
+var account = AllocationAccount.new(initial_cash, initial_cash, equityValue=initial_cash, peakEquity=initial_cash)
+var deep_rsi_state = PineRsi.new()
+var shallow_rsi_state = PineRsi.new()
+var bool swing_risk_on = false
+var bool dip_active = false
+var int dip_start_bar = na
+var int lockout_until_bar = na
+var float active_stop = na
+var float commanded_target = 0.0
+float missing_float = na
+int missing_int = na
+
+quantity_before_open = account.quantityValue
+account.resolve_target(open, fee_rate, tick_size, slippage_ticks, bar_index)
+position_increased = account.quantityValue > quantity_before_open + 0.0000001
+
+// Emergency risk stop is a resting order. A gap through it fills at the open.
+if account.quantityValue > 0.0 and not na(active_stop) and low <= active_stop
+	exit_reference = open <= active_stop ? open : active_stop
+	account.fill("ARR risk stop", broker.Side.sell, exit_reference, account.quantityValue, fee_rate, tick_size, slippage_ticks, bar_index)
+	active_stop := missing_float
+	lockout_until_bar := bar_index + cooldown_bars
+
+just_exited = quantity_before_open > 0.0 and account.quantityValue == 0.0
+if just_exited
+	lockout_until_bar := bar_index + cooldown_bars
+
+stock_average = ta.sma(close, regime_length)
+fast_ema = ta.ema(close, swing_fast_length)
+slow_ema = ta.ema(close, swing_slow_length)
+rebound_average = ta.sma(close, rebound_sma_length)
+deep_rsi = deep_rsi_state.update(close, deep_rsi_length)
+shallow_rsi = shallow_rsi_state.update(close, shallow_rsi_length)
+average_dollar_volume = ta.sma(close * volume, 20)
+benchmark_close = request.security(benchmark_symbol, "D", close, lookahead=barmerge.lookahead_off)
+benchmark_average = request.security(benchmark_symbol, "D", ta.sma(close, regime_length), lookahead=barmerge.lookahead_off)
+
+date_open = time >= start_time and time <= end_time
+liquidity_open = use_liquidity_filter == 0 or average_dollar_volume >= minimum_dollar_volume_millions * 1000000.0
+ready = date_open and not na(stock_average) and not na(benchmark_average) and liquidity_open
+lockout_active = not na(lockout_until_bar) and bar_index < lockout_until_bar
+can_start = not lockout_active
+
+trend_strong = fast_ema > slow_ema and close > slow_ema
+deep_dip = deep_rsi < deep_rsi_level and close < fast_ema
+shallow_dip = trend_strong and shallow_rsi < shallow_rsi_level and close <= fast_ema * 1.01
+dip_signal = deep_dip or shallow_dip
+
+if not ready
+	swing_risk_on := false
+	dip_active := false
+else
+	stock_entry_open = require_stock_regime == 0 or close > stock_average * (1.0 + entry_buffer_percent / 100.0)
+	stock_exit_hit = require_stock_regime == 1 and close < stock_average * (1.0 - exit_buffer_percent / 100.0)
+	benchmark_entry_open = benchmark_close > benchmark_average * (1.0 + entry_buffer_percent / 100.0)
+	benchmark_exit_hit = benchmark_close < benchmark_average * (1.0 - exit_buffer_percent / 100.0)
+	if not swing_risk_on and stock_entry_open and benchmark_entry_open and can_start
+		swing_risk_on := true
+		dip_active := false
+	if swing_risk_on and (stock_exit_hit or benchmark_exit_hit)
+		swing_risk_on := false
+		dip_active := false
+	if swing_risk_on and dip_signal and not dip_active
+		dip_active := true
+		dip_start_bar := bar_index
+	rebound_complete = close > rebound_average and deep_rsi > rebound_rsi_level
+	dip_timed_out = dip_active and not na(dip_start_bar) and bar_index - dip_start_bar >= maximum_dip_bars
+	if dip_active and (rebound_complete or dip_timed_out)
+		dip_active := false
+		dip_start_bar := missing_int
+
+target_percent = 0.0
+if swing_risk_on and not lockout_active
+	target_percent := math.min(core_allocation, maximum_allocation)
+	if dip_active
+		target_percent := math.min(math.max(dip_allocation, core_allocation), maximum_allocation)
+	if enforce_risk_cap == 1 and swing_stop_percent > 0.0
+		target_percent := math.min(target_percent, 100.0 * account_risk_limit / swing_stop_percent)
+	// Published allocations are whole 5% account increments and round down.
+	target_percent := math.floor(target_percent / 5.0) * 5.0
+
+if math.abs(target_percent - commanded_target) >= 0.5
+	account.schedule(target_percent)
+	commanded_target := target_percent
+
+if position_increased
+	candidate_stop = account.averagePrice * (1.0 - swing_stop_percent / 100.0)
+	active_stop := na(active_stop) ? candidate_stop : math.max(active_stop, candidate_stop)
+if account.quantityValue == 0.0
+	active_stop := missing_float
+
+account.mark(close)
+
+plot(close, "close")
+plot(stock_average, "stock regime average")
+plot(benchmark_close, "benchmark close")
+plot(benchmark_average, "benchmark regime average")
+plot(fast_ema, "fast EMA")
+plot(slow_ema, "slow EMA")
+plot(target_percent, "target allocation percent")
+plot(dip_active ? 1.0 : 0.0, "dip active")
+plot(account.quantityValue, "position quantity")
+plot(account.equityValue, "equity")
+plot(account.realizedPnlValue, "realized pnl")
+plot(account.totalFeesValue, "total fees")
+plot(account.fillCountValue, "fill count")
+plot(account.roundTripsValue, "round trips")
+plot(account.maxDrawdownValue, "maximum drawdown")
+plot(account.total_return(), "total return")

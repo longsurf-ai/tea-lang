@@ -37,9 +37,12 @@ An indicator inside the same generic subset follows the identical path.
 
 `analyzeWgslEligibility(program)` reports support.
 `compileProgramToWgsl(program)` returns either those diagnostics or a complete,
-bind-independent artifact containing the shader, numeric contract, required
-inputs, output/effect schemas, and physical layouts. The artifact remains
-reusable when only datasets or the binding grid change.
+bind-independent artifact containing the shader, the ordinary generated JS
+binding module, numeric contract, required inputs, output/effect schemas, and
+physical layouts. The artifact remains reusable when only datasets or the
+binding grid change. The JS sidecar is generated from the same Program and
+contains only the existing `init`/`bind` protocol; it is not a second compiler
+or a second history-expression evaluator.
 
 ## Executable deterministic subset
 
@@ -55,14 +58,16 @@ example, including:
   extent;
 - statically projected root and call-site frames, including persistent `var`
   locals initialized when their declarations are first reached;
-- constant-depth history on frame values and direct provider-series history,
-  advancing once per committed bar rather than once per function call;
+- constant, bind-resolved, or explicitly capped history on frame values, plus
+  direct provider-series history, advancing once per committed bar rather than
+  once per function call;
 - nullable floats and ints, bools, enums, interned literal strings/colors, and
   acyclic fixed user values with explicit physical layouts;
 - closed acyclic free functions, const methods, and mutable methods, including
   copy-out to a directly rooted receiver;
-- arithmetic, comparisons, boolean operations, conditionals, and the native
-  surface used by the deterministic component graph;
+- arithmetic, comparisons, boolean operations, conditionals, numeric range
+  loops, and the supported native surface including `math.abs`, `math.max`,
+  `math.min`, and `math.floor`;
 - one unconditional top-level scalar channel per emitted output, of type
   float, int, bool, or enum;
 - typed sparse effects with primitive, enum, literal string/color, or
@@ -126,6 +131,14 @@ parameters use the same resolver as CPU and are packed per execution. Source,
 string, and color parameters and request contexts remain fail-closed target
 exclusions.
 
+Before allocating device state, the runtime loads the artifact's generated JS
+binding module and runs the same provisional-frame bind phase used by
+`JSRuntime`. That phase evaluates bound history expressions against each
+binding's concrete parameters and provider extent. It reports capacities by
+the artifact's published frame ids and slots; the runtime validates that
+static topology and uses the reports only for physical allocation. It never
+reads the Program or reconstructs Tea expressions.
+
 The host injects the `GPUDevice` and therefore owns adapter and deployment
 policy. The runtime owns shader diagnostics, physical validation and packing,
 buffer creation, dispatch, readback, decoding, and sink delivery. Rebinding a
@@ -142,10 +155,14 @@ and the chosen chunk size.
 
 ## Persistent state and chunked readback
 
-Each Program execution has a disjoint read-write state block. It contains the
-root frame, statically embedded call-site frames, activation and initialization
-state, committed history, scratch values, and `nextRow`. That state stays on
-the GPU across `runChunk()` calls. Each dispatch executes:
+Each Program execution has a disjoint read-write state range. A compile-time
+fixed prefix contains `nextRow`, the root and statically embedded call-site
+frames, activation and initialization state, scratch values, and history
+descriptors. Binding-specific committed-history payloads follow that prefix.
+Each job descriptor carries the concrete state offset and word count, so two
+parameter bindings may retain different history capacities while sharing one
+shader. The state remains on the GPU across `runChunk()` calls. Each dispatch
+executes:
 
 ```text
 [nextRow, min(nextRow + chunkRows, totalRows))
@@ -155,7 +172,7 @@ Consequently `bar_index`, `barstate.islast`, result row ids, and effect row ids
 remain absolute; a chunk boundary is not visible to Tea code. Completed or
 shorter executions become inert while other executions continue.
 
-Only values that must survive or define temporal behavior occupy that arena.
+Only values that must survive or define temporal behavior occupy that state.
 History-free per-bar function receivers and parameters are ordinary mutable
 WGSL function locals; history-bearing formals remain frame slots. This keeps
 Tea call semantics while avoiding storage traffic for values that cannot be
@@ -163,10 +180,11 @@ observed after the call.
 
 ## Workgroup cache placement
 
-The storage buffer is authoritative across dispatches. Codegen also partitions
-each execution's state into statically sized segments and ranks them by expected
-access density. When a session is created, the runtime chooses a device-valid
-workgroup size and the largest whole-segment ranked prefix that fits
+The storage buffer is authoritative across dispatches. Codegen partitions the
+fixed state prefix into statically sized segments and ranks them by expected
+access density; binding-sized history payloads remain in storage. When a
+session is created, the runtime chooses a device-valid workgroup size and the
+largest whole-segment ranked prefix that fits
 `maxCacheBytesPerWorkgroup` and the device's workgroup-storage limit. A zero
 budget selects the storage-only entry point.
 
@@ -199,8 +217,10 @@ execution declines effects, the runtime skips effect clear and readback.
 
 Codegen proves a conservative maximum effect count per row from the closed
 call graph. Sequential calls add, exclusive branches take their maximum, and
-statically bounded loops multiply. Effect-reachable recursion or an unbounded
-loop fails eligibility. Overflow status remains a defensive check: an overflow
+compile-time-counted loops multiply. Numeric range loops do not otherwise need
+a trip-count ceiling: a loop is rejected only when its body can emit effects
+and the fixed transport cannot prove a bound. Effect-reachable recursion fails
+eligibility. Overflow status remains a defensive check: an overflow
 publishes none of the current chunk and terminal-fails the session rather than
 truncating records.
 
@@ -228,19 +248,20 @@ effects with CPU execution:
 bun run test:gpu
 ```
 
-The canonical temporal-state example uses ordinary Tea library calls and the
+The canonical temporal-state examples use ordinary Tea library calls and the
 ordinary CLI path:
 
 ```sh
-tea sweep examples/ema-cross-strategy.tea \
-  -i examples/binance-btcusdt-1d.csv \
-  --fast_length 2:20:2 --slow_length 24:60:4 \
-  --initial_cash 100000 --slippage 0.0005 --fee 0.001
+tea execute examples/strategy/ema-cross/sweep.yaml
+tea execute examples/strategy/turtle-system/sweep.yaml
 ```
 
-The source calls `ta.ema`, `ta.crossover`, and `ta.crossunder` directly. Their
-function-local persistent state and parameter history use the generic static
-call-site frame machine; no `ta` name is recognized by the backend.
+The EMA source calls `ta.ema`, `ta.crossover`, and `ta.crossunder` directly.
+Turtle additionally exercises parameter-bound `ta.sma`, `ta.highest`, and
+`ta.lowest` ranges, core math natives, custom account methods, and typed fill
+effects. Their function-local state and parameter history use the generic
+call-site frame machine and bind phase; no `ta` or strategy name is recognized
+by the backend.
 
 ## Fail-closed exclusions
 
@@ -248,16 +269,24 @@ The current backend emits no artifact for Programs requiring any of these:
 
 - source/string/color parameters or request child contexts (fixed-width
   int/float/bool/enum parameters are packed per execution);
-- non-constant frame-history requirements or `varip` execution;
-- collections, tuples, collection iteration, while loops, or emitted loops the
-  WGSL statement emitter cannot lower;
+- unresolved dynamic frame-history requirements without an explicit cap, or
+  `varip` execution;
+- collections, tuples, collection iteration, or while loops;
 - unsupported bind-time initialization or typed execution inputs;
 - dynamic string construction (effect string literals are interned and
   supported);
 - bound, multi-channel, conditional, nested, or non-scalar dense emissions;
-- effect-reachable recursion, data-dependent effect multiplicity, or payload
-  shapes without a fixed physical representation.
+- effect-reachable recursion, effect multiplicity without a provable transport
+  bound, or payload shapes without a fixed physical representation.
 
 Other unsupported native calls, receiver paths, or function-frame shapes also
 fail closed with a specific diagnostic. This is a target-subset boundary, not
 a separate strategy compiler or runtime model.
+
+Historical epoch-millisecond `time` is one remaining typed-execution-input
+exclusion. It does not fit this artifact's declared i32 integer carrier. That
+is not an inherent inability to compare time on WebGPU: a future artifact can
+publish an exact wide-integer representation such as two u32 words and lower
+comparison/arithmetic against it. Turtle is not a reason to add that carrier,
+because its former date inputs were generic TradingView backtest UI rather
+than trading-system semantics and have been removed from the example.

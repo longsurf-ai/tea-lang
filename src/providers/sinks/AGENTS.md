@@ -6,7 +6,7 @@ runtime never formats or aggregates emissions.
 ## Invariants
 
 - `TraceSink` is the sole owner of the machine trace format shared by
-  `tea run --trace` and the run goldens under `testdata/run/`. Do not change
+  `tea run --trace` and the run goldens under `tests/fixtures/run/`. Do not change
   that text shape without regenerating goldens.
 - `RunReportSink` captures complete dense rows plus logical typed effects for
   one human-facing run. `SweepReportSink` requests

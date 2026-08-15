@@ -1,4 +1,4 @@
-// Purpose: Acceptance boundary for generic static call-site frames and constant history in WGSL.
+// Purpose: Acceptance boundary for generic call-site frames and bind-sized history in WGSL.
 
 import {describe, expect, test} from 'bun:test';
 import {DepthKind} from '../../ir/node';
@@ -54,7 +54,9 @@ describe('WGSL temporal call-site frames', () => {
     expect(artifact.module.source).not.toContain('ta.ema');
     expect(artifact.module.source).not.toContain('crossover');
     expect(artifact.module.source).not.toContain('crossunder');
-    expect(artifact.state.wordsPerExecution).toBe(50);
+    expect(artifact.state.fixedWordCount * 4).toBe(
+      artifact.executionStateFixedByteSize,
+    );
     expect(
       artifact.state.frames
         .find(frame => frame.owner === 'ta.ema')
@@ -96,7 +98,7 @@ describe('WGSL temporal call-site frames', () => {
       candidate => candidate.owner === 'previous',
     );
     expect(frame?.locals.map(local => local.name)).toEqual(['source']);
-    expect(frame?.locals[0]?.historyCapacity).toBe(1);
+    expect(frame?.locals[0]?.historyDescriptorWordOffset).not.toBeNull();
     expect(emittedFunction(artifact, 'previous')).not.toContain(
       'var tea_arg_0',
     );
@@ -146,7 +148,9 @@ describe('WGSL temporal call-site frames', () => {
     const frame = artifact.state.frames.find(
       candidate => candidate.owner === 'Pair.touch',
     );
-    expect(artifact.state.wordsPerExecution).toBe(18);
+    expect(artifact.state.fixedWordCount * 4).toBe(
+      artifact.executionStateFixedByteSize,
+    );
     expect(frame?.wordCount).toBe(2);
     expect(frame?.locals).toEqual([]);
     const source = emittedFunction(artifact, 'Pair.touch');
@@ -263,7 +267,7 @@ describe('WGSL temporal call-site frames', () => {
     const flag = artifact.state.frames
       .flatMap(frame => frame.locals)
       .find(local => local.name === 'flag');
-    expect(flag?.historyCapacity).toBe(0);
+    expect(flag?.historyDescriptorWordOffset).toBeNull();
     expect(artifact.module.source).not.toContain('2147483648u');
   });
 
@@ -276,7 +280,7 @@ describe('WGSL temporal call-site frames', () => {
       ].join('\n'),
     );
     const layout = artifact.layouts[artifact.executionStateLayout];
-    expect(layout?.byteSize).toBeGreaterThan(10000 * 4);
+    expect(layout?.byteSize).toBeLessThan(100);
     expect(layout?.fields.map(field => field.path)).toEqual([
       'initialized',
       'next_row',
@@ -299,7 +303,7 @@ describe('WGSL temporal call-site frames', () => {
     expect(result.status).toBe('compiled');
   });
 
-  test('fails quickly when valid history exceeds the u32 byte layout', () => {
+  test('keeps large valid history out of the bind-independent fixed layout', () => {
     const result = compileProgramToWgsl(
       mustBuild(
         [
@@ -309,12 +313,9 @@ describe('WGSL temporal call-site frames', () => {
         ].join('\n'),
       ),
     );
-    expect(result.status).toBe('staged-unsupported');
-    expect(result.eligibility.issues[0]?.code).toBe(
-      'history-layout-unimplemented',
-    );
-    expect(result.eligibility.issues[0]?.message).toContain(
-      'u32 physical-layout limit',
-    );
+    expect(result.status).toBe('compiled');
+    if (result.status === 'compiled') {
+      expect(result.artifact.executionStateFixedByteSize).toBeLessThan(100);
+    }
   });
 });

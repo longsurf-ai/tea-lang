@@ -1,0 +1,40 @@
+schema: tea.execution/v1
+
+program:
+  source: ./strategy.tea
+
+runtime:
+  kind: javascript
+
+execution:
+  kind: sweep
+  provider:
+    kind: csv
+    path: ../../data/binance/btcusdt-15m.csv
+    sha256: 2eece143be58b72349e513b8392d45cd8a8f27fdf011c544767a26a406af3721
+  parameters:
+    long_stoch_length:
+      range: {start: 120, stop: 162, step: 21}
+    long_stoch_smooth_k: 48
+    long_stoch_smooth_d: 48
+    short_stoch_length: 10
+    short_stoch_smooth_k: 3
+    short_stoch_smooth_d: 3
+    long_rsi_length:
+      range: {start: 180, stop: 240, step: 60}
+    short_rsi_length: 9
+    macd_fast_length: 12
+    macd_slow_length: 26
+    macd_signal_length: 9
+    take_profit_ticks:
+      range: {start: 500, stop: 1500, step: 500}
+    stop_loss_ticks: 0
+    trailing_points: 400
+    trailing_offset: 0
+    session_start_minute: 300
+    session_end_minute: 960
+    initial_cash: 100000
+    fixed_quantity: 10000
+    tick_size: 0.01
+  maxExecutions: 18
+  timeNow: 1786579200000

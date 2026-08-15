@@ -1,0 +1,29 @@
+schema: tea.execution/v1
+
+program:
+  source: ./strategy.tea
+
+runtime:
+  kind: javascript
+
+execution:
+  kind: sweep
+  provider:
+    kind: csv
+    path: ../../data/binance/btcusdt-1d.csv
+    sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
+  parameters:
+    symbol_one: BTC-USD
+    symbol_two: ETH-USD
+    spread_timeframe: D
+    mean_length:
+      range: {start: 10, stop: 30, step: 10}
+    entry_deviations:
+      range: {start: 1.5, stop: 2.5, step: 0.5}
+    initial_cash: 30000
+    tick_size: 0.01
+    slippage_ticks: 1
+    commission_per_contract: 0.05
+    contracts: 1
+  maxExecutions: 9
+  timeNow: 1786579200000

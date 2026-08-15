@@ -1,0 +1,68 @@
+# Turtle system
+
+This is a clean-room Tea execution model derived from Eugene's open-source
+[Turtle System](https://www.tradingview.com/script/cOv24513-Turtle-System/),
+page state inspected on 2026-08-14 (Pine v4 source revision 29; the page reports
+an update on 2022-11-10). TradingView pages are mutable, so the behavioral
+contract below—not the linked page alone—is the reproducible authority. No
+third-party source is copied.
+
+The example preserves the published long-only profile: System 1 and System 2
+highest-high breakouts, corresponding lowest-low exits, Wilder ATR (`N`),
+risk-sized integer units, same-close fills, pyramiding at configurable N
+spacing, one whole-position stop, and the System 1 skip rule. A skipped System
+1 breakout is tracked as a virtual trade; its result determines whether the
+next System 1 breakout may be taken, while a System 2 breakout remains eligible.
+
+A strategy-local account is intentional. It emits the standard
+`broker.FillExecuted` effect for every add and close, but it is not constrained
+to the shipped all-in/all-out reference broker. Unit size is floored from the
+published `capital × risk fraction / N` formula and capped by remaining
+capital; `stop_n` changes the protective exit distance but not that unit
+quantity. Up to `max_units` separate additions contribute to one
+weighted-average long position. The published strategy declares zero
+commission, so this profile charges none.
+
+The implementation excludes chart drawings, alerts, and the published Pine
+script's backtest-date controls. Those controls are TradingView host UI for
+choosing an execution window, not Turtle trading rules, so they are
+intentionally omitted. The checked-in sweep runs the full provider range. If
+Tea later adds bounded historical evaluation, that belongs in the Execution
+Context with explicit warmup and order-admission semantics, not as epoch
+literals repeated inside strategies. Turtle's Wilder ATR state is explicit in
+the strategy so the selected historical contract remains locally auditable.
+
+The supported parameter domain requires positive risk/stop/pyramid values,
+System 1 entry shorter than System 2 entry, and System 1 exit shorter than
+System 2 exit. The checked-in 36-scenario sweep is valid by construction and
+varies stop distance, risk fraction, pyramid spacing, and maximum units. Its
+default config runs on WebGPU; `sweep-cpu.yaml` is the identical JS/f64 grid
+for an authoritative CPU check.
+
+```sh
+tea execute examples/strategy/turtle-system/sweep.yaml
+tea execute examples/strategy/turtle-system/sweep-cpu.yaml
+```
+
+Measured on 2026-08-15 with Dawn and the `wgsl-f32-i32` profile, the default
+config executed all 36 bindings and 118,188 rows in one dispatch. A warm run
+reported 16.61 ms lowering, 641.54 ms execution, and 658.15 ms total. Total
+return ranged from 1.042421 to 33.825901, maximum drawdown from 0.099307 to
+0.534546, fill count from 77 to 243, and completed round trips from 22 to 68.
+
+The matching `js-f64` run executed the same 36 bindings and 118,188 rows in
+9,306.74 ms reported total time. Its extrema were 1.042421 to 33.825902 total
+return and 0.099307 to 0.534546 maximum drawdown. A fresh binding-by-binding
+differential found identical fill counts and round trips for all 36 scenarios;
+the largest absolute differences were 1.14 in ending equity, 0.000000199 in
+maximum drawdown, and 0.00001358 in total return. This is strong evidence for
+this grid, but the numeric profiles are not bit-identical and another
+threshold-sensitive binding may take a different branch.
+
+The WebGPU highest-return binding was `stop N=1.5, risk=0.015, pyramid N=0.5,
+max units=5`: ending equity 3,482,590.00, return 33.825901, drawdown 0.527433,
+203 fills, and 56 round trips. The lowest-return binding was `stop N=1.5,
+risk=0.005, pyramid N=1.0, max units=3`: ending equity 204,242.13, return
+1.042421, drawdown 0.103512, 81 fills, and 25 round trips. These are descriptive
+snapshot extrema, not parameter recommendations. This is a historical
+language/runtime stress fixture, not investment advice.

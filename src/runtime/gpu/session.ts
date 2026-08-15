@@ -6,7 +6,7 @@ import {
   GPU_ARTIFACT_ABI_VERSION,
   GPU_BUFFER_GROUP,
   GPU_EFFECT_STATUS_BYTE_STRIDE,
-  GPU_EXECUTION_STATE_MIN_BYTE_STRIDE,
+  GPU_EXECUTION_STATE_MIN_BYTE_SIZE,
   GPU_EXTERNAL_BUFFER_BINDINGS,
   GPU_JOB_DESCRIPTOR_BYTE_STRIDE,
   GPU_JOB_DESCRIPTOR_OFFSETS,
@@ -18,6 +18,9 @@ import {
   type WgslValueSchema,
 } from '../../gpu/contract';
 import type {BindInputs, BoundInput} from '../binding';
+import {resolveGeneratedBindingLayout} from '../js-runtime';
+import {loadModule} from '../load';
+import {RUNTIME_ABI_VERSION, type TeaModule} from '../module-abi';
 import {
   isContextError,
   type ContextError,
@@ -166,6 +169,15 @@ export interface PreparedGpuExecutionInstance {
   readonly seriesOffset: number;
   // Scalar-slot offset into the execution-major parameter payload.
   readonly paramsOffset: number;
+  // Word range in the shared execution-state buffer. Unlike parameter and
+  // result layouts, this range is sized independently for every binding.
+  readonly stateOffset: number;
+  readonly stateWords: number;
+  readonly stateDescriptors: readonly {
+    readonly descriptorWordOffset: number;
+    readonly historyWordOffset: number;
+    readonly capacity: number;
+  }[];
   // Result-cell range assigned to this execution. Final-dense sinks own one
   // row of cells; complete sinks own the chunk-sized row stream.
   readonly finalDenseOnly: boolean;
@@ -196,6 +208,7 @@ export interface PreparedGpuExecution {
   readonly seriesPayload: Uint8Array;
   readonly descriptorPayload: Uint8Array;
   readonly paramPayload: Uint8Array;
+  readonly statePayload: Uint8Array;
   readonly chunkRows: number;
   readonly effectRecordsPerExecution: number;
   readonly effectRecordCount: number;
@@ -413,6 +426,7 @@ export async function createGpuExecution(
       executionStates: make(
         resources.executionStates,
         GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        prepared.statePayload,
       ),
       results: make(
         resources.results,
@@ -1306,6 +1320,15 @@ async function prepareGpuExecutionInputsWithLimits(
   deviceLimits?: GpuBufferDeviceLimits,
 ): Promise<PreparedGpuExecution> {
   validateArtifact(artifact);
+  let bindingModule: TeaModule;
+  try {
+    bindingModule = loadModule(artifact.bindingModule.source);
+    validateBindingModule(artifact, bindingModule);
+  } catch (error) {
+    throw new GpuBindingError(
+      `compiled WGSL has an invalid binding module: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const requestedRows = positiveInteger(
     options.maxRowsPerChunk ?? DEFAULT_MAX_ROWS_PER_CHUNK,
     'maxRowsPerChunk',
@@ -1326,6 +1349,7 @@ async function prepareGpuExecutionInputsWithLimits(
     DataProvider,
     Map<string, Promise<ProviderContext | ContextError>>
   >();
+  const bindingContexts = new Map<ProviderContext, ProviderContext>();
   const resolved = await Promise.all(
     bindings.map(async (inputs, bindingIndex) => {
       let values: readonly Value[];
@@ -1363,12 +1387,43 @@ async function prepareGpuExecutionInputsWithLimits(
           `GPU binding ${bindingIndex} row count exceeds the i32 bar_index target profile`,
         );
       }
-      const boundInputs = artifact.params.map((spec, pid) => ({
-        spec,
-        value: values[pid] ?? fatalGpuParamValue(spec.name),
-        active: artifact.paramActive[pid] ?? false,
-      }));
-      return {inputs, bindingIndex, context, boundInputs};
+      let bindingContext = bindingContexts.get(context);
+      if (bindingContext === undefined) {
+        bindingContext = memoizedSeriesContext(context);
+        bindingContexts.set(context, bindingContext);
+      }
+      let bindingLayout;
+      try {
+        bindingLayout = resolveGeneratedBindingLayout(
+          bindingModule,
+          inputs,
+          bindingContext,
+        );
+      } catch (error) {
+        throw new GpuBindingError(
+          `GPU binding ${bindingIndex}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      const boundInputs = bindingLayout.inputs;
+      if (
+        boundInputs.length !== artifact.params.length ||
+        boundInputs.some(
+          (input, pid) =>
+            input.value !== values[pid] ||
+            input.active !== (artifact.paramActive[pid] ?? false),
+        )
+      ) {
+        throw new GpuBindingError(
+          `GPU binding ${bindingIndex} generated bind results disagree with the artifact parameter contract`,
+        );
+      }
+      return {
+        inputs,
+        bindingIndex,
+        context: bindingContext,
+        boundInputs,
+        frameHistoryCapacities: bindingLayout.frameHistoryCapacities,
+      };
     }),
   );
 
@@ -1379,7 +1434,14 @@ async function prepareGpuExecutionInputsWithLimits(
     ResolvedContextSeries
   >();
   let scalarCount = 0;
-  for (const {inputs, bindingIndex, context, boundInputs} of resolved) {
+  let nextStateWord = 0;
+  for (const {
+    inputs,
+    bindingIndex,
+    context,
+    boundInputs,
+    frameHistoryCapacities,
+  } of resolved) {
     let seriesOffset = contextSeriesOffsets.get(context);
     if (seriesOffset === undefined) {
       seriesOffset = scalarCount;
@@ -1419,6 +1481,16 @@ async function prepareGpuExecutionInputsWithLimits(
         );
       }
     }
+    const state = planExecutionState(
+      artifact,
+      frameHistoryCapacities,
+      nextStateWord,
+    );
+    nextStateWord = checkedSum(
+      [nextStateWord, state.stateWords],
+      'GPU execution-state words',
+    );
+    requireU32(nextStateWord, 'GPU execution-state words');
     executions.push({
       bindingIndex,
       inputs,
@@ -1427,6 +1499,9 @@ async function prepareGpuExecutionInputsWithLimits(
       boundInputs,
       seriesOffset,
       paramsOffset: bindingIndex * artifact.params.length,
+      stateOffset: state.stateOffset,
+      stateWords: state.stateWords,
+      stateDescriptors: state.stateDescriptors,
       finalDenseOnly: inputs.sink.capabilities?.denseRows === 'final',
       resultOffset: 0,
       resultCapacity: 0,
@@ -1452,6 +1527,11 @@ async function prepareGpuExecutionInputsWithLimits(
     artifact.parameterByteStride,
     'GPU parameter bytes',
   );
+  const stateBytes = checkedProduct(
+    nextStateWord,
+    Uint32Array.BYTES_PER_ELEMENT,
+    'GPU execution-state bytes',
+  );
   const maximumRows = executions.reduce(
     (max, execution) => Math.max(max, execution.rows),
     0,
@@ -1462,6 +1542,7 @@ async function prepareGpuExecutionInputsWithLimits(
     executions.filter(execution => execution.capturesEffects).length,
     seriesBytes,
     paramBytes,
+    stateBytes,
     maximumRows,
     requestedRows,
     requestedEffectCapacity,
@@ -1516,6 +1597,10 @@ async function prepareGpuExecutionInputsWithLimits(
     throw new GpuBindingError('GPU effect record plan disagrees with bindings');
   }
   const paramPayload = packParams(plannedExecutions, artifact);
+  const statePayload = packInitialExecutionStates(
+    plannedExecutions,
+    nextStateWord,
+  );
   const descriptorPayload = packInitialDescriptors(
     artifact,
     plannedExecutions,
@@ -1527,6 +1612,7 @@ async function prepareGpuExecutionInputsWithLimits(
     seriesPayload,
     descriptorPayload,
     paramPayload,
+    statePayload,
     chunkRows: plan.chunkRows,
     effectRecordsPerExecution: plan.effectRecordsPerExecution,
     effectRecordCount: plan.effectRecordCount,
@@ -1540,6 +1626,7 @@ function planResources(
   effectExecutionCount: number,
   seriesBytes: number,
   paramBytes: number,
+  stateBytes: number,
   maximumRows: number,
   requestedRows: number,
   requestedEffectCapacity: number | undefined,
@@ -1629,6 +1716,7 @@ function planResources(
       executionCount,
       seriesBytes,
       paramBytes,
+      stateBytes,
       chunkRows,
       resultCellCount,
       effectRecordCount,
@@ -1702,6 +1790,7 @@ function resourceSizes(
   executionCount: number,
   seriesBytes: number,
   paramBytes: number,
+  stateBytes: number,
   chunkRows: number,
   resultCellCount: number,
   effectRecordCount: number,
@@ -1715,11 +1804,7 @@ function resourceSizes(
     ),
     series: seriesBytes,
     params: paramBytes,
-    executionStates: checkedProduct(
-      executionCount,
-      artifact.executionStateByteStride,
-      'GPU execution-state bytes',
-    ),
+    executionStates: stateBytes,
     results: checkedProduct(
       resultCellCount,
       artifact.resultCellByteStride,
@@ -1751,7 +1836,7 @@ function resourceSizes(
     ),
     executionStates: physicalStorageBufferBytes(
       logical.executionStates,
-      artifact.executionStateByteStride,
+      Uint32Array.BYTES_PER_ELEMENT,
     ),
     results: physicalStorageBufferBytes(
       logical.results,
@@ -1796,6 +1881,23 @@ function resourceSizes(
       ],
       'GPU buffer bytes',
     ),
+  };
+}
+
+function memoizedSeriesContext(context: ProviderContext): ProviderContext {
+  const series = new Map<string, SeriesData | null>();
+  return {
+    rows: context.rows,
+    axis: context.axis,
+    series(id) {
+      if (series.has(id)) {
+        return series.get(id) ?? null;
+      }
+      const data = context.series(id);
+      series.set(id, data);
+      return data;
+    },
+    builtinValue: source => context.builtinValue(source),
   };
 }
 
@@ -1931,6 +2033,178 @@ function fatalGpuParamValue(name: string): never {
   );
 }
 
+function validateBindingModule(
+  artifact: CompiledWgslProgram,
+  module: TeaModule,
+): void {
+  if (
+    module.abi !== RUNTIME_ABI_VERSION ||
+    module.manifest.requests.length !== 0 ||
+    module.manifest.frames.length !== artifact.state.frames.length ||
+    JSON.stringify(module.manifest.params) !==
+      JSON.stringify(artifact.params) ||
+    module.manifest.series.length !== artifact.requiredSeries.length ||
+    module.manifest.series.some(
+      (series, sid) => series.id !== artifact.requiredSeries[sid]?.id,
+    )
+  ) {
+    throw new GpuBindingError(
+      'compiled WGSL binding module disagrees with the artifact manifest',
+    );
+  }
+  artifact.state.frames.forEach((frame, fid) => {
+    const bindingFrame = module.manifest.frames[fid];
+    if (bindingFrame === undefined) {
+      throw new GpuBindingError(
+        `compiled WGSL binding module is missing frame ${fid}`,
+      );
+    }
+    if (
+      bindingFrame.subs.length !== frame.children.length ||
+      frame.children.some(
+        child => bindingFrame.subs[child.slot]?.fid !== child.templateId,
+      )
+    ) {
+      throw new GpuBindingError(
+        `compiled WGSL binding module disagrees with frame ${fid} child topology`,
+      );
+    }
+    frame.locals.forEach((local, localIndex) => {
+      const bindingLocal = bindingFrame.locals[local.slot];
+      const storage = bindingLocal?.storage;
+      if (
+        bindingLocal === undefined ||
+        (storage === 'perBar' ? 'perBar' : 'var') !== local.storage
+      ) {
+        throw new GpuBindingError(
+          `compiled WGSL binding module disagrees with frame ${fid} local ${localIndex}`,
+        );
+      }
+    });
+  });
+}
+
+function planExecutionState(
+  artifact: CompiledWgslProgram,
+  frameHistoryCapacities: readonly (readonly number[])[],
+  stateOffset: number,
+): Pick<
+  PreparedGpuExecutionInstance,
+  'stateOffset' | 'stateWords' | 'stateDescriptors'
+> {
+  requireU32(stateOffset, 'GPU execution-state offset');
+  let stateWords = artifact.state.fixedWordCount;
+  const stateDescriptors: Array<{
+    readonly descriptorWordOffset: number;
+    readonly historyWordOffset: number;
+    readonly capacity: number;
+  }> = [];
+  const visit = (
+    frame: CompiledWgslProgram['state']['frames'][number],
+    frameBase: number,
+  ): void => {
+    const capacities = frameHistoryCapacities[frame.id];
+    if (capacities === undefined) {
+      throw new GpuBindingError(
+        `generated bind did not report frame ${frame.id}`,
+      );
+    }
+    frame.locals.forEach((local, localIndex) => {
+      const capacity = capacities[local.slot];
+      if (
+        capacity === undefined ||
+        !Number.isSafeInteger(capacity) ||
+        capacity < 0 ||
+        capacity > MAX_U32
+      ) {
+        throw new GpuBindingError(
+          `generated bind reported invalid capacity for frame ${frame.id} local ${localIndex}`,
+        );
+      }
+      if (local.historyDescriptorWordOffset === null) {
+        // The target intentionally has no descriptor for a statically invalid
+        // read (for example an offset beyond the i32 row profile). CPU may
+        // still retain that source-level depth; WGSL always returns typed
+        // empty and therefore needs no physical history here.
+        return;
+      }
+      const historyWordOffset = capacity === 0 ? 0 : stateWords;
+      stateWords = checkedSum(
+        [
+          stateWords,
+          checkedProduct(
+            capacity,
+            local.valueWordCount,
+            `GPU frame ${frame.id} local ${localIndex} history words`,
+          ),
+        ],
+        'GPU execution-state words',
+      );
+      stateDescriptors.push({
+        descriptorWordOffset: frameBase + local.historyDescriptorWordOffset,
+        historyWordOffset,
+        capacity,
+      });
+    });
+    frame.children.forEach(child => {
+      const childFrame = artifact.state.frames[child.templateId];
+      if (childFrame === undefined) {
+        throw new GpuBindingError(
+          `compiled WGSL frame ${frame.id} refers to missing child ${child.templateId}`,
+        );
+      }
+      visit(childFrame, frameBase + child.wordOffset);
+    });
+  };
+  const root = artifact.state.frames[0];
+  if (root === undefined) {
+    throw new GpuBindingError('compiled WGSL has no root state frame');
+  }
+  visit(root, artifact.state.rootFrameWordOffset);
+  requireU32(stateWords, 'GPU execution-state words');
+  requireU32(
+    checkedSum([stateOffset, stateWords], 'GPU execution-state extent'),
+    'GPU execution-state extent',
+  );
+  return {
+    stateOffset,
+    stateWords,
+    stateDescriptors: Object.freeze(stateDescriptors),
+  };
+}
+
+function packInitialExecutionStates(
+  executions: readonly PreparedGpuExecutionInstance[],
+  totalStateWords: number,
+): Uint8Array {
+  const bytes = allocateBytes(
+    checkedProduct(
+      totalStateWords,
+      Uint32Array.BYTES_PER_ELEMENT,
+      'GPU execution-state payload bytes',
+    ),
+    'GPU execution-state payload',
+  );
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  executions.forEach(execution => {
+    execution.stateDescriptors.forEach(descriptor => {
+      const descriptorWord =
+        execution.stateOffset + descriptor.descriptorWordOffset;
+      view.setUint32(
+        descriptorWord * Uint32Array.BYTES_PER_ELEMENT,
+        descriptor.historyWordOffset,
+        true,
+      );
+      view.setUint32(
+        (descriptorWord + 1) * Uint32Array.BYTES_PER_ELEMENT,
+        descriptor.capacity,
+        true,
+      );
+    });
+  });
+  return bytes;
+}
+
 function packInitialDescriptors(
   artifact: CompiledWgslProgram,
   executions: readonly PreparedGpuExecutionInstance[],
@@ -1964,6 +2238,8 @@ function packInitialDescriptors(
       true,
     );
     view.setUint32(base + offsets.paramsOffset, execution.paramsOffset, true);
+    view.setUint32(base + offsets.stateOffset, execution.stateOffset, true);
+    view.setUint32(base + offsets.stateWords, execution.stateWords, true);
   });
   return bytes;
 }
@@ -1996,6 +2272,8 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
     artifact.target !== 'webgpu-wgsl' ||
     artifact.module.language !== 'wgsl' ||
     artifact.module.entryPoint.length === 0 ||
+    artifact.bindingModule.language !== 'javascript-es2015-function-body' ||
+    artifact.bindingModule.source.length === 0 ||
     artifact.externalBuffers.group !== GPU_BUFFER_GROUP ||
     bindings.some(value => !Number.isSafeInteger(value) || value < 0) ||
     bindings.some((value, index) => value !== expectedBindings[index])
@@ -2015,7 +2293,7 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
     jobDescriptorByteStride: artifact.jobDescriptorByteStride,
     seriesScalarByteStride: artifact.seriesScalarByteStride,
     parameterByteStride: artifact.parameterByteStride,
-    executionStateByteStride: artifact.executionStateByteStride,
+    executionStateFixedByteSize: artifact.executionStateFixedByteSize,
     resultCellByteStride: artifact.resultCellByteStride,
     effectStatusByteStride: artifact.effectStatusByteStride,
     effectRecordByteStride: artifact.effectRecordByteStride,
@@ -2033,18 +2311,18 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
       'compiled WGSL effect schemas disagree with maxEffectsPerRow',
     );
   }
-  const minimumStrides = {
+  const minimumSizes = {
     jobDescriptorByteStride: GPU_JOB_DESCRIPTOR_BYTE_STRIDE,
     seriesScalarByteStride: GPU_SERIES_SCALAR_BYTE_STRIDE,
     parameterByteStride: GPU_PARAMETER_BYTE_STRIDE,
-    executionStateByteStride: GPU_EXECUTION_STATE_MIN_BYTE_STRIDE,
+    executionStateFixedByteSize: GPU_EXECUTION_STATE_MIN_BYTE_SIZE,
     resultCellByteStride: GPU_RESULT_CELL_BYTE_STRIDE,
     effectStatusByteStride: GPU_EFFECT_STATUS_BYTE_STRIDE,
     effectRecordByteStride:
       8 + Math.max(1, artifact.effectPayloadWordCapacity) * 4,
   } as const;
-  for (const [name, minimum] of Object.entries(minimumStrides)) {
-    const actual = artifact[name as keyof typeof minimumStrides];
+  for (const [name, minimum] of Object.entries(minimumSizes)) {
+    const actual = artifact[name as keyof typeof minimumSizes];
     if (actual < minimum) {
       throw new GpuBindingError(
         `compiled WGSL ${name} ${actual} is below minimum ${minimum}`,
@@ -2139,8 +2417,8 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
     ],
     [
       artifact.executionStateLayout,
-      artifact.executionStateByteStride,
-      'execution state',
+      artifact.executionStateFixedByteSize,
+      'fixed execution state',
     ],
     [artifact.resultCellLayout, artifact.resultCellByteStride, 'result cell'],
     [
@@ -2274,9 +2552,9 @@ function validateStateManifest(artifact: CompiledWgslProgram): void {
     state.initializedWordOffset !== 0 ||
     state.nextRowWordOffset !== 1 ||
     state.rootFrameWordOffset !== 2 ||
-    !Number.isSafeInteger(state.wordsPerExecution) ||
-    state.wordsPerExecution < 4 ||
-    state.wordsPerExecution * 4 !== artifact.executionStateByteStride ||
+    !Number.isSafeInteger(state.fixedWordCount) ||
+    state.fixedWordCount < 4 ||
+    state.fixedWordCount * 4 !== artifact.executionStateFixedByteSize ||
     state.frames.length === 0
   ) {
     throw new GpuBindingError(
@@ -2318,6 +2596,7 @@ function validateStateManifest(artifact: CompiledWgslProgram): void {
     };
     claim(frame.committedActivationWordOffset, 1, 'committed activation');
     claim(frame.tentativeActivationWordOffset, 1, 'tentative activation');
+    const localSlots = new Set<number>();
     frame.locals.forEach((local, localIndex) => {
       claim(
         local.scratchWordOffset,
@@ -2326,20 +2605,20 @@ function validateStateManifest(artifact: CompiledWgslProgram): void {
       );
       const persistent = local.storage === 'var';
       if (
+        !Number.isSafeInteger(local.slot) ||
+        local.slot < 0 ||
+        localSlots.has(local.slot) ||
         (local.storage !== 'perBar' && local.storage !== 'var') ||
         (local.committedInitWordOffset === null) !==
           (local.tentativeInitWordOffset === null) ||
         persistent !== (local.committedInitWordOffset !== null) ||
-        !Number.isSafeInteger(local.historyCapacity) ||
-        local.historyCapacity < 0 ||
-        (local.historyWordOffset === null) !== (local.historyCapacity === 0) ||
-        (persistent &&
-          (local.historyCapacity < 1 || local.historyWordOffset === null))
+        (persistent && local.historyDescriptorWordOffset === null)
       ) {
         throw new GpuBindingError(
           `compiled WGSL state frame ${frameIndex} has invalid local ${localIndex}`,
         );
       }
+      localSlots.add(local.slot);
       if (
         local.committedInitWordOffset !== null &&
         local.tentativeInitWordOffset !== null
@@ -2355,11 +2634,11 @@ function validateStateManifest(artifact: CompiledWgslProgram): void {
           `local ${localIndex} tentative init`,
         );
       }
-      if (local.historyWordOffset !== null) {
+      if (local.historyDescriptorWordOffset !== null) {
         claim(
-          local.historyWordOffset,
-          local.historyCapacity * local.valueWordCount,
-          `local ${localIndex} history`,
+          local.historyDescriptorWordOffset,
+          2,
+          `local ${localIndex} history descriptor`,
         );
       }
     });
@@ -2393,7 +2672,7 @@ function validateStateManifest(artifact: CompiledWgslProgram): void {
   const root = frames[0];
   if (
     root === undefined ||
-    state.rootFrameWordOffset + root.wordCount !== state.wordsPerExecution
+    state.rootFrameWordOffset + root.wordCount !== state.fixedWordCount
   ) {
     throw new GpuBindingError(
       'compiled WGSL execution-state manifest has an invalid root extent',
@@ -2476,8 +2755,8 @@ function validateCacheContract(artifact: CompiledWgslProgram): void {
     storageEnd += segment.wordCount;
   }
   if (
-    cacheEnd !== artifact.state.wordsPerExecution ||
-    storageEnd !== artifact.state.wordsPerExecution
+    cacheEnd !== artifact.state.fixedWordCount ||
+    storageEnd !== artifact.state.fixedWordCount
   ) {
     throw new GpuBindingError(
       'compiled WGSL cache segments disagree with execution state',

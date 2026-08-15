@@ -74,6 +74,9 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   `bound` expression is normalized for lowering from the root bind frame.
   Immutable root-safe `simple` aliases, including typed execution inputs, are
   exact `DepthKind.Bound` demands rather than conservatively capped history.
+  A history read indexed exactly by a numeric range induction variable uses
+  that range's bind-safe maximum; compound induction arithmetic stays capped
+  until a general interval pass can prove it without under-allocation.
 - Alias bindings: a never-reassigned plain declaration whose initializer is
   a current-bar read of a STABLE place (series, param, STATIC request —
   never a Name, whose later writes would leak through) binds the name to

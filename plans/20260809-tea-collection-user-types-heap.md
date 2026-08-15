@@ -1448,7 +1448,7 @@ Heap arenas.
       accounting.
 - [x] Conformance includes concrete `UserType -> collection` and
       `collection<UserType>` Tea cases, plus same-iteration and historical COW
-      traces under `testdata/execution/`.
+      traces under `tests/fixtures/execution/`.
 - [x] Run:
 
       ```sh

@@ -30,7 +30,16 @@ export ema(source, length) =>
 export rma(source, length) =>
 	alpha = 1.0 / length
 	var float r = na
-	r := na(r) ? source : alpha * source + (1 - alpha) * r
+	var float seedSum = 0.0
+	var int seedCount = 0
+	if not na(source)
+		if na(r)
+			seedSum := seedSum + source
+			seedCount := seedCount + 1
+			if seedCount == length
+				r := seedSum / length
+		else
+			r := alpha * source + (1 - alpha) * r
 	r
 
 export wma(source, length) =>

@@ -1,5 +1,8 @@
 # GPU backtest runtime: domain model, feasibility, dual lowering
 
+> Historical note: the TypeGPU experiment referenced by this plan was
+> extracted to the sibling directory `tea-lang-typegpu-experiment`.
+
 ## 1. System map
 
 ```text
@@ -41,7 +44,8 @@
 The TypeGPU experiment proved one-dispatch parameter sweeps work (64
 full-history jobs, 132k journal events, ~190 ms) but with a hardcoded SMA
 strategy whose entire state is ~20 scalars in registers
-([typegpu-kernel.ts](../experiment/typegpu/src/typegpu-kernel.ts)).
+(`src/typegpu-kernel.ts` in the sibling `tea-lang-typegpu-experiment`
+package).
 We have since decided to drop TypeGPU and lower Tea IR directly to WGSL against
 a hand-written runtime. What is missing is (a) a backtest/live domain model
 that is tape-driven — a host-premerged, timestamp-sorted record tape consumed
@@ -85,7 +89,8 @@ backend are follow-up plans.
      fields (`next_timer_ts`, `effective_at`) polled against the tape clock,
      never per-job event queues.
 
-2. **GPU feasibility probes** — extend `experiment/typegpu`
+2. **GPU feasibility probes** — extend
+   the sibling `tea-lang-typegpu-experiment` package
    - State-residency: move sweep state to job-strided storage buffers; measure
      throughput vs. register baseline at 256 B / 1 KiB / 4 KiB / 16 KiB per job.
    - Multi-dispatch bar-slicing: state persists in storage across N dispatches;

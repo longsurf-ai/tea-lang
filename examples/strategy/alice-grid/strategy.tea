@@ -1,0 +1,247 @@
+//@version=1
+// Clean-room historical CPU implementation of the public AliceTears Grid.
+// Per-level lots make the published pyramiding and from-entry exits explicit.
+strategy("AliceTears Grid", shorttitle="Alice Grid", overlay=true)
+
+import broker
+
+type GridLot
+	int id
+	int direction
+	int level
+	float entryPrice
+	float quantity
+	float targetPrice
+	float stopPrice
+	float entryFee
+	bool trailingArmed = false
+	float trailExtreme = na
+	float trailDistance = na
+
+type GridAccount
+	float initialCash
+	float cashValue
+	array<GridLot> lots
+	float equityValue
+	float peakEquity
+	float maxDrawdownValue = 0.0
+	float realizedPnlValue = 0.0
+	float totalFeesValue = 0.0
+	int fillCountValue = 0
+	int closedLotsValue = 0
+	int nextLotId = 1
+	int nextOrderId = 1
+	int nextFillId = 1
+	int maxLongStack = 0
+	int maxShortStack = 0
+
+	float emit_fill(string commandId, broker.Side side, float price, float quantity, float feeRate, int fillBar) =>
+		notional = quantity * price
+		fee = notional * feeRate
+		orderId = this.nextOrderId
+		fillId = this.nextFillId
+		this.nextOrderId := orderId + 1
+		this.nextFillId := fillId + 1
+		this.fillCountValue := this.fillCountValue + 1
+		this.totalFeesValue := this.totalFeesValue + fee
+		execution = broker.Fill.new(fillId, orderId, commandId, side, fillBar, price, price, quantity, notional, fee)
+		effect.emit(broker.FillExecuted.new(execution))
+		fee
+
+	float close_lot(int index, float price, float feeRate, int fillBar) =>
+		lot = this.lots.get(index)
+		isLong = lot.direction == 1
+		side = isLong ? broker.Side.sell : broker.Side.buy
+		fee = this.emit_fill(isLong ? "Alice long close" : "Alice short cover", side, price, lot.quantity, feeRate, fillBar)
+		notional = lot.quantity * price
+		if isLong
+			this.cashValue := this.cashValue + notional - fee
+			this.realizedPnlValue := this.realizedPnlValue + lot.quantity * (price - lot.entryPrice) - lot.entryFee - fee
+		else
+			this.cashValue := this.cashValue - notional - fee
+			this.realizedPnlValue := this.realizedPnlValue + lot.quantity * (lot.entryPrice - price) - lot.entryFee - fee
+		lastLot = this.lots.pop()
+		if index < this.lots.size()
+			this.lots.set(index, lastLot)
+		this.closedLotsValue := this.closedLotsValue + 1
+		lot.quantity
+
+	int close_direction(int direction, float price, float feeRate, int fillBar) =>
+		i = this.lots.size() - 1
+		closed = 0
+		while i >= 0
+			lot = this.lots.get(i)
+			if lot.direction == direction
+				this.close_lot(i, price, feeRate, fillBar)
+				closed := closed + 1
+			i := i - 1
+		closed
+
+	float open_lot(int direction, int level, float price, float targetPrice, float stopPrice, float cashPerOrder, float feeRate, int fillBar) =>
+		// Pine strategy.entry reverses an existing opposite position rather than
+		// holding a hedge. Close every opposite per-entry lot first.
+		this.close_direction(-direction, price, feeRate, fillBar)
+		quantity = price <= 0.0 ? 0.0 : cashPerOrder / price
+		if quantity > 0.0
+			isLong = direction == 1
+			side = isLong ? broker.Side.buy : broker.Side.sell
+			fee = this.emit_fill(isLong ? "Alice long open" : "Alice short open", side, price, quantity, feeRate, fillBar)
+			notional = quantity * price
+			this.cashValue := isLong ? this.cashValue - notional - fee : this.cashValue + notional - fee
+			lot = GridLot.new(this.nextLotId, direction, level, price, quantity, targetPrice, stopPrice, fee)
+			this.nextLotId := this.nextLotId + 1
+			this.lots.push(lot)
+			longCount = 0
+			shortCount = 0
+			for openLot in this.lots
+				if openLot.direction == 1
+					longCount := longCount + 1
+				else
+					shortCount := shortCount + 1
+			this.maxLongStack := math.max(this.maxLongStack, longCount)
+			this.maxShortStack := math.max(this.maxShortStack, shortCount)
+		quantity
+
+	float mark(float price) =>
+		value = this.cashValue
+		for lot in this.lots
+			value := value + lot.direction * lot.quantity * price
+		this.equityValue := value
+		this.peakEquity := math.max(this.peakEquity, value)
+		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - value) / this.peakEquity
+		this.maxDrawdownValue := math.max(this.maxDrawdownValue, drawdown)
+		value
+
+	float position_quantity() const =>
+		quantity = 0.0
+		for lot in this.lots
+			quantity := quantity + lot.direction * lot.quantity
+		quantity
+
+	float total_return() const =>
+		(this.equityValue - this.initialCash) / this.initialCash
+
+entry_reversal_mode = input.int(1, "Entry reversal: 0 off, 1 on", minval=0, maxval=1)
+grid_step_percent = input.float(1.0, "Grid step percent", minval=0.1, maxval=20.0)
+maximum_steps = input.int(20, "Maximum levels per side", minval=1, maxval=100)
+tp_reversal_mode = input.int(1, "Target reversal: 0 off, 1 on", minval=0, maxval=1)
+use_trailing = input.int(1, "Trailing target: 0 off, 1 on", minval=0, maxval=1)
+trailing_offset_percent = input.float(1.0, "Trailing offset percent", minval=0.1, maxval=20.0)
+use_stop_loss = input.int(0, "Manual stop: 0 off, 1 on", minval=0, maxval=1)
+stop_loss_multiplier = input.float(2.0, "Stop grid multiplier", minval=0.1, maxval=20.0)
+use_date_filter = input.int(0, "Date filter: 0 off, 1 on", minval=0, maxval=1)
+start_time = input.time(1704067200000, "Start time")
+end_time = input.time(1893456000000, "End time")
+cash_per_order = input.float(10.0, "Cash per grid order", minval=0.01)
+initial_cash = input.float(1000.0, "Initial cash", minval=1.0)
+fee_rate = input.float(0.00025, "Fee rate", minval=0.0, maxval=0.05)
+
+var account = GridAccount.new(initial_cash, initial_cash, array.new<GridLot>(), initial_cash, initial_cash)
+var triggered_longs = array.new<bool>(maximum_steps + 1, false)
+var triggered_shorts = array.new<bool>(maximum_steps + 1, false)
+var breached_longs = array.new<bool>(maximum_steps + 1, false)
+var breached_shorts = array.new<bool>(maximum_steps + 1, false)
+var float session_base = na
+var float prior_day = na
+
+day_key = math.floor(time / 86400000.0)
+new_session = na(prior_day) or day_key != prior_day
+if new_session
+	session_base := open
+	prior_day := day_key
+	for i = 0 to maximum_steps
+		triggered_longs.set(i, false)
+		triggered_shorts.set(i, false)
+		breached_longs.set(i, false)
+		breached_shorts.set(i, false)
+
+// Manage every per-entry lot independently. Iterating backwards makes pop
+// removal deterministic and keeps array indices valid.
+lot_index = account.lots.size() - 1
+while lot_index >= 0
+	lot = account.lots.get(lot_index)
+	is_long = lot.direction == 1
+	close_now = false
+	float close_price = na
+	if use_stop_loss == 1 and not na(lot.stopPrice)
+		stop_hit = is_long ? close <= lot.stopPrice : close >= lot.stopPrice
+		if stop_hit
+			close_now := true
+			close_price := close
+	if not close_now and use_trailing == 0
+		if tp_reversal_mode == 1
+			target_reversal = is_long ? close[1] > lot.targetPrice and close < lot.targetPrice : close[1] < lot.targetPrice and close > lot.targetPrice
+			if target_reversal
+				close_now := true
+				close_price := close
+		else
+			target_hit = is_long ? close >= lot.targetPrice : close <= lot.targetPrice
+			if target_hit
+				close_now := true
+				close_price := close
+	if not close_now and use_trailing == 1
+		if lot.trailingArmed
+			lot.trailExtreme := is_long ? math.max(lot.trailExtreme, high) : math.min(lot.trailExtreme, low)
+			trail_stop = is_long ? lot.trailExtreme - lot.trailDistance : lot.trailExtreme + lot.trailDistance
+			trail_hit = is_long ? low <= trail_stop : high >= trail_stop
+			if trail_hit
+				close_now := true
+				close_price := is_long ? (open <= trail_stop ? open : trail_stop) : (open >= trail_stop ? open : trail_stop)
+		else
+			activation = tp_reversal_mode == 1 ? (is_long ? close[1] > lot.targetPrice and close < lot.targetPrice : close[1] < lot.targetPrice and close > lot.targetPrice) : (is_long ? high >= lot.targetPrice : low <= lot.targetPrice)
+			if activation
+				lot.trailingArmed := true
+				lot.trailExtreme := close
+				lot.trailDistance := close * trailing_offset_percent / 100.0
+	if close_now
+		account.close_lot(lot_index, close_price, fee_rate, bar_index)
+	else
+		account.lots.set(lot_index, lot)
+	lot_index := lot_index - 1
+
+in_date_range = use_date_filter == 0 or time >= start_time and time <= end_time
+
+for level = 1 to maximum_steps
+	short_entry = session_base * (1.0 + grid_step_percent / 100.0 * level)
+	short_target = session_base * (1.0 + grid_step_percent / 100.0 * (level - 1))
+	short_stop = use_stop_loss == 1 ? short_entry + short_entry * grid_step_percent / 100.0 * stop_loss_multiplier : na
+	if not triggered_shorts.get(level) and in_date_range
+		if entry_reversal_mode == 1
+			if close[1] > short_entry
+				breached_shorts.set(level, true)
+			if breached_shorts.get(level) and close < short_entry
+				account.open_lot(-1, level, close, short_target, short_stop, cash_per_order, fee_rate, bar_index)
+				triggered_shorts.set(level, true)
+		else if ta.crossover(close, short_entry)
+			account.open_lot(-1, level, close, short_target, short_stop, cash_per_order, fee_rate, bar_index)
+			triggered_shorts.set(level, true)
+
+	long_entry = session_base * (1.0 - grid_step_percent / 100.0 * level)
+	long_target = session_base * (1.0 - grid_step_percent / 100.0 * (level - 1))
+	long_stop = use_stop_loss == 1 ? long_entry - long_entry * grid_step_percent / 100.0 * stop_loss_multiplier : na
+	if not triggered_longs.get(level) and in_date_range
+		if entry_reversal_mode == 1
+			if close[1] < long_entry
+				breached_longs.set(level, true)
+			if breached_longs.get(level) and close > long_entry
+				account.open_lot(1, level, close, long_target, long_stop, cash_per_order, fee_rate, bar_index)
+				triggered_longs.set(level, true)
+		else if ta.crossunder(close, long_entry)
+			account.open_lot(1, level, close, long_target, long_stop, cash_per_order, fee_rate, bar_index)
+			triggered_longs.set(level, true)
+
+account.mark(close)
+
+plot(close, "close")
+plot(session_base, "session base")
+plot(account.position_quantity(), "position quantity")
+plot(account.lots.size(), "open lots")
+plot(account.maxLongStack, "maximum long stack")
+plot(account.maxShortStack, "maximum short stack")
+plot(account.equityValue, "equity")
+plot(account.realizedPnlValue, "realized pnl")
+plot(account.totalFeesValue, "total fees")
+plot(account.fillCountValue, "fill count")
+plot(account.closedLotsValue, "round trips")
+plot(account.maxDrawdownValue, "maximum drawdown")
+plot(account.total_return(), "total return")

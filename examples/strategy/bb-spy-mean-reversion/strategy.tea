@@ -1,0 +1,283 @@
+//@version=1
+// Clean-room long-only historical profile of the public BB SPY mean-reversion
+// strategy. It keeps the published stop-entry re-arm and segmented ATR exits.
+strategy("BB SPY Mean Reversion", shorttitle="BB Mean Reversion", overlay=true)
+
+import broker
+import portfolio
+
+// Keep the selected Pine directional-smoothing contract explicit and
+// self-contained in this historical profile.
+pine_rma(float source, int length) =>
+	seed = ta.sma(source, length)
+	var float value = na
+	if na(value)
+		value := seed
+	else
+		value := (value * (length - 1.0) + source) / length
+	value
+
+pine_dmi(int diLength, int adxSmoothing) =>
+	up_move = high - high[1]
+	down_move = low[1] - low
+	previous_close = close[1]
+	true_range = na(previous_close) ? high - low : math.max(high - low, math.max(math.abs(high - previous_close), math.abs(low - previous_close)))
+	smoothed_range = pine_rma(true_range, diLength)
+	raw_plus = 100.0 * pine_rma(up_move > down_move and up_move > 0.0 ? up_move : 0.0, diLength) / smoothed_range
+	raw_minus = 100.0 * pine_rma(down_move > up_move and down_move > 0.0 ? down_move : 0.0, diLength) / smoothed_range
+	var float plus = na
+	var float minus = na
+	plus := na(raw_plus) ? plus : raw_plus
+	minus := na(raw_minus) ? minus : raw_minus
+	sum = plus + minus
+	adx = 100.0 * pine_rma(math.abs(plus - minus) / (sum == 0.0 ? 1.0 : sum), adxSmoothing)
+	[plus, minus, adx]
+
+type FillFactory
+	int nextOrderId = 1
+	int nextFillId = 1
+
+	broker.Fill execute(string commandId, broker.Side side, float referencePrice, float quantity, float feeRate, float tickSize, float slippageTicks, int fillBar) =>
+		isBuy = side == broker.Side.buy
+		price = referencePrice + (isBuy ? 1.0 : -1.0) * tickSize * slippageTicks
+		notional = quantity * price
+		fee = notional * feeRate
+		orderId = this.nextOrderId
+		fillId = this.nextFillId
+		this.nextOrderId := orderId + 1
+		this.nextFillId := fillId + 1
+		execution = broker.Fill.new(fillId, orderId, commandId, side, fillBar, referencePrice, price, quantity, notional, fee)
+		effect.emit(broker.FillExecuted.new(execution))
+		execution
+
+type ConfirmedMonthlyAtr
+	float key = na
+	float monthHigh = na
+	float monthLow = na
+	float monthClose = na
+	float previousClose = na
+	float value = na
+	float seedSum = 0.0
+	int samples = 0
+
+	float update(float currentKey, float nextKey, float barHigh, float barLow, float barClose, int length) =>
+		if na(this.key) or currentKey != this.key
+			this.key := currentKey
+			this.monthHigh := barHigh
+			this.monthLow := barLow
+			this.monthClose := barClose
+		else
+			this.monthHigh := math.max(this.monthHigh, barHigh)
+			this.monthLow := math.min(this.monthLow, barLow)
+			this.monthClose := barClose
+		if nextKey != currentKey
+			monthlyRange = this.monthHigh - this.monthLow
+			monthlyTr = na(this.previousClose) ? monthlyRange : math.max(monthlyRange, math.abs(this.monthHigh - this.previousClose), math.abs(this.monthLow - this.previousClose))
+			nextSamples = this.samples + 1
+			if nextSamples <= length
+				this.seedSum := this.seedSum + monthlyTr
+				if nextSamples == length
+					this.value := this.seedSum / (length * 1.0)
+			else
+				this.value := (this.value * (length - 1.0) + monthlyTr) / length
+			this.samples := nextSamples
+			this.previousClose := this.monthClose
+		this.value
+
+month_key(int epochMs) =>
+	days = math.floor(epochMs / 86400000.0)
+	z = days + 719468.0
+	era = math.floor(z / 146097.0)
+	doe = z - era * 146097.0
+	yoe = math.floor((doe - math.floor(doe / 1460.0) + math.floor(doe / 36524.0) - math.floor(doe / 146096.0)) / 365.0)
+	year = yoe + era * 400.0
+	doy = doe - (365.0 * yoe + math.floor(yoe / 4.0) - math.floor(yoe / 100.0))
+	mp = math.floor((5.0 * doy + 2.0) / 153.0)
+	month = mp + (mp < 10.0 ? 3.0 : -9.0)
+	year := year + (month <= 2.0 ? 1.0 : 0.0)
+	year * 12.0 + month
+
+bb_length = input.int(14, "BB length", minval=1, maxval=200)
+bb_multiplier = input.float(1.1, "BB multiplier", minval=0.1, maxval=10.0)
+long_ema_length = input.int(20, "Long EMA length", minval=1, maxval=200)
+short_ema_length = input.int(10, "Short EMA length", minval=1, maxval=200)
+minimum_short_adx = input.float(25.0, "Minimum short ADX", minval=0.0, maxval=100.0)
+use_adaptive_multiplier = input.int(0, "Adaptive bands: 0 off, 1 on", minval=0, maxval=1)
+use_adaptive_signals = input.int(0, "Adaptive signals: 0 off, 1 on", minval=0, maxval=1)
+vov_length = input.int(20, "Volatility-of-volatility length", minval=5, maxval=200)
+vov_gain = input.float(0.6, "Volatility-of-volatility gain", minval=0.0, maxval=5.0)
+vov_scale_min = input.float(0.5, "Minimum adaptive scale", minval=0.1, maxval=5.0)
+vov_scale_max = input.float(2.0, "Maximum adaptive scale", minval=0.1, maxval=10.0)
+regime_mode = input.int(0, "Regime: 0 none, 1 trend, 2 mean reversion", minval=0, maxval=2)
+rank_length = input.int(200, "Regime rank lookback", minval=50, maxval=500)
+trend_rank_minimum = input.float(60.0, "Trend width percentile", minval=0.0, maxval=100.0)
+slope_length = input.int(10, "Basis slope length", minval=1, maxval=100)
+slope_threshold = input.float(0.1, "Normalized slope threshold", minval=0.0, maxval=10.0)
+atr_length = input.int(14, "Monthly ATR length", minval=1, maxval=100)
+atr_stop_multiple = input.float(1.5, "ATR stop multiple", minval=0.1, maxval=10.0)
+atr_target_multiple = input.float(3.0, "ATR target multiple", minval=0.1, maxval=20.0)
+break_even_r = input.float(1.0, "Break-even trigger R", minval=0.0, maxval=10.0)
+use_time_exit = input.int(0, "Time exit: 0 off, 1 on", minval=0, maxval=1)
+minimum_hold_bars = input.int(30, "Minimum hold bars", minval=1, maxval=500)
+profit_extension_bars = input.int(15, "Profit extension bars", minval=0, maxval=500)
+time_profit_gate_r = input.float(0.25, "Time-exit profit gate R", minval=0.0, maxval=10.0)
+bias_history_length = input.int(16, "Bias flips retained", minval=1, maxval=1000)
+allocation_percent = input.float(5.0, "Allocation per entry percent", minval=0.1, maxval=100.0)
+initial_cash = input.float(25000.0, "Initial cash", minval=1.0)
+fee_rate = input.float(0.0003, "Fee rate", minval=0.0, maxval=0.05)
+tick_size = input.float(0.01, "Tick size", minval=0.00000001)
+slippage_ticks = input.float(3.0, "Slippage ticks", minval=0.0, maxval=100.0)
+
+var account = portfolio.basic(initial_cash)
+var fills = FillFactory.new()
+var monthly_atr_state = ConfirmedMonthlyAtr.new()
+var bias_history = array.new<int>()
+var int current_bias = 0
+var bool pending_long = false
+var float pending_stop = na
+var float active_stop = na
+var float active_target = na
+var float entry_price_state = na
+var int entry_bar = na
+float missing_float = na
+int missing_int = na
+
+// The CSV axis exposes each bar's close boundary. A transition in that
+// boundary identifies the month's final daily row, matching Pine's
+// lookahead-off higher-timeframe publication without provider resampling.
+monthly_atr = monthly_atr_state.update(month_key(time), month_key(time_close), high, low, close, atr_length)
+
+// Resolve a resting buy-stop submitted on a prior bar.
+if pending_long and account.position_quantity() == 0.0
+	float entry_reference = na
+	if open >= pending_stop
+		entry_reference := open
+	else if high >= pending_stop
+		entry_reference := pending_stop
+	if not na(entry_reference)
+		account.mark(entry_reference)
+		buying_power = account.equity() * allocation_percent / 100.0
+		entry_price = entry_reference + tick_size * slippage_ticks
+		entry_quantity = math.min(account.buying_power(), buying_power) / (entry_price * (1.0 + fee_rate))
+		execution = fills.execute("BB long", broker.Side.buy, entry_reference, entry_quantity, fee_rate, tick_size, slippage_ticks, bar_index)
+		account.apply(execution)
+		entry_price_state := execution.price
+		entry_bar := bar_index
+		pending_long := false
+
+// The active bracket was published at the previous close.
+if account.position_quantity() > 0.0 and bar_index > entry_bar and not na(active_stop) and not na(active_target)
+	stop_touched = low <= active_stop
+	target_touched = high >= active_target
+	float exit_reference = na
+	if open <= active_stop or open >= active_target
+		exit_reference := open
+	else if stop_touched and target_touched
+		high_first = math.abs(high - open) < math.abs(open - low)
+		exit_reference := high_first ? active_target : active_stop
+	else if stop_touched
+		exit_reference := active_stop
+	else if target_touched
+		exit_reference := active_target
+	if not na(exit_reference)
+		execution = fills.execute("BB ATR exit", broker.Side.sell, exit_reference, account.position_quantity(), fee_rate, tick_size, slippage_ticks, bar_index)
+		account.apply(execution)
+		active_stop := missing_float
+		active_target := missing_float
+		entry_price_state := missing_float
+		entry_bar := missing_int
+
+basis = ta.sma(close, bb_length)
+standard_deviation = ta.stdev(close, bb_length)
+upper_band = basis + bb_multiplier * standard_deviation
+lower_band = basis - bb_multiplier * standard_deviation
+vov = ta.stdev(ta.roc(close, 1), vov_length)
+vov_average = ta.sma(vov, vov_length)
+vov_ratio = na(vov_average) or vov_average == 0.0 ? 1.0 : vov / vov_average
+vov_scale = math.min(math.max(1.0 + vov_gain * (vov_ratio - 1.0), vov_scale_min), vov_scale_max)
+effective_multiplier = use_adaptive_multiplier == 1 ? bb_multiplier * vov_scale : bb_multiplier
+upper_adaptive = basis + effective_multiplier * standard_deviation
+lower_adaptive = basis - effective_multiplier * standard_deviation
+signal_upper = use_adaptive_multiplier == 1 and use_adaptive_signals == 1 ? upper_adaptive : upper_band
+signal_lower = use_adaptive_multiplier == 1 and use_adaptive_signals == 1 ? lower_adaptive : lower_band
+
+band_width = upper_band - lower_band
+width_rank = ta.percentrank(band_width, rank_length)
+normalized_slope = band_width == 0.0 ? 0.0 : (basis - basis[slope_length]) / band_width
+trend_gate = width_rank > trend_rank_minimum and math.abs(normalized_slope) > slope_threshold
+mean_reversion_gate = width_rank < 100.0 - trend_rank_minimum
+regime_ok = regime_mode == 0 or regime_mode == 1 and trend_gate or regime_mode == 2 and mean_reversion_gate
+[unused_plus, unused_minus, adx_value] = pine_dmi(14, 14)
+long_base = ta.crossover(close, signal_lower) and close > open and close > ta.ema(close, long_ema_length)
+short_base = ta.crossunder(close, signal_upper) and close < open and close < ta.ema(close, short_ema_length) and adx_value > minimum_short_adx
+long_signal = long_base and regime_ok
+
+next_bias = current_bias
+if current_bias == 0
+	next_bias := long_base ? 1 : short_base ? -1 : 0
+else if current_bias == 1 and short_base
+	next_bias := -1
+else if current_bias == -1 and long_base
+	next_bias := 1
+if next_bias != current_bias and next_bias != 0
+	if array.size(bias_history) >= bias_history_length
+		array.clear(bias_history)
+	array.push(bias_history, next_bias)
+current_bias := next_bias
+
+// Time segmentation is an optional published alternative to the ATR bracket.
+if use_time_exit == 1 and account.position_quantity() > 0.0 and not na(entry_bar)
+	bars_held = bar_index - entry_bar
+	profit_gate = not na(monthly_atr) and close - entry_price_state >= time_profit_gate_r * atr_stop_multiple * monthly_atr
+	time_exit_now = bars_held >= minimum_hold_bars and not profit_gate or bars_held >= minimum_hold_bars + profit_extension_bars
+	if time_exit_now
+		execution = fills.execute("BB time exit", broker.Side.sell, close, account.position_quantity(), fee_rate, tick_size, slippage_ticks, bar_index)
+		account.apply(execution)
+		active_stop := missing_float
+		active_target := missing_float
+		entry_price_state := missing_float
+		entry_bar := missing_int
+
+account.mark(close)
+
+// Keep the published long bias re-armed while flat. A marketable buy stop
+// fills on this close because this publication processes orders on close.
+want_long = current_bias == 1 and regime_ok and account.position_quantity() == 0.0
+if want_long
+	pending_long := true
+	pending_stop := signal_lower
+	if pending_stop <= close
+		buying_power = account.equity() * allocation_percent / 100.0
+		entry_price = close + tick_size * slippage_ticks
+		entry_quantity = math.min(account.buying_power(), buying_power) / (entry_price * (1.0 + fee_rate))
+		execution = fills.execute("BB long re-arm", broker.Side.buy, close, entry_quantity, fee_rate, tick_size, slippage_ticks, bar_index)
+		account.apply(execution)
+		entry_price_state := execution.price
+		entry_bar := bar_index
+		pending_long := false
+else if current_bias != 1
+	pending_long := false
+
+if account.position_quantity() > 0.0 and not na(monthly_atr)
+	long_stop_raw = entry_price_state - atr_stop_multiple * monthly_atr
+	break_even_on = close - entry_price_state >= break_even_r * atr_stop_multiple * monthly_atr
+	active_stop := break_even_on ? math.max(long_stop_raw, entry_price_state) : long_stop_raw
+	active_target := entry_price_state + atr_target_multiple * monthly_atr
+
+plot(close, "close")
+plot(basis, "BB basis")
+plot(upper_band, "BB upper")
+plot(lower_band, "BB lower")
+plot(use_adaptive_multiplier == 1 ? upper_adaptive : na, "BB upper adaptive")
+plot(use_adaptive_multiplier == 1 ? lower_adaptive : na, "BB lower adaptive")
+plot(monthly_atr, "confirmed monthly ATR")
+plot(long_signal ? 1.0 : 0.0, "long signal")
+plot(current_bias, "bias")
+plot(account.position_quantity(), "position quantity")
+plot(account.equity(), "equity")
+plot(account.realized_pnl(), "realized pnl")
+plot(account.total_fees(), "total fees")
+plot(account.fill_count(), "fill count")
+plot(account.round_trip_count(), "round trips")
+plot(account.max_drawdown(), "maximum drawdown")
+plot(account.total_return(), "total return")

@@ -24,6 +24,17 @@ describe('finite-or-na helpers', () => {
     expect(Number.isNaN(num(-Infinity))).toBe(true);
   });
 
+  test('$rangeNext stops zero, overflowing, and numerically stalled ranges', () => {
+    const next = helper<(x: number, step: number) => number>(
+      HELPERS.$rangeNext,
+    );
+    expect(next(1, 2)).toBe(3);
+    expect(next(3, -2)).toBe(1);
+    expect(Number.isNaN(next(1, 0))).toBe(true);
+    expect(Number.isNaN(next(Number.MAX_VALUE, Number.MAX_VALUE))).toBe(true);
+    expect(Number.isNaN(next(1e20, 1))).toBe(true);
+  });
+
   test('a non-finite Program constant fails at the lowering boundary', () => {
     const ctx: LowerCtx = {
       nameSlots: new Map(),

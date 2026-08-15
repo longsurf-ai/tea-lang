@@ -17,17 +17,17 @@ import {loadModule} from '../runtime/load';
 
 const SOURCE = join(
   import.meta.dir,
-  '../../testdata/requests/aggregate-result.tea',
+  '../../tests/fixtures/requests/aggregate-result.tea',
 );
 
 const CONTEXT_ORDER_SOURCE = join(
   import.meta.dir,
-  '../../testdata/requests/context-evaluation-order.tea',
+  '../../tests/fixtures/requests/context-evaluation-order.tea',
 );
 
 const MUTABLE_METHOD_SUSPENSION_SOURCE = join(
   import.meta.dir,
-  '../../testdata/requests/mutable-method-suspension.tea',
+  '../../tests/fixtures/requests/mutable-method-suspension.tea',
 );
 
 const PRIMARY = [

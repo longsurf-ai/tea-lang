@@ -4,6 +4,7 @@ import type {Pos} from '../../base/pos';
 import {formatPos} from '../../base/pos';
 import {fatal} from '../../base/print';
 import {paramSpecsOf} from '../params';
+import {generate} from '../codegen';
 import {
   GPU_ARTIFACT_ABI_VERSION,
   GPU_BUFFER_GROUP,
@@ -24,7 +25,6 @@ import {
   type WgslValueSchema,
 } from '../../gpu/contract';
 import {
-  DepthKind,
   IrKind,
   IrOp,
   PlaceKind,
@@ -111,6 +111,8 @@ const {
   effectCapacity: JOB_EFFECT_CAPACITY_OFFSET,
   chunkRows: JOB_CHUNK_ROWS_OFFSET,
   paramsOffset: JOB_PARAMS_OFFSET,
+  stateOffset: JOB_STATE_OFFSET,
+  stateWords: JOB_STATE_WORDS_OFFSET,
 } = GPU_JOB_DESCRIPTOR_OFFSETS;
 const F32_ABSOLUTE_TOLERANCE = 0.0001;
 const F32_RELATIVE_TOLERANCE = 0.00002;
@@ -329,7 +331,6 @@ class WgslEmitter {
           'varip execution is not part of the historical one-pass GPU subset',
         );
       }
-      this.requireStaticDepth(name.depth, `name '${name.name}'`);
       this.collectType(name.type);
     }
     for (const func of this.funcs) {
@@ -348,7 +349,6 @@ class WgslEmitter {
           `GPU numeric series '${series.id}' has unsupported type ${formatType(series.type)}`,
         );
       }
-      this.requireStaticDepth(series.depth, `series '${series.id}'`);
     }
     this.validateOutputs();
     this.validateCallGraph();
@@ -379,6 +379,10 @@ class WgslEmitter {
       target: 'webgpu-wgsl',
       numeric: WGSL_F32_NUMERIC_CONTRACT,
       module,
+      bindingModule: {
+        language: 'javascript-es2015-function-body',
+        source: generate(this.program),
+      },
       layouts: this.layouts,
       workgroupSize: [WORKGROUP_SIZE, 1, 1],
       externalBuffers: {
@@ -397,7 +401,7 @@ class WgslEmitter {
       parameterLayout: this.parameterLayout,
       parameterByteStride: this.layouts[this.parameterLayout].byteSize,
       executionStateLayout: this.executionStateLayout,
-      executionStateByteStride:
+      executionStateFixedByteSize:
         this.layouts[this.executionStateLayout].byteSize,
       state: this.stateManifest(),
       cache: this.cacheManifest(),
@@ -446,7 +450,7 @@ class WgslEmitter {
       initializedWordOffset: 0,
       nextRowWordOffset: 1,
       rootFrameWordOffset: 2,
-      wordsPerExecution: 2 + frames.root.wordCount,
+      fixedWordCount: 2 + frames.root.wordCount,
       frames: frames.templates.map(template => ({
         id: template.id,
         owner: template.ownerName,
@@ -456,13 +460,13 @@ class WgslEmitter {
         wordCount: template.wordCount,
         locals: template.locals.map(local => ({
           name: local.name.name,
+          slot: local.slot,
           storage: local.name.storage === 'perBar' ? 'perBar' : 'var',
           scratchWordOffset: local.scratchWordOffset,
           valueWordCount: local.valueWordCount,
           committedInitWordOffset: local.committedInitWordOffset,
           tentativeInitWordOffset: local.tentativeInitWordOffset,
-          historyWordOffset: local.historyWordOffset,
-          historyCapacity: local.historyCapacity,
+          historyDescriptorWordOffset: local.historyDescriptorWordOffset,
         })),
         children: template.children.map(child => ({
           slot: child.slot,
@@ -527,12 +531,8 @@ class WgslEmitter {
             local.tentativeInitWordOffset + 1,
           );
         }
-        if (local.historyWordOffset !== null) {
-          end = Math.max(
-            end,
-            local.historyWordOffset +
-              local.historyCapacity * local.valueWordCount,
-          );
+        if (local.historyDescriptorWordOffset !== null) {
+          end = Math.max(end, local.historyDescriptorWordOffset + 2);
         }
         const persistent = local.name.storage !== 'perBar';
         add(
@@ -541,8 +541,8 @@ class WgslEmitter {
           'local',
           frameBase + local.scratchWordOffset,
           end - local.scratchWordOffset,
-          persistent ? 4 : local.historyCapacity > 0 ? 2 : 1,
-          persistent ? 4 : local.historyCapacity > 0 ? 2 : 1,
+          persistent ? 4 : local.historyDescriptorWordOffset !== null ? 2 : 1,
+          persistent ? 4 : local.historyDescriptorWordOffset !== null ? 2 : 1,
         );
       });
       frame.children.forEach(child => {
@@ -568,9 +568,9 @@ class WgslEmitter {
       }
       storageEnd += segment.wordCount;
     }
-    if (storageEnd !== state.wordsPerExecution) {
+    if (storageEnd !== state.fixedWordCount) {
       fatal(
-        `WGSL cache segments cover ${storageEnd} words; state owns ${state.wordsPerExecution}`,
+        `WGSL cache segments cover ${storageEnd} words; fixed state owns ${state.fixedWordCount}`,
       );
     }
     let cacheEnd = 0;
@@ -615,24 +615,6 @@ class WgslEmitter {
     };
   }
 
-  private requireStaticDepth(
-    depth: Name['depth'] | SeriesInput['depth'],
-    owner: string,
-  ): void {
-    if (depth.kind === DepthKind.None) return;
-    if (
-      depth.kind === DepthKind.Const &&
-      Number.isSafeInteger(depth.bars) &&
-      depth.bars >= 0
-    ) {
-      return;
-    }
-    this.unsupported(
-      'history-layout-unimplemented',
-      `${owner} requires bind-computed or invalid history depth`,
-    );
-  }
-
   private collectFunctionTypes(func: IrFunc): void {
     if (func.callMode !== 'free') {
       this.collectType(func.receiver.type);
@@ -645,7 +627,6 @@ class WgslEmitter {
           'varip function locals are outside the historical GPU subset',
         );
       }
-      this.requireStaticDepth(name.depth, `function name '${name.name}'`);
     }
     this.collectType(func.resultType);
   }
@@ -860,17 +841,17 @@ class WgslEmitter {
       throw error;
     }
     const frames = this.frames;
-    const wordsPerExecution = 2 + frames.root.wordCount;
-    const executionStateByteSize = wordsPerExecution * 4;
+    const fixedWordsPerExecution = 2 + frames.root.wordCount;
+    const executionStateByteSize = fixedWordsPerExecution * 4;
     if (
-      !Number.isSafeInteger(wordsPerExecution) ||
-      wordsPerExecution > MAX_U32 ||
+      !Number.isSafeInteger(fixedWordsPerExecution) ||
+      fixedWordsPerExecution > MAX_U32 ||
       !Number.isSafeInteger(executionStateByteSize) ||
       executionStateByteSize > MAX_U32
     ) {
       this.unsupported(
         'history-layout-unimplemented',
-        `GPU execution history state requires ${wordsPerExecution} words (${executionStateByteSize} bytes), exceeding the u32 physical-layout limit`,
+        `GPU fixed execution state requires ${fixedWordsPerExecution} words (${executionStateByteSize} bytes), exceeding the u32 physical-layout limit`,
       );
     }
     const stateFields: WgslPhysicalField[] = [
@@ -913,6 +894,16 @@ class WgslEmitter {
           path: 'params_offset',
           scalar: 'u32',
           byteOffset: JOB_PARAMS_OFFSET,
+        },
+        {
+          path: 'state_offset',
+          scalar: 'u32',
+          byteOffset: JOB_STATE_OFFSET,
+        },
+        {
+          path: 'state_words',
+          scalar: 'u32',
+          byteOffset: JOB_STATE_WORDS_OFFSET,
         },
       ],
     );
@@ -1088,6 +1079,8 @@ class WgslEmitter {
       '  effect_capacity: u32,',
       '  chunk_rows: u32,',
       '  params_offset: u32,',
+      '  state_offset: u32,',
+      '  state_words: u32,',
       '}',
       'struct TeaResultCell { bits: u32, valid: u32, }',
       'struct TeaEffectStatus { count: u32, overflow: u32, first_overflow_row: u32, first_overflow_effect: u32, }',
@@ -1220,6 +1213,20 @@ class WgslEmitter {
       '  if (x.valid == 0u) { return TeaFloat(0u, 0.0); }',
       '  return tea_float(f32(x.value));',
       '}',
+      'fn tea_abs_f32(x: TeaFloat) -> TeaFloat {',
+      '  if (x.valid == 0u) { return TeaFloat(0u, 0.0); }',
+      '  return tea_float(abs(x.value));',
+      '}',
+      'fn tea_abs_i32(x: TeaInt) -> TeaInt {',
+      '  if (x.valid == 0u || x.value >= 0) { return x; }',
+      '  return TeaInt(1u, bitcast<i32>(0u - bitcast<u32>(x.value)));',
+      '}',
+      'fn tea_floor_f32(x: TeaFloat) -> TeaInt {',
+      '  if (x.valid == 0u) { return TeaInt(0u, 0); }',
+      '  let value = floor(x.value);',
+      '  if (value < -2147483648.0 || value >= 2147483648.0) { return TeaInt(0u, 0); }',
+      '  return TeaInt(1u, i32(value));',
+      '}',
       'fn tea_add_f32(x: TeaFloat, y: TeaFloat) -> TeaFloat {',
       '  if (x.valid == 0u || y.valid == 0u) { return TeaFloat(0u, 0.0); }',
       '  return tea_float(x.value + y.value);',
@@ -1252,6 +1259,32 @@ class WgslEmitter {
       '  if (x.valid == 0u || y.valid == 0u || y.value == 0) { return TeaInt(0u, 0); }',
       '  if (x.value == -2147483648 && y.value == -1) { return TeaInt(1u, -2147483648); }',
       '  return TeaInt(1u, x.value / y.value);',
+      '}',
+      'fn tea_range_next_f32(x: TeaFloat, step: TeaFloat) -> TeaFloat {',
+      '  let next = tea_add_f32(x, step);',
+      '  if (next.valid == 0u) { return next; }',
+      '  if ((step.value > 0.0 && next.value <= x.value) || (step.value < 0.0 && next.value >= x.value)) { return TeaFloat(0u, 0.0); }',
+      '  return next;',
+      '}',
+      'fn tea_range_next_i32(x: TeaInt, step: TeaInt) -> TeaInt {',
+      '  let next = tea_add_i32(x, step);',
+      '  if (next.valid == 0u) { return next; }',
+      '  if ((step.value > 0 && next.value <= x.value) || (step.value < 0 && next.value >= x.value)) { return TeaInt(0u, 0); }',
+      '  return next;',
+      '}',
+      'fn tea_range_advance_f32(word: u32, step: TeaFloat) -> TeaFloat {',
+      '  let current = TeaFloat(tea_state_load(word), bitcast<f32>(tea_state_load(word + 1u)));',
+      '  let next = tea_range_next_f32(current, step);',
+      '  tea_state_store(word, next.valid);',
+      '  tea_state_store(word + 1u, bitcast<u32>(next.value));',
+      '  return next;',
+      '}',
+      'fn tea_range_advance_i32(word: u32, step: TeaInt) -> TeaInt {',
+      '  let current = TeaInt(tea_state_load(word), bitcast<i32>(tea_state_load(word + 1u)));',
+      '  let next = tea_range_next_i32(current, step);',
+      '  tea_state_store(word, next.valid);',
+      '  tea_state_store(word + 1u, bitcast<u32>(next.value));',
+      '  return next;',
       '}',
       'fn tea_note_effect_overflow(execution_index: u32, row: u32, effect_id: u32) {',
       '  if (tea_effect_status[execution_index].overflow == 0u) {',
@@ -1301,21 +1334,24 @@ class WgslEmitter {
         );
         if (
           local.committedInitWordOffset === null ||
-          local.historyWordOffset === null ||
-          local.historyCapacity < 1
+          local.historyDescriptorWordOffset === null
         ) {
           return fatal(
             `persistent WGSL local '${local.name.name}' lacks state`,
           );
         }
+        const historyBase = `tea_history_base_${frame.id}_${local.scratchWordOffset}`;
+        const historyCapacity = `tea_history_capacity_${frame.id}_${local.scratchWordOffset}`;
         out.push(
-          `    if (tea_state_load(tea_frame_base + ${local.committedInitWordOffset}u) != 0u && tea_row > 0u) {`,
-          `      let tea_ring_${frame.id}_${local.scratchWordOffset}: u32 = (tea_row - 1u) % ${local.historyCapacity}u;`,
+          `    let ${historyBase}: u32 = tea_state_load(tea_frame_base + ${local.historyDescriptorWordOffset}u);`,
+          `    let ${historyCapacity}: u32 = tea_state_load(tea_frame_base + ${local.historyDescriptorWordOffset + 1}u);`,
+          `    if (tea_state_load(tea_frame_base + ${local.committedInitWordOffset}u) != 0u && tea_row > 0u && ${historyCapacity} > 0u) {`,
+          `      let tea_ring_${frame.id}_${local.scratchWordOffset}: u32 = (tea_row - 1u) % ${historyCapacity};`,
         );
         this.emitStateCopy(
           local.name.type,
           `tea_frame_base + ${local.scratchWordOffset}u`,
-          `tea_frame_base + ${local.historyWordOffset}u + tea_ring_${frame.id}_${local.scratchWordOffset} * ${local.valueWordCount}u`,
+          `tea_execution_state_base + ${historyBase} + tea_ring_${frame.id}_${local.scratchWordOffset} * ${local.valueWordCount}u`,
           out,
           3,
         );
@@ -1344,17 +1380,23 @@ class WgslEmitter {
             `    tea_state_store(tea_frame_base + ${local.committedInitWordOffset}u, tea_state_load(tea_frame_base + ${local.tentativeInitWordOffset}u));`,
           );
         }
-        if (local.historyWordOffset !== null && local.historyCapacity > 0) {
+        if (local.historyDescriptorWordOffset !== null) {
+          const historyBase = `tea_history_base_${frame.id}_${local.scratchWordOffset}`;
+          const historyCapacity = `tea_history_capacity_${frame.id}_${local.scratchWordOffset}`;
           out.push(
-            `    let tea_ring_${frame.id}_${local.scratchWordOffset}: u32 = tea_row % ${local.historyCapacity}u;`,
+            `    let ${historyBase}: u32 = tea_state_load(tea_frame_base + ${local.historyDescriptorWordOffset}u);`,
+            `    let ${historyCapacity}: u32 = tea_state_load(tea_frame_base + ${local.historyDescriptorWordOffset + 1}u);`,
+            `    if (${historyCapacity} > 0u) {`,
+            `      let tea_ring_${frame.id}_${local.scratchWordOffset}: u32 = tea_row % ${historyCapacity};`,
           );
           this.emitStateCopy(
             local.name.type,
-            `tea_frame_base + ${local.historyWordOffset}u + tea_ring_${frame.id}_${local.scratchWordOffset} * ${local.valueWordCount}u`,
+            `tea_execution_state_base + ${historyBase} + tea_ring_${frame.id}_${local.scratchWordOffset} * ${local.valueWordCount}u`,
             `tea_frame_base + ${local.scratchWordOffset}u`,
             out,
-            2,
+            3,
           );
+          out.push('    }');
         }
       }
       out.push('  }');
@@ -1430,6 +1472,7 @@ class WgslEmitter {
       frameBase: 'tea_frame_base',
       rootBase: 'tea_root_base',
       functionLocals,
+      loopDepth: 0,
       allowDenseEmit: false,
       allowEffect: true,
       executionIndex: 'tea_execution_index',
@@ -1507,6 +1550,7 @@ class WgslEmitter {
       '  let tea_execution_base: u32 = tea_execution_state_base;',
       `  let tea_root_base: u32 = tea_execution_base + ${state.rootFrameWordOffset}u;`,
       '  let tea_job = tea_jobs[tea_job_index];',
+      `  if (tea_job.state_offset != tea_execution_base || tea_job.state_words < ${state.fixedWordCount}u) { return; }`,
       '  if (tea_job.chunk_rows == 0u) { return; }',
       ...(this.outputCells.size === 0
         ? ['  if (tea_job.result_count != 0u) { return; }']
@@ -1536,6 +1580,7 @@ class WgslEmitter {
       frameBase: 'tea_root_base',
       rootBase: 'tea_root_base',
       functionLocals: new Map(),
+      loopDepth: 0,
       allowDenseEmit: true,
       allowEffect: true,
       executionIndex: 'tea_job_index',
@@ -1554,10 +1599,11 @@ class WgslEmitter {
       '}',
       `@compute @workgroup_size(${WORKGROUP_SIZE_OVERRIDE}, 1, 1)`,
       `fn ${STORAGE_ENTRY_POINT}(@builtin(global_invocation_id) tea_gid: vec3<u32>) {`,
-      `  tea_execution_state_base = tea_gid.x * ${state.wordsPerExecution}u;`,
+      '  if (tea_gid.x >= arrayLength(&tea_jobs)) { return; }',
+      '  let tea_job = tea_jobs[tea_gid.x];',
+      '  tea_execution_state_base = tea_job.state_offset;',
       '  tea_execution_cache_base = 0u;',
-      '  if (tea_execution_state_base > arrayLength(&tea_execution_states) || arrayLength(&tea_execution_states) - tea_execution_state_base < ' +
-        `${state.wordsPerExecution}u) { return; }`,
+      '  if (tea_execution_state_base > arrayLength(&tea_execution_states) || tea_job.state_words > arrayLength(&tea_execution_states) - tea_execution_state_base) { return; }',
       '  tea_execute(tea_gid.x);',
       '}',
       `@compute @workgroup_size(${WORKGROUP_SIZE_OVERRIDE}, 1, 1)`,
@@ -1565,10 +1611,11 @@ class WgslEmitter {
       '  @builtin(global_invocation_id) tea_gid: vec3<u32>,',
       '  @builtin(local_invocation_id) tea_local_id: vec3<u32>,',
       ') {',
-      `  tea_execution_state_base = tea_gid.x * ${state.wordsPerExecution}u;`,
+      '  if (tea_gid.x >= arrayLength(&tea_jobs)) { return; }',
+      '  let tea_job = tea_jobs[tea_gid.x];',
+      '  tea_execution_state_base = tea_job.state_offset;',
       `  tea_execution_cache_base = tea_local_id.x * ${CACHE_WORDS_OVERRIDE};`,
-      '  if (tea_execution_state_base > arrayLength(&tea_execution_states) || arrayLength(&tea_execution_states) - tea_execution_state_base < ' +
-        `${state.wordsPerExecution}u) { return; }`,
+      '  if (tea_execution_state_base > arrayLength(&tea_execution_states) || tea_job.state_words > arrayLength(&tea_execution_states) - tea_execution_state_base) { return; }',
       '  tea_cache_load();',
       '  tea_execute(tea_gid.x);',
       '  tea_cache_flush();',
@@ -1750,11 +1797,12 @@ class WgslEmitter {
           expr.pos,
         );
       case IrKind.ForExpr:
+        return this.emitFor(expr, ctx, out);
       case IrKind.ForInExpr:
       case IrKind.WhileExpr:
         return this.unsupported(
           'loop-lowering-unimplemented',
-          'Tea loops are outside the executable GPU subset',
+          'Tea collection and while loops are outside the executable GPU subset',
           expr.pos,
         );
       case IrKind.BlockExpr:
@@ -1762,6 +1810,75 @@ class WgslEmitter {
       default:
         return unreachableGpuExpr(expr);
     }
+  }
+
+  private emitFor(
+    expr: Extract<IrExpr, {kind: typeof IrKind.ForExpr}>,
+    ctx: WgslContext,
+    out: string[],
+  ): string {
+    const indexType = expr.index.type;
+    if (
+      (indexType.kind !== TypeKind.Int && indexType.kind !== TypeKind.Float) ||
+      !typesEqual(expr.from.type, indexType) ||
+      !typesEqual(expr.to.type, indexType) ||
+      (expr.step !== null && !typesEqual(expr.step.type, indexType))
+    ) {
+      return fatal('malformed numeric range reached GPU lowering');
+    }
+
+    // Tea evaluates range bounds exactly once, before the first iteration.
+    const result = this.fresh('range_result');
+    out.push(
+      `var ${result}: ${this.wgslType(expr.type)} = ${this.empty(expr.type)};`,
+    );
+    const from = this.capture(expr.from, ctx, out);
+    const to = this.capture(expr.to, ctx, out);
+    const step =
+      expr.step === null
+        ? indexType.kind === TypeKind.Int
+          ? 'TeaInt(1u, 1)'
+          : 'TeaFloat(1u, 1.0)'
+        : this.capture(expr.step, ctx, out);
+    const index = this.fresh('range_index');
+    const zero = indexType.kind === TypeKind.Int ? '0' : '0.0';
+    const next =
+      indexType.kind === TypeKind.Int
+        ? 'tea_range_advance_i32'
+        : 'tea_range_advance_f32';
+    const location = this.locateName(expr.index, ctx);
+    const indexWord = `${location.frameBase} + ${location.local.scratchWordOffset}u`;
+
+    const body: string[] = [];
+    const bodyValue = this.emitBlock(
+      expr.body,
+      {...ctx, loopDepth: ctx.loopDepth + 1},
+      body,
+    );
+    if (bodyValue !== null) {
+      body.push(
+        `${result} = ${this.coerce(
+          bodyValue,
+          expr.body.value?.type ?? expr.body.type,
+          expr.type,
+        )};`,
+      );
+    }
+
+    // A zero/invalid step starts no iterations. The update helper turns
+    // integer wrap, non-finite float addition, and f32 non-progress into an
+    // invalid index, so a data-dependent range cannot wedge a GPU dispatch.
+    this.emitCurrentNameStore(expr.index, from, ctx, out);
+    out.push(
+      `for (var ${index}: ${this.wgslType(indexType)} = ${from};`,
+      `  ${index}.valid != 0u && ${to}.valid != 0u && ${step}.valid != 0u &&`,
+      `  ((${step}.value > ${zero} && ${index}.value <= ${to}.value) ||`,
+      `   (${step}.value < ${zero} && ${index}.value >= ${to}.value));`,
+      `  ${index} = ${next}(${indexWord}, ${step})) {`,
+      ...indent(body, 1),
+      '}',
+    );
+    return result;
   }
 
   private emitBlock(
@@ -1924,12 +2041,25 @@ class WgslEmitter {
         return;
       }
       case IrKind.Break:
+        if (ctx.loopDepth < 1) {
+          this.unsupported(
+            'loop-lowering-unimplemented',
+            'break cannot appear outside a supported GPU loop',
+            stmt.pos,
+          );
+        }
+        out.push('break;');
+        return;
       case IrKind.Continue:
-        this.unsupported(
-          'loop-lowering-unimplemented',
-          'break/continue cannot appear outside a supported loop',
-          stmt.pos,
-        );
+        if (ctx.loopDepth < 1) {
+          this.unsupported(
+            'loop-lowering-unimplemented',
+            'continue cannot appear outside a supported GPU loop',
+            stmt.pos,
+          );
+        }
+        out.push('continue;');
+        return;
       default:
         return unreachableGpuStmt(stmt);
     }
@@ -2021,33 +2151,48 @@ class WgslEmitter {
     ctx: WgslContext,
     out: string[],
   ): string {
-    const offset = this.historyOffset(expr.offset, expr.pos);
+    const offset = this.historyOffset(expr.offset, expr.pos, ctx, out);
     if (offset === null) return this.empty(expr.type);
+    const dynamicOffset = typeof offset === 'number' ? null : offset.value;
+    const offsetValue =
+      typeof offset === 'number' ? `${offset}u` : this.fresh('history_offset');
+    const offsetValid =
+      typeof offset === 'number' ? 'true' : this.fresh('history_offset_valid');
+    if (dynamicOffset !== null) {
+      out.push(
+        `let ${offsetValid}: bool = ${dynamicOffset}.valid != 0u && ${dynamicOffset}.value >= 0;`,
+        `var ${offsetValue}: u32 = 0u;`,
+        `if (${offsetValid}) { ${offsetValue} = u32(${dynamicOffset}.value); }`,
+      );
+    }
     switch (expr.place.kind) {
       case PlaceKind.Name: {
         if (offset === 0) {
           return this.emitCurrentNameRead(expr.place.name, ctx);
         }
         const location = this.locateName(expr.place.name, ctx);
-        if (
-          location.local.historyWordOffset === null ||
-          location.local.historyCapacity < offset
-        ) {
+        if (location.local.historyDescriptorWordOffset === null) {
           return fatal(
-            `WGSL history layout for '${expr.place.name.name}' is shallower than offset ${offset}`,
+            `WGSL history layout for '${expr.place.name.name}' has no descriptor`,
           );
         }
         const result = this.fresh('history');
         const activation = this.fresh('activation');
+        const historyBase = this.fresh('history_base');
+        const historyCapacity = this.fresh('history_capacity');
         const ring = this.fresh('ring');
         out.push(
           `var ${result}: ${this.wgslType(expr.type)} = ${this.empty(expr.type)};`,
           `let ${activation}: u32 = tea_state_load(${location.frameBase} + ${location.frame.committedActivationWordOffset}u);`,
-          `if (${activation} != 0u && ${ctx.row} + 1u >= ${activation} + ${offset}u) {`,
-          `  let ${ring}: u32 = (${ctx.row} - ${offset}u) % ${location.local.historyCapacity}u;`,
+          `let ${historyBase}: u32 = tea_state_load(${location.frameBase} + ${location.local.historyDescriptorWordOffset}u);`,
+          `let ${historyCapacity}: u32 = tea_state_load(${location.frameBase} + ${location.local.historyDescriptorWordOffset + 1}u);`,
+          `if (${offsetValid} && ${offsetValue} == 0u) {`,
+          `  ${result} = ${this.emitCurrentNameRead(expr.place.name, ctx)};`,
+          `} else if (${offsetValid} && ${offsetValue} <= ${historyCapacity} && ${historyCapacity} > 0u && ${activation} != 0u && ${ctx.row} + 1u >= ${activation} + ${offsetValue}) {`,
+          `  let ${ring}: u32 = (${ctx.row} - ${offsetValue}) % ${historyCapacity};`,
           `  ${result} = ${this.emitStateLoad(
             expr.place.name.type,
-            `${location.frameBase} + ${location.local.historyWordOffset}u + ${ring} * ${location.local.valueWordCount}u`,
+            `tea_execution_state_base + ${historyBase} + ${ring} * ${location.local.valueWordCount}u`,
           )};`,
           '}',
         );
@@ -2066,15 +2211,15 @@ class WgslEmitter {
         } else {
           out.push(
             `var ${result}: TeaFloat = TeaFloat(0u, 0.0);`,
-            `if (${ctx.row} >= ${offset}u) {`,
-            `  ${result} = tea_float(tea_series[${ctx.job}.series_offset + ${ordinal}u * ${ctx.job}.row_count + ${ctx.row} - ${offset}u]);`,
+            `if (${offsetValid} && ${ctx.row} >= ${offsetValue}) {`,
+            `  ${result} = tea_float(tea_series[${ctx.job}.series_offset + ${ordinal}u * ${ctx.job}.row_count + ${ctx.row} - ${offsetValue}]);`,
             '}',
           );
         }
         return result;
       }
       case PlaceKind.Execution:
-        if (offset > 0) {
+        if (offset !== 0) {
           return this.unsupported(
             'history-layout-unimplemented',
             'historical execution-input reads are outside the current GPU subset',
@@ -2090,15 +2235,20 @@ class WgslEmitter {
           return fatal(`unmapped GPU parameter '${expr.place.param.name}'`);
         }
         const bits = `tea_params[${ctx.job}.params_offset + ${pid}u]`;
+        let value: string;
         switch (expr.place.param.type.kind) {
           case TypeKind.Int:
-            return `TeaInt(1u, bitcast<i32>(${bits}))`;
+            value = `TeaInt(1u, bitcast<i32>(${bits}))`;
+            break;
           case TypeKind.Float:
-            return `TeaFloat(1u, bitcast<f32>(${bits}))`;
+            value = `TeaFloat(1u, bitcast<f32>(${bits}))`;
+            break;
           case TypeKind.Bool:
-            return bits;
+            value = bits;
+            break;
           case TypeKind.Enum:
-            return `TeaEnum(1u, ${bits})`;
+            value = `TeaEnum(1u, ${bits})`;
+            break;
           default:
             return this.unsupported(
               'parameter-packing-unimplemented',
@@ -2106,6 +2256,13 @@ class WgslEmitter {
               expr.pos,
             );
         }
+        if (typeof offset === 'number') return value;
+        const result = this.fresh('param_history');
+        out.push(
+          `var ${result}: ${this.wgslType(expr.type)} = ${this.empty(expr.type)};`,
+          `if (${offsetValid}) { ${result} = ${value}; }`,
+        );
+        return result;
       }
       case PlaceKind.Request:
         return this.unsupported(
@@ -2118,14 +2275,18 @@ class WgslEmitter {
     }
   }
 
-  private historyOffset(offset: IrExpr | null, pos: Pos): number | null {
+  private historyOffset(
+    offset: IrExpr | null,
+    pos: Pos,
+    ctx: WgslContext,
+    out: string[],
+  ): number | {readonly value: string} | null {
     if (offset === null) return 0;
     if (offset.kind !== IrKind.Const) {
-      return this.unsupported(
-        'history-layout-unimplemented',
-        'GPU history offsets require a non-negative const int',
-        pos,
-      );
+      if (offset.type.kind !== TypeKind.Int) {
+        return fatal('GPU history offset is not int');
+      }
+      return {value: this.capture(offset, ctx, out)};
     }
     if (
       offset.type.kind !== TypeKind.Int ||
@@ -2274,6 +2435,64 @@ class WgslEmitter {
       const result = this.fresh();
       out.push(
         `let ${result}: TeaFloat = ${this.coerce(values[0], args[0].type, resultType)};`,
+      );
+      return result;
+    }
+    if (native === 'math.abs') {
+      if (
+        args.length !== 1 ||
+        (resultType.kind !== TypeKind.Int && resultType.kind !== TypeKind.Float)
+      ) {
+        return fatal('malformed math.abs call reached GPU lowering');
+      }
+      const value = this.coerce(values[0], args[0].type, resultType);
+      const result = this.fresh();
+      const helper =
+        resultType.kind === TypeKind.Int ? 'tea_abs_i32' : 'tea_abs_f32';
+      out.push(
+        `let ${result}: ${this.wgslType(resultType)} = ${helper}(${value});`,
+      );
+      return result;
+    }
+    if (native === 'math.floor') {
+      if (args.length !== 1 || resultType.kind !== TypeKind.Int) {
+        return fatal('malformed math.floor call reached GPU lowering');
+      }
+      const result = this.fresh();
+      if (args[0].type.kind === TypeKind.Int) {
+        out.push(`let ${result}: TeaInt = ${values[0]};`);
+      } else if (args[0].type.kind === TypeKind.Float) {
+        out.push(`let ${result}: TeaInt = tea_floor_f32(${values[0]});`);
+      } else {
+        return fatal('non-numeric math.floor argument reached GPU lowering');
+      }
+      return result;
+    }
+    if (native === 'math.max' || native === 'math.min') {
+      if (
+        args.length < 2 ||
+        (resultType.kind !== TypeKind.Int && resultType.kind !== TypeKind.Float)
+      ) {
+        return fatal(`malformed ${native} call reached GPU lowering`);
+      }
+      const coerced = values.map((value, index) =>
+        this.coerce(value, args[index].type, resultType),
+      );
+      const valid = coerced
+        .map(value => this.validity(value, resultType))
+        .join(' && ');
+      const builtin = native === 'math.max' ? 'max' : 'min';
+      const payload = coerced
+        .map(value => this.payload(value, resultType))
+        .reduce((left, right) => `${builtin}(${left}, ${right})`);
+      const result = this.fresh();
+      const present =
+        resultType.kind === TypeKind.Float
+          ? `tea_float(${payload})`
+          : `TeaInt(1u, ${payload})`;
+      out.push(
+        `var ${result}: ${this.wgslType(resultType)} = ${this.empty(resultType)};`,
+        `if (${valid}) { ${result} = ${present}; }`,
       );
       return result;
     }
@@ -2901,6 +3120,7 @@ interface WgslContext {
   readonly frameBase: string;
   readonly rootBase: string;
   readonly functionLocals: ReadonlyMap<Name, string>;
+  readonly loopDepth: number;
   readonly allowDenseEmit: boolean;
   readonly allowEffect: boolean;
   readonly executionIndex: string;

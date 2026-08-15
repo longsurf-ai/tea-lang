@@ -152,30 +152,37 @@ The same `IrFunc` may therefore execute against many independent frame bases.
 Frame layout is derived from Program identity and slots; runtime never
 reconstructs it.
 
-## 5. GPU state arena
+## 5. GPU execution state
 
 Each execution receives one aligned range in the existing read-write state
 buffer. The buffer is word-addressed and its layout is published by the WGSL
 artifact.
 
 ```text
-Execution state arena
+Execution state range
   execution header: initialized, next row
   committed/tentative frame activation epochs
   persistent-slot initialization bits
   current scratch cells needed across calls
-  committed history cells
+  history descriptors
+  binding-sized committed history payloads
 ```
 
-Each slot owns one scratch cell plus `keep` committed cells:
+Each slot owns one scratch cell. A history-bearing slot also owns a two-word
+descriptor in the fixed frame prefix; its concrete `keep` cells are allocated
+after bind:
 
 ```text
-perBar / receiver / parameter: keep = constant history depth
-var / varip:                   keep = max(constant history depth, 1)
+perBar / receiver / parameter: keep = resolved history depth
+var:                           keep = max(resolved history depth, 1)
 ```
 
-The initial constant-depth layout is bind-independent and uses that capacity
-for every execution; it is not shrunk to a particular execution's row count.
+The fixed frame topology and descriptor positions are bind-independent. The
+artifact also embeds the ordinary generated JS binding module; the GPU runtime
+runs its provisional bind phase exactly as CPU does, then allocates each
+execution's history payload from the reported depths, clamped to that
+execution's row count. The runtime never rereads Program or evaluates a second
+history expression.
 The root frame is durably active from execution initialization with epoch row
 zero. Each child frame retains committed/tentative activation state and its
 activation epoch. Under fixed cadence, the absolute `next_row` plus activation
@@ -185,13 +192,13 @@ available committed rows is typed empty even when physical capacity exists. A
 provider-series read checks `absolute_row >= offset` before subtracting the
 unsigned row index.
 
-The initial fixed-layout slice supports:
+The fixed-prefix plus bind-sized payload model supports:
 
 - free functions and const/mutable methods;
 - scalar, enum, color, string-literal, and fixed user-value layouts already
   supported by WGSL;
 - persistent `var` locals;
-- constant-depth history on Names and function parameters;
+- constant, bound, and capped history on Names and function parameters;
 - direct provider-series history;
 - fixed cadence, multi-chunk resume, and multiple independent executions.
 
@@ -274,25 +281,23 @@ device limits.
 Workgroup caching is an optional optimization after storage-only temporal
 execution is correct. It cannot gate the canonical `ta.*` proof.
 
-## 7. Later depth forms
+## 7. Bind-resolved depth forms
 
-Constant depth lands first because it enables `ta.ema`, `ta.crossover`, and
-`ta.crossunder` and fixes the architectural seam without binding data entering
-codegen.
-
-The same arena then extends to:
+Constant depth first enabled `ta.ema`, `ta.crossover`, and `ta.crossunder`.
+Artifact ABI v2 extends the same frame topology to:
 
 - `Bound`: runtime evaluates the bind-known expression per execution and
   allocates the resolved ring capacity;
 - `Capped`: runtime allocates the bound and generated reads validate the
   current dynamic offset against it;
-- heterogeneous execution sizes as an optional later optimization: descriptors
-  carry `state_offset` and `state_words`, and runtime may shrink capacities to
-  an execution's row count while session sizing sums checked arenas.
+- heterogeneous execution sizes: descriptors carry `state_offset` and
+  `state_words`, runtime shrinks capacities to an execution's row count, and
+  session sizing sums checked state ranges.
 
-The artifact owns the resolver schema. The GPU runtime may evaluate only the
-published bind-time expression contract; it may not inspect Tea source or
-infer history from WGSL text.
+The artifact owns the resolver executable: the same generated JS `init`/`bind`
+module used by CPU. The GPU runtime may execute only that published binding
+module; it may not inspect Tea source, walk Program, infer history from WGSL
+text, or maintain a parallel evaluator.
 
 ## 8. Implementation sequence
 
@@ -324,11 +329,11 @@ the backend.
 ### Stage C — session state and chunk resume ✅
 
 - Publish state layout/stride in the artifact.
-- Allocate/validate the flat state arena in `createGpuExecution`.
+- Allocate/validate the flat execution-state ranges in `createGpuExecution`.
 - Carry state over multiple `runChunk` calls and preserve absolute row
   semantics.
 - Decode no state on the host during normal execution.
-- Use checked arithmetic for every arena sum/product and validate
+- Use checked arithmetic for every state sum/product and validate
   `maxBufferSize`, `maxStorageBufferBindingSize`, and related device limits
   before allocation. If one session cannot fit, fail with an actionable
   resource error in this slice; automatic partitioning is a later scheduler
@@ -339,7 +344,7 @@ parameters and row counts across forced one-row chunks.
 
 ### Stage D — canonical example and storage-only proof ✅
 
-- Rewrite `examples/ema-cross-strategy.tea` to ordinary `ta.*` calls.
+- Rewrite `examples/strategy/ema-cross/strategy.tea` to ordinary `ta.*` calls.
 - Remove the hand-written EMA UDT and `previous_spread` workaround.
 - Run CPU/GPU parity on the checked-in fixture.
 - Force one-row chunks and multiple executions with different parameters and
@@ -411,6 +416,28 @@ Gate complete: the public summary reports preparation, encode/submit,
 GPU-completion-plus-readback, decode/publication, cache placement, and total
 execution separately. Pure kernel time is not claimed without timestamp
 queries.
+
+### Stage G — bind-sized history and numeric ranges ✅
+
+- Bump the physical artifact to ABI v2 and publish the ordinary generated JS
+  binding module alongside WGSL.
+- Reuse `JSRuntime`'s provisional bind phase to resolve history capacities for
+  every concrete binding, then pack per-job state offsets, word counts, and
+  relative history descriptors.
+- Keep only the fixed frame prefix eligible for workgroup caching; history
+  payloads remain authoritative storage.
+- Lower finite numeric ranges with compile-, bind-, or row-time bounds without
+  an arbitrary trip-count ceiling. Keep effect transport sizing as a separate
+  proof obligation.
+- Lower nullable `math.abs`, `math.max`, `math.min`, and `math.floor` under the
+  declared WGSL numeric profile.
+- Remove TradingView's generic date-window UI from the Turtle strategy and run
+  its equivalent 36-binding WebGPU and JS/f64 grids.
+
+Gate complete: focused bind/layout tests cover heterogeneous capacities and
+malformed sidecars; real Dawn runs two Turtle bindings with different ATR and
+channel depths across multiple chunks, and the checked-in 36-binding Turtle
+config completes on WebGPU.
 
 ## 9. Required regression matrix
 

@@ -11,7 +11,7 @@ All execution and accounting policy is Tea source compiled into the same
 
 ## 1. Read the strategy
 
-The runnable source is `examples/strategy-cpu-gpu.tea`:
+The runnable source is `examples/strategy/cpu-gpu-next-open/strategy.tea`:
 
 ```tea
 //@version=1
@@ -58,7 +58,7 @@ because their policy is part of the program, not a platform setting.
 
 ## 2. Read the bars
 
-`examples/strategy-bars.csv` contains:
+`examples/data/demo/strategy-bars.csv` contains:
 
 ```csv
 open,close
@@ -74,8 +74,8 @@ so the last `end` expires order id `3`.
 ## 3. Run it
 
 ```sh
-tea run examples/strategy-cpu-gpu.tea \
-  --input examples/strategy-bars.csv
+tea run examples/strategy/cpu-gpu-next-open/strategy.tea \
+  --input examples/data/demo/strategy-bars.csv
 ```
 
 `run` uses the JavaScript CPU target by default. It prints system statistics,
@@ -83,8 +83,8 @@ effective parameters, the complete dense table, and typed sparse effects.
 Source parameters become CLI options after compilation:
 
 ```sh
-tea run examples/strategy-cpu-gpu.tea \
-  --input examples/strategy-bars.csv \
+tea run examples/strategy/cpu-gpu-next-open/strategy.tea \
+  --input examples/data/demo/strategy-bars.csv \
   --slippage 0 --fee 0 --initial_cash 100
 ```
 
@@ -104,8 +104,8 @@ tea execute <config> [--view|--trace]
 For example, the repository includes a real Binance Spot BTCUSDT daily sweep:
 
 ```sh
-tea execute examples/ema-cross-sweep.yaml
-tea execute examples/ema-cross-sweep.yaml --view
+tea execute examples/strategy/ema-cross/sweep.yaml
+tea execute examples/strategy/ema-cross/sweep.yaml --view
 ```
 
 The configuration is ordinary YAML (JSON is also accepted):
@@ -114,7 +114,7 @@ The configuration is ordinary YAML (JSON is also accepted):
 schema: tea.execution/v1
 
 program:
-  source: ./ema-cross-strategy.tea
+  source: ./strategy.tea
 
 runtime:
   kind: webgpu
@@ -123,7 +123,7 @@ execution:
   kind: sweep
   provider:
     kind: csv
-    path: ./binance-btcusdt-1d.csv
+    path: ../../data/binance/btcusdt-1d.csv
     sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
   parameters:
     fast_length:
@@ -163,7 +163,7 @@ Both `program.source` and `execution.provider.path` resolve relative to the
 configuration file's directory, not the process working directory. An
 optional provider `sha256` is checked against the exact file bytes before
 strict UTF-8 decoding. This makes the example refer to the precise checked-in
-Binance snapshot recorded in `examples/binance-btcusdt-1d.source.json`.
+Binance snapshot recorded in `examples/data/binance/btcusdt-1d.source.json`.
 
 `execution.parameters` accepts scalar numbers, strings, and booleans. Omitted
 parameters keep their Tea source defaults. A numeric sweep axis uses the
@@ -263,20 +263,20 @@ strategy library can define a different explicit lifecycle.
 uses GPU by default. `--cpu` runs the same binding list through JavaScript:
 
 ```sh
-tea sweep examples/strategy-cpu-gpu.tea \
-  --input examples/strategy-bars.csv \
+tea sweep examples/strategy/cpu-gpu-next-open/strategy.tea \
+  --input examples/data/demo/strategy-bars.csv \
   --slippage 0:0.2:0.1 --fee 0 --initial_cash 100
 
-tea sweep examples/strategy-cpu-gpu.tea \
-  --input examples/strategy-bars.csv \
+tea sweep examples/strategy/cpu-gpu-next-open/strategy.tea \
+  --input examples/data/demo/strategy-bars.csv \
   --slippage 0:0.2:0.1 --fee 0 --initial_cash 100 --cpu
 ```
 
 Add `--view` when at least two parameters use range syntax:
 
 ```sh
-tea sweep examples/strategy-cpu-gpu.tea \
-  --input examples/strategy-bars.csv \
+tea sweep examples/strategy/cpu-gpu-next-open/strategy.tea \
+  --input examples/data/demo/strategy-bars.csv \
   --slippage 0:0.2:0.1 --fee 0:0.2:0.1 \
   --initial_cash 100 --view
 ```
@@ -303,7 +303,7 @@ CDN.
 See [Strategy model](../strategy.md) for the normative source contract and
 [GPU Lowering](../advanced/gpu-lowering.md) for the target boundary.
 
-For a fuller signal-driven example, `examples/ema-cross-strategy.tea` uses
+For a fuller signal-driven example, `examples/strategy/ema-cross/strategy.tea` uses
 `ta.ema`, `ta.crossover`, and `ta.crossunder` directly, trades the signals with
 next-open execution, and runs unchanged through the checked-in `tea execute`
 configuration or the compatible `tea run`, `tea run --gpu`, and `tea sweep`

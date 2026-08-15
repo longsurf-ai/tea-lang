@@ -2,7 +2,7 @@
 
 import type {EffectSpec, ParamSpec} from '../runtime/schema';
 
-export const GPU_ARTIFACT_ABI_VERSION = 1 as const;
+export const GPU_ARTIFACT_ABI_VERSION = 2 as const;
 
 export const GPU_BUFFER_GROUP = 0;
 export const GPU_EXTERNAL_BUFFER_BINDINGS = Object.freeze({
@@ -15,7 +15,7 @@ export const GPU_EXTERNAL_BUFFER_BINDINGS = Object.freeze({
   params: 6,
 });
 
-export const GPU_JOB_DESCRIPTOR_BYTE_STRIDE = 32;
+export const GPU_JOB_DESCRIPTOR_BYTE_STRIDE = 40;
 export const GPU_JOB_DESCRIPTOR_OFFSETS = Object.freeze({
   seriesOffset: 0,
   rowCount: 4,
@@ -25,11 +25,13 @@ export const GPU_JOB_DESCRIPTOR_OFFSETS = Object.freeze({
   effectCapacity: 20,
   chunkRows: 24,
   paramsOffset: 28,
+  stateOffset: 32,
+  stateWords: 36,
 });
 
 export const GPU_SERIES_SCALAR_BYTE_STRIDE = 4;
 export const GPU_PARAMETER_BYTE_STRIDE = 4;
-export const GPU_EXECUTION_STATE_MIN_BYTE_STRIDE = 8;
+export const GPU_EXECUTION_STATE_MIN_BYTE_SIZE = 8;
 export const GPU_RESULT_CELL_BYTE_STRIDE = 8;
 export const GPU_EFFECT_STATUS_BYTE_STRIDE = 16;
 
@@ -67,6 +69,13 @@ export interface WgslModule {
   readonly language: 'wgsl';
   readonly source: string;
   readonly entryPoint: string;
+}
+
+export interface WgslBindingModule {
+  readonly language: 'javascript-es2015-function-body';
+  // The ordinary generated JS module. GPU binding runs its exact init/bind
+  // sections through the shared provisional-frame JSRuntime path.
+  readonly source: string;
 }
 
 export type WgslResultScalar = 'float' | 'int' | 'bool' | 'enum';
@@ -150,13 +159,18 @@ export interface WgslEffectSchema {
 
 export interface WgslStateLocalLayout {
   readonly name: string;
+  // Slot in the generated JS frame manifest. WGSL may elide history-free
+  // formals, so this is not necessarily the local's index below.
+  readonly slot: number;
   readonly storage: 'perBar' | 'var';
   readonly scratchWordOffset: number;
   readonly valueWordCount: number;
   readonly committedInitWordOffset: number | null;
   readonly tentativeInitWordOffset: number | null;
-  readonly historyWordOffset: number | null;
-  readonly historyCapacity: number;
+  // Two fixed words containing the binding-specific history payload offset
+  // (relative to the execution state) and capacity. Null means no retained
+  // history exists for this local.
+  readonly historyDescriptorWordOffset: number | null;
 }
 
 export interface WgslStateFrameLayout {
@@ -211,6 +225,7 @@ export interface CompiledWgslProgram {
   readonly target: 'webgpu-wgsl';
   readonly numeric: WgslNumericContract;
   readonly module: WgslModule;
+  readonly bindingModule: WgslBindingModule;
   readonly layouts: readonly WgslPhysicalLayout[];
   readonly workgroupSize: readonly [number, number, number];
   readonly externalBuffers: {
@@ -234,18 +249,22 @@ export interface CompiledWgslProgram {
     readonly effectCapacity: number;
     readonly chunkRows: number;
     readonly paramsOffset: number;
+    readonly stateOffset: number;
+    readonly stateWords: number;
   };
   readonly parameterLayout: number;
   readonly parameterByteStride: number;
   readonly seriesScalarLayout: number;
   readonly seriesScalarByteStride: number;
   readonly executionStateLayout: number;
-  readonly executionStateByteStride: number;
+  // Header, frame activations, scratch, init flags, and history descriptors.
+  // History payloads follow this fixed region and are sized per binding.
+  readonly executionStateFixedByteSize: number;
   readonly state: {
     readonly initializedWordOffset: 0;
     readonly nextRowWordOffset: 1;
     readonly rootFrameWordOffset: 2;
-    readonly wordsPerExecution: number;
+    readonly fixedWordCount: number;
     readonly frames: readonly WgslStateFrameLayout[];
   };
   readonly cache: WgslCacheContract;

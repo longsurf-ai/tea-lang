@@ -12,7 +12,7 @@ import {BindError, RequestError, type DataProvider, type Value} from './abi';
 import {bind} from './js-runtime';
 import {loadModule} from './load';
 
-const TESTDATA = join(import.meta.dir, '../../testdata');
+const TESTDATA = join(import.meta.dir, '../../tests/fixtures');
 const UPDATE = process.env['UPDATE_GOLDENS'] === '1';
 
 async function runSource(
@@ -439,6 +439,60 @@ describe('hand-checked vectors', () => {
       seriesCsv([1]),
     );
     expect(lines.slice(1)).toEqual(['0 0 3']);
+  });
+
+  test('numeric ranges evaluate bounds once and terminate without a trip cap', async () => {
+    const lines = await runSource(
+      [
+        'indicator("range semantics")',
+        'type Counter',
+        '    int calls',
+        '    int mark(int value) =>',
+        '        this.calls := this.calls + 1',
+        '        value',
+        'var Counter counter = Counter.new(0)',
+        'positive = for i = counter.mark(1) to counter.mark(5) by counter.mark(1)',
+        '    if i == 2',
+        '        continue',
+        '    if i == 4',
+        '        break',
+        '    i * 10',
+        'defaulted = for i = 1 to 3',
+        '    i',
+        'negative = for i = 3 to 1 by -1',
+        '    i',
+        'mutatedCount = 0',
+        'for i = 0 to 10',
+        '    mutatedCount += 1',
+        '    if i == 1',
+        '        i := 8',
+        'zero = input.int(0)',
+        'empty = for i = 1 to 3 by zero',
+        '    i',
+        'stalled = for i = 100000000000000000000.0 to 100000000000000000000.0 by 1.0',
+        '    i',
+        'plot(positive)',
+        'plot(defaulted)',
+        'plot(negative)',
+        'plot(mutatedCount)',
+        'plot(empty)',
+        'plot(stalled)',
+        'plot(counter.calls)',
+        'plot(close)',
+      ].join(chr10()),
+      seriesCsv([1]),
+    );
+
+    expect(lines.filter(line => !line.startsWith('#'))).toEqual([
+      '0 1 30',
+      '0 2 3',
+      '0 3 1',
+      '0 4 4',
+      '0 5 na',
+      '0 6 100000000000000000000',
+      '0 7 3',
+      '0 8 1',
+    ]);
   });
 
   test('an active skipped frame advances parameter history by bar', async () => {

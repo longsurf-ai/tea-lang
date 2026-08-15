@@ -50,8 +50,9 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   graph in each Program context. Each stateful call site's `SlotId` selects a
   sub-frame in the caller's frame; the frame tree is statically enumerable
   from the call graph. Backends choose its physical representation: JS may
-  materialize child frames lazily, while WGSL reserves a static execution
-  arena. The topology is identical for user functions and Tea prelude code.
+  materialize child frames lazily, while WGSL uses a fixed frame prefix plus
+  bind-sized history payloads. The topology is identical for user functions
+  and Tea prelude code.
 - Free functions, const methods, and mutable methods are an exhaustive
   Program union. A method owns one hidden receiver Name separate from every
   source-visible param; const calls carry no writeback path, while mutable

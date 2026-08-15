@@ -1,0 +1,315 @@
+//@version=1
+// Clean-room historical CPU implementation derived from the public VWAP Suite.
+// The signed account keeps the publication's symmetric long/short paths.
+strategy("VWAP Suite", shorttitle="VWAP Suite", overlay=true)
+
+import broker
+
+// Keep the selected Pine smoothing contract explicit and self-contained in
+// this historical profile.
+pine_rma(float source, int length) =>
+	seed = ta.sma(source, length)
+	var float value = na
+	if na(value)
+		value := seed
+	else
+		value := (value * (length - 1.0) + source) / length
+	value
+
+pine_atr(int length) =>
+	previous_close = close[1]
+	true_range = na(previous_close) ? high - low : math.max(high - low, math.max(math.abs(high - previous_close), math.abs(low - previous_close)))
+	pine_rma(true_range, length)
+
+pine_rsi(float source, int length) =>
+	delta = source - source[1]
+	average_gain = pine_rma(math.max(delta, 0.0), length)
+	average_loss = pine_rma(math.max(-delta, 0.0), length)
+	average_loss == 0.0 ? 100.0 : average_gain == 0.0 ? 0.0 : 100.0 - 100.0 / (1.0 + average_gain / average_loss)
+
+pine_dmi(int diLength, int adxSmoothing) =>
+	up_move = high - high[1]
+	down_move = low[1] - low
+	previous_close = close[1]
+	true_range = na(previous_close) ? high - low : math.max(high - low, math.max(math.abs(high - previous_close), math.abs(low - previous_close)))
+	smoothed_range = pine_rma(true_range, diLength)
+	raw_plus = 100.0 * pine_rma(up_move > down_move and up_move > 0.0 ? up_move : 0.0, diLength) / smoothed_range
+	raw_minus = 100.0 * pine_rma(down_move > up_move and down_move > 0.0 ? down_move : 0.0, diLength) / smoothed_range
+	var float plus = na
+	var float minus = na
+	plus := na(raw_plus) ? plus : raw_plus
+	minus := na(raw_minus) ? minus : raw_minus
+	sum = plus + minus
+	adx = 100.0 * pine_rma(math.abs(plus - minus) / (sum == 0.0 ? 1.0 : sum), adxSmoothing)
+	[plus, minus, adx]
+
+type DirectionalAccount
+	float initialCash
+	float cashValue
+	float quantityValue = 0.0
+	float averagePrice = na
+	float entryFees = 0.0
+	float equityValue
+	float peakEquity
+	float maxDrawdownValue = 0.0
+	float realizedPnlValue = 0.0
+	float totalFeesValue = 0.0
+	int fillCountValue = 0
+	int roundTripsValue = 0
+	int nextOrderId = 1
+	int nextFillId = 1
+
+	float emit_fill(string commandId, broker.Side side, float referencePrice, float quantity, float feeRate, float slippageRate, int fillBar) =>
+		isBuy = side == broker.Side.buy
+		price = referencePrice * (isBuy ? 1.0 + slippageRate : 1.0 - slippageRate)
+		notional = quantity * price
+		fee = notional * feeRate
+		orderId = this.nextOrderId
+		fillId = this.nextFillId
+		this.nextOrderId := orderId + 1
+		this.nextFillId := fillId + 1
+		this.fillCountValue := this.fillCountValue + 1
+		this.totalFeesValue := this.totalFeesValue + fee
+		execution = broker.Fill.new(fillId, orderId, commandId, side, fillBar, referencePrice, price, quantity, notional, fee)
+		effect.emit(broker.FillExecuted.new(execution))
+		price
+
+	float open_position(int direction, float referencePrice, float requestedQuantity, float feeRate, float slippageRate, int fillBar) =>
+		side = direction == 1 ? broker.Side.buy : broker.Side.sell
+		estimatedPrice = referencePrice * (direction == 1 ? 1.0 + slippageRate : 1.0 - slippageRate)
+		capacity = direction == 1 ? this.cashValue / (estimatedPrice * (1.0 + feeRate)) : requestedQuantity
+		quantity = this.quantityValue == 0.0 ? math.max(0.0, math.min(requestedQuantity, capacity)) : 0.0
+		if quantity > 0.0
+			price = this.emit_fill(direction == 1 ? "VWAP long open" : "VWAP short open", side, referencePrice, quantity, feeRate, slippageRate, fillBar)
+			notional = quantity * price
+			fee = notional * feeRate
+			this.cashValue := direction == 1 ? this.cashValue - notional - fee : this.cashValue + notional - fee
+			this.quantityValue := direction * quantity
+			this.averagePrice := price
+			this.entryFees := fee
+		quantity
+
+	float close_position(float referencePrice, float feeRate, float slippageRate, int fillBar) =>
+		direction = this.quantityValue > 0.0 ? 1 : -1
+		quantity = math.abs(this.quantityValue)
+		if quantity > 0.0
+			side = direction == 1 ? broker.Side.sell : broker.Side.buy
+			price = this.emit_fill(direction == 1 ? "VWAP long close" : "VWAP short cover", side, referencePrice, quantity, feeRate, slippageRate, fillBar)
+			notional = quantity * price
+			fee = notional * feeRate
+			this.cashValue := direction == 1 ? this.cashValue + notional - fee : this.cashValue - notional - fee
+			this.realizedPnlValue := this.realizedPnlValue + direction * quantity * (price - this.averagePrice) - this.entryFees - fee
+			float missingPrice = na
+			this.quantityValue := 0.0
+			this.averagePrice := missingPrice
+			this.entryFees := 0.0
+			this.roundTripsValue := this.roundTripsValue + 1
+		quantity
+
+	float mark(float price) =>
+		this.equityValue := this.cashValue + this.quantityValue * price
+		this.peakEquity := math.max(this.peakEquity, this.equityValue)
+		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - this.equityValue) / this.peakEquity
+		this.maxDrawdownValue := math.max(this.maxDrawdownValue, drawdown)
+		this.equityValue
+
+	float total_return() const =>
+		(this.equityValue - this.initialCash) / this.initialCash
+
+month_key(int epochMs) =>
+	days = math.floor(epochMs / 86400000.0)
+	z = days + 719468.0
+	era = math.floor(z / 146097.0)
+	doe = z - era * 146097.0
+	yoe = math.floor((doe - math.floor(doe / 1460.0) + math.floor(doe / 36524.0) - math.floor(doe / 146096.0)) / 365.0)
+	year = yoe + era * 400.0
+	doy = doe - (365.0 * yoe + math.floor(yoe / 4.0) - math.floor(yoe / 100.0))
+	mp = math.floor((5.0 * doy + 2.0) / 153.0)
+	month = mp + (mp < 10.0 ? 3.0 : -9.0)
+	year := year + (month <= 2.0 ? 1.0 : 0.0)
+	year * 12.0 + month
+
+anchor_mode = input.int(2, "Anchor: 0 day, 1 week, 2 month", minval=0, maxval=2)
+strategy_mode = input.int(1, "Mode: 0 trend, 1 mean reversion", minval=0, maxval=1)
+entry_type = input.int(2, "Entry trigger: 0 basic, 1 band cross, 2 band reclaim", minval=0, maxval=2)
+band1_mult = input.float(1.0, "Band 1 multiplier", minval=0.1, maxval=5.0)
+band2_mult = input.float(2.0, "Band 2 multiplier", minval=0.2, maxval=8.0)
+band3_mult = input.float(3.0, "Band 3 multiplier", minval=0.3, maxval=12.0)
+mean_reversion_band = input.int(2, "Mean reversion band", minval=1, maxval=3)
+volume_length = input.int(20, "Volume average length", minval=1, maxval=200)
+volume_threshold = input.float(1.2, "Volume threshold", minval=0.0, maxval=10.0)
+use_volume_filter = input.int(1, "Volume filter: 0 off, 1 on", minval=0, maxval=1)
+atr_length = input.int(14, "ATR length", minval=1, maxval=200)
+minimum_atr_percent = input.float(0.2, "Minimum ATR percent", minval=0.0, maxval=20.0)
+use_volatility_filter = input.int(1, "ATR filter: 0 off, 1 on", minval=0, maxval=1)
+minimum_bandwidth_percent = input.float(0.2, "Minimum bandwidth percent", minval=0.0, maxval=20.0)
+use_bandwidth_filter = input.int(1, "Bandwidth filter: 0 off, 1 on", minval=0, maxval=1)
+slope_lookback = input.int(5, "VWAP slope lookback", minval=1, maxval=100)
+minimum_slope_percent = input.float(0.05, "Minimum VWAP slope percent", minval=0.0, maxval=10.0)
+use_slope_filter = input.int(1, "Slope filter: 0 off, 1 on", minval=0, maxval=1)
+adx_length = input.int(14, "ADX length", minval=1, maxval=100)
+maximum_mean_reversion_adx = input.float(25.0, "Maximum mean reversion ADX", minval=0.0, maxval=100.0)
+use_adx_filter = input.int(1, "ADX filter: 0 off, 1 on", minval=0, maxval=1)
+maximum_deviation_atr = input.float(3.0, "Maximum VWAP deviation in ATR", minval=0.1, maxval=20.0)
+secondary_indicator = input.int(0, "Confluence: 0 none, 1 RSI, 2 EMA", minval=0, maxval=2)
+rsi_length = input.int(14, "RSI length", minval=1, maxval=200)
+trend_rsi_minimum = input.float(50.0, "Trend RSI minimum", minval=0.0, maxval=100.0)
+mean_reversion_rsi_oversold = input.float(30.0, "Mean reversion RSI oversold", minval=1.0, maxval=50.0)
+mean_reversion_rsi_overbought = input.float(70.0, "Mean reversion RSI overbought", minval=50.0, maxval=99.0)
+regime_ema_length = input.int(200, "EMA regime length", minval=1, maxval=500)
+risk_percent = input.float(1.0, "Risk per trade percent", minval=0.1, maxval=20.0)
+maximum_position_percent = input.float(20.0, "Maximum position percent", minval=1.0, maxval=100.0)
+stop_atr_multiple = input.float(1.5, "ATR stop multiple", minval=0.1, maxval=10.0)
+stop_loss_method = input.int(0, "Stop: 0 ATR, 1 band", minval=0, maxval=1)
+profit_method = input.int(0, "Target: 0 opposite band, 1 VWAP", minval=0, maxval=1)
+break_even_atr = input.float(1.0, "Break-even trigger ATR", minval=0.1, maxval=10.0)
+use_break_even = input.int(0, "Break-even: 0 off, 1 on", minval=0, maxval=1)
+fixed_take_profit = input.int(0, "Fixed target: 0 off, 1 on", minval=0, maxval=1)
+initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
+fee_rate = input.float(0.0005, "Fee rate", minval=0.0, maxval=0.05)
+slippage_rate = input.float(0.0, "Slippage rate", minval=0.0, maxval=0.05)
+
+var account = DirectionalAccount.new(initial_cash, initial_cash, equityValue=initial_cash, peakEquity=initial_cash)
+var bool pending_entry = false
+var int pending_signal_bar = na
+var int pending_direction = 0
+var float pending_quantity = 0.0
+var float active_stop = na
+var float active_target = na
+var float locked_target = na
+var float entry_atr = na
+var int entry_bar = na
+float missing_float = na
+int missing_int = na
+
+// Market entries generated on a completed bar fill at the next bar's open.
+if pending_entry and account.quantityValue == 0.0 and bar_index > pending_signal_bar
+	filled = account.open_position(pending_direction, open, pending_quantity, fee_rate, slippage_rate, bar_index)
+	if filled > 0.0
+		entry_bar := bar_index
+	pending_entry := false
+
+// Stop/limit orders use the previously published levels. Gap fills resolve at
+// the open; when both levels trade inside one bar, the nearer-first OHLC path
+// decides which order wins.
+if account.quantityValue != 0.0 and bar_index > entry_bar and not na(active_stop) and not na(active_target)
+	direction = account.quantityValue > 0.0 ? 1 : -1
+	stop_touched = direction == 1 ? low <= active_stop : high >= active_stop
+	target_touched = direction == 1 ? high >= active_target : low <= active_target
+	float exit_reference = na
+	gap_exit = direction == 1 ? open <= active_stop or open >= active_target : open >= active_stop or open <= active_target
+	if gap_exit
+		exit_reference := open
+	else if stop_touched and target_touched
+		target_first = direction == 1 ? math.abs(high - open) < math.abs(open - low) : math.abs(open - low) < math.abs(high - open)
+		exit_reference := target_first ? active_target : active_stop
+	else if stop_touched
+		exit_reference := active_stop
+	else if target_touched
+		exit_reference := active_target
+	if not na(exit_reference)
+		account.close_position(exit_reference, fee_rate, slippage_rate, bar_index)
+		active_stop := missing_float
+		active_target := missing_float
+		locked_target := missing_float
+		entry_atr := missing_float
+		entry_bar := missing_int
+
+day_key = math.floor(time / 86400000.0)
+period_key = anchor_mode == 0 ? day_key : anchor_mode == 1 ? math.floor((day_key + 4.0) / 7.0) : month_key(time)
+var float prior_period_key = na
+new_period = na(prior_period_key) or period_key != prior_period_key
+var float cumulative_pv = 0.0
+var float cumulative_volume = 0.0
+var float cumulative_pv2 = 0.0
+if new_period
+	cumulative_pv := 0.0
+	cumulative_volume := 0.0
+	cumulative_pv2 := 0.0
+	prior_period_key := period_key
+
+typical_price = (high + low + close) / 3.0
+cumulative_pv := cumulative_pv + typical_price * volume
+cumulative_volume := cumulative_volume + volume
+cumulative_pv2 := cumulative_pv2 + typical_price * typical_price * volume
+vwap_value = cumulative_volume == 0.0 ? typical_price : cumulative_pv / cumulative_volume
+variance = cumulative_volume == 0.0 ? 0.0 : cumulative_pv2 / cumulative_volume - vwap_value * vwap_value
+vwap_deviation = math.sqrt(math.max(variance, 0.0))
+upper_band1 = vwap_value + band1_mult * vwap_deviation
+lower_band1 = vwap_value - band1_mult * vwap_deviation
+upper_band2 = vwap_value + band2_mult * vwap_deviation
+lower_band2 = vwap_value - band2_mult * vwap_deviation
+upper_band3 = vwap_value + band3_mult * vwap_deviation
+lower_band3 = vwap_value - band3_mult * vwap_deviation
+
+atr_value = pine_atr(atr_length)
+average_volume = ta.sma(volume, volume_length)
+[unused_plus, unused_minus, adx_value] = pine_dmi(adx_length, adx_length)
+rsi_value = pine_rsi(close, rsi_length)
+regime_ema = ta.ema(close, regime_ema_length)
+atr_percent = close == 0.0 ? 0.0 : atr_value / close * 100.0
+bandwidth_percent = close == 0.0 ? 0.0 : (upper_band1 - lower_band1) / close * 100.0
+volume_ok = use_volume_filter == 0 or volume > average_volume * volume_threshold
+volatility_ok = use_volatility_filter == 0 or atr_percent > minimum_atr_percent
+bandwidth_ok = use_bandwidth_filter == 0 or bandwidth_percent > minimum_bandwidth_percent
+base_filters = volume_ok and volatility_ok and bandwidth_ok
+vwap_slope_percent = na(vwap_value[slope_lookback]) or vwap_value[slope_lookback] == 0.0 ? 0.0 : (vwap_value - vwap_value[slope_lookback]) / vwap_value[slope_lookback] * 100.0
+trend_trigger = entry_type == 0 ? ta.crossover(close, vwap_value) : entry_type == 1 ? ta.crossover(close, upper_band1) : ta.crossover(close, upper_band2)
+short_trend_trigger = entry_type == 0 ? ta.crossunder(close, vwap_value) : entry_type == 1 ? ta.crossunder(close, lower_band1) : ta.crossunder(close, lower_band2)
+selected_lower = mean_reversion_band == 1 ? lower_band1 : mean_reversion_band == 2 ? lower_band2 : lower_band3
+selected_upper = mean_reversion_band == 1 ? upper_band1 : mean_reversion_band == 2 ? upper_band2 : upper_band3
+mean_trigger = entry_type == 0 ? close < selected_lower : entry_type == 1 ? ta.crossunder(close, selected_lower) : low < selected_lower and close > selected_lower
+short_mean_trigger = entry_type == 0 ? close > selected_upper : entry_type == 1 ? ta.crossover(close, selected_upper) : high > selected_upper and close < selected_upper
+deviation_atr = atr_value <= 0.0 ? 0.0 : math.abs(close - vwap_value) / atr_value
+trend_confluence = secondary_indicator == 0 or secondary_indicator == 1 and rsi_value > trend_rsi_minimum or secondary_indicator == 2 and close > regime_ema
+mean_confluence = secondary_indicator == 0 or secondary_indicator == 1 and ta.crossover(rsi_value, mean_reversion_rsi_oversold) or secondary_indicator == 2 and close > regime_ema
+short_trend_confluence = secondary_indicator == 0 or secondary_indicator == 1 and rsi_value < 100.0 - trend_rsi_minimum or secondary_indicator == 2 and close < regime_ema
+short_mean_confluence = secondary_indicator == 0 or secondary_indicator == 1 and ta.crossunder(rsi_value, mean_reversion_rsi_overbought) or secondary_indicator == 2 and close < regime_ema
+slope_ok = use_slope_filter == 0 or vwap_slope_percent > minimum_slope_percent
+short_slope_ok = use_slope_filter == 0 or vwap_slope_percent < -minimum_slope_percent
+adx_ok = use_adx_filter == 0 or adx_value < maximum_mean_reversion_adx
+long_signal = strategy_mode == 0 ? trend_trigger and base_filters and slope_ok and trend_confluence : mean_trigger and base_filters and adx_ok and deviation_atr <= maximum_deviation_atr and mean_confluence
+short_signal = strategy_mode == 0 ? short_trend_trigger and base_filters and short_slope_ok and short_trend_confluence : short_mean_trigger and base_filters and adx_ok and deviation_atr <= maximum_deviation_atr and short_mean_confluence
+
+equity_now = account.mark(close)
+signal_direction = long_signal ? 1 : short_signal ? -1 : 0
+if signal_direction != 0 and account.quantityValue == 0.0 and not pending_entry
+	band_stop_distance = strategy_mode == 0 ? math.abs(close - lower_band1) : math.abs(close - lower_band3)
+	if signal_direction == -1
+		band_stop_distance := strategy_mode == 0 ? math.abs(upper_band1 - close) : math.abs(upper_band3 - close)
+	stop_distance = stop_loss_method == 0 ? atr_value * stop_atr_multiple : band_stop_distance
+	risk_amount = equity_now * risk_percent / 100.0
+	maximum_value = equity_now * maximum_position_percent / 100.0
+	pending_quantity := stop_distance <= 0.0 ? 0.0 : math.min(risk_amount / stop_distance, maximum_value / close)
+	active_stop := close - signal_direction * stop_distance
+	entry_atr := atr_value
+	locked_target := profit_method == 1 ? vwap_value : strategy_mode == 0 ? (signal_direction == 1 ? upper_band2 : lower_band2) : vwap_value
+	active_target := locked_target
+	pending_signal_bar := bar_index
+	pending_direction := signal_direction
+	pending_entry := pending_quantity > 0.0
+
+if account.quantityValue != 0.0
+	direction = account.quantityValue > 0.0 ? 1 : -1
+	dynamic_target = profit_method == 1 ? vwap_value : strategy_mode == 0 ? (direction == 1 ? upper_band2 : lower_band2) : vwap_value
+	active_target := fixed_take_profit == 1 ? locked_target : dynamic_target
+	break_even_reached = direction == 1 ? close >= account.averagePrice + entry_atr * break_even_atr : close <= account.averagePrice - entry_atr * break_even_atr
+	if use_break_even == 1 and break_even_reached
+		active_stop := direction == 1 ? math.max(active_stop, account.averagePrice) : math.min(active_stop, account.averagePrice)
+
+plot(close, "close")
+plot(vwap_value, "vwap")
+plot(upper_band1, "upper band 1")
+plot(lower_band1, "lower band 1")
+plot(upper_band2, "upper band 2")
+plot(lower_band2, "lower band 2")
+plot(long_signal ? 1.0 : 0.0, "long signal")
+plot(short_signal ? 1.0 : 0.0, "short signal")
+plot(account.quantityValue, "position quantity")
+plot(account.mark(close), "equity")
+plot(account.realizedPnlValue, "realized pnl")
+plot(account.totalFeesValue, "total fees")
+plot(account.fillCountValue, "fill count")
+plot(account.roundTripsValue, "round trips")
+plot(account.maxDrawdownValue, "maximum drawdown")
+plot(account.total_return(), "total return")

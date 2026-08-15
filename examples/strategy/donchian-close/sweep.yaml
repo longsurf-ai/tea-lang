@@ -1,0 +1,32 @@
+schema: tea.execution/v1
+
+program:
+  source: ./strategy.tea
+
+runtime:
+  kind: javascript
+
+execution:
+  kind: sweep
+  provider:
+    kind: csv
+    path: ../../data/binance/btcusdt-1d.csv
+    sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
+  parameters:
+    upper_length:
+      range: {start: 30, stop: 70, step: 10}
+    lower_length:
+      range: {start: 10, stop: 30, step: 5}
+    tight_stop_mode:
+      range: {start: 0, stop: 1, step: 1}
+    tight_stop_length:
+      range: {start: 2, stop: 6, step: 2}
+    start_time: 1546322400000
+    end_time: 4102444800000
+    initial_cash: 100000
+    slippage:
+      range: {start: 0, stop: 0.001, step: 0.001}
+    fee:
+      range: {start: 0.0005, stop: 0.001, step: 0.0005}
+  maxExecutions: 600
+  timeNow: 1786579200000

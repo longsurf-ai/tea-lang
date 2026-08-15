@@ -22,7 +22,7 @@ imports.
 - Functions that read ambient context (volume, high, low, close) directly
   are rejected inside request expressions by design — prefer passing
   sources as parameters wherever Pine's signature allows.
-- `testdata/checker/ta-suite.tea` must call every export of ta; extend it in
+- `tests/fixtures/checker/ta-suite.tea` must call every export of ta; extend it in
   the same change that adds a function.
 - Known gaps tracked in ta.tea's header: median/mode/percentile\__/valuewhen
   need collections; the ta._ namespace VARIABLES (obv, vwap, accdist, …)

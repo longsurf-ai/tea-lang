@@ -218,7 +218,7 @@ function safeFixturePath(path: unknown, label: string): string {
     value.includes('\\') ||
     value.split('/').includes('..')
   ) {
-    throw new Error(`${label} must stay inside testdata/execution`);
+    throw new Error(`${label} must stay inside tests/fixtures/execution`);
   }
   return value;
 }

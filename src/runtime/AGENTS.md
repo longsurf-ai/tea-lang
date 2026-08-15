@@ -33,8 +33,12 @@ The target-neutral `executeProgram()` host harness lives one level above in
   injected sink.
 - GPU execution consumes a bind-independent WGSL artifact, an injected
   `GPUDevice`, and an ordered `BindInputs[]`. It resolves providers, validates
-  and normalizes required inputs, derives dense capacity, bounds sparse effect
-  storage, and packs private buffers while creating one resumable session.
+  and normalizes required inputs, runs the artifact's ordinary generated JS
+  provisional bind phase, sizes each binding's history payload, derives dense
+  capacity, bounds sparse effect storage, and packs private buffers while
+  creating one resumable session. The fixed frame topology and ids come only
+  from the artifact; runtime never reads Program or reinterprets Tea depth
+  expressions.
   `runChunk()` keeps each Program execution's state on-device and publishes
   decoded absolute rows through each binding's `OutputSink`; `runAll()` is only
   repetition over that lifecycle. Neither runtime method owns Tea broker or

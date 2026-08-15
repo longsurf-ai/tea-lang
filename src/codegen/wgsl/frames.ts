@@ -2,13 +2,7 @@
 
 import {fatal} from '../../base/print';
 import {frameTopologyOf} from '../../ir/frames';
-import {
-  DepthKind,
-  IrKind,
-  PlaceKind,
-  type IrExpr,
-  type Name,
-} from '../../ir/node';
+import {IrKind, PlaceKind, type IrExpr, type Name} from '../../ir/node';
 import {TypeKind} from '../../ir/type';
 import type {IrFunc, Program} from '../../ir/program';
 import {walkIrExpr, walkIrStmt} from '../../ir/visit';
@@ -18,12 +12,12 @@ export const MAX_WGSL_HISTORY_OFFSET = 0x7fff_ffff;
 
 export interface WgslFrameLocalLayout {
   readonly name: Name;
+  readonly slot: number;
   readonly scratchWordOffset: number;
   readonly valueWordCount: number;
   readonly committedInitWordOffset: number | null;
   readonly tentativeInitWordOffset: number | null;
-  readonly historyWordOffset: number | null;
-  readonly historyCapacity: number;
+  readonly historyDescriptorWordOffset: number | null;
 }
 
 export interface WgslFrameChildLayout {
@@ -74,10 +68,6 @@ function addWords(left: number, right: number, owner: string): number {
   return checkedWords(left + right, owner);
 }
 
-function multiplyWords(left: number, right: number, owner: string): number {
-  return checkedWords(left * right, owner);
-}
-
 export function projectWgslFrames(
   program: Program,
   valueWords: (name: Name) => number,
@@ -90,27 +80,28 @@ export function projectWgslFrames(
   // that WGSL intentionally lowers to typed empty (for example an offset that
   // cannot be represented by the GPU row cursor). Derive the physical demand
   // from WGSL-valid read sites so such a read cannot inflate frame storage.
-  const historyDemand = new Map<Name, number>();
+  const historyDemand = new Set<Name>();
   const noteHistoryDemand = (expr: IrExpr): void => {
     if (expr.kind !== IrKind.HistRead || expr.place.kind !== PlaceKind.Name) {
       return;
     }
     const offset = expr.offset;
-    if (
-      offset === null ||
-      offset.kind !== IrKind.Const ||
-      offset.type.kind !== TypeKind.Int ||
-      typeof offset.value !== 'number' ||
-      !Number.isSafeInteger(offset.value) ||
-      offset.value < 0 ||
-      offset.value > MAX_WGSL_HISTORY_OFFSET
-    ) {
+    if (offset === null) {
       return;
     }
-    historyDemand.set(
-      expr.place.name,
-      Math.max(historyDemand.get(expr.place.name) ?? 0, offset.value),
-    );
+    if (offset.kind !== IrKind.Const) {
+      historyDemand.add(expr.place.name);
+      return;
+    }
+    if (
+      offset.type.kind === TypeKind.Int &&
+      typeof offset.value === 'number' &&
+      Number.isSafeInteger(offset.value) &&
+      offset.value > 0 &&
+      offset.value <= MAX_WGSL_HISTORY_OFFSET
+    ) {
+      historyDemand.add(expr.place.name);
+    }
   };
   program.init.forEach(stmt => walkIrStmt(stmt, {expr: noteHistoryDemand}));
   program.body.forEach(stmt => walkIrStmt(stmt, {expr: noteHistoryDemand}));
@@ -129,6 +120,13 @@ export function projectWgslFrames(
       );
     }
     visiting.add(owner);
+    const semanticFrame =
+      owner === null ? topology.root : topology.frameByFunc.get(owner);
+    if (semanticFrame === undefined) {
+      return fatal(
+        `missing semantic frame for '${owner?.name ?? '<program>'}'`,
+      );
+    }
     let names: readonly Name[];
     if (owner === null) {
       names = topology.root.locals;
@@ -139,8 +137,7 @@ export function projectWgslFrames(
       ];
       const ephemeral = new Set(
         parameters.filter(
-          name =>
-            name.storage === 'perBar' && (historyDemand.get(name) ?? 0) === 0,
+          name => name.storage === 'perBar' && !historyDemand.has(name),
         ),
       );
       ephemeralFormalsByFunc.set(owner, ephemeral);
@@ -154,6 +151,12 @@ export function projectWgslFrames(
     // becomes durable only at row commit.
     let words = checkedWords(2, 'frame activation');
     const locals: WgslFrameLocalLayout[] = names.map(name => {
+      const slot = semanticFrame.locals.indexOf(name);
+      if (slot < 0) {
+        return fatal(
+          `WGSL frame '${owner?.name ?? '<program>'}' does not own '${name.name}'`,
+        );
+      }
       const valueWordCount = valueWords(name);
       if (
         !Number.isSafeInteger(valueWordCount) ||
@@ -174,49 +177,23 @@ export function projectWgslFrames(
       if (tentativeInitWordOffset !== null) {
         words = addWords(words, 1, `'${name.name}' tentative init`);
       }
-      let historyCapacity: number;
-      switch (name.depth.kind) {
-        case DepthKind.None:
-        case DepthKind.Const:
-          historyCapacity = Math.max(
-            name.storage === 'perBar' ? 0 : 1,
-            historyDemand.get(name) ?? 0,
-          );
-          break;
-        case DepthKind.Bound:
-        case DepthKind.Capped:
-          throw new WgslFrameProjectionError(
-            `frame name '${name.name}' requires non-constant history`,
-          );
+      const retainsHistory =
+        name.storage !== 'perBar' || historyDemand.has(name);
+      const historyDescriptorWordOffset = retainsHistory ? words : null;
+      if (historyDescriptorWordOffset !== null) {
+        words = addWords(words, 2, `'${name.name}' history descriptor`);
       }
-      const historyWordOffset = historyCapacity === 0 ? null : words;
-      words = addWords(
-        words,
-        multiplyWords(
-          historyCapacity,
-          valueWordCount,
-          `'${name.name}' history`,
-        ),
-        `'${name.name}' state`,
-      );
       return {
         name,
+        slot,
         scratchWordOffset,
         valueWordCount,
         committedInitWordOffset,
         tentativeInitWordOffset,
-        historyWordOffset,
-        historyCapacity,
+        historyDescriptorWordOffset,
       };
     });
     const children: WgslFrameChildLayout[] = [];
-    const semanticFrame =
-      owner === null ? topology.root : topology.frameByFunc.get(owner);
-    if (semanticFrame === undefined) {
-      return fatal(
-        `missing semantic frame for '${owner?.name ?? '<program>'}'`,
-      );
-    }
     for (const {slot, callee} of semanticFrame.children) {
       const child = build(callee);
       children.push({

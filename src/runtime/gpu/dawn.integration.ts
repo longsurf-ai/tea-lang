@@ -64,7 +64,7 @@ test('Dawn resumes independent executions and publishes dense values and effects
   const compiled = compileFixture(
     join(
       process.cwd(),
-      'testdata/execution/compile/strategy-components/source.tea',
+      'tests/fixtures/execution/compile/strategy-components/source.tea',
     ),
   );
   const providers = [
@@ -291,6 +291,80 @@ test('Dawn packs fixed-width parameter sweep executions and matches CPU', async 
   }
 });
 
+test('Dawn matches CPU for unrestricted numeric ranges and core math', async () => {
+  const program = mustBuild(
+    [
+      'indicator("range and math parity")',
+      'limit = input.int(511)',
+      'zero = input.int(0)',
+      'sum = 0',
+      'for i = 0 to limit',
+      '    sum += i',
+      'selected = for i = 0 to 10',
+      '    if i == 2',
+      '        continue',
+      '    if i == 5',
+      '        break',
+      '    i',
+      'descending = for i = 5 to 1 by -2',
+      '    i',
+      'mutatedCount = 0',
+      'for i = 0 to 10',
+      '    mutatedCount += 1',
+      '    if i == 1',
+      '        i := 8',
+      'empty = for i = 1 to 3 by zero',
+      '    i',
+      'float missing = na',
+      'plot(sum)',
+      'plot(selected)',
+      'plot(descending)',
+      'plot(mutatedCount)',
+      'plot(empty)',
+      'plot(math.abs(close))',
+      'plot(math.abs(bar_index - 2))',
+      'plot(math.max(bar_index, close, 2))',
+      'plot(math.min(close, bar_index, 2))',
+      'plot(math.floor(close))',
+      'plot(math.max(missing, close))',
+      'plot(math.min(close, missing))',
+    ].join('\n'),
+  );
+  const result = compileProgramToWgsl(program);
+  assert.equal(result.status, 'compiled');
+  if (result.status !== 'compiled') return;
+
+  const source = provider({close: [-1.25, 3.75, -4]});
+  const cpuSink = new MemorySink();
+  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+  assert.deepEqual(
+    cpuSink.emissions
+      .filter(emission => emission.outputId === 1)
+      .map(emission => emission.channels[0]),
+    [130816, 130816, 130816],
+  );
+
+  Object.assign(globalThis, globals);
+  const gpu = create([]);
+  const adapter = await gpu.requestAdapter();
+  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
+  const device = await adapter.requestDevice();
+  const gpuSink = new MemorySink();
+  const execution = await createGpuExecution(
+    device,
+    result.artifact,
+    [binding(source, gpuSink)],
+    {maxRowsPerChunk: 1, maxCacheBytesPerWorkgroup: 0},
+  );
+  try {
+    await execution.runAll();
+    assertSinkParity(cpuSink, gpuSink, result.artifact);
+  } finally {
+    execution.dispose();
+    device.destroy();
+  }
+});
+
 test('Dawn executes one-chunk transient and mutable-path programs', async () => {
   Object.assign(globalThis, globals);
   const gpu = create([]);
@@ -299,8 +373,8 @@ test('Dawn executes one-chunk transient and mutable-path programs', async () => 
   const device = await adapter.requestDevice();
   try {
     for (const [fixture, expected] of [
-      ['testdata/gpu/transient/source.tea', [7]],
-      ['testdata/gpu/path-rebase/source.tea', [7, 1]],
+      ['tests/fixtures/gpu/transient/source.tea', [7]],
+      ['tests/fixtures/gpu/path-rebase/source.tea', [7, 1]],
     ] as const) {
       const compiled = compileFixture(join(process.cwd(), fixture));
       const sink = new MemorySink();
@@ -559,7 +633,7 @@ test('Dawn storage, partial, and full cache placements are equivalent', async ()
   const budgets = [
     0,
     first.cacheEnd * 4,
-    result.artifact.state.wordsPerExecution * 4,
+    result.artifact.state.fixedWordCount * 4,
   ];
   try {
     for (const budget of budgets) {

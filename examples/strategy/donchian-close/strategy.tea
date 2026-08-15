@@ -1,0 +1,90 @@
+//@version=1
+// Clean-room implementation of the published Donchian strategy's explicit
+// Close mode. Signals are evaluated on the completed bar and market orders
+// are resolved by the Tea reference broker at the following bar's open.
+strategy("Donchian close breakout", shorttitle="Donchian Close", overlay=true)
+
+import broker
+import portfolio
+import strategy
+
+upper_length = input.int(20, "Upper channel length", minval=2, maxval=200)
+lower_length = input.int(10, "Lower channel length", minval=2, maxval=200)
+// Numeric 0/1 keeps the published boolean choice sweepable with the current
+// numeric-range execution config.
+tight_stop_mode = input.int(0, "Tight initial stop: 0 off, 1 on", minval=0, maxval=1)
+tight_stop_length = input.int(8, "Tight initial stop length", minval=2, maxval=200)
+start_time = input.time(1546322400000, "Backtest start")
+end_time = input.time(4102444800000, "Backtest end")
+initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
+slippage = input.float(0.0, "Adverse slippage rate", minval=0.0, maxval=0.05)
+fee = input.float(0.001, "Taker fee rate", minval=0.0, maxval=0.05)
+
+var strat = strategy.configure(
+	broker = broker.basic(slippage, fee),
+	portfolio = portfolio.basic(initial_cash)
+)
+
+// begin() applies any order submitted on a prior bar. Capturing its Fill lets
+// the optional tight-stop state use the actual next-open entry price.
+execution = strat.begin(open, bar_index)
+
+var float entry_price = na
+var float profit_floor = na
+float missing_value = na
+
+if not na(execution)
+	if execution.side == broker.Side.buy
+		entry_price := execution.price
+		profit_floor := missing_value
+	else
+		entry_price := missing_value
+		profit_floor := missing_value
+
+upper_channel = ta.highest(high, upper_length)
+lower_channel = ta.lowest(low, lower_length)
+tight_channel = ta.lowest(low, tight_stop_length)
+
+// These relationships define the supported "tighter initial stop" domain.
+// Invalid direct overrides remain observable but submit no orders.
+valid_parameters = tight_stop_length < lower_length and lower_length <= upper_length
+tight_stop_enabled = tight_stop_mode == 1
+in_position = strat.position_quantity() > 0.0
+
+// The published prose describes a tight channel until the trade is in profit,
+// followed by the wider lower channel. Latch the prior tight level at the
+// transition so switching channels cannot immediately widen the stop.
+if tight_stop_enabled and in_position and na(profit_floor) and tight_channel >= entry_price
+	profit_floor := tight_channel
+
+tight_active_stop = na(profit_floor) ? tight_channel : math.max(lower_channel, profit_floor)
+active_stop = tight_stop_enabled ? tight_active_stop : lower_channel
+
+in_window = time > start_time and time < end_time
+long_signal = valid_parameters and in_window and close >= upper_channel[1]
+close_signal = valid_parameters and in_position and close <= active_stop[1]
+
+if long_signal and not in_position and not strat.has_pending()
+	strat.entry("Donchian Long", strategy.Direction.long)
+
+if close_signal and not strat.has_pending()
+	strat.close("Donchian Long")
+
+strat.end(close, barstate.islast)
+
+plot(close, "close")
+plot(upper_channel, "upper channel")
+plot(lower_channel, "lower channel")
+plot(tight_stop_enabled ? tight_channel : na, "tight initial channel")
+plot(active_stop, "active stop")
+plot(long_signal ? 1.0 : 0.0, "long signal")
+plot(close_signal ? 1.0 : 0.0, "close signal")
+plot(valid_parameters ? 1.0 : 0.0, "valid parameters")
+plot(strat.position_quantity(), "position quantity")
+plot(strat.equity(), "equity")
+plot(strat.realized_pnl(), "realized pnl")
+plot(strat.total_fees(), "total fees")
+plot(strat.fill_count(), "fill count")
+plot(strat.round_trip_count(), "round trips")
+plot(strat.max_drawdown(), "maximum drawdown")
+plot(strat.total_return(), "total return")

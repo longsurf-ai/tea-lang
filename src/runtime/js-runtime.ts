@@ -205,6 +205,91 @@ export async function bind(
   }
 }
 
+// The generated frame-aware bind section is shared by both execution
+// targets. GPU binding needs its concrete per-frame retention without
+// allocating the final CPU Rings, so it runs the same provisional JSRuntime
+// phase against an already resolved provider context and snapshots the
+// resulting capacities.
+export interface GeneratedBindingLayout {
+  readonly frameHistoryCapacities: readonly (readonly number[])[];
+  readonly inputs: readonly BoundInput[];
+}
+
+export function resolveGeneratedBindingLayout(
+  module: TeaModule,
+  inputs: BindInputs,
+  context: ProviderContext,
+): GeneratedBindingLayout {
+  if (module.abi !== RUNTIME_ABI_VERSION) {
+    throw new BindError(
+      `unsupported module ABI ${String(module.abi)}; expected ${RUNTIME_ABI_VERSION}`,
+    );
+  }
+  const timeNow = bindTimeNow(inputs.timeNow);
+  const maxRequestContexts = requestContextLimit(inputs.maxRequestContexts);
+  const maxCollectionElements =
+    optionalBindLimit(inputs.maxCollectionElements, 'maxCollectionElements') ??
+    DEFAULT_MAX_COLLECTION_ELEMENTS;
+  const symbol = inputs.symbol ?? '';
+  const timeframe = inputs.timeframe ?? '';
+  const identity = effectiveContextIdentity(context, symbol, timeframe);
+  const params = resolveParamValues(module.manifest.params, inputs.params);
+  const shared: SharedRuntimeState = {
+    aggregateLayouts: new ValueLayoutRegistry(module.aggregateLayouts),
+    heap: new HeapArena({
+      maxStorageCells: optionalBindLimit(
+        inputs.maxHeapStorageCells,
+        'maxHeapStorageCells',
+      ),
+      maxLogicalBytes: optionalBindLimit(
+        inputs.maxHeapLogicalBytes,
+        'maxHeapLogicalBytes',
+      ),
+      maxTransientStorageCells: optionalBindLimit(
+        inputs.maxHeapTransientStorageCells,
+        'maxHeapTransientStorageCells',
+      ),
+      maxTransientLogicalBytes: optionalBindLimit(
+        inputs.maxHeapTransientLogicalBytes,
+        'maxHeapTransientLogicalBytes',
+      ),
+    }),
+    contextBudget: {used: 0, max: maxRequestContexts},
+    fixedValueStorage: {
+      usedLogicalBytes: 0,
+      maxLogicalBytes: fixedValueStorageLimit(inputs.maxFixedValueLogicalBytes),
+    },
+    runtimes: new Set(),
+    resultBuilders: new Set(),
+    disposed: false,
+  };
+  let rt: JSRuntime | null = null;
+  try {
+    rt = new JSRuntime(
+      module,
+      inputs.provider,
+      null,
+      context,
+      identity.symbol,
+      identity.timeframe,
+      timeNow,
+      params,
+      shared,
+      maxCollectionElements,
+      true,
+      true,
+    );
+    return rt.generatedBindingLayout();
+  } finally {
+    if (rt === null) {
+      shared.heap.dispose();
+      shared.disposed = true;
+    } else {
+      rt.dispose();
+    }
+  }
+}
+
 function pairKey(rid: number, symbol: string, timeframe: string): string {
   return `${rid}\u0000${symbol}\u0000${timeframe}`;
 }
@@ -550,6 +635,7 @@ class JSRuntime implements Runtime, BoundProgram {
     private readonly shared: SharedRuntimeState,
     private readonly maxCollectionElements: number,
     private readonly ownsShared: boolean,
+    bindingOnly = false,
   ) {
     if (
       !Number.isSafeInteger(maxCollectionElements) ||
@@ -606,12 +692,14 @@ class JSRuntime implements Runtime, BoundProgram {
         this.provisionalBindFrames = false;
         this.rootFrame = null;
         this.releaseRingStorage();
-        this.rootFrame = this.newFrame(0, true);
         this.inputs = module.manifest.params.map((spec, pid) => ({
           spec,
           value: this.paramValues[pid],
           active: this.paramActive[pid],
         }));
+        if (!bindingOnly) {
+          this.rootFrame = this.newFrame(0, true);
+        }
       } finally {
         attempt.abort();
         this.heapAttempt = null;
@@ -625,6 +713,22 @@ class JSRuntime implements Runtime, BoundProgram {
   }
 
   // ---- binding --------------------------------------------------------------
+
+  generatedBindingLayout(): GeneratedBindingLayout {
+    this.assertBinding('generatedBindingLayout');
+    return Object.freeze({
+      frameHistoryCapacities: Object.freeze(
+        this.module.manifest.frames.map((frame, fid) =>
+          Object.freeze(
+            frame.locals.map((local, slot) =>
+              this.localHistoryCapacity(fid, slot, local.storage, local.depth),
+            ),
+          ),
+        ),
+      ),
+      inputs: Object.freeze([...this.inputs]),
+    });
+  }
 
   // Resolve every static request edge before row 0: fetch the child
   // context, bind and run the child over its full history, and build the
@@ -1116,6 +1220,16 @@ class JSRuntime implements Runtime, BoundProgram {
     if (this.provisionalBindFrames) {
       return this.allocateRing(0, layout, `provisional frame ${fid}:${slot}`);
     }
+    const keep = this.localHistoryCapacity(fid, slot, storage, depth);
+    return this.allocateRing(keep, layout, `frame ${fid}:${slot}`);
+  }
+
+  private localHistoryCapacity(
+    fid: number,
+    slot: number,
+    storage: string,
+    depth: DepthSpec,
+  ): number {
     let keep: number;
     switch (depth.kind) {
       case 'none':
@@ -1144,7 +1258,7 @@ class JSRuntime implements Runtime, BoundProgram {
     if (storage === Storage.Var || storage === Storage.Varip) {
       keep = Math.max(keep, 1);
     }
-    return this.allocateRing(keep, layout, `frame ${fid}:${slot}`);
+    return keep;
   }
 
   private allocateRing(keep: number, layout: LayoutId, what: string): Ring {

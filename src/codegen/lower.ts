@@ -67,6 +67,8 @@ export const HELPERS = {
   $div: '(a, b) => (b === 0 ? NaN : a / b)',
   $mod: '(a, b) => (b === 0 ? NaN : a % b)',
   $num: '(x) => (Number.isFinite(x) ? x : NaN)',
+  $rangeNext:
+    '(x, step) => { const next = Number.isFinite(x + step) ? x + step : NaN; return (step > 0 && next > x) || (step < 0 && next < x) ? next : NaN; }',
   $eq: '(a, b) => (a === null || b === null || Number.isNaN(a) || Number.isNaN(b) ? false : a === b)',
   $ne: '(a, b) => (a === null || b === null || Number.isNaN(a) || Number.isNaN(b) ? false : a !== b)',
   $concat: '(a, b) => (a === null || b === null ? null : a + b)',
@@ -663,9 +665,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       if (val !== null) {
         bodyLines.push(`${temp} = (${val});`);
       }
-      ctx.useHelper('$num');
+      ctx.useHelper('$rangeNext');
       out.push(
-        `for (rt.write(${frRef}, ${slot}, ${fromT}); (${stepT}) >= 0 ? (${idx}) <= (${toT}) : (${idx}) >= (${toT}); rt.write(${frRef}, ${slot}, $num((${idx}) + (${stepT})))) {`,
+        `for (rt.write(${frRef}, ${slot}, ${fromT}); (${stepT}) > 0 ? (${idx}) <= (${toT}) : (${stepT}) < 0 ? (${idx}) >= (${toT}) : false; rt.write(${frRef}, ${slot}, $rangeNext((${idx}), (${stepT})))) {`,
         ...indent(bodyLines),
         '}',
       );

@@ -1,4 +1,4 @@
-// Purpose: ERROR-comment regression suite for the checker — testdata/checker fixtures are syntactically valid Tea whose declared diagnostics come from the checked-package stage.
+// Purpose: ERROR-comment regression suite for the checker — tests/fixtures/checker fixtures are syntactically valid Tea whose declared diagnostics come from the checked-package stage.
 
 import {readdirSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -6,7 +6,7 @@ import {describe, expect, test} from 'bun:test';
 import {collectExpectations, diffExpectations} from '../testing/error-comments';
 import {checkText} from './testing';
 
-const TESTDATA = join(import.meta.dir, '../../testdata/checker');
+const TESTDATA = join(import.meta.dir, '../../tests/fixtures/checker');
 
 describe('typecheck error comments', () => {
   const files = readdirSync(TESTDATA).filter(name => name.endsWith('.tea'));

@@ -1,5 +1,10 @@
 # TypeGPU parameter-sweep backtest experiment
 
+> Historical note: this experiment was extracted to the sibling directory
+> `tea-lang-typegpu-experiment`. Paths below describe the design at the time of
+> extraction and are relative to that standalone package. The extracted local
+> directory is not initialized or published as a Git repository by this change.
+
 ## 1. System map
 
 ```text
@@ -23,7 +28,8 @@ Binance market-data API
                               round trips / equity curves
 ```
 
-- `experiment/typegpu` is the standalone owner; it has no
+- The sibling `tea-lang-typegpu-experiment` package is the standalone owner;
+  it has no
   workspace imports, dependencies, or root lockfile changes.
 - The normalized snapshot and explicit SMA/exchange contract are input sources
   of truth. The GPU journal owns real-run strategy decisions; CPU artifact
@@ -50,9 +56,9 @@ the OpenChart monorepo.
 
 ## 3. Implementation
 
-1. **Create the standalone experiment boundary** —
-   `experiment/typegpu/package.json`, `tsconfig.json`,
-   `AGENTS.md`, `README.md`
+1. **Create the standalone experiment boundary** — `package.json`,
+   `tsconfig.json`, `AGENTS.md`, `README.md` in
+   `tea-lang-typegpu-experiment`
    - Pin concrete npm dependencies for TypeGPU, its Rollup plugin, Dawn,
      boundary parsing, and package-local tooling.
    - Provide separate download, sweep, artifact, test, typecheck, and benchmark

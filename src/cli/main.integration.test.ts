@@ -5,10 +5,10 @@ import {join} from 'node:path';
 
 const ROOT = join(import.meta.dir, '../..');
 const MAIN = join(ROOT, 'src/main.ts');
-const SOURCE = join(ROOT, 'testdata/cli/parameter-report.tea');
-const DATA = join(ROOT, 'testdata/cli/data.csv');
-const RUN_CONFIG = join(ROOT, 'testdata/cli/configs/run.yaml');
-const SWEEP_CONFIG = join(ROOT, 'testdata/cli/configs/sweep.json');
+const SOURCE = join(ROOT, 'tests/fixtures/cli/parameter-report.tea');
+const DATA = join(ROOT, 'tests/fixtures/cli/data.csv');
+const RUN_CONFIG = join(ROOT, 'tests/fixtures/cli/configs/run.yaml');
+const SWEEP_CONFIG = join(ROOT, 'tests/fixtures/cli/configs/sweep.json');
 
 interface CliResult {
   readonly status: number | null;

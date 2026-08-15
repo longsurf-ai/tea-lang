@@ -1,106 +1,141 @@
 # Tea examples
 
-## EMA crossover strategy
+`examples/` is the human-facing runnable catalog. It is intentionally separate
+from the test corpus under [`tests/fixtures`](../tests/fixtures/): examples may
+use live data providers, while automated tests never reach the network.
 
-`ema-cross-strategy.tea` is a parameterized long-only EMA crossover over
-`binance-btcusdt-1d.csv`: 3,283 real Binance Spot BTCUSDT daily bars from
-2017-08-17 through 2026-08-12 UTC. The immutable source record and SHA-256 live
-in `binance-btcusdt-1d.source.json`. The script uses the shipped `ta.ema`,
-`ta.crossover`, and `ta.crossunder` functions directly, then delegates
-next-open fills, fees, and accounting to the shipped
-broker/portfolio/strategy packages.
+## Layout
 
-The checked-in execution configuration runs a 100-scenario WebGPU sweep over
-that exact dataset:
+| Directory                  | Contents                                                                                                                                                                                                    |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`strategy/`](strategy/)   | Runnable strategies, one directory per strategy. A strategy directory owns its Tea source and any execution configuration specific to it. The catalog README also records the clean-room TradingView audit. |
+| [`indicator/`](indicator/) | Indicator and data-request demonstrations that do not place orders.                                                                                                                                         |
+| [`language/`](language/)   | Focused demonstrations of Tea language semantics.                                                                                                                                                           |
+| [`data/`](data/)           | Inputs for the runnable examples. Venue snapshots live under a provider-specific directory with adjacent provenance; small synthetic inputs live under `data/demo/`.                                        |
+
+Code under `src/` and fixtures under `tests/fixtures/` must not depend on this
+directory. Add reusable test inputs to `tests/fixtures/`, not here.
+
+## TradingView-derived strategy stress catalog
+
+[`strategy/README.md`](strategy/README.md) audits twelve open-source
+TradingView strategies and links each clean-room Tea implementation. Every
+conversion owns a CPU execution config, a documented historical execution
+profile, and measured results over real market data. The set deliberately
+exercises rolling statistics, requests, arrays, nested loops, per-lot state,
+long/short accounting, target allocations, pyramiding, pending orders,
+cancel/replace, brackets, trailing exits, and deterministic same-bar OHLC
+matching.
+
+Compile every conversion and validate its exact Cartesian grid without making
+network requests:
 
 ```sh
-tea execute examples/ema-cross-sweep.yaml
-tea execute examples/ema-cross-sweep.yaml --view
+bun test tests/strategy-catalog.test.ts
 ```
 
-`program.source` and `execution.provider.path` are relative to the YAML file,
-not the shell's working directory. The provider SHA-256 is copied from the
-source record and checked against the exact CSV bytes before execution. The
-fixed `timeNow` makes this historical execution independent of the host clock.
-
-The direct commands remain available for one-off use. Run one backtest with
-defaults or overrides:
+Run a particular measured sweep through its checked-in config, for example:
 
 ```sh
-tea run examples/ema-cross-strategy.tea -i examples/binance-btcusdt-1d.csv
+tea execute examples/strategy/turtle-system/sweep.yaml
+tea execute examples/strategy/alice-grid/sweep.yaml
+```
 
-tea run examples/ema-cross-strategy.tea -i examples/binance-btcusdt-1d.csv \
-  --fast_length 10 --slow_length 32 --initial_cash 100000 \
-  --slippage 0.0005 --fee 0.001
+These Pine-derived profiles currently target the JavaScript runtime. Their
+loops, collections, dynamic history, requests, or advanced Tea-authored order
+engines are outside the current WGSL subset; they do not silently fall back to
+CPU. Each strategy README records its selected public mode, deliberate
+boundaries, data provenance, and any source-page discrepancy.
 
-tea run examples/ema-cross-strategy.tea -i examples/binance-btcusdt-1d.csv --gpu \
+## Real market data
+
+`data/binance/` contains two immutable BTCUSDT fixtures:
+
+- `btcusdt-1d.csv`: 3,283 daily bars used by the broad historical sweeps.
+- `btcusdt-15m.csv`: 20,000 complete 15-minute bars used by the intraday grid
+  and Cowabunga execution tests.
+
+Each CSV has an adjacent source manifest containing its SHA-256, time range,
+normalization rules, and provenance. Automated tests verify hashes, cadence,
+finite OHLCV values, and price envelopes. The 15-minute file is a deterministic
+aggregation of a separately hash-pinned Binance one-minute archive; its
+[`derive-btcusdt-15m.ts`](data/binance/derive-btcusdt-15m.ts) script reproduces
+the checked-in bytes from that exact normalized parent. The manifest explicitly
+records that the raw archive inventory and timestamp-normalization log were not
+retained, so this is derivation-verifiable rather than a claim of full raw-source
+reproducibility.
+
+## EMA crossover strategy
+
+[`strategy/ema-cross/strategy.tea`](strategy/ema-cross/strategy.tea) is a
+parameterized long-only EMA crossover over 3,283 Binance Spot BTCUSDT daily
+bars from 2017-08-17 through 2026-08-12 UTC. The CSV, immutable source record,
+and SHA-256 are under [`data/binance/`](data/binance/).
+
+Run the checked-in 100-scenario WebGPU sweep, optionally opening the local
+viewer:
+
+```sh
+tea execute examples/strategy/ema-cross/sweep.yaml
+tea execute examples/strategy/ema-cross/sweep.yaml --view
+```
+
+Paths in the execution config are relative to the YAML file. Its fixed
+`timeNow` and pinned provider digest make the historical run independent of the
+working directory, host clock, and later data changes.
+
+Run one scenario on CPU or GPU:
+
+```sh
+tea run examples/strategy/ema-cross/strategy.tea \
+  -i examples/data/binance/btcusdt-1d.csv
+
+tea run examples/strategy/ema-cross/strategy.tea \
+  -i examples/data/binance/btcusdt-1d.csv --gpu \
   --fast_length 10 --slow_length 32 --initial_cash 100000
 ```
 
-Run the same Program through the legacy GPU-default sweep spelling, or add
-`--cpu` to use the JavaScript runtime:
+The direct sweep command remains available. It uses GPU by default; add
+`--cpu` to select the JavaScript runtime.
 
 ```sh
-tea sweep examples/ema-cross-strategy.tea -i examples/binance-btcusdt-1d.csv \
+tea sweep examples/strategy/ema-cross/strategy.tea \
+  -i examples/data/binance/btcusdt-1d.csv \
   --fast_length 2:20:2 --slow_length 24:60:4 \
   --initial_cash 100000 --slippage 0.0005 --fee 0.001 --view
-
-tea sweep examples/ema-cross-strategy.tea -i examples/binance-btcusdt-1d.csv \
-  --fast_length 2:20:2 --slow_length 24:60:4 \
-  --initial_cash 100000 --slippage 0.0005 --fee 0.001 --cpu
 ```
 
-`--view` opens a loopback-only interactive 3D view. Choose two numeric range
-parameters for X and Y and any final numeric output for Z. If more parameters
-are ranges, each remaining dimension gets an explicit slice selector. Auto
-mode renders a complete grid with at least two values per axis as a surface,
-preserving null metrics as holes; incomplete or degenerate grids use points.
+The snapshot is a reproducible stress input, not a claim about future returns.
 
-This is a fixed historical snapshot rather than a claim about future returns.
-It makes the sweep reproducible while still exercising real gaps, volatility,
-cross timing, next-open fills, fees, and drawdowns.
+## CPU/GPU lifecycle strategy
 
-## Minimal lifecycle fixture
-
-`strategy-cpu-gpu.tea` is one deterministic strategy intended for the same
-Program to run unchanged on CPU and GPU. Its source configures the ordinary
-Tea-authored `broker`, `portfolio`, and `strategy` libraries; the host does not
-recreate their execution, accounting, or lifecycle rules.
-
-Run the strategy with the ordinary CLI and its default parameters:
+[`strategy/cpu-gpu-next-open/strategy.tea`](strategy/cpu-gpu-next-open/strategy.tea)
+is a small deterministic strategy for exercising the same compiled `Program`
+on both runtimes. It delegates next-open fills, fees, and accounting to the
+shipped Tea-authored strategy libraries.
 
 ```sh
-tea run examples/strategy-cpu-gpu.tea -i examples/strategy-bars.csv
-```
+tea run examples/strategy/cpu-gpu-next-open/strategy.tea \
+  -i examples/data/demo/strategy-bars.csv
 
-Override any source-declared parameter after the fixed CLI options are parsed:
-
-```sh
-tea run examples/strategy-cpu-gpu.tea -i examples/strategy-bars.csv \
-  --slippage 0 --fee 0 --initial_cash 100
-```
-
-Run a Cartesian sweep. Sweeps use GPU by default; `--cpu` selects the ordinary
-JavaScript runtime:
-
-```sh
-tea sweep examples/strategy-cpu-gpu.tea -i examples/strategy-bars.csv \
-  --slippage 0:0.2:0.1 --fee 0 --initial_cash 100
-
-tea sweep examples/strategy-cpu-gpu.tea -i examples/strategy-bars.csv \
+tea sweep examples/strategy/cpu-gpu-next-open/strategy.tea \
+  -i examples/data/demo/strategy-bars.csv \
   --slippage 0:0.2:0.1 --fee 0 --initial_cash 100 --cpu
 ```
 
-The CLI compiles once to the same generic `Program`, then `executeProgram()`
-selects JS or WGSL lowering. Both targets receive the same ordered
-`BindInputs[]` and publish through generic sinks. `run` prints system
-statistics, effective parameters, full dense rows, and typed sparse effects.
-`sweep` requests only each binding's final dense values and no effect payloads,
-so reporting and transport memory do not grow with bar history. The optional
-viewer projects the renderer-neutral sweep result into a selected scene and
-serves its pinned Plotly adapter locally without a CDN. The Bun launcher safely
-relays Dawn execution to an installed Node 22 process (`TEA_GPU_NODE` may
-select it); compilation and runtime semantics stay on the same public path.
+## Indicators and language demonstrations
 
-The other `.tea` files demonstrate requests and value semantics. They are CPU
-examples and are not necessarily inside the current fail-closed WGSL subset.
+The request examples use the local primary timeline but fetch requested series
+through the configured providers. They may therefore require network access or
+provider credentials.
+
+```sh
+tea run examples/indicator/requests-tour.tea \
+  -i examples/data/demo/primary.csv
+
+tea run examples/indicator/dynamic-rotation.tea \
+  -i examples/data/demo/primary.csv
+
+tea run examples/language/value-semantics.tea \
+  -i examples/data/demo/primary.csv
+```

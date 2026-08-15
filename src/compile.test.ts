@@ -9,7 +9,7 @@ import {Errors} from './base/print';
 import {compile, compileToProgram, hashProgramSourceClosure} from './compile';
 import {loadModule} from './runtime/load';
 
-const TESTDATA = join(import.meta.dir, '../testdata');
+const TESTDATA = join(import.meta.dir, '../tests/fixtures');
 const STRATEGY_SOURCE = join(
   TESTDATA,
   'execution',

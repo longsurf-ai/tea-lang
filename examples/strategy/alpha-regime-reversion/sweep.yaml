@@ -1,0 +1,50 @@
+schema: tea.execution/v1
+
+program:
+  source: ./strategy.tea
+
+runtime:
+  kind: javascript
+
+execution:
+  kind: sweep
+  provider:
+    kind: csv
+    path: ../../data/binance/btcusdt-1d.csv
+    sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
+  parameters:
+    benchmark_symbol: QQQ
+    maximum_allocation: 75
+    core_allocation:
+      range: {start: 25, stop: 50, step: 25}
+    dip_allocation: 75
+    enforce_risk_cap: 1
+    account_risk_limit: 6
+    regime_length: 200
+    entry_buffer_percent: 1
+    exit_buffer_percent: 1
+    require_stock_regime: 1
+    use_liquidity_filter: 1
+    minimum_dollar_volume_millions: 20
+    swing_fast_length:
+      range: {start: 15, stop: 25, step: 10}
+    swing_slow_length: 50
+    deep_rsi_length: 2
+    deep_rsi_level:
+      range: {start: 10, stop: 20, step: 10}
+    shallow_rsi_length: 4
+    shallow_rsi_level: 40
+    rebound_sma_length: 5
+    rebound_rsi_level: 70
+    maximum_dip_bars: 10
+    swing_stop_percent:
+      range: {start: 6, stop: 10, step: 4}
+    cooldown_bars: 5
+    start_time: 1483228800000
+    end_time: 4102444800000
+    initial_cash: 100000
+    fee_rate: 0.0005
+    tick_size: 0.01
+    slippage_ticks: 1
+  maxExecutions: 16
+  timeNow: 1786579200000

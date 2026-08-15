@@ -939,6 +939,17 @@ describe('diagnostics', () => {
     expect(r.info.reassigned.has(declaredName(r, 'x'))).toBeTrue();
   });
 
+  test('rejects a compile-time zero numeric range step', () => {
+    for (const zero of ['0', '0.0', '-0.0']) {
+      const r = checkText(
+        ['value = for i = 1 to 3 by ' + zero, '    i'].join('\n'),
+      );
+      expect(r.errors.map(error => error.msg)).toContain(
+        "'for' step must not be zero",
+      );
+    }
+  });
+
   test('undeclared names and non-bool conditions report once', () => {
     const r = checkText('x = missing + 1');
     expect(r.errors.length).toBe(1);

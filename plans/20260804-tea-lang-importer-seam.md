@@ -94,5 +94,5 @@ testable. Codegen/runtime are out of scope.
       external path → staged error.
 - [x] `grep -r "from '../loader" src/checker` returns nothing (layering
       invariant holds).
-- [x] `bun src/main.ts parse --ir testdata/macd.tea` output identical to the
+- [x] `bun src/main.ts parse --ir tests/fixtures/macd.tea` output identical to the
       committed golden.

@@ -1,0 +1,312 @@
+//@version=1
+// Clean-room ATR ZigZag breakout with a strategy-local stop-entry/bracket
+// engine. The engine replays TradingView's documented OHLC path heuristic so
+// same-bar entry/exit collisions have an explicit deterministic order.
+strategy("ATR ZigZag breakout", shorttitle="ATR ZigZag", overlay=true)
+
+import broker
+
+pine_rma(float source, int length) =>
+	seed = ta.sma(source, length)
+	var float value = na
+	if na(value)
+		value := seed
+	else
+		value := (value * (length - 1) + source) / length
+	value
+
+pine_atr(int length) =>
+	previous_close = close[1]
+	true_range = na(previous_close) ? high - low : math.max(high - low, math.max(math.abs(high - previous_close), math.abs(low - previous_close)))
+	pine_rma(true_range, length)
+
+type BracketAccount
+	float initialCash
+	float cash
+	float signedQuantity = 0.0
+	float entryPrice = na
+	float activeStop = na
+	float activeTarget = na
+	int pendingSide = 0
+	float pendingEntry = na
+	float pendingStop = na
+	float pendingTarget = na
+	float realizedPnl = 0.0
+	float equityValue
+	float peakEquity
+	float maxDrawdownValue = 0.0
+	int fillCount = 0
+	int roundTrips = 0
+	int nextOrderId = 1
+	int nextFillId = 1
+
+	int submit(int side, float entry, float stop, float target) =>
+		if this.signedQuantity == 0.0
+			this.pendingSide := side
+			this.pendingEntry := entry
+			this.pendingStop := stop
+			this.pendingTarget := target
+		this.pendingSide
+
+	int cancel(int side) =>
+		if this.pendingSide == side
+			this.pendingSide := 0
+			float missing = na
+			this.pendingEntry := missing
+			this.pendingStop := missing
+			this.pendingTarget := missing
+		this.pendingSide
+
+	int enter_at(int side, float price, int barIndex) =>
+		if this.signedQuantity == 0.0 and this.pendingSide == side
+			isLong = side == 1
+			this.signedQuantity := isLong ? 1.0 : -1.0
+			this.entryPrice := price
+			this.activeStop := this.pendingStop
+			this.activeTarget := this.pendingTarget
+			this.cash := isLong ? this.cash - price : this.cash + price
+			commandId = isLong ? "Long Open" : "Short Open"
+			fillSide = isLong ? broker.Side.buy : broker.Side.sell
+			execution = broker.Fill.new(this.nextFillId, this.nextOrderId, commandId, fillSide, barIndex, price, price, 1.0, price, 0.0)
+			effect.emit(broker.FillExecuted.new(execution))
+			this.nextOrderId := this.nextOrderId + 1
+			this.nextFillId := this.nextFillId + 1
+			this.fillCount := this.fillCount + 1
+			this.pendingSide := 0
+			float missing = na
+			this.pendingEntry := missing
+			this.pendingStop := missing
+			this.pendingTarget := missing
+		this.fillCount
+
+	int exit_at(float price, int barIndex, string reason) =>
+		held_quantity = this.signedQuantity
+		if held_quantity != 0.0
+			isLong = held_quantity > 0.0
+			this.cash := isLong ? this.cash + price : this.cash - price
+			tradePnl = isLong ? price - this.entryPrice : this.entryPrice - price
+			this.realizedPnl := this.realizedPnl + tradePnl
+			commandId = isLong ? "Long " + reason : "Short " + reason
+			fillSide = isLong ? broker.Side.sell : broker.Side.buy
+			execution = broker.Fill.new(this.nextFillId, this.nextOrderId, commandId, fillSide, barIndex, price, price, 1.0, price, 0.0)
+			effect.emit(broker.FillExecuted.new(execution))
+			this.nextOrderId := this.nextOrderId + 1
+			this.nextFillId := this.nextFillId + 1
+			this.fillCount := this.fillCount + 1
+			this.roundTrips := this.roundTrips + 1
+			this.signedQuantity := 0.0
+			float missing = na
+			this.entryPrice := missing
+			this.activeStop := missing
+			this.activeTarget := missing
+		this.fillCount
+
+	int process_open(float price, int barIndex) =>
+		if this.signedQuantity > 0.0
+			if price <= this.activeStop
+				this.exit_at(price, barIndex, "Stop")
+			else if price >= this.activeTarget
+				this.exit_at(price, barIndex, "Target")
+		else if this.signedQuantity < 0.0
+			if price >= this.activeStop
+				this.exit_at(price, barIndex, "Stop")
+			else if price <= this.activeTarget
+				this.exit_at(price, barIndex, "Target")
+
+		if this.signedQuantity == 0.0 and this.pendingSide == 1 and price >= this.pendingEntry
+			this.enter_at(1, price, barIndex)
+			if price >= this.activeTarget
+				this.exit_at(price, barIndex, "Target")
+		else if this.signedQuantity == 0.0 and this.pendingSide == -1 and price <= this.pendingEntry
+			this.enter_at(-1, price, barIndex)
+			if price <= this.activeTarget
+				this.exit_at(price, barIndex, "Target")
+		this.fillCount
+
+	int process_segment(float fromPrice, float toPrice, int barIndex) =>
+		ascending = toPrice > fromPrice
+		descending = toPrice < fromPrice
+		if this.signedQuantity > 0.0
+			if ascending and fromPrice <= this.activeTarget and toPrice >= this.activeTarget
+				this.exit_at(this.activeTarget, barIndex, "Target")
+			else if descending and fromPrice >= this.activeStop and toPrice <= this.activeStop
+				this.exit_at(this.activeStop, barIndex, "Stop")
+		else if this.signedQuantity < 0.0
+			if ascending and fromPrice <= this.activeStop and toPrice >= this.activeStop
+				this.exit_at(this.activeStop, barIndex, "Stop")
+			else if descending and fromPrice >= this.activeTarget and toPrice <= this.activeTarget
+				this.exit_at(this.activeTarget, barIndex, "Target")
+
+		if this.signedQuantity == 0.0 and this.pendingSide == 1 and ascending and fromPrice <= this.pendingEntry and toPrice >= this.pendingEntry
+			entry_level = this.pendingEntry
+			this.enter_at(1, entry_level, barIndex)
+			if toPrice >= this.activeTarget
+				this.exit_at(this.activeTarget, barIndex, "Target")
+		else if this.signedQuantity == 0.0 and this.pendingSide == -1 and descending and fromPrice >= this.pendingEntry and toPrice <= this.pendingEntry
+			entry_level = this.pendingEntry
+			this.enter_at(-1, entry_level, barIndex)
+			if toPrice <= this.activeTarget
+				this.exit_at(this.activeTarget, barIndex, "Target")
+		this.fillCount
+
+	float mark(float price) =>
+		this.equityValue := this.cash + this.signedQuantity * price
+		if this.equityValue > this.peakEquity
+			this.peakEquity := this.equityValue
+		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - this.equityValue) / this.peakEquity
+		if drawdown > this.maxDrawdownValue
+			this.maxDrawdownValue := drawdown
+		this.equityValue
+
+	float total_return() const =>
+		(this.equityValue - this.initialCash) / this.initialCash
+
+zigzag_atr_length = input.int(50, "ZigZag ATR length", minval=1, maxval=300)
+zigzag_atr_multiple = input.float(3.0, "ZigZag ATR multiple", minval=0.1, maxval=20.0)
+stop_atr_multiple = input.float(1.0, "Stop ATR multiple", minval=0.1, maxval=20.0)
+risk_reward = input.float(2.0, "Reward multiple", minval=0.1, maxval=20.0)
+trading_window_mode = input.int(0, "Trading window profile: 0 disabled", minval=0, maxval=1)
+initial_cash = input.float(50000.0, "Initial cash", minval=1.0)
+
+var account = BracketAccount.new(initialCash = initial_cash, cash = initial_cash, equityValue = initial_cash, peakEquity = initial_cash)
+
+// Existing orders are replayed through the deterministic bar path before the
+// completed bar updates the ZigZag state and replaces pending orders.
+account.process_open(open, bar_index)
+high_first = math.abs(open - high) < math.abs(open - low)
+if high_first
+	account.process_segment(open, high, bar_index)
+	account.process_segment(high, low, bar_index)
+	account.process_segment(low, close, bar_index)
+else
+	account.process_segment(open, low, bar_index)
+	account.process_segment(low, high, bar_index)
+	account.process_segment(high, close, bar_index)
+
+atr_value = pine_atr(zigzag_atr_length)
+threshold = atr_value * zigzag_atr_multiple
+
+var int zigzag_direction = 0
+var float high_since_low = na
+var float low_since_high = na
+var float last_high_level = na
+var float last_low_level = na
+var int high_since_low_index = -1
+var int low_since_high_index = -1
+var int last_high_index = -1
+var int last_low_index = -1
+var bool is_new_high = false
+var bool is_new_low = false
+var bool high_broken = true
+var bool low_broken = true
+
+if bar_index == 0
+	zigzag_direction := 0
+	float missing = na
+	high_since_low := missing
+	low_since_high := missing
+	last_high_level := missing
+	last_low_level := missing
+	high_since_low_index := -1
+	low_since_high_index := -1
+	last_high_index := -1
+	last_low_index := -1
+	is_new_high := false
+	is_new_low := false
+else if bar_index == 1
+	high_since_low := high
+	low_since_high := low
+	high_since_low_index := bar_index
+	low_since_high_index := bar_index
+	zigzag_direction := 0
+	is_new_high := false
+	is_new_low := false
+else
+	previous_direction = zigzag_direction
+	is_new_high := false
+	is_new_low := false
+	if previous_direction == 0
+		high_since_low := na(high_since_low) ? high : math.max(high_since_low, high)
+		low_since_high := na(low_since_high) ? low : math.min(low_since_high, low)
+		if high_since_low - open > threshold
+			zigzag_direction := 1
+			low_since_high := high
+			low_since_high_index := bar_index
+		else if open - low_since_high > threshold
+			zigzag_direction := -1
+			high_since_low := low
+			high_since_low_index := bar_index
+	else if previous_direction == 1
+		if high >= high_since_low
+			high_since_low := high
+			high_since_low_index := bar_index
+			low_since_high := high
+			low_since_high_index := bar_index
+		else if low <= low_since_high
+			low_since_high := low
+			low_since_high_index := bar_index
+		if high_since_low - low_since_high > threshold
+			zigzag_direction := -1
+			last_high_level := high_since_low
+			last_high_index := high_since_low_index
+			is_new_high := true
+			high_since_low := high
+			high_since_low_index := bar_index
+	else if previous_direction == -1
+		if low <= low_since_high
+			high_since_low := low
+			high_since_low_index := bar_index
+			low_since_high := low
+			low_since_high_index := bar_index
+		else if high >= high_since_low
+			high_since_low := high
+			high_since_low_index := bar_index
+		if high_since_low - low_since_high > threshold
+			zigzag_direction := 1
+			last_low_level := low_since_high
+			last_low_index := low_since_high_index
+			is_new_low := true
+			low_since_high := low
+			low_since_high_index := bar_index
+
+if is_new_high
+	high_broken := false
+if is_new_low
+	low_broken := false
+if not na(last_high_level) and high >= last_high_level
+	high_broken := true
+if not na(last_low_level) and low <= last_low_level
+	low_broken := true
+
+base_long = zigzag_direction == 1 and not high_broken and not is_new_low
+base_short = zigzag_direction == -1 and not low_broken and not is_new_high
+valid_profile = trading_window_mode == 0
+
+if zigzag_direction == 1
+	account.cancel(-1)
+if zigzag_direction == -1
+	account.cancel(1)
+
+if account.signedQuantity == 0.0 and valid_profile
+	if base_long and not na(last_high_level)
+		stop_distance = stop_atr_multiple * atr_value
+		account.submit(1, last_high_level, last_high_level - stop_distance, last_high_level + risk_reward * stop_distance)
+	else if base_short and not na(last_low_level)
+		stop_distance = stop_atr_multiple * atr_value
+		account.submit(-1, last_low_level, last_low_level + stop_distance, last_low_level - risk_reward * stop_distance)
+
+account.mark(close)
+
+plot(close, "close")
+plot(base_long ? last_high_level : na, "candidate long")
+plot(base_short ? last_low_level : na, "candidate short")
+plot(account.signedQuantity != 0.0 ? account.activeStop : na, "active stop")
+plot(account.signedQuantity != 0.0 ? account.activeTarget : na, "active target")
+plot(account.signedQuantity, "signed position")
+plot(account.entryPrice, "entry price")
+plot(account.equityValue, "equity")
+plot(account.realizedPnl, "realized pnl")
+plot(account.fillCount, "fill count")
+plot(account.roundTrips, "round trips")
+plot(account.maxDrawdownValue, "maximum drawdown")
+plot(account.total_return(), "total return")

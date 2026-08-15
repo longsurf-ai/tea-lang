@@ -16,7 +16,7 @@ if (node === null) {
 const root = fileURLToPath(new URL('../../..', import.meta.url));
 const tests = [
   join(root, 'src/runtime/gpu/dawn.integration.ts'),
-  join(root, 'examples.gpu.integration.ts'),
+  join(root, 'tests/examples.gpu.integration.ts'),
 ];
 const result = spawnSync(
   node,

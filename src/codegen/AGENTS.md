@@ -26,9 +26,19 @@ WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
   provider, series payload, parameter sweep, job list, result capacity, GPU
   device, or dispatch policy. CPU/GPU runtimes own those physical inputs after
   codegen.
+- A WGSL artifact embeds the ordinary generated JS module as its binding
+  sidecar. GPU runtime executes that module's exact provisional `init`/`bind`
+  phase to resolve per-binding history capacities; neither codegen nor runtime
+  may introduce a second bound-expression language or evaluator.
 - Only Time-Machine ops lower to rt calls; arithmetic, comparisons, math
   intrinsics, and na()/nz() expand inline via the rules tables in lower.ts.
   Backend-specific rendering decisions live only in those tables.
+- Numeric ranges have no arbitrary target trip-count cap. JS and WGSL capture
+  bounds once, preserve inclusive ascending/descending semantics and
+  break/continue/index-write behavior, and terminate a dynamic zero or
+  non-progressing update safely. A separate sparse-effect analysis may still
+  require a provable emission bound; that transport constraint is not loop
+  eligibility.
 - Persistent declarations are lexical `InitName` statements. JS lowering must
   place initializer evaluation inside a `rt.needsInit` guard and publish it
   with `rt.initialize`; modules have no detached initializer-thunk table.

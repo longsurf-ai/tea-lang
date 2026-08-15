@@ -25,7 +25,7 @@ function strategyArtifact(): CompiledWgslProgram {
   const source = readFileSync(
     join(
       import.meta.dir,
-      '../../../testdata/execution/compile/strategy-components/source.tea',
+      '../../../tests/fixtures/execution/compile/strategy-components/source.tea',
     ),
     'utf8',
   );
@@ -152,12 +152,12 @@ describe('GPU execution preparation', () => {
     expect(partial.cachedWordsPerExecution).toBe(first.cacheEnd);
     const full = planGpuWorkgroupCache(artifact, 8, limits, {
       maxCacheBytesPerWorkgroup:
-        artifact.state.wordsPerExecution * 8 * Uint32Array.BYTES_PER_ELEMENT,
+        artifact.state.fixedWordCount * 8 * Uint32Array.BYTES_PER_ELEMENT,
     });
     expect(full.segmentIds).toEqual(
       artifact.cache.segments.map(segment => segment.id),
     );
-    expect(full.cachedWordsPerExecution).toBe(artifact.state.wordsPerExecution);
+    expect(full.cachedWordsPerExecution).toBe(artifact.state.fixedWordCount);
   });
 
   test('keeps a one-execution workgroup on authoritative storage', () => {
@@ -352,10 +352,18 @@ describe('GPU execution preparation', () => {
   test('resolves, packs, and reports fixed-width parameters for shared-context executions', async () => {
     const artifact = parameterArtifact();
     let resolutions = 0;
+    let seriesLookups = 0;
     const provider: DataProvider = {
       resolveContext: async () => {
         resolutions += 1;
-        return context({close: [10, 20]});
+        const resolved = context({close: [10, 20]});
+        return {
+          ...resolved,
+          series(id) {
+            seriesLookups += 1;
+            return resolved.series(id);
+          },
+        };
       },
     };
     const defaults = binding(provider);
@@ -370,6 +378,7 @@ describe('GPU execution preparation', () => {
     );
 
     expect(resolutions).toBe(1);
+    expect(seriesLookups).toBe(1);
     expect(
       prepared.executions.map(execution => execution.seriesOffset),
     ).toEqual([0, 0]);
@@ -425,6 +434,94 @@ describe('GPU execution preparation', () => {
         true,
       ),
     ).toBe(4);
+  });
+
+  test('bind-sizes child-frame history independently and packs its descriptors', async () => {
+    const compiled = compileProgramToWgsl(
+      mustBuild(
+        [
+          'indicator("bind-sized SMA")',
+          'length = input.int(3, minval=1, maxval=20)',
+          'plot(ta.sma(close, length))',
+        ].join('\n'),
+      ),
+    );
+    if (compiled.status !== 'compiled') {
+      throw new Error(JSON.stringify(compiled.eligibility.issues));
+    }
+    const artifact = compiled.artifact;
+    const sma = artifact.state.frames.find(frame => frame.owner === 'ta.sma');
+    const source = sma?.locals.find(local => local.name === 'source');
+    expect(source?.historyDescriptorWordOffset).not.toBeNull();
+    const firstProvider: DataProvider = {
+      resolveContext: async () =>
+        context({close: Array.from({length: 10}, (_, i) => i + 1)}),
+    };
+    const secondProvider: DataProvider = {
+      resolveContext: async () => context({close: [1, 2, 3, 4]}),
+    };
+    const prepared = await prepareGpuExecutionInputs(artifact, [
+      {...binding(firstProvider), params: {length: 3}},
+      {...binding(secondProvider), params: {length: 8}},
+    ]);
+    const [first, second] = prepared.executions;
+    expect(first?.stateOffset).toBe(0);
+    expect(second?.stateOffset).toBe(first?.stateWords);
+    expect(
+      first?.stateDescriptors.map(descriptor => descriptor.capacity),
+    ).toEqual([2]);
+    // length - 1 is seven, but the second context has only four rows.
+    expect(
+      second?.stateDescriptors.map(descriptor => descriptor.capacity),
+    ).toEqual([4]);
+    expect(first?.stateWords).toBe(artifact.state.fixedWordCount + 2 * 2);
+    expect(second?.stateWords).toBe(artifact.state.fixedWordCount + 4 * 2);
+
+    const state = new DataView(
+      prepared.statePayload.buffer,
+      prepared.statePayload.byteOffset,
+      prepared.statePayload.byteLength,
+    );
+    for (const execution of prepared.executions) {
+      const descriptor = execution.stateDescriptors[0]!;
+      const word = execution.stateOffset + descriptor.descriptorWordOffset;
+      expect(state.getUint32(word * 4, true)).toBe(
+        descriptor.historyWordOffset,
+      );
+      expect(state.getUint32((word + 1) * 4, true)).toBe(descriptor.capacity);
+    }
+    const descriptors = new DataView(
+      prepared.descriptorPayload.buffer,
+      prepared.descriptorPayload.byteOffset,
+      prepared.descriptorPayload.byteLength,
+    );
+    expect(
+      descriptors.getUint32(artifact.jobDescriptorOffsets.stateOffset, true),
+    ).toBe(first?.stateOffset);
+    expect(
+      descriptors.getUint32(artifact.jobDescriptorOffsets.stateWords, true),
+    ).toBe(first?.stateWords);
+    expect(
+      descriptors.getUint32(
+        artifact.jobDescriptorByteStride +
+          artifact.jobDescriptorOffsets.stateOffset,
+        true,
+      ),
+    ).toBe(second?.stateOffset);
+  });
+
+  test('retains one committed cell for persistent state without source history', async () => {
+    const artifact = resultlessArtifact();
+    const prepared = await prepareGpuExecutionInputs(artifact, [
+      binding({
+        resolveContext: async () => context({close: [1, 2, 3]}),
+      }),
+    ]);
+    const execution = prepared.executions[0]!;
+    expect(
+      execution.stateDescriptors.map(descriptor => descriptor.capacity),
+    ).toEqual([1]);
+    expect(execution.stateWords).toBe(artifact.state.fixedWordCount + 2);
   });
 
   test('derives a smaller chunk from the effect bound and total GPU budget', async () => {
@@ -602,7 +699,7 @@ describe('GPU execution preparation', () => {
       prepareGpuExecutionInputs(artifact, [
         binding({resolveContext: async () => context({open: [1]})}),
       ]),
-    ).rejects.toThrow("missing required series 'close'");
+    ).rejects.toThrow("series 'close' is not provided by this context");
   });
 
   test('rejects series extent and non-f32 payload mismatches', async () => {
@@ -613,7 +710,7 @@ describe('GPU execution preparation', () => {
           resolveContext: async () => context({open: [1, 2], close: [3]}, 2),
         }),
       ]),
-    ).rejects.toThrow(/has 1 rows; expected 2/);
+    ).rejects.toThrow(/series 1 has 1 rows, context has 2/);
     await expect(
       prepareGpuExecutionInputs(artifact, [
         binding({
@@ -645,7 +742,7 @@ describe('GPU execution preparation', () => {
           }),
         }),
       ]),
-    ).rejects.toThrow("missing required series 'close'");
+    ).rejects.toThrow("series 'close' is not provided by this context");
     expect(reads).toBe(0);
 
     await expect(
@@ -660,7 +757,7 @@ describe('GPU execution preparation', () => {
           }),
         }),
       ]),
-    ).rejects.toThrow("series 'close' has 1 rows; expected 2");
+    ).rejects.toThrow('series 1 has 1 rows, context has 2');
     expect(reads).toBe(0);
   });
 
@@ -802,20 +899,38 @@ describe('GPU execution preparation', () => {
     const artifact = strategyArtifact();
     await expect(
       prepareGpuExecutionInputs(
-        {...artifact, abi: 2} as unknown as CompiledWgslProgram,
+        {...artifact, abi: 3} as unknown as CompiledWgslProgram,
         [],
       ),
-    ).rejects.toThrow(/unsupported GPU artifact ABI 2; expected 1/);
+    ).rejects.toThrow(/unsupported GPU artifact ABI 3; expected 2/);
     await expect(
-      prepareGpuExecutionInputs({...artifact, executionStateByteStride: 4}, []),
-    ).rejects.toThrow(/executionStateByteStride 4 is below minimum 8/);
+      prepareGpuExecutionInputs(
+        {
+          ...artifact,
+          bindingModule: {
+            ...artifact.bindingModule,
+            source: artifact.bindingModule.source.replace(
+              '  abi: 1,',
+              '  abi: 999,',
+            ),
+          },
+        },
+        [],
+      ),
+    ).rejects.toThrow(/binding module disagrees with the artifact manifest/);
+    await expect(
+      prepareGpuExecutionInputs(
+        {...artifact, executionStateFixedByteSize: 4},
+        [],
+      ),
+    ).rejects.toThrow(/executionStateFixedByteSize 4 is below minimum 8/);
     await expect(
       prepareGpuExecutionInputs(
         {
           ...artifact,
           state: {
             ...artifact.state,
-            wordsPerExecution: artifact.state.wordsPerExecution + 1,
+            fixedWordCount: artifact.state.fixedWordCount + 1,
           },
         },
         [],
@@ -858,8 +973,7 @@ describe('GPU execution preparation', () => {
                   index === persistentIndex
                     ? {
                         ...local,
-                        historyCapacity: 0,
-                        historyWordOffset: null,
+                        historyDescriptorWordOffset: null,
                       }
                     : local,
                 ),
@@ -892,12 +1006,11 @@ describe('GPU execution preparation', () => {
       prepareGpuExecutionInputs(
         {
           ...artifact,
-          executionStateByteStride:
+          executionStateFixedByteSize:
             (artifact.state.rootFrameWordOffset + hugeRootWords) * 4,
           state: {
             ...artifact.state,
-            wordsPerExecution:
-              artifact.state.rootFrameWordOffset + hugeRootWords,
+            fixedWordCount: artifact.state.rootFrameWordOffset + hugeRootWords,
             frames: [
               {...rootFrame, wordCount: hugeRootWords},
               ...artifact.state.frames.slice(1),

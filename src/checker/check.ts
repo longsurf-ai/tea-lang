@@ -3245,6 +3245,9 @@ class Checker {
         );
       }
     }
+    if (stepTv?.value === 0 && e.step !== null) {
+      this.error(e.step.pos, "'for' step must not be zero");
+    }
     const anyFloat = [fromTv, toTv, stepTv].some(
       tv => tv !== null && tv.type.kind === TypeKind.Float,
     );

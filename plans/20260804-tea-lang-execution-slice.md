@@ -48,7 +48,7 @@ semantics the compiler describes (depths, storage classes, frames, slots,
 emissions) are unexecuted and therefore numerically unverified — including
 the ~40 ta.\* functions, which only ever type-check today.
 
-This slice makes `tea run script.tea --input testdata/dataset.csv` execute
+This slice makes `tea run script.tea --input tests/fixtures/dataset.csv` execute
 real bars: lower the Program to a JS module against a small runtime ABI
 (`rt`), implement the kernel that owns frames, rings, and the main loop, and
 bind it to a csv DataProvider and a printing OutputSink. Numeric golden
@@ -90,7 +90,7 @@ traces become the execution-level regression surface.
      is a bind error. `tea run <file> --input <csv>` binds, executes, and
      prints per-bar channel values (stable text form reused by goldens).
 5. **Execution goldens + provisional harness** — `src/runtime/run.test.ts`,
-   `testdata/run/`
+   `tests/fixtures/run/`
    - Numeric golden traces: macd.tea and a ta-coverage script over
      `dataset.csv` (extend the CSV with high/low/volume columns as needed),
      `UPDATE_GOLDENS=1` convention.
@@ -104,9 +104,9 @@ traces become the execution-level regression surface.
 
 - [x] `bun run typecheck` and `bun test` green; new rt/codegen suites
       included.
-- [x] `bun src/main.ts run testdata/macd.tea --input testdata/dataset.csv`
+- [x] `bun src/main.ts run tests/fixtures/macd.tea --input tests/fixtures/dataset.csv`
       prints per-bar MACD/signal/histogram values; exit 0.
-- [x] Execution goldens locked under `testdata/run/`; rerun is
+- [x] Execution goldens locked under `tests/fixtures/run/`; rerun is
       byte-identical (determinism).
 - [x] Hand-checked vectors: ta.sma/ema over a tiny known series match
       hand-computed values in unit tests (first numeric ground truth).

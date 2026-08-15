@@ -510,13 +510,16 @@ runtime nor the generic reporting layer recognizes strategy packages.
 
 ## GPU binding and execution
 
-WGSL codegen returns a bind-independent artifact: the complete shader, target
-numeric/layout contract, required inputs, output/effect schemas, persistent
-execution-state layout, and bounded effect analysis. It contains no concrete
-rows, binding identities, resource allocation, or device.
+WGSL codegen returns a bind-independent artifact: the complete shader, the
+ordinary generated JS binding module, target numeric/layout contract, required
+inputs, output/effect schemas, persistent execution-state layout, and bounded
+effect analysis. It contains no concrete rows, binding identities, resource
+allocation, or device. The JS sidecar is generated from the same Program and
+exists only to run the established `init`/`bind` protocol; it is not another
+semantic representation.
 
 That physical boundary is the versioned `CompiledWgslProgram` contract in
-`src/gpu/contract.ts`. Its `abi` is currently `1`; the same module owns every
+`src/gpu/contract.ts`. Its `abi` is currently `2`; the same module owns every
 fixed bind-group index, descriptor offset, and scalar stride used by both
 WGSL lowering and runtime validation. Codegen produces this contract and the
 GPU runtime consumes it without importing codegen implementation modules or
@@ -559,6 +562,14 @@ int/float/bool/enum parameters share the ordinary resolver and are packed per
 execution.
 Source/string/color parameters and requests remain fail-closed exclusions.
 
+For every concrete binding, the GPU runtime loads the artifact's JS sidecar and
+uses `JSRuntime`'s provisional bind-only phase. The generated `bind` section
+evaluates immutable aliases and bound history expressions against the concrete
+parameters and provider extent, then reports capacities by published frame id
+and slot. The provisional CPU frame is discarded before allocation. The GPU
+runtime validates the sidecar manifest against the artifact, but never reads a
+Program or interprets a Tea expression itself.
+
 `maxRowsPerChunk` is a physical ceiling whose default is 65,536 rows. Dense
 result capacity is exact from each execution's sink requirements: a complete
 stream reserves the chosen chunk rows, while `denseRows: 'final'` reserves one
@@ -570,23 +581,28 @@ effect records for that execution. Otherwise, when
 artifact's conservative maximum effects per row; an explicit value cannot be
 smaller than one row's proven maximum.
 
-Each Program execution's persistent frame state, initialization bits, and
-`nextRow` live in a disjoint read-write GPU-buffer range and remain
-device-resident across `runChunk()` calls. Reusable dense/effect buffers cover
-only the current chunk. Every dispatch executes absolute rows from that
-execution's cursor, so `bar_index`, final-bar behavior, row ids, and
-package-global state are independent of chunk boundaries. Completed
-executions become inert while longer executions continue.
+Each Program execution owns a disjoint read-write GPU-buffer range and remains
+device-resident across `runChunk()` calls. Its compile-time fixed prefix holds
+`nextRow`, frame topology, activation/init flags, scratch values, and two-word
+history descriptors; bind-sized committed-history payloads follow the prefix.
+The job descriptor publishes that binding's state offset and word count. Thus
+one shader can execute parameter bindings whose history capacities differ.
+Reusable dense/effect buffers cover only the current chunk. Every dispatch
+executes absolute rows from that execution's cursor, so `bar_index`, final-bar
+behavior, row ids, and package-global state are independent of chunk
+boundaries. Completed executions become inert while longer executions
+continue.
 
-The persistent arena contains only temporally observable slots. A
+The persistent state contains only temporally observable slots. A
 history-free per-bar function receiver or parameter stays in a mutable WGSL
 function local; a history-bearing formal is projected into its call-site frame.
 
 Storage remains the authoritative state between dispatches. At session
-creation, the runtime may select a compiler-ranked, whole-segment prefix to
-stage in workgroup memory for one dispatch. The selected workgroup size and
-prefix respect both device limits and `maxCacheBytesPerWorkgroup`; zero budget
-selects the storage-only entry point. The runtime also stays storage-only when
+creation, the runtime may select a compiler-ranked, whole-segment portion of
+the fixed state prefix to stage in workgroup memory for one dispatch.
+Binding-sized history payloads stay in storage. The selected workgroup size
+and prefix respect both device limits and `maxCacheBytesPerWorkgroup`; zero
+budget selects the storage-only entry point. The runtime also stays storage-only when
 the workgroup contains one Program execution or the artifact owns more than 16
 cache segments: at those boundaries, cache copying and generated address
 routing cost more than the staged accesses they replace. `GpuRunSummary.cache`,

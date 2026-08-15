@@ -29,7 +29,7 @@ subset.
 schema: tea.execution/v1
 
 program:
-  source: ./ema-cross-strategy.tea
+  source: ./strategy.tea
 
 runtime:
   kind: webgpu
@@ -42,7 +42,7 @@ execution:
   kind: sweep
   provider:
     kind: csv
-    path: ./binance-btcusdt-1d.csv
+    path: ../../data/binance/btcusdt-1d.csv
     sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
   parameters:
     fast_length:

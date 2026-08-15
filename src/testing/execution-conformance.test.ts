@@ -1,7 +1,7 @@
 // Purpose: Fail-closed execution conformance harness — every committed case runs through compile, load, bind, runAll, and TraceSink against independently reviewed, hash-pinned references.
 
-import {readdirSync, readFileSync, statSync} from 'node:fs';
-import {join, relative, resolve} from 'node:path';
+import {existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
+import {dirname, join, relative, resolve} from 'node:path';
 import {describe, expect, test} from 'bun:test';
 import {formatPos} from '../base/pos';
 import {compile} from '../compile';
@@ -23,7 +23,7 @@ import {
   sha256,
 } from './execution-conformance-schema';
 
-const EXECUTION_ROOT = join(import.meta.dir, '../../testdata/execution');
+const EXECUTION_ROOT = join(import.meta.dir, '../../tests/fixtures/execution');
 const CONFORMANCE_TIME_NOW = 1_700_000_000_000;
 
 function allFiles(root: string): string[] {
@@ -202,6 +202,17 @@ async function runCase(entry: CorpusCase): Promise<{
     await readJson(join(EXECUTION_ROOT, entry.reference)),
     entry.reference,
   );
+  const referenceDirectory = dirname(join(EXECUTION_ROOT, entry.reference));
+  for (const document of reference.oracle.references) {
+    if (document.startsWith('https://') || document.startsWith('http://')) {
+      expect(() => new URL(document), `${entry.id} oracle URL`).not.toThrow();
+      continue;
+    }
+    expect(
+      existsSync(resolve(referenceDirectory, document)),
+      `${entry.id} oracle reference '${document}' must exist`,
+    ).toBe(true);
+  }
   if (entry.kind === 'differential') {
     expect(
       reference.oracle.kind,

@@ -1,4 +1,4 @@
-// Purpose: IR dump goldens — every testdata/ir/*.tea must node cleanly and lock its Program dump; regenerate with UPDATE_GOLDENS=1 bun test.
+// Purpose: IR dump goldens — every tests/fixtures/ir/*.tea must node cleanly and lock its Program dump; regenerate with UPDATE_GOLDENS=1 bun test.
 
 import {existsSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -6,7 +6,7 @@ import {describe, expect, test} from 'bun:test';
 import {dumpProgram} from '../ir/dumper';
 import {buildText} from './testing';
 
-const TESTDATA = join(import.meta.dir, '../../testdata/ir');
+const TESTDATA = join(import.meta.dir, '../../tests/fixtures/ir');
 const UPDATE = process.env['UPDATE_GOLDENS'] === '1';
 
 function checkGolden(goldenPath: string, dump: string): void {
@@ -22,7 +22,7 @@ function checkGolden(goldenPath: string, dump: string): void {
   expect(dump).toBe(readFileSync(goldenPath, 'utf8'));
 }
 
-// Root-level testdata fixtures that must compile through check + noding —
+// Root-level fixtures that must compile through check + noding —
 // grows toward the full corpus as catalog and language coverage lands.
 const CHECKABLE = ['macd.tea'];
 

@@ -1,0 +1,27 @@
+schema: tea.execution/v1
+
+program:
+  source: ./strategy.tea
+
+runtime:
+  kind: javascript
+
+execution:
+  kind: sweep
+  provider:
+    kind: csv
+    path: ../../data/binance/btcusdt-1d.csv
+    sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
+  parameters:
+    zigzag_atr_length:
+      range: {start: 30, stop: 70, step: 20}
+    zigzag_atr_multiple:
+      range: {start: 2, stop: 4, step: 1}
+    stop_atr_multiple:
+      range: {start: 0.75, stop: 1.25, step: 0.5}
+    risk_reward:
+      range: {start: 1.5, stop: 2.5, step: 1}
+    trading_window_mode: 0
+    initial_cash: 50000
+  maxExecutions: 36
+  timeNow: 1786579200000

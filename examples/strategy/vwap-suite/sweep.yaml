@@ -1,0 +1,61 @@
+schema: tea.execution/v1
+
+program:
+  source: ./strategy.tea
+
+runtime:
+  kind: javascript
+
+execution:
+  kind: sweep
+  provider:
+    kind: csv
+    path: ../../data/binance/btcusdt-1d.csv
+    sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
+  parameters:
+    anchor_mode: 2
+    strategy_mode:
+      range: {start: 0, stop: 1, step: 1}
+    entry_type: 2
+    band1_mult:
+      range: {start: 1, stop: 1.5, step: 0.5}
+    band2_mult:
+      range: {start: 1.5, stop: 2.5, step: 0.5}
+    band3_mult: 3
+    mean_reversion_band: 2
+    volume_length: 20
+    volume_threshold: 1
+    use_volume_filter: 1
+    atr_length: 14
+    minimum_atr_percent: 0.2
+    use_volatility_filter: 1
+    minimum_bandwidth_percent: 0.2
+    use_bandwidth_filter: 1
+    slope_lookback: 5
+    minimum_slope_percent: 0.05
+    use_slope_filter: 1
+    adx_length: 14
+    maximum_mean_reversion_adx: 30
+    use_adx_filter: 1
+    maximum_deviation_atr: 3
+    secondary_indicator: 0
+    rsi_length: 14
+    trend_rsi_minimum: 50
+    mean_reversion_rsi_oversold: 30
+    mean_reversion_rsi_overbought: 70
+    regime_ema_length: 200
+    risk_percent:
+      range: {start: 0.5, stop: 1, step: 0.5}
+    maximum_position_percent: 20
+    stop_atr_multiple:
+      range: {start: 1.5, stop: 2, step: 0.5}
+    stop_loss_method: 0
+    profit_method: 0
+    break_even_atr: 1
+    use_break_even: 0
+    fixed_take_profit: 0
+    initial_cash: 100000
+    fee_rate: 0.0005
+    slippage_rate: 0
+  maxExecutions: 48
+  timeNow: 1786579200000

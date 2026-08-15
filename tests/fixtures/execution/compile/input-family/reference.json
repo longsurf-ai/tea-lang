@@ -1,0 +1,419 @@
+{
+  "version": 1,
+  "oracle": {
+    "kind": "tea-contract",
+    "description": "Compile-through contract for the supported input family; the expected values follow directly from the committed defaults in source.tea.",
+    "references": ["../../../../../docs/conformance.md"]
+  },
+  "tolerance": {"absolute": 0, "relative": 0},
+  "outputs": [
+    {
+      "oid": 0,
+      "effect": "indicator",
+      "staticArgs": [["title", "Input family compile-through"]],
+      "boundArgs": [],
+      "channels": []
+    },
+    {
+      "oid": 1,
+      "effect": "plot",
+      "staticArgs": [["title", "Result"]],
+      "boundArgs": [["color", "#2196F3"]],
+      "channels": [["series", "float"]]
+    },
+    {
+      "oid": 2,
+      "effect": "plot",
+      "staticArgs": [["title", "Folded overflow"]],
+      "boundArgs": [],
+      "channels": [["series", "float"]]
+    },
+    {
+      "oid": 3,
+      "effect": "plot",
+      "staticArgs": [["title", "Dynamic overflow"]],
+      "boundArgs": [],
+      "channels": [["series", "float"]]
+    }
+  ],
+  "rows": [
+    {
+      "row": 0,
+      "emissions": [
+        {"oid": 1, "provisional": false, "channels": [8.5]},
+        {"oid": 2, "provisional": false, "channels": [null]},
+        {"oid": 3, "provisional": false, "channels": [null]}
+      ]
+    },
+    {
+      "row": 1,
+      "emissions": [
+        {"oid": 1, "provisional": false, "channels": [10]},
+        {"oid": 2, "provisional": false, "channels": [null]},
+        {"oid": 3, "provisional": false, "channels": [null]}
+      ]
+    }
+  ],
+  "bindings": [
+    {
+      "name": "defaults",
+      "params": [],
+      "inputs": [
+        {
+          "spec": {
+            "name": "enabled",
+            "title": "Enabled",
+            "type": "bool",
+            "control": "bool",
+            "defaultValue": true,
+            "constraints": null,
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "none",
+            "seriesSid": null
+          },
+          "value": true,
+          "active": true
+        },
+        {
+          "spec": {
+            "name": "length",
+            "title": "Length",
+            "type": "int",
+            "control": "int",
+            "defaultValue": 5,
+            "constraints": {
+              "kind": "options",
+              "options": [3, 5, 8]
+            },
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "all",
+            "seriesSid": null
+          },
+          "value": 5,
+          "active": true
+        },
+        {
+          "spec": {
+            "name": "scale",
+            "title": "Scale",
+            "type": "float",
+            "control": "float",
+            "defaultValue": 1.5,
+            "constraints": {
+              "kind": "range",
+              "minval": 0.5,
+              "maxval": 3,
+              "step": 0.5
+            },
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "all",
+            "seriesSid": null
+          },
+          "value": 1.5,
+          "active": true
+        },
+        {
+          "spec": {
+            "name": "method",
+            "title": "Method",
+            "type": "string",
+            "control": "string",
+            "defaultValue": "SMA",
+            "constraints": {
+              "kind": "options",
+              "options": ["SMA", "EMA"]
+            },
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "all",
+            "seriesSid": null
+          },
+          "value": "SMA",
+          "active": true
+        },
+        {
+          "spec": {
+            "name": "tone",
+            "title": "Tone",
+            "type": "color",
+            "control": "color",
+            "defaultValue": "#2196F3",
+            "constraints": null,
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "none",
+            "seriesSid": null
+          },
+          "value": "#2196F3",
+          "active": true
+        },
+        {
+          "spec": {
+            "name": "source",
+            "title": "Source",
+            "type": "source",
+            "control": "source",
+            "defaultValue": "close",
+            "constraints": null,
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": true,
+            "display": "all",
+            "seriesSid": 1
+          },
+          "value": "close",
+          "active": true
+        },
+        {
+          "spec": {
+            "name": "mode",
+            "title": "Mode",
+            "type": "enum",
+            "control": "enum",
+            "defaultValue": "fast",
+            "constraints": {
+              "kind": "options",
+              "options": ["fast", "slow"]
+            },
+            "enumType": {
+              "name": "Mode",
+              "members": [
+                {"name": "fast", "title": "Fast"},
+                {"name": "slow", "title": "Slow"}
+              ]
+            },
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "all",
+            "seriesSid": null
+          },
+          "value": "fast",
+          "active": true
+        },
+        {
+          "spec": {
+            "name": "auto",
+            "title": "Auto",
+            "type": "int",
+            "control": "auto",
+            "defaultValue": 2,
+            "constraints": null,
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "all",
+            "seriesSid": null
+          },
+          "value": 2,
+          "active": true
+        }
+      ]
+    },
+    {
+      "name": "disabled-enum-rebind",
+      "params": [
+        ["enabled", false],
+        ["mode", "slow"]
+      ],
+      "inputs": [
+        {
+          "spec": {
+            "name": "enabled",
+            "title": "Enabled",
+            "type": "bool",
+            "control": "bool",
+            "defaultValue": true,
+            "constraints": null,
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "none",
+            "seriesSid": null
+          },
+          "value": false,
+          "active": true
+        },
+        {
+          "spec": {
+            "name": "length",
+            "title": "Length",
+            "type": "int",
+            "control": "int",
+            "defaultValue": 5,
+            "constraints": {
+              "kind": "options",
+              "options": [3, 5, 8]
+            },
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "all",
+            "seriesSid": null
+          },
+          "value": 5,
+          "active": false
+        },
+        {
+          "spec": {
+            "name": "scale",
+            "title": "Scale",
+            "type": "float",
+            "control": "float",
+            "defaultValue": 1.5,
+            "constraints": {
+              "kind": "range",
+              "minval": 0.5,
+              "maxval": 3,
+              "step": 0.5
+            },
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "all",
+            "seriesSid": null
+          },
+          "value": 1.5,
+          "active": false
+        },
+        {
+          "spec": {
+            "name": "method",
+            "title": "Method",
+            "type": "string",
+            "control": "string",
+            "defaultValue": "SMA",
+            "constraints": {
+              "kind": "options",
+              "options": ["SMA", "EMA"]
+            },
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "all",
+            "seriesSid": null
+          },
+          "value": "SMA",
+          "active": false
+        },
+        {
+          "spec": {
+            "name": "tone",
+            "title": "Tone",
+            "type": "color",
+            "control": "color",
+            "defaultValue": "#2196F3",
+            "constraints": null,
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "none",
+            "seriesSid": null
+          },
+          "value": "#2196F3",
+          "active": false
+        },
+        {
+          "spec": {
+            "name": "source",
+            "title": "Source",
+            "type": "source",
+            "control": "source",
+            "defaultValue": "close",
+            "constraints": null,
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": true,
+            "display": "all",
+            "seriesSid": 1
+          },
+          "value": "close",
+          "active": false
+        },
+        {
+          "spec": {
+            "name": "mode",
+            "title": "Mode",
+            "type": "enum",
+            "control": "enum",
+            "defaultValue": "fast",
+            "constraints": {
+              "kind": "options",
+              "options": ["fast", "slow"]
+            },
+            "enumType": {
+              "name": "Mode",
+              "members": [
+                {"name": "fast", "title": "Fast"},
+                {"name": "slow", "title": "Slow"}
+              ]
+            },
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "all",
+            "seriesSid": null
+          },
+          "value": "slow",
+          "active": false
+        },
+        {
+          "spec": {
+            "name": "auto",
+            "title": "Auto",
+            "type": "int",
+            "control": "auto",
+            "defaultValue": 2,
+            "constraints": null,
+            "enumType": null,
+            "group": null,
+            "inline": null,
+            "tooltip": null,
+            "confirm": false,
+            "display": "all",
+            "seriesSid": null
+          },
+          "value": 2,
+          "active": false
+        }
+      ]
+    }
+  ],
+  "deviations": []
+}

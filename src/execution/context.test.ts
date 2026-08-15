@@ -15,7 +15,10 @@ import type {ExecutionConfig} from './config';
 import {ExecutionConfigError} from './config';
 import {resolveExecutionContext} from './context';
 
-const SOURCE = join(import.meta.dir, '../../testdata/cli/parameter-report.tea');
+const SOURCE = join(
+  import.meta.dir,
+  '../../tests/fixtures/cli/parameter-report.tea',
+);
 const CSV = new TextEncoder().encode('time,close\n100,1\n200,2\n');
 
 describe('execution context', () => {

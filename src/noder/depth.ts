@@ -13,7 +13,7 @@ import {
 } from '../ir/node';
 import {ParamDefaultKind, type IrFunc, type Program} from '../ir/program';
 import {IntType, Qualifier, joinQualifiers, qualifierLE} from '../ir/type';
-import {funcsOf, namesOf} from '../ir/visit';
+import {funcsOf, namesOf, walkIrExpr} from '../ir/visit';
 import {
   exprChildren,
   immutableBindLocals,
@@ -45,6 +45,11 @@ interface Normalized {
 
 interface WalkContext {
   readonly env: Map<Name, Normalized>;
+  // Exact induction-variable reads may use the bind-normalized range maximum.
+  // More complex expressions stay dynamic until an interval pass can prove a
+  // safe maximum; substituting the endpoint through arbitrary arithmetic can
+  // under-estimate decreasing expressions.
+  readonly induction: ReadonlyMap<Name, Normalized>;
   readonly immutable: ReadonlySet<Name>;
   readonly immutableByFunc: ReadonlyMap<IrFunc, ReadonlySet<Name>>;
   readonly scope: 'root' | 'function';
@@ -112,7 +117,13 @@ function collectDemands(
       }
       return;
     }
-    const normalized = normalize(offset, ctx, functionNames);
+    const induction =
+      offset.kind === IrKind.HistRead &&
+      offset.offset === null &&
+      offset.place.kind === PlaceKind.Name
+        ? ctx.induction.get(offset.place.name)
+        : undefined;
+    const normalized = induction ?? normalize(offset, ctx, functionNames);
     if (
       qualifierLE(normalized.expr.qualifier, Qualifier.Simple) &&
       normalized.rootSafe
@@ -184,6 +195,7 @@ function collectDemands(
     active.add(expr.func);
     const callee: WalkContext = {
       env,
+      induction: new Map(),
       immutable: immutableByFunc.get(expr.func) ?? new Set<Name>(),
       immutableByFunc,
       scope: 'function',
@@ -208,6 +220,59 @@ function collectDemands(
       walkBlock(expr.stmts, expr.value, ctx);
       return;
     }
+    if (expr.kind === IrKind.ForExpr) {
+      walkExpr(expr.from, ctx);
+      walkExpr(expr.to, ctx);
+      if (expr.step !== null) walkExpr(expr.step, ctx);
+      const from = normalize(expr.from, ctx, functionNames);
+      const to = normalize(expr.to, ctx, functionNames);
+      let maximum: Normalized;
+      const step = expr.step;
+      if (
+        step === null ||
+        (step.kind === IrKind.Const &&
+          typeof step.value === 'number' &&
+          step.value > 0)
+      ) {
+        maximum = to;
+      } else if (
+        step.kind === IrKind.Const &&
+        typeof step.value === 'number' &&
+        step.value < 0
+      ) {
+        maximum = from;
+      } else {
+        const args = [from.expr, to.expr];
+        maximum = {
+          expr: {
+            kind: IrKind.CallNative,
+            pos: expr.pos,
+            type: IntType,
+            qualifier: joinQualifiers(from.expr.qualifier, to.expr.qualifier),
+            native: 'math.max',
+            slot: null,
+            args,
+            argumentEvaluationOrder: [0, 1],
+          },
+          rootSafe: from.rootSafe && to.rootSafe,
+        };
+      }
+      const induction = new Map(ctx.induction);
+      let indexReassigned = false;
+      walkIrExpr(expr.body, {
+        stmt: stmt => {
+          if (stmt.kind === IrKind.WriteName && stmt.name === expr.index) {
+            indexReassigned = true;
+          }
+        },
+      });
+      if (!indexReassigned) {
+        induction.set(expr.index, maximum);
+      }
+      const loop = {...ctx, env: new Map(ctx.env), induction};
+      walkBlock(expr.body.stmts, expr.body.value, loop);
+      return;
+    }
     for (const child of exprChildren(expr)) {
       walkExpr(child, ctx);
     }
@@ -215,6 +280,7 @@ function collectDemands(
 
   const root: WalkContext = {
     env: new Map(),
+    induction: new Map(),
     immutable: rootImmutable,
     immutableByFunc,
     scope: 'root',
@@ -383,6 +449,7 @@ function normalizeFunctionCall(
   active.add(call.func);
   const callee: WalkContext = {
     env,
+    induction: new Map(),
     immutable: ctx.immutableByFunc.get(call.func) ?? new Set<Name>(),
     immutableByFunc: ctx.immutableByFunc,
     scope: 'function',

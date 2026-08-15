@@ -12,7 +12,7 @@ function componentProgram() {
     readFileSync(
       join(
         import.meta.dir,
-        '../../../testdata/execution/compile/strategy-components/source.tea',
+        '../../../tests/fixtures/execution/compile/strategy-components/source.tea',
       ),
       'utf8',
     ),

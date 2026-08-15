@@ -1,0 +1,51 @@
+schema: tea.execution/v1
+
+program:
+  source: ./strategy.tea
+
+runtime:
+  kind: javascript
+
+execution:
+  kind: sweep
+  provider:
+    kind: csv
+    path: ../../data/binance/btcusdt-1d.csv
+    sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
+  parameters:
+    bb_length:
+      range: {start: 12, stop: 16, step: 4}
+    bb_multiplier:
+      range: {start: 1, stop: 1.4, step: 0.4}
+    long_ema_length: 20
+    short_ema_length: 10
+    minimum_short_adx: 25
+    use_adaptive_multiplier: 0
+    use_adaptive_signals: 0
+    vov_length: 20
+    vov_gain: 0.6
+    vov_scale_min: 0.5
+    vov_scale_max: 2
+    regime_mode: 0
+    rank_length: 200
+    trend_rank_minimum: 60
+    slope_length: 10
+    slope_threshold: 0.1
+    atr_length: 14
+    atr_stop_multiple:
+      range: {start: 1.5, stop: 2, step: 0.5}
+    atr_target_multiple:
+      range: {start: 2.5, stop: 3.5, step: 1}
+    break_even_r: 1
+    use_time_exit: 0
+    minimum_hold_bars: 30
+    profit_extension_bars: 15
+    time_profit_gate_r: 0.25
+    bias_history_length: 16
+    allocation_percent: 5
+    initial_cash: 25000
+    fee_rate: 0.0003
+    tick_size: 0.01
+    slippage_ticks: 3
+  maxExecutions: 16
+  timeNow: 1786579200000

@@ -350,7 +350,10 @@ unreachable never enter `requests` — dead-request elimination by construction.
   error for now.
 - A value-position loop yields the last completed iteration's block value,
   `na` if no iteration completed; `break` skips the current iteration's
-  value.
+  value. A numeric range captures its start, end, and step once, uses inclusive
+  endpoints in either direction, and has no language-level trip-count ceiling.
+  A compile-time zero step is an error; a dynamic zero, non-finite, wrapping,
+  or numerically non-progressing update terminates without wedging execution.
 - User-value construction consumes the constructor call's single resolution. Its
   field-ordered arguments include both supplied expressions and field-owned
   defaults; the noder temporarily reads each checked expression's `Info` while
@@ -403,8 +406,10 @@ unreachable never enter `requests` — dead-request elimination by construction.
   and `ExecutionInput`, then combined into one exact `bound` maximum
   (invalid/na components contribute zero). A demand that still depends on
   per-bar or unresolved frame state is `capped` by
-  `indicator(max_bars_back=…)` or the engine default (500). Interval analysis
-  over loop bounds refines dynamic demands later.
+  `indicator(max_bars_back=…)` or the engine default (500). For a history read
+  indexed directly by a numeric range's induction variable, the noder uses the
+  range's bind-safe maximum as the exact demand. More complex index arithmetic
+  remains capped until a general interval pass can prove it safely.
 
 ## One Program, multiple targets
 
@@ -420,20 +425,25 @@ their package names nor gives them privileged nodes or ABI slots. Its
 fail-closed audit describes only which generic Program constructs its current
 target profile can represent.
 
-Concrete bindings are not Program facts. After codegen, the CPU runtime may bind
-one ordinary JS module repeatedly to isolated providers/parameters and capture
-committed emissions through an `OutputSink`. The GPU runtime binds one ordinary
-WGSL artifact to ordered `BindInputs[]`, packs buffers, constructs dispatch/readback
-metadata, and submits it to an injected device. Those runtime contracts do not
-change the Program or reinterpret Tea matching/accounting semantics. See
-[GPU Lowering](advanced/gpu-lowering.md).
+Concrete bindings are not Program facts. After codegen, the CPU runtime may
+bind one ordinary JS module repeatedly to isolated providers/parameters and
+capture committed emissions through an `OutputSink`. The bind-independent GPU
+artifact carries both WGSL and the ordinary generated JS binding module. The
+GPU runtime runs that module's provisional bind phase for each ordered
+`BindInputs` element, sizes its physical history payload, packs buffers,
+constructs dispatch/readback metadata, and submits the shared shader to an
+injected device. It does not revisit the Program or evaluate a second form of
+the bound expression. Those runtime contracts do not change the Program or
+reinterpret Tea matching/accounting semantics. See [GPU
+Lowering](advanced/gpu-lowering.md).
 
 ## Open items
 
 - Function _templates_ (untyped params) are a checker representation, not a
   `FuncType`; the type domain holds concrete signatures only.
 - Id branding (`SlotId` etc.) hardens when the noder becomes the only mint.
-- `HistoryDepth.bound`'s expression form will be refined by the depth
-  resolution pass (interval analysis over loop bounds).
+- General interval analysis can refine history demands for compound expressions
+  over loop induction variables; exact direct-induction reads are already
+  resolved.
 - Merge policy details for `request.security_lower_tf` (collect) vs
   `security` (sample) to be finalized against real host semantics.

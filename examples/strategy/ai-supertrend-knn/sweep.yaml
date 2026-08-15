@@ -1,0 +1,30 @@
+schema: tea.execution/v1
+
+program:
+  source: ./strategy.tea
+
+runtime:
+  kind: javascript
+
+execution:
+  kind: sweep
+  provider:
+    kind: csv
+    path: ../../data/binance/btcusdt-1d.csv
+    sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
+  parameters:
+    neighbors:
+      range: {start: 2, stop: 4, step: 1}
+    data_points:
+      range: {start: 8, stop: 12, step: 2}
+    price_trend_length: 20
+    prediction_trend_length: 100
+    supertrend_length: 10
+    supertrend_factor:
+      range: {start: 2.5, stop: 3.0, step: 0.5}
+    initial_cash: 10000
+    allocation_percent: 10
+    commission_percent: 0.1
+    tick_size: 0.01
+  maxExecutions: 18
+  timeNow: 1786579200000

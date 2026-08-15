@@ -15,6 +15,7 @@
   // runtime.ts at the package root is design notes, not compiling source.
   "include": [
     "src",
+    "tests",
     "editors/vscode/scripts",
     "editors/vscode/test",
     "website/docusaurus.config.ts",

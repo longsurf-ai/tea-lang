@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "file": "btcusdt-1d.csv",
+  "sha256": "fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d",
+  "source": "https://data-api.binance.vision/api/v3/klines",
+  "sourceDocumentation": "https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#klinecandlestick-data",
+  "attribution": "Binance Public Data",
+  "license": "MIT",
+  "licenseUrl": "https://github.com/binance/binance-public-data#licence",
+  "venue": "binance",
+  "marketType": "spot",
+  "symbol": "BTCUSDT",
+  "interval": "1d",
+  "fetchedAt": "2026-08-13T09:32:57.115Z",
+  "rows": 3283,
+  "firstOpenTime": "2017-08-17T00:00:00.000Z",
+  "lastOpenTime": "2026-08-12T00:00:00.000Z",
+  "format": "time,open,high,low,close,volume",
+  "timeUnit": "epoch milliseconds",
+  "request": {
+    "method": "GET",
+    "query": {
+      "symbol": "BTCUSDT",
+      "interval": "1d",
+      "startTime": 0,
+      "endTime": 1786579199999,
+      "timeZone": "0",
+      "limit": 1000
+    },
+    "pagination": "repeat with startTime equal to the previous page's close time plus one millisecond; stop after the page containing open time 1786492800000"
+  },
+  "normalization": {
+    "responseColumns": ["open time", "open", "high", "low", "close", "volume"],
+    "csvColumns": ["time", "open", "high", "low", "close", "volume"],
+    "timeZone": "UTC",
+    "lineEnding": "LF",
+    "finalNewline": true
+  },
+  "reproducibility": {
+    "note": "Binance may correct historical public data after publication. The SHA-256 pins the exact checked-in snapshot; a later replay of the bounded query may legitimately differ."
+  }
+}

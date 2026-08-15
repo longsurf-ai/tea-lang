@@ -1,0 +1,31 @@
+schema: tea.execution/v1
+
+program:
+  source: ./strategy.tea
+
+runtime:
+  kind: webgpu
+
+execution:
+  kind: sweep
+  provider:
+    kind: csv
+    path: ../../data/binance/btcusdt-1d.csv
+    sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
+  parameters:
+    stop_n:
+      range: {start: 1.5, stop: 2.5, step: 0.5}
+    risk_percent:
+      range: {start: 0.005, stop: 0.015, step: 0.005}
+    pyramid_n:
+      range: {start: 0.5, stop: 1, step: 0.5}
+    max_units:
+      range: {start: 3, stop: 5, step: 2}
+    atr_length: 14
+    l1_entry_length: 20
+    l2_entry_length: 55
+    l1_exit_length: 10
+    l2_exit_length: 20
+    initial_cash: 100000
+  maxExecutions: 36
+  timeNow: 1786579200000
