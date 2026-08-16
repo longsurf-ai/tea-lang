@@ -6,14 +6,24 @@ import {createHash} from 'node:crypto';
 import {existsSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Errors} from '../src/base/print';
+import {paramSpecsOf} from '../src/codegen/params';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
 import {compileToProgram} from '../src/compile';
 import {executeProgram} from '../src/execute';
+import {
+  loadExecutionConfig,
+  resolveExecutionParameters,
+} from '../src/execution';
 import {csvProvider} from '../src/providers/data/csv';
 import {MemorySink} from '../src/providers/sinks/memory-sink';
+import type {EffectValue} from '../src/runtime/abi';
 
 const ROOT = join(import.meta.dir, '..');
 const SOURCE = join(ROOT, 'examples/strategy/ema-cross/strategy.tea');
+const BB_SWEEP = join(
+  ROOT,
+  'examples/strategy/bb-spy-mean-reversion/sweep.yaml',
+);
 const DATA = join(ROOT, 'examples/data/binance/btcusdt-1d.csv');
 const DATA_SOURCE = join(ROOT, 'examples/data/binance/btcusdt-1d.source.json');
 const INTRADAY_DATA = join(ROOT, 'examples/data/binance/btcusdt-15m.csv');
@@ -123,6 +133,116 @@ describe('canonical EMA crossover example', () => {
   });
 });
 
+describe('canonical component migration regressions', () => {
+  test('pins BB SPY binding 0 final metrics and normalized fill tape', async () => {
+    const loaded = loadExecutionConfig(BB_SWEEP);
+    if (loaded.config.execution.kind !== 'sweep') {
+      throw new Error('BB SPY migration fixture must remain a sweep');
+    }
+
+    const errors = new Errors();
+    const program = compileToProgram([loaded.config.program.source], errors);
+    if (program === null) {
+      throw new Error(
+        errors
+          .flushErrors()
+          .map(error => error.msg)
+          .join('; '),
+      );
+    }
+    expect(errors.count).toBe(0);
+
+    const params = resolveExecutionParameters(
+      paramSpecsOf(program.params),
+      loaded.config.execution,
+    ).parameterSets[0];
+    if (params === undefined) {
+      throw new Error('BB SPY sweep must contain binding 0');
+    }
+    const timeNow = loaded.config.execution.timeNow;
+    if (timeNow === undefined) {
+      throw new Error('BB SPY migration fixture must pin execution.timeNow');
+    }
+    const providerHash = loaded.config.execution.provider.sha256;
+    if (providerHash === undefined) {
+      throw new Error('BB SPY migration fixture must pin the provider hash');
+    }
+    const csv = readFileSync(loaded.config.execution.provider.path, 'utf8');
+    expect(createHash('sha256').update(csv).digest('hex')).toBe(
+      providerHash,
+    );
+
+    const sink = new MemorySink();
+    const result = await executeProgram(
+      program,
+      [{params, provider: csvProvider(csv), sink, timeNow}],
+      {kind: 'cpu'},
+    );
+    expect(result.numericProfile).toBe('js-f64');
+    expect(result.bindings[0]?.rows).toBe(3_283);
+
+    const finalMetrics = Object.fromEntries(
+      [
+        'equity',
+        'realized pnl',
+        'total fees',
+        'fill count',
+        'round trips',
+        'maximum drawdown',
+        'total return',
+      ].map(title => [title, finalScalar(sink, outputWithTitle(sink, title))]),
+    );
+    expect(finalMetrics).toEqual({
+      equity: 29_964.929552900474,
+      'realized pnl': 4_964.929552900471,
+      'total fees': 16.785778506874447,
+      'fill count': 36,
+      'round trips': 18,
+      'maximum drawdown': 0.12488412837887929,
+      'total return': 0.19859718211601896,
+    });
+
+    const fillEffectIds = new Set(
+      sink.effectSchemas.flatMap((effect, effectId) =>
+        effect.payload.kind === 'user-type' &&
+        effect.payload.typeId === 'broker.FillExecuted'
+          ? [effectId]
+          : [],
+      ),
+    );
+    const timeByRow = new Map(
+      sink.publications.map(publication => [publication.row, publication.time]),
+    );
+    const fills = sink.effectEmissions
+      .filter(emission => fillEffectIds.has(emission.effectId))
+      .map(emission => {
+        const [fill] = effectFields(emission.payload, 'broker.FillExecuted');
+        const fields = effectFields(fill, 'broker.FillExecuted.fill');
+        const side = effectString(fields[3], 'fill.side');
+        const time = timeByRow.get(emission.row);
+        if (typeof time !== 'number') {
+          throw new Error(`fill row ${emission.row} has no root time`);
+        }
+        return {
+          row: emission.row,
+          time,
+          role: side === 'buy' ? 'entry' : 'bracket-exit',
+          side,
+          barIndex: effectNumber(fields[4], 'fill.barIndex'),
+          referencePrice: effectNumber(fields[5], 'fill.referencePrice'),
+          price: effectNumber(fields[6], 'fill.price'),
+          quantity: effectNumber(fields[7], 'fill.quantity'),
+          notional: effectNumber(fields[8], 'fill.notional'),
+          fee: effectNumber(fields[9], 'fill.fee'),
+        };
+      });
+    expect(fills).toHaveLength(36);
+    expect(
+      createHash('sha256').update(JSON.stringify(fills)).digest('hex'),
+    ).toBe('54aabe9d33f400c7bbeea86c6fd2becba3f501d1baf8ff77ab35e86a8035dc09');
+  });
+});
+
 function outputWithTitle(sink: MemorySink, title: string): number {
   const output = sink.outputs.findIndex(candidate =>
     candidate.spec.staticArgs.some(
@@ -139,6 +259,34 @@ function finalScalar(sink: MemorySink, outputId: number): number {
   )?.channels[0];
   expect(typeof value).toBe('number');
   return value as number;
+}
+
+function effectFields(
+  value: EffectValue,
+  label: string,
+): readonly EffectValue[] {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    value.kind !== 'user-type'
+  ) {
+    throw new Error(`${label} must be a user-type effect value`);
+  }
+  return value.fields;
+}
+
+function effectNumber(value: EffectValue | undefined, label: string): number {
+  if (typeof value !== 'number') {
+    throw new Error(`${label} must be numeric`);
+  }
+  return value;
+}
+
+function effectString(value: EffectValue | undefined, label: string): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be a string`);
+  }
+  return value;
 }
 
 function validateMarketData(

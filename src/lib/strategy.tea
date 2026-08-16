@@ -16,6 +16,7 @@ export enum SizingKind
 export type Sizing
 	SizingKind kind
 	float value
+	bool commissionIncluded = false
 
 export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 	B broker
@@ -32,28 +33,59 @@ export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 		this.currentBarIndex := barIndex
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
-		entryExecution = currentBroker.on_open(openPrice, currentPortfolio.account(), this.currentBarIndex)
-		currentPortfolio.apply(entryExecution)
+		pendingExecution = currentBroker.match_pending(openPrice, highPrice, currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(pendingExecution)
 		exitExecution = currentBroker.match_exit(openPrice, highPrice, lowPrice, currentPortfolio.account(), this.currentBarIndex)
 		currentPortfolio.apply(exitExecution)
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
-		broker.BarMatches.new(entryExecution, exitExecution)
+		broker.BarMatches.new(pendingExecution, exitExecution)
 
-	broker.Order entry(string commandId, Direction direction, float qty = na, Sizing sizing = na) =>
+	broker.Order entry(string commandId, Direction direction, float qty = na, Sizing sizing = na, float stop = na) =>
 		side = direction == Direction.long ? broker.Side.buy : broker.Side.sell
 		float notional = na
+		float cashBudget = na
 		if not na(sizing)
 			equity = this.portfolio.equity()
 			sizingValid = sizing.kind == SizingKind.percentOfEquity and not na(sizing.value) and sizing.value > 0.0 and sizing.value <= 100.0 and not na(equity) and equity > 0.0
-			notional := sizingValid ? equity * sizing.value / 100.0 : -1.0
-		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.entry, side, qty, this.currentBarIndex, notional))
+			budget = sizingValid ? equity * sizing.value / 100.0 : -1.0
+			if sizing.commissionIncluded
+				cashBudget := budget
+			else
+				notional := budget
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.entry, side, qty, this.currentBarIndex, notional, na, stop, false, na, cashBudget))
 
-	broker.Order exit(string commandId, string fromEntry, float stop, bool activateOnEntryBar = false) =>
-		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.exit, broker.Side.sell, na, this.currentBarIndex, na, fromEntry, stop, activateOnEntryBar))
+	broker.Order exit(string commandId, string fromEntry, float stop = na, float target = na, bool activateOnEntryBar = false) =>
+		this.broker.submit_exit(broker.Command.new(commandId, broker.CommandKind.exit, broker.Side.sell, na, this.currentBarIndex, na, fromEntry, stop, activateOnEntryBar, target))
 
 	broker.Order close(string commandId) =>
 		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.close, broker.Side.sell, na, this.currentBarIndex))
+
+	int cancel(string commandId) =>
+		this.broker.cancel(commandId)
+
+	broker.Fill process_close(float closePrice) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		execution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(execution)
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		execution
+
+	float mark(float price) =>
+		currentPortfolio = this.portfolio
+		value = currentPortfolio.mark(price)
+		this.portfolio := currentPortfolio
+		value
+
+	broker.FinishResult finish(bool isLast) =>
+		broker.FinishResult expired = na
+		if isLast
+			currentBroker = this.broker
+			expired := currentBroker.finish()
+			this.broker := currentBroker
+		expired
 
 	broker.FinishResult end(float closePrice, bool isLast) =>
 		execution = this.broker.on_close(closePrice, this.portfolio.account(), this.currentBarIndex)
@@ -100,8 +132,8 @@ export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 	bool has_pending_entry() const =>
 		this.broker.has_pending_entry()
 
-export percentOfEquity(float percent) =>
-	Sizing.new(SizingKind.percentOfEquity, percent)
+export percentOfEquity(float percent, bool commissionIncluded = false) =>
+	Sizing.new(SizingKind.percentOfEquity, percent, commissionIncluded)
 
 export configure(broker, portfolio) =>
 	Strategy.new(broker, portfolio)

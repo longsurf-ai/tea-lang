@@ -1348,6 +1348,371 @@ describe('Tea strategy components end to end', () => {
     expect(effectField(program, sink, 3, 'reason')).toBe('invalidAccountState');
   });
 
+  test('keeps commission inside a percent-of-equity cash budget when requested', async () => {
+    const source = [
+      'strategy("fee-inclusive percent sizing")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var included = strategy.configure(',
+      '    broker = broker.new(commission = broker.commissionPercent(1.0), processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 1000.0, marginLong = 100.0)',
+      ')',
+      'var excluded = strategy.configure(',
+      '    broker = broker.new(commission = broker.commissionPercent(1.0), processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 1000.0, marginLong = 100.0)',
+      ')',
+      'included.begin_bar(open, high, low, bar_index)',
+      'excluded.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    included.entry("Included", strategy.Direction.long, sizing = strategy.percentOfEquity(10.0, commissionIncluded = true))',
+      '    excluded.entry("Excluded", strategy.Direction.long, sizing = strategy.percentOfEquity(10.0))',
+      'included.process_close(close)',
+      'excluded.process_close(close)',
+      'included.mark(close)',
+      'excluded.mark(close)',
+      'included.finish(barstate.islast)',
+      'excluded.finish(barstate.islast)',
+      'plot(included.cash())',
+      'plot(included.position_quantity())',
+      'plot(included.total_fees())',
+      'plot(excluded.cash())',
+      'plot(excluded.position_quantity())',
+      'plot(excluded.total_fees())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', ''].join('\n'),
+    );
+
+    const includedBudget = 100;
+    const includedQuantity = includedBudget / (10 * 1.01);
+    const includedFee = includedQuantity * 10 * 0.01;
+    expectNumbersClose(valuesFor(sink, 1), [900]);
+    expectNumbersClose(valuesFor(sink, 2), [includedQuantity]);
+    expectNumbersClose(valuesFor(sink, 3), [includedFee]);
+    expectNumbersClose(valuesFor(sink, 4), [899]);
+    expectNumbersClose(valuesFor(sink, 5), [10]);
+    expectNumbersClose(valuesFor(sink, 6), [1]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [0, 'FillExecuted'],
+      [0, 'FillExecuted'],
+    ]);
+    expect(effectField(program, sink, 2, 'fill', 'notional')).toBeCloseTo(
+      includedBudget - includedFee,
+      12,
+    );
+    expect(effectField(program, sink, 2, 'fill', 'fee')).toBeCloseTo(
+      includedFee,
+      12,
+    );
+  });
+
+  test('accepts a fee-inclusive 100% cash budget without a roundoff rejection', async () => {
+    const source = [
+      'strategy("full fee-inclusive cash budget")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(commission = broker.commissionPercent(0.3), processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 100.0, marginLong = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'strat.entry("Long", strategy.Direction.long, sizing = strategy.percentOfEquity(100.0, commissionIncluded = true))',
+      'strat.process_close(close)',
+      'strat.mark(close)',
+      'strat.finish(barstate.islast)',
+      'plot(strat.cash())',
+      'plot(strat.position_quantity())',
+      'plot(strat.fill_count())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '7.3,7.3,7.3,7.3', ''].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [0]);
+    expect(valuesFor(sink, 2)[0]).toBeGreaterThan(0);
+    expect(valuesFor(sink, 3)).toEqual([1]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'FillExecuted'],
+    ]);
+  });
+
+  test('distinguishes resting buy-stop gap, intrabar, and missed fills', async () => {
+    const source = [
+      'strategy("resting buy-stop paths")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var gap = strategy.configure(broker.new(), portfolio.new(initialCash = 100.0))',
+      'var intrabar = strategy.configure(broker.new(), portfolio.new(initialCash = 100.0))',
+      'var missed = strategy.configure(broker.new(), portfolio.new(initialCash = 100.0))',
+      'gap.begin_bar(open, high, low, bar_index)',
+      'intrabar.begin_bar(open, high, low, bar_index)',
+      'missed.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    gap.entry("Gap", strategy.Direction.long, qty = 1.0, stop = 11.0)',
+      '    intrabar.entry("Intrabar", strategy.Direction.long, qty = 1.0, stop = 13.0)',
+      '    missed.entry("Missed", strategy.Direction.long, qty = 1.0, stop = 15.0)',
+      'gap.process_close(close)',
+      'intrabar.process_close(close)',
+      'missed.process_close(close)',
+      'gap.mark(close)',
+      'intrabar.mark(close)',
+      'missed.mark(close)',
+      'gap.finish(barstate.islast)',
+      'intrabar.finish(barstate.islast)',
+      'missed.finish(barstate.islast)',
+      'plot(gap.cash())',
+      'plot(gap.position_quantity())',
+      'plot(intrabar.cash())',
+      'plot(intrabar.position_quantity())',
+      'plot(missed.cash())',
+      'plot(missed.position_quantity())',
+      'plot(missed.has_pending() ? 1 : 0)',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '12,14,11,13', ''].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [100, 88]);
+    expectNumbersClose(valuesFor(sink, 2), [0, 1]);
+    expectNumbersClose(valuesFor(sink, 3), [100, 87]);
+    expectNumbersClose(valuesFor(sink, 4), [0, 1]);
+    expectNumbersClose(valuesFor(sink, 5), [100, 100]);
+    expectNumbersClose(valuesFor(sink, 6), [0, 0]);
+    expect(valuesFor(sink, 7)).toEqual([1, 0]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderExpired'],
+    ]);
+    expect(effectField(program, sink, 3, 'fill', 'commandId')).toBe('Gap');
+    expect(effectField(program, sink, 3, 'fill', 'referencePrice')).toBe(12);
+    expect(effectField(program, sink, 3, 'fill', 'orderType')).toBe('stop');
+    expect(effectField(program, sink, 4, 'fill', 'commandId')).toBe('Intrabar');
+    expect(effectField(program, sink, 4, 'fill', 'referencePrice')).toBe(13);
+    expect(effectField(program, sink, 4, 'fill', 'orderType')).toBe('stop');
+    expect(effectField(program, sink, 5, 'order', 'commandId')).toBe('Missed');
+    expect(effectField(program, sink, 5, 'order', 'stop')).toBe(15);
+  });
+
+  test('replaces a resting buy stop and cancels its contingent bracket atomically', async () => {
+    const source = [
+      'strategy("replace and cancel resting entry")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(broker.new(), portfolio.new(initialCash = 100.0))',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'int cancelled = 0',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0, stop = 12.0)',
+      '    strat.exit("Bracket", fromEntry = "Long", stop = 9.0, target = 15.0)',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0, stop = 13.0)',
+      'if bar_index == 1',
+      '    cancelled := strat.cancel("Long")',
+      'strat.process_close(close)',
+      'strat.mark(close)',
+      'strat.finish(barstate.islast)',
+      'plot(cancelled)',
+      'plot(strat.fill_count())',
+      'plot(strat.has_pending() ? 1 : 0)',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '11,12.5,10,12', ''].join('\n'),
+    );
+
+    expect(valuesFor(sink, 1)).toEqual([0, 2]);
+    expect(valuesFor(sink, 2)).toEqual([0, 0]);
+    expect(valuesFor(sink, 3)).toEqual([1, 0]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [0, 'OrderCancelled'],
+      [0, 'OrderSubmitted'],
+      [1, 'OrderCancelled'],
+      [1, 'OrderCancelled'],
+    ]);
+    expect(effectField(program, sink, 0, 'order', 'id')).toBe(1);
+    expect(effectField(program, sink, 0, 'order', 'stop')).toBe(12);
+    expect(effectField(program, sink, 1, 'order', 'orderType')).toBe('bracket');
+    expect(effectField(program, sink, 2, 'order', 'id')).toBe(1);
+    expect(effectField(program, sink, 3, 'order', 'id')).toBe(3);
+    expect(effectField(program, sink, 3, 'order', 'stop')).toBe(13);
+    expect(effectField(program, sink, 4, 'order', 'id')).toBe(3);
+    expect(effectField(program, sink, 5, 'order', 'id')).toBe(2);
+  });
+
+  test('matches one atomic stop-target bracket across gaps, touches, and a tied path', async () => {
+    const source = [
+      'strategy("atomic bracket paths")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 100.0, marginLong = 0.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0)',
+      '    strat.exit("Bracket", fromEntry = "Long", stop = 9.0, target = 11.0)',
+      'strat.process_close(close)',
+      'strat.mark(close)',
+      'strat.finish(barstate.islast)',
+      'plot(strat.position_quantity())',
+      'plot(strat.fill_count())',
+    ].join('\n');
+    const cases = [
+      {
+        name: 'stop gap',
+        bar: '8,8,7,8',
+        referencePrice: 8,
+        orderType: 'stop',
+      },
+      {
+        name: 'target gap',
+        bar: '12,12,12,12',
+        referencePrice: 12,
+        orderType: 'target',
+      },
+      {
+        name: 'stop touch',
+        bar: '10,10.5,8,10',
+        referencePrice: 9,
+        orderType: 'stop',
+      },
+      {
+        name: 'target touch',
+        bar: '10,12,9.5,10',
+        referencePrice: 11,
+        orderType: 'target',
+      },
+      {
+        name: 'both touch at equal distance',
+        bar: '10,12,8,10',
+        referencePrice: 9,
+        orderType: 'stop',
+      },
+    ] as const;
+
+    for (const scenario of cases) {
+      const {program, sink} = await execute(
+        source,
+        ['open,high,low,close', '10,10,10,10', scenario.bar, ''].join('\n'),
+      );
+
+      expect(valuesFor(sink, 1), scenario.name).toEqual([1, 0]);
+      expect(valuesFor(sink, 2), scenario.name).toEqual([1, 2]);
+      expect(effectTimeline(program, sink), scenario.name).toEqual([
+        [0, 'OrderSubmitted'],
+        [0, 'OrderSubmitted'],
+        [0, 'FillExecuted'],
+        [1, 'FillExecuted'],
+      ]);
+      expect(
+        effectField(program, sink, 1, 'order', 'orderType'),
+        scenario.name,
+      ).toBe('bracket');
+      expect(
+        effectField(program, sink, 1, 'order', 'stop'),
+        scenario.name,
+      ).toBe(9);
+      expect(
+        effectField(program, sink, 1, 'order', 'target'),
+        scenario.name,
+      ).toBe(11);
+      expect(
+        effectField(program, sink, 3, 'fill', 'referencePrice'),
+        scenario.name,
+      ).toBe(scenario.referencePrice);
+      expect(
+        effectField(program, sink, 3, 'fill', 'orderType'),
+        scenario.name,
+      ).toBe(scenario.orderType);
+      expect(
+        effectField(program, sink, 3, 'fill', 'orderId'),
+        scenario.name,
+      ).toBe(effectField(program, sink, 1, 'order', 'id'));
+    }
+  });
+
+  test('processes a close, marks equity, and permits only one same-close reentry fill', async () => {
+    const source = [
+      'strategy("same-close reentry and fill cap")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 100.0, marginLong = 0.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Seed", strategy.Direction.long, qty = 1.0)',
+      'if bar_index == 1',
+      '    strat.close("Exit")',
+      'strat.process_close(close)',
+      'strat.mark(close)',
+      'if bar_index == 1 and strat.position_quantity() == 0.0',
+      '    strat.entry("Reentry", strategy.Direction.long, sizing = strategy.percentOfEquity(100.0, commissionIncluded = true))',
+      'strat.process_close(close)',
+      'strat.mark(close)',
+      'if bar_index == 1',
+      '    strat.close("Third fill is blocked")',
+      'strat.process_close(close)',
+      'strat.mark(close)',
+      'finished = strat.finish(barstate.islast)',
+      'plot(strat.cash())',
+      'plot(strat.position_quantity())',
+      'plot(strat.equity())',
+      'plot(strat.fill_count())',
+      'plot(na(finished) or na(finished.pending) ? 0 : finished.pending.id)',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '20,20,20,20', ''].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [90, 0]);
+    expectNumbersClose(valuesFor(sink, 2), [1, 5.5]);
+    expectNumbersClose(valuesFor(sink, 3), [100, 110]);
+    expect(valuesFor(sink, 4)).toEqual([1, 3]);
+    expect(valuesFor(sink, 5)).toEqual([0, 4]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [1, 'OrderExpired'],
+    ]);
+    expect(effectField(program, sink, 3, 'fill', 'commandId')).toBe('Exit');
+    expect(effectField(program, sink, 5, 'fill', 'commandId')).toBe('Reentry');
+    expect(effectField(program, sink, 5, 'fill', 'quantity')).toBe(5.5);
+    expect(effectField(program, sink, 7, 'order', 'commandId')).toBe(
+      'Third fill is blocked',
+    );
+    expect(
+      effectTimeline(program, sink).filter(
+        ([row, type]) => row === 1 && type === 'FillExecuted',
+      ),
+    ).toHaveLength(2);
+  });
+
   test('turns SMA crossovers into next-open fills in the documented phase order', async () => {
     const source = [
       'strategy("SMA crossover lifecycle")',

@@ -196,4 +196,21 @@ describe('clean-room strategy catalog', () => {
     expect(source).not.toContain('type LongStopEngine');
     expect(source).not.toContain('broker.Fill.new');
   });
+
+  test('BB mean reversion composes the canonical broker and portfolio', () => {
+    const source = readFileSync(
+      join(STRATEGY_ROOT, 'bb-spy-mean-reversion', 'strategy.tea'),
+      'utf8',
+    );
+
+    expect(source).toContain('broker.new(');
+    expect(source).toContain('portfolio.new(');
+    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('commissionIncluded = true');
+    expect(source).toContain('strat.begin_bar(');
+    expect(source).toContain('strat.exit(');
+    expect(source).toContain('target = active_target');
+    expect(source).not.toContain('type FillFactory');
+    expect(source).not.toContain('broker.Fill.new');
+  });
 });

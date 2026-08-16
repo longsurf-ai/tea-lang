@@ -282,6 +282,140 @@ test('Dawn matches canonical percent-equity entries and attached stops', async (
   }
 });
 
+test('Dawn matches resting cash-budget entries and atomic brackets', async () => {
+  const program = mustBuild(
+    [
+      'strategy("canonical resting bracket")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(',
+      '        commission = broker.commissionPercent(0.1),',
+      '        slippage = broker.slippageTicks(1.0, 1.0),',
+      '        processOrdersOnClose = false',
+      '    ),',
+      '    portfolio = portfolio.new(initialCash = 1000.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, sizing = strategy.percentOfEquity(10.0, commissionIncluded = true), stop = 11.0)',
+      '    strat.exit("Bracket", fromEntry = "Long", stop = 8.0, target = 14.0)',
+      'strat.end(close, barstate.islast)',
+      'plot(strat.cash())',
+      'plot(strat.position_quantity())',
+      'plot(strat.equity())',
+      'plot(strat.total_fees())',
+      'plot(strat.fill_count())',
+      'plot(strat.round_trip_count())',
+    ].join('\n'),
+  );
+  const result = compileProgramToWgsl(program);
+  assert.equal(
+    result.status,
+    'compiled',
+    result.status === 'staged-unsupported'
+      ? JSON.stringify(result.eligibility.issues)
+      : undefined,
+  );
+  if (result.status !== 'compiled') return;
+
+  const source = provider({
+    open: [10, 10, 12],
+    high: [10, 12, 15],
+    low: [10, 9, 7],
+    close: [10, 11, 13],
+  });
+  const cpuSink = new MemorySink();
+  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+
+  const effectField = (
+    emissionIndex: number,
+    ...path: readonly string[]
+  ): EffectValue => {
+    const emission = cpuSink.effectEmissions[emissionIndex];
+    let type =
+      emission === undefined
+        ? undefined
+        : program.effects[emission.effectId]?.payloadType;
+    let value = emission?.payload;
+    for (const name of path) {
+      assert.equal(type?.kind, TypeKind.UserType);
+      assert.ok(value !== undefined && isEffectUserTypeValue(value));
+      if (type?.kind !== TypeKind.UserType || !isEffectUserTypeValue(value)) {
+        throw new Error(`effect ${emissionIndex} cannot select '${name}'`);
+      }
+      const fieldIndex = type.fields.findIndex(field => field.name === name);
+      assert.notEqual(fieldIndex, -1);
+      type = type.fields[fieldIndex]?.type;
+      value = value.fields[fieldIndex];
+    }
+    assert.notEqual(value, undefined);
+    return value!;
+  };
+  assert.deepEqual(
+    cpuSink.effectEmissions.map((emission, index) => {
+      const type = program.effects[emission.effectId]?.payloadType;
+      assert.equal(type?.kind, TypeKind.UserType);
+      if (type?.kind !== TypeKind.UserType) {
+        throw new Error(`effect ${emission.effectId} has no nominal payload`);
+      }
+      const payload = type.name === 'OrderSubmitted' ? 'order' : 'fill';
+      return [
+        emission.row,
+        type.name,
+        effectField(index, payload, 'commandId'),
+        effectField(index, payload, 'orderType'),
+      ];
+    }),
+    [
+      [0, 'OrderSubmitted', 'Long', 'stop'],
+      [0, 'OrderSubmitted', 'Bracket', 'bracket'],
+      [1, 'FillExecuted', 'Long', 'stop'],
+      [2, 'FillExecuted', 'Bracket', 'target'],
+    ],
+  );
+  assert.equal(effectField(0, 'order', 'cashBudget'), 100);
+  assert.equal(effectField(2, 'fill', 'referencePrice'), 11);
+  assert.equal(effectField(2, 'fill', 'price'), 12);
+  assert.equal(effectField(3, 'fill', 'referencePrice'), 14);
+  assert.equal(effectField(3, 'fill', 'price'), 13);
+  assert.deepEqual(
+    cpuSink.emissions
+      .filter(emission => emission.outputId === 5)
+      .map(emission => emission.channels[0]),
+    [0, 1, 2],
+  );
+  assert.deepEqual(
+    cpuSink.emissions
+      .filter(emission => emission.outputId === 6)
+      .map(emission => emission.channels[0]),
+    [0, 0, 1],
+  );
+
+  Object.assign(globalThis, globals);
+  const gpu = create([]);
+  const adapter = await gpu.requestAdapter();
+  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
+  const device = await adapter.requestDevice();
+  const gpuSink = new MemorySink();
+  const execution = await createGpuExecution(
+    device,
+    result.artifact,
+    [binding(source, gpuSink)],
+    {maxRowsPerChunk: 1},
+  );
+  try {
+    const summary = await execution.runAll();
+    assert.equal(summary.chunks, 3);
+    assert.equal(summary.dispatches, 3);
+    assertSinkParity(cpuSink, gpuSink, result.artifact);
+  } finally {
+    execution.dispose();
+    device.destroy();
+  }
+});
+
 test('Dawn validates a complete chunk before publishing its first dense row', async () => {
   const program = mustBuild('indicator("late invalid result")\nplot(close)');
   const result = compileProgramToWgsl(program);

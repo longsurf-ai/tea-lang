@@ -99,7 +99,7 @@ The deterministic reference behavior is:
    `processOrdersOnClose=true` an opportunity to fill a pending command at that
    close, applies the fill, and then marks the portfolio.
 4. On the final bar, `end` expires any command still pending without forcing
-   liquidation. Its fixed `FinishResult` reports the pending market and
+   liquidation. Its fixed `FinishResult` reports the pending primary-order and
    attached-exit slots separately; the corresponding `OrderExpired` effects
    are the exhaustive terminal journal.
 
@@ -109,18 +109,20 @@ order. Calling `end` before `begin`, calling either twice, or calling one
 conditionally is valid Tea with the behavior defined by the library source.
 
 The current canonical pair is deliberately bounded. `BrokerEmulator` accepts
-one pending market command, fills it at a later open or optionally at the
-signal bar's close, and applies the configured commission and adverse
-slippage. `strat.entry` accepts an explicit positive `qty`; omitting it (the
-`na` default) uses the commission-aware all-available-cash quantity. A
-`strategy.percentOfEquity(percent)` sizing value instead snapshots a cash
-notional from the portfolio's last marked equity when the entry is submitted,
-then resolves quantity from the eventual fill price.
+one pending market-or-buy-stop command, fills it at an eligible later open or
+intrabar stop touch, or optionally at the signal bar's close, and applies the
+configured commission and adverse slippage. `strat.entry` accepts an explicit
+positive `qty`; omitting it (the `na` default) uses the commission-aware
+all-available-cash quantity. A `strategy.percentOfEquity(percent)` sizing value
+instead snapshots a cash notional from the portfolio's last marked equity when
+the entry is submitted, then resolves quantity from the eventual fill price.
+Passing `commissionIncluded=true` treats that snapshot as a cash budget whose
+commission is included rather than charged outside the requested allocation.
 `NetPortfolio` is a long-only net account. It aggregates up to `pyramiding`
 open entries, reports their quantity and weighted-average price, and
 `strat.close` closes the whole net position.
 
-For a long strategy that needs one persistent protective stop, use the richer
+For a long strategy that needs one persistent stop/target exit, use the richer
 bar entry point and attach the exit to its entry id:
 
 ```tea
@@ -134,27 +136,40 @@ if enterLong
     )
 if updateStop
     strat.exit(
-        "Long stop",
+        "Long bracket",
         fromEntry = "Long",
         stop = stopPrice,
+        target = targetPrice,
         activateOnEntryBar = true
     )
 
 strat.end(close, barstate.islast)
 ```
 
-The broker keeps one scalar attached stop, including while its matching entry
-is pending. `begin_bar` applies an eligible pending market fill first and then
-tests the stop against the updated position. A gap through the stop uses the
-open as its reference price; otherwise a low touching the stop uses the stop
-price. Calling `exit` again with the same exit id replaces its price. Skipping
-the call leaves the prior stop live. When pyramiding under that stop, every add
-must reuse the same entry id; the stop closes the resulting aggregate net
-position. A
-different entry id fails closed while that aggregate position is open, whether
-or not a stop is currently attached. This fixed two-stage path can produce an
-entry and its stop fill on the same bar without a strategy-local account or
-order matcher.
+The broker keeps one scalar atomic stop/target exit, including while its
+matching entry is pending. `begin_bar` applies an eligible pending primary fill
+first and then tests the attached exit against the updated position. A buy stop
+gaps at the open or otherwise uses its trigger as the reference price. An exit
+gap uses the open; an intrabar touch uses the selected stop or target. If both
+levels are touched, the extreme nearer the open is treated as first, with ties
+selecting the stop. The configured adverse sell slippage still applies after a
+target touch, so `target` is not a true limit-price guarantee.
+
+Calling `entry` again with the same id replaces a resting buy stop; calling
+`exit` again with the same exit id replaces the atomic attached order. Skipping
+either call leaves the prior order live. `strat.cancel(id)` explicitly cancels
+a matching primary or exit order. When pyramiding under one attached exit,
+every add must reuse the same entry id; the exit closes the resulting aggregate
+net position. A different entry id fails closed while that aggregate position
+is open, whether or not an exit is currently attached. This fixed two-stage
+path can produce a primary fill and attached exit on the same bar without a
+strategy-local account or matcher.
+
+`end(close, isLast)` remains the normal close-phase convenience. Strategies
+whose policy requires an observation between close-time fills may explicitly
+sequence `process_close(close)`, `mark(close)`, and `finish(isLast)` instead.
+Close processing sees only the close point; it never retroactively inspects the
+completed bar's high or low.
 
 This first slice accepts exactly two margin policies: `marginLong=100` requires
 the full notional plus fees to fit in current cash, while `marginLong=0`
@@ -166,11 +181,10 @@ does not open short positions. Default quantity remains all-available-cash
 sizing rather than leveraged sizing.
 
 This slice does not provide per-entry lots, partial closes, short positions,
-general margin accounting or margin calls, resting entries or limits, multiple
-independent exits, explicit cancellation, OCA groups, or general OHLC
-price-path simulation. The attached long stop above is the one supported
-resting-order shape. The current `Broker` interface itself is a scalar,
-at-most-two-fill boundary; a general order book will require an explicit
+general margin accounting or margin calls, multiple independent exits, true
+limit orders, general OCA groups, or segment-by-segment OHLC path replay. Its
+one primary slot and one atomic attached-exit slot form a scalar,
+at-most-two-fill boundary. A general order book will require an explicit
 bounded fill-drain revision rather than pretending an arbitrary number of fills
 fits this interface. That future component remains ordinary Tea source and
 does not require compiler/runtime dispatch by strategy name.

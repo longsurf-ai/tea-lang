@@ -41,7 +41,6 @@ execution:
     minimum_hold_bars: 30
     profit_extension_bars: 15
     time_profit_gate_r: 0.25
-    bias_history_length: 16
     allocation_percent: 5
     initial_cash: 25000
     fee_rate: 0.0003

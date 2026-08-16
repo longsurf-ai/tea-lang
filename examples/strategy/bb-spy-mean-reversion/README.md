@@ -13,8 +13,13 @@ replacement, optional time exits, fees, tick slippage, and deterministic
 same-bar bracket ordering. Standard `broker.FillExecuted` events feed the
 dashboard.
 
-The Tea port aggregates the retained bias flips because only the latest flip
-affects orders. Confirmed monthly ATR is built from the checked-in daily bars
+The strategy now composes the shipped `broker.new`, `portfolio.new`, and
+`strategy.configure` components. Resting buy stops, atomic stop/target exits,
+replacement/cancellation, fill pricing, costs, and accounting therefore live
+in the canonical libraries rather than in a strategy-local fill factory. The
+Tea port omits the publication's display-only bias-history collection because
+only the current scalar bias affects orders. Confirmed monthly ATR is built
+from the checked-in daily bars
 instead of issuing an external higher-timeframe request: the CSV `time_close`
 boundary identifies the month's final daily row, so the completed value is
 published on the same lower-timeframe bar as Pine's `lookahead_off` merge. Its
@@ -35,14 +40,21 @@ TradingView parity claim.
 tea execute examples/strategy/bb-spy-mean-reversion/sweep.yaml
 ```
 
-The 16-scenario JavaScript sweep processes 52,528 rows. On the 2026-08-14
-parity run it completed in **39.23 s**. Across the scenarios, total return
+The 16-scenario JavaScript sweep processes 52,528 rows. On the 2026-08-16
+canonical-component parity run it completed in **32.36 s**. Across the scenarios, total return
 ranged from **17.38% to 21.26%**, maximum drawdown from **11.19% to 12.49%**,
 and completed round trips from **10 to 22**. The best scenario returned
 **21.26%**, with **12.49%** maximum drawdown and **21** completed round trips
 (`bb_length=12`, multiplier 1.4, 1.5 ATR stop, 2.5 ATR target). Every checked
 scenario was profitable on this sample, but that is not evidence of future
 performance.
+
+For binding 0, the migration preserves the prior 36-fill/18-round-trip tape
+and its final values exactly: equity **29,964.929552900474**, realized P&L
+**4,964.929552900471**, fees **16.785778506874447**, maximum drawdown
+**12.4884%**, and return **19.8597%**. Canonical order submission,
+replacement, cancellation, and expiry events are additional lifecycle detail;
+numeric order IDs are intentionally not a cross-implementation contract.
 
 Runtime measurements vary by machine. This is a language/runtime stress
 fixture, not investment advice.
