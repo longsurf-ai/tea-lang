@@ -6,6 +6,42 @@ library("portfolio")
 
 import broker
 
+// PortfolioView is the shared read/report surface exposed by every canonical
+// accounting policy. Lifecycle coordination belongs to the policy-specific
+// ledger contracts below.
+export interface PortfolioView
+	float cash() const
+	float position_quantity() const
+	float position_avg_price() const
+	PortfolioSnapshot snapshot() const
+
+// NetLedger is the scalar-net accounting contract. It intentionally excludes
+// the bounded per-trade reads owned by LotLedger.
+export interface NetLedger
+	broker.Account account() const
+	int apply(broker.Fill execution)
+	float mark(float price)
+	float cash() const
+	float position_quantity() const
+	float position_avg_price() const
+	PortfolioSnapshot snapshot() const
+
+// LotLedger is the bounded per-trade accounting contract. Open-trade mutation
+// remains outside this public lifecycle surface during the compatibility
+// migration.
+export interface LotLedger
+	broker.Account account() const
+	int apply(broker.Fill execution)
+	float mark(float price)
+	float cash() const
+	float position_quantity() const
+	float position_avg_price() const
+	PortfolioSnapshot snapshot() const
+	int open_trade_count() const
+	OpenTrade open_trade(int index) const
+
+// Compatibility contract retained until configured strategies migrate to the
+// policy-specific ledger surfaces.
 export interface Portfolio
 	broker.Account account() const
 	bool is_flat() const

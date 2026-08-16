@@ -150,6 +150,39 @@ export type FinishResult
 	Order pending
 	Order exit
 
+// BrokerCommands is the shared scheduled-command and pending-state view. It
+// deliberately says nothing about when matching runs or whether immediate
+// execution is available.
+export interface BrokerCommands
+	bool has_pending() const
+	bool has_pending_entry() const
+	Order submit(Command command)
+	Order submit_exit(Command command)
+	int cancel(string commandId)
+
+// ScheduledBroker is the complete bounded scalar scheduling policy. Tea
+// interfaces do not compose, so its command surface is repeated explicitly.
+export interface ScheduledBroker
+	bool has_pending() const
+	bool has_pending_entry() const
+	Order submit(Command command)
+	Order submit_exit(Command command)
+	int cancel(string commandId)
+	Fill on_open(float referencePrice, Account account, int barIndex)
+	Fill match_pending(float openPrice, float highPrice, float lowPrice, Account account, int barIndex)
+	Fill match_path_primary(float openPrice, float highPrice, float lowPrice, float closePrice, Account account, int barIndex)
+	Fill continue_reversal(Account account, int barIndex)
+	Fill match_exit(float openPrice, float highPrice, float lowPrice, Account account, int barIndex)
+	Fill match_path_exit(float openPrice, float highPrice, float lowPrice, float closePrice, Account account, int barIndex)
+	Fill on_close(float referencePrice, Account account, int barIndex)
+	FinishResult finish()
+
+// ImmediateBroker is intentionally narrow: preflight rejection and one
+// synchronous execution. It makes no pending-order or finalization promise.
+export interface ImmediateBroker
+	int reject(string commandId, Side side, int barIndex, Rejection reason)
+	Fill execute_now(Command command, float referencePrice, Account account, int barIndex)
+
 export interface Broker
 	bool has_pending() const
 	bool has_pending_entry() const
