@@ -21,6 +21,13 @@ command that would exceed it is rejected before a fill is published. This cap
 is independent of `maximum_steps`: daily trigger state resets while a lot can
 remain open across a session boundary.
 
+Alice-specific exit policy is separate from that accounting. The script owns a
+`GridPosition` array keyed by the `tradeId` returned by each successful entry
+fill; tag, target, stop, and trailing state live there. Its ordering mirrors the
+lot portfolio's push and swap-pop rules, and it changes only after a successful
+`entry_now` or `close_trade` fill. The strategy therefore never reads or edits
+the portfolio's open-trade records to implement grid policy.
+
 The measured stress config is intentionally not the publication's all-default
 input set: it caps each side at five rather than twenty levels, sweeps the
 take-profit reversal switch, disables trailing activation, and enables manual
@@ -44,7 +51,7 @@ tea execute examples/strategy/alice-grid/sweep.yaml
 ```
 
 The 8-scenario JavaScript sweep processes 160,000 rows from the SHA-pinned
-20,000-bar Binance BTCUSDT 15-minute snapshot and completed in **50.18 s** on
+20,000-bar Binance BTCUSDT 15-minute snapshot and completed in **46.41 s** on
 the 2026-08-16 development run. The best scenario returned **0.0015%**, with
 **0.54%** maximum drawdown and **428** closed per-entry lots
 (`entry_reversal_mode=0`, 1% grid, five levels, standard take-profit). The
