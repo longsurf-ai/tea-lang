@@ -13,8 +13,17 @@ fee = input.float(0.1, "Fee", minval=0.0)
 initial_cash = input.float(121.0, "Initial cash", minval=1.0)
 
 var strat = strategy.configure(
-	broker = broker.basic(slippage, fee),
-	portfolio = portfolio.basic(initial_cash)
+	broker = broker.new(
+		commission = broker.commissionRate(fee),
+		slippage = broker.slippageRate(slippage),
+		processOrdersOnClose = false
+	),
+	portfolio = portfolio.new(
+		initialCash = initial_cash,
+		pyramiding = 1,
+		marginLong = 100.0,
+		marginShort = 100.0
+	)
 )
 
 strat.begin(open, bar_index)

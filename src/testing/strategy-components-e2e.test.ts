@@ -235,15 +235,15 @@ describe('Tea strategy components end to end', () => {
 
     expect(funcsOf(program).map(func => func.name)).toEqual(
       expect.arrayContaining([
-        'BasicBroker.on_open',
-        'BasicBroker.submit',
-        'BasicBroker.finish',
-        'BasicPortfolio.apply',
-        'BasicPortfolio.mark',
-        'Strategy<BasicBroker, BasicPortfolio>.begin',
-        'Strategy<BasicBroker, BasicPortfolio>.entry',
-        'Strategy<BasicBroker, BasicPortfolio>.close',
-        'Strategy<BasicBroker, BasicPortfolio>.end',
+        'BrokerEmulator.on_open',
+        'BrokerEmulator.submit',
+        'BrokerEmulator.finish',
+        'NetPortfolio.apply',
+        'NetPortfolio.mark',
+        'Strategy<BrokerEmulator, NetPortfolio>.begin',
+        'Strategy<BrokerEmulator, NetPortfolio>.entry',
+        'Strategy<BrokerEmulator, NetPortfolio>.close',
+        'Strategy<BrokerEmulator, NetPortfolio>.end',
       ]),
     );
     expect(program.outputs[0]?.effect).toBe('strategy');
@@ -361,6 +361,418 @@ describe('Tea strategy components end to end', () => {
       [1, 'FillExecuted'],
       [1, 'OrderSubmitted'],
       [2, 'FillExecuted'],
+    ]);
+  });
+
+  test('uses explicit quantity, tick slippage, per-contract commission, and zero margin', async () => {
+    const source = [
+      'strategy("canonical fixed-contract policy")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(',
+      '        commission = broker.commissionCashPerContract(0.25),',
+      '        slippage = broker.slippageTicks(1.0, 0.5),',
+      '        processOrdersOnClose = false',
+      '    ),',
+      '    portfolio = portfolio.new(initialCash = 5.0, pyramiding = 1, marginLong = 0.0, marginShort = 0.0)',
+      ')',
+      'strat.begin(open, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 2.0)',
+      'if bar_index == 1',
+      '    strat.close("Long")',
+      'strat.end(close, barstate.islast)',
+      'plot(strat.cash())',
+      'plot(strat.position_quantity())',
+      'plot(strat.equity())',
+      'plot(strat.realized_pnl())',
+      'plot(strat.total_fees())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,close', '8,8', '10,10', '20,20', ''].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [5, -16.5, 22]);
+    expectNumbersClose(valuesFor(sink, 2), [0, 2, 0]);
+    expectNumbersClose(valuesFor(sink, 3), [5, 3.5, 22]);
+    expectNumbersClose(valuesFor(sink, 4), [0, 0, 17]);
+    expectNumbersClose(valuesFor(sink, 5), [0, 0.5, 1]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [2, 'FillExecuted'],
+    ]);
+  });
+
+  test('applies the configured long-margin gate only when margin is enabled', async () => {
+    const source = [
+      'strategy("explicit quantity margin gate")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var gated = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.new(initialCash = 5.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'var ungated = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.new(initialCash = 5.0, pyramiding = 1, marginLong = 0.0, marginShort = 0.0)',
+      ')',
+      'gated.begin(open, bar_index)',
+      'ungated.begin(open, bar_index)',
+      'if bar_index == 0',
+      '    gated.entry("Gated", strategy.Direction.long, qty = 2.0)',
+      '    ungated.entry("Ungated", strategy.Direction.long, qty = 2.0)',
+      'gated.end(close, barstate.islast)',
+      'ungated.end(close, barstate.islast)',
+      'plot(gated.cash())',
+      'plot(gated.position_quantity())',
+      'plot(gated.fill_count())',
+      'plot(ungated.cash())',
+      'plot(ungated.position_quantity())',
+      'plot(ungated.fill_count())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,close', '8,8', '10,10', ''].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [5, 5]);
+    expectNumbersClose(valuesFor(sink, 2), [0, 0]);
+    expect(valuesFor(sink, 3)).toEqual([0, 0]);
+    expectNumbersClose(valuesFor(sink, 4), [5, -15]);
+    expectNumbersClose(valuesFor(sink, 5), [0, 2]);
+    expect(valuesFor(sink, 6)).toEqual([0, 1]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [1, 'OrderRejected'],
+      [1, 'FillExecuted'],
+    ]);
+    expect(effectField(program, sink, 2, 'commandId')).toBe('Gated');
+    expect(effectField(program, sink, 2, 'reason')).toBe('invalidAccountState');
+    expect(effectField(program, sink, 3, 'fill', 'commandId')).toBe('Ungated');
+  });
+
+  test('fails closed on invalid configuration and quantity while preserving implicit sizing', async () => {
+    const validBroker = 'broker.new()';
+    const validPortfolio =
+      'portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)';
+    const sourceFor = (
+      title: string,
+      brokerExpression: string,
+      portfolioExpression: string,
+      entryCall: string,
+    ) =>
+      [
+        `strategy("${title}")`,
+        'import broker',
+        'import portfolio',
+        'import strategy',
+        'var strat = strategy.configure(',
+        `    broker = ${brokerExpression},`,
+        `    portfolio = ${portfolioExpression}`,
+        ')',
+        'strat.begin(open, bar_index)',
+        'if bar_index == 0',
+        `    ${entryCall}`,
+        'strat.end(close, barstate.islast)',
+        'plot(strat.cash())',
+        'plot(strat.position_quantity())',
+        'plot(strat.fill_count())',
+      ].join('\n');
+    const csv = ['open,close', '8,8', '10,10', ''].join('\n');
+
+    const invalidConfigurations = [
+      {
+        name: 'unsupported long margin',
+        broker: validBroker,
+        portfolio:
+          'portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = 50.0, marginShort = 100.0)',
+      },
+      {
+        name: 'unsupported short margin',
+        broker: validBroker,
+        portfolio:
+          'portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = 100.0, marginShort = 50.0)',
+      },
+      {
+        name: 'negative long margin',
+        broker: validBroker,
+        portfolio:
+          'portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = -1.0, marginShort = 100.0)',
+      },
+      {
+        name: 'zero initial cash',
+        broker: validBroker,
+        portfolio:
+          'portfolio.new(initialCash = 0.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
+      },
+      {
+        name: 'negative initial cash',
+        broker: validBroker,
+        portfolio:
+          'portfolio.new(initialCash = -1.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
+      },
+      {
+        name: 'zero pyramiding',
+        broker: validBroker,
+        portfolio:
+          'portfolio.new(initialCash = 100.0, pyramiding = 0, marginLong = 100.0, marginShort = 100.0)',
+      },
+      {
+        name: 'negative commission',
+        broker: 'broker.new(commission = broker.commissionRate(-0.01))',
+        portfolio: validPortfolio,
+      },
+      {
+        name: 'na commission',
+        broker: 'broker.new(commission = broker.commissionRate(na))',
+        portfolio: validPortfolio,
+      },
+      {
+        name: 'negative slippage',
+        broker: 'broker.new(slippage = broker.slippageRate(-0.01))',
+        portfolio: validPortfolio,
+      },
+      {
+        name: 'na slippage',
+        broker: 'broker.new(slippage = broker.slippageRate(na))',
+        portfolio: validPortfolio,
+      },
+      {
+        name: 'complete adverse rate',
+        broker: 'broker.new(slippage = broker.slippageRate(1.0))',
+        portfolio: validPortfolio,
+      },
+      {
+        name: 'tick slippage without tick size',
+        broker: 'broker.new(slippage = broker.slippageTicks(1.0, 0.0))',
+        portfolio: validPortfolio,
+      },
+      {
+        name: 'zero tick slippage with negative tick size',
+        broker: 'broker.new(slippage = broker.slippageTicks(0.0, -1.0))',
+        portfolio: validPortfolio,
+      },
+    ] as const;
+
+    for (const scenario of invalidConfigurations) {
+      const commandId = `Invalid config: ${scenario.name}`;
+      const {program, sink} = await execute(
+        sourceFor(
+          scenario.name,
+          scenario.broker,
+          scenario.portfolio,
+          `strat.entry("${commandId}", strategy.Direction.long, qty = 1.0)`,
+        ),
+        csv,
+      );
+
+      expect(effectTimeline(program, sink)).toEqual([
+        [0, 'OrderSubmitted'],
+        [1, 'OrderRejected'],
+      ]);
+      expect(effectField(program, sink, 1, 'commandId')).toBe(commandId);
+      expect(effectField(program, sink, 1, 'reason')).toBe(
+        'invalidConfiguration',
+      );
+      expect(valuesFor(sink, 3)).toEqual([0, 0]);
+    }
+
+    for (const quantity of [0.0, -1.0]) {
+      const commandId = `Invalid quantity: ${quantity}`;
+      const {program, sink} = await execute(
+        sourceFor(
+          commandId,
+          validBroker,
+          validPortfolio,
+          `strat.entry("${commandId}", strategy.Direction.long, qty = ${quantity})`,
+        ),
+        csv,
+      );
+
+      expect(effectTimeline(program, sink)).toEqual([
+        [0, 'OrderSubmitted'],
+        [1, 'OrderRejected'],
+      ]);
+      expect(effectField(program, sink, 1, 'reason')).toBe('invalidQuantity');
+      expect(valuesFor(sink, 3)).toEqual([0, 0]);
+    }
+
+    const legacyEntries = [
+      {
+        name: 'omitted quantity',
+        call: 'strat.entry("Omitted", strategy.Direction.long)',
+      },
+      {
+        name: 'na quantity',
+        call: 'strat.entry("NA", strategy.Direction.long, qty = na)',
+      },
+    ] as const;
+    for (const scenario of legacyEntries) {
+      const {program, sink} = await execute(
+        sourceFor(scenario.name, validBroker, validPortfolio, scenario.call),
+        csv,
+      );
+
+      expect(effectTimeline(program, sink)).toEqual([
+        [0, 'OrderSubmitted'],
+        [1, 'FillExecuted'],
+      ]);
+      expect(effectField(program, sink, 1, 'fill', 'quantity')).toBe(10);
+      expectNumbersClose(valuesFor(sink, 1), [100, 0]);
+      expectNumbersClose(valuesFor(sink, 2), [0, 10]);
+      expect(valuesFor(sink, 3)).toEqual([0, 1]);
+    }
+  });
+
+  test('normalizes percent commissions to rates and charges cash per order once', async () => {
+    const source = [
+      'strategy("canonical commission policies")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var percent = strategy.configure(',
+      '    broker = broker.new(commission = broker.commissionPercent(1.0)),',
+      '    portfolio = portfolio.new(initialCash = 1000.0, marginLong = 0.0)',
+      ')',
+      'var rate = strategy.configure(',
+      '    broker = broker.new(commission = broker.commissionRate(0.01)),',
+      '    portfolio = portfolio.new(initialCash = 1000.0, marginLong = 0.0)',
+      ')',
+      'var flat = strategy.configure(',
+      '    broker = broker.new(commission = broker.commissionCashPerOrder(3.0)),',
+      '    portfolio = portfolio.new(initialCash = 1000.0, marginLong = 0.0)',
+      ')',
+      'percent.begin(open, bar_index)',
+      'rate.begin(open, bar_index)',
+      'flat.begin(open, bar_index)',
+      'if bar_index == 0',
+      '    percent.entry("Percent", strategy.Direction.long, qty = 2.0)',
+      '    rate.entry("Rate", strategy.Direction.long, qty = 2.0)',
+      '    flat.entry("Flat", strategy.Direction.long, qty = 2.0)',
+      'if bar_index == 1',
+      '    percent.close("Percent")',
+      '    rate.close("Rate")',
+      '    flat.close("Flat")',
+      'percent.end(close, barstate.islast)',
+      'rate.end(close, barstate.islast)',
+      'flat.end(close, barstate.islast)',
+      'plot(percent.total_fees())',
+      'plot(rate.total_fees())',
+      'plot(percent.cash())',
+      'plot(rate.cash())',
+      'plot(flat.total_fees())',
+      'plot(flat.cash())',
+      'plot(flat.fill_count())',
+      'plot(flat.realized_pnl())',
+    ].join('\n');
+    const {sink} = await execute(
+      source,
+      ['open,close', '8,8', '10,10', '20,20', ''].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [0, 0.2, 0.6]);
+    expectNumbersClose(valuesFor(sink, 2), [0, 0.2, 0.6]);
+    expectNumbersClose(valuesFor(sink, 3), [1000, 979.8, 1019.4]);
+    expectNumbersClose(valuesFor(sink, 4), [1000, 979.8, 1019.4]);
+    expectNumbersClose(valuesFor(sink, 5), [0, 3, 6]);
+    expectNumbersClose(valuesFor(sink, 6), [1000, 977, 1014]);
+    expect(valuesFor(sink, 7)).toEqual([0, 1, 2]);
+    expectNumbersClose(valuesFor(sink, 8), [0, 0, 14]);
+  });
+
+  test('keeps next-open execution for commands submitted after close processing', async () => {
+    const source = [
+      'strategy("close processing preserves next-open fallback")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 100.0, marginLong = 0.0)',
+      ')',
+      'strat.begin(open, bar_index)',
+      'strat.end(close, barstate.islast)',
+      'if bar_index == 0',
+      '    strat.entry("Late", strategy.Direction.long, qty = 2.0)',
+      'plot(strat.cash())',
+      'plot(strat.position_quantity())',
+      'plot(strat.fill_count())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,close', '10,50', '20,30', ''].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [100, 60]);
+    expectNumbersClose(valuesFor(sink, 2), [0, 2]);
+    expect(valuesFor(sink, 3)).toEqual([0, 1]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+    ]);
+    expect(effectField(program, sink, 1, 'fill', 'referencePrice')).toBe(20);
+    expect(effectField(program, sink, 1, 'fill', 'barIndex')).toBe(1);
+  });
+
+  test('fills on close and accounts for pyramided entries at weighted average cost', async () => {
+    const source = [
+      'strategy("canonical close fills and pyramiding")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 2, marginLong = 0.0, marginShort = 0.0)',
+      ')',
+      'strat.begin(open, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("First", strategy.Direction.long, qty = 2.0)',
+      'if bar_index == 1',
+      '    strat.entry("Second", strategy.Direction.long, qty = 3.0)',
+      'if bar_index == 2',
+      '    strat.entry("Over capacity", strategy.Direction.long, qty = 1.0)',
+      'if bar_index == 3',
+      '    strat.close("All")',
+      'strat.end(close, barstate.islast)',
+      'plot(strat.cash())',
+      'plot(strat.position_quantity())',
+      'plot(strat.position_avg_price())',
+      'plot(strat.equity())',
+      'plot(strat.realized_pnl())',
+      'plot(strat.fill_count())',
+      'plot(strat.round_trip_count())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,close', '10,10', '20,20', '30,30', '40,40', ''].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [80, 20, 20, 220]);
+    expectNumbersClose(valuesFor(sink, 2), [2, 5, 5, 0]);
+    expect(valuesFor(sink, 3)[0]).toBe(10);
+    expect(valuesFor(sink, 3)[1]).toBe(16);
+    expect(valuesFor(sink, 3)[2]).toBe(16);
+    expect(Number.isNaN(valuesFor(sink, 3)[3] as number)).toBe(true);
+    expectNumbersClose(valuesFor(sink, 4), [100, 120, 170, 220]);
+    expectNumbersClose(valuesFor(sink, 5), [0, 0, 0, 120]);
+    expect(valuesFor(sink, 6)).toEqual([1, 2, 2, 3]);
+    expect(valuesFor(sink, 7)).toEqual([0, 0, 0, 1]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [2, 'OrderSubmitted'],
+      [2, 'OrderRejected'],
+      [3, 'OrderSubmitted'],
+      [3, 'FillExecuted'],
     ]);
   });
 

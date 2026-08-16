@@ -1,14 +1,16 @@
 //@version=1
-// Canonical portfolio contract and deterministic long-only accounting.
-// A Basic value consumes broker.Fill values but never matches orders.
+// Canonical scalar net-portfolio accounting. It consumes broker.Fill values
+// but never decides whether, when, or at what price an order fills.
 library("portfolio")
 
 import broker
 
 export interface Portfolio
+	broker.Account account() const
 	bool is_flat() const
 	float buying_power() const
 	float position_quantity() const
+	float position_avg_price() const
 	int apply(broker.Fill execution)
 	float mark(float price)
 	float cash() const
@@ -20,13 +22,17 @@ export interface Portfolio
 	float max_drawdown() const
 	float total_return() const
 
-export type BasicPortfolio
+export type NetPortfolio
 	float initialCash
+	int pyramiding
+	float marginLong
+	float marginShort
 	float cashValue = 0.0
 	float positionQuantityValue = 0.0
 	float entryPrice = na
 	float entryNotional = 0.0
 	float entryFee = 0.0
+	int openEntryCountValue = 0
 	float realizedPnlValue = 0.0
 	float totalFeesValue = 0.0
 	float equityValue = 0.0
@@ -34,6 +40,12 @@ export type BasicPortfolio
 	float maxDrawdownValue = 0.0
 	int fillCountValue = 0
 	int roundTripCountValue = 0
+
+	broker.Account account() const =>
+		longMarginValid = this.marginLong == 0.0 or this.marginLong == 100.0
+		shortMarginValid = this.marginShort == 0.0 or this.marginShort == 100.0
+		configurationValid = this.initialCash > 0.0 and this.pyramiding >= 1 and longMarginValid and shortMarginValid
+		broker.Account.new(this.cashValue, this.positionQuantityValue, this.openEntryCountValue, this.pyramiding, this.marginLong, this.marginShort, configurationValid)
 
 	bool is_flat() const =>
 		this.positionQuantityValue == 0.0
@@ -44,27 +56,41 @@ export type BasicPortfolio
 	float position_quantity() const =>
 		this.positionQuantityValue
 
+	float position_avg_price() const =>
+		this.entryPrice
+
 	int apply(broker.Fill execution) =>
 		if not na(execution)
 			isBuy = execution.side == broker.Side.buy
-			canApply = isBuy ? this.positionQuantityValue == 0.0 : this.positionQuantityValue > 0.0
-			if canApply and isBuy
+			canBuy = isBuy and execution.quantity > 0.0 and this.positionQuantityValue >= 0.0 and this.openEntryCountValue < this.pyramiding
+			canSell = not isBuy and execution.quantity > 0.0 and this.positionQuantityValue > 0.0 and execution.quantity <= this.positionQuantityValue
+			if canBuy
+				priorQuantity = this.positionQuantityValue
+				newQuantity = priorQuantity + execution.quantity
 				this.cashValue := this.cashValue - execution.notional - execution.fee
-				this.positionQuantityValue := execution.quantity
-				this.entryPrice := execution.price
-				this.entryNotional := execution.notional
-				this.entryFee := execution.fee
-			if canApply and not isBuy
+				this.entryPrice := priorQuantity == 0.0 ? execution.price : (priorQuantity * this.entryPrice + execution.quantity * execution.price) / newQuantity
+				this.positionQuantityValue := newQuantity
+				this.entryNotional := this.entryNotional + execution.notional
+				this.entryFee := this.entryFee + execution.fee
+				this.openEntryCountValue := this.openEntryCountValue + 1
+			if canSell
+				quantityBefore = this.positionQuantityValue
+				isFullClose = execution.quantity == quantityBefore
+				entryFeeShare = isFullClose ? this.entryFee : this.entryFee * execution.quantity / quantityBefore
 				grossPnl = execution.quantity * (execution.price - this.entryPrice)
-				tradeFees = this.entryFee + execution.fee
+				tradeFees = entryFeeShare + execution.fee
 				this.cashValue := this.cashValue + execution.notional - execution.fee
 				this.realizedPnlValue := this.realizedPnlValue + grossPnl - tradeFees
-				this.positionQuantityValue := 0.0
-				this.entryPrice := na
-				this.entryNotional := 0.0
-				this.entryFee := 0.0
-				this.roundTripCountValue := this.roundTripCountValue + 1
-			if canApply
+				this.positionQuantityValue := quantityBefore - execution.quantity
+				this.entryNotional := this.entryNotional * this.positionQuantityValue / quantityBefore
+				this.entryFee := this.entryFee - entryFeeShare
+				if isFullClose
+					this.entryPrice := na
+					this.entryNotional := 0.0
+					this.entryFee := 0.0
+					this.openEntryCountValue := 0
+					this.roundTripCountValue := this.roundTripCountValue + 1
+			if canBuy or canSell
 				this.totalFeesValue := this.totalFeesValue + execution.fee
 				this.fillCountValue := this.fillCountValue + 1
 		this.fillCountValue
@@ -102,5 +128,14 @@ export type BasicPortfolio
 	float total_return() const =>
 		this.initialCash == 0.0 ? na : (this.equityValue - this.initialCash) / this.initialCash
 
+export new(
+	float initialCash = 1000000.0,
+	int pyramiding = 1,
+	float marginLong = 100.0,
+	float marginShort = 100.0
+) =>
+	NetPortfolio.new(initialCash = initialCash, pyramiding = pyramiding, marginLong = marginLong, marginShort = marginShort, cashValue = initialCash, equityValue = initialCash, peakEquity = initialCash)
+
+// Compatibility wrapper for the original flat-or-long reference account.
 export basic(float initialCash) =>
-	BasicPortfolio.new(initialCash = initialCash, cashValue = initialCash, equityValue = initialCash, peakEquity = initialCash)
+	new(initialCash = initialCash, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)

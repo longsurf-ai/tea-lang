@@ -127,6 +127,65 @@ test('Dawn resumes independent executions and publishes dense values and effects
   }
 });
 
+test('Dawn matches canonical explicit-quantity close fills and pyramiding', async () => {
+  const program = mustBuild(
+    [
+      'strategy("canonical component policies")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(',
+      '        commission = broker.commissionCashPerContract(0.25),',
+      '        slippage = broker.slippageTicks(1.0, 0.5),',
+      '        processOrdersOnClose = true',
+      '    ),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 2, marginLong = 0.0, marginShort = 0.0)',
+      ')',
+      'strat.begin(open, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("First", strategy.Direction.long, qty = 2.0)',
+      'if bar_index == 1',
+      '    strat.entry("Second", strategy.Direction.long, qty = 3.0)',
+      'if bar_index == 2',
+      '    strat.close("All")',
+      'strat.end(close, barstate.islast)',
+      'plot(strat.cash())',
+      'plot(strat.position_quantity())',
+      'plot(strat.position_avg_price())',
+      'plot(strat.equity())',
+      'plot(strat.realized_pnl())',
+    ].join('\n'),
+  );
+  const result = compileProgramToWgsl(program);
+  assert.equal(result.status, 'compiled');
+  if (result.status !== 'compiled') return;
+
+  const source = provider({open: [10, 20, 30], close: [10, 20, 30]});
+  const cpuSink = new MemorySink();
+  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+
+  Object.assign(globalThis, globals);
+  const gpu = create([]);
+  const adapter = await gpu.requestAdapter();
+  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
+  const device = await adapter.requestDevice();
+  const gpuSink = new MemorySink();
+  const execution = await createGpuExecution(
+    device,
+    result.artifact,
+    [binding(source, gpuSink)],
+    {maxRowsPerChunk: 1},
+  );
+  try {
+    await execution.runAll();
+    assertSinkParity(cpuSink, gpuSink, result.artifact);
+  } finally {
+    execution.dispose();
+    device.destroy();
+  }
+});
+
 test('Dawn validates a complete chunk before publishing its first dense row', async () => {
   const program = mustBuild('indicator("late invalid result")\nplot(close)');
   const result = compileProgramToWgsl(program);

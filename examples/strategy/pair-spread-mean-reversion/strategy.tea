@@ -7,65 +7,6 @@ import broker
 import portfolio
 import strategy
 
-// The published strategy uses a fixed one-contract order, one tick of adverse
-// slippage, and a fixed cash commission per contract. BasicBroker sizes orders
-// from all available cash and charges a percentage fee, so this example keeps
-// the differing execution policy local instead of changing the shared broker.
-type FixedContractBroker
-	float tickSize
-	float slippageTicks
-	float commissionPerContract
-	float contracts
-	int nextOrderId = 1
-	int nextFillId = 1
-	broker.Order pending = na
-
-	bool has_pending() const =>
-		not na(this.pending)
-
-	broker.Order submit(string commandId, broker.Side side, int signalBarIndex) =>
-		broker.Order order = na
-		if na(this.pending)
-			order := broker.Order.new(this.nextOrderId, commandId, side, signalBarIndex)
-			this.nextOrderId := this.nextOrderId + 1
-			this.pending := order
-			effect.emit(broker.OrderSubmitted.new(order))
-		else
-			effect.emit(broker.OrderRejected.new(commandId, side, signalBarIndex, broker.Rejection.pendingOrder))
-		order
-
-	broker.Fill on_open(float referencePrice, float buyingPower, float positionQuantity, int barIndex) =>
-		broker.Fill execution = na
-		if not na(this.pending)
-			order = this.pending
-			if barIndex > order.signalBarIndex
-				isBuy = order.side == broker.Side.buy
-				slippage = this.tickSize * this.slippageTicks
-				price = isBuy ? referencePrice + slippage : referencePrice - slippage
-				quantity = isBuy ? this.contracts : positionQuantity
-				notional = quantity * price
-				fee = quantity * this.commissionPerContract
-				// The source strategy's published v5 properties use zero margin,
-				// so fixed-size entries are not limited by available funds.
-				validAccountState = isBuy ? positionQuantity == 0.0 : positionQuantity > 0.0
-				if validAccountState and quantity > 0.0 and price > 0.0
-					execution := broker.Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, referencePrice, price, quantity, notional, fee)
-					this.nextFillId := this.nextFillId + 1
-					effect.emit(broker.FillExecuted.new(execution))
-				else
-					effect.emit(broker.OrderRejected.new(order.commandId, order.side, barIndex, broker.Rejection.invalidAccountState))
-				broker.Order empty = na
-				this.pending := empty
-		execution
-
-	broker.Order finish() =>
-		expired = this.pending
-		broker.Order empty = na
-		this.pending := empty
-		if not na(expired)
-			effect.emit(broker.OrderExpired.new(expired))
-		expired
-
 symbol_one = input.symbol("YM=F", "Spread leg one")
 symbol_two = input.symbol("ES=F", "Spread leg two")
 spread_timeframe = input.timeframe("D", "Spread timeframe")
@@ -78,8 +19,17 @@ commission_per_contract = input.float(0.05, "Commission per contract", minval=0.
 contracts = input.float(1.0, "Contracts per entry", minval=0.00000001)
 
 var strat = strategy.configure(
-	broker = FixedContractBroker.new(tick_size, slippage_ticks, commission_per_contract, contracts),
-	portfolio = portfolio.basic(initial_cash)
+	broker = broker.new(
+		commission = broker.commissionCashPerContract(commission_per_contract),
+		slippage = broker.slippageTicks(slippage_ticks, tick_size),
+		processOrdersOnClose = false
+	),
+	portfolio = portfolio.new(
+		initialCash = initial_cash,
+		pyramiding = 1,
+		marginLong = 0.0,
+		marginShort = 0.0
+	)
 )
 
 // Resolve prior-bar orders at the primary instrument's next open.
@@ -96,7 +46,7 @@ enter_long = spread < lower_band
 exit_long = spread > spread_mean
 
 if enter_long and strat.position_quantity() == 0.0 and not strat.has_pending()
-	strat.entry("Spread Long", strategy.Direction.long)
+	strat.entry("Spread Long", strategy.Direction.long, qty = contracts)
 
 if exit_long and strat.position_quantity() > 0.0 and not strat.has_pending()
 	strat.close("Spread Long")

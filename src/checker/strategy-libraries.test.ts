@@ -11,14 +11,17 @@ const ALTERNATIVE_COMPONENTS = [
   'type AlternateBroker',
   '    int marker',
   '    bool has_pending() const => false',
-  '    broker.Order submit(string commandId, broker.Side side, int signalBarIndex) => na',
-  '    broker.Fill on_open(float referencePrice, float buyingPower, float positionQuantity, int barIndex) => na',
+  '    broker.Order submit(broker.Command command) => na',
+  '    broker.Fill on_open(float referencePrice, broker.Account account, int barIndex) => na',
+  '    broker.Fill on_close(float referencePrice, broker.Account account, int barIndex) => na',
   '    broker.Order finish() => na',
   'type AlternatePortfolio',
   '    float balance',
+  '    broker.Account account() const => broker.Account.new(this.balance, 0.0, 0, 1, 100.0, 100.0)',
   '    bool is_flat() const => true',
   '    float buying_power() const => this.balance',
   '    float position_quantity() const => 0.0',
+  '    float position_avg_price() const => na',
   '    int apply(broker.Fill execution) => 0',
   '    float mark(float price) => this.balance',
   '    float cash() const => this.balance',
@@ -48,7 +51,9 @@ describe('Tea-authored strategy libraries', () => {
     );
 
     expect(result.errors).toEqual([]);
-    const broker = result.checked.pkg.imports.find(pkg => pkg.path === 'broker');
+    const broker = result.checked.pkg.imports.find(
+      pkg => pkg.path === 'broker',
+    );
     const portfolio = result.checked.pkg.imports.find(
       pkg => pkg.path === 'portfolio',
     );
@@ -56,8 +61,13 @@ describe('Tea-authored strategy libraries', () => {
       pkg => pkg.path === 'strategy',
     );
     expect([...broker!.exports.keys()].sort()).toEqual([
-      'BasicBroker',
+      'Account',
       'Broker',
+      'BrokerEmulator',
+      'Command',
+      'CommandKind',
+      'Commission',
+      'CommissionKind',
       'Fill',
       'FillExecuted',
       'Order',
@@ -66,18 +76,58 @@ describe('Tea-authored strategy libraries', () => {
       'OrderSubmitted',
       'Rejection',
       'Side',
+      'Slippage',
+      'SlippageKind',
       'basic',
+      'commissionCashPerContract',
+      'commissionCashPerOrder',
+      'commissionPercent',
+      'commissionRate',
+      'new',
+      'slippagePercent',
+      'slippageRate',
+      'slippageTicks',
     ]);
     expect([...portfolio!.exports.keys()].sort()).toEqual([
-      'BasicPortfolio',
+      'NetPortfolio',
       'Portfolio',
       'basic',
+      'new',
     ]);
     expect([...strategy!.exports.keys()].sort()).toEqual([
       'Direction',
       'Strategy',
       'configure',
     ]);
+  });
+
+  test('accepts the canonical named constructor shape', () => {
+    const result = checkText(
+      [
+        'strategy("canonical constructors")',
+        'import broker',
+        'import portfolio',
+        'import strategy',
+        'var strat = strategy.configure(',
+        '    broker = broker.new(',
+        '        commission = broker.commissionCashPerContract(0.05),',
+        '        slippage = broker.slippageTicks(1.0, 0.01),',
+        '        processOrdersOnClose = true',
+        '    ),',
+        '    portfolio = portfolio.new(',
+        '        initialCash = 30000.0,',
+        '        pyramiding = 2,',
+        '        marginLong = 0.0,',
+        '        marginShort = 100.0',
+        '    )',
+        ')',
+        'strat.begin(open, bar_index)',
+        'strat.entry("Long", strategy.Direction.long, qty = 1.0)',
+        'strat.end(close, barstate.islast)',
+      ].join('\n'),
+    );
+
+    expect(result.errors).toEqual([]);
   });
 
   test('specializes configure for alternative implicit implementations', () => {
@@ -111,7 +161,7 @@ describe('Tea-authored strategy libraries', () => {
     );
     expect(funcsOf(program).map(func => func.name)).toEqual(
       expect.arrayContaining([
-        'Strategy<BasicBroker, BasicPortfolio>.begin',
+        'Strategy<BrokerEmulator, NetPortfolio>.begin',
         'Strategy<AlternateBroker, AlternatePortfolio>.begin',
       ]),
     );

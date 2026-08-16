@@ -1,21 +1,68 @@
 //@version=1
 // Canonical order/fill vocabulary and the deterministic reference broker.
-// Every Basic value is explicit scenario state; the package hides no broker.
+// Every BrokerEmulator value is explicit scenario state; the package hides no
+// broker, order book, or account state.
 library("broker")
 
 export enum Side
 	buy
 	sell
 
+export enum CommandKind
+	entry
+	close
+
+export enum CommissionKind
+	percent
+	cashPerContract
+	cashPerOrder
+
+export enum SlippageKind
+	percent
+	ticks
+
 export enum Rejection
 	pendingOrder
 	invalidAccountState
+	invalidConfiguration
+	invalidQuantity
+
+export type Commission
+	CommissionKind kind
+	float value
+
+export type Slippage
+	SlippageKind kind
+	float value
+	float tickSize
+
+// Account is the read-only execution view supplied by a Portfolio. It keeps
+// broker matching independent of the concrete accounting implementation.
+export type Account
+	float buyingPower
+	float positionQuantity
+	int openEntryCount
+	int pyramiding
+	float marginLong
+	float marginShort
+	bool configurationValid = true
+
+// Command is the strategy-to-broker boundary. Future order fields belong here
+// rather than in strategy-specific account implementations.
+export type Command
+	string commandId
+	CommandKind kind
+	Side side
+	float quantity
+	int signalBarIndex
 
 export type Order
 	int id
 	string commandId
 	Side side
 	int signalBarIndex
+	CommandKind kind = CommandKind.entry
+	float quantity = na
 
 export type Fill
 	int id
@@ -46,13 +93,18 @@ export type OrderRejected
 
 export interface Broker
 	bool has_pending() const
-	Order submit(string commandId, Side side, int signalBarIndex)
-	Fill on_open(float referencePrice, float buyingPower, float positionQuantity, int barIndex)
+	Order submit(Command command)
+	Fill on_open(float referencePrice, Account account, int barIndex)
+	Fill on_close(float referencePrice, Account account, int barIndex)
 	Order finish()
 
-export type BasicBroker
-	float adverseSlippageRate
-	float takerFeeRate
+export type BrokerEmulator
+	CommissionKind commissionKind
+	float commissionValue
+	SlippageKind slippageKind
+	float slippageValue
+	float tickSize
+	bool processOrdersOnClose
 	int nextOrderId = 1
 	int nextFillId = 1
 	Order pending = na
@@ -60,45 +112,114 @@ export type BasicBroker
 	bool has_pending() const =>
 		not na(this.pending)
 
-	Order submit(string commandId, Side side, int signalBarIndex) =>
+	float execution_price(float referencePrice, Side side) const =>
+		isBuy = side == Side.buy
+		if this.slippageKind == SlippageKind.ticks
+			adjustment = this.slippageValue * this.tickSize
+			isBuy ? referencePrice + adjustment : referencePrice - adjustment
+		else
+			multiplier = isBuy ? 1.0 + this.slippageValue : 1.0 - this.slippageValue
+			referencePrice * multiplier
+
+	float commission_for(float quantity, float notional) const =>
+		this.commissionKind == CommissionKind.cashPerContract ? quantity * this.commissionValue : this.commissionKind == CommissionKind.cashPerOrder ? this.commissionValue : notional * this.commissionValue
+
+	float default_buy_quantity(float price, float buyingPower) const =>
+		this.commissionKind == CommissionKind.cashPerContract ? buyingPower / (price + this.commissionValue) : this.commissionKind == CommissionKind.cashPerOrder ? (buyingPower - this.commissionValue) / price : buyingPower / (price * (1.0 + this.commissionValue))
+
+	bool configuration_valid() const =>
+		commissionKindValid = this.commissionKind == CommissionKind.percent or this.commissionKind == CommissionKind.cashPerContract or this.commissionKind == CommissionKind.cashPerOrder
+		commissionValueValid = not na(this.commissionValue) and this.commissionValue >= 0.0
+		slippageKindValid = this.slippageKind == SlippageKind.percent or this.slippageKind == SlippageKind.ticks
+		slippageValueValid = not na(this.slippageValue) and this.slippageValue >= 0.0 and (this.slippageKind != SlippageKind.percent or this.slippageValue < 1.0)
+		tickSizeValid = this.slippageKind != SlippageKind.ticks or not na(this.tickSize) and this.tickSize >= 0.0 and (this.slippageValue == 0.0 or this.tickSize > 0.0)
+		commissionKindValid and commissionValueValid and slippageKindValid and slippageValueValid and tickSizeValid
+
+	Order submit(Command command) =>
 		Order order = na
 		if na(this.pending)
-			order := Order.new(this.nextOrderId, commandId, side, signalBarIndex)
+			order := Order.new(this.nextOrderId, command.commandId, command.side, command.signalBarIndex, command.kind, command.quantity)
 			this.nextOrderId := this.nextOrderId + 1
 			this.pending := order
 			effect.emit(OrderSubmitted.new(order))
 		else
-			effect.emit(OrderRejected.new(commandId, side, signalBarIndex, Rejection.pendingOrder))
+			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.pendingOrder))
 		order
 
-	Fill on_open(float referencePrice, float buyingPower, float positionQuantity, int barIndex) =>
+	Fill execute(float referencePrice, Account account, int barIndex, bool atClose) =>
 		Fill execution = na
 		if not na(this.pending)
 			order = this.pending
-			if barIndex > order.signalBarIndex
-				isBuy = order.side == Side.buy
-				priceMultiplier = isBuy ? 1.0 + this.adverseSlippageRate : 1.0 - this.adverseSlippageRate
-				price = referencePrice * priceMultiplier
-				canExecute = isBuy ? positionQuantity == 0.0 and buyingPower > 0.0 : positionQuantity > 0.0
-				quantity = canExecute ? (isBuy ? buyingPower / (price * (1.0 + this.takerFeeRate)) : positionQuantity) : 0.0
-				if quantity > 0
-					notional = quantity * price
-					fee = notional * this.takerFeeRate
-					execution := Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, referencePrice, price, quantity, notional, fee)
-					this.nextFillId := this.nextFillId + 1
-					effect.emit(FillExecuted.new(execution))
+			eligible = atClose ? this.processOrdersOnClose and barIndex >= order.signalBarIndex : barIndex > order.signalBarIndex
+			if eligible
+				if not this.configuration_valid() or not account.configurationValid
+					effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidConfiguration))
+				else if order.kind == CommandKind.entry and not na(order.quantity) and order.quantity <= 0.0
+					effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidQuantity))
 				else
-					effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState))
-				this.pending := na
-				execution
+					isBuy = order.side == Side.buy
+					price = this.execution_price(referencePrice, order.side)
+					requestedQuantity = order.quantity
+					hasExplicitQuantity = not na(requestedQuantity)
+					quantity = isBuy ? (hasExplicitQuantity ? requestedQuantity : this.default_buy_quantity(price, account.buyingPower)) : account.positionQuantity
+					notional = quantity * price
+					fee = this.commission_for(quantity, notional)
+					entryCapacity = account.openEntryCount < account.pyramiding
+					accountStateValid = isBuy ? order.kind == CommandKind.entry and account.positionQuantity >= 0.0 and entryCapacity : order.kind == CommandKind.close and account.positionQuantity > 0.0
+					marginRequired = notional * account.marginLong / 100.0 + fee
+					capitalValid = not isBuy or (hasExplicitQuantity ? account.marginLong == 0.0 or account.buyingPower >= marginRequired : account.buyingPower > 0.0)
+					if accountStateValid and capitalValid and quantity > 0.0 and price > 0.0 and fee >= 0.0
+						execution := Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, referencePrice, price, quantity, notional, fee)
+						this.nextFillId := this.nextFillId + 1
+						effect.emit(FillExecuted.new(execution))
+					else
+						effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState))
+				Order empty = na
+				this.pending := empty
 		execution
+
+	Fill on_open(float referencePrice, Account account, int barIndex) =>
+		this.execute(referencePrice, account, barIndex, false)
+
+	Fill on_close(float referencePrice, Account account, int barIndex) =>
+		this.execute(referencePrice, account, barIndex, true)
 
 	Order finish() =>
 		expired = this.pending
-		this.pending := na
+		Order empty = na
+		this.pending := empty
 		if not na(expired)
 			effect.emit(OrderExpired.new(expired))
 		expired
 
+export commissionRate(float rate = 0.0) =>
+	Commission.new(CommissionKind.percent, rate)
+
+export commissionPercent(float percent = 0.0) =>
+	commissionRate(percent / 100.0)
+
+export commissionCashPerContract(float cash = 0.0) =>
+	Commission.new(CommissionKind.cashPerContract, cash)
+
+export commissionCashPerOrder(float cash = 0.0) =>
+	Commission.new(CommissionKind.cashPerOrder, cash)
+
+export slippageRate(float rate = 0.0) =>
+	Slippage.new(SlippageKind.percent, rate, 0.0)
+
+export slippagePercent(float percent = 0.0) =>
+	slippageRate(percent / 100.0)
+
+export slippageTicks(float ticks = 0.0, float tickSize = 0.0) =>
+	Slippage.new(SlippageKind.ticks, ticks, tickSize)
+
+export new(
+	Commission commission = Commission.new(CommissionKind.percent, 0.0),
+	Slippage slippage = Slippage.new(SlippageKind.percent, 0.0, 0.0),
+	bool processOrdersOnClose = false
+) =>
+	BrokerEmulator.new(commission.kind, commission.value, slippage.kind, slippage.value, slippage.tickSize, processOrdersOnClose)
+
+// Compatibility wrapper for the original all-in, next-open reference policy.
 export basic(float adverseSlippageRate = 0.0, float takerFeeRate = 0.0) =>
-	BasicBroker.new(adverseSlippageRate, takerFeeRate)
+	new(commissionRate(takerFeeRate), slippageRate(adverseSlippageRate), false)

@@ -26,8 +26,17 @@ fee = input.float(0.1, "Fee", minval=0.0)
 initial_cash = input.float(121.0, "Initial cash", minval=1.0)
 
 var strat = strategy.configure(
-    broker = broker.basic(slippage, fee),
-    portfolio = portfolio.basic(initial_cash)
+    broker = broker.new(
+        commission = broker.commissionRate(fee),
+        slippage = broker.slippageRate(slippage),
+        processOrdersOnClose = false
+    ),
+    portfolio = portfolio.new(
+        initialCash = initial_cash,
+        pyramiding = 1,
+        marginLong = 100.0,
+        marginShort = 100.0
+    )
 )
 
 strat.begin(open, bar_index)
@@ -55,6 +64,12 @@ plot(na(expired) ? 0 : expired.id, "expired order id")
 `strategy()` is contextual first-statement metadata. `import strategy` binds
 the ordinary package used by later selectors. All three packages are explicit
 because their policy is part of the program, not a platform setting.
+
+`broker.new` selects decimal commission and slippage rates and keeps fills at
+the next open. `portfolio.new` selects one aggregate long entry with a 100%
+explicit-quantity capital requirement. This example omits `qty`, so the broker
+uses its commission-aware all-available-cash sizing. `marginShort` is reserved
+in this long-only implementation.
 
 ## 2. Read the bars
 
@@ -252,7 +267,9 @@ The calls are ordinary Tea:
 1. `begin(open, bar_index)` processes a previously pending order and applies
    its fill.
 2. Signal logic calls `entry` or `close`.
-3. `end(close, isLast)` marks the portfolio and performs final expiry.
+3. `end(close, isLast)` optionally processes and applies an on-close fill when
+   `processOrdersOnClose=true`, then marks the portfolio.
+4. On the final bar, `end` expires any command that remains pending.
 
 The compiler does not insert, reorder, count, or enforce these calls. A custom
 strategy library can define a different explicit lifecycle.

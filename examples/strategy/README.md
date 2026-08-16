@@ -39,10 +39,39 @@ are runtime fixtures, not parameter recommendations or profitability claims.
 
 ## Why these are Tea programs rather than compiler features
 
-Tea's shipped `BasicBroker` and `BasicPortfolio` intentionally implement a
-small long-only, all-in/all-out, next-open lifecycle. That library policy is not
-the language boundary. These examples prove the broader CPU surface using
-ordinary Tea-authored state machines:
+Tea's shipped `BrokerEmulator` and `NetPortfolio` provide a reusable canonical
+path for the common long-only case:
+
+```tea
+var strat = strategy.configure(
+    broker = broker.new(
+        commission = broker.commissionRate(fee),
+        slippage = broker.slippageRate(slippage),
+        processOrdersOnClose = false
+    ),
+    portfolio = portfolio.new(
+        initialCash = initial_cash,
+        pyramiding = 1,
+        marginLong = 100.0,
+        marginShort = 100.0
+    )
+)
+```
+
+That path supports one pending market command, an explicit positive or omitted
+all-available-cash entry quantity, next-open or process-on-close execution,
+rate/percent/tick slippage, rate/percent/cash commission, and aggregate
+long-position pyramiding with weighted-average cost. This first slice accepts
+only `marginLong=100` (full notional plus fees must fit in cash) or
+`marginLong=0` (the gate is disabled). Intermediate leverage fails closed until
+the portfolio has true free-margin accounting. `marginShort` is validated
+against the same two values but otherwise reserved in the current long-only
+implementation.
+
+The canonical path does not yet cover short positions, per-entry lots, partial
+closes, general margin accounting, resting orders, cancellation, OCA groups,
+or intrabar price paths. Examples that need those behaviors still demonstrate
+the broader CPU surface with ordinary Tea-authored components and state:
 
 - signed and quantity-aware positions;
 - weighted cost and target allocation;
@@ -53,8 +82,8 @@ ordinary Tea-authored state machines:
 - typed `broker.FillExecuted` effects through the normal output contract.
 
 Nothing in the compiler or runtime recognizes these strategy names. Their
-local accounts and order engines compile through the same
-parser → checker → noder → codegen path as any other Tea source.
+canonical or strategy-specific components compile through the same parser →
+checker → noder → codegen path as any other Tea source.
 
 ## Explicit boundaries
 

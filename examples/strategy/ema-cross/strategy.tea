@@ -15,8 +15,17 @@ slippage = input.float(0.0005, "Adverse slippage rate", minval=0.0, maxval=0.05)
 fee = input.float(0.001, "Taker fee rate", minval=0.0, maxval=0.05)
 
 var strat = strategy.configure(
-	broker = broker.basic(slippage, fee),
-	portfolio = portfolio.basic(initial_cash)
+	broker = broker.new(
+		commission = broker.commissionRate(fee),
+		slippage = broker.slippageRate(slippage),
+		processOrdersOnClose = false
+	),
+	portfolio = portfolio.new(
+		initialCash = initial_cash,
+		pyramiding = 1,
+		marginLong = 100.0,
+		marginShort = 100.0
+	)
 )
 
 // Resolve orders submitted on an earlier bar before evaluating this bar's

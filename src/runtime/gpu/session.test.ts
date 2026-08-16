@@ -210,7 +210,7 @@ describe('GPU execution preparation', () => {
 
   test('packs an actual strategy artifact in caller execution and artifact series order', async () => {
     const artifact = strategyArtifact();
-    expect(artifact.maxEffectsPerRow).toBe(5);
+    expect(artifact.maxEffectsPerRow).toBe(6);
     const requested: Array<readonly [string, string]> = [];
     const columns = {
       open: [10, 11, 12],
@@ -235,7 +235,7 @@ describe('GPU execution preparation', () => {
     expect(
       prepared.executions.map(execution => execution.seriesOffset),
     ).toEqual([0, 0]);
-    expect(prepared.chunkRows).toBe(2);
+    expect(prepared.chunkRows).toBe(1);
     expect(prepared.effectRecordsPerExecution).toBe(10);
 
     const series = new DataView(
@@ -266,7 +266,7 @@ describe('GPU execution preparation', () => {
       descriptors.getUint32(offsets.effectCapacity, true),
       descriptors.getUint32(offsets.chunkRows, true),
       descriptors.getUint32(offsets.paramsOffset, true),
-    ]).toEqual([3, 0, 2 * artifact.resultChannels.length, 0, 10, 2, 0]);
+    ]).toEqual([3, 0, 2 * artifact.resultChannels.length, 0, 10, 1, 0]);
     const second = artifact.jobDescriptorByteStride;
     expect([
       descriptors.getUint32(second + offsets.resultOffset, true),

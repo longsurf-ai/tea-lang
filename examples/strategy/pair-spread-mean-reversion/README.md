@@ -4,7 +4,7 @@ This is a clean-room Tea implementation of the behavior exposed by TradingView's
 
 Despite the original title, its public behavior is not a market-neutral two-leg arbitrage. Two requested instruments form a close-price spread and its rolling mean and standard deviation. A lower-band break submits a long order for the chart instrument; a move above the spread mean closes that position. This example preserves that single-instrument behavior. The source defaults use Yahoo's resolvable `YM=F` and `ES=F` equivalents of the published continuous-index-future pair. The supplied sweep deliberately overrides them with `BTC-USD` and `ETH-USD`, so its signal and its checked-in Binance BTCUSDT primary instrument all belong to the crypto market rather than presenting a futures signal over BTC as if it were the original strategy's performance.
 
-The local `FixedContractBroker` preserves the published historical-bar execution settings that the shared all-in broker cannot represent:
+The strategy configures Tea's canonical broker and portfolio components with the published historical-bar execution settings:
 
 - one fixed contract by default;
 - market orders filled at the next primary bar's open;
@@ -12,7 +12,7 @@ The local `FixedContractBroker` preserves the published historical-bar execution
 - USD 0.05 commission per filled contract; and
 - a USD 30,000 initial account.
 
-The configured `tick_size` is `0.01`, matching the BTCUSDT fixture. The published Pine v5 strategy has zero long margin, so its broker emulator does not check available funds before opening a fixed-size position. The local broker intentionally preserves that behavior and can therefore make portfolio cash negative; this is a compatibility choice, not realistic risk management. The example targets the JavaScript runtime because `request.security` contexts are not supported by the current WebGPU runtime.
+The configured `tick_size` is `0.01`, matching the BTCUSDT fixture. The published Pine v5 strategy has zero long margin, so `portfolio.new(..., marginLong = 0.0)` does not gate the fixed-size entry on available cash. This can make portfolio cash negative; it is a compatibility choice, not realistic risk management. The example targets the JavaScript runtime because `request.security` contexts are not supported by the current WebGPU runtime.
 
 Run the bounded 3 x 3 CPU sweep from the repository root:
 
@@ -22,7 +22,7 @@ bun src/main.ts execute examples/strategy/pair-spread-mean-reversion/sweep.yaml
 
 ## Observed reference run
 
-On 2026-08-14, the bounded sweep completed all 9 bindings and 29,547 primary rows on the CPU runtime. The engine reported 9.81 ms of lowering, 45,541.93 ms of execution, and 45,551.74 ms total.
+On 2026-08-16, after migrating the strategy to the canonical broker and portfolio components, the bounded sweep completed all 9 bindings and 29,547 primary rows on the CPU runtime. The engine reported 7.59 ms of lowering, 39,224.17 ms of execution, and 39,231.76 ms total. Its returns, drawdowns, fill counts, and round-trip counts matched the prior local-broker reference run.
 
 - Best total return: binding 3 (`mean_length=20`, `entry_deviations=1.5`), +50.5834%, with 54.6385% maximum drawdown and 72 round trips.
 - Worst total return: binding 2 (`mean_length=10`, `entry_deviations=2.5`), -89.5488%, with 109.3452% maximum drawdown and 22 round trips.

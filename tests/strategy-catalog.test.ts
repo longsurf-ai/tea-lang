@@ -167,4 +167,17 @@ describe('clean-room strategy catalog', () => {
     expect(source).not.toContain('end_time');
     expect(source).not.toContain('4102444800000');
   });
+
+  test('Pair strategy composes the canonical broker and portfolio', () => {
+    const source = readFileSync(
+      join(STRATEGY_ROOT, 'pair-spread-mean-reversion', 'strategy.tea'),
+      'utf8',
+    );
+
+    expect(source).toContain('broker.new(');
+    expect(source).toContain('portfolio.new(');
+    expect(source).toContain('qty = contracts');
+    expect(source).not.toContain('type FixedContractBroker');
+    expect(source).not.toContain('broker.Fill.new');
+  });
 });

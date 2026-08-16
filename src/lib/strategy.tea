@@ -17,18 +17,20 @@ export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 
 	broker.Fill begin(float openPrice, int barIndex) =>
 		this.currentBarIndex := barIndex
-		execution = this.broker.on_open(openPrice, this.portfolio.buying_power(), this.portfolio.position_quantity(), barIndex)
+		execution = this.broker.on_open(openPrice, this.portfolio.account(), this.currentBarIndex)
 		this.portfolio.apply(execution)
 		execution
 
-	broker.Order entry(string commandId, Direction direction) =>
+	broker.Order entry(string commandId, Direction direction, float qty = na) =>
 		side = direction == Direction.long ? broker.Side.buy : broker.Side.sell
-		this.broker.submit(commandId, side, this.currentBarIndex)
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.entry, side, qty, this.currentBarIndex))
 
 	broker.Order close(string commandId) =>
-		this.broker.submit(commandId, broker.Side.sell, this.currentBarIndex)
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.close, broker.Side.sell, na, this.currentBarIndex))
 
 	broker.Order end(float closePrice, bool isLast) =>
+		execution = this.broker.on_close(closePrice, this.portfolio.account(), this.currentBarIndex)
+		this.portfolio.apply(execution)
 		this.portfolio.mark(closePrice)
 		broker.Order expired = na
 		if isLast
@@ -40,6 +42,9 @@ export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 
 	float position_quantity() const =>
 		this.portfolio.position_quantity()
+
+	float position_avg_price() const =>
+		this.portfolio.position_avg_price()
 
 	float equity() const =>
 		this.portfolio.equity()
