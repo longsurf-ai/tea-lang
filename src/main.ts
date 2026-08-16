@@ -452,10 +452,10 @@ function printMachineResult(value: unknown): void {
 }
 
 const DASHBOARD_SCENARIO_SCHEMA = 'tea.dashboard-scenario/v1' as const;
-// Enough for the checked-in 100-execution daily BTC sweep while remaining a
-// fail-closed retained-data bound. Minute-scale histories need a different,
-// display-tier archive rather than silently exhausting the host.
-const DASHBOARD_TRAJECTORY_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
+// Supports larger multidimensional daily-history dashboard sweeps while
+// remaining a fail-closed retained-data bound. Minute-scale histories still
+// need a different display-tier or disk-backed archive.
+const DASHBOARD_TRAJECTORY_ARCHIVE_MAX_BYTES = 1024 * 1024 * 1024;
 
 interface DashboardScenarioRequest {
   readonly schema: typeof DASHBOARD_SCENARIO_SCHEMA;

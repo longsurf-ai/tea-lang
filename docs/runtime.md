@@ -490,7 +490,7 @@ packaged local Plotly asset and communicates only with the extension host; it
 does not use the loopback browser server. Selecting a projected execution
 projects the exact row-aligned values already captured during that dashboard
 sweep. There is no selected-binding replay. A dedicated compact archive owns
-scalar dense columns and logical typed effects under one 128 MiB
+scalar dense columns and logical typed effects under one 1 GiB
 charged-retention budget; normal CLI sweeps keep their final-row-only capture.
 The initial machine message still carries only the compact `SweepResult`, and
 the CLI sends one selected trajectory on demand.

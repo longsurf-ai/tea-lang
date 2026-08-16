@@ -34,23 +34,24 @@ the strategy so the selected historical contract remains locally auditable.
 
 The supported parameter domain requires positive risk/stop/pyramid values,
 System 1 entry shorter than System 2 entry, and System 1 exit shorter than
-System 2 exit. The checked-in 36-scenario sweep is valid by construction and
-varies stop distance, risk fraction, pyramid spacing, and maximum units. Its
-default config runs on WebGPU; `sweep-cpu.yaml` is the identical JS/f64 grid
-for an authoritative CPU check.
+System 2 exit. The default WebGPU config is a 780-scenario stress sweep that
+varies stop distance, risk fraction, pyramid spacing, and maximum units.
+`sweep-cpu.yaml` is a representative 36-scenario JS/f64 subset used as the
+authoritative differential oracle; every one of its bindings also appears in
+the larger GPU grid.
 
 ```sh
 tea execute examples/strategy/turtle-system/sweep.yaml
 tea execute examples/strategy/turtle-system/sweep-cpu.yaml
 ```
 
-Measured on 2026-08-15 with Dawn and the `wgsl-f32-i32` profile, the default
-config executed all 36 bindings and 118,188 rows in one dispatch. A warm run
+Measured on 2026-08-15 with Dawn and the `wgsl-f32-i32` profile, the checked
+36-binding oracle subset executed 118,188 rows in one dispatch. A warm run
 reported 16.61 ms lowering, 641.54 ms execution, and 658.15 ms total. Total
 return ranged from 1.042421 to 33.825901, maximum drawdown from 0.099307 to
 0.534546, fill count from 77 to 243, and completed round trips from 22 to 68.
 
-The matching `js-f64` run executed the same 36 bindings and 118,188 rows in
+The matching `js-f64` run executed those 36 bindings and 118,188 rows in
 9,306.74 ms reported total time. Its extrema were 1.042421 to 33.825902 total
 return and 0.099307 to 0.534546 maximum drawdown. A fresh binding-by-binding
 differential found identical fill counts and round trips for all 36 scenarios;
@@ -59,7 +60,8 @@ maximum drawdown, and 0.00001358 in total return. This is strong evidence for
 this grid, but the numeric profiles are not bit-identical and another
 threshold-sensitive binding may take a different branch.
 
-The WebGPU highest-return binding was `stop N=1.5, risk=0.015, pyramid N=0.5,
+Within that 36-binding oracle subset, the WebGPU highest-return binding was
+`stop N=1.5, risk=0.015, pyramid N=0.5,
 max units=5`: ending equity 3,482,590.00, return 33.825901, drawdown 0.527433,
 203 fills, and 56 round trips. The lowest-return binding was `stop N=1.5,
 risk=0.005, pyramid N=1.0, max units=3`: ending equity 204,242.13, return

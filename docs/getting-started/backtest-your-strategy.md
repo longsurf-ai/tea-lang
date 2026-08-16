@@ -222,7 +222,7 @@ If `tea` is not available on the extension host's `PATH`, set the
 application-scoped `tea.executablePath` setting to an absolute executable path.
 The command is intentionally unavailable in untrusted workspaces.
 
-The archive accepts scalar output transports and has a 128 MiB charged-retention
+The archive accepts scalar output transports and has a 1 GiB charged-retention
 limit. Use it for daily data and other moderate histories. Multi-million-row
 minute sweeps require an output-selective, viewport-aware, or disk-backed
 archive; the extension fails clearly rather than truncating or silently

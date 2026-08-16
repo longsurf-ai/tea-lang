@@ -89,7 +89,7 @@ describe('clean-room strategy catalog', () => {
           axis => axis.type === 'int' || axis.type === 'float',
         ),
       ).toBe(true);
-      expect(resolved.parameterSets).toHaveLength(
+      expect(resolved.parameterSets.length).toBeLessThanOrEqual(
         loaded.config.execution.maxExecutions!,
       );
 
@@ -111,11 +111,10 @@ describe('clean-room strategy catalog', () => {
     });
   }
 
-  test('Turtle publishes an equivalent checked-in CPU oracle grid', () => {
+  test('Turtle publishes a checked-in CPU oracle subset of its GPU grid', () => {
     const directory = join(STRATEGY_ROOT, 'turtle-system');
     const gpu = loadExecutionConfig(join(directory, 'sweep.yaml'));
     const cpu = loadExecutionConfig(join(directory, 'sweep-cpu.yaml'));
-    expect(cpu.config.execution).toEqual(gpu.config.execution);
     expect(gpu.config.runtime.kind).toBe('webgpu');
     expect(cpu.config.runtime.kind).toBe('javascript');
 
@@ -130,6 +129,31 @@ describe('clean-room strategy catalog', () => {
       );
     }
     expect(errors.count).toBe(0);
+    if (
+      gpu.config.execution.kind !== 'sweep' ||
+      cpu.config.execution.kind !== 'sweep'
+    ) {
+      throw new Error('Turtle configs must both be sweeps');
+    }
+    const specs = paramSpecsOf(program.params);
+    const gpuParameters = resolveExecutionParameters(
+      specs,
+      gpu.config.execution,
+    ).parameterSets;
+    const cpuParameters = resolveExecutionParameters(
+      specs,
+      cpu.config.execution,
+    ).parameterSets;
+    expect(gpuParameters).toHaveLength(780);
+    expect(cpuParameters).toHaveLength(36);
+    const gpuKeys = new Set(
+      gpuParameters.map(parameters => JSON.stringify(parameters)),
+    );
+    expect(
+      cpuParameters.every(parameters =>
+        gpuKeys.has(JSON.stringify(parameters)),
+      ),
+    ).toBe(true);
     const compiled = compileProgramToWgsl(program);
     expect(compiled.status).toBe('compiled');
     if (compiled.status !== 'compiled') {

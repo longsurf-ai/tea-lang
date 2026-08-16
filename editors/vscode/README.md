@@ -35,7 +35,7 @@ extension host's `PATH`. Execution is disabled in untrusted workspaces. Plotly
 is packaged locally; the webview does not fetch code or data from a CDN or
 loopback server.
 
-The archive has a 128 MiB charged-retention limit and supports scalar output
+The archive has a 1 GiB charged-retention limit and supports scalar output
 channels. A selected trajectory is sent as one bounded JSON result. This is
 intended for daily data and other moderate histories; multi-million-row minute
 histories need output selection plus a viewport-aware or disk-backed archive.
