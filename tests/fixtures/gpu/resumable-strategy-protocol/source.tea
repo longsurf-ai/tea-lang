@@ -1,0 +1,148 @@
+//@version=1
+// Compile-only spike for a static resumable broker/coordinator protocol.
+// The two concrete brokers share a structural method set; no interface value,
+// collection, or runtime dispatch object is constructed.
+strategy("Resumable strategy protocol")
+
+type Bar
+	float open
+	float high
+	float low
+	float close
+	int index
+
+type AccountView
+	float cash
+	float positionQuantity
+
+type Fill
+	float quantityDelta
+	float price
+
+type ExecutionStep
+	Fill execution
+	bool more
+
+interface ResumableBroker
+	ExecutionStep begin_bar(Bar bar, AccountView account)
+	ExecutionStep resume(AccountView account)
+	ExecutionStep end_bar(AccountView account)
+
+interface Accounting
+	AccountView account_view() const
+	int apply(Fill execution)
+	float equity(float markPrice) const
+
+type Ledger
+	float cashValue
+	float positionValue = 0.0
+
+	AccountView account_view() const =>
+		AccountView.new(this.cashValue, this.positionValue)
+
+	int apply(Fill execution) =>
+		if not na(execution)
+			this.cashValue := this.cashValue - execution.quantityDelta * execution.price
+			this.positionValue := this.positionValue + execution.quantityDelta
+		1
+
+	float equity(float markPrice) const =>
+		this.cashValue + this.positionValue * markPrice
+
+type SimpleBroker
+	float closePrice = na
+
+	ExecutionStep begin_bar(Bar bar, AccountView account) =>
+		this.closePrice := bar.close
+		Fill execution = na
+		if account.positionQuantity == 0.0
+			execution := Fill.new(1.0, bar.open)
+		ExecutionStep.new(execution, false)
+
+	ExecutionStep resume(AccountView account) =>
+		Fill execution = na
+		ExecutionStep.new(execution, false)
+
+	ExecutionStep end_bar(AccountView account) =>
+		Fill execution = na
+		if account.positionQuantity > 0.0
+			execution := Fill.new(-1.0, this.closePrice)
+		ExecutionStep.new(execution, false)
+
+// PathLikeBroker deliberately yields after its primary fill. resume() must see
+// the post-fill AccountView before it can create the path exit.
+type PathLikeBroker
+	float exitPrice = na
+	int cursor = 0
+
+	ExecutionStep begin_bar(Bar bar, AccountView account) =>
+		nearerHigh = bar.high - bar.open <= bar.open - bar.low
+		this.exitPrice := nearerHigh ? bar.high : bar.low
+		this.cursor := 1
+		Fill execution = na
+		if account.positionQuantity == 0.0
+			execution := Fill.new(2.0, bar.open)
+		ExecutionStep.new(execution, not na(execution))
+
+	ExecutionStep resume(AccountView account) =>
+		Fill execution = na
+		if this.cursor == 1 and account.positionQuantity > 0.0
+			execution := Fill.new(-account.positionQuantity, this.exitPrice)
+		this.cursor := 2
+		ExecutionStep.new(execution, false)
+
+	ExecutionStep end_bar(AccountView account) =>
+		Fill execution = na
+		ExecutionStep.new(execution, false)
+
+type Coordinator<B: ResumableBroker, P: Accounting>
+	B broker
+	P portfolio
+
+	int drain(ExecutionStep first) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		step = first
+		count = 0
+		// The reference policies expose at most three resumptions per phase. A
+		// numeric range is WGSL-lowerable; condition-controlled loops are not.
+		for attempt = 0 to 2
+			if na(step.execution)
+				break
+			currentPortfolio.apply(step.execution)
+			count := count + 1
+			if step.more
+				step := currentBroker.resume(currentPortfolio.account_view())
+			else
+				Fill noFill = na
+				step := ExecutionStep.new(noFill, false)
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		count
+
+	int begin(Bar bar) =>
+		currentBroker = this.broker
+		step = currentBroker.begin_bar(bar, this.portfolio.account_view())
+		this.broker := currentBroker
+		this.drain(step)
+
+	int end() =>
+		currentBroker = this.broker
+		step = currentBroker.end_bar(this.portfolio.account_view())
+		this.broker := currentBroker
+		this.drain(step)
+
+	float equity(float markPrice) const =>
+		this.portfolio.equity(markPrice)
+
+var simple = Coordinator.new(SimpleBroker.new(), Ledger.new(1000.0))
+var pathLike = Coordinator.new(PathLikeBroker.new(), Ledger.new(1000.0))
+
+bar = Bar.new(open, high, low, close, bar_index)
+simple.begin(bar)
+simple.end()
+pathLike.begin(bar)
+pathLike.end()
+
+plot(simple.equity(close), "simple equity")
+plot(pathLike.equity(close), "path-like equity")

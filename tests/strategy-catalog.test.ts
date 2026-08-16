@@ -31,7 +31,129 @@ const expectedStrategies = [
   'vwap-suite',
 ] as const;
 
+const brokerLifecycleEffects = [
+  'OrderSubmitted',
+  'FillExecuted',
+  'OrderExpired',
+  'OrderCancelled',
+  'OrderRejected',
+] as const;
+
+function strategySource(name: (typeof expectedStrategies)[number]): string {
+  return readFileSync(join(STRATEGY_ROOT, name, 'strategy.tea'), 'utf8');
+}
+
+function escaped(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function ownershipViolations(source: string): readonly string[] {
+  const violations: string[] = [];
+  for (const match of source.matchAll(
+    /^\s*(?:export\s+)?(?:type|struct)\s+([A-Za-z_][A-Za-z0-9_]*(?:Account|Broker|Engine))\b/gm,
+  )) {
+    violations.push(`local execution type ${match[1]}`);
+  }
+  for (const match of source.matchAll(
+    /\bbroker\s*\.\s*(Fill|Order|Account)\s*\.\s*new\s*\(/g,
+  )) {
+    violations.push(`direct broker.${match[1]}.new`);
+  }
+
+  const lifecycleNames = brokerLifecycleEffects.join('|');
+  for (const match of source.matchAll(
+    new RegExp(
+      `\\beffect\\s*\\.\\s*emit\\s*\\(\\s*broker\\s*\\.\\s*(?:${lifecycleNames})\\s*\\.\\s*new\\s*\\(`,
+      'g',
+    ),
+  )) {
+    violations.push(`direct broker lifecycle emission ${match[0]}`);
+  }
+
+  for (const match of source.matchAll(
+    /\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*portfolio\b/g,
+  )) {
+    violations.push(`direct configured portfolio access ${match[0]}`);
+  }
+
+  const portfolioBindings = new Set(
+    [
+      ...source.matchAll(
+        /^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*portfolio\s*\.\s*(?:new|basic|lots)\s*\(/gm,
+      ),
+    ].map(match => match[1]),
+  );
+  for (const binding of portfolioBindings) {
+    const receiver = escaped(binding);
+    if (
+      new RegExp(`\\b${receiver}\\s*\\.\\s*(?:apply|account)\\s*\\(`).test(
+        source,
+      )
+    ) {
+      violations.push(`direct portfolio mutation through ${binding}`);
+    }
+    if (
+      new RegExp(`\\b${receiver}\\s*\\.\\s*[A-Za-z_][A-Za-z0-9_]*\\s*:=`).test(
+        source,
+      )
+    ) {
+      violations.push(`direct portfolio field mutation through ${binding}`);
+    }
+  }
+  return violations;
+}
+
 describe('clean-room strategy catalog', () => {
+  test('ownership guard permits policy state and catches execution ownership leaks', () => {
+    expect(
+      ownershipViolations(
+        [
+          'type RegimeState',
+          '    int stage',
+          'var levels = array.new<float>(4, 0.0)',
+        ].join('\n'),
+      ),
+    ).toEqual([]);
+
+    const violations = ownershipViolations(
+      [
+        'type LocalAccount',
+        'struct LocalBroker',
+        'type FillEngine',
+        'fill = broker.Fill.new()',
+        'order = broker.Order.new()',
+        'account = broker.Account.new()',
+        'effect.emit(broker.FillExecuted.new(fill))',
+        'var book = portfolio.new(initialCash = 100.0)',
+        'book.apply(fill)',
+        'book.cashValue := 0.0',
+        'strat.portfolio.account()',
+      ].join('\n'),
+    );
+    expect(violations).toEqual(
+      expect.arrayContaining([
+        'local execution type LocalAccount',
+        'local execution type LocalBroker',
+        'local execution type FillEngine',
+        'direct broker.Fill.new',
+        'direct broker.Order.new',
+        'direct broker.Account.new',
+        'direct portfolio mutation through book',
+        'direct portfolio field mutation through book',
+      ]),
+    );
+    expect(
+      violations.some(violation =>
+        violation.startsWith('direct broker lifecycle emission'),
+      ),
+    ).toBe(true);
+    expect(
+      violations.some(violation =>
+        violation.startsWith('direct configured portfolio access'),
+      ),
+    ).toBe(true);
+  });
+
   test('contains exactly the twelve audited TradingView profiles', () => {
     const catalog = readdirSync(STRATEGY_ROOT, {withFileTypes: true})
       .filter(
@@ -47,10 +169,7 @@ describe('clean-room strategy catalog', () => {
 
   test('routes every audited profile through the canonical strategy components', () => {
     for (const name of expectedStrategies) {
-      const source = readFileSync(
-        join(STRATEGY_ROOT, name, 'strategy.tea'),
-        'utf8',
-      );
+      const source = strategySource(name);
       expect(source).toContain('import broker');
       expect(source).toContain('import portfolio');
       expect(source).toContain('import strategy');
@@ -59,6 +178,12 @@ describe('clean-room strategy catalog', () => {
       expect(source).not.toContain('effect.emit');
     }
   });
+
+  for (const name of expectedStrategies) {
+    test(`${name} keeps broker execution and portfolio accounting in canonical components`, () => {
+      expect(ownershipViolations(strategySource(name))).toEqual([]);
+    });
+  }
 
   for (const name of expectedStrategies) {
     test(`${name} compiles and resolves its declared grid`, () => {
