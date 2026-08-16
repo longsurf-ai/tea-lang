@@ -1,90 +1,12 @@
 //@version=1
 // Clean-room execution model of the published Turtle System strategy profile.
-// It intentionally uses a strategy-local account because the published rules
-// require risk-sized units, pyramiding, and same-close fills.
+// Canonical strategy components own broker execution and portfolio accounting;
+// the strategy owns only the published Turtle signals and sizing rules.
 strategy("Turtle system", shorttitle="Turtle", overlay=true)
 
 import broker
-
-type TurtleAccount
-	float initialCash
-	float cash
-	float positionQuantity = 0.0
-	float averagePrice = na
-	float realizedPnl = 0.0
-	float equityValue
-	float peakEquity
-	float maxDrawdownValue = 0.0
-	int fillCount = 0
-	int roundTrips = 0
-	int nextOrderId = 1
-	int nextFillId = 1
-
-	int buy(float price, float quantity, int barIndex, string commandId) =>
-		if quantity > 0.0
-			oldQuantity = this.positionQuantity
-			newQuantity = oldQuantity + quantity
-			oldCost = oldQuantity > 0.0 ? oldQuantity * this.averagePrice : 0.0
-			this.averagePrice := (oldCost + quantity * price) / newQuantity
-			this.positionQuantity := newQuantity
-			this.cash := this.cash - quantity * price
-			execution = broker.Fill.new(
-				this.nextFillId,
-				this.nextOrderId,
-				commandId,
-				broker.Side.buy,
-				barIndex,
-				price,
-				price,
-				quantity,
-				quantity * price,
-				0.0
-			)
-			effect.emit(broker.FillExecuted.new(execution))
-			this.nextOrderId := this.nextOrderId + 1
-			this.nextFillId := this.nextFillId + 1
-			this.fillCount := this.fillCount + 1
-		this.fillCount
-
-	int close(float price, int barIndex, string commandId) =>
-		quantity = this.positionQuantity
-		if quantity > 0.0
-			notional = quantity * price
-			this.cash := this.cash + notional
-			this.realizedPnl := this.realizedPnl + quantity * (price - this.averagePrice)
-			execution = broker.Fill.new(
-				this.nextFillId,
-				this.nextOrderId,
-				commandId,
-				broker.Side.sell,
-				barIndex,
-				price,
-				price,
-				quantity,
-				notional,
-				0.0
-			)
-			effect.emit(broker.FillExecuted.new(execution))
-			this.nextOrderId := this.nextOrderId + 1
-			this.nextFillId := this.nextFillId + 1
-			this.fillCount := this.fillCount + 1
-			this.roundTrips := this.roundTrips + 1
-			this.positionQuantity := 0.0
-			float missing = na
-			this.averagePrice := missing
-		this.fillCount
-
-	float mark(float price) =>
-		this.equityValue := this.cash + this.positionQuantity * price
-		if this.equityValue > this.peakEquity
-			this.peakEquity := this.equityValue
-		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - this.equityValue) / this.peakEquity
-		if drawdown > this.maxDrawdownValue
-			this.maxDrawdownValue := drawdown
-		this.equityValue
-
-	float total_return() const =>
-		(this.equityValue - this.initialCash) / this.initialCash
+import portfolio
+import strategy
 
 stop_n = input.float(2.0, "Stop distance in N", minval=0.1, maxval=10.0)
 risk_percent = input.float(0.01, "Risk fraction of capital", minval=0.0001, maxval=0.25)
@@ -97,12 +19,24 @@ l1_exit_length = input.int(10, "System 1 exit length", minval=2, maxval=300)
 l2_exit_length = input.int(20, "System 2 exit length", minval=2, maxval=300)
 initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 
-var account = TurtleAccount.new(
-	initialCash = initial_cash,
-	cash = initial_cash,
-	equityValue = initial_cash,
-	peakEquity = initial_cash
+var strat = strategy.configure(
+	broker = broker.new(
+		commission = broker.commissionRate(),
+		slippage = broker.slippagePercent(),
+		processOrdersOnClose = true
+	),
+	portfolio = portfolio.new(
+		initialCash = initial_cash,
+		// Turtle's own unit_count enforces the published per-sequence cap. Keep
+		// the generic portfolio capacity non-binding so a later System breakout
+		// can reset that sequence while the existing real position remains open.
+		pyramiding = 2147483647,
+		marginLong = 100.0,
+		marginShort = 100.0
+	)
 )
+
+strat.begin(open, bar_index)
 
 previous_close = close[1]
 true_range = na(previous_close) ? high - low : math.max(high - low, math.max(math.abs(high - previous_close), math.abs(low - previous_close)))
@@ -176,25 +110,25 @@ if level == 0 and was_virtual_long and high > next_buy_price and unit_count < ma
 	stop_price := close - stop_n * n_value
 	next_buy_price := close + pyramid_n * n_value
 
-real_position = account.positionQuantity > 0.0
+real_position = strat.position_quantity() > 0.0
 if level == 0 and was_virtual_long and not fake_trade and real_position
 	stop_exit = low < stop_price
 	channel_exit = previous_mode == 1 ? low < l1_exit[1] : low < l2_exit[1]
 	if stop_exit or channel_exit
-		level := close >= account.averagePrice ? 4 : 5
+		level := close >= strat.position_avg_price() ? 4 : 5
 
 if level == 4
 	last_trade_won := true
 if level == 5
 	last_trade_won := false
 
-risk_capital = (account.initialCash + account.realizedPnl) * risk_percent
+risk_capital = (initial_cash + strat.realized_pnl()) * risk_percent
 // The published position-sizing rule defines one unit as risk capital / N.
 // stop_n controls the protective exit distance, not the unit quantity.
 unit_risk = n_value
 shares = unit_risk > 0.0 ? math.floor(risk_capital / unit_risk) : 0.0
-invested_capital = account.positionQuantity > 0.0 ? account.positionQuantity * account.averagePrice : 0.0
-capital_left = account.initialCash + account.realizedPnl - invested_capital
+invested_capital = strat.position_quantity() > 0.0 ? strat.position_quantity() * strat.position_avg_price() : 0.0
+capital_left = initial_cash + strat.realized_pnl() - invested_capital
 if shares * close > capital_left
 	shares := math.max(0.0, math.floor(capital_left / close))
 
@@ -202,14 +136,16 @@ enter_long = valid_parameters and not fake_trade and (level == 1 or level == 2 o
 exit_long = valid_parameters and (level == 4 or level == 5)
 
 if enter_long and shares > 0.0
-	command = level == 1 ? "System 1 Open" : level == 2 ? "System 2 Open" : "Pyramid Add"
-	account.buy(close, shares, bar_index, command)
+	strat.entry("Turtle Long", strategy.Direction.long, qty = shares)
+	strat.process_close(close)
 
 if exit_long
 	command = level == 4 ? "Winning Close" : "Losing Close"
-	account.close(close, bar_index, command)
+	strat.close(command)
+	strat.process_close(close)
 
-account.mark(close)
+strat.mark(close)
+strat.finish(barstate.islast)
 
 plot(close, "close")
 plot(l1_entry[1], "system 1 entry")
@@ -220,11 +156,11 @@ plot(n_value, "N")
 plot(stop_price, "stop")
 plot(next_buy_price, "next pyramid")
 plot(fake_trade ? 1.0 : 0.0, "fake trade")
-plot(account.positionQuantity, "position quantity")
-plot(account.averagePrice, "average price")
-plot(account.equityValue, "equity")
-plot(account.realizedPnl, "realized pnl")
-plot(account.fillCount, "fill count")
-plot(account.roundTrips, "round trips")
-plot(account.maxDrawdownValue, "maximum drawdown")
-plot(account.total_return(), "total return")
+plot(strat.position_quantity(), "position quantity")
+plot(strat.position_avg_price(), "average price")
+plot(strat.equity(), "equity")
+plot(strat.realized_pnl(), "realized pnl")
+plot(strat.fill_count(), "fill count")
+plot(strat.round_trip_count(), "round trips")
+plot(strat.max_drawdown(), "maximum drawdown")
+plot(strat.total_return(), "total return")

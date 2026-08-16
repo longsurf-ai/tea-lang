@@ -162,6 +162,12 @@ describe('clean-room strategy catalog', () => {
     expect(compiled.artifact.bindingModule.source.length).toBeGreaterThan(0);
     expect(compiled.artifact.state.frames.length).toBeGreaterThan(1);
     const source = readFileSync(gpu.config.program.source, 'utf8');
+    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('broker.new(');
+    expect(source).toContain('portfolio.new(');
+    expect(source).not.toContain('type TurtleAccount');
+    expect(source).not.toContain('broker.Fill.new');
+    expect(source).not.toContain('effect.emit');
     expect(source).not.toContain('date_allowed');
     expect(source).not.toContain('start_time');
     expect(source).not.toContain('end_time');
