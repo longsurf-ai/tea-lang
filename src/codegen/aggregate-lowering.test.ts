@@ -16,6 +16,7 @@ import {
 } from '../ir/node';
 import type {
   ConstMethodIrFunc,
+  FreeIrFunc,
   MutableMethodIrFunc,
   Program,
 } from '../ir/program';
@@ -64,6 +65,13 @@ function read(target: Name): HistReadExpr {
     qualifier: target.qualifier,
     place: {kind: PlaceKind.Name, name: target},
     offset: null,
+  };
+}
+
+function readAt(target: Name, offset: number): HistReadExpr {
+  return {
+    ...read(target),
+    offset: constant(IntType, offset),
   };
 }
 
@@ -409,46 +417,46 @@ describe('aggregate expression and rooted-write lowering', () => {
     };
     const holderName = name('holder', holder);
     const resultName = name('result', IntType);
-    const module = compile(
-      program([
-        write(holderName, {
-          kind: IrKind.NewUserValue,
-          pos,
-          type: holder,
-          qualifier: Qualifier.Series,
-          userType: holder,
-          args: [
-            {
-              kind: IrKind.NewUserValue,
-              pos,
-              type: point,
-              qualifier: Qualifier.Series,
-              userType: point,
-              args: [constant(IntType, 1)],
-              argumentEvaluationOrder: [0],
-            },
-            constant(IntType, 2),
-          ],
-          argumentEvaluationOrder: [0, 1],
-        }),
-        write(resultName, {
-          kind: IrKind.CallConstMethod,
-          pos,
-          type: IntType,
-          qualifier: Qualifier.Series,
-          func: inspect,
-          receiver: field(read(holderName), 0, point),
-          slot: 0,
-          args: [
-            block(
-              [update(holderName, [1], constant(IntType, 9))],
-              constant(IntType, 5),
-            ),
-          ],
-          argumentEvaluationOrder: [0],
-        }),
-      ]),
-    );
+    const ir = program([
+      write(holderName, {
+        kind: IrKind.NewUserValue,
+        pos,
+        type: holder,
+        qualifier: Qualifier.Series,
+        userType: holder,
+        args: [
+          {
+            kind: IrKind.NewUserValue,
+            pos,
+            type: point,
+            qualifier: Qualifier.Series,
+            userType: point,
+            args: [constant(IntType, 1)],
+            argumentEvaluationOrder: [0],
+          },
+          constant(IntType, 2),
+        ],
+        argumentEvaluationOrder: [0, 1],
+      }),
+      write(resultName, {
+        kind: IrKind.CallConstMethod,
+        pos,
+        type: IntType,
+        qualifier: Qualifier.Series,
+        func: inspect,
+        receiver: field(read(holderName), 0, point),
+        slot: 0,
+        args: [
+          block(
+            [update(holderName, [1], constant(IntType, 9))],
+            constant(IntType, 5),
+          ),
+        ],
+        argumentEvaluationOrder: [0],
+      }),
+    ]);
+    const js = generate(ir);
+    const module = compile(ir);
     const frame: TestFrame = {values: [], subs: new Map()};
     const events: string[] = [];
     module.main(executionRuntime(frame, events) as never, frame as never);
@@ -459,11 +467,11 @@ describe('aggregate expression and rooted-write lowering', () => {
     expect(result.fields[1]).toBe(9);
     const receiverRead = events.indexOf('field:2:0');
     const argumentWrite = events.indexOf('write-root:0', receiverRead + 1);
-    const calleeReceiverWrite = events.indexOf('write-func:0');
     expect(receiverRead).toBeGreaterThanOrEqual(0);
     expect(receiverRead).toBeLessThan(argumentWrite);
-    expect(argumentWrite).toBeLessThan(calleeReceiverWrite);
+    expect(events).not.toContain('write-func:0');
     expect(events.filter(event => event === 'write-root:0')).toHaveLength(2);
+    expect(js).not.toMatch(/rt\.write\(fr, \d+, p\d+\)/);
   });
 
   test('copies a mutable receiver before args and rebases copy-out afterward', () => {
@@ -489,47 +497,47 @@ describe('aggregate expression and rooted-write lowering', () => {
     };
     const holderName = name('holder', holder);
     const resultName = name('result', IntType);
-    const module = compile(
-      program([
-        write(holderName, {
-          kind: IrKind.NewUserValue,
-          pos,
-          type: holder,
-          qualifier: Qualifier.Series,
-          userType: holder,
-          args: [
-            {
-              kind: IrKind.NewUserValue,
-              pos,
-              type: point,
-              qualifier: Qualifier.Series,
-              userType: point,
-              args: [constant(IntType, 1)],
-              argumentEvaluationOrder: [0],
-            },
-            constant(IntType, 2),
-          ],
-          argumentEvaluationOrder: [0, 1],
-        }),
-        write(resultName, {
-          kind: IrKind.CallMutableMethod,
-          pos,
-          type: IntType,
-          qualifier: Qualifier.Series,
-          func: mutate,
-          path: {root: holderName, fieldIndices: [0]},
-          receiver: field(read(holderName), 0, point),
-          slot: 0,
-          args: [
-            block(
-              [update(holderName, [1], constant(IntType, 9))],
-              constant(IntType, 5),
-            ),
-          ],
-          argumentEvaluationOrder: [0],
-        }),
-      ]),
-    );
+    const ir = program([
+      write(holderName, {
+        kind: IrKind.NewUserValue,
+        pos,
+        type: holder,
+        qualifier: Qualifier.Series,
+        userType: holder,
+        args: [
+          {
+            kind: IrKind.NewUserValue,
+            pos,
+            type: point,
+            qualifier: Qualifier.Series,
+            userType: point,
+            args: [constant(IntType, 1)],
+            argumentEvaluationOrder: [0],
+          },
+          constant(IntType, 2),
+        ],
+        argumentEvaluationOrder: [0, 1],
+      }),
+      write(resultName, {
+        kind: IrKind.CallMutableMethod,
+        pos,
+        type: IntType,
+        qualifier: Qualifier.Series,
+        func: mutate,
+        path: {root: holderName, fieldIndices: [0]},
+        receiver: field(read(holderName), 0, point),
+        slot: 0,
+        args: [
+          block(
+            [update(holderName, [1], constant(IntType, 9))],
+            constant(IntType, 5),
+          ),
+        ],
+        argumentEvaluationOrder: [0],
+      }),
+    ]);
+    const js = generate(ir);
+    const module = compile(ir);
     const frame: TestFrame = {values: [], subs: new Map()};
     const events: string[] = [];
     module.main(executionRuntime(frame, events) as never, frame as never);
@@ -540,10 +548,110 @@ describe('aggregate expression and rooted-write lowering', () => {
     expect(frame.values[1]).toBe(5);
     const receiverRead = events.indexOf('field:2:0');
     const argumentWrite = events.indexOf('write-root:0', 1);
-    const calleeWrite = events.indexOf('write-func:0');
+    const copyoutWrite = events.indexOf('write-root:0', argumentWrite + 1);
     expect(receiverRead).toBeGreaterThanOrEqual(0);
     expect(receiverRead).toBeLessThan(argumentWrite);
-    expect(argumentWrite).toBeLessThan(calleeWrite);
+    expect(argumentWrite).toBeLessThan(copyoutWrite);
+    expect(events).not.toContain('write-func:0');
+    expect(js).not.toMatch(/rt\.write\(fr, \d+, p\d+\)/);
+  });
+
+  test('keeps history-free formal zero reads, reassignment, and receiver updates in JS locals', () => {
+    const point = userType('Point', [{name: 'x', type: IntType}]);
+    const receiver = name('self', point);
+    const amount = name('amount', IntType);
+    const bump: MutableMethodIrFunc = {
+      callMode: 'mutable-method',
+      name: 'bump',
+      params: [amount],
+      receiver,
+      locals: [],
+      resultType: IntType,
+      resultQualifier: Qualifier.Series,
+      body: block(
+        [
+          write(amount, {
+            kind: IrKind.Binary,
+            pos,
+            type: IntType,
+            qualifier: Qualifier.Series,
+            op: IrOp.Add,
+            x: readAt(amount, 0),
+            y: constant(IntType, 1),
+          }),
+          update(receiver, [0], read(amount)),
+        ],
+        field(read(receiver), 0, IntType),
+      ),
+    };
+    const pointName = name('point', point);
+    const resultName = name('result', IntType);
+    const ir = program([
+      write(pointName, {
+        kind: IrKind.NewUserValue,
+        pos,
+        type: point,
+        qualifier: Qualifier.Series,
+        userType: point,
+        args: [constant(IntType, 1)],
+        argumentEvaluationOrder: [0],
+      }),
+      write(resultName, {
+        kind: IrKind.CallMutableMethod,
+        pos,
+        type: IntType,
+        qualifier: Qualifier.Series,
+        func: bump,
+        path: {root: pointName, fieldIndices: []},
+        receiver: read(pointName),
+        slot: 0,
+        args: [constant(IntType, 4)],
+        argumentEvaluationOrder: [0],
+      }),
+    ]);
+    const js = generate(ir);
+    const module = compile(ir);
+    const frame: TestFrame = {values: [], subs: new Map()};
+    module.main(executionRuntime(frame, []) as never, frame as never);
+
+    expect((frame.values[0] as TestUserValue).fields).toEqual([5]);
+    expect(frame.values[1]).toBe(5);
+    expect(js).not.toMatch(/rt\.write\(fr, \d+, p\d+\)/);
+    expect(js).toContain('p1 = (');
+    expect(js).toContain('p0 = (rt.rebuildUserPath');
+    expect(js).toContain('return {receiver: p0, result:');
+  });
+
+  test('keeps a history-bearing function formal in its checked Ring', () => {
+    const source = name('source', IntType);
+    source.depth = {kind: DepthKind.Const, bars: 1};
+    const previous: FreeIrFunc = {
+      callMode: 'free',
+      name: 'previous',
+      params: [source],
+      locals: [],
+      resultType: IntType,
+      resultQualifier: Qualifier.Series,
+      body: readAt(source, 1),
+    };
+    const result = name('result', IntType);
+    const js = generate(
+      program([
+        write(result, {
+          kind: IrKind.CallFunc,
+          pos,
+          type: IntType,
+          qualifier: Qualifier.Series,
+          func: previous,
+          slot: 0,
+          args: [constant(IntType, 4)],
+          argumentEvaluationOrder: [0],
+        }),
+      ]),
+    );
+
+    expect(js).toContain('rt.write(fr, 0, p0);');
+    expect(js).toContain('rt.read(fr, 0, t0)');
   });
 
   test('rebases a nested mutable method through the outer hidden receiver', () => {
@@ -589,44 +697,50 @@ describe('aggregate expression and rooted-write lowering', () => {
     };
     const rootName = name('holder', holder);
     const resultName = name('result', IntType);
-    const module = compile(
-      program([
-        write(rootName, {
-          kind: IrKind.NewUserValue,
-          pos,
-          type: holder,
-          qualifier: Qualifier.Series,
-          userType: holder,
-          args: [
-            {
-              kind: IrKind.NewUserValue,
-              pos,
-              type: point,
-              qualifier: Qualifier.Series,
-              userType: point,
-              args: [constant(IntType, 1)],
-              argumentEvaluationOrder: [0],
-            },
-          ],
-          argumentEvaluationOrder: [0],
-        }),
-        write(resultName, {
-          kind: IrKind.CallMutableMethod,
-          pos,
-          type: IntType,
-          qualifier: Qualifier.Series,
-          func: replacePointX,
-          path: {root: rootName, fieldIndices: []},
-          receiver: read(rootName),
-          slot: 0,
-          args: [constant(IntType, 5)],
-          argumentEvaluationOrder: [0],
-        }),
-      ]),
-    );
+    const ir = program([
+      write(rootName, {
+        kind: IrKind.NewUserValue,
+        pos,
+        type: holder,
+        qualifier: Qualifier.Series,
+        userType: holder,
+        args: [
+          {
+            kind: IrKind.NewUserValue,
+            pos,
+            type: point,
+            qualifier: Qualifier.Series,
+            userType: point,
+            args: [constant(IntType, 1)],
+            argumentEvaluationOrder: [0],
+          },
+        ],
+        argumentEvaluationOrder: [0],
+      }),
+      write(resultName, {
+        kind: IrKind.CallMutableMethod,
+        pos,
+        type: IntType,
+        qualifier: Qualifier.Series,
+        func: replacePointX,
+        path: {root: rootName, fieldIndices: []},
+        receiver: read(rootName),
+        slot: 0,
+        args: [constant(IntType, 5)],
+        argumentEvaluationOrder: [0],
+      }),
+    ]);
+    const js = generate(ir);
+    const module = compile(ir);
     const frame: TestFrame = {values: [], subs: new Map()};
     module.main(executionRuntime(frame, []) as never, frame as never);
 
+    expect(js).not.toMatch(
+      /rt\.rebuildUserPath\([^;\n]*, \[\], \([^;\n]*\.receiver\)\)/,
+    );
+    expect(js).toMatch(
+      /rt\.rebuildUserPath\([^;\n]*, \[0\], \([^;\n]*\.receiver\)\)/,
+    );
     const result = frame.values[0] as TestUserValue;
     expect((result.fields[0] as TestUserValue).fields).toEqual([5]);
     expect(frame.values[1]).toBe(5);

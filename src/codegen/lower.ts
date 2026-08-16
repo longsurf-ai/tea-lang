@@ -35,6 +35,10 @@ import {ValueClass, type ValueClass as ValueClassType} from '../runtime/value';
 // reported back through noteCallSite.
 export interface LowerCtx {
   readonly nameSlots: Map<Name, {fid: number; slot: number}>;
+  // History-free function receivers and parameters are ordinary generated-JS
+  // locals. They never cross the Time-Machine ABI unless a later operation
+  // writes their value into real state; history-bearing formals remain Rings.
+  readonly directNames: ReadonlyMap<Name, string>;
   readonly seriesIds: Map<SeriesInput, number>;
   readonly executionIds: Map<ExecutionInput, number>;
   readonly paramIds: Map<ParamInput, number>;
@@ -175,8 +179,32 @@ function slotOf(ctx: LowerCtx, name: Name): number {
   return entry.slot;
 }
 
+function directName(ctx: LowerCtx, name: Name): string | undefined {
+  return ctx.directNames.get(name);
+}
+
+function readName(
+  ctx: LowerCtx,
+  name: Name,
+  offset: string,
+  current: boolean,
+): string {
+  const direct = directName(ctx, name);
+  if (direct !== undefined && current) {
+    return direct;
+  }
+  return `rt.read(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, ${offset})`;
+}
+
+function writeNameExpr(ctx: LowerCtx, name: Name, value: string): string {
+  const direct = directName(ctx, name);
+  return direct !== undefined
+    ? `${direct} = (${value})`
+    : `rt.write(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, (${value}))`;
+}
+
 function readRoot(ctx: LowerCtx, path: IrValuePath): string {
-  return `rt.read(${frameRef(ctx, path.root)}, ${slotOf(ctx, path.root)}, 0)`;
+  return readName(ctx, path.root, '0', true);
 }
 
 // Program paths contain canonical field indices, but codegen is also the
@@ -219,9 +247,12 @@ function writePath(
   replacement: string,
 ): string {
   valuePathType(path);
+  if (path.fieldIndices.length === 0) {
+    return `${writeNameExpr(ctx, path.root, replacement)};`;
+  }
   const root = readRoot(ctx, path);
   const rebuilt = `rt.rebuildUserPath((${root}), ${ctx.layoutOf(path.root.type)}, ${JSON.stringify(path.fieldIndices)}, (${replacement}))`;
-  return `rt.write(${frameRef(ctx, path.root)}, ${slotOf(ctx, path.root)}, ${rebuilt});`;
+  return `${writeNameExpr(ctx, path.root, rebuilt)};`;
 }
 
 // Evaluate now, not merely when a later generated expression happens to use
@@ -342,8 +373,14 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
     case IrKind.HistRead: {
       const off = e.offset === null ? '0' : capture(e.offset, out, ctx);
       switch (e.place.kind) {
-        case PlaceKind.Name:
-          return `rt.read(${frameRef(ctx, e.place.name)}, ${slotOf(ctx, e.place.name)}, ${off})`;
+        case PlaceKind.Name: {
+          const current =
+            e.offset === null ||
+            (e.offset.kind === IrKind.Const &&
+              typeof e.offset.value === 'number' &&
+              e.offset.value === 0);
+          return readName(ctx, e.place.name, off, current);
+        }
         case PlaceKind.Series: {
           const sid = ctx.seriesIds.get(e.place.series);
           if (sid === undefined) {
@@ -969,9 +1006,7 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
     }
     case IrKind.WriteName: {
       const v = lowerExpr(stmt.value, out, ctx);
-      out.push(
-        `rt.write(${frameRef(ctx, stmt.name)}, ${slotOf(ctx, stmt.name)}, (${v}));`,
-      );
+      out.push(`${writeNameExpr(ctx, stmt.name, v)};`);
       return;
     }
     case IrKind.UpdateValuePath: {

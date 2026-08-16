@@ -38,6 +38,7 @@ describe('finite-or-na helpers', () => {
   test('a non-finite Program constant fails at the lowering boundary', () => {
     const ctx: LowerCtx = {
       nameSlots: new Map(),
+      directNames: new Map(),
       seriesIds: new Map(),
       executionIds: new Map(),
       paramIds: new Map(),

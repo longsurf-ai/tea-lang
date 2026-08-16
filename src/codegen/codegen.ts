@@ -6,6 +6,7 @@ import {frameTopologyOf, type FrameTopology} from '../ir/frames';
 import {
   DepthKind,
   IrKind,
+  Storage,
   type HistoryDepth,
   type IrExpr,
   type IrStmt,
@@ -342,9 +343,13 @@ class Generator {
     });
   }
 
-  private ctxFor(fid: number): LowerCtx {
+  private ctxFor(
+    fid: number,
+    directNames: ReadonlyMap<Name, string> = new Map(),
+  ): LowerCtx {
     return {
       nameSlots: this.nameSlots,
+      directNames,
       seriesIds: this.seriesIds,
       executionIds: this.executionIds,
       paramIds: this.paramIds,
@@ -529,17 +534,29 @@ class Generator {
       if (fid === undefined) {
         return fatal('unmapped function during lowering');
       }
-      const ctx = this.ctxFor(fid);
       // The generated JS ABI is internal: method receivers occupy p0, while
       // Program.params remains source-visible explicit parameters only.
       const receiver = func.callMode === 'free' ? [] : [func.receiver];
       const parameters = [...receiver, ...func.params];
       const params = parameters.map((_, i) => `p${i}`);
+      const directNames = new Map<Name, string>();
+      parameters.forEach((param, index) => {
+        if (
+          param.storage === Storage.PerBar &&
+          param.depth.kind === DepthKind.None
+        ) {
+          directNames.set(param, params[index]);
+        }
+      });
+      const ctx = this.ctxFor(fid, directNames);
       const lines: string[] = [
         `(rt, fr${params.map(p => `, ${p}`).join('')}) => {`,
       ];
       // Arguments land in the frame so param history works like any name.
       parameters.forEach((param, i) => {
+        if (directNames.has(param)) {
+          return;
+        }
         const where = this.nameSlots.get(param);
         if (where === undefined) {
           return fatal(`unmapped param '${param.name}'`);
@@ -554,8 +571,11 @@ class Generator {
         if (receiverSlot === undefined || receiverSlot.fid !== fid) {
           return fatal(`mutable method '${func.name}' has an unowned receiver`);
         }
+        const receiverValue =
+          directNames.get(func.receiver) ??
+          `rt.read(fr, ${receiverSlot.slot}, 0)`;
         lines.push(
-          `  return {receiver: rt.read(fr, ${receiverSlot.slot}, 0), result: (${value})};`,
+          `  return {receiver: ${receiverValue}, result: (${value})};`,
         );
       } else {
         lines.push(`  return (${value});`);
