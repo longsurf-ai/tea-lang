@@ -11,8 +11,10 @@ entry families, independently switchable volume/ATR/bandwidth/slope/ADX
 filters, optional RSI or EMA confluence, risk-based quantity, a maximum
 allocation cap, next-open market entry, ATR- or band-based stops, VWAP or
 opposite-band targets, optional break-even replacement, fees, and
-deterministic same-bar stop/target collision handling. Its Tea-authored signed
-account emits the standard `broker.FillExecuted` event.
+deterministic same-bar stop/target collision handling. Execution and signed
+accounting compose Tea's canonical `broker.new`, `portfolio.new`, and
+`strategy.configure` components, which emit the standard
+`broker.FillExecuted` event.
 
 ## Pinned runnable profile
 
@@ -40,8 +42,9 @@ auditable alongside the strategy even though the shared `ta` library now uses
 the same seed rule.
 
 The dashboard currently labels buys as entries and sells as exits. The signed
-engine is correct, but short opens/covers therefore appear with reversed marker
-labels until the visualization contract carries an explicit open/close action.
+portfolio is correct, but short opens/covers therefore appear with reversed
+marker labels until the visualization contract carries an explicit open/close
+action.
 
 ## Measured sweep
 
@@ -52,7 +55,8 @@ tea execute examples/strategy/vwap-suite/sweep.yaml
 ```
 
 The 48-scenario JavaScript sweep processes 157,584 rows from 3,283 real daily
-bars. On the 2026-08-14 parity run it completed in **83.72 s**. The best
+bars. On the 2026-08-16 canonical-component parity run, lowering took 16.23 ms
+and execution took **80.56 s**. The best
 scenario returned **26.90%**, with **2.99%** maximum drawdown and **204** round
 trips (`strategy_mode=0`, Band 2 multiplier 1.5, 1% risk, 1.5 ATR stop). The
 worst scenario returned **-32.78%**, illustrating that the two-sided

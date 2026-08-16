@@ -219,4 +219,69 @@ describe('clean-room strategy catalog', () => {
     expect(source).not.toContain('type FillFactory');
     expect(source).not.toContain('broker.Fill.new');
   });
+
+  test('Alpha regime reversion composes the canonical broker and portfolio', () => {
+    const source = readFileSync(
+      join(STRATEGY_ROOT, 'alpha-regime-reversion', 'strategy.tea'),
+      'utf8',
+    );
+
+    expect(source).toContain('broker.new(');
+    expect(source).toContain('portfolio.new(');
+    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('strategy.targetPercentOfEquity(');
+    expect(source).toContain('strat.begin_bar(');
+    expect(source).toContain('strat.rebalance(');
+    expect(source).toContain('strat.exit(');
+    expect(source).not.toContain('type AllocationAccount');
+    expect(source).not.toContain('broker.Fill.new');
+    expect(source).not.toContain('effect.emit');
+  });
+
+  test('Cluster breakout composes the canonical broker and portfolio', () => {
+    const source = readFileSync(
+      join(STRATEGY_ROOT, 'cluster-breakout-v6', 'strategy.tea'),
+      'utf8',
+    );
+
+    expect(source).toContain('broker.new(');
+    expect(source).toContain('portfolio.new(');
+    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('strat.begin_bar(');
+    expect(source).toContain('strat.exit(');
+    expect(source).not.toContain('type SignedAccount');
+    expect(source).not.toContain('broker.Fill.new');
+    expect(source).not.toContain('effect.emit');
+  });
+
+  test('MTF PSAR composes the canonical broker and portfolio', () => {
+    const source = readFileSync(
+      join(STRATEGY_ROOT, 'mtf-psar', 'strategy.tea'),
+      'utf8',
+    );
+
+    expect(source).toContain('broker.new(');
+    expect(source).toContain('portfolio.new(');
+    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('strategy.percentOfEquityAtFill(');
+    expect(source).not.toContain('type SignedPercentEngine');
+    expect(source).not.toContain('broker.Fill.new');
+    expect(source).not.toContain('effect.emit');
+  });
+
+  test('VWAP Suite composes the canonical broker and portfolio', () => {
+    const source = readFileSync(
+      join(STRATEGY_ROOT, 'vwap-suite', 'strategy.tea'),
+      'utf8',
+    );
+
+    expect(source).toContain('broker.new(');
+    expect(source).toContain('portfolio.new(');
+    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('strat.rebalance(');
+    expect(source).toContain('strat.exit(');
+    expect(source).not.toContain('type DirectionalAccount');
+    expect(source).not.toContain('broker.Fill.new');
+    expect(source).not.toContain('effect.emit');
+  });
 });

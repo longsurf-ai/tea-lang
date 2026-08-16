@@ -13,6 +13,13 @@ Clean-room Tea conversion of the current public source behind TradingView's [Mul
 
 The source is genuinely two-sided. With the current dashboard event contract, a short opening sell appears as an exit marker and a short-cover buy appears as an entry marker; use the signed-position plot to interpret those fills.
 
+Execution and accounting use Tea's canonical `broker.new`, `portfolio.new`,
+and `strategy.configure` components. Fill-time percent sizing and ordered
+reversal continuation let the broker close the old side, apply that fill and
+commission to the portfolio, and only then size and open the new side. The
+strategy source retains only PSAR signals and the publication's deliberately
+buggy exit-state policy.
+
 The primary instrument is the immutable Binance BTCUSDT daily snapshot. The runtime cannot resample a CSV into the source's requested timeframe, so `BTC-USD` weekly bars come from Yahoo. This introduces both a small USD/USDT venue difference and a live, non-hash-pinned request leg. The source default timeframe is daily; the checked-in weekly override is intentional so a daily primary dataset actually exercises multi-timeframe execution.
 
 ## Run
@@ -23,10 +30,10 @@ bun src/main.ts execute examples/strategy/mtf-psar/sweep.yaml
 
 ## Measured result
 
-Validated on 2026-08-14 with the checked-in 3,283-row BTCUSDT daily snapshot and a live Yahoo `BTC-USD` weekly request:
+Revalidated on 2026-08-16 with the checked-in 3,283-row BTCUSDT daily snapshot and a live Yahoo `BTC-USD` weekly request:
 
 - 9 bindings / 29,547 evaluated rows
-- Tea lowering: 8.36 ms; execution: 11,201.49 ms; reported core total: 11,209.85 ms; process wall time: 11.33 s
+- Tea lowering: 15.18 ms; execution: 18,041.15 ms; reported core total: 18,056.33 ms
 - Best total return: 1,496.8417 (149,684.17%), maximum drawdown 46.06%, 33 round trips — binding `condition_source_mode=0` (higher), `sar_start=0.01`
 - Worst total return: 0.114852 (11.49%), maximum drawdown 95.32%, 269 round trips — binding `condition_source_mode=1` (current), `sar_start=0.02`
 - Largest drawdown: 95.32% — the same worst-return binding above

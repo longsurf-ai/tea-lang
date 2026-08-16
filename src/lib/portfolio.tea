@@ -19,6 +19,8 @@ export interface Portfolio
 	float total_fees() const
 	int fill_count() const
 	int round_trip_count() const
+	float win_rate() const
+	float profit_factor() const
 	float max_drawdown() const
 	float total_return() const
 
@@ -40,6 +42,12 @@ export type NetPortfolio
 	float maxDrawdownValue = 0.0
 	int fillCountValue = 0
 	int roundTripCountValue = 0
+	float activeTradePnlValue = 0.0
+	int winningTradeCountValue = 0
+	int losingTradeCountValue = 0
+	float grossProfitValue = 0.0
+	float grossLossValue = 0.0
+	bool targetPositionArithmetic = false
 
 	broker.Account account() const =>
 		longMarginValid = this.marginLong == 0.0 or this.marginLong == 100.0
@@ -61,36 +69,76 @@ export type NetPortfolio
 
 	int apply(broker.Fill execution) =>
 		if not na(execution)
-			isBuy = execution.side == broker.Side.buy
-			canBuy = isBuy and execution.quantity > 0.0 and this.positionQuantityValue >= 0.0 and this.openEntryCountValue < this.pyramiding
-			canSell = not isBuy and execution.quantity > 0.0 and this.positionQuantityValue > 0.0 and execution.quantity <= this.positionQuantityValue
-			if canBuy
-				priorQuantity = this.positionQuantityValue
-				newQuantity = priorQuantity + execution.quantity
-				this.cashValue := this.cashValue - execution.notional - execution.fee
-				this.entryPrice := priorQuantity == 0.0 ? execution.price : (priorQuantity * this.entryPrice + execution.quantity * execution.price) / newQuantity
-				this.positionQuantityValue := newQuantity
-				this.entryNotional := this.entryNotional + execution.notional
-				this.entryFee := this.entryFee + execution.fee
-				this.openEntryCountValue := this.openEntryCountValue + 1
-			if canSell
-				quantityBefore = this.positionQuantityValue
-				isFullClose = execution.quantity == quantityBefore
-				entryFeeShare = isFullClose ? this.entryFee : this.entryFee * execution.quantity / quantityBefore
-				grossPnl = execution.quantity * (execution.price - this.entryPrice)
-				tradeFees = entryFeeShare + execution.fee
-				this.cashValue := this.cashValue + execution.notional - execution.fee
-				this.realizedPnlValue := this.realizedPnlValue + grossPnl - tradeFees
-				this.positionQuantityValue := quantityBefore - execution.quantity
-				this.entryNotional := this.entryNotional * this.positionQuantityValue / quantityBefore
-				this.entryFee := this.entryFee - entryFeeShare
-				if isFullClose
+			quantityValid = execution.quantity > 0.0
+			priceValid = execution.price > 0.0
+			feeValid = execution.fee >= 0.0
+			if quantityValid and priceValid and feeValid
+				delta = execution.side == broker.Side.buy ? execution.quantity : -execution.quantity
+				oldQuantity = this.positionQuantityValue
+				oldAbsolute = math.abs(oldQuantity)
+				sameDirection = oldQuantity == 0.0 or oldQuantity * delta > 0.0
+				closedQuantity = sameDirection ? 0.0 : math.min(oldAbsolute, math.abs(delta))
+				openedQuantity = sameDirection ? math.abs(delta) : math.max(math.abs(delta) - oldAbsolute, 0.0)
+				closeFee = closedQuantity == 0.0 ? 0.0 : execution.fee * closedQuantity / execution.quantity
+				openFee = execution.fee - closeFee
+				newQuantity = oldQuantity + delta
+				if math.abs(newQuantity) <= 0.0000001
+					newQuantity := 0.0
+
+				this.cashValue := execution.side == broker.Side.buy ? this.cashValue - execution.notional - execution.fee : this.cashValue + execution.notional - execution.fee
+
+				if closedQuantity > 0.0
+					entryFeeShare = oldAbsolute == 0.0 ? 0.0 : this.entryFee * closedQuantity / oldAbsolute
+					grossPnl = closedQuantity * (execution.price - this.entryPrice) * (oldQuantity > 0.0 ? 1.0 : -1.0)
+					closedPnl = grossPnl - entryFeeShare - closeFee
+					if this.targetPositionArithmetic
+						this.realizedPnlValue := this.realizedPnlValue + grossPnl - entryFeeShare - closeFee
+					else
+						tradeFees = entryFeeShare + closeFee
+						this.realizedPnlValue := this.realizedPnlValue + grossPnl - tradeFees
+					this.activeTradePnlValue := this.activeTradePnlValue + closedPnl
+					this.entryFee := this.entryFee - entryFeeShare
+					this.entryNotional := oldAbsolute == 0.0 ? 0.0 : this.entryNotional * math.max(oldAbsolute - closedQuantity, 0.0) / oldAbsolute
+
+				closedPosition = oldQuantity != 0.0 and (newQuantity == 0.0 or oldQuantity * newQuantity < 0.0)
+				if closedPosition
+					this.roundTripCountValue := this.roundTripCountValue + 1
+					if this.activeTradePnlValue > 0.0
+						this.winningTradeCountValue := this.winningTradeCountValue + 1
+						this.grossProfitValue := this.grossProfitValue + this.activeTradePnlValue
+					else
+						this.losingTradeCountValue := this.losingTradeCountValue + 1
+						this.grossLossValue := this.grossLossValue + math.abs(this.activeTradePnlValue)
+					this.activeTradePnlValue := 0.0
 					this.entryPrice := na
 					this.entryNotional := 0.0
 					this.entryFee := 0.0
 					this.openEntryCountValue := 0
-					this.roundTripCountValue := this.roundTripCountValue + 1
-			if canBuy or canSell
+					this.targetPositionArithmetic := false
+
+				if openedQuantity > 0.0
+					if sameDirection and oldQuantity != 0.0
+						newAbsolute = oldAbsolute + openedQuantity
+						this.entryPrice := (oldAbsolute * this.entryPrice + openedQuantity * execution.price) / newAbsolute
+						this.entryNotional := this.entryNotional + execution.notional
+						this.entryFee := this.entryFee + execution.fee
+						if execution.commandKind != broker.CommandKind.rebalance
+							this.openEntryCountValue := this.openEntryCountValue + 1
+					else
+						this.entryPrice := execution.price
+						this.entryNotional := openedQuantity * execution.price
+						this.entryFee := openFee
+						this.targetPositionArithmetic := execution.commandKind == broker.CommandKind.rebalance
+						this.openEntryCountValue := 1
+
+				this.positionQuantityValue := newQuantity
+				if newQuantity == 0.0
+					this.entryPrice := na
+					this.entryNotional := 0.0
+					this.entryFee := 0.0
+					this.openEntryCountValue := 0
+					this.targetPositionArithmetic := false
+
 				this.totalFeesValue := this.totalFeesValue + execution.fee
 				this.fillCountValue := this.fillCountValue + 1
 		this.fillCountValue
@@ -121,6 +169,12 @@ export type NetPortfolio
 
 	int round_trip_count() const =>
 		this.roundTripCountValue
+
+	float win_rate() const =>
+		this.roundTripCountValue == 0 ? 0.0 : float(this.winningTradeCountValue) / float(this.roundTripCountValue)
+
+	float profit_factor() const =>
+		this.grossLossValue == 0.0 ? 0.0 : this.grossProfitValue / this.grossLossValue
 
 	float max_drawdown() const =>
 		this.maxDrawdownValue

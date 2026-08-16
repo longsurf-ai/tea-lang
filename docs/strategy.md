@@ -109,21 +109,24 @@ order. Calling `end` before `begin`, calling either twice, or calling one
 conditionally is valid Tea with the behavior defined by the library source.
 
 The current canonical pair is deliberately bounded. `BrokerEmulator` accepts
-one pending market-or-buy-stop command, fills it at an eligible later open or
-intrabar stop touch, or optionally at the signal bar's close, and applies the
-configured commission and adverse slippage. `strat.entry` accepts an explicit
+one pending market-or-directional-stop command, fills it at an eligible later
+open or intrabar stop touch, or optionally at the signal bar's close, and
+applies the configured commission and adverse slippage. `strat.entry` accepts an explicit
 positive `qty`; omitting it (the `na` default) uses the commission-aware
 all-available-cash quantity. A `strategy.percentOfEquity(percent)` sizing value
 instead snapshots a cash notional from the portfolio's last marked equity when
 the entry is submitted, then resolves quantity from the eventual fill price.
 Passing `commissionIncluded=true` treats that snapshot as a cash budget whose
 commission is included rather than charged outside the requested allocation.
-`NetPortfolio` is a long-only net account. It aggregates up to `pyramiding`
-open entries, reports their quantity and weighted-average price, and
-`strat.close` closes the whole net position.
+`strategy.percentOfEquityAtFill(percent)` resolves the equity budget at the
+actual fill phase. `NetPortfolio` is a signed net account. It aggregates
+same-direction adds at weighted-average cost, applies partial reductions,
+records full closes and reversals, and reports the signed quantity and average
+price. `strat.close` closes the whole net position, while `strat.rebalance`
+targets either a signed quantity or a signed percent of fill-time equity.
 
-For a long strategy that needs one persistent stop/target exit, use the richer
-bar entry point and attach the exit to its entry id:
+For a strategy that needs one persistent stop/target exit, use the richer bar
+entry point and attach the exit to its entry id:
 
 ```tea
 strat.begin_bar(open, high, low, bar_index)
@@ -148,22 +151,31 @@ strat.end(close, barstate.islast)
 
 The broker keeps one scalar atomic stop/target exit, including while its
 matching entry is pending. `begin_bar` applies an eligible pending primary fill
-first and then tests the attached exit against the updated position. A buy stop
-gaps at the open or otherwise uses its trigger as the reference price. An exit
-gap uses the open; an intrabar touch uses the selected stop or target. If both
-levels are touched, the extreme nearer the open is treated as first, with ties
-selecting the stop. The configured adverse sell slippage still applies after a
-target touch, so `target` is not a true limit-price guarantee.
+first and then tests the attached exit against the updated position. Buy and
+sell stops gap at the open or otherwise use their trigger as the reference
+price. Long and short exits mirror one another. An exit gap uses the open; an
+intrabar touch uses the selected stop or target. If both levels are touched,
+the extreme nearer the open is treated as first, with ties selecting the stop.
+Configured adverse slippage still applies after a target touch, so `target` is
+not a true limit-price guarantee.
 
-Calling `entry` again with the same id replaces a resting buy stop; calling
+`begin_bar` is the ordinary composition of `begin_primary` followed by
+`process_exit`. A strategy may call those two phases explicitly when the
+primary fill determines the stop or target it must attach before the same
+bar's exit check. The portfolio is updated between the phases, so the exit
+always sees the filled quantity and average price; calling the split phases
+does not expose or move matching into the host runtime.
+
+Calling `entry` again with the same id replaces a resting directional stop; calling
 `exit` again with the same exit id replaces the atomic attached order. Skipping
 either call leaves the prior order live. `strat.cancel(id)` explicitly cancels
 a matching primary or exit order. When pyramiding under one attached exit,
 every add must reuse the same entry id; the exit closes the resulting aggregate
-net position. A different entry id fails closed while that aggregate position
-is open, whether or not an exit is currently attached. This fixed two-stage
-path can produce a primary fill and attached exit on the same bar without a
-strategy-local account or matcher.
+net position. A different id in the same direction fails closed while that
+aggregate position is open. An opposite-direction entry performs an ordered
+close fill, applies it to the portfolio, and then sizes and fills the new side;
+this is distinct from a one-fill target rebalance. This fixed two-stage path can
+produce at most two fills on one bar without a strategy-local account or matcher.
 
 `end(close, isLast)` remains the normal close-phase convenience. Strategies
 whose policy requires an observation between close-time fills may explicitly
@@ -171,18 +183,16 @@ sequence `process_close(close)`, `mark(close)`, and `finish(isLast)` instead.
 Close processing sees only the close point; it never retroactively inspects the
 completed bar's high or low.
 
-This first slice accepts exactly two margin policies: `marginLong=100` requires
-the full notional plus fees to fit in current cash, while `marginLong=0`
-disables that capital gate for compatibility profiles. Intermediate leverage
-values fail closed until the portfolio publishes true free-margin accounting.
-`marginShort` is validated against the same `0`/`100` set and retained for
-forward compatibility, but is not otherwise used because this implementation
-does not open short positions. Default quantity remains all-available-cash
-sizing rather than leveraged sizing.
+This slice accepts exactly two policies independently for `marginLong` and
+`marginShort`: `100` requires newly opened exposure plus fees to fit the
+available capital, while `0` disables that capital gate for compatibility
+profiles. Intermediate leverage values fail closed until the portfolio
+publishes true free-margin accounting. Default quantity remains
+all-available-capital sizing rather than leveraged sizing.
 
-This slice does not provide per-entry lots, partial closes, short positions,
-general margin accounting or margin calls, multiple independent exits, true
-limit orders, general OCA groups, or segment-by-segment OHLC path replay. Its
+This slice does not provide per-entry lots, independently addressed partial
+closes, general margin accounting or margin calls, multiple independent exits,
+true limit orders, general OCA groups, or segment-by-segment OHLC path replay. Its
 one primary slot and one atomic attached-exit slot form a scalar,
 at-most-two-fill boundary. A general order book will require an explicit
 bounded fill-drain revision rather than pretending an arbitrary number of fills

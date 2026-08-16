@@ -12,6 +12,7 @@ export enum Direction
 
 export enum SizingKind
 	percentOfEquity
+	percentOfEquityAtFill
 
 export type Sizing
 	SizingKind kind
@@ -25,41 +26,76 @@ export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 
 	broker.Fill begin(float openPrice, int barIndex) =>
 		this.currentBarIndex := barIndex
-		execution = this.broker.on_open(openPrice, this.portfolio.account(), this.currentBarIndex)
-		this.portfolio.apply(execution)
-		execution
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		execution = currentBroker.on_open(openPrice, currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(execution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(continuation)
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		not na(continuation) ? continuation : execution
 
-	broker.BarMatches begin_bar(float openPrice, float highPrice, float lowPrice, int barIndex) =>
+	broker.BarMatches begin_primary(float openPrice, float highPrice, float lowPrice, int barIndex) =>
 		this.currentBarIndex := barIndex
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
-		pendingExecution = currentBroker.match_pending(openPrice, highPrice, currentPortfolio.account(), this.currentBarIndex)
-		currentPortfolio.apply(pendingExecution)
-		exitExecution = currentBroker.match_exit(openPrice, highPrice, lowPrice, currentPortfolio.account(), this.currentBarIndex)
-		currentPortfolio.apply(exitExecution)
+		firstExecution = currentBroker.match_pending(openPrice, highPrice, lowPrice, currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(firstExecution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(continuation)
+		pendingExecution = not na(continuation) ? continuation : firstExecution
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
-		broker.BarMatches.new(pendingExecution, exitExecution)
+		broker.BarMatches.new(pendingExecution, na, not na(continuation) ? firstExecution : na)
+
+	broker.Fill process_exit(float openPrice, float highPrice, float lowPrice) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		execution = currentBroker.match_exit(openPrice, highPrice, lowPrice, currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(execution)
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		execution
+
+	broker.BarMatches begin_bar(float openPrice, float highPrice, float lowPrice, int barIndex) =>
+		primary = this.begin_primary(openPrice, highPrice, lowPrice, barIndex)
+		exitExecution = this.process_exit(openPrice, highPrice, lowPrice)
+		broker.BarMatches.new(primary.pending, exitExecution, primary.reversalClose)
 
 	broker.Order entry(string commandId, Direction direction, float qty = na, Sizing sizing = na, float stop = na) =>
 		side = direction == Direction.long ? broker.Side.buy : broker.Side.sell
 		float notional = na
 		float cashBudget = na
+		float equityPercent = na
+		commissionIncluded = false
 		if not na(sizing)
-			equity = this.portfolio.equity()
-			sizingValid = sizing.kind == SizingKind.percentOfEquity and not na(sizing.value) and sizing.value > 0.0 and sizing.value <= 100.0 and not na(equity) and equity > 0.0
-			budget = sizingValid ? equity * sizing.value / 100.0 : -1.0
-			if sizing.commissionIncluded
-				cashBudget := budget
+			sizingValid = (sizing.kind == SizingKind.percentOfEquity or sizing.kind == SizingKind.percentOfEquityAtFill) and not na(sizing.value) and sizing.value > 0.0 and sizing.value <= 100.0
+			if sizing.kind == SizingKind.percentOfEquityAtFill
+				commissionIncluded := sizing.commissionIncluded
+				equityPercent := sizingValid ? sizing.value : -1.0
 			else
-				notional := budget
-		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.entry, side, qty, this.currentBarIndex, notional, na, stop, false, na, cashBudget))
+				equity = this.portfolio.equity()
+				markedSizingValid = sizingValid and not na(equity) and equity > 0.0
+				budget = markedSizingValid ? equity * sizing.value / 100.0 : -1.0
+				if sizing.commissionIncluded
+					cashBudget := budget
+				else
+					notional := budget
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.entry, side, qty, this.currentBarIndex, notional, na, stop, false, na, cashBudget, equityPercent, commissionIncluded))
 
 	broker.Order exit(string commandId, string fromEntry, float stop = na, float target = na, bool activateOnEntryBar = false) =>
 		this.broker.submit_exit(broker.Command.new(commandId, broker.CommandKind.exit, broker.Side.sell, na, this.currentBarIndex, na, fromEntry, stop, activateOnEntryBar, target))
 
 	broker.Order close(string commandId) =>
-		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.close, broker.Side.sell, na, this.currentBarIndex))
+		currentQuantity = this.portfolio.position_quantity()
+		side = currentQuantity < 0.0 ? broker.Side.buy : broker.Side.sell
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.close, side, na, this.currentBarIndex))
+
+	broker.Order rebalance(string commandId, broker.PositionTarget target) =>
+		currentQuantity = this.portfolio.position_quantity()
+		side = target.value > 0.0 ? broker.Side.buy : target.value < 0.0 ? broker.Side.sell : currentQuantity > 0.0 ? broker.Side.sell : broker.Side.buy
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.rebalance, side, na, this.currentBarIndex, positionTarget = target))
 
 	int cancel(string commandId) =>
 		this.broker.cancel(commandId)
@@ -67,11 +103,13 @@ export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 	broker.Fill process_close(float closePrice) =>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
-		execution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.currentBarIndex)
-		currentPortfolio.apply(execution)
+		firstExecution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(firstExecution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(continuation)
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
-		execution
+		not na(continuation) ? continuation : firstExecution
 
 	float mark(float price) =>
 		currentPortfolio = this.portfolio
@@ -88,12 +126,18 @@ export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 		expired
 
 	broker.FinishResult end(float closePrice, bool isLast) =>
-		execution = this.broker.on_close(closePrice, this.portfolio.account(), this.currentBarIndex)
-		this.portfolio.apply(execution)
-		this.portfolio.mark(closePrice)
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		execution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(execution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(continuation)
+		currentPortfolio.mark(closePrice)
 		broker.FinishResult expired = na
 		if isLast
-			expired := this.broker.finish()
+			expired := currentBroker.finish()
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
 		expired
 
 	float cash() const =>
@@ -120,6 +164,12 @@ export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 	int round_trip_count() const =>
 		this.portfolio.round_trip_count()
 
+	float win_rate() const =>
+		this.portfolio.win_rate()
+
+	float profit_factor() const =>
+		this.portfolio.profit_factor()
+
 	float max_drawdown() const =>
 		this.portfolio.max_drawdown()
 
@@ -134,6 +184,15 @@ export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 
 export percentOfEquity(float percent, bool commissionIncluded = false) =>
 	Sizing.new(SizingKind.percentOfEquity, percent, commissionIncluded)
+
+export percentOfEquityAtFill(float percent, bool commissionIncluded = false) =>
+	Sizing.new(SizingKind.percentOfEquityAtFill, percent, commissionIncluded)
+
+export targetQuantity(float quantity) =>
+	broker.PositionTarget.new(broker.PositionTargetKind.quantity, quantity)
+
+export targetPercentOfEquity(float percent) =>
+	broker.PositionTarget.new(broker.PositionTargetKind.percentOfEquity, percent)
 
 export configure(broker, portfolio) =>
 	Strategy.new(broker, portfolio)

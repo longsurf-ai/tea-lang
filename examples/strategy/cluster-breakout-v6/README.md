@@ -22,11 +22,14 @@ exchange-timezone/session-calendar contract. The trend filter remains a real
 parameterized code path but is disabled in the measured profile, matching its
 published default. Visual lines, labels, tables, and alerts are omitted.
 
-A strategy-local signed account emits `broker.FillExecuted` for every entry
-and exit. Its command IDs distinguish `Long Open`, `Short Open`, `Long Stop`,
-`Short Stop`, and time closes. Current dashboard annotations classify every
-buy as an entry and every sell as an exit, so short-open and short-cover markers
-will be visually reversed even though quantities, cash, and P&L are correct.
+The strategy composes Tea's canonical `broker.new`, `portfolio.new`, and
+`strategy.configure` components. The broker owns same-close entries, persistent
+gap-aware stops, and time-close fills; the signed net portfolio owns cash,
+position, and P&L accounting. `marginLong=0` and `marginShort=0` preserve the
+published fixed-unit profile without a cash-admission gate. Current dashboard
+annotations classify every buy as an entry and every sell as an exit, so
+short-open and short-cover markers remain visually reversed even though
+quantities, cash, and P&L are correct.
 
 The 36-scenario CPU sweep varies cluster length, ATR tightness, breakout buffer,
 and strong-close threshold over the SHA-256-pinned BTCUSDT daily snapshot:
@@ -35,9 +38,9 @@ and strong-close threshold over the SHA-256-pinned BTCUSDT daily snapshot:
 tea execute examples/strategy/cluster-breakout-v6/sweep.yaml
 ```
 
-Measured on 2026-08-14 with `js-f64`, the sweep executed 36 bindings and
-118,188 rows. Lowering took 21.55 ms, execution 94,265.26 ms, reported total
-time 94,286.81 ms, and parallel-test wall time 94.65 seconds. Total return
+Revalidated on 2026-08-16 with `js-f64`, the sweep executed 36 bindings and
+118,188 rows. Lowering took 16.49 ms, execution 64,029.12 ms, and reported
+total time was 64,045.61 ms. Total return
 ranged from -0.047153 to 0.714522, maximum drawdown from 0 to 0.354245, fill
 count from 0 to 96, and completed round trips from 0 to 48. Some strict
 cluster/filter bindings intentionally produced no trades; that is a valid

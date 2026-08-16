@@ -12,6 +12,7 @@ export enum CommandKind
 	entry
 	close
 	exit
+	rebalance
 
 export enum OrderType
 	market
@@ -27,6 +28,10 @@ export enum CommissionKind
 export enum SlippageKind
 	percent
 	ticks
+
+export enum PositionTargetKind
+	quantity
+	percentOfEquity
 
 export enum Rejection
 	pendingOrder
@@ -44,6 +49,10 @@ export type Slippage
 	SlippageKind kind
 	float value
 	float tickSize
+
+export type PositionTarget
+	PositionTargetKind kind
+	float value
 
 // Account is the read-only execution view supplied by a Portfolio. It keeps
 // broker matching independent of the concrete accounting implementation.
@@ -70,6 +79,9 @@ export type Command
 	bool activateOnEntryBar = false
 	float target = na
 	float cashBudget = na
+	float equityPercent = na
+	bool commissionIncluded = false
+	PositionTarget positionTarget = na
 
 export type Order
 	int id
@@ -85,6 +97,9 @@ export type Order
 	float target = na
 	float cashBudget = na
 	OrderType orderType = OrderType.market
+	float equityPercent = na
+	bool commissionIncluded = false
+	PositionTarget positionTarget = na
 
 export type Fill
 	int id
@@ -98,6 +113,7 @@ export type Fill
 	float notional
 	float fee
 	OrderType orderType = OrderType.market
+	CommandKind commandKind = CommandKind.entry
 
 export type OrderSubmitted
 	Order order
@@ -120,6 +136,7 @@ export type OrderRejected
 export type BarMatches
 	Fill pending
 	Fill exit
+	Fill reversalClose = na
 
 export type FinishResult
 	Order pending
@@ -132,14 +149,16 @@ export interface Broker
 	Order submit_exit(Command command)
 	int cancel(string commandId)
 	Fill on_open(float referencePrice, Account account, int barIndex)
-	Fill match_pending(float openPrice, float highPrice, Account account, int barIndex)
+	Fill match_pending(float openPrice, float highPrice, float lowPrice, Account account, int barIndex)
+	Fill continue_reversal(Account account, int barIndex)
 	Fill match_exit(float openPrice, float highPrice, float lowPrice, Account account, int barIndex)
 	Fill on_close(float referencePrice, Account account, int barIndex)
 	FinishResult finish()
 
 // This reference emulator intentionally owns a bounded scalar order model: one
-// pending market-or-buy-stop command and one atomic long stop/target exit. It is
-// not a general order book or a true limit-order implementation.
+// pending directional market-or-stop command and one symmetric atomic
+// stop/target exit. It is not a general order book or a true limit-order
+// implementation.
 export type BrokerEmulator
 	CommissionKind commissionKind
 	float commissionValue
@@ -152,9 +171,14 @@ export type BrokerEmulator
 	Order pending = na
 	Order attachedExit = na
 	string activeEntryId = na
+	Side activeEntrySide = na
 	int activeEntryBar = -1
 	int matchedBarIndex = -1
 	int fillsThisBar = 0
+	bool reversalPending = false
+	float reversalReferencePrice = na
+	bool reversalAtClose = false
+	bool reversalOrderFeePaid = false
 
 	bool has_pending() const =>
 		not na(this.pending) or not na(this.attachedExit)
@@ -180,6 +204,12 @@ export type BrokerEmulator
 	float budgeted_buy_quantity(float price, float budget) const =>
 		this.commissionKind == CommissionKind.cashPerContract ? budget / (price + this.commissionValue) : this.commissionKind == CommissionKind.cashPerOrder ? (budget - this.commissionValue) / price : budget / (price * (1.0 + this.commissionValue))
 
+	float equity_at(float referencePrice, Account account) const =>
+		account.buyingPower + account.positionQuantity * referencePrice
+
+	float budgeted_entry_quantity(float price, float budget) const =>
+		this.commissionKind == CommissionKind.cashPerContract ? budget / (price + this.commissionValue) : this.commissionKind == CommissionKind.cashPerOrder ? (budget - this.commissionValue) / price : budget / (price * (1.0 + this.commissionValue))
+
 	bool configuration_valid() const =>
 		commissionKindValid = this.commissionKind == CommissionKind.percent or this.commissionKind == CommissionKind.cashPerContract or this.commissionKind == CommissionKind.cashPerOrder
 		commissionValueValid = not na(this.commissionValue) and this.commissionValue >= 0.0
@@ -190,21 +220,23 @@ export type BrokerEmulator
 
 	Order submit(Command command) =>
 		Order order = na
-		kindValid = command.kind == CommandKind.entry or command.kind == CommandKind.close
-		sideValid = command.kind == CommandKind.entry and command.side == Side.buy or command.kind == CommandKind.close and command.side == Side.sell
+		kindValid = command.kind == CommandKind.entry or command.kind == CommandKind.close or command.kind == CommandKind.rebalance
+		sideValid = command.kind == CommandKind.rebalance or command.side == Side.buy or command.side == Side.sell
 		stopValid = command.kind != CommandKind.entry or na(command.stop) or command.stop > 0.0
+		targetValid = command.kind != CommandKind.rebalance or not na(command.positionTarget) and not na(command.positionTarget.value) and (command.positionTarget.kind == PositionTargetKind.quantity or command.positionTarget.kind == PositionTargetKind.percentOfEquity and math.abs(command.positionTarget.value) <= 100.0)
 		if not kindValid or not sideValid
 			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidAccountState))
-		else if not stopValid
+		else if not stopValid or not targetValid
 			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidPrice))
-		else if command.kind == CommandKind.entry and not na(this.activeEntryId) and command.commandId != this.activeEntryId
+		else if command.kind == CommandKind.entry and not na(this.activeEntryId) and command.side == this.activeEntrySide and command.commandId != this.activeEntryId
 			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.entryIdMismatch))
 		else
 			canReplacePendingStop = not na(this.pending) and command.kind == CommandKind.entry and this.pending.kind == CommandKind.entry and command.commandId == this.pending.commandId and not na(command.stop) and this.pending.orderType == OrderType.stop
-			if na(this.pending) or canReplacePendingStop
-				replaced = canReplacePendingStop ? this.pending : na
+			canReplaceTarget = not na(this.pending) and command.kind == CommandKind.rebalance and this.pending.kind == CommandKind.rebalance and command.commandId == this.pending.commandId
+			if na(this.pending) or canReplacePendingStop or canReplaceTarget
+				replaced = canReplacePendingStop or canReplaceTarget ? this.pending : na
 				orderType = command.kind == CommandKind.entry and not na(command.stop) ? OrderType.stop : OrderType.market
-				order := Order.new(this.nextOrderId, command.commandId, command.side, command.signalBarIndex, command.kind, command.quantity, command.notional, command.fromEntry, command.stop, command.activateOnEntryBar, command.target, command.cashBudget, orderType)
+				order := Order.new(this.nextOrderId, command.commandId, command.side, command.signalBarIndex, command.kind, command.quantity, command.notional, command.fromEntry, command.stop, command.activateOnEntryBar, command.target, command.cashBudget, orderType, command.equityPercent, command.commissionIncluded, command.positionTarget)
 				this.nextOrderId := this.nextOrderId + 1
 				this.pending := order
 				if not na(replaced)
@@ -218,12 +250,16 @@ export type BrokerEmulator
 		Order order = na
 		stopPresent = not na(command.stop)
 		targetPresent = not na(command.target)
-		pricesValid = (stopPresent or targetPresent) and (not stopPresent or command.stop > 0.0) and (not targetPresent or command.target > 0.0) and (not stopPresent or not targetPresent or command.stop < command.target)
 		pendingEntryMatches = this.has_pending_entry() and not na(command.fromEntry) and this.pending.commandId == command.fromEntry
 		activeEntryMatches = not na(this.activeEntryId) and not na(command.fromEntry) and this.activeEntryId == command.fromEntry
 		entryMatches = pendingEntryMatches or activeEntryMatches
+		entrySide = pendingEntryMatches ? this.pending.side : this.activeEntrySide
+		exitSide = entrySide == Side.sell ? Side.buy : Side.sell
+		isLong = entrySide == Side.buy
+		orderedPrices = not stopPresent or not targetPresent or isLong and command.stop < command.target or not isLong and command.target < command.stop
+		pricesValid = (stopPresent or targetPresent) and (not stopPresent or command.stop > 0.0) and (not targetPresent or command.target > 0.0) and orderedPrices
 		canReplace = na(this.attachedExit) or this.attachedExit.commandId == command.commandId and this.attachedExit.fromEntry == command.fromEntry
-		if command.kind != CommandKind.exit or command.side != Side.sell
+		if command.kind != CommandKind.exit
 			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidAccountState))
 		else if not pricesValid
 			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidPrice))
@@ -234,7 +270,7 @@ export type BrokerEmulator
 		else
 			replaced = this.attachedExit
 			orderType = stopPresent and targetPresent ? OrderType.bracket : stopPresent ? OrderType.stop : OrderType.target
-			order := Order.new(this.nextOrderId, command.commandId, command.side, command.signalBarIndex, command.kind, command.quantity, command.notional, command.fromEntry, command.stop, command.activateOnEntryBar, command.target, command.cashBudget, orderType)
+			order := Order.new(this.nextOrderId, command.commandId, exitSide, command.signalBarIndex, command.kind, command.quantity, command.notional, command.fromEntry, command.stop, command.activateOnEntryBar, command.target, command.cashBudget, orderType, command.equityPercent, command.commissionIncluded, command.positionTarget)
 			this.nextOrderId := this.nextOrderId + 1
 			this.attachedExit := order
 			if not na(replaced)
@@ -248,6 +284,10 @@ export type BrokerEmulator
 			cancelledPending = this.pending
 			Order noPending = na
 			this.pending := noPending
+			this.reversalPending := false
+			this.reversalReferencePrice := na
+			this.reversalAtClose := false
+			this.reversalOrderFeePaid := false
 			effect.emit(OrderCancelled.new(cancelledPending))
 			cancelled := cancelled + 1
 			if cancelledPending.kind == CommandKind.entry and na(this.activeEntryId) and not na(this.attachedExit) and this.attachedExit.fromEntry == cancelledPending.commandId
@@ -264,9 +304,11 @@ export type BrokerEmulator
 			cancelled := cancelled + 1
 		cancelled
 
-	Fill execute(float referencePrice, Account account, int barIndex, bool atClose, bool priceTriggered = true) =>
+	Fill execute(float referencePrice, Account account, int barIndex, bool atClose, bool priceTriggered = true, bool reversalContinuation = false) =>
 		Fill execution = na
 		Order cancelledExit = na
+		if reversalContinuation
+			this.reversalPending := false
 		if this.matchedBarIndex != barIndex
 			this.matchedBarIndex := barIndex
 			this.fillsThisBar := 0
@@ -276,69 +318,168 @@ export type BrokerEmulator
 			if eligible and priceTriggered and this.fillsThisBar < 2
 				if not this.configuration_valid() or not account.configurationValid
 					effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidConfiguration))
+				else if order.kind == CommandKind.rebalance
+					referenceEquity = this.equity_at(referencePrice, account)
+					percentTargetValid = order.positionTarget.kind != PositionTargetKind.percentOfEquity or referencePrice > 0.0 and referenceEquity > 0.0
+					targetPrice = referencePrice > 0.0 ? referencePrice : 1.0
+					targetQuantity = order.positionTarget.kind == PositionTargetKind.quantity ? order.positionTarget.value : referenceEquity * math.abs(order.positionTarget.value) / 100.0 / targetPrice * (order.positionTarget.value < 0.0 ? -1.0 : 1.0)
+					delta = targetQuantity - account.positionQuantity
+					if not percentTargetValid
+						effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState))
+					else if math.abs(delta) > 0.0000001
+						fillSide = delta > 0.0 ? Side.buy : Side.sell
+						price = this.execution_price(referencePrice, fillSide)
+						requestedQuantity = math.abs(delta)
+						buyCapacity = account.positionQuantity >= 0.0 and fillSide == Side.buy and account.marginLong != 0.0 ? math.max(this.default_buy_quantity(price, account.buyingPower), 0.0) : requestedQuantity
+						quantity = math.min(requestedQuantity, buyCapacity)
+						notional = quantity * price
+						fee = this.commission_for(quantity, notional)
+						filledDelta = fillSide == Side.buy ? quantity : -quantity
+						projectedQuantity = account.positionQuantity + filledDelta
+						if math.abs(projectedQuantity) <= 0.0000001
+							projectedQuantity := 0.0
+						crossesPosition = account.positionQuantity * projectedQuantity < 0.0
+						increasesExposure = math.abs(projectedQuantity) > math.abs(account.positionQuantity) or crossesPosition
+						marginRate = projectedQuantity < 0.0 ? account.marginShort : account.marginLong
+						capitalAvailable = crossesPosition or projectedQuantity < 0.0 ? referenceEquity : account.buyingPower
+						openingQuantity = crossesPosition ? math.abs(projectedQuantity) : math.max(math.abs(projectedQuantity) - math.abs(account.positionQuantity), 0.0)
+						closingSlippageCost = crossesPosition ? math.min(math.abs(account.positionQuantity), quantity) * math.abs(price - referencePrice) : 0.0
+						capitalRequired = openingQuantity * price * marginRate / 100.0 + fee + closingSlippageCost
+						capitalValid = not increasesExposure or marginRate == 0.0 or capitalAvailable >= capitalRequired
+						if capitalValid and quantity > 0.0 and price > 0.0 and fee >= 0.0
+							execution := Fill.new(this.nextFillId, order.id, order.commandId, fillSide, barIndex, referencePrice, price, quantity, notional, fee, order.orderType, CommandKind.rebalance)
+							this.nextFillId := this.nextFillId + 1
+							this.fillsThisBar := this.fillsThisBar + 1
+							crossedOrClosed = account.positionQuantity != 0.0 and (projectedQuantity == 0.0 or account.positionQuantity * projectedQuantity < 0.0)
+							if crossedOrClosed
+								cancelledExit := this.attachedExit
+								Order noExit = na
+								this.attachedExit := noExit
+							if projectedQuantity == 0.0
+								string noEntry = na
+								Side noEntrySide = na
+								this.activeEntryId := noEntry
+								this.activeEntrySide := noEntrySide
+								this.activeEntryBar := -1
+							else if account.positionQuantity == 0.0 or account.positionQuantity * projectedQuantity < 0.0 or na(this.activeEntryId)
+								this.activeEntryId := order.commandId
+								this.activeEntrySide := projectedQuantity > 0.0 ? Side.buy : Side.sell
+								this.activeEntryBar := barIndex
+							effect.emit(FillExecuted.new(execution))
+							if not na(cancelledExit)
+								effect.emit(OrderCancelled.new(cancelledExit))
+						else
+							effect.emit(OrderRejected.new(order.commandId, fillSide, barIndex, Rejection.invalidAccountState))
+					else
+						effect.emit(OrderCancelled.new(order))
 				else
 					hasExplicitQuantity = not na(order.quantity)
 					hasExplicitNotional = not na(order.notional)
 					hasCashBudget = not na(order.cashBudget)
-					sizeKinds = (hasExplicitQuantity ? 1 : 0) + (hasExplicitNotional ? 1 : 0) + (hasCashBudget ? 1 : 0)
-					sizeValid = order.kind != CommandKind.entry or sizeKinds <= 1 and (not hasExplicitQuantity or order.quantity > 0.0) and (not hasExplicitNotional or order.notional > 0.0) and (not hasCashBudget or order.cashBudget > 0.0)
+					hasEquityPercent = not na(order.equityPercent)
+					sizeKinds = (hasExplicitQuantity ? 1 : 0) + (hasExplicitNotional ? 1 : 0) + (hasCashBudget ? 1 : 0) + (hasEquityPercent ? 1 : 0)
+					sizeValid = order.kind != CommandKind.entry or sizeKinds <= 1 and (not hasExplicitQuantity or order.quantity > 0.0) and (not hasExplicitNotional or order.notional > 0.0) and (not hasCashBudget or order.cashBudget > 0.0) and (not hasEquityPercent or order.equityPercent > 0.0 and order.equityPercent <= 100.0)
 					if not sizeValid
 						effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidQuantity))
 					else
-						isBuy = order.side == Side.buy
-						price = this.execution_price(referencePrice, order.side)
-						quantity = isBuy ? (hasExplicitQuantity ? order.quantity : hasExplicitNotional ? order.notional / price : hasCashBudget ? this.budgeted_buy_quantity(price, order.cashBudget) : this.default_buy_quantity(price, account.buyingPower)) : account.positionQuantity
+						entryDirection = order.side == Side.buy ? 1.0 : -1.0
+						isReversal = order.kind == CommandKind.entry and account.positionQuantity * entryDirection < 0.0
+						fillSide = isReversal ? (account.positionQuantity > 0.0 ? Side.sell : Side.buy) : order.side
+						price = this.execution_price(referencePrice, fillSide)
+						fillEquity = this.equity_at(referencePrice, account)
+						fillBudget = hasEquityPercent ? order.equityPercent == 100.0 ? fillEquity : fillEquity * order.equityPercent / 100.0 : na
+						orderFeeAlreadyPaid = reversalContinuation and this.reversalOrderFeePaid and this.commissionKind == CommissionKind.cashPerOrder
+						entryCapital = order.side == Side.buy ? account.buyingPower : fillEquity
+						cashBudgetQuantity = orderFeeAlreadyPaid ? order.cashBudget / price : this.budgeted_entry_quantity(price, order.cashBudget)
+						equityBudgetQuantity = orderFeeAlreadyPaid ? fillBudget / price : this.budgeted_entry_quantity(price, fillBudget)
+						defaultEntryQuantity = orderFeeAlreadyPaid ? entryCapital / price : this.default_buy_quantity(price, entryCapital)
+						entryQuantity = hasExplicitQuantity ? order.quantity : hasExplicitNotional ? order.notional / price : hasCashBudget ? cashBudgetQuantity : hasEquityPercent ? (order.commissionIncluded ? equityBudgetQuantity : fillBudget / price) : defaultEntryQuantity
+						quantity = isReversal or order.kind == CommandKind.close ? math.abs(account.positionQuantity) : entryQuantity
 						notional = quantity * price
-						fee = this.commission_for(quantity, notional)
+						fee = orderFeeAlreadyPaid ? 0.0 : this.commission_for(quantity, notional)
 						entryCapacity = account.openEntryCount < account.pyramiding
-						accountStateValid = isBuy ? order.kind == CommandKind.entry and account.positionQuantity >= 0.0 and entryCapacity : order.kind == CommandKind.close and account.positionQuantity > 0.0
-						marginRequired = notional * account.marginLong / 100.0 + fee
-						requiredCapital = hasCashBudget ? order.cashBudget : marginRequired
+						sameEntryDirection = account.positionQuantity == 0.0 or account.positionQuantity * entryDirection > 0.0
+						closeSideValid = account.positionQuantity > 0.0 and order.side == Side.sell or account.positionQuantity < 0.0 and order.side == Side.buy
+						accountStateValid = order.kind == CommandKind.entry ? (isReversal or sameEntryDirection and entryCapacity) : order.kind == CommandKind.close and closeSideValid
+						marginRate = order.side == Side.buy ? account.marginLong : account.marginShort
+						capitalAvailable = order.side == Side.buy ? account.buyingPower : fillEquity
+						marginRequired = notional * marginRate / 100.0 + fee
+						requiredCapital = hasCashBudget or hasEquityPercent and order.commissionIncluded ? (hasCashBudget ? order.cashBudget : fillBudget) : marginRequired
 						hasExplicitSize = sizeKinds > 0
-						capitalValid = not isBuy or (hasExplicitSize ? account.marginLong == 0.0 or account.buyingPower >= requiredCapital : account.buyingPower > 0.0)
+						capitalValid = isReversal or order.kind == CommandKind.close or (hasExplicitSize ? marginRate == 0.0 or capitalAvailable >= requiredCapital : capitalAvailable > 0.0)
 						if accountStateValid and capitalValid and quantity > 0.0 and price > 0.0 and fee >= 0.0
-							execution := Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, referencePrice, price, quantity, notional, fee, order.orderType)
+							executionKind = isReversal ? CommandKind.close : order.kind
+							execution := Fill.new(this.nextFillId, order.id, order.commandId, fillSide, barIndex, referencePrice, price, quantity, notional, fee, order.orderType, executionKind)
 							this.nextFillId := this.nextFillId + 1
 							this.fillsThisBar := this.fillsThisBar + 1
-							if order.kind == CommandKind.entry
+							if order.kind == CommandKind.entry and not isReversal
 								if account.positionQuantity == 0.0 or na(this.activeEntryId) or this.activeEntryId != order.commandId
 									this.activeEntryId := order.commandId
+									this.activeEntrySide := order.side
 									this.activeEntryBar := barIndex
 							else
-								cancelledExit := this.attachedExit
-								Order noExit = na
-								this.attachedExit := noExit
+								keepsReversalExit = isReversal and not na(this.attachedExit) and this.attachedExit.fromEntry == order.commandId and this.attachedExit.side != order.side
+								if not keepsReversalExit
+									cancelledExit := this.attachedExit
+									Order noExit = na
+									this.attachedExit := noExit
 								string noEntry = na
+								Side noEntrySide = na
 								this.activeEntryId := noEntry
+								this.activeEntrySide := noEntrySide
+								if isReversal
+									this.reversalPending := true
+									this.reversalReferencePrice := referencePrice
+									this.reversalAtClose := atClose
+									this.reversalOrderFeePaid := this.commissionKind == CommissionKind.cashPerOrder
 								this.activeEntryBar := -1
 							effect.emit(FillExecuted.new(execution))
 							if not na(cancelledExit)
 								effect.emit(OrderCancelled.new(cancelledExit))
 						else
 							effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState))
-				hasLiveMatchingEntry = not na(this.activeEntryId) and this.activeEntryId == order.commandId and account.positionQuantity > 0.0
-				if order.kind == CommandKind.entry and na(execution) and not hasLiveMatchingEntry and not na(this.attachedExit) and this.attachedExit.fromEntry == order.commandId
+				hasLiveMatchingEntry = not na(this.activeEntryId) and this.activeEntryId == order.commandId and account.positionQuantity != 0.0
+				if order.kind == CommandKind.entry and na(execution) and not hasLiveMatchingEntry and not this.reversalPending and not na(this.attachedExit) and this.attachedExit.fromEntry == order.commandId
 					orphanedExit = this.attachedExit
 					Order noOrphanedExit = na
 					this.attachedExit := noOrphanedExit
 					effect.emit(OrderCancelled.new(orphanedExit))
-				Order empty = na
-				this.pending := empty
+				if not this.reversalPending
+					Order empty = na
+					this.pending := empty
+		if reversalContinuation
+			this.reversalReferencePrice := na
+			this.reversalAtClose := false
+			this.reversalOrderFeePaid := false
 		execution
 
 	Fill on_open(float referencePrice, Account account, int barIndex) =>
-		priceTriggered = not na(this.pending) and (this.pending.orderType == OrderType.market or this.pending.orderType == OrderType.stop and referencePrice >= this.pending.stop)
-		this.execute(referencePrice, account, barIndex, false, priceTriggered)
+		deferredReversal = this.reversalPending and this.matchedBarIndex != barIndex
+		priceTriggered = deferredReversal or not na(this.pending) and (this.pending.orderType == OrderType.market or this.pending.orderType == OrderType.stop and (this.pending.side == Side.buy and referencePrice >= this.pending.stop or this.pending.side == Side.sell and referencePrice <= this.pending.stop))
+		this.execute(referencePrice, account, barIndex, false, priceTriggered, deferredReversal)
 
-	Fill match_pending(float openPrice, float highPrice, Account account, int barIndex) =>
+	Fill match_pending(float openPrice, float highPrice, float lowPrice, Account account, int barIndex) =>
 		Fill execution = na
 		if not na(this.pending)
-			isMarket = this.pending.orderType == OrderType.market
-			gapTriggered = this.pending.orderType == OrderType.stop and openPrice >= this.pending.stop
-			intrabarTriggered = this.pending.orderType == OrderType.stop and not gapTriggered and highPrice >= this.pending.stop
-			triggered = isMarket or gapTriggered or intrabarTriggered
-			referencePrice = isMarket or gapTriggered ? openPrice : this.pending.stop
-			execution := this.execute(referencePrice, account, barIndex, false, triggered)
+			deferredReversal = this.reversalPending and this.matchedBarIndex != barIndex
+			if deferredReversal
+				execution := this.execute(openPrice, account, barIndex, false, true, true)
+			else
+				isMarket = this.pending.orderType == OrderType.market
+				isBuy = this.pending.side == Side.buy
+				gapTriggered = this.pending.orderType == OrderType.stop and (isBuy and openPrice >= this.pending.stop or not isBuy and openPrice <= this.pending.stop)
+				intrabarTriggered = this.pending.orderType == OrderType.stop and not gapTriggered and (isBuy and highPrice >= this.pending.stop or not isBuy and lowPrice <= this.pending.stop)
+				triggered = isMarket or gapTriggered or intrabarTriggered
+				referencePrice = isMarket or gapTriggered ? openPrice : this.pending.stop
+				execution := this.execute(referencePrice, account, barIndex, false, triggered)
+		execution
+
+	Fill continue_reversal(Account account, int barIndex) =>
+		Fill execution = na
+		if this.reversalPending and not na(this.pending) and this.fillsThisBar < 2
+			execution := this.execute(this.reversalReferencePrice, account, barIndex, this.reversalAtClose, true, true)
+			this.reversalReferencePrice := na
+			this.reversalAtClose := false
 		execution
 
 	Fill match_exit(float openPrice, float highPrice, float lowPrice, Account account, int barIndex) =>
@@ -346,14 +487,15 @@ export type BrokerEmulator
 		if this.matchedBarIndex != barIndex
 			this.matchedBarIndex := barIndex
 			this.fillsThisBar := 0
-		if not na(this.attachedExit) and not na(this.activeEntryId) and this.attachedExit.fromEntry == this.activeEntryId and account.positionQuantity > 0.0 and this.fillsThisBar < 2
+		if not na(this.attachedExit) and not na(this.activeEntryId) and this.attachedExit.fromEntry == this.activeEntryId and account.positionQuantity != 0.0 and this.fillsThisBar < 2
 			activationAllowed = this.attachedExit.activateOnEntryBar or barIndex > this.activeEntryBar
 			stopPresent = not na(this.attachedExit.stop)
 			targetPresent = not na(this.attachedExit.target)
-			gapStop = activationAllowed and stopPresent and openPrice <= this.attachedExit.stop
-			gapTarget = activationAllowed and targetPresent and openPrice >= this.attachedExit.target
-			stopTouched = activationAllowed and stopPresent and lowPrice <= this.attachedExit.stop
-			targetTouched = activationAllowed and targetPresent and highPrice >= this.attachedExit.target
+			isLong = account.positionQuantity > 0.0
+			gapStop = activationAllowed and stopPresent and (isLong and openPrice <= this.attachedExit.stop or not isLong and openPrice >= this.attachedExit.stop)
+			gapTarget = activationAllowed and targetPresent and (isLong and openPrice >= this.attachedExit.target or not isLong and openPrice <= this.attachedExit.target)
+			stopTouched = activationAllowed and stopPresent and (isLong and lowPrice <= this.attachedExit.stop or not isLong and highPrice >= this.attachedExit.stop)
+			targetTouched = activationAllowed and targetPresent and (isLong and highPrice >= this.attachedExit.target or not isLong and lowPrice <= this.attachedExit.target)
 			triggered = gapStop or gapTarget or stopTouched or targetTouched
 			if triggered
 				order = this.attachedExit
@@ -363,9 +505,11 @@ export type BrokerEmulator
 					referencePrice := openPrice
 					matchedType := gapTarget ? OrderType.target : OrderType.stop
 				else if stopTouched and targetTouched
-					highFirst = math.abs(highPrice - openPrice) < math.abs(openPrice - lowPrice)
-					referencePrice := highFirst ? order.target : order.stop
-					matchedType := highFirst ? OrderType.target : OrderType.stop
+					targetDistance = isLong ? math.abs(highPrice - openPrice) : math.abs(openPrice - lowPrice)
+					stopDistance = isLong ? math.abs(openPrice - lowPrice) : math.abs(highPrice - openPrice)
+					targetFirst = targetDistance < stopDistance
+					referencePrice := targetFirst ? order.target : order.stop
+					matchedType := targetFirst ? OrderType.target : OrderType.stop
 				else if stopTouched
 					referencePrice := order.stop
 					matchedType := OrderType.stop
@@ -377,11 +521,11 @@ export type BrokerEmulator
 				else
 					unclampedPrice = this.execution_price(referencePrice, order.side)
 					price = this.slippageKind == SlippageKind.ticks ? math.max(unclampedPrice, this.tickSize) : unclampedPrice
-					quantity = account.positionQuantity
+					quantity = math.abs(account.positionQuantity)
 					notional = quantity * price
 					fee = this.commission_for(quantity, notional)
 					if price > 0.0 and quantity > 0.0 and fee >= 0.0
-						execution := Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, referencePrice, price, quantity, notional, fee, matchedType)
+						execution := Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, referencePrice, price, quantity, notional, fee, matchedType, CommandKind.exit)
 						this.nextFillId := this.nextFillId + 1
 						this.fillsThisBar := this.fillsThisBar + 1
 						effect.emit(FillExecuted.new(execution))
@@ -391,13 +535,16 @@ export type BrokerEmulator
 				this.attachedExit := noExit
 				if not na(execution)
 					string noEntry = na
+					Side noEntrySide = na
 					this.activeEntryId := noEntry
+					this.activeEntrySide := noEntrySide
 					this.activeEntryBar := -1
 		execution
 
 	Fill on_close(float referencePrice, Account account, int barIndex) =>
-		priceTriggered = not na(this.pending) and (this.pending.orderType == OrderType.market or this.pending.orderType == OrderType.stop and referencePrice >= this.pending.stop)
-		this.execute(referencePrice, account, barIndex, true, priceTriggered)
+		deferredReversal = this.reversalPending and this.matchedBarIndex != barIndex
+		priceTriggered = deferredReversal or not na(this.pending) and (this.pending.orderType == OrderType.market or this.pending.orderType == OrderType.stop and (this.pending.side == Side.buy and referencePrice >= this.pending.stop or this.pending.side == Side.sell and referencePrice <= this.pending.stop))
+		this.execute(referencePrice, account, barIndex, true, priceTriggered, deferredReversal)
 
 	FinishResult finish() =>
 		expired = this.pending
@@ -406,8 +553,14 @@ export type BrokerEmulator
 		this.pending := empty
 		this.attachedExit := empty
 		string noEntry = na
+		Side noEntrySide = na
 		this.activeEntryId := noEntry
+		this.activeEntrySide := noEntrySide
 		this.activeEntryBar := -1
+		this.reversalPending := false
+		this.reversalReferencePrice := na
+		this.reversalAtClose := false
+		this.reversalOrderFeePaid := false
 		if not na(expired)
 			effect.emit(OrderExpired.new(expired))
 		if not na(expiredExit)

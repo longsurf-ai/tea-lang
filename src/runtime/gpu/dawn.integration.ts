@@ -416,6 +416,110 @@ test('Dawn matches resting cash-budget entries and atomic brackets', async () =>
   }
 });
 
+test('Dawn matches target rebalances, signed reversals, and short brackets', async () => {
+  const program = mustBuild(
+    [
+      'strategy("canonical signed scalar lifecycle")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(',
+      '        commission = broker.commissionPercent(1.0),',
+      '        processOrdersOnClose = true',
+      '    ),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = 0.0, marginShort = 0.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.rebalance("Allocation", strategy.targetPercentOfEquity(50.0))',
+      'if bar_index == 1',
+      '    strat.entry("Short", strategy.Direction.short, sizing = strategy.percentOfEquityAtFill(100.0, commissionIncluded = true))',
+      '    strat.exit("Short bracket", fromEntry = "Short", stop = 30.0, target = 10.0)',
+      'strat.process_close(close)',
+      'strat.mark(close)',
+      'strat.finish(barstate.islast)',
+      'plot(strat.cash())',
+      'plot(strat.position_quantity())',
+      'plot(strat.realized_pnl())',
+      'plot(strat.total_fees())',
+      'plot(strat.fill_count())',
+      'plot(strat.round_trip_count())',
+      'plot(strat.win_rate())',
+      'plot(strat.profit_factor())',
+    ].join('\n'),
+  );
+  const result = compileProgramToWgsl(program);
+  assert.equal(
+    result.status,
+    'compiled',
+    result.status === 'staged-unsupported'
+      ? JSON.stringify(result.eligibility.issues)
+      : undefined,
+  );
+  if (result.status !== 'compiled') return;
+
+  const source = provider({
+    open: [10, 20, 15],
+    high: [10, 20, 16],
+    low: [10, 20, 9],
+    close: [10, 20, 12],
+  });
+  const cpuSink = new MemorySink();
+  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+
+  assert.deepEqual(
+    cpuSink.effectEmissions.map(emission => {
+      const type = program.effects[emission.effectId]?.payloadType;
+      assert.equal(type?.kind, TypeKind.UserType);
+      return [emission.row, type?.kind === TypeKind.UserType ? type.name : ''];
+    }),
+    [
+      [0, 'OrderSubmitted'],
+      [0, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [1, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'FillExecuted'],
+      [2, 'FillExecuted'],
+    ],
+  );
+  assert.deepEqual(
+    cpuSink.emissions
+      .filter(emission => emission.outputId === 5)
+      .map(emission => emission.channels[0]),
+    [1, 3, 4],
+  );
+  assert.deepEqual(
+    cpuSink.emissions
+      .filter(emission => emission.outputId === 6)
+      .map(emission => emission.channels[0]),
+    [0, 1, 2],
+  );
+
+  Object.assign(globalThis, globals);
+  const gpu = create([]);
+  const adapter = await gpu.requestAdapter();
+  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
+  const device = await adapter.requestDevice();
+  const gpuSink = new MemorySink();
+  const execution = await createGpuExecution(
+    device,
+    result.artifact,
+    [binding(source, gpuSink)],
+    {maxRowsPerChunk: 1},
+  );
+  try {
+    const summary = await execution.runAll();
+    assert.equal(summary.chunks, 3);
+    assert.equal(summary.dispatches, 3);
+    assertSinkParity(cpuSink, gpuSink, result.artifact);
+  } finally {
+    execution.dispose();
+    device.destroy();
+  }
+});
+
 test('Dawn validates a complete chunk before publishing its first dense row', async () => {
   const program = mustBuild('indicator("late invalid result")\nplot(close)');
   const result = compileProgramToWgsl(program);

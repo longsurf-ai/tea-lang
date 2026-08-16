@@ -1,10 +1,12 @@
 //@version=1
 // Clean-room implementation pinned to the publication's original v6 logic.
-// A strategy-local signed account provides fixed-size long/short positions and
-// persistent stop orders without changing Tea's shared reference broker.
+// Fixed-size long/short positions and persistent stop orders run through Tea's
+// canonical strategy, broker, and portfolio components.
 strategy("Cluster breakout v6", shorttitle="Cluster v6", overlay=true)
 
 import broker
+import portfolio
+import strategy
 
 pine_rma(float source, int length) =>
 	seed = ta.sma(source, length)
@@ -19,70 +21,6 @@ pine_atr(int length) =>
 	previous_close = close[1]
 	true_range = na(previous_close) ? high - low : math.max(high - low, math.max(math.abs(high - previous_close), math.abs(low - previous_close)))
 	pine_rma(true_range, length)
-
-type SignedAccount
-	float initialCash
-	float cash
-	float signedQuantity = 0.0
-	float entryPrice = na
-	float realizedPnl = 0.0
-	float equityValue
-	float peakEquity
-	float maxDrawdownValue = 0.0
-	int fillCount = 0
-	int roundTrips = 0
-	int nextOrderId = 1
-	int nextFillId = 1
-
-	int enter(int side, float price, float quantity, int barIndex) =>
-		if this.signedQuantity == 0.0 and quantity > 0.0
-			isLong = side == 1
-			this.signedQuantity := isLong ? quantity : -quantity
-			this.entryPrice := price
-			notional = quantity * price
-			this.cash := isLong ? this.cash - notional : this.cash + notional
-			commandId = isLong ? "Long Open" : "Short Open"
-			fillSide = isLong ? broker.Side.buy : broker.Side.sell
-			execution = broker.Fill.new(this.nextFillId, this.nextOrderId, commandId, fillSide, barIndex, price, price, quantity, notional, 0.0)
-			effect.emit(broker.FillExecuted.new(execution))
-			this.nextOrderId := this.nextOrderId + 1
-			this.nextFillId := this.nextFillId + 1
-			this.fillCount := this.fillCount + 1
-		this.fillCount
-
-	int exit(float price, int barIndex, string reason) =>
-		held_quantity = this.signedQuantity
-		if held_quantity != 0.0
-			isLong = held_quantity > 0.0
-			quantity = math.abs(held_quantity)
-			notional = quantity * price
-			this.cash := isLong ? this.cash + notional : this.cash - notional
-			tradePnl = isLong ? quantity * (price - this.entryPrice) : quantity * (this.entryPrice - price)
-			this.realizedPnl := this.realizedPnl + tradePnl
-			commandId = isLong ? "Long " + reason : "Short " + reason
-			fillSide = isLong ? broker.Side.sell : broker.Side.buy
-			execution = broker.Fill.new(this.nextFillId, this.nextOrderId, commandId, fillSide, barIndex, price, price, quantity, notional, 0.0)
-			effect.emit(broker.FillExecuted.new(execution))
-			this.nextOrderId := this.nextOrderId + 1
-			this.nextFillId := this.nextFillId + 1
-			this.fillCount := this.fillCount + 1
-			this.roundTrips := this.roundTrips + 1
-			this.signedQuantity := 0.0
-			float missing = na
-			this.entryPrice := missing
-		this.fillCount
-
-	float mark(float price) =>
-		this.equityValue := this.cash + this.signedQuantity * price
-		if this.equityValue > this.peakEquity
-			this.peakEquity := this.equityValue
-		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - this.equityValue) / this.peakEquity
-		if drawdown > this.maxDrawdownValue
-			this.maxDrawdownValue := drawdown
-		this.equityValue
-
-	float total_return() const =>
-		(this.equityValue - this.initialCash) / this.initialCash
 
 cluster_length = input.int(10, "Cluster lookback", minval=2, maxval=200)
 cluster_atr_length = input.int(14, "Cluster ATR length", minval=2, maxval=200)
@@ -112,14 +50,25 @@ adx_length = input.int(14, "ADX length", minval=2, maxval=200)
 adx_minimum = input.float(20.0, "Minimum ADX", minval=0.0, maxval=100.0)
 initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 
-var account = SignedAccount.new(initialCash = initial_cash, cash = initial_cash, equityValue = initial_cash, peakEquity = initial_cash)
+var strat = strategy.configure(
+	broker = broker.new(
+		commission = broker.commissionRate(0.0),
+		slippage = broker.slippageRate(0.0),
+		processOrdersOnClose = true
+	),
+	portfolio = portfolio.new(
+		initialCash = initial_cash,
+		pyramiding = 1,
+		marginLong = 0.0,
+		marginShort = 0.0
+	)
+)
 float missing_value = na
 
 var float box_top = na
 var float box_bottom = na
 var bool box_active = false
 var float current_stop = na
-var float resting_stop = na
 var float target_line = na
 var float strategy_entry_price = na
 var float initial_risk = na
@@ -129,22 +78,14 @@ var int last_exit_bar = na
 var float last_day_bucket = na
 var int trades_today = 0
 
-// Resolve the resting stop submitted at an earlier close. A gap through the
-// stop fills at the opening price; otherwise it fills at the stop level.
-stopped_this_bar = false
-if account.signedQuantity > 0.0 and not na(resting_stop) and low <= resting_stop
-	stop_fill = open < resting_stop ? open : resting_stop
-	account.exit(stop_fill, bar_index, "Stop")
-	stopped_this_bar := true
-if account.signedQuantity < 0.0 and not na(resting_stop) and high >= resting_stop
-	stop_fill = open > resting_stop ? open : resting_stop
-	account.exit(stop_fill, bar_index, "Stop")
-	stopped_this_bar := true
+// Resolve the resting stop submitted at an earlier close. The canonical
+// broker owns its gap and intrabar fill rules.
+matches = strat.begin_bar(open, high, low, bar_index)
+stopped_this_bar = not na(matches.exit)
 if stopped_this_bar
 	last_exit_bar := bar_index
-	resting_stop := missing_value
 
-position_at_calculation = account.signedQuantity
+position_at_calculation = strat.position_quantity()
 
 atr_value = pine_atr(cluster_atr_length)
 cluster_high = ta.highest(high, cluster_length)
@@ -202,26 +143,30 @@ short_risk = box_top - close
 
 entered_this_bar = false
 if position_at_calculation == 0.0 and long_signal and long_risk > 0.0
-	account.enter(1, close, order_size, bar_index)
-	strategy_entry_price := close
-	initial_risk := long_risk
-	current_stop := box_bottom
-	target_line := close + long_risk * risk_reward
-	stage := 0
-	bars_in_trade := 0
-	trades_today := trades_today + 1
-	entered_this_bar := true
+	strat.entry("Cluster Position", strategy.Direction.long, qty = order_size)
+	execution = strat.process_close(close)
+	if not na(execution)
+		strategy_entry_price := close
+		initial_risk := long_risk
+		current_stop := box_bottom
+		target_line := close + long_risk * risk_reward
+		stage := 0
+		bars_in_trade := 0
+		trades_today := trades_today + 1
+		entered_this_bar := true
 
 if position_at_calculation == 0.0 and not entered_this_bar and short_signal and short_risk > 0.0
-	account.enter(-1, close, order_size, bar_index)
-	strategy_entry_price := close
-	initial_risk := short_risk
-	current_stop := box_top
-	target_line := close - short_risk * risk_reward
-	stage := 0
-	bars_in_trade := 0
-	trades_today := trades_today + 1
-	entered_this_bar := true
+	strat.entry("Cluster Position", strategy.Direction.short, qty = order_size)
+	execution = strat.process_close(close)
+	if not na(execution)
+		strategy_entry_price := close
+		initial_risk := short_risk
+		current_stop := box_top
+		target_line := close - short_risk * risk_reward
+		stage := 0
+		bars_in_trade := 0
+		trades_today := trades_today + 1
+		entered_this_bar := true
 
 closed_on_time = false
 if position_at_calculation > 0.0
@@ -236,11 +181,13 @@ if position_at_calculation > 0.0
 	if stage == 2
 		current_stop := math.max(current_stop, close - initial_risk * trail_multiple)
 	if time_stop_mode == 1 and stage == 0 and bars_in_trade >= time_stop_bars
-		account.exit(close, bar_index, "Time Close")
-		last_exit_bar := bar_index
-		closed_on_time := true
+		strat.close("Cluster Time Close")
+		execution = strat.process_close(close)
+		if not na(execution)
+			last_exit_bar := bar_index
+			closed_on_time := true
 	else
-		resting_stop := current_stop
+		strat.exit("Cluster Stop", fromEntry = "Cluster Position", stop = current_stop)
 
 if position_at_calculation < 0.0
 	bars_in_trade := bars_in_trade + 1
@@ -254,34 +201,36 @@ if position_at_calculation < 0.0
 	if stage == 2
 		current_stop := math.min(current_stop, close + initial_risk * trail_multiple)
 	if time_stop_mode == 1 and stage == 0 and bars_in_trade >= time_stop_bars
-		account.exit(close, bar_index, "Time Close")
-		last_exit_bar := bar_index
-		closed_on_time := true
+		strat.close("Cluster Time Close")
+		execution = strat.process_close(close)
+		if not na(execution)
+			last_exit_bar := bar_index
+			closed_on_time := true
 	else
-		resting_stop := current_stop
+		strat.exit("Cluster Stop", fromEntry = "Cluster Position", stop = current_stop)
 
-if account.signedQuantity == 0.0 and not entered_this_bar
+if strat.position_quantity() == 0.0 and not entered_this_bar
 	strategy_entry_price := missing_value
 	initial_risk := missing_value
 	current_stop := missing_value
 	target_line := missing_value
-	resting_stop := missing_value
 	stage := 0
 	bars_in_trade := 0
 
-account.mark(close)
+strat.mark(close)
+strat.finish(barstate.islast)
 
 plot(close, "close")
 plot(box_top, "cluster top")
 plot(box_bottom, "cluster bottom")
-plot(account.signedQuantity != 0.0 ? current_stop : na, "active stop")
-plot(account.signedQuantity != 0.0 ? target_line : na, "target line")
+plot(strat.position_quantity() != 0.0 ? current_stop : na, "active stop")
+plot(strat.position_quantity() != 0.0 ? target_line : na, "target line")
 plot(long_signal ? 1.0 : 0.0, "long signal")
 plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(account.signedQuantity, "signed position")
-plot(account.equityValue, "equity")
-plot(account.realizedPnl, "realized pnl")
-plot(account.fillCount, "fill count")
-plot(account.roundTrips, "round trips")
-plot(account.maxDrawdownValue, "maximum drawdown")
-plot(account.total_return(), "total return")
+plot(strat.position_quantity(), "signed position")
+plot(strat.equity(), "equity")
+plot(strat.realized_pnl(), "realized pnl")
+plot(strat.fill_count(), "fill count")
+plot(strat.round_trip_count(), "round trips")
+plot(strat.max_drawdown(), "maximum drawdown")
+plot(strat.total_return(), "total return")

@@ -16,7 +16,8 @@ const ALTERNATIVE_COMPONENTS = [
   '    broker.Order submit_exit(broker.Command command) => na',
   '    int cancel(string commandId) => 0',
   '    broker.Fill on_open(float referencePrice, broker.Account account, int barIndex) => na',
-  '    broker.Fill match_pending(float openPrice, float highPrice, broker.Account account, int barIndex) => na',
+  '    broker.Fill match_pending(float openPrice, float highPrice, float lowPrice, broker.Account account, int barIndex) => na',
+  '    broker.Fill continue_reversal(broker.Account account, int barIndex) => na',
   '    broker.Fill match_exit(float openPrice, float highPrice, float lowPrice, broker.Account account, int barIndex) => na',
   '    broker.Fill on_close(float referencePrice, broker.Account account, int barIndex) => na',
   '    broker.FinishResult finish() => na',
@@ -35,6 +36,8 @@ const ALTERNATIVE_COMPONENTS = [
   '    float total_fees() const => 0.0',
   '    int fill_count() const => 0',
   '    int round_trip_count() const => 0',
+  '    float win_rate() const => 0.0',
+  '    float profit_factor() const => 0.0',
   '    float max_drawdown() const => 0.0',
   '    float total_return() const => 0.0',
 ].join('\n');
@@ -83,6 +86,8 @@ describe('Tea-authored strategy libraries', () => {
       'OrderRejected',
       'OrderSubmitted',
       'OrderType',
+      'PositionTarget',
+      'PositionTargetKind',
       'Rejection',
       'Side',
       'Slippage',
@@ -110,6 +115,9 @@ describe('Tea-authored strategy libraries', () => {
       'Strategy',
       'configure',
       'percentOfEquity',
+      'percentOfEquityAtFill',
+      'targetPercentOfEquity',
+      'targetQuantity',
     ]);
   });
 
@@ -136,6 +144,33 @@ describe('Tea-authored strategy libraries', () => {
         'strat.begin(open, bar_index)',
         'strat.entry("Long", strategy.Direction.long, qty = 1.0)',
         'strat.end(close, barstate.islast)',
+      ].join('\n'),
+    );
+
+    expect(result.errors).toEqual([]);
+  });
+
+  test('checks signed entries, fill-time sizing, and typed position targets', () => {
+    const result = checkText(
+      [
+        'strategy("signed component API")',
+        'import broker',
+        'import portfolio',
+        'import strategy',
+        'var strat = strategy.configure(',
+        '    broker = broker.new(processOrdersOnClose = true),',
+        '    portfolio = portfolio.new(initialCash = 100.0, marginLong = 0.0, marginShort = 0.0)',
+        ')',
+        'strat.begin_primary(open, high, low, bar_index)',
+        'strat.process_exit(open, high, low)',
+        'strat.entry("Short", strategy.Direction.short, sizing = strategy.percentOfEquityAtFill(25.0, commissionIncluded = true), stop = 9.0)',
+        'strat.exit("Short bracket", fromEntry = "Short", stop = 12.0, target = 6.0, activateOnEntryBar = true)',
+        'strat.rebalance("Quantity target", strategy.targetQuantity(-2.0))',
+        'strat.rebalance("Percent target", strategy.targetPercentOfEquity(50.0))',
+        'strat.close("Flat")',
+        'strat.end(close, barstate.islast)',
+        'plot(strat.win_rate())',
+        'plot(strat.profit_factor())',
       ].join('\n'),
     );
 

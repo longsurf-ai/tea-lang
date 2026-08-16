@@ -4,6 +4,8 @@
 strategy("Alpha Regime Reversion - Swing Core + Dip", shorttitle="ARR Swing", overlay=true)
 
 import broker
+import portfolio
+import strategy
 
 // Keep Pine's SMA-seeded Wilder RSI state explicit and self-contained in this
 // historical profile.
@@ -37,90 +39,6 @@ type PineRsi
 			result := this.averageLoss == 0.0 ? 100.0 : this.averageGain == 0.0 ? 0.0 : 100.0 - 100.0 / (1.0 + this.averageGain / this.averageLoss)
 		result
 
-type AllocationAccount
-	float initialCash
-	float cashValue
-	float quantityValue = 0.0
-	float averagePrice = na
-	float entryFees = 0.0
-	float equityValue
-	float peakEquity
-	float maxDrawdownValue = 0.0
-	float realizedPnlValue = 0.0
-	float totalFeesValue = 0.0
-	int fillCountValue = 0
-	int roundTripsValue = 0
-	int nextOrderId = 1
-	int nextFillId = 1
-	bool pending = false
-	float pendingTargetPercent = 0.0
-
-	float fill(string commandId, broker.Side side, float referencePrice, float requestedQuantity, float feeRate, float tickSize, float slippageTicks, int fillBar) =>
-		isBuy = side == broker.Side.buy
-		price = referencePrice + (isBuy ? 1.0 : -1.0) * tickSize * slippageTicks
-		capacity = isBuy ? this.cashValue / (price * (1.0 + feeRate)) : this.quantityValue
-		quantity = math.max(0.0, math.min(requestedQuantity, capacity))
-		if quantity > 0.0
-			notional = quantity * price
-			fee = notional * feeRate
-			if isBuy
-				oldQuantity = this.quantityValue
-				newQuantity = oldQuantity + quantity
-				this.averagePrice := oldQuantity == 0.0 ? price : (oldQuantity * this.averagePrice + notional) / newQuantity
-				this.cashValue := this.cashValue - notional - fee
-				this.quantityValue := newQuantity
-				this.entryFees := this.entryFees + fee
-			else
-				oldQuantity = this.quantityValue
-				entryFeeShare = oldQuantity == 0.0 ? 0.0 : this.entryFees * quantity / oldQuantity
-				this.cashValue := this.cashValue + notional - fee
-				this.realizedPnlValue := this.realizedPnlValue + quantity * (price - this.averagePrice) - entryFeeShare - fee
-				this.quantityValue := oldQuantity - quantity
-				this.entryFees := this.entryFees - entryFeeShare
-				if this.quantityValue <= 0.0000001
-					float missingPrice = na
-					this.quantityValue := 0.0
-					this.averagePrice := missingPrice
-					this.entryFees := 0.0
-					this.roundTripsValue := this.roundTripsValue + 1
-			this.totalFeesValue := this.totalFeesValue + fee
-			this.fillCountValue := this.fillCountValue + 1
-			orderId = this.nextOrderId
-			fillId = this.nextFillId
-			this.nextOrderId := orderId + 1
-			this.nextFillId := fillId + 1
-			execution = broker.Fill.new(fillId, orderId, commandId, side, fillBar, referencePrice, price, quantity, notional, fee)
-			effect.emit(broker.FillExecuted.new(execution))
-		quantity
-
-	float resolve_target(float referencePrice, float feeRate, float tickSize, float slippageTicks, int fillBar) =>
-		filled = 0.0
-		if this.pending and referencePrice > 0.0
-			equityAtOpen = this.cashValue + this.quantityValue * referencePrice
-			desiredQuantity = equityAtOpen * this.pendingTargetPercent / 100.0 / referencePrice
-			difference = desiredQuantity - this.quantityValue
-			if difference > 0.0000001
-				filled := this.fill("ARR allocation buy", broker.Side.buy, referencePrice, difference, feeRate, tickSize, slippageTicks, fillBar)
-			else if difference < -0.0000001
-				filled := this.fill("ARR allocation reduce", broker.Side.sell, referencePrice, -difference, feeRate, tickSize, slippageTicks, fillBar)
-			this.pending := false
-		filled
-
-	int schedule(float targetPercent) =>
-		this.pendingTargetPercent := targetPercent
-		this.pending := true
-		1
-
-	float mark(float price) =>
-		this.equityValue := this.cashValue + this.quantityValue * price
-		this.peakEquity := math.max(this.peakEquity, this.equityValue)
-		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - this.equityValue) / this.peakEquity
-		this.maxDrawdownValue := math.max(this.maxDrawdownValue, drawdown)
-		this.equityValue
-
-	float total_return() const =>
-		(this.equityValue - this.initialCash) / this.initialCash
-
 benchmark_symbol = input.symbol("QQQ", "Macro regime symbol")
 maximum_allocation = input.float(75.0, "Maximum allocation percent", minval=5.0, maxval=100.0)
 core_allocation = input.float(50.0, "Core allocation percent", minval=0.0, maxval=100.0)
@@ -151,7 +69,19 @@ fee_rate = input.float(0.0005, "Fee rate", minval=0.0, maxval=0.05)
 tick_size = input.float(0.01, "Instrument tick size", minval=0.00000001)
 slippage_ticks = input.float(1.0, "Adverse slippage in ticks", minval=0.0, maxval=100.0)
 
-var account = AllocationAccount.new(initial_cash, initial_cash, equityValue=initial_cash, peakEquity=initial_cash)
+var strat = strategy.configure(
+	broker = broker.new(
+		commission = broker.commissionRate(fee_rate),
+		slippage = broker.slippageTicks(slippage_ticks, tick_size),
+		processOrdersOnClose = false
+	),
+	portfolio = portfolio.new(
+		initialCash = initial_cash,
+		pyramiding = 1,
+		marginLong = 100.0,
+		marginShort = 100.0
+	)
+)
 var deep_rsi_state = PineRsi.new()
 var shallow_rsi_state = PineRsi.new()
 var bool swing_risk_on = false
@@ -163,18 +93,15 @@ var float commanded_target = 0.0
 float missing_float = na
 int missing_int = na
 
-quantity_before_open = account.quantityValue
-account.resolve_target(open, fee_rate, tick_size, slippage_ticks, bar_index)
-position_increased = account.quantityValue > quantity_before_open + 0.0000001
+quantity_before_open = strat.position_quantity()
+matches = strat.begin_bar(open, high, low, bar_index)
+position_increased = strat.position_quantity() > quantity_before_open + 0.0000001
 
-// Emergency risk stop is a resting order. A gap through it fills at the open.
-if account.quantityValue > 0.0 and not na(active_stop) and low <= active_stop
-	exit_reference = open <= active_stop ? open : active_stop
-	account.fill("ARR risk stop", broker.Side.sell, exit_reference, account.quantityValue, fee_rate, tick_size, slippage_ticks, bar_index)
+if not na(matches.exit)
 	active_stop := missing_float
 	lockout_until_bar := bar_index + cooldown_bars
 
-just_exited = quantity_before_open > 0.0 and account.quantityValue == 0.0
+just_exited = quantity_before_open > 0.0 and strat.position_quantity() == 0.0
 if just_exited
 	lockout_until_bar := bar_index + cooldown_bars
 
@@ -233,16 +160,18 @@ if swing_risk_on and not lockout_active
 	target_percent := math.floor(target_percent / 5.0) * 5.0
 
 if math.abs(target_percent - commanded_target) >= 0.5
-	account.schedule(target_percent)
+	strat.rebalance("ARR allocation", strategy.targetPercentOfEquity(target_percent))
 	commanded_target := target_percent
 
 if position_increased
-	candidate_stop = account.averagePrice * (1.0 - swing_stop_percent / 100.0)
+	candidate_stop = strat.position_avg_price() * (1.0 - swing_stop_percent / 100.0)
 	active_stop := na(active_stop) ? candidate_stop : math.max(active_stop, candidate_stop)
-if account.quantityValue == 0.0
+	strat.exit("ARR risk stop", fromEntry = "ARR allocation", stop = active_stop, activateOnEntryBar = true)
+if strat.position_quantity() == 0.0
 	active_stop := missing_float
 
-account.mark(close)
+strat.mark(close)
+strat.finish(barstate.islast)
 
 plot(close, "close")
 plot(stock_average, "stock regime average")
@@ -252,11 +181,11 @@ plot(fast_ema, "fast EMA")
 plot(slow_ema, "slow EMA")
 plot(target_percent, "target allocation percent")
 plot(dip_active ? 1.0 : 0.0, "dip active")
-plot(account.quantityValue, "position quantity")
-plot(account.equityValue, "equity")
-plot(account.realizedPnlValue, "realized pnl")
-plot(account.totalFeesValue, "total fees")
-plot(account.fillCountValue, "fill count")
-plot(account.roundTripsValue, "round trips")
-plot(account.maxDrawdownValue, "maximum drawdown")
-plot(account.total_return(), "total return")
+plot(strat.position_quantity(), "position quantity")
+plot(strat.equity(), "equity")
+plot(strat.realized_pnl(), "realized pnl")
+plot(strat.total_fees(), "total fees")
+plot(strat.fill_count(), "fill count")
+plot(strat.round_trip_count(), "round trips")
+plot(strat.max_drawdown(), "maximum drawdown")
+plot(strat.total_return(), "total return")

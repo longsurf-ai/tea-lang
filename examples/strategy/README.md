@@ -40,7 +40,7 @@ are runtime fixtures, not parameter recommendations or profitability claims.
 ## Why these are Tea programs rather than compiler features
 
 Tea's shipped `BrokerEmulator` and `NetPortfolio` provide a reusable canonical
-path for the common long-only case:
+path for scalar net-position strategies:
 
 ```tea
 var strat = strategy.configure(
@@ -58,26 +58,25 @@ var strat = strategy.configure(
 )
 ```
 
-That path supports one pending market-or-buy-stop command; explicit,
-all-available-cash, or captured percent-of-equity entry sizing (with commission
-either inside or outside that allocation); next-open, intrabar stop-touch, or
+That path supports one pending market-or-directional-stop command; explicit,
+all-available-capital, captured percent-of-equity, or fill-time
+percent-of-equity entry sizing; next-open, intrabar stop-touch, or
 process-on-close execution; rate/percent/tick slippage; rate/percent/cash
-commission; and aggregate long-position pyramiding with weighted-average cost.
-It also supports one scalar atomic stop/target exit attached to a pending or
-open long entry, explicit cancellation, and bounded primary-then-exit matching
-through `strat.begin_bar(...)`. All pyramided adds in this scalar model reuse
-one entry id; the attached exit closes that aggregate net position, and a
-different id fails closed while it remains open. This slice accepts only
-`marginLong=100` (full notional plus fees must fit in cash) or `marginLong=0`
-(the gate is disabled). Intermediate leverage fails closed until the portfolio
-has true free-margin accounting. `marginShort` is validated against the same
-two values but otherwise reserved in the current long-only implementation.
+commission; signed positions; aggregate same-direction pyramiding; partial
+target rebalances; and ordered reversals. It also supports one scalar atomic
+stop/target exit attached to a pending or open long or short entry, explicit
+cancellation, and bounded primary-then-exit matching through
+`strat.begin_bar(...)`. All same-direction adds in this scalar model reuse one
+entry id; the attached exit closes that aggregate net position. Both
+`marginLong` and `marginShort` accept `100` (new exposure plus fees must fit
+available capital) or `0` (the gate is disabled). Intermediate leverage fails
+closed until the portfolio has true free-margin accounting.
 
-The canonical path does not yet cover short positions, per-entry lots, partial
-closes, general margin accounting, multiple independent exits, true limit
-orders, general OCA groups, or segment-by-segment intrabar paths. Examples that
-need those behaviors still demonstrate the broader CPU surface with ordinary
-Tea-authored components and state:
+The canonical scalar path does not yet cover per-entry lots, independently
+addressed partial closes, general margin accounting, multiple independent
+exits, true limit orders, general OCA groups, or segment-by-segment intrabar
+paths. Examples that need those behaviors still demonstrate the broader CPU
+surface with ordinary Tea-authored components and state:
 
 - signed and quantity-aware positions;
 - weighted cost and target allocation;

@@ -66,10 +66,9 @@ the ordinary package used by later selectors. All three packages are explicit
 because their policy is part of the program, not a platform setting.
 
 `broker.new` selects decimal commission and slippage rates and keeps fills at
-the next open. `portfolio.new` selects one aggregate long entry with a 100%
-explicit-quantity capital requirement. This example omits `qty`, so the broker
-uses its commission-aware all-available-cash sizing. `marginShort` is reserved
-in this long-only implementation.
+the next open. `portfolio.new` selects a signed net portfolio with a 100%
+capital requirement in either direction. This example only opens long and
+omits `qty`, so the broker uses its commission-aware all-available-cash sizing.
 
 ## 2. Read the bars
 

@@ -4,6 +4,8 @@
 strategy("VWAP Suite", shorttitle="VWAP Suite", overlay=true)
 
 import broker
+import portfolio
+import strategy
 
 // Keep the selected Pine smoothing contract explicit and self-contained in
 // this historical profile.
@@ -42,79 +44,6 @@ pine_dmi(int diLength, int adxSmoothing) =>
 	sum = plus + minus
 	adx = 100.0 * pine_rma(math.abs(plus - minus) / (sum == 0.0 ? 1.0 : sum), adxSmoothing)
 	[plus, minus, adx]
-
-type DirectionalAccount
-	float initialCash
-	float cashValue
-	float quantityValue = 0.0
-	float averagePrice = na
-	float entryFees = 0.0
-	float equityValue
-	float peakEquity
-	float maxDrawdownValue = 0.0
-	float realizedPnlValue = 0.0
-	float totalFeesValue = 0.0
-	int fillCountValue = 0
-	int roundTripsValue = 0
-	int nextOrderId = 1
-	int nextFillId = 1
-
-	float emit_fill(string commandId, broker.Side side, float referencePrice, float quantity, float feeRate, float slippageRate, int fillBar) =>
-		isBuy = side == broker.Side.buy
-		price = referencePrice * (isBuy ? 1.0 + slippageRate : 1.0 - slippageRate)
-		notional = quantity * price
-		fee = notional * feeRate
-		orderId = this.nextOrderId
-		fillId = this.nextFillId
-		this.nextOrderId := orderId + 1
-		this.nextFillId := fillId + 1
-		this.fillCountValue := this.fillCountValue + 1
-		this.totalFeesValue := this.totalFeesValue + fee
-		execution = broker.Fill.new(fillId, orderId, commandId, side, fillBar, referencePrice, price, quantity, notional, fee)
-		effect.emit(broker.FillExecuted.new(execution))
-		price
-
-	float open_position(int direction, float referencePrice, float requestedQuantity, float feeRate, float slippageRate, int fillBar) =>
-		side = direction == 1 ? broker.Side.buy : broker.Side.sell
-		estimatedPrice = referencePrice * (direction == 1 ? 1.0 + slippageRate : 1.0 - slippageRate)
-		capacity = direction == 1 ? this.cashValue / (estimatedPrice * (1.0 + feeRate)) : requestedQuantity
-		quantity = this.quantityValue == 0.0 ? math.max(0.0, math.min(requestedQuantity, capacity)) : 0.0
-		if quantity > 0.0
-			price = this.emit_fill(direction == 1 ? "VWAP long open" : "VWAP short open", side, referencePrice, quantity, feeRate, slippageRate, fillBar)
-			notional = quantity * price
-			fee = notional * feeRate
-			this.cashValue := direction == 1 ? this.cashValue - notional - fee : this.cashValue + notional - fee
-			this.quantityValue := direction * quantity
-			this.averagePrice := price
-			this.entryFees := fee
-		quantity
-
-	float close_position(float referencePrice, float feeRate, float slippageRate, int fillBar) =>
-		direction = this.quantityValue > 0.0 ? 1 : -1
-		quantity = math.abs(this.quantityValue)
-		if quantity > 0.0
-			side = direction == 1 ? broker.Side.sell : broker.Side.buy
-			price = this.emit_fill(direction == 1 ? "VWAP long close" : "VWAP short cover", side, referencePrice, quantity, feeRate, slippageRate, fillBar)
-			notional = quantity * price
-			fee = notional * feeRate
-			this.cashValue := direction == 1 ? this.cashValue + notional - fee : this.cashValue - notional - fee
-			this.realizedPnlValue := this.realizedPnlValue + direction * quantity * (price - this.averagePrice) - this.entryFees - fee
-			float missingPrice = na
-			this.quantityValue := 0.0
-			this.averagePrice := missingPrice
-			this.entryFees := 0.0
-			this.roundTripsValue := this.roundTripsValue + 1
-		quantity
-
-	float mark(float price) =>
-		this.equityValue := this.cashValue + this.quantityValue * price
-		this.peakEquity := math.max(this.peakEquity, this.equityValue)
-		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - this.equityValue) / this.peakEquity
-		this.maxDrawdownValue := math.max(this.maxDrawdownValue, drawdown)
-		this.equityValue
-
-	float total_return() const =>
-		(this.equityValue - this.initialCash) / this.initialCash
 
 month_key(int epochMs) =>
 	days = math.floor(epochMs / 86400000.0)
@@ -169,10 +98,21 @@ initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 fee_rate = input.float(0.0005, "Fee rate", minval=0.0, maxval=0.05)
 slippage_rate = input.float(0.0, "Slippage rate", minval=0.0, maxval=0.05)
 
-var account = DirectionalAccount.new(initial_cash, initial_cash, equityValue=initial_cash, peakEquity=initial_cash)
+var strat = strategy.configure(
+	broker = broker.new(
+		commission = broker.commissionRate(fee_rate),
+		slippage = broker.slippageRate(slippage_rate),
+		processOrdersOnClose = false
+	),
+	portfolio = portfolio.new(
+		initialCash = initial_cash,
+		pyramiding = 1,
+		marginLong = 100.0,
+		marginShort = 0.0
+	)
+)
 var bool pending_entry = false
 var int pending_signal_bar = na
-var int pending_direction = 0
 var float pending_quantity = 0.0
 var float active_stop = na
 var float active_target = na
@@ -183,37 +123,18 @@ float missing_float = na
 int missing_int = na
 
 // Market entries generated on a completed bar fill at the next bar's open.
-if pending_entry and account.quantityValue == 0.0 and bar_index > pending_signal_bar
-	filled = account.open_position(pending_direction, open, pending_quantity, fee_rate, slippage_rate, bar_index)
-	if filled > 0.0
+// The same canonical bar phase then resolves any previously active bracket.
+matches = strat.begin_bar(open, high, low, bar_index)
+if pending_entry and bar_index > pending_signal_bar
+	if not na(matches.pending)
 		entry_bar := bar_index
 	pending_entry := false
-
-// Stop/limit orders use the previously published levels. Gap fills resolve at
-// the open; when both levels trade inside one bar, the nearer-first OHLC path
-// decides which order wins.
-if account.quantityValue != 0.0 and bar_index > entry_bar and not na(active_stop) and not na(active_target)
-	direction = account.quantityValue > 0.0 ? 1 : -1
-	stop_touched = direction == 1 ? low <= active_stop : high >= active_stop
-	target_touched = direction == 1 ? high >= active_target : low <= active_target
-	float exit_reference = na
-	gap_exit = direction == 1 ? open <= active_stop or open >= active_target : open >= active_stop or open <= active_target
-	if gap_exit
-		exit_reference := open
-	else if stop_touched and target_touched
-		target_first = direction == 1 ? math.abs(high - open) < math.abs(open - low) : math.abs(open - low) < math.abs(high - open)
-		exit_reference := target_first ? active_target : active_stop
-	else if stop_touched
-		exit_reference := active_stop
-	else if target_touched
-		exit_reference := active_target
-	if not na(exit_reference)
-		account.close_position(exit_reference, fee_rate, slippage_rate, bar_index)
-		active_stop := missing_float
-		active_target := missing_float
-		locked_target := missing_float
-		entry_atr := missing_float
-		entry_bar := missing_int
+if not na(matches.exit)
+	active_stop := missing_float
+	active_target := missing_float
+	locked_target := missing_float
+	entry_atr := missing_float
+	entry_bar := missing_int
 
 day_key = math.floor(time / 86400000.0)
 period_key = anchor_mode == 0 ? day_key : anchor_mode == 1 ? math.floor((day_key + 4.0) / 7.0) : month_key(time)
@@ -271,9 +192,9 @@ adx_ok = use_adx_filter == 0 or adx_value < maximum_mean_reversion_adx
 long_signal = strategy_mode == 0 ? trend_trigger and base_filters and slope_ok and trend_confluence : mean_trigger and base_filters and adx_ok and deviation_atr <= maximum_deviation_atr and mean_confluence
 short_signal = strategy_mode == 0 ? short_trend_trigger and base_filters and short_slope_ok and short_trend_confluence : short_mean_trigger and base_filters and adx_ok and deviation_atr <= maximum_deviation_atr and short_mean_confluence
 
-equity_now = account.mark(close)
+equity_now = strat.mark(close)
 signal_direction = long_signal ? 1 : short_signal ? -1 : 0
-if signal_direction != 0 and account.quantityValue == 0.0 and not pending_entry
+if signal_direction != 0 and strat.position_quantity() == 0.0 and not pending_entry
 	band_stop_distance = strategy_mode == 0 ? math.abs(close - lower_band1) : math.abs(close - lower_band3)
 	if signal_direction == -1
 		band_stop_distance := strategy_mode == 0 ? math.abs(upper_band1 - close) : math.abs(upper_band3 - close)
@@ -286,16 +207,20 @@ if signal_direction != 0 and account.quantityValue == 0.0 and not pending_entry
 	locked_target := profit_method == 1 ? vwap_value : strategy_mode == 0 ? (signal_direction == 1 ? upper_band2 : lower_band2) : vwap_value
 	active_target := locked_target
 	pending_signal_bar := bar_index
-	pending_direction := signal_direction
 	pending_entry := pending_quantity > 0.0
+	if pending_entry
+		strat.rebalance("VWAP Position", strategy.targetQuantity(signal_direction * pending_quantity))
 
-if account.quantityValue != 0.0
-	direction = account.quantityValue > 0.0 ? 1 : -1
+if strat.position_quantity() != 0.0
+	direction = strat.position_quantity() > 0.0 ? 1 : -1
 	dynamic_target = profit_method == 1 ? vwap_value : strategy_mode == 0 ? (direction == 1 ? upper_band2 : lower_band2) : vwap_value
 	active_target := fixed_take_profit == 1 ? locked_target : dynamic_target
-	break_even_reached = direction == 1 ? close >= account.averagePrice + entry_atr * break_even_atr : close <= account.averagePrice - entry_atr * break_even_atr
+	break_even_reached = direction == 1 ? close >= strat.position_avg_price() + entry_atr * break_even_atr : close <= strat.position_avg_price() - entry_atr * break_even_atr
 	if use_break_even == 1 and break_even_reached
-		active_stop := direction == 1 ? math.max(active_stop, account.averagePrice) : math.min(active_stop, account.averagePrice)
+		active_stop := direction == 1 ? math.max(active_stop, strat.position_avg_price()) : math.min(active_stop, strat.position_avg_price())
+	strat.exit("VWAP Bracket", fromEntry = "VWAP Position", stop = active_stop, target = active_target)
+
+strat.finish(barstate.islast)
 
 plot(close, "close")
 plot(vwap_value, "vwap")
@@ -305,11 +230,11 @@ plot(upper_band2, "upper band 2")
 plot(lower_band2, "lower band 2")
 plot(long_signal ? 1.0 : 0.0, "long signal")
 plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(account.quantityValue, "position quantity")
-plot(account.mark(close), "equity")
-plot(account.realizedPnlValue, "realized pnl")
-plot(account.totalFeesValue, "total fees")
-plot(account.fillCountValue, "fill count")
-plot(account.roundTripsValue, "round trips")
-plot(account.maxDrawdownValue, "maximum drawdown")
-plot(account.total_return(), "total return")
+plot(strat.position_quantity(), "position quantity")
+plot(strat.equity(), "equity")
+plot(strat.realized_pnl(), "realized pnl")
+plot(strat.total_fees(), "total fees")
+plot(strat.fill_count(), "fill count")
+plot(strat.round_trip_count(), "round trips")
+plot(strat.max_drawdown(), "maximum drawdown")
+plot(strat.total_return(), "total return")

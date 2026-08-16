@@ -4,187 +4,8 @@
 strategy("Multi-timeframe PSAR — inspected v2.0", shorttitle="MTF PSAR v2", overlay=true)
 
 import broker
-
-// The source uses 100%-of-equity entries, separate next-open close and reverse
-// orders, and 0.1% commission. Signed state stays local to this example because
-// Tea's shared reference portfolio is intentionally long-only.
-type SignedPercentEngine
-	float initialCash
-	float feeRate
-	float cashValue = 0.0
-	float positionQuantity = 0.0
-	float entryPrice = na
-	float entryFee = 0.0
-	float equityValue = 0.0
-	float peakEquity = 0.0
-	float maximumDrawdown = 0.0
-	float realizedPnl = 0.0
-	float totalFees = 0.0
-	float stopLossPrice = na
-	float takeProfitPrice = na
-	float trailingStop = na
-	float totalProfit = 0.0
-	float totalLoss = 0.0
-	float largestWin = 0.0
-	float largestLoss = 0.0
-	int fills = 0
-	int roundTrips = 0
-	int winningTrades = 0
-	int losingTrades = 0
-	int longTrades = 0
-	int shortTrades = 0
-	int longWins = 0
-	int shortWins = 0
-	int consecutiveWins = 0
-	int consecutiveLosses = 0
-	int maximumConsecutiveWins = 0
-	int maximumConsecutiveLosses = 0
-	int nextOrderId = 1
-	int nextFillId = 1
-	int pendingAction = 0
-	int pendingSignalBar = -1
-
-	bool has_pending() const =>
-		this.pendingAction != 0
-
-	int submit_direction(int direction, int signalBarIndex) =>
-		if this.pendingAction == 0
-			this.pendingAction := direction
-			this.pendingSignalBar := signalBarIndex
-		this.pendingAction
-
-	int submit_close(int signalBarIndex) =>
-		if this.pendingAction == 0 and this.positionQuantity != 0.0
-			this.pendingAction := 2
-			this.pendingSignalBar := signalBarIndex
-		this.pendingAction
-
-	int reset_exit_state() =>
-		float empty = na
-		this.stopLossPrice := empty
-		this.takeProfitPrice := empty
-		this.trailingStop := empty
-		0
-
-	int record_trade(float tradeResult, bool wasLong) =>
-		this.roundTrips := this.roundTrips + 1
-		if wasLong
-			this.longTrades := this.longTrades + 1
-		else
-			this.shortTrades := this.shortTrades + 1
-		if tradeResult > 0.0
-			this.winningTrades := this.winningTrades + 1
-			this.totalProfit := this.totalProfit + tradeResult
-			this.largestWin := math.max(this.largestWin, tradeResult)
-			this.consecutiveWins := this.consecutiveWins + 1
-			this.consecutiveLosses := 0
-			this.maximumConsecutiveWins := math.max(this.maximumConsecutiveWins, this.consecutiveWins)
-			if wasLong
-				this.longWins := this.longWins + 1
-			else
-				this.shortWins := this.shortWins + 1
-		else
-			this.losingTrades := this.losingTrades + 1
-			this.totalLoss := this.totalLoss + math.abs(tradeResult)
-			this.largestLoss := math.max(this.largestLoss, math.abs(tradeResult))
-			this.consecutiveLosses := this.consecutiveLosses + 1
-			this.consecutiveWins := 0
-			this.maximumConsecutiveLosses := math.max(this.maximumConsecutiveLosses, this.consecutiveLosses)
-		this.roundTrips
-
-	int execute_to(float target, string commandId, float referencePrice, float price, int barIndex) =>
-		oldPosition = this.positionQuantity
-		delta = target - oldPosition
-		quantity = math.abs(delta)
-		side = delta > 0.0 ? broker.Side.buy : broker.Side.sell
-		notional = quantity * price
-		fee = notional * this.feeRate
-		execution = broker.Fill.new(this.nextFillId, this.nextOrderId, commandId, side, barIndex, referencePrice, price, quantity, notional, fee)
-		this.nextFillId := this.nextFillId + 1
-		this.nextOrderId := this.nextOrderId + 1
-		effect.emit(broker.FillExecuted.new(execution))
-		this.cashValue := this.cashValue - delta * price - fee
-		closedLong = oldPosition > 0.0 and target == 0.0
-		closedShort = oldPosition < 0.0 and target == 0.0
-		if closedLong or closedShort
-			grossPnl = closedLong ? oldPosition * (price - this.entryPrice) : math.abs(oldPosition) * (this.entryPrice - price)
-			tradeResult = grossPnl - this.entryFee - fee
-			this.realizedPnl := this.realizedPnl + tradeResult
-			this.record_trade(tradeResult, closedLong)
-		this.positionQuantity := target
-		if target == 0.0
-			float empty = na
-			this.entryPrice := empty
-			this.entryFee := 0.0
-			this.reset_exit_state()
-		else
-			this.entryPrice := price
-			this.entryFee := fee
-		this.totalFees := this.totalFees + fee
-		this.fills := this.fills + 1
-		this.fills
-
-	int begin(float openPrice, int barIndex) =>
-		if this.pendingAction != 0 and barIndex > this.pendingSignalBar
-			action = this.pendingAction
-			if action == 2
-				commandId = this.positionQuantity > 0.0 ? "Long Exit" : "Short Exit"
-				this.execute_to(0.0, commandId, openPrice, openPrice, barIndex)
-			else
-				direction = action
-				if this.positionQuantity * direction < 0.0
-					closeId = this.positionQuantity > 0.0 ? "Long Close" : "Short Close"
-					this.execute_to(0.0, closeId, openPrice, openPrice, barIndex)
-				// Percent-of-equity sizing is evaluated when the new order fills.
-				// On reversal, the explicit close above settles first, including its
-				// commission; never reuse the preceding bar's cached equity.
-				entryEquity = this.cashValue + this.positionQuantity * openPrice
-				desiredQuantity = entryEquity / openPrice
-				target = direction > 0 ? desiredQuantity : -desiredQuantity
-				entryId = direction > 0 ? "Long" : "Short"
-				this.execute_to(target, entryId, openPrice, openPrice, barIndex)
-			this.pendingAction := 0
-			this.pendingSignalBar := -1
-		this.fills
-
-	int prepare_exits(float closePrice, int useStopLoss, float stopLossRate, int useTakeProfit, float takeProfitRate, int useTrailingStop, float trailingRate) =>
-		if this.positionQuantity > 0.0
-			if useStopLoss == 1
-				this.stopLossPrice := this.entryPrice * (1.0 - stopLossRate)
-			if useTakeProfit == 1
-				this.takeProfitPrice := this.entryPrice * (1.0 + takeProfitRate)
-			if useTrailingStop == 1
-				// Exact source behavior: math.max(na, candidate) remains na, so
-				// the trailing state never bootstraps after an entry reset.
-				this.trailingStop := math.max(this.trailingStop, closePrice * (1.0 - trailingRate))
-				this.stopLossPrice := math.max(this.stopLossPrice, this.trailingStop)
-		else if this.positionQuantity < 0.0
-			if useStopLoss == 1
-				this.stopLossPrice := this.entryPrice * (1.0 + stopLossRate)
-			if useTakeProfit == 1
-				this.takeProfitPrice := this.entryPrice * (1.0 - takeProfitRate)
-			if useTrailingStop == 1
-				this.trailingStop := math.min(this.trailingStop, closePrice * (1.0 + trailingRate))
-				this.stopLossPrice := math.min(this.stopLossPrice, this.trailingStop)
-		0
-
-	float mark(float closePrice) =>
-		this.equityValue := this.cashValue + this.positionQuantity * closePrice
-		if this.equityValue > this.peakEquity
-			this.peakEquity := this.equityValue
-		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - this.equityValue) / this.peakEquity
-		if drawdown > this.maximumDrawdown
-			this.maximumDrawdown := drawdown
-		this.equityValue
-
-	float total_return() const =>
-		(this.equityValue - this.initialCash) / this.initialCash
-
-	float win_rate() const =>
-		this.roundTrips == 0 ? 0.0 : float(this.winningTrades) / float(this.roundTrips)
-
-	float profit_factor() const =>
-		this.totalLoss == 0.0 ? 0.0 : this.totalProfit / this.totalLoss
+import portfolio
+import strategy
 
 request_symbol = input.symbol("BTC-USD", "Requested symbol equivalent")
 higher_timeframe = input.timeframe("D", "Higher timeframe")
@@ -201,15 +22,29 @@ take_profit_percent = input.float(2.0, "Take profit (%)", minval=0.1, maxval=100
 initial_cash = input.float(10000.0, "Initial cash", minval=1.0)
 commission_percent = input.float(0.1, "Commission (%)", minval=0.0, maxval=10.0)
 
-var engine = SignedPercentEngine.new(
-	initialCash = initial_cash,
-	feeRate = commission_percent / 100.0,
-	cashValue = initial_cash,
-	equityValue = initial_cash,
-	peakEquity = initial_cash
+var strat = strategy.configure(
+	broker = broker.new(
+		commission = broker.commissionPercent(commission_percent),
+		slippage = broker.slippageRate(0.0),
+		processOrdersOnClose = false
+	),
+	portfolio = portfolio.new(
+		initialCash = initial_cash,
+		pyramiding = 1,
+		marginLong = 0.0,
+		marginShort = 0.0
+	)
 )
+var float stop_loss_price = na
+var float take_profit_price = na
+var float trailing_stop = na
+float missing_value = na
 
-engine.begin(open, bar_index)
+strat.begin(open, bar_index)
+if strat.position_quantity() == 0.0
+	stop_loss_price := missing_value
+	take_profit_price := missing_value
+	trailing_stop := missing_value
 
 current_sar = ta.sar(sar_start, sar_increment, sar_maximum)
 // The inspected v2.0 source explicitly uses lookahead_on, despite the page
@@ -229,56 +64,70 @@ long_signal = condition_source_mode == 0 ? higher_long : condition_source_mode =
 short_signal = condition_source_mode == 0 ? higher_short : condition_source_mode == 1 ? current_short : higher_short and current_short
 
 // This occurs before signal handling in the Pine source.
-engine.prepare_exits(
-	close,
-	use_stop_loss,
-	stop_loss_percent / 100.0,
-	use_take_profit,
-	take_profit_percent / 100.0,
-	use_trailing_stop,
-	trailing_stop_percent / 100.0
-)
+if strat.position_quantity() > 0.0
+	if use_stop_loss == 1
+		stop_loss_price := strat.position_avg_price() * (1.0 - stop_loss_percent / 100.0)
+	if use_take_profit == 1
+		take_profit_price := strat.position_avg_price() * (1.0 + take_profit_percent / 100.0)
+	if use_trailing_stop == 1
+		// Exact source behavior: math.max(na, candidate) remains na, so
+		// the trailing state never bootstraps after an entry reset.
+		trailing_stop := math.max(trailing_stop, close * (1.0 - trailing_stop_percent / 100.0))
+		stop_loss_price := math.max(stop_loss_price, trailing_stop)
+else if strat.position_quantity() < 0.0
+	if use_stop_loss == 1
+		stop_loss_price := strat.position_avg_price() * (1.0 + stop_loss_percent / 100.0)
+	if use_take_profit == 1
+		take_profit_price := strat.position_avg_price() * (1.0 - take_profit_percent / 100.0)
+	if use_trailing_stop == 1
+		trailing_stop := math.min(trailing_stop, close * (1.0 + trailing_stop_percent / 100.0))
+		stop_loss_price := math.min(stop_loss_price, trailing_stop)
 
 if long_signal
-	if engine.positionQuantity <= 0.0 and not engine.has_pending()
-		engine.submit_direction(1, bar_index)
+	if strat.position_quantity() <= 0.0 and not strat.has_pending()
+		strat.entry("MTF Position", strategy.Direction.long, sizing = strategy.percentOfEquityAtFill(100.0))
 	// The source resets these on every true condition, even when pyramiding=0
 	// rejects a redundant same-direction entry.
-	engine.reset_exit_state()
+	stop_loss_price := missing_value
+	take_profit_price := missing_value
+	trailing_stop := missing_value
 
 if short_signal
-	if engine.positionQuantity >= 0.0 and not engine.has_pending()
-		engine.submit_direction(-1, bar_index)
-	engine.reset_exit_state()
+	if strat.position_quantity() >= 0.0 and not strat.has_pending()
+		strat.entry("MTF Position", strategy.Direction.short, sizing = strategy.percentOfEquityAtFill(100.0))
+	stop_loss_price := missing_value
+	take_profit_price := missing_value
+	trailing_stop := missing_value
 
 // Close-tested exits are next-open market orders. Under the source-default
 // Higher mode, one directional condition is normally true and has just reset
 // these levels, which is why the nominally enabled stop is usually inert.
-if engine.positionQuantity > 0.0 and not engine.has_pending()
-	if use_stop_loss == 1 and close <= engine.stopLossPrice
-		engine.submit_close(bar_index)
-	else if use_take_profit == 1 and close >= engine.takeProfitPrice
-		engine.submit_close(bar_index)
-if engine.positionQuantity < 0.0 and not engine.has_pending()
-	if use_stop_loss == 1 and close >= engine.stopLossPrice
-		engine.submit_close(bar_index)
-	else if use_take_profit == 1 and close <= engine.takeProfitPrice
-		engine.submit_close(bar_index)
+if strat.position_quantity() > 0.0 and not strat.has_pending()
+	if use_stop_loss == 1 and close <= stop_loss_price
+		strat.close("MTF Exit")
+	else if use_take_profit == 1 and close >= take_profit_price
+		strat.close("MTF Exit")
+if strat.position_quantity() < 0.0 and not strat.has_pending()
+	if use_stop_loss == 1 and close >= stop_loss_price
+		strat.close("MTF Exit")
+	else if use_take_profit == 1 and close <= take_profit_price
+		strat.close("MTF Exit")
 
-engine.mark(close)
+strat.mark(close)
+strat.finish(barstate.islast)
 
 plot(close, "close")
 plot(current_sar, "current SAR")
 plot(higher_sar, "higher-timeframe SAR")
 plot(long_signal ? 1.0 : 0.0, "long signal")
 plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(engine.positionQuantity, "signed position quantity")
-plot(engine.equityValue, "equity")
-plot(engine.realizedPnl, "realized pnl")
-plot(engine.totalFees, "total fees")
-plot(engine.fills, "fill count")
-plot(engine.roundTrips, "round trips")
-plot(engine.win_rate(), "win rate")
-plot(engine.profit_factor(), "profit factor")
-plot(engine.maximumDrawdown, "maximum drawdown")
-plot(engine.total_return(), "total return")
+plot(strat.position_quantity(), "signed position quantity")
+plot(strat.equity(), "equity")
+plot(strat.realized_pnl(), "realized pnl")
+plot(strat.total_fees(), "total fees")
+plot(strat.fill_count(), "fill count")
+plot(strat.round_trip_count(), "round trips")
+plot(strat.win_rate(), "win rate")
+plot(strat.profit_factor(), "profit factor")
+plot(strat.max_drawdown(), "maximum drawdown")
+plot(strat.total_return(), "total return")
