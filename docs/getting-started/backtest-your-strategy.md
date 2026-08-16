@@ -48,7 +48,7 @@ if bar_index == 1
 if bar_index == 2
     strat.entry("Long", strategy.Direction.long)
 
-expired = strat.end(close, barstate.islast)
+finished = strat.end(close, barstate.islast)
 
 plot(strat.cash(), "cash")
 plot(strat.position_quantity(), "position quantity")
@@ -58,7 +58,7 @@ plot(strat.total_fees(), "total fees")
 plot(strat.fill_count(), "fill count")
 plot(strat.round_trip_count(), "round-trip count")
 plot(strat.max_drawdown(), "maximum drawdown")
-plot(na(expired) ? 0 : expired.id, "expired order id")
+plot(na(finished) or na(finished.pending) ? 0 : finished.pending.id, "expired order id")
 ```
 
 `strategy()` is contextual first-statement metadata. `import strategy` binds

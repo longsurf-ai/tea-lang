@@ -10,6 +10,13 @@ export enum Direction
 	long
 	short
 
+export enum SizingKind
+	percentOfEquity
+
+export type Sizing
+	SizingKind kind
+	float value
+
 export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 	B broker
 	P portfolio
@@ -21,18 +28,38 @@ export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 		this.portfolio.apply(execution)
 		execution
 
-	broker.Order entry(string commandId, Direction direction, float qty = na) =>
+	broker.BarMatches begin_bar(float openPrice, float highPrice, float lowPrice, int barIndex) =>
+		this.currentBarIndex := barIndex
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		entryExecution = currentBroker.on_open(openPrice, currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(entryExecution)
+		exitExecution = currentBroker.match_exit(openPrice, highPrice, lowPrice, currentPortfolio.account(), this.currentBarIndex)
+		currentPortfolio.apply(exitExecution)
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		broker.BarMatches.new(entryExecution, exitExecution)
+
+	broker.Order entry(string commandId, Direction direction, float qty = na, Sizing sizing = na) =>
 		side = direction == Direction.long ? broker.Side.buy : broker.Side.sell
-		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.entry, side, qty, this.currentBarIndex))
+		float notional = na
+		if not na(sizing)
+			equity = this.portfolio.equity()
+			sizingValid = sizing.kind == SizingKind.percentOfEquity and not na(sizing.value) and sizing.value > 0.0 and sizing.value <= 100.0 and not na(equity) and equity > 0.0
+			notional := sizingValid ? equity * sizing.value / 100.0 : -1.0
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.entry, side, qty, this.currentBarIndex, notional))
+
+	broker.Order exit(string commandId, string fromEntry, float stop, bool activateOnEntryBar = false) =>
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.exit, broker.Side.sell, na, this.currentBarIndex, na, fromEntry, stop, activateOnEntryBar))
 
 	broker.Order close(string commandId) =>
 		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.close, broker.Side.sell, na, this.currentBarIndex))
 
-	broker.Order end(float closePrice, bool isLast) =>
+	broker.FinishResult end(float closePrice, bool isLast) =>
 		execution = this.broker.on_close(closePrice, this.portfolio.account(), this.currentBarIndex)
 		this.portfolio.apply(execution)
 		this.portfolio.mark(closePrice)
-		broker.Order expired = na
+		broker.FinishResult expired = na
 		if isLast
 			expired := this.broker.finish()
 		expired
@@ -69,6 +96,12 @@ export type Strategy<B: broker.Broker, P: portfolio.Portfolio>
 
 	bool has_pending() const =>
 		this.broker.has_pending()
+
+	bool has_pending_entry() const =>
+		this.broker.has_pending_entry()
+
+export percentOfEquity(float percent) =>
+	Sizing.new(SizingKind.percentOfEquity, percent)
 
 export configure(broker, portfolio) =>
 	Strategy.new(broker, portfolio)

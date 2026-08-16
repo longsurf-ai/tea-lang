@@ -733,11 +733,11 @@ describe('Tea strategy components end to end', () => {
       ')',
       'strat.begin(open, bar_index)',
       'if bar_index == 0',
-      '    strat.entry("First", strategy.Direction.long, qty = 2.0)',
+      '    strat.entry("Long", strategy.Direction.long, qty = 2.0)',
       'if bar_index == 1',
-      '    strat.entry("Second", strategy.Direction.long, qty = 3.0)',
+      '    strat.entry("Long", strategy.Direction.long, qty = 3.0)',
       'if bar_index == 2',
-      '    strat.entry("Over capacity", strategy.Direction.long, qty = 1.0)',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0)',
       'if bar_index == 3',
       '    strat.close("All")',
       'strat.end(close, barstate.islast)',
@@ -774,6 +774,495 @@ describe('Tea strategy components end to end', () => {
       [3, 'OrderSubmitted'],
       [3, 'FillExecuted'],
     ]);
+  });
+
+  test('fails closed when an aggregate pyramid changes entry id', async () => {
+    const source = [
+      'strategy("aggregate entry identity")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 2, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'strat.begin(open, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("A", strategy.Direction.long, qty = 1.0)',
+      'if bar_index == 1',
+      '    strat.entry("B", strategy.Direction.long, qty = 1.0)',
+      'strat.end(close, barstate.islast)',
+      'plot(strat.position_quantity())',
+      'plot(strat.fill_count())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,close', '10,10', '10,10', ''].join('\n'),
+    );
+
+    expect(valuesFor(sink, 1)).toEqual([1, 1]);
+    expect(valuesFor(sink, 2)).toEqual([1, 1]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'FillExecuted'],
+      [1, 'OrderRejected'],
+    ]);
+    expect(effectField(program, sink, 2, 'reason')).toBe('entryIdMismatch');
+  });
+
+  test('keeps an attached stop live and applies entry before a same-bar stop', async () => {
+    const source = [
+      'strategy("scalar attached stop")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(',
+      '        commission = broker.commissionRate(0.001),',
+      '        slippage = broker.slippageTicks(1.0, 1.0),',
+      '        processOrdersOnClose = false',
+      '    ),',
+      '    portfolio = portfolio.new(initialCash = 1000.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long A", strategy.Direction.long, sizing = strategy.percentOfEquity(10.0))',
+      '    strat.exit("Stop A", fromEntry = "Long A", stop = 9.0, activateOnEntryBar = true)',
+      'if bar_index == 2',
+      '    strat.entry("Long B", strategy.Direction.long, sizing = strategy.percentOfEquity(10.0))',
+      '    strat.exit("Stop B", fromEntry = "Long B", stop = 9.0, activateOnEntryBar = true)',
+      'strat.end(close, barstate.islast)',
+      'plot(strat.cash())',
+      'plot(strat.position_quantity())',
+      'plot(strat.equity())',
+      'plot(strat.realized_pnl())',
+      'plot(strat.fill_count())',
+      'plot(strat.round_trip_count())',
+      'plot(strat.total_fees())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      [
+        'open,high,low,close',
+        '10,10,10,10',
+        '10,12,10,11',
+        '7,8,6,7',
+        '10,12,8,9',
+        '',
+      ].join('\n'),
+    );
+
+    const firstEntryNotional = 100;
+    const firstEntryPrice = 11;
+    const firstQuantity = firstEntryNotional / firstEntryPrice;
+    const firstEntryFee = firstEntryNotional * 0.001;
+    const cashAfterFirstEntry = 1000 - firstEntryNotional - firstEntryFee;
+    const firstExitNotional = firstQuantity * 6;
+    const firstExitFee = firstExitNotional * 0.001;
+    const cashAfterFirstExit =
+      cashAfterFirstEntry + firstExitNotional - firstExitFee;
+    const firstRealized =
+      firstQuantity * (6 - firstEntryPrice) - firstEntryFee - firstExitFee;
+    const secondEntryNotional = 999.9 * 0.1;
+    const secondEntryPrice = 11;
+    const secondQuantity = secondEntryNotional / secondEntryPrice;
+    const secondEntryFee = secondEntryNotional * 0.001;
+    const secondExitNotional = secondQuantity * 8;
+    const secondExitFee = secondExitNotional * 0.001;
+    const finalCash =
+      cashAfterFirstExit -
+      secondEntryNotional -
+      secondEntryFee +
+      secondExitNotional -
+      secondExitFee;
+    const finalRealized =
+      firstRealized +
+      secondQuantity * (8 - secondEntryPrice) -
+      secondEntryFee -
+      secondExitFee;
+
+    expectNumbersClose(valuesFor(sink, 1), [
+      1000,
+      cashAfterFirstEntry,
+      cashAfterFirstExit,
+      finalCash,
+    ]);
+    expectNumbersClose(valuesFor(sink, 2), [0, firstQuantity, 0, 0]);
+    expectNumbersClose(valuesFor(sink, 3), [
+      1000,
+      999.9,
+      cashAfterFirstExit,
+      finalCash,
+    ]);
+    expectNumbersClose(valuesFor(sink, 4), [
+      0,
+      0,
+      firstRealized,
+      finalRealized,
+    ]);
+    expect(valuesFor(sink, 5)).toEqual([0, 1, 2, 4]);
+    expect(valuesFor(sink, 6)).toEqual([0, 0, 1, 2]);
+    expectNumbersClose(valuesFor(sink, 7), [
+      0,
+      firstEntryFee,
+      firstEntryFee + firstExitFee,
+      firstEntryFee + firstExitFee + secondEntryFee + secondExitFee,
+    ]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [2, 'FillExecuted'],
+      [2, 'OrderSubmitted'],
+      [2, 'OrderSubmitted'],
+      [3, 'FillExecuted'],
+      [3, 'FillExecuted'],
+    ]);
+
+    // The first stop is submitted only on row 0, remains live through row 1,
+    // and gaps out on row 2 at the open before one tick of adverse slippage.
+    expect(effectField(program, sink, 3, 'fill', 'commandId')).toBe('Stop A');
+    expect(effectField(program, sink, 3, 'fill', 'referencePrice')).toBe(7);
+    expect(effectField(program, sink, 3, 'fill', 'price')).toBe(6);
+
+    // Percent-of-equity sizing snapshots the row-1 marked equity at submission,
+    // before the row-2 gap fill is reflected in the next end-of-bar mark.
+    // On row 3 the entry is applied before the attached stop is matched.
+    expect(effectField(program, sink, 6, 'fill', 'commandId')).toBe('Long B');
+    expect(effectField(program, sink, 6, 'fill', 'notional')).toBeCloseTo(
+      secondEntryNotional,
+      12,
+    );
+    expect(effectField(program, sink, 6, 'fill', 'quantity')).toBeCloseTo(
+      secondQuantity,
+      12,
+    );
+    expect(effectField(program, sink, 7, 'fill', 'commandId')).toBe('Stop B');
+    expect(effectField(program, sink, 7, 'fill', 'referencePrice')).toBe(9);
+    expect(effectField(program, sink, 7, 'fill', 'price')).toBe(8);
+  });
+
+  test('terminates the prior order when replacing an attached stop', async () => {
+    const source = [
+      'strategy("replace attached stop")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0)',
+      '    strat.exit("Stop", fromEntry = "Long", stop = 9.0)',
+      'if bar_index == 1',
+      '    strat.exit("Stop", fromEntry = "Long", stop = 8.0)',
+      'strat.end(close, barstate.islast)',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '10,10,10,10', ''].join('\n'),
+    );
+
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderCancelled'],
+      [1, 'OrderSubmitted'],
+      [1, 'OrderExpired'],
+    ]);
+    expect(effectField(program, sink, 3, 'order', 'stop')).toBe(9);
+    expect(effectField(program, sink, 4, 'order', 'stop')).toBe(8);
+    expect(effectField(program, sink, 5, 'order', 'stop')).toBe(8);
+  });
+
+  test('cancels an attached stop after a market close fills', async () => {
+    const source = [
+      'strategy("close cancels stop")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0)',
+      '    strat.exit("Stop", fromEntry = "Long", stop = 5.0)',
+      'if bar_index == 1',
+      '    strat.close("Manual close")',
+      'strat.end(close, barstate.islast)',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '12,12,12,12', ''].join('\n'),
+    );
+
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [0, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderCancelled'],
+    ]);
+    expect(effectField(program, sink, 4, 'fill', 'commandId')).toBe(
+      'Manual close',
+    );
+    expect(effectField(program, sink, 5, 'order', 'commandId')).toBe('Stop');
+  });
+
+  test('cancels an attached stop when its initial entry is rejected', async () => {
+    const source = [
+      'strategy("rejected entry cancels stop")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = 50.0, marginShort = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0)',
+      '    strat.exit("Stop", fromEntry = "Long", stop = 5.0)',
+      'strat.end(close, barstate.islast)',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '10,10,10,10', ''].join('\n'),
+    );
+
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [1, 'OrderRejected'],
+      [1, 'OrderCancelled'],
+    ]);
+    expect(effectField(program, sink, 2, 'reason')).toBe(
+      'invalidConfiguration',
+    );
+    expect(effectField(program, sink, 3, 'order', 'commandId')).toBe('Stop');
+  });
+
+  test('retains entry identity when a triggered stop is rejected', async () => {
+    const source = [
+      'strategy("rejected stop keeps identity")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0)',
+      '    strat.exit("Stop", fromEntry = "Long", stop = 5.0)',
+      'if bar_index == 1',
+      '    strat.broker.commissionValue := 0.0',
+      '    strat.exit("Replacement", fromEntry = "Long", stop = 4.0)',
+      'finished = strat.end(close, barstate.islast)',
+      'if bar_index == 0',
+      '    strat.broker.commissionValue := -1.0',
+      'plot(strat.position_quantity())',
+      'plot(na(finished) or na(finished.exit) ? 0 : finished.exit.id)',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '4,5,3,4', ''].join('\n'),
+    );
+
+    expect(valuesFor(sink, 1)).toEqual([1, 1]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [0, 'FillExecuted'],
+      [1, 'OrderRejected'],
+      [1, 'OrderSubmitted'],
+      [1, 'OrderExpired'],
+    ]);
+    expect(effectField(program, sink, 3, 'reason')).toBe(
+      'invalidConfiguration',
+    );
+    expect(effectField(program, sink, 4, 'order', 'commandId')).toBe(
+      'Replacement',
+    );
+    expect(valuesFor(sink, 2)[1]).toBe(3);
+    expect(effectField(program, sink, 5, 'order', 'id')).toBe(3);
+  });
+
+  test('one stop closes the full same-id aggregate position', async () => {
+    const source = [
+      'strategy("aggregate attached stop")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 2, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 2.0)',
+      '    strat.exit("Stop", fromEntry = "Long", stop = 5.0)',
+      'if bar_index == 1',
+      '    strat.entry("Long", strategy.Direction.long, qty = 3.0)',
+      'strat.end(close, barstate.islast)',
+      'plot(strat.position_quantity())',
+      'plot(strat.position_avg_price())',
+      'plot(strat.cash())',
+      'plot(strat.fill_count())',
+      'plot(strat.round_trip_count())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '20,20,20,20', '6,6,4,5', ''].join(
+        '\n',
+      ),
+    );
+
+    expect(valuesFor(sink, 1)).toEqual([2, 5, 0]);
+    expect(valuesFor(sink, 2).slice(0, 2)).toEqual([10, 16]);
+    expect(Number.isNaN(valuesFor(sink, 2)[2] as number)).toBe(true);
+    expect(valuesFor(sink, 3)).toEqual([80, 20, 45]);
+    expect(valuesFor(sink, 4)).toEqual([1, 2, 3]);
+    expect(valuesFor(sink, 5)).toEqual([0, 0, 1]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [0, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [2, 'FillExecuted'],
+    ]);
+    expect(effectField(program, sink, 5, 'fill', 'commandId')).toBe('Stop');
+    expect(effectField(program, sink, 5, 'fill', 'quantity')).toBe(5);
+  });
+
+  test('keeps the live stop when a same-id pyramid entry is rejected', async () => {
+    const source = [
+      'strategy("rejected pyramid keeps stop")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0)',
+      '    strat.exit("Stop", fromEntry = "Long", stop = 5.0)',
+      'if bar_index == 1',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0)',
+      'strat.end(close, barstate.islast)',
+      'plot(strat.position_quantity())',
+      'plot(strat.fill_count())',
+      'plot(strat.round_trip_count())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      [
+        'open,high,low,close',
+        '10,10,10,10',
+        '10,10,10,10',
+        '10,10,4,4',
+        '',
+      ].join('\n'),
+    );
+
+    expect(valuesFor(sink, 1)).toEqual([0, 1, 0]);
+    expect(valuesFor(sink, 2)).toEqual([0, 1, 2]);
+    expect(valuesFor(sink, 3)).toEqual([0, 0, 1]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [2, 'OrderRejected'],
+      [2, 'FillExecuted'],
+    ]);
+    expect(effectField(program, sink, 4, 'reason')).toBe('invalidAccountState');
+    expect(effectField(program, sink, 5, 'fill', 'commandId')).toBe('Stop');
+  });
+
+  test('can re-arm immediately after an entry and attached stop fill in begin_bar', async () => {
+    const source = [
+      'strategy("same-bar stop rearm")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("A", strategy.Direction.long, qty = 1.0)',
+      '    strat.exit("A stop", fromEntry = "A", stop = 9.0, activateOnEntryBar = true)',
+      'if bar_index == 1 and strat.position_quantity() == 0.0 and not strat.has_pending_entry()',
+      '    strat.entry("B", strategy.Direction.long, qty = 1.0)',
+      'strat.end(close, barstate.islast)',
+      'plot(strat.fill_count())',
+      'plot(strat.position_quantity())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '10,10,8,8', ''].join('\n'),
+    );
+
+    expect(valuesFor(sink, 1)).toEqual([0, 2]);
+    expect(valuesFor(sink, 2)).toEqual([0, 0]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [1, 'OrderExpired'],
+    ]);
+    expect(effectField(program, sink, 4, 'order', 'commandId')).toBe('B');
+    expect(effectField(program, sink, 5, 'order', 'commandId')).toBe('B');
+  });
+
+  test('clears pending-entry state immediately after begin_bar fills it', async () => {
+    const source = [
+      'strategy("post-fill pending state")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 2, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("A", strategy.Direction.long, qty = 1.0)',
+      '    strat.exit("A stop", fromEntry = "A", stop = 5.0)',
+      'if bar_index == 1 and not strat.has_pending_entry()',
+      '    strat.entry("A", strategy.Direction.long, qty = 1.0)',
+      'strat.end(close, barstate.islast)',
+      'plot(strat.position_quantity())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '10,10,10,10', ''].join('\n'),
+    );
+
+    expect(valuesFor(sink, 1)).toEqual([0, 1]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [1, 'OrderExpired'],
+      [1, 'OrderExpired'],
+    ]);
+    expect(effectField(program, sink, 3, 'order', 'commandId')).toBe('A');
   });
 
   test('emits rejected and final-expiry events from Tea lifecycle code', async () => {
@@ -841,7 +1330,7 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 0',
       '    strat.entry("first", strategy.Direction.long)',
       'if bar_index == 1',
-      '    strat.entry("already long", strategy.Direction.long)',
+      '    strat.entry("first", strategy.Direction.long)',
       'strat.end(close, barstate.islast)',
     ].join('\n');
     const {program, sink} = await execute(
@@ -855,7 +1344,7 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderSubmitted'],
       [2, 'OrderRejected'],
     ]);
-    expect(effectField(program, sink, 3, 'commandId')).toBe('already long');
+    expect(effectField(program, sink, 3, 'commandId')).toBe('first');
     expect(effectField(program, sink, 3, 'reason')).toBe('invalidAccountState');
   });
 

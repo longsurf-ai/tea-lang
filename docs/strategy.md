@@ -87,7 +87,7 @@ if enterLong
 if exitLong
     strat.close("Long")
 
-expired = strat.end(close, barstate.islast)
+finished = strat.end(close, barstate.islast)
 ```
 
 The deterministic reference behavior is:
@@ -99,7 +99,9 @@ The deterministic reference behavior is:
    `processOrdersOnClose=true` an opportunity to fill a pending command at that
    close, applies the fill, and then marks the portfolio.
 4. On the final bar, `end` expires any command still pending without forcing
-   liquidation.
+   liquidation. Its fixed `FinishResult` reports the pending market and
+   attached-exit slots separately; the corresponding `OrderExpired` effects
+   are the exhaustive terminal journal.
 
 The calls are not compiler lifecycle hooks. Tea checks their ordinary argument
 and result types, but does not require them, insert them, or enforce their
@@ -110,10 +112,49 @@ The current canonical pair is deliberately bounded. `BrokerEmulator` accepts
 one pending market command, fills it at a later open or optionally at the
 signal bar's close, and applies the configured commission and adverse
 slippage. `strat.entry` accepts an explicit positive `qty`; omitting it (the
-`na` default) uses the commission-aware all-available-cash quantity.
+`na` default) uses the commission-aware all-available-cash quantity. A
+`strategy.percentOfEquity(percent)` sizing value instead snapshots a cash
+notional from the portfolio's last marked equity when the entry is submitted,
+then resolves quantity from the eventual fill price.
 `NetPortfolio` is a long-only net account. It aggregates up to `pyramiding`
 open entries, reports their quantity and weighted-average price, and
 `strat.close` closes the whole net position.
+
+For a long strategy that needs one persistent protective stop, use the richer
+bar entry point and attach the exit to its entry id:
+
+```tea
+strat.begin_bar(open, high, low, bar_index)
+
+if enterLong
+    strat.entry(
+        "Long",
+        strategy.Direction.long,
+        sizing = strategy.percentOfEquity(10.0)
+    )
+if updateStop
+    strat.exit(
+        "Long stop",
+        fromEntry = "Long",
+        stop = stopPrice,
+        activateOnEntryBar = true
+    )
+
+strat.end(close, barstate.islast)
+```
+
+The broker keeps one scalar attached stop, including while its matching entry
+is pending. `begin_bar` applies an eligible pending market fill first and then
+tests the stop against the updated position. A gap through the stop uses the
+open as its reference price; otherwise a low touching the stop uses the stop
+price. Calling `exit` again with the same exit id replaces its price. Skipping
+the call leaves the prior stop live. When pyramiding under that stop, every add
+must reuse the same entry id; the stop closes the resulting aggregate net
+position. A
+different entry id fails closed while that aggregate position is open, whether
+or not a stop is currently attached. This fixed two-stage path can produce an
+entry and its stop fill on the same bar without a strategy-local account or
+order matcher.
 
 This first slice accepts exactly two margin policies: `marginLong=100` requires
 the full notional plus fees to fit in current cash, while `marginLong=0`
@@ -124,11 +165,15 @@ forward compatibility, but is not otherwise used because this implementation
 does not open short positions. Default quantity remains all-available-cash
 sizing rather than leveraged sizing.
 
-This first slice does not provide per-entry lots, partial closes, short
-positions, general margin accounting or margin calls, resting limit/stop
-orders, cancellation, OCA groups, or intrabar price-path simulation. A richer
-deterministic or probabilistic component can satisfy the same interfaces
-without changing `Strategy` storage or compiler/runtime dispatch.
+This slice does not provide per-entry lots, partial closes, short positions,
+general margin accounting or margin calls, resting entries or limits, multiple
+independent exits, explicit cancellation, OCA groups, or general OHLC
+price-path simulation. The attached long stop above is the one supported
+resting-order shape. The current `Broker` interface itself is a scalar,
+at-most-two-fill boundary; a general order book will require an explicit
+bounded fill-drain revision rather than pretending an arbitrary number of fills
+fits this interface. That future component remains ordinary Tea source and
+does not require compiler/runtime dispatch by strategy name.
 
 ## Observables and effects
 
@@ -139,13 +184,13 @@ plot(strat.equity(), "Equity")
 plot(strat.realized_pnl(), "Realized PnL")
 ```
 
-The canonical broker package also owns nominal order, fill, expiry, and
-rejection event payloads. `broker.BrokerEmulator` emits those values at the
-point where it makes the corresponding execution decision; the generic
-`Strategy<B, P>` does not guess why an arbitrary broker accepted or rejected a
-command. Sparse, non-column records use the generic `effect.emit(value)` path;
-the host transports typed Tea values and does not reconstruct strategy events
-in a bespoke journal.
+The canonical broker package also owns nominal order, fill, cancellation,
+expiry, and rejection event payloads. `broker.BrokerEmulator` emits those
+values at the point where it makes the corresponding execution decision; the
+generic `Strategy<B, P>` does not guess why an arbitrary broker accepted or
+rejected a command. Sparse, non-column records use the generic
+`effect.emit(value)` path; the host transports typed Tea values and does not
+reconstruct strategy events in a bespoke journal.
 
 ## Compilation and execution
 

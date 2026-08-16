@@ -180,4 +180,20 @@ describe('clean-room strategy catalog', () => {
     expect(source).not.toContain('type FixedContractBroker');
     expect(source).not.toContain('broker.Fill.new');
   });
+
+  test('AI SuperTrend composes the canonical broker and portfolio', () => {
+    const source = readFileSync(
+      join(STRATEGY_ROOT, 'ai-supertrend-knn', 'strategy.tea'),
+      'utf8',
+    );
+
+    expect(source).toContain('broker.new(');
+    expect(source).toContain('portfolio.new(');
+    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('strategy.percentOfEquity(');
+    expect(source).toContain('strat.begin_bar(');
+    expect(source).toContain('strat.exit(');
+    expect(source).not.toContain('type LongStopEngine');
+    expect(source).not.toContain('broker.Fill.new');
+  });
 });

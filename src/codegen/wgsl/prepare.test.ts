@@ -29,7 +29,7 @@ describe('generic WGSL capability boundary', () => {
       seriesInputCount: 2,
       executionInputCount: 2,
       persistentRootCount: 1,
-      functionCount: 39,
+      functionCount: 40,
       mutableMethodCount: 11,
       callSiteSlotCount: 16,
       outputCount: 10,

@@ -4,6 +4,8 @@
 strategy("AI SuperTrend KNN — WMA long mode", shorttitle="AI ST KNN Long", overlay=true)
 
 import broker
+import portfolio
+import strategy
 
 pine_rma(float source, int length) =>
 	seed = ta.sma(source, length)
@@ -48,115 +50,6 @@ knn_weighted(array<float> data, array<int> labels, int k, float x) =>
 		totalWeight += weight
 	weightedSum / totalWeight
 
-// A strategy-local execution engine preserves the publication's 10%-of-equity
-// sizing, one-tick adverse slippage, percent commission, and persistent stop
-// order without expanding Tea's shared reference broker.
-type LongStopEngine
-	float initialCash
-	float allocationRate
-	float tickSize
-	float feeRate
-	float cashValue = 0.0
-	float positionQuantity = 0.0
-	float entryPrice = na
-	float entryFee = 0.0
-	float equityValue = 0.0
-	float peakEquity = 0.0
-	float maximumDrawdown = 0.0
-	float realizedPnl = 0.0
-	float totalFees = 0.0
-	float activeStop = na
-	int fills = 0
-	int roundTrips = 0
-	int nextOrderId = 1
-	int nextFillId = 1
-	int pendingEntryBar = -1
-	float pendingEntryNotional = 0.0
-
-	bool is_flat() const =>
-		this.positionQuantity == 0.0
-
-	bool has_pending_entry() const =>
-		this.pendingEntryBar >= 0
-
-	int submit_entry(int signalBarIndex) =>
-		if this.positionQuantity == 0.0 and this.pendingEntryBar < 0
-			this.pendingEntryBar := signalBarIndex
-			this.pendingEntryNotional := this.equityValue * this.allocationRate
-		this.pendingEntryBar
-
-	int emit_entry(float referencePrice, int barIndex) =>
-		price = referencePrice + this.tickSize
-		quantity = this.pendingEntryNotional / price
-		notional = quantity * price
-		fee = notional * this.feeRate
-		execution = broker.Fill.new(this.nextFillId, this.nextOrderId, "AI Long", broker.Side.buy, barIndex, referencePrice, price, quantity, notional, fee)
-		this.nextFillId := this.nextFillId + 1
-		this.nextOrderId := this.nextOrderId + 1
-		effect.emit(broker.FillExecuted.new(execution))
-		this.cashValue := this.cashValue - notional - fee
-		this.positionQuantity := quantity
-		this.entryPrice := price
-		this.entryFee := fee
-		this.totalFees := this.totalFees + fee
-		this.fills := this.fills + 1
-		this.pendingEntryBar := -1
-		this.pendingEntryNotional := 0.0
-		this.fills
-
-	int emit_exit(float referencePrice, float expectedPrice, int barIndex) =>
-		price = math.max(expectedPrice - this.tickSize, this.tickSize)
-		quantity = this.positionQuantity
-		notional = quantity * price
-		fee = notional * this.feeRate
-		execution = broker.Fill.new(this.nextFillId, this.nextOrderId, "AI Long Stop", broker.Side.sell, barIndex, referencePrice, price, quantity, notional, fee)
-		this.nextFillId := this.nextFillId + 1
-		this.nextOrderId := this.nextOrderId + 1
-		effect.emit(broker.FillExecuted.new(execution))
-		grossPnl = quantity * (price - this.entryPrice)
-		this.cashValue := this.cashValue + notional - fee
-		this.realizedPnl := this.realizedPnl + grossPnl - this.entryFee - fee
-		this.positionQuantity := 0.0
-		float empty = na
-		this.entryPrice := empty
-		this.entryFee := 0.0
-		this.activeStop := empty
-		this.totalFees := this.totalFees + fee
-		this.fills := this.fills + 1
-		this.roundTrips := this.roundTrips + 1
-		this.fills
-
-	int begin(float openPrice, float lowPrice, int barIndex) =>
-		// Market entries resolve first at the next open. A previously submitted
-		// exit tied to that entry can then trigger during the same bar.
-		if this.pendingEntryBar >= 0 and barIndex > this.pendingEntryBar and this.positionQuantity == 0.0
-			this.emit_entry(openPrice, barIndex)
-		if this.positionQuantity > 0.0 and not na(this.activeStop)
-			if openPrice <= this.activeStop
-				this.emit_exit(openPrice, openPrice, barIndex)
-			else if lowPrice <= this.activeStop
-				this.emit_exit(this.activeStop, this.activeStop, barIndex)
-		this.fills
-
-	float update_stop(float stopPrice, bool enabled) =>
-		// strategy.exit(when=false) does not replace the existing order. The
-		// last submitted stop therefore remains live until fill or replacement.
-		if enabled and not na(stopPrice) and (this.positionQuantity > 0.0 or this.pendingEntryBar >= 0)
-			this.activeStop := stopPrice
-		this.activeStop
-
-	float mark(float closePrice) =>
-		this.equityValue := this.cashValue + this.positionQuantity * closePrice
-		if this.equityValue > this.peakEquity
-			this.peakEquity := this.equityValue
-		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - this.equityValue) / this.peakEquity
-		if drawdown > this.maximumDrawdown
-			this.maximumDrawdown := drawdown
-		this.equityValue
-
-	float total_return() const =>
-		(this.equityValue - this.initialCash) / this.initialCash
-
 neighbors = input.int(3, "KNN neighbors", minval=1, maxval=100)
 data_points = input.int(10, "KNN data points", minval=1, maxval=100)
 price_trend_length = input.int(20, "Price WMA length", minval=2, maxval=500)
@@ -168,17 +61,30 @@ allocation_percent = input.float(10.0, "Entry equity percent", minval=0.1, maxva
 commission_percent = input.float(0.1, "Commission (%)", minval=0.0, maxval=10.0)
 tick_size = input.float(0.01, "Instrument tick size", minval=0.00000001)
 
-var engine = LongStopEngine.new(
-	initialCash = initial_cash,
-	allocationRate = allocation_percent / 100.0,
-	tickSize = tick_size,
-	feeRate = commission_percent / 100.0,
-	cashValue = initial_cash,
-	equityValue = initial_cash,
-	peakEquity = initial_cash
+var strat = strategy.configure(
+	broker = broker.new(
+		commission = broker.commissionPercent(commission_percent),
+		slippage = broker.slippageTicks(1.0, tick_size),
+		processOrdersOnClose = false
+	),
+	portfolio = portfolio.new(
+		initialCash = initial_cash,
+		pyramiding = 1,
+		// The publication treats commission as an extra charge outside the
+		// requested equity allocation, including at a 100% allocation.
+		marginLong = 0.0,
+		marginShort = 0.0
+	)
 )
+// Display-only mirror of the live stop; matching remains broker-owned.
+var float display_active_stop = na
 
-engine.begin(open, low, bar_index)
+// The canonical broker fills a pending market entry first, then evaluates its
+// attached stop against the same bar's open/low path.
+strat.begin_bar(open, high, low, bar_index)
+if strat.position_quantity() == 0.0 and not strat.has_pending_entry()
+	float no_active_stop = na
+	display_active_stop := no_active_stop
 
 // The selected published moving-average mode is WMA. Its central SuperTrend
 // source is volume-weighted by explicitly smoothing close*volume and volume.
@@ -231,24 +137,29 @@ aligned_bearish = direction == 1 and bearish_class
 long_exit_condition = not aligned_bullish and not aligned_bearish
 long_stop = supertrend - atr_value * supertrend_factor
 
-if long_signal and engine.is_flat() and not engine.has_pending_entry()
-	engine.submit_entry(bar_index)
+if long_signal and strat.position_quantity() == 0.0 and not strat.has_pending_entry()
+	strat.entry("AI Long", strategy.Direction.long, sizing = strategy.percentOfEquity(allocation_percent))
 
-engine.update_stop(long_stop, long_exit_condition)
-engine.mark(close)
+// Skipping this call is the Pine `when=false` behavior: the last submitted
+// stop remains live rather than being cancelled or replaced.
+if long_exit_condition and not na(long_stop) and (strat.position_quantity() > 0.0 or strat.has_pending_entry())
+	strat.exit("AI Long Stop", fromEntry = "AI Long", stop = long_stop, activateOnEntryBar = true)
+	display_active_stop := long_stop
+
+strat.end(close, barstate.islast)
 
 plot(close, "close")
 plot(supertrend, "volume supertrend")
 plot(classification, "KNN classification")
 plot(long_stop, "long stop candidate")
-plot(engine.activeStop, "active stop")
+plot(display_active_stop, "active stop")
 plot(long_signal ? 1.0 : 0.0, "long signal")
 plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(engine.positionQuantity, "position quantity")
-plot(engine.equityValue, "equity")
-plot(engine.realizedPnl, "realized pnl")
-plot(engine.totalFees, "total fees")
-plot(engine.fills, "fill count")
-plot(engine.roundTrips, "round trips")
-plot(engine.maximumDrawdown, "maximum drawdown")
-plot(engine.total_return(), "total return")
+plot(strat.position_quantity(), "position quantity")
+plot(strat.equity(), "equity")
+plot(strat.realized_pnl(), "realized pnl")
+plot(strat.total_fees(), "total fees")
+plot(strat.fill_count(), "fill count")
+plot(strat.round_trip_count(), "round trips")
+plot(strat.max_drawdown(), "maximum drawdown")
+plot(strat.total_return(), "total return")

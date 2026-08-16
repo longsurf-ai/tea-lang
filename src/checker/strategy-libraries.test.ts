@@ -11,10 +11,12 @@ const ALTERNATIVE_COMPONENTS = [
   'type AlternateBroker',
   '    int marker',
   '    bool has_pending() const => false',
+  '    bool has_pending_entry() const => false',
   '    broker.Order submit(broker.Command command) => na',
   '    broker.Fill on_open(float referencePrice, broker.Account account, int barIndex) => na',
+  '    broker.Fill match_exit(float openPrice, float highPrice, float lowPrice, broker.Account account, int barIndex) => na',
   '    broker.Fill on_close(float referencePrice, broker.Account account, int barIndex) => na',
-  '    broker.Order finish() => na',
+  '    broker.FinishResult finish() => na',
   'type AlternatePortfolio',
   '    float balance',
   '    broker.Account account() const => broker.Account.new(this.balance, 0.0, 0, 1, 100.0, 100.0)',
@@ -62,6 +64,7 @@ describe('Tea-authored strategy libraries', () => {
     );
     expect([...broker!.exports.keys()].sort()).toEqual([
       'Account',
+      'BarMatches',
       'Broker',
       'BrokerEmulator',
       'Command',
@@ -70,7 +73,9 @@ describe('Tea-authored strategy libraries', () => {
       'CommissionKind',
       'Fill',
       'FillExecuted',
+      'FinishResult',
       'Order',
+      'OrderCancelled',
       'OrderExpired',
       'OrderRejected',
       'OrderSubmitted',
@@ -96,8 +101,11 @@ describe('Tea-authored strategy libraries', () => {
     ]);
     expect([...strategy!.exports.keys()].sort()).toEqual([
       'Direction',
+      'Sizing',
+      'SizingKind',
       'Strategy',
       'configure',
+      'percentOfEquity',
     ]);
   });
 

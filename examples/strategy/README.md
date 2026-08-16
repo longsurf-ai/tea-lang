@@ -58,20 +58,25 @@ var strat = strategy.configure(
 )
 ```
 
-That path supports one pending market command, an explicit positive or omitted
-all-available-cash entry quantity, next-open or process-on-close execution,
-rate/percent/tick slippage, rate/percent/cash commission, and aggregate
-long-position pyramiding with weighted-average cost. This first slice accepts
-only `marginLong=100` (full notional plus fees must fit in cash) or
-`marginLong=0` (the gate is disabled). Intermediate leverage fails closed until
-the portfolio has true free-margin accounting. `marginShort` is validated
-against the same two values but otherwise reserved in the current long-only
-implementation.
+That path supports one pending market command; explicit, all-available-cash, or
+captured percent-of-equity entry sizing; next-open or process-on-close
+execution; rate/percent/tick slippage; rate/percent/cash commission; and
+aggregate long-position pyramiding with weighted-average cost. It also supports
+one scalar protective stop attached to a pending or open long entry, including
+entry-then-stop matching on one bar through `strat.begin_bar(...)`. All
+pyramided adds in this scalar model reuse one entry id; an attached stop closes
+that aggregate net position, and a different id fails closed while it remains
+open. This slice accepts only `marginLong=100` (full notional plus fees must fit
+in cash) or `marginLong=0` (the gate is disabled). Intermediate leverage fails
+closed until the portfolio has true free-margin accounting. `marginShort` is
+validated against the same two values but otherwise reserved in the current
+long-only implementation.
 
 The canonical path does not yet cover short positions, per-entry lots, partial
-closes, general margin accounting, resting orders, cancellation, OCA groups,
-or intrabar price paths. Examples that need those behaviors still demonstrate
-the broader CPU surface with ordinary Tea-authored components and state:
+closes, general margin accounting, resting entries or limits, multiple
+independent exits, explicit cancellation commands, OCA groups, or general
+intrabar price paths. Examples that need those behaviors still demonstrate the
+broader CPU surface with ordinary Tea-authored components and state:
 
 - signed and quantity-aware positions;
 - weighted cost and target allocation;
@@ -83,7 +88,10 @@ the broader CPU surface with ordinary Tea-authored components and state:
 
 Nothing in the compiler or runtime recognizes these strategy names. Their
 canonical or strategy-specific components compile through the same parser →
-checker → noder → codegen path as any other Tea source.
+checker → noder → codegen path as any other Tea source. The current canonical
+`Broker` is explicitly a scalar, at-most-two-fill interface; a general order
+book will use a bounded fill-drain revision rather than forcing many fills
+through this shape.
 
 ## Explicit boundaries
 

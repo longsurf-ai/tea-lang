@@ -12,6 +12,7 @@ import {compileProgramToWgsl} from '../../codegen/wgsl';
 import type {CompiledWgslProgram} from '../../gpu/contract';
 import {compileToProgram} from '../../compile';
 import type {Program} from '../../ir/program';
+import {TypeKind} from '../../ir/type';
 import {mustBuild} from '../../noder/testing';
 import {MemorySink} from '../../providers/sinks/memory-sink';
 import type {
@@ -144,9 +145,9 @@ test('Dawn matches canonical explicit-quantity close fills and pyramiding', asyn
       ')',
       'strat.begin(open, bar_index)',
       'if bar_index == 0',
-      '    strat.entry("First", strategy.Direction.long, qty = 2.0)',
+      '    strat.entry("Long", strategy.Direction.long, qty = 2.0)',
       'if bar_index == 1',
-      '    strat.entry("Second", strategy.Direction.long, qty = 3.0)',
+      '    strat.entry("Long", strategy.Direction.long, qty = 3.0)',
       'if bar_index == 2',
       '    strat.close("All")',
       'strat.end(close, barstate.islast)',
@@ -179,6 +180,101 @@ test('Dawn matches canonical explicit-quantity close fills and pyramiding', asyn
   );
   try {
     await execution.runAll();
+    assertSinkParity(cpuSink, gpuSink, result.artifact);
+  } finally {
+    execution.dispose();
+    device.destroy();
+  }
+});
+
+test('Dawn matches canonical percent-equity entries and attached stops', async () => {
+  const program = mustBuild(
+    [
+      'strategy("canonical scalar attached stop")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(',
+      '        commission = broker.commissionPercent(0.1),',
+      '        slippage = broker.slippageTicks(1.0, 1.0),',
+      '        processOrdersOnClose = false',
+      '    ),',
+      '    portfolio = portfolio.new(initialCash = 1000.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long A", strategy.Direction.long, sizing = strategy.percentOfEquity(10.0))',
+      '    strat.exit("Stop A", fromEntry = "Long A", stop = 9.0, activateOnEntryBar = true)',
+      'if bar_index == 2',
+      '    strat.entry("Long B", strategy.Direction.long, sizing = strategy.percentOfEquity(10.0))',
+      '    strat.exit("Stop B", fromEntry = "Long B", stop = 9.0, activateOnEntryBar = true)',
+      'strat.end(close, barstate.islast)',
+      'plot(strat.cash())',
+      'plot(strat.position_quantity())',
+      'plot(strat.equity())',
+      'plot(strat.realized_pnl())',
+      'plot(strat.total_fees())',
+      'plot(strat.fill_count())',
+      'plot(strat.round_trip_count())',
+    ].join('\n'),
+  );
+  const result = compileProgramToWgsl(program);
+  assert.equal(
+    result.status,
+    'compiled',
+    result.status === 'staged-unsupported'
+      ? JSON.stringify(result.eligibility.issues)
+      : undefined,
+  );
+  if (result.status !== 'compiled') return;
+
+  const source = provider({
+    open: [10, 10, 7, 10],
+    high: [10, 12, 8, 12],
+    low: [10, 10, 6, 8],
+    close: [10, 11, 7, 9],
+  });
+  const cpuSink = new MemorySink();
+  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+
+  const cpuEffectTimeline = cpuSink.publications.flatMap(publication =>
+    publication.effects.map(effect => {
+      const type = program.effects[effect.effectId]?.payloadType;
+      assert.equal(type?.kind, TypeKind.UserType);
+      if (type?.kind !== TypeKind.UserType) {
+        throw new Error(`effect ${effect.effectId} has no nominal payload`);
+      }
+      return [publication.row, type.name] as const;
+    }),
+  );
+  assert.deepEqual(cpuEffectTimeline, [
+    [0, 'OrderSubmitted'],
+    [0, 'OrderSubmitted'],
+    [1, 'FillExecuted'],
+    [2, 'FillExecuted'],
+    [2, 'OrderSubmitted'],
+    [2, 'OrderSubmitted'],
+    [3, 'FillExecuted'],
+    [3, 'FillExecuted'],
+  ]);
+
+  Object.assign(globalThis, globals);
+  const gpu = create([]);
+  const adapter = await gpu.requestAdapter();
+  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
+  const device = await adapter.requestDevice();
+  const gpuSink = new MemorySink();
+  const execution = await createGpuExecution(
+    device,
+    result.artifact,
+    [binding(source, gpuSink)],
+    {maxRowsPerChunk: 1},
+  );
+  try {
+    const summary = await execution.runAll();
+    assert.equal(summary.chunks, 4);
+    assert.equal(summary.dispatches, 4);
     assertSinkParity(cpuSink, gpuSink, result.artifact);
   } finally {
     execution.dispose();
