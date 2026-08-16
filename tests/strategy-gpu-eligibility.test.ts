@@ -35,6 +35,50 @@ interface FirstBlocker {
   readonly message: string;
 }
 
+interface ClosureCeiling {
+  readonly functionCount: number;
+  readonly frameCount: number;
+  readonly fixedBytes: number;
+  readonly sourceBytes: number;
+  readonly maxEffectsPerRow: number;
+}
+
+// These are the direct NetTrade baselines captured before the lifecycle
+// family split. A narrower abstraction may improve them, but never enlarge a
+// previously eligible Program merely because its coordinator became clearer.
+const CLOSURE_CEILINGS: Readonly<
+  Record<(typeof EXPECTED_ELIGIBLE)[number], ClosureCeiling>
+> = {
+  'atr-zigzag-breakout': {
+    functionCount: 48,
+    frameCount: 49,
+    fixedBytes: 23_848,
+    sourceBytes: 5_292_152,
+    maxEffectsPerRow: 25,
+  },
+  'cpu-gpu-next-open': {
+    functionCount: 32,
+    frameCount: 33,
+    fixedBytes: 13_648,
+    sourceBytes: 3_330_144,
+    maxEffectsPerRow: 20,
+  },
+  'ema-cross': {
+    functionCount: 38,
+    frameCount: 39,
+    fixedBytes: 12_992,
+    sourceBytes: 3_284_208,
+    maxEffectsPerRow: 18,
+  },
+  'turtle-system': {
+    functionCount: 41,
+    frameCount: 42,
+    fixedBytes: 19_300,
+    sourceBytes: 3_943_996,
+    maxEffectsPerRow: 24,
+  },
+};
+
 const EXPECTED_FIRST_BLOCKERS: Readonly<Record<string, FirstBlocker>> = {
   'ai-supertrend-knn': {
     code: 'collection-layout-unimplemented',
@@ -94,7 +138,8 @@ const SHARED_SCALAR_EXECUTION_TYPES = new Set([
   'FillExecuted',
   'FinishResult',
   'NetPortfolio',
-  'NetTrade<BrokerEmulator, NetPortfolio>',
+  'NextOpenTrade<BrokerEmulator, NetPortfolio>',
+  'OhlcTrade<BrokerEmulator, NetPortfolio>',
   'Order',
   'OrderCancelled',
   'OrderExpired',
@@ -102,6 +147,7 @@ const SHARED_SCALAR_EXECUTION_TYPES = new Set([
   'OrderSubmitted',
   'PositionTarget',
   'PortfolioSnapshot',
+  'PathTrade<BrokerEmulator, NetPortfolio>',
   'Sizing',
   'Slippage',
 ]);
@@ -130,6 +176,11 @@ test('pins every strategy example at the real WGSL eligibility boundary', () => 
     if (result.status === 'compiled') {
       eligible.push(strategyName);
       expectScalarSharedClosure(strategyName, program);
+      expectNoExecutionAbstractionRegression(
+        strategyName as (typeof EXPECTED_ELIGIBLE)[number],
+        program,
+        result,
+      );
       continue;
     }
 
@@ -163,6 +214,48 @@ function compileStrategy(strategyName: string): Program {
   return program;
 }
 
+function expectNoExecutionAbstractionRegression(
+  strategyName: (typeof EXPECTED_ELIGIBLE)[number],
+  program: Program,
+  result: Extract<
+    ReturnType<typeof compileProgramToWgsl>,
+    {status: 'compiled'}
+  >,
+): void {
+  const ceiling = CLOSURE_CEILINGS[strategyName];
+  expect(result.eligibility.inventory.functionCount).toBeLessThanOrEqual(
+    ceiling.functionCount,
+  );
+  expect(result.artifact.state.frames.length).toBeLessThanOrEqual(
+    ceiling.frameCount,
+  );
+  expect(result.artifact.executionStateFixedByteSize).toBeLessThanOrEqual(
+    ceiling.fixedBytes,
+  );
+  expect(result.artifact.module.source.length).toBeLessThanOrEqual(
+    ceiling.sourceBytes,
+  );
+  expect(result.artifact.maxEffectsPerRow).toBeLessThanOrEqual(
+    ceiling.maxEffectsPerRow,
+  );
+
+  const rootTrade = result.artifact.state.frames[0]?.locals.find(
+    local => local.name === 'strat',
+  );
+  expect(rootTrade?.valueWordCount).toBeLessThanOrEqual(175);
+
+  const functionNames = funcsOf(program).map(func => func.name);
+  const forbidden =
+    strategyName === 'atr-zigzag-breakout'
+      ? ['.on_open', '.on_close', '.match_pending', '.execute_now']
+      : ['.match_pending', '.match_exit', '.match_path_', '.execute_now'];
+  expect(
+    functionNames.filter(name =>
+      forbidden.some(fragment => name.includes(fragment)),
+    ),
+  ).toEqual([]);
+}
+
 function expectScalarSharedClosure(
   strategyName: string,
   program: Program,
@@ -194,7 +287,7 @@ function expectScalarSharedClosure(
     .filter(
       name =>
         name.includes('LotPortfolio') ||
-        name.includes('OpenTrade') ||
+        /\bOpenTrade\b/.test(name) ||
         /\.(?:entry_now|close_trade|open_trade|update_open_trade)(?:<|$)/.test(
           name,
         ) ||

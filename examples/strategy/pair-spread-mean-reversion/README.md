@@ -4,7 +4,7 @@ This is a clean-room Tea implementation of the behavior exposed by TradingView's
 
 Despite the original title, its public behavior is not a market-neutral two-leg arbitrage. Two requested instruments form a close-price spread and its rolling mean and standard deviation. A lower-band break submits a long order for the chart instrument; a move above the spread mean closes that position. This example preserves that single-instrument behavior. The source defaults use Yahoo's resolvable `YM=F` and `ES=F` equivalents of the published continuous-index-future pair. The supplied sweep deliberately overrides them with `BTC-USD` and `ETH-USD`, so its signal and its checked-in Binance BTCUSDT primary instrument all belong to the crypto market rather than presenting a futures signal over BTC as if it were the original strategy's performance.
 
-The strategy uses `trade.net` to coordinate Tea's canonical broker and portfolio components with the published historical-bar execution settings:
+The strategy uses `trade.nextOpen` to coordinate Tea's canonical broker and portfolio components with the published historical-bar execution settings:
 
 - one fixed contract by default;
 - market orders filled at the next primary bar's open;
@@ -22,7 +22,7 @@ bun src/main.ts execute examples/strategy/pair-spread-mean-reversion/sweep.yaml
 
 ## Observed reference run
 
-On 2026-08-16, after migrating the strategy to `trade.net` with the canonical broker and portfolio components, the bounded sweep completed all 9 bindings and 29,547 primary rows on the CPU runtime. The engine reported 7.59 ms of lowering, 39,224.17 ms of execution, and 39,231.76 ms total. Its returns, drawdowns, fill counts, and round-trip counts matched the prior local-broker reference run.
+On 2026-08-16, after migrating the strategy to `trade.nextOpen` with the canonical broker and portfolio components, the bounded sweep completed all 9 bindings and 29,547 primary rows on the CPU runtime. The engine reported 7.59 ms of lowering, 39,224.17 ms of execution, and 39,231.76 ms total. Its returns, drawdowns, fill counts, and round-trip counts matched the prior local-broker reference run.
 
 - Best total return: binding 3 (`mean_length=20`, `entry_deviations=1.5`), +50.5834%, with 54.6385% maximum drawdown and 72 round trips.
 - Worst total return: binding 2 (`mean_length=10`, `entry_deviations=2.5`), -89.5488%, with 109.3452% maximum drawdown and 22 round trips.

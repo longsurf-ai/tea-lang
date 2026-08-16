@@ -14,7 +14,7 @@ same-bar bracket ordering. Standard `broker.FillExecuted` events feed the
 dashboard.
 
 The strategy now composes the shipped `broker.new`, `portfolio.new`, and
-`trade.net` components. Resting buy stops, atomic stop/target exits,
+`trade.ohlc` components. Resting buy stops, atomic stop/target exits,
 replacement/cancellation, fill pricing, costs, and accounting therefore live
 in the canonical libraries rather than in a strategy-local fill factory. The
 Tea port omits the publication's display-only bias-history collection because

@@ -12,7 +12,7 @@ slippage = input.float(0.1, "Slippage", minval=0.0)
 fee = input.float(0.1, "Fee", minval=0.0)
 initial_cash = input.float(121.0, "Initial cash", minval=1.0)
 
-var strat = trade.net(
+var strat = trade.nextOpen(
 	broker = broker.new(
 		commission = broker.commissionRate(fee),
 		slippage = broker.slippageRate(slippage),
@@ -26,7 +26,7 @@ var strat = trade.net(
 	)
 )
 
-strat.begin(open, bar_index)
+strat.begin_bar(open, bar_index)
 
 // Orders submitted after begin can only fill at a later bar's open.
 if bar_index == 0
@@ -36,7 +36,7 @@ if bar_index == 1
 if bar_index == 2
 	strat.entry("Long", trade.Direction.long)
 
-expired = strat.end(close, barstate.islast)
+expired = strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
 plot(metrics.cash, "cash")

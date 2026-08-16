@@ -13,7 +13,7 @@ Clean-room Tea conversion of TradingView's open-source [Cowabunga System from ba
 - The source defaults are take profit 1,000 ticks, stop loss disabled (`0 → na`), trailing activation 400 ticks, and trailing offset disabled (`0 → na`). Because Pine trailing exits require both activation and offset, the selected default has a profit target but no active stop or trailing pair. Tea still implements the nonzero stop and complete trailing pair for direct parameter overrides; simultaneous intrabar levels follow TradingView's documented inferred OHLC path.
 
 Execution is composed from Tea's canonical `broker.new`, `portfolio.new`, and
-`trade.net` components. Signed quantity targets use `strat.rebalance`,
+`trade.path` components. Signed quantity targets use `strat.rebalance`,
 so a next-open reversal remains one delta fill, while fill-derived exits use the
 broker's fixed-scalar OHLC path phases. The nondefault trailing branch is now
 strictly path-causal: activation and the favorable-extreme update happen on one

@@ -28,7 +28,7 @@ risk_reward = input.float(2.0, "Reward multiple", minval=0.1, maxval=20.0)
 trading_window_mode = input.int(0, "Trading window profile: 0 disabled", minval=0, maxval=1)
 initial_cash = input.float(50000.0, "Initial cash", minval=1.0)
 
-var strat = trade.net(
+var strat = trade.path(
 	broker = broker.new(
 		commission = broker.commissionRate(0.0),
 		slippage = broker.slippageRate(0.0)
@@ -47,14 +47,14 @@ var float active_target = na
 
 // Existing orders are replayed through the deterministic bar path before the
 // completed bar updates the ZigZag state and replaces pending orders.
-primary = strat.begin_path_primary(open, high, low, close, bar_index)
+primary = strat.begin_bar(open, high, low, close, bar_index)
 if not na(primary.pending) and strat.position_quantity() != 0.0
 	active_stop := pending_stop
 	active_target := pending_target
 	float no_pending = na
 	pending_stop := no_pending
 	pending_target := no_pending
-exit_execution = strat.process_path_exit(open, high, low, close)
+exit_execution = strat.continue_bar(open, high, low, close)
 if not na(exit_execution)
 	float no_active = na
 	active_stop := no_active
@@ -193,8 +193,7 @@ if strat.position_quantity() == 0.0 and valid_profile
 		strat.entry("Short Open", trade.Direction.short, qty = 1.0, stop = last_low_level)
 		strat.exit("Short Bracket", fromEntry = "Short Open", stop = pending_stop, target = pending_target, activateOnEntryBar = true)
 
-strat.mark(close)
-strat.finish(barstate.islast)
+strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
 plot(close, "close")

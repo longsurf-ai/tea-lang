@@ -20,7 +20,7 @@ initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 slippage = input.float(0.0, "Adverse slippage rate", minval=0.0, maxval=0.05)
 fee = input.float(0.001, "Taker fee rate", minval=0.0, maxval=0.05)
 
-var strat = trade.net(
+var strat = trade.nextOpen(
 	broker = broker.new(
 		commission = broker.commissionRate(fee),
 		slippage = broker.slippageRate(slippage),
@@ -36,7 +36,7 @@ var strat = trade.net(
 
 // begin() applies any order submitted on a prior bar. Capturing its Fill lets
 // the optional tight-stop state use the actual next-open entry price.
-execution = strat.begin(open, bar_index)
+execution = strat.begin_bar(open, bar_index)
 
 var float entry_price = na
 var float profit_floor = na
@@ -79,7 +79,7 @@ if long_signal and not in_position and not strat.has_pending()
 if close_signal and not strat.has_pending()
 	strat.close("Donchian Long")
 
-strat.end(close, barstate.islast)
+strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
 plot(close, "close")

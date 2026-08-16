@@ -44,7 +44,7 @@
       "data": "compile/strategy-components/data.csv",
       "reference": "compile/strategy-components/reference.json",
       "sha256": {
-        "source": "53363f520ff5d8dbeee04c4dd242427641673b069f99290b08731144a4a95412",
+        "source": "cbf5493c0f63d1e1d7c26f16355c0374c15ae2f5901b4d1557bfd28c779b2f68",
         "data": "e1e088513ef236556ec9f781dfec7aa0df1ceae7b93683320391039f0a985a9b",
         "reference": "38e2d2dbee999a133a240a682f6529688e6649490f541a96ce400b8d577089e5"
       }

@@ -41,11 +41,18 @@ are runtime fixtures, not parameter recommendations or profitability claims.
 ## Why these are Tea programs rather than compiler features
 
 All twelve audited profiles compose Tea's shipped broker, portfolio, and trade
-components. The scalar `BrokerEmulator` + `NetPortfolio` path is coordinated
-by `trade.net` for net-position strategies:
+components. Each net-position strategy selects only the execution family it
+uses:
+
+- `trade.nextOpen(...)` for next-open and optional signal-close execution;
+- `trade.ohlc(...)` for unordered OHLC range matching and fixed exits;
+- `trade.path(...)` for segment-ordered OHLC replay and trailing exits.
+
+All three families reuse the scalar `BrokerEmulator` + `NetPortfolio`
+components. A next-open strategy, for example, is configured and driven as:
 
 ```tea
-var strat = trade.net(
+var strat = trade.nextOpen(
     broker = broker.new(
         commission = broker.commissionRate(fee),
         slippage = broker.slippageRate(slippage),
@@ -58,24 +65,25 @@ var strat = trade.net(
         marginShort = 100.0
     )
 )
+
+strat.begin_bar(open, bar_index)
+// Submit entries, closes, or rebalances.
+strat.end_bar(close, barstate.islast)
 ```
 
-That path supports one pending market-or-directional-stop command; explicit,
+The shared scheduled scalar broker supports one pending command; explicit,
 all-available-capital, captured percent-of-equity, or fill-time
-percent-of-equity entry sizing; next-open, intrabar stop-touch, or
-process-on-close execution; rate/percent/tick slippage; rate/percent/cash
-commission; signed positions; aggregate same-direction pyramiding; partial
-target rebalances; and ordered reversals. It also supports one scalar atomic
-stop/target exit attached to a pending or open long or short entry, explicit
-cancellation, and bounded primary-then-exit matching through
-`strat.begin_bar(...)`, plus segment-ordered OHLC replay through
-`strat.begin_path(...)`. The path lifecycle resumes after an intrabar entry and
-supports fixed and trailing exits without reusing a pre-entry extreme. All
-same-direction adds in this scalar model reuse one entry id; the attached exit
-closes that aggregate net position. Both
-`marginLong` and `marginShort` accept `100` (new exposure plus fees must fit
-available capital) or `0` (the gate is disabled). Intermediate leverage fails
-closed until the portfolio has true free-margin accounting.
+percent-of-equity entry sizing; rate/percent/tick slippage;
+rate/percent/cash commission; signed positions; aggregate same-direction
+pyramiding; partial target rebalances; and ordered reversals. `trade.ohlc`
+adds stop-touch entries and one atomic fixed stop/target exit.
+`trade.path` splits a bar into `begin_bar(...)` and `continue_bar(...)`, so an
+intrabar entry's attached fixed or trailing exit inspects only the remaining
+path without reusing a pre-entry extreme. All same-direction adds in the
+scalar model reuse one entry id; an attached exit closes that aggregate net
+position. Both `marginLong` and `marginShort` accept `100` (new exposure plus
+fees must fit available capital) or `0` (the gate is disabled). Intermediate
+leverage fails closed until the portfolio has true free-margin accounting.
 
 Alice Grid selects `trade.lots(...)` with the separate
 `portfolio.lots(...)` policy. It provides an explicit `maxOpenTrades`

@@ -11,7 +11,7 @@ initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 slippage = input.float(0.0005, "Adverse slippage rate", minval=0.0, maxval=0.05)
 fee = input.float(0.001, "Taker fee rate", minval=0.0, maxval=0.05)
 
-var strat = trade.net(
+var strat = trade.nextOpen(
 	broker = broker.new(
 		commission = broker.commissionRate(fee),
 		slippage = broker.slippageRate(slippage),
@@ -25,7 +25,7 @@ var strat = trade.net(
 	)
 )
 
-strat.begin(open, bar_index)
+strat.begin_bar(open, bar_index)
 
 fast_value = ta.ema(close, fast_length)
 slow_value = ta.ema(close, slow_length)
@@ -40,7 +40,7 @@ if valid_lengths and crossed_above and strat.position_quantity() == 0.0 and not 
 if valid_lengths and crossed_below and strat.position_quantity() > 0.0 and not strat.has_pending()
 	strat.close("EMA Long")
 
-strat.end(close, barstate.islast)
+strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
 plot(close, "close")

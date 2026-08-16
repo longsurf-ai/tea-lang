@@ -14,7 +14,7 @@ fees, one-tick adverse slippage, and standard `broker.FillExecuted` effects.
 Its two RSI streams use strategy-local SMA-seeded Wilder state to match Pine's
 `ta.rsi` initialization without changing Tea's shared indicator contract.
 Target-percent rebalances, partial reductions, weighted accounting, and the
-resting emergency stop run through Tea's canonical `trade.net`, `broker`, and
+resting emergency stop run through Tea's canonical `trade.ohlc`, `broker`, and
 `portfolio` components; the example owns only the published signal state.
 
 The publication's separate Intraday Reversion profile is not selected here:

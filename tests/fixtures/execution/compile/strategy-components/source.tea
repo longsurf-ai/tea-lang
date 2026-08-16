@@ -5,12 +5,12 @@ import broker
 import portfolio
 import trade
 
-var strat = trade.net(
+var strat = trade.nextOpen(
 	broker = broker.basic(0.1, 0.1),
 	portfolio = portfolio.basic(121.0)
 )
 
-strat.begin(open, bar_index)
+strat.begin_bar(open, bar_index)
 
 if bar_index == 0
 	strat.entry("Long", trade.Direction.long)
@@ -19,7 +19,7 @@ if bar_index == 1
 if bar_index == 2
 	strat.entry("Long", trade.Direction.long)
 
-expired = strat.end(close, barstate.islast)
+expired = strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
 plot(strat.cash(), "cash")

@@ -22,7 +22,7 @@ take_profit_percent = input.float(2.0, "Take profit (%)", minval=0.1, maxval=100
 initial_cash = input.float(10000.0, "Initial cash", minval=1.0)
 commission_percent = input.float(0.1, "Commission (%)", minval=0.0, maxval=10.0)
 
-var strat = trade.net(
+var strat = trade.nextOpen(
 	broker = broker.new(
 		commission = broker.commissionPercent(commission_percent),
 		slippage = broker.slippageRate(0.0),
@@ -40,7 +40,7 @@ var float take_profit_price = na
 var float trailing_stop = na
 float missing_value = na
 
-strat.begin(open, bar_index)
+strat.begin_bar(open, bar_index)
 if strat.position_quantity() == 0.0
 	stop_loss_price := missing_value
 	take_profit_price := missing_value

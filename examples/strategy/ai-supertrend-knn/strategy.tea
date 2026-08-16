@@ -61,7 +61,7 @@ allocation_percent = input.float(10.0, "Entry equity percent", minval=0.1, maxva
 commission_percent = input.float(0.1, "Commission (%)", minval=0.0, maxval=10.0)
 tick_size = input.float(0.01, "Instrument tick size", minval=0.00000001)
 
-var strat = trade.net(
+var strat = trade.ohlc(
 	broker = broker.new(
 		commission = broker.commissionPercent(commission_percent),
 		slippage = broker.slippageTicks(1.0, tick_size),
@@ -146,7 +146,7 @@ if long_exit_condition and not na(long_stop) and (strat.position_quantity() > 0.
 	strat.exit("AI Long Stop", fromEntry = "AI Long", stop = long_stop, activateOnEntryBar = true)
 	display_active_stop := long_stop
 
-strat.end(close, barstate.islast)
+strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
 plot(close, "close")

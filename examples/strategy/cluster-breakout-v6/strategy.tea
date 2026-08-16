@@ -50,7 +50,7 @@ adx_length = input.int(14, "ADX length", minval=2, maxval=200)
 adx_minimum = input.float(20.0, "Minimum ADX", minval=0.0, maxval=100.0)
 initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 
-var strat = trade.net(
+var strat = trade.ohlc(
 	broker = broker.new(
 		commission = broker.commissionRate(0.0),
 		slippage = broker.slippageRate(0.0),

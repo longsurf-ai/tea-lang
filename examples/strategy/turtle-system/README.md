@@ -15,7 +15,7 @@ spacing, one whole-position stop, and the System 1 skip rule. A skipped System
 next System 1 breakout may be taken, while a System 2 breakout remains eligible.
 
 Execution and accounting use the compiler-shipped canonical components:
-`broker.new(...)`, `portfolio.new(...)`, and `trade.net(...)`. The
+`broker.new(...)`, `portfolio.new(...)`, and `trade.nextOpen(...)`. The
 broker processes explicit-quantity market orders on the signal bar's close;
 the portfolio maintains the weighted-average long position, cash, realized
 PnL, drawdown, fill count, and round trips. Turtle's existing `unit_count`

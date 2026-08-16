@@ -18,22 +18,33 @@ const SPECIALIZATION_SOURCE = [
   'import broker',
   'import portfolio',
   'import trade',
-  'var netState = trade.net(',
+  'var nextOpenState = trade.nextOpen(',
   '    broker.new(processOrdersOnClose = true),',
   '    portfolio.new(initialCash = 100.0, marginLong = 0.0, marginShort = 0.0)',
   ')',
+  'var ohlcState = trade.ohlc(broker.new(), portfolio.new())',
+  'var pathState = trade.path(broker.new(), portfolio.new())',
   'var lotState = trade.lots(',
   '    broker.new(),',
   '    portfolio.lots(initialCash = 100.0, maxOpenTrades = 2)',
   ')',
-  'netState.begin(open, bar_index)',
+  'nextOpenState.begin_bar(open, bar_index)',
+  'ohlcState.begin_bar(open, high, low, bar_index)',
+  'pathState.begin_bar(open, high, low, close, bar_index)',
   'lotState.begin_bar(close, bar_index)',
   'if bar_index == 0',
-  '    netState.entry("Net", trade.Direction.long, qty = 1.0)',
+  '    nextOpenState.entry("Next", trade.Direction.long, qty = 1.0)',
+  '    ohlcState.entry("OHLC", trade.Direction.long, qty = 1.0)',
+  '    pathState.entry("Path", trade.Direction.long, qty = 1.0)',
   '    lotState.entry("Lot", "Reverse", trade.Direction.long, qty = 1.0)',
-  'netState.end(close, barstate.islast)',
+  'pathState.continue_bar(open, high, low, close)',
+  'nextOpenState.end_bar(close, barstate.islast)',
+  'ohlcState.end_bar(close, barstate.islast)',
+  'pathState.end_bar(close, barstate.islast)',
   'lotState.mark()',
-  'plot(netState.snapshot().equity)',
+  'plot(nextOpenState.snapshot().equity)',
+  'plot(ohlcState.snapshot().equity)',
+  'plot(pathState.snapshot().equity)',
   'plot(lotState.snapshot().equity)',
 ].join('\n');
 
@@ -89,29 +100,47 @@ describe('trade library', () => {
     expect([...tradePackage(result).exports.keys()].sort()).toEqual([
       'Direction',
       'LotTrade',
-      'NetTrade',
+      'NextOpenTrade',
+      'OhlcTrade',
+      'PathTrade',
       'Sizing',
       'SizingKind',
       'lots',
-      'net',
+      'nextOpen',
+      'ohlc',
+      'path',
       'percentOfEquity',
       'percentOfEquityAtFill',
       'targetPercentOfEquity',
       'targetQuantity',
     ]);
 
-    const net = tradePackage(result).exports.get('NetTrade');
+    const nextOpen = tradePackage(result).exports.get('NextOpenTrade');
+    const ohlc = tradePackage(result).exports.get('OhlcTrade');
+    const path = tradePackage(result).exports.get('PathTrade');
     const lots = tradePackage(result).exports.get('LotTrade');
-    expect(net?.kind).toBe(ObjectKind.GenericUserType);
+    expect(nextOpen?.kind).toBe(ObjectKind.GenericUserType);
+    expect(ohlc?.kind).toBe(ObjectKind.GenericUserType);
+    expect(path?.kind).toBe(ObjectKind.GenericUserType);
     expect(lots?.kind).toBe(ObjectKind.GenericUserType);
     if (
-      net?.kind !== ObjectKind.GenericUserType ||
+      nextOpen?.kind !== ObjectKind.GenericUserType ||
+      ohlc?.kind !== ObjectKind.GenericUserType ||
+      path?.kind !== ObjectKind.GenericUserType ||
       lots?.kind !== ObjectKind.GenericUserType
     ) {
       throw new Error('trade package lost its generic coordinator types');
     }
-    expect(net.typeParams.map(param => param.constraint.name)).toEqual([
-      'ScheduledBroker',
+    expect(nextOpen.typeParams.map(param => param.constraint.name)).toEqual([
+      'NextOpenBroker',
+      'NetLedger',
+    ]);
+    expect(ohlc.typeParams.map(param => param.constraint.name)).toEqual([
+      'OhlcBroker',
+      'NetLedger',
+    ]);
+    expect(path.typeParams.map(param => param.constraint.name)).toEqual([
+      'PathBroker',
       'NetLedger',
     ]);
     expect(lots.typeParams.map(param => param.constraint.name)).toEqual([
@@ -123,7 +152,7 @@ describe('trade library', () => {
     );
   });
 
-  test('checks and nodes the scheduled/net and immediate/lot surfaces', () => {
+  test('checks and nodes each direct policy surface', () => {
     const result = checkText(SPECIALIZATION_SOURCE);
 
     expect(result.errors).toEqual([]);
@@ -131,10 +160,19 @@ describe('trade library', () => {
       funcsOf(mustBuild(SPECIALIZATION_SOURCE)).map(func => func.name),
     ).toEqual(
       expect.arrayContaining([
-        'NetTrade<BrokerEmulator, NetPortfolio>.begin',
-        'NetTrade<BrokerEmulator, NetPortfolio>.entry',
-        'NetTrade<BrokerEmulator, NetPortfolio>.end',
-        'NetTrade<BrokerEmulator, NetPortfolio>.snapshot',
+        'NextOpenTrade<BrokerEmulator, NetPortfolio>.begin_bar',
+        'NextOpenTrade<BrokerEmulator, NetPortfolio>.entry',
+        'NextOpenTrade<BrokerEmulator, NetPortfolio>.end_bar',
+        'NextOpenTrade<BrokerEmulator, NetPortfolio>.snapshot',
+        'OhlcTrade<BrokerEmulator, NetPortfolio>.begin_bar',
+        'OhlcTrade<BrokerEmulator, NetPortfolio>.entry',
+        'OhlcTrade<BrokerEmulator, NetPortfolio>.end_bar',
+        'OhlcTrade<BrokerEmulator, NetPortfolio>.snapshot',
+        'PathTrade<BrokerEmulator, NetPortfolio>.begin_bar',
+        'PathTrade<BrokerEmulator, NetPortfolio>.entry',
+        'PathTrade<BrokerEmulator, NetPortfolio>.continue_bar',
+        'PathTrade<BrokerEmulator, NetPortfolio>.end_bar',
+        'PathTrade<BrokerEmulator, NetPortfolio>.snapshot',
         'LotTrade<BrokerEmulator, LotPortfolio>.begin_bar',
         'LotTrade<BrokerEmulator, LotPortfolio>.entry',
         'LotTrade<BrokerEmulator, LotPortfolio>.mark',
@@ -150,9 +188,13 @@ describe('trade library', () => {
         'import broker',
         'import portfolio',
         'import trade',
-        'var netState = trade.net(broker.new(), portfolio.new())',
+        'var nextOpenState = trade.nextOpen(broker.new(), portfolio.new())',
+        'var ohlcState = trade.ohlc(broker.new(), portfolio.new())',
+        'var pathState = trade.path(broker.new(), portfolio.new())',
         'var lotState = trade.lots(broker.new(), portfolio.lots())',
-        'netState.close_trade("wrong", 1)',
+        'nextOpenState.close_trade("wrong", 1)',
+        'ohlcState.continue_bar(open, high, low, close)',
+        'pathState.process_close(close)',
         'lotState.cancel("wrong")',
         'lotState.open_trade(0)',
       ].join('\n'),
@@ -161,6 +203,12 @@ describe('trade library', () => {
 
     expect(
       messages.some(message => message.includes('close_trade')),
+    ).toBeTrue();
+    expect(
+      messages.some(message => message.includes('continue_bar')),
+    ).toBeTrue();
+    expect(
+      messages.some(message => message.includes('process_close')),
     ).toBeTrue();
     expect(messages.some(message => message.includes('cancel'))).toBeTrue();
     expect(messages.some(message => message.includes('open_trade'))).toBeTrue();
@@ -173,7 +221,9 @@ describe('trade library', () => {
         'import broker',
         'import portfolio',
         'import trade',
-        'badNet = trade.net(broker.new(), portfolio.lots())',
+        'badNext = trade.nextOpen(broker.new(), portfolio.lots())',
+        'badOhlc = trade.ohlc(broker.new(), portfolio.lots())',
+        'badPath = trade.path(broker.new(), portfolio.lots())',
         'badLots = trade.lots(broker.new(), portfolio.new())',
       ].join('\n'),
     );

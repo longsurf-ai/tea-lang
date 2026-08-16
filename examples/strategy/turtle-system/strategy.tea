@@ -19,7 +19,7 @@ l1_exit_length = input.int(10, "System 1 exit length", minval=2, maxval=300)
 l2_exit_length = input.int(20, "System 2 exit length", minval=2, maxval=300)
 initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 
-var strat = trade.net(
+var strat = trade.nextOpen(
 	broker = broker.new(
 		commission = broker.commissionRate(),
 		slippage = broker.slippagePercent(),
@@ -36,7 +36,7 @@ var strat = trade.net(
 	)
 )
 
-strat.begin(open, bar_index)
+strat.begin_bar(open, bar_index)
 
 previous_close = close[1]
 true_range = na(previous_close) ? high - low : math.max(high - low, math.max(math.abs(high - previous_close), math.abs(low - previous_close)))

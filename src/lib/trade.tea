@@ -1,7 +1,8 @@
 //@version=1
-// Policy-specific trade coordinators. NetTrade owns scheduled scalar-net
-// lifecycle calls; LotTrade owns immediate bounded-lot calls. Broker matching
-// and portfolio accounting remain in their respective components.
+// Policy-specific trade coordinators. NextOpenTrade, OhlcTrade, and PathTrade
+// own distinct scalar-net lifecycles; LotTrade owns immediate bounded-lot
+// calls. Broker matching and portfolio accounting remain in their respective
+// components.
 library("trade")
 
 import broker
@@ -20,12 +21,15 @@ export type Sizing
 	float value
 	bool commissionIncluded = false
 
-export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
+// NextOpenTrade coordinates only next-open and optional close processing.
+// It owns the concrete broker and portfolio values directly so choosing this
+// narrower policy adds no wrapper state to the generated Program.
+export type NextOpenTrade<B: broker.NextOpenBroker, P: portfolio.NetLedger>
 	B broker
 	P portfolio
 	int idx = -1
 
-	broker.Fill begin(float openPrice, int barIndex) =>
+	broker.Fill begin_bar(float openPrice, int barIndex) =>
 		this.idx := barIndex
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
@@ -37,7 +41,107 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 		this.portfolio := currentPortfolio
 		not na(continuation) ? continuation : execution
 
-	broker.BarMatches begin_primary(float openPrice, float highPrice, float lowPrice, int barIndex) =>
+	broker.Order entry(string commandId, Direction direction, float qty = na, Sizing sizing = na) =>
+		side = direction == Direction.long ? broker.Side.buy : broker.Side.sell
+		float notional = na
+		float cashBudget = na
+		float equityPercent = na
+		commissionIncluded = false
+		if not na(sizing)
+			sizingValid = (sizing.kind == SizingKind.percentOfEquity or sizing.kind == SizingKind.percentOfEquityAtFill) and not na(sizing.value) and sizing.value > 0.0 and sizing.value <= 100.0
+			if sizing.kind == SizingKind.percentOfEquityAtFill
+				commissionIncluded := sizing.commissionIncluded
+				equityPercent := sizingValid ? sizing.value : -1.0
+			else
+				metrics = this.portfolio.snapshot()
+				equity = metrics.equity
+				markedSizingValid = sizingValid and not na(equity) and equity > 0.0
+				budget = markedSizingValid ? equity * sizing.value / 100.0 : -1.0
+				if sizing.commissionIncluded
+					cashBudget := budget
+				else
+					notional := budget
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.entry, side, qty, this.idx, notional, na, na, false, na, cashBudget, equityPercent, commissionIncluded))
+
+	broker.Order close(string commandId) =>
+		currentQuantity = this.portfolio.position_quantity()
+		side = currentQuantity < 0.0 ? broker.Side.buy : broker.Side.sell
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.close, side, na, this.idx))
+
+	broker.Order rebalance(string commandId, broker.PositionTarget target) =>
+		currentQuantity = this.portfolio.position_quantity()
+		side = target.value > 0.0 ? broker.Side.buy : target.value < 0.0 ? broker.Side.sell : currentQuantity > 0.0 ? broker.Side.sell : broker.Side.buy
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.rebalance, side, na, this.idx, positionTarget = target))
+
+	int cancel(string commandId) =>
+		this.broker.cancel(commandId)
+
+	broker.Fill process_close(float closePrice) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		firstExecution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply_net(firstExecution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
+		currentPortfolio.apply_net(continuation)
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		not na(continuation) ? continuation : firstExecution
+
+	float mark(float price) =>
+		currentPortfolio = this.portfolio
+		value = currentPortfolio.mark(price)
+		this.portfolio := currentPortfolio
+		value
+
+	broker.FinishResult finish(bool isLast) =>
+		broker.FinishResult expired = na
+		if isLast
+			currentBroker = this.broker
+			expired := currentBroker.finish()
+			this.broker := currentBroker
+		expired
+
+	broker.FinishResult end_bar(float closePrice, bool isLast) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		execution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply_net(execution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
+		currentPortfolio.apply_net(continuation)
+		currentPortfolio.mark(closePrice)
+		broker.FinishResult expired = na
+		if isLast
+			expired := currentBroker.finish()
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		expired
+
+	float cash() const =>
+		this.portfolio.cash()
+
+	float position_quantity() const =>
+		this.portfolio.position_quantity()
+
+	float position_avg_price() const =>
+		this.portfolio.position_avg_price()
+
+	portfolio.PortfolioSnapshot snapshot() const =>
+		this.portfolio.snapshot()
+
+	bool has_pending() const =>
+		this.broker.has_pending()
+
+	bool has_pending_entry() const =>
+		this.broker.has_pending_entry()
+
+// OhlcTrade coordinates unordered OHLC range matching without deterministic
+// path or trailing-exit state in its public policy surface.
+export type OhlcTrade<B: broker.OhlcBroker, P: portfolio.NetLedger>
+	B broker
+	P portfolio
+	int idx = -1
+
+	broker.BarMatches begin_bar(float openPrice, float highPrice, float lowPrice, int barIndex) =>
 		this.idx := barIndex
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
@@ -46,25 +150,118 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
 		currentPortfolio.apply_net(continuation)
 		pendingExecution = not na(continuation) ? continuation : firstExecution
+		exitExecution = currentBroker.match_exit(openPrice, highPrice, lowPrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply_net(exitExecution)
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
-		broker.BarMatches.new(pendingExecution, na, not na(continuation) ? firstExecution : na)
+		broker.BarMatches.new(pendingExecution, exitExecution, not na(continuation) ? firstExecution : na)
 
-	broker.Fill process_exit(float openPrice, float highPrice, float lowPrice) =>
+	broker.Order entry(string commandId, Direction direction, float qty = na, Sizing sizing = na, float stop = na) =>
+		side = direction == Direction.long ? broker.Side.buy : broker.Side.sell
+		float notional = na
+		float cashBudget = na
+		float equityPercent = na
+		commissionIncluded = false
+		if not na(sizing)
+			sizingValid = (sizing.kind == SizingKind.percentOfEquity or sizing.kind == SizingKind.percentOfEquityAtFill) and not na(sizing.value) and sizing.value > 0.0 and sizing.value <= 100.0
+			if sizing.kind == SizingKind.percentOfEquityAtFill
+				commissionIncluded := sizing.commissionIncluded
+				equityPercent := sizingValid ? sizing.value : -1.0
+			else
+				metrics = this.portfolio.snapshot()
+				equity = metrics.equity
+				markedSizingValid = sizingValid and not na(equity) and equity > 0.0
+				budget = markedSizingValid ? equity * sizing.value / 100.0 : -1.0
+				if sizing.commissionIncluded
+					cashBudget := budget
+				else
+					notional := budget
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.entry, side, qty, this.idx, notional, na, stop, false, na, cashBudget, equityPercent, commissionIncluded))
+
+	broker.Order exit(string commandId, string fromEntry, float stop = na, float target = na, bool activateOnEntryBar = false) =>
+		currentQuantity = this.portfolio.position_quantity()
+		side = currentQuantity < 0.0 ? broker.Side.buy : broker.Side.sell
+		this.broker.submit_exit(broker.Command.new(commandId, broker.CommandKind.exit, side, na, this.idx, na, fromEntry, stop, activateOnEntryBar, target))
+
+	broker.Order close(string commandId) =>
+		currentQuantity = this.portfolio.position_quantity()
+		side = currentQuantity < 0.0 ? broker.Side.buy : broker.Side.sell
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.close, side, na, this.idx))
+
+	broker.Order rebalance(string commandId, broker.PositionTarget target) =>
+		currentQuantity = this.portfolio.position_quantity()
+		side = target.value > 0.0 ? broker.Side.buy : target.value < 0.0 ? broker.Side.sell : currentQuantity > 0.0 ? broker.Side.sell : broker.Side.buy
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.rebalance, side, na, this.idx, positionTarget = target))
+
+	int cancel(string commandId) =>
+		this.broker.cancel(commandId)
+
+	broker.Fill process_close(float closePrice) =>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
-		execution = currentBroker.match_exit(openPrice, highPrice, lowPrice, currentPortfolio.account(), this.idx)
-		currentPortfolio.apply_net(execution)
+		firstExecution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply_net(firstExecution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
+		currentPortfolio.apply_net(continuation)
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
-		execution
+		not na(continuation) ? continuation : firstExecution
 
-	broker.BarMatches begin_bar(float openPrice, float highPrice, float lowPrice, int barIndex) =>
-		primary = this.begin_primary(openPrice, highPrice, lowPrice, barIndex)
-		exitExecution = this.process_exit(openPrice, highPrice, lowPrice)
-		broker.BarMatches.new(primary.pending, exitExecution, primary.reversalClose)
+	float mark(float price) =>
+		currentPortfolio = this.portfolio
+		value = currentPortfolio.mark(price)
+		this.portfolio := currentPortfolio
+		value
 
-	broker.BarMatches begin_path_primary(float openPrice, float highPrice, float lowPrice, float closePrice, int barIndex) =>
+	broker.FinishResult finish(bool isLast) =>
+		broker.FinishResult expired = na
+		if isLast
+			currentBroker = this.broker
+			expired := currentBroker.finish()
+			this.broker := currentBroker
+		expired
+
+	broker.FinishResult end_bar(float closePrice, bool isLast) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		execution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply_net(execution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
+		currentPortfolio.apply_net(continuation)
+		currentPortfolio.mark(closePrice)
+		broker.FinishResult expired = na
+		if isLast
+			expired := currentBroker.finish()
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		expired
+
+	float cash() const =>
+		this.portfolio.cash()
+
+	float position_quantity() const =>
+		this.portfolio.position_quantity()
+
+	float position_avg_price() const =>
+		this.portfolio.position_avg_price()
+
+	portfolio.PortfolioSnapshot snapshot() const =>
+		this.portfolio.snapshot()
+
+	bool has_pending() const =>
+		this.broker.has_pending()
+
+	bool has_pending_entry() const =>
+		this.broker.has_pending_entry()
+
+// PathTrade coordinates deterministic intrabar path matching and therefore
+// exposes the full fixed and trailing exit command surface.
+export type PathTrade<B: broker.PathBroker, P: portfolio.NetLedger>
+	B broker
+	P portfolio
+	int idx = -1
+
+	broker.BarMatches begin_bar(float openPrice, float highPrice, float lowPrice, float closePrice, int barIndex) =>
 		this.idx := barIndex
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
@@ -77,7 +274,7 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 		this.portfolio := currentPortfolio
 		broker.BarMatches.new(pendingExecution, na, not na(continuation) ? firstExecution : na)
 
-	broker.Fill process_path_exit(float openPrice, float highPrice, float lowPrice, float closePrice) =>
+	broker.Fill continue_bar(float openPrice, float highPrice, float lowPrice, float closePrice) =>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
 		execution = currentBroker.match_path_exit(openPrice, highPrice, lowPrice, closePrice, currentPortfolio.account(), this.idx)
@@ -85,11 +282,6 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
 		execution
-
-	broker.BarMatches begin_path(float openPrice, float highPrice, float lowPrice, float closePrice, int barIndex) =>
-		primary = this.begin_path_primary(openPrice, highPrice, lowPrice, closePrice, barIndex)
-		exitExecution = this.process_path_exit(openPrice, highPrice, lowPrice, closePrice)
-		broker.BarMatches.new(primary.pending, exitExecution, primary.reversalClose)
 
 	broker.Order entry(string commandId, Direction direction, float qty = na, Sizing sizing = na, float stop = na) =>
 		side = direction == Direction.long ? broker.Side.buy : broker.Side.sell
@@ -131,38 +323,9 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 	int cancel(string commandId) =>
 		this.broker.cancel(commandId)
 
-	broker.Fill process_close(float closePrice) =>
+	broker.FinishResult end_bar(float closePrice, bool isLast) =>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
-		firstExecution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.idx)
-		currentPortfolio.apply_net(firstExecution)
-		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
-		currentPortfolio.apply_net(continuation)
-		this.broker := currentBroker
-		this.portfolio := currentPortfolio
-		not na(continuation) ? continuation : firstExecution
-
-	float mark(float price) =>
-		currentPortfolio = this.portfolio
-		value = currentPortfolio.mark(price)
-		this.portfolio := currentPortfolio
-		value
-
-	broker.FinishResult finish(bool isLast) =>
-		broker.FinishResult expired = na
-		if isLast
-			currentBroker = this.broker
-			expired := currentBroker.finish()
-			this.broker := currentBroker
-		expired
-
-	broker.FinishResult end(float closePrice, bool isLast) =>
-		currentBroker = this.broker
-		currentPortfolio = this.portfolio
-		execution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.idx)
-		currentPortfolio.apply_net(execution)
-		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
-		currentPortfolio.apply_net(continuation)
 		currentPortfolio.mark(closePrice)
 		broker.FinishResult expired = na
 		if isLast
@@ -288,8 +451,14 @@ export targetQuantity(float quantity) =>
 export targetPercentOfEquity(float percent) =>
 	broker.PositionTarget.new(broker.PositionTargetKind.percentOfEquity, percent)
 
-export net(broker, portfolio) =>
-	NetTrade.new(broker, portfolio)
+export nextOpen(broker, portfolio) =>
+	NextOpenTrade.new(broker, portfolio)
+
+export ohlc(broker, portfolio) =>
+	OhlcTrade.new(broker, portfolio)
+
+export path(broker, portfolio) =>
+	PathTrade.new(broker, portfolio)
 
 export lots(broker, portfolio) =>
 	LotTrade.new(broker, portfolio)

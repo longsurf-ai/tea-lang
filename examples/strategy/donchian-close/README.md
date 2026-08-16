@@ -42,11 +42,11 @@ does not specify a stable cross-bar latch unambiguously. Results for that mode
 must therefore be treated as this documented Tea contract, not claimed as a
 line-for-line TradingView parity result.
 
-Accounting is also explicit Tea behavior: `trade.net` coordinates the shipped
-long-only broker and net portfolio, investing available cash net of fees,
-applying fractional adverse slippage, and charging fees on each fill. Those
-cost controls are useful stress dimensions, but their nonzero values are not a
-claim to reproduce TradingView's tick-slippage model or every detail of
+Accounting is also explicit Tea behavior: `trade.nextOpen` coordinates the
+shipped long-only broker and net portfolio, investing available cash net of
+fees, applying fractional adverse slippage, and charging fees on each fill.
+Those cost controls are useful stress dimensions, but their nonzero values are
+not a claim to reproduce TradingView's tick-slippage model or every detail of
 percent-of-equity sizing.
 
 ## Reproducible stress sweep

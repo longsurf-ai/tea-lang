@@ -98,7 +98,7 @@ initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 fee_rate = input.float(0.0005, "Fee rate", minval=0.0, maxval=0.05)
 slippage_rate = input.float(0.0, "Slippage rate", minval=0.0, maxval=0.05)
 
-var strat = trade.net(
+var strat = trade.ohlc(
 	broker = broker.new(
 		commission = broker.commissionRate(fee_rate),
 		slippage = broker.slippageRate(slippage_rate),

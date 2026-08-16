@@ -160,21 +160,45 @@ export interface BrokerCommands
 	Order submit_exit(Command command)
 	int cancel(string commandId)
 
-// ScheduledBroker is the complete bounded scalar scheduling policy. Tea
-// interfaces do not compose, so its command surface is repeated explicitly.
-export interface ScheduledBroker
+// NextOpenBroker schedules commands at the next open, permits a bounded
+// reversal continuation, and optionally processes commands on the close.
+// Tea interfaces do not compose, so its command surface is repeated.
+export interface NextOpenBroker
+	bool has_pending() const
+	bool has_pending_entry() const
+	Order submit(Command command)
+	int cancel(string commandId)
+	Fill on_open(float referencePrice, Account account, int barIndex)
+	Fill continue_reversal(Account account, int barIndex)
+	Fill on_close(float referencePrice, Account account, int barIndex)
+	FinishResult finish()
+
+// OhlcBroker matches pending commands and attached exits against a bar's
+// OHLC range. Its command surface is repeated because interfaces do not compose.
+export interface OhlcBroker
 	bool has_pending() const
 	bool has_pending_entry() const
 	Order submit(Command command)
 	Order submit_exit(Command command)
 	int cancel(string commandId)
-	Fill on_open(float referencePrice, Account account, int barIndex)
 	Fill match_pending(float openPrice, float highPrice, float lowPrice, Account account, int barIndex)
-	Fill match_path_primary(float openPrice, float highPrice, float lowPrice, float closePrice, Account account, int barIndex)
 	Fill continue_reversal(Account account, int barIndex)
 	Fill match_exit(float openPrice, float highPrice, float lowPrice, Account account, int barIndex)
-	Fill match_path_exit(float openPrice, float highPrice, float lowPrice, float closePrice, Account account, int barIndex)
 	Fill on_close(float referencePrice, Account account, int barIndex)
+	FinishResult finish()
+
+// PathBroker matches pending commands and attached exits in deterministic
+// intrabar path order. Its command surface is repeated because interfaces do
+// not compose.
+export interface PathBroker
+	bool has_pending() const
+	bool has_pending_entry() const
+	Order submit(Command command)
+	Order submit_exit(Command command)
+	int cancel(string commandId)
+	Fill match_path_primary(float openPrice, float highPrice, float lowPrice, float closePrice, Account account, int barIndex)
+	Fill continue_reversal(Account account, int barIndex)
+	Fill match_path_exit(float openPrice, float highPrice, float lowPrice, float closePrice, Account account, int barIndex)
 	FinishResult finish()
 
 // ImmediateBroker is intentionally narrow: preflight rejection and one

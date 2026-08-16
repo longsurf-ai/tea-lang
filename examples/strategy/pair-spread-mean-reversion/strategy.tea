@@ -18,7 +18,7 @@ slippage_ticks = input.float(1.0, "Adverse slippage in ticks", minval=0.0)
 commission_per_contract = input.float(0.05, "Commission per contract", minval=0.0)
 contracts = input.float(1.0, "Contracts per entry", minval=0.00000001)
 
-var strat = trade.net(
+var strat = trade.nextOpen(
 	broker = broker.new(
 		commission = broker.commissionCashPerContract(commission_per_contract),
 		slippage = broker.slippageTicks(slippage_ticks, tick_size),
@@ -33,7 +33,7 @@ var strat = trade.net(
 )
 
 // Resolve prior-bar orders at the primary instrument's next open.
-strat.begin(open, bar_index)
+strat.begin_bar(open, bar_index)
 
 leg_one_close = request.security(symbol_one, spread_timeframe, close)
 leg_two_close = request.security(symbol_two, spread_timeframe, close)
@@ -51,7 +51,7 @@ if enter_long and strat.position_quantity() == 0.0 and not strat.has_pending()
 if exit_long and strat.position_quantity() > 0.0 and not strat.has_pending()
 	strat.close("Spread Long")
 
-strat.end(close, barstate.islast)
+strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
 plot(spread, "spread")

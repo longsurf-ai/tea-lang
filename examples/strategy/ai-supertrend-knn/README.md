@@ -15,7 +15,7 @@ Clean-room Tea conversion of TradingView's open-source [AI SuperTrend Strategy](
   flow. When the source calls `strategy.exit(..., when=false)`, the last
   submitted matching stop remains active rather than being replaced.
 - Execution and accounting use Tea's canonical `broker.new`, `portfolio.new`,
-  and `trade.net` components. The strategy supplies only its
+  and `trade.ohlc` components. The strategy supplies only its
   percent-of-equity sizing intent and linked stop prices; it does not construct
   fills or maintain a private account model.
 - The checked-in run selects the source's published `Long` direction option. Short signals are still computed and plotted, but no short orders are opened, keeping dashboard buy/sell markers semantically entry/exit.

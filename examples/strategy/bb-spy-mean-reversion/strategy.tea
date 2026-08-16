@@ -111,7 +111,7 @@ fee_rate = input.float(0.0003, "Fee rate", minval=0.0, maxval=0.05)
 tick_size = input.float(0.01, "Tick size", minval=0.00000001)
 slippage_ticks = input.float(3.0, "Slippage ticks", minval=0.0, maxval=100.0)
 
-var strat = trade.net(
+var strat = trade.ohlc(
 	broker = broker.new(
 		commission = broker.commissionRate(fee_rate),
 		slippage = broker.slippageTicks(slippage_ticks, tick_size),

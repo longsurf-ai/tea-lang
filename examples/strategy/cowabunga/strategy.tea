@@ -44,7 +44,7 @@ initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 fixed_quantity = input.float(10000.0, "Fixed order quantity", minval=0.00000001)
 tick_size = input.float(0.01, "Instrument tick size", minval=0.00000001)
 
-var strat = trade.net(
+var strat = trade.path(
 	broker = broker.new(
 		commission = broker.commissionRate(0.0),
 		slippage = broker.slippageRate(0.0)
@@ -59,7 +59,7 @@ var strat = trade.net(
 
 // A market target fills at the next open. The split path phases let the
 // resulting fill-derived exit inspect that open and only the path after it.
-primary = strat.begin_path_primary(open, high, low, close, bar_index)
+primary = strat.begin_bar(open, high, low, close, bar_index)
 if not na(primary.pending) and strat.position_quantity() != 0.0
 	average = strat.position_avg_price()
 	is_long_position = strat.position_quantity() > 0.0
@@ -82,7 +82,7 @@ if not na(primary.pending) and strat.position_quantity() != 0.0
 		strat.exit("Cowabunga Trail", fromEntry = primary.pending.commandId, activateOnEntryBar = true, trailPrice = trail_price, trailOffset = trail_distance)
 	else if not na(exit_target) or not na(fixed_stop) or not na(trail_price)
 		strat.exit("Cowabunga Exit", fromEntry = primary.pending.commandId, stop = fixed_stop, target = exit_target, activateOnEntryBar = true, trailPrice = trail_price, trailOffset = trail_distance)
-strat.process_path_exit(open, high, low, close)
+strat.continue_bar(open, high, low, close)
 
 stoch_long_raw = ta.stoch(close, high, low, long_stoch_length)
 stoch_long_k = ta.sma(stoch_long_raw, long_stoch_smooth_k)
@@ -123,8 +123,7 @@ if short_signal
 		strat.cancel("Cowabunga Long")
 		strat.rebalance("Cowabunga Short", trade.targetQuantity(-fixed_quantity))
 
-strat.mark(close)
-strat.finish(barstate.islast)
+strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
 plot(close, "close")

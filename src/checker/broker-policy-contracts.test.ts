@@ -20,15 +20,31 @@ const COMMON_METHODS = [
   'cancel',
 ] as const;
 
-const SCHEDULED_METHODS = [
-  ...COMMON_METHODS,
+const NEXT_OPEN_METHODS = [
+  'has_pending',
+  'has_pending_entry',
+  'submit',
+  'cancel',
   'on_open',
+  'continue_reversal',
+  'on_close',
+  'finish',
+] as const;
+
+const OHLC_METHODS = [
+  ...COMMON_METHODS,
   'match_pending',
-  'match_path_primary',
   'continue_reversal',
   'match_exit',
-  'match_path_exit',
   'on_close',
+  'finish',
+] as const;
+
+const PATH_METHODS = [
+  ...COMMON_METHODS,
+  'match_path_primary',
+  'continue_reversal',
+  'match_path_exit',
   'finish',
 ] as const;
 
@@ -49,22 +65,28 @@ describe('broker policy contracts', () => {
 
     const emulator = exportedUserType(result, 'BrokerEmulator');
     const commands = exportedInterface(result, 'BrokerCommands');
-    const scheduled = exportedInterface(result, 'ScheduledBroker');
+    const nextOpen = exportedInterface(result, 'NextOpenBroker');
+    const ohlc = exportedInterface(result, 'OhlcBroker');
+    const path = exportedInterface(result, 'PathBroker');
     const immediate = exportedInterface(result, 'ImmediateBroker');
 
     expect(commands.methods.map(method => method.name)).toEqual([
       ...COMMON_METHODS,
     ]);
-    expect(scheduled.methods.map(method => method.name)).toEqual([
-      ...SCHEDULED_METHODS,
+    expect(nextOpen.methods.map(method => method.name)).toEqual([
+      ...NEXT_OPEN_METHODS,
     ]);
+    expect(ohlc.methods.map(method => method.name)).toEqual([...OHLC_METHODS]);
+    expect(path.methods.map(method => method.name)).toEqual([...PATH_METHODS]);
     expect(immediate.methods.map(method => method.name)).toEqual([
       'reject',
       'execute_now',
     ]);
 
     expect(satisfies(emulator, commands)).toBeTrue();
-    expect(satisfies(emulator, scheduled)).toBeTrue();
+    expect(satisfies(emulator, nextOpen)).toBeTrue();
+    expect(satisfies(emulator, ohlc)).toBeTrue();
+    expect(satisfies(emulator, path)).toBeTrue();
     expect(satisfies(emulator, immediate)).toBeTrue();
   });
 
@@ -75,17 +97,27 @@ describe('broker policy contracts', () => {
       'type CommandView<B: broker.BrokerCommands>',
       '    B value',
       '    bool pending() const => this.value.has_pending()',
-      'type ScheduledView<B: broker.ScheduledBroker>',
+      'type NextOpenView<B: broker.NextOpenBroker>',
       '    B value',
       '    broker.Fill match_open(float price, broker.Account account, int barIndex) => this.value.on_open(price, account, barIndex)',
+      'type OhlcView<B: broker.OhlcBroker>',
+      '    B value',
+      '    broker.Fill match_bar(float openPrice, float highPrice, float lowPrice, broker.Account account, int barIndex) => this.value.match_pending(openPrice, highPrice, lowPrice, account, barIndex)',
+      'type PathView<B: broker.PathBroker>',
+      '    B value',
+      '    broker.Fill match_path(float openPrice, float highPrice, float lowPrice, float closePrice, broker.Account account, int barIndex) => this.value.match_path_primary(openPrice, highPrice, lowPrice, closePrice, account, barIndex)',
       'type ImmediateView<B: broker.ImmediateBroker>',
       '    B value',
       '    broker.Fill execute(broker.Command command, float price, broker.Account account, int barIndex) => this.value.execute_now(command, price, account, barIndex)',
       'var commands = CommandView.new(broker.basic())',
-      'var scheduled = ScheduledView.new(broker.basic())',
+      'var nextOpen = NextOpenView.new(broker.basic())',
+      'var ohlc = OhlcView.new(broker.basic())',
+      'var path = PathView.new(broker.basic())',
       'var immediate = ImmediateView.new(broker.basic())',
       'account = broker.Account.new(1000.0, 0.0, 0, 1, 100.0, 100.0)',
-      'scheduled_fill = scheduled.match_open(open, account, bar_index)',
+      'next_open_fill = nextOpen.match_open(open, account, bar_index)',
+      'ohlc_fill = ohlc.match_bar(open, high, low, account, bar_index)',
+      'path_fill = path.match_path(open, high, low, close, account, bar_index)',
       'command = broker.Command.new("now", broker.CommandKind.entry, broker.Side.buy, 1.0, bar_index)',
       'immediate_fill = immediate.execute(command, open, account, bar_index)',
       'plot(commands.pending() ? 1 : 0)',
@@ -95,10 +127,14 @@ describe('broker policy contracts', () => {
     expect(funcsOf(mustBuild(source)).map(func => func.name)).toEqual(
       expect.arrayContaining([
         'CommandView<BrokerEmulator>.pending',
-        'ScheduledView<BrokerEmulator>.match_open',
+        'NextOpenView<BrokerEmulator>.match_open',
+        'OhlcView<BrokerEmulator>.match_bar',
+        'PathView<BrokerEmulator>.match_path',
         'ImmediateView<BrokerEmulator>.execute',
         'BrokerEmulator.has_pending',
         'BrokerEmulator.on_open',
+        'BrokerEmulator.match_pending',
+        'BrokerEmulator.match_path_primary',
         'BrokerEmulator.execute_now',
       ]),
     );
@@ -124,23 +160,23 @@ describe('broker policy contracts', () => {
     );
   });
 
-  test('rejects a scheduled broker with the wrong matching result', () => {
+  test('rejects a next-open broker with the wrong matching result', () => {
     const result = checkText(
       [
-        'indicator("bad scheduled broker")',
+        'indicator("bad next-open broker")',
         'import broker',
-        'type BadScheduled',
+        'type BadNextOpen',
         '    int marker',
-        ...COMMON_IMPLEMENTATION,
+        ...COMMON_IMPLEMENTATION.filter(line => !line.includes('submit_exit')),
         '    int on_open(float referencePrice, broker.Account account, int barIndex) => 0',
-        'type Holder<B: broker.ScheduledBroker>',
+        'type Holder<B: broker.NextOpenBroker>',
         '    B value',
-        'bad = Holder.new(BadScheduled.new(0))',
+        'bad = Holder.new(BadNextOpen.new(0))',
       ].join('\n'),
     );
 
     expect(result.errors.map(error => error.msg)).toContain(
-      "BadScheduled does not satisfy ScheduledBroker: method 'on_open' returns int, want Fill",
+      "BadNextOpen does not satisfy NextOpenBroker: method 'on_open' returns int, want Fill",
     );
   });
 

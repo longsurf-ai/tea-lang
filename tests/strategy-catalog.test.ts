@@ -31,6 +31,23 @@ const expectedStrategies = [
   'vwap-suite',
 ] as const;
 
+const expectedTradeFactory: Readonly<
+  Record<(typeof expectedStrategies)[number], string>
+> = {
+  'ai-supertrend-knn': 'trade.ohlc(',
+  'alice-grid': 'trade.lots(',
+  'alpha-regime-reversion': 'trade.ohlc(',
+  'atr-zigzag-breakout': 'trade.path(',
+  'bb-spy-mean-reversion': 'trade.ohlc(',
+  'cluster-breakout-v6': 'trade.ohlc(',
+  cowabunga: 'trade.path(',
+  'donchian-close': 'trade.nextOpen(',
+  'mtf-psar': 'trade.nextOpen(',
+  'pair-spread-mean-reversion': 'trade.nextOpen(',
+  'turtle-system': 'trade.nextOpen(',
+  'vwap-suite': 'trade.ohlc(',
+};
+
 const brokerLifecycleEffects = [
   'OrderSubmitted',
   'FillExecuted',
@@ -173,9 +190,8 @@ describe('clean-room strategy catalog', () => {
       expect(source).toContain('import broker');
       expect(source).toContain('import portfolio');
       expect(source).toContain('import trade');
-      expect(source).toContain(
-        name === 'alice-grid' ? 'trade.lots(' : 'trade.net(',
-      );
+      expect(source).toContain(expectedTradeFactory[name]);
+      expect(source).not.toContain('trade.net(');
       expect(source).not.toContain('broker.Fill.new');
       expect(source).not.toContain('effect.emit');
     }
@@ -304,7 +320,7 @@ describe('clean-room strategy catalog', () => {
     expect(compiled.artifact.bindingModule.source.length).toBeGreaterThan(0);
     expect(compiled.artifact.state.frames.length).toBeGreaterThan(1);
     const source = readFileSync(gpu.config.program.source, 'utf8');
-    expect(source).toContain('trade.net(');
+    expect(source).toContain('trade.nextOpen(');
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
     expect(source).not.toContain('type TurtleAccount');
@@ -337,7 +353,7 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('trade.net(');
+    expect(source).toContain('trade.ohlc(');
     expect(source).toContain('trade.percentOfEquity(');
     expect(source).toContain('strat.begin_bar(');
     expect(source).toContain('strat.exit(');
@@ -372,9 +388,9 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('trade.net(');
-    expect(source).toContain('strat.begin_path_primary(');
-    expect(source).toContain('strat.process_path_exit(');
+    expect(source).toContain('trade.path(');
+    expect(source).toContain('strat.begin_bar(');
+    expect(source).toContain('strat.continue_bar(');
     expect(source).toContain('strat.entry(');
     expect(source).toContain('strat.exit(');
     expect(source).not.toContain('type BracketAccount');
@@ -390,7 +406,7 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('trade.net(');
+    expect(source).toContain('trade.ohlc(');
     expect(source).toContain('commissionIncluded = true');
     expect(source).toContain('strat.begin_bar(');
     expect(source).toContain('strat.exit(');
@@ -407,7 +423,7 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('trade.net(');
+    expect(source).toContain('trade.ohlc(');
     expect(source).toContain('trade.targetPercentOfEquity(');
     expect(source).toContain('strat.begin_bar(');
     expect(source).toContain('strat.rebalance(');
@@ -425,7 +441,7 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('trade.net(');
+    expect(source).toContain('trade.ohlc(');
     expect(source).toContain('strat.begin_bar(');
     expect(source).toContain('strat.exit(');
     expect(source).not.toContain('type SignedAccount');
@@ -441,9 +457,9 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('trade.net(');
-    expect(source).toContain('strat.begin_path_primary(');
-    expect(source).toContain('strat.process_path_exit(');
+    expect(source).toContain('trade.path(');
+    expect(source).toContain('strat.begin_bar(');
+    expect(source).toContain('strat.continue_bar(');
     expect(source).toContain('strat.rebalance(');
     expect(source).toContain('strat.exit(');
     expect(source).not.toContain('type SignedBracketEngine');
@@ -459,7 +475,7 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('trade.net(');
+    expect(source).toContain('trade.nextOpen(');
     expect(source).toContain('trade.percentOfEquityAtFill(');
     expect(source).not.toContain('type SignedPercentEngine');
     expect(source).not.toContain('broker.Fill.new');
@@ -474,7 +490,7 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('trade.net(');
+    expect(source).toContain('trade.ohlc(');
     expect(source).toContain('strat.rebalance(');
     expect(source).toContain('strat.exit(');
     expect(source).not.toContain('type DirectionalAccount');

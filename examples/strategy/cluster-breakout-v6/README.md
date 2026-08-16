@@ -23,7 +23,7 @@ parameterized code path but is disabled in the measured profile, matching its
 published default. Visual lines, labels, tables, and alerts are omitted.
 
 The strategy composes Tea's canonical `broker.new`, `portfolio.new`, and
-`trade.net` components. The broker owns same-close entries, persistent
+`trade.ohlc` components. The broker owns same-close entries, persistent
 gap-aware stops, and time-close fills; the signed net portfolio owns cash,
 position, and P&L accounting. `marginLong=0` and `marginShort=0` preserve the
 published fixed-unit profile without a cash-admission gate. Current dashboard
