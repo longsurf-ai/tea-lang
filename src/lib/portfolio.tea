@@ -19,7 +19,7 @@ export interface PortfolioView
 // the bounded per-trade reads owned by LotLedger.
 export interface NetLedger
 	broker.Account account() const
-	int apply(broker.Fill execution)
+	int apply_net(broker.Fill execution)
 	float mark(float price)
 	float cash() const
 	float position_quantity() const
@@ -31,7 +31,7 @@ export interface NetLedger
 // migration.
 export interface LotLedger
 	broker.Account account() const
-	int apply(broker.Fill execution)
+	int apply_lot(broker.Fill execution)
 	float mark(float price)
 	float cash() const
 	float position_quantity() const
@@ -184,6 +184,9 @@ export type NetPortfolio
 		)
 
 	int apply(broker.Fill execution) =>
+		this.apply_net(execution)
+
+	int apply_net(broker.Fill execution) =>
 		if not na(execution)
 			quantityValid = execution.quantity > 0.0
 			priceValid = execution.price > 0.0
@@ -393,6 +396,9 @@ export type LotPortfolio
 		)
 
 	int apply(broker.Fill execution) =>
+		this.apply_lot(execution)
+
+	int apply_lot(broker.Fill execution) =>
 		if not na(execution)
 			quantityValid = execution.quantity > 0.0
 			priceValid = execution.price > 0.0

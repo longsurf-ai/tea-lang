@@ -35,11 +35,11 @@ const SPECIALIZATION_SOURCE = [
   '    portfolio.PortfolioSnapshot observe() const => this.ledger.snapshot()',
   'type NetCoordinator<P: portfolio.NetLedger>',
   '    P ledger',
-  '    int accept(broker.Fill execution) => this.ledger.apply(execution)',
+  '    int accept(broker.Fill execution) => this.ledger.apply_net(execution)',
   '    float value(float price) => this.ledger.mark(price)',
   'type LotCoordinator<P: portfolio.LotLedger>',
   '    P ledger',
-  '    int accept(broker.Fill execution) => this.ledger.apply(execution)',
+  '    int accept(broker.Fill execution) => this.ledger.apply_lot(execution)',
   '    int count() const => this.ledger.open_trade_count()',
   '    portfolio.OpenTrade trade(int index) const => this.ledger.open_trade(index)',
   'var net = portfolio.new(initialCash = 1000.0)',
@@ -78,7 +78,7 @@ describe('portfolio policy contracts', () => {
     ]);
     expect(contractMethods(result, 'NetLedger')).toEqual([
       'account',
-      'apply',
+      'apply_net',
       'mark',
       'cash',
       'position_quantity',
@@ -87,7 +87,7 @@ describe('portfolio policy contracts', () => {
     ]);
     expect(contractMethods(result, 'LotLedger')).toEqual([
       'account',
-      'apply',
+      'apply_lot',
       'mark',
       'cash',
       'position_quantity',
@@ -116,17 +116,40 @@ describe('portfolio policy contracts', () => {
         'LotCoordinator<LotPortfolio>.accept',
         'LotCoordinator<LotPortfolio>.count',
         'LotCoordinator<LotPortfolio>.trade',
-        'NetPortfolio.apply',
+        'NetPortfolio.apply_net',
         'NetPortfolio.mark',
-        'LotPortfolio.apply',
+        'LotPortfolio.apply_lot',
         'LotPortfolio.open_trade_count',
         'LotPortfolio.open_trade',
       ]),
     );
   });
 
-  test.todo(
-    'rejects NetPortfolio as LotLedger after the legacy open-trade stubs are removed',
-    () => {},
-  );
+  test('rejects cross-policy ledger pairings structurally', () => {
+    const netAsLots = checkText(
+      [
+        'indicator("net as lots")',
+        'import portfolio',
+        'type Holder<P: portfolio.LotLedger>',
+        '    P value',
+        'bad = Holder.new(portfolio.new())',
+      ].join('\n'),
+    );
+    expect(netAsLots.errors.map(error => error.msg)).toContain(
+      "NetPortfolio does not satisfy LotLedger: missing method 'apply_lot'",
+    );
+
+    const lotsAsNet = checkText(
+      [
+        'indicator("lots as net")',
+        'import portfolio',
+        'type Holder<P: portfolio.NetLedger>',
+        '    P value',
+        'bad = Holder.new(portfolio.lots())',
+      ].join('\n'),
+    );
+    expect(lotsAsNet.errors.map(error => error.msg)).toContain(
+      "LotPortfolio does not satisfy NetLedger: missing method 'apply_net'",
+    );
+  });
 });

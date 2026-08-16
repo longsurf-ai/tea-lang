@@ -30,9 +30,9 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
 		execution = currentBroker.on_open(openPrice, currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(execution)
+		currentPortfolio.apply_net(execution)
 		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(continuation)
+		currentPortfolio.apply_net(continuation)
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
 		not na(continuation) ? continuation : execution
@@ -42,9 +42,9 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
 		firstExecution = currentBroker.match_pending(openPrice, highPrice, lowPrice, currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(firstExecution)
+		currentPortfolio.apply_net(firstExecution)
 		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(continuation)
+		currentPortfolio.apply_net(continuation)
 		pendingExecution = not na(continuation) ? continuation : firstExecution
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
@@ -54,7 +54,7 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
 		execution = currentBroker.match_exit(openPrice, highPrice, lowPrice, currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(execution)
+		currentPortfolio.apply_net(execution)
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
 		execution
@@ -69,9 +69,9 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
 		firstExecution = currentBroker.match_path_primary(openPrice, highPrice, lowPrice, closePrice, currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(firstExecution)
+		currentPortfolio.apply_net(firstExecution)
 		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(continuation)
+		currentPortfolio.apply_net(continuation)
 		pendingExecution = not na(continuation) ? continuation : firstExecution
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
@@ -81,7 +81,7 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
 		execution = currentBroker.match_path_exit(openPrice, highPrice, lowPrice, closePrice, currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(execution)
+		currentPortfolio.apply_net(execution)
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
 		execution
@@ -135,9 +135,9 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
 		firstExecution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(firstExecution)
+		currentPortfolio.apply_net(firstExecution)
 		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(continuation)
+		currentPortfolio.apply_net(continuation)
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
 		not na(continuation) ? continuation : firstExecution
@@ -160,9 +160,9 @@ export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
 		execution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(execution)
+		currentPortfolio.apply_net(execution)
 		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
-		currentPortfolio.apply(continuation)
+		currentPortfolio.apply_net(continuation)
 		currentPortfolio.mark(closePrice)
 		broker.FinishResult expired = na
 		if isLast
@@ -221,18 +221,18 @@ export type LotTrade<B: broker.ImmediateBroker, P: portfolio.LotLedger>
 					closeSide = openTrade.entrySide == broker.Side.buy ? broker.Side.sell : broker.Side.buy
 					closeCommand = broker.Command.new(reversalCommandId, broker.CommandKind.close, closeSide, openTrade.quantity, this.idx, tradeId = openTrade.id)
 					closeExecution = currentBroker.execute_now(closeCommand, this.referencePrice, currentPortfolio.account(), this.idx)
-					currentPortfolio.apply(closeExecution)
+					currentPortfolio.apply_lot(closeExecution)
 					reversalValid := not na(closeExecution)
 				tradeIndex := tradeIndex - 1
 			if reversalValid
 				entryCommand = broker.Command.new(commandId, broker.CommandKind.entry, entrySide, qty, this.idx, notional, tradeId = 0)
 				execution := currentBroker.execute_now(entryCommand, this.referencePrice, currentPortfolio.account(), this.idx)
-				currentPortfolio.apply(execution)
+				currentPortfolio.apply_lot(execution)
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
 		execution
 
-	broker.Fill close_trade(string commandId, int tradeId) =>
+	broker.Fill close_trade(string commandId, int tradeId, float referencePrice) =>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
 		broker.Fill execution = na
@@ -247,8 +247,8 @@ export type LotTrade<B: broker.ImmediateBroker, P: portfolio.LotLedger>
 			openTrade = currentPortfolio.open_trade(matchedIndex)
 			side = openTrade.entrySide == broker.Side.buy ? broker.Side.sell : broker.Side.buy
 			command = broker.Command.new(commandId, broker.CommandKind.close, side, openTrade.quantity, this.idx, tradeId = openTrade.id)
-			execution := currentBroker.execute_now(command, this.referencePrice, currentPortfolio.account(), this.idx)
-			currentPortfolio.apply(execution)
+			execution := currentBroker.execute_now(command, referencePrice, currentPortfolio.account(), this.idx)
+			currentPortfolio.apply_lot(execution)
 		else
 			side = currentPortfolio.position_quantity() < 0.0 ? broker.Side.buy : broker.Side.sell
 			currentBroker.reject(commandId, side, this.idx, broker.Rejection.invalidAccountState)

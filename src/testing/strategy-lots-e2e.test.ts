@@ -1,5 +1,5 @@
 // Purpose: Exercise the canonical bounded per-entry portfolio and immediate
-// broker lifecycle without relying on a catalog strategy or external data.
+// trade lifecycle without relying on a catalog strategy or external data.
 
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -29,7 +29,7 @@ const LIBRARIES: Readonly<Record<string, string>> = {
     join(import.meta.dir, '../lib/portfolio.tea'),
     'utf8',
   ),
-  strategy: readFileSync(join(import.meta.dir, '../lib/strategy.tea'), 'utf8'),
+  trade: readFileSync(join(import.meta.dir, '../lib/trade.tea'), 'utf8'),
 };
 
 const REGISTRY: Registry = (path: string): PackageSource | null => {
@@ -166,32 +166,29 @@ function effectField(
   return value;
 }
 
-describe('canonical bounded lot strategy components', () => {
+describe('canonical bounded lot trade components', () => {
   test('closes exact lots newest-first before an immediate reversal', async () => {
     const source = [
       'strategy("bounded lots")',
       'import broker',
       'import portfolio',
-      'import strategy',
-      'var strat = strategy.configure(',
+      'import trade',
+      'var strat = trade.lots(',
       '    broker = broker.new(commission = broker.commissionRate(0.01)),',
       '    portfolio = portfolio.lots(initialCash = 100.0, maxOpenTrades = 2)',
       ')',
-      'strat.begin_immediate(bar_index)',
+      'var int longBTradeId = 0',
+      'strat.begin_bar(close, bar_index)',
       'if bar_index == 0',
-      '    strat.entry_now("Long A", "Short cover", strategy.Direction.long, close, notional = 10.0, tag = 1, target = 15.0)',
-      '    strat.entry_now("Long B", "Short cover", strategy.Direction.long, close, notional = 20.0, tag = 2, target = 16.0)',
+      '    strat.entry("Long A", "Short cover", trade.Direction.long, notional = 10.0)',
+      '    longBExecution = strat.entry("Long B", "Short cover", trade.Direction.long, notional = 20.0)',
+      '    longBTradeId := longBExecution.tradeId',
       'if bar_index == 1',
-      '    newest = strat.open_trade(strat.open_trade_count() - 1)',
-      '    newest.trailingArmed := true',
-      '    newest.trailExtreme := high',
-      '    newest.trailDistance := 1.0',
-      '    strat.update_open_trade(strat.open_trade_count() - 1, newest)',
-      '    strat.close_trade("Long B close", strat.open_trade_count() - 1, close)',
-      '    strat.entry_now("Long C", "Short cover", strategy.Direction.long, close, notional = 10.0, tag = 3, target = 17.0)',
+      '    strat.close_trade("Long B close", longBTradeId, close)',
+      '    strat.entry("Long C", "Short cover", trade.Direction.long, notional = 10.0)',
       'if bar_index == 2',
-      '    strat.entry_now("Short A", "Long reversal close", strategy.Direction.short, close, notional = 10.0, tag = 4, target = 7.0)',
-      'strat.mark(close)',
+      '    strat.entry("Short A", "Long reversal close", trade.Direction.short, notional = 10.0)',
+      'strat.mark()',
       'metrics = strat.snapshot()',
       'plot(metrics.cash)',
       'plot(metrics.positionQuantity)',
@@ -250,17 +247,18 @@ describe('canonical bounded lot strategy components', () => {
       'strategy("lot capacity")',
       'import broker',
       'import portfolio',
-      'import strategy',
-      'var strat = strategy.configure(',
+      'import trade',
+      'var strat = trade.lots(',
       '    broker = broker.new(),',
       '    portfolio = portfolio.lots(initialCash = 100.0, maxOpenTrades = 1)',
       ')',
-      'strat.begin(open, bar_index)',
-      'strat.entry_now("First", "Cover", strategy.Direction.long, close, qty = 1.0)',
-      'strat.entry_now("Overflow", "Cover", strategy.Direction.long, close, qty = 1.0)',
-      'strat.mark(close)',
-      'plot(strat.open_trade_count())',
-      'plot(strat.fill_count())',
+      'strat.begin_bar(close, bar_index)',
+      'strat.entry("First", "Cover", trade.Direction.long, qty = 1.0)',
+      'strat.entry("Overflow", "Cover", trade.Direction.long, qty = 1.0)',
+      'strat.mark()',
+      'metrics = strat.snapshot()',
+      'plot(metrics.openTradeCount)',
+      'plot(metrics.fillCount)',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -274,53 +272,39 @@ describe('canonical bounded lot strategy components', () => {
     );
   });
 
-  test('rejects scalar pending-order APIs for the immediate-only lot policy', async () => {
+  test('rejects scheduled APIs for the immediate-only lot policy statically', async () => {
     const source = [
       'strategy("lot policy boundary")',
       'import broker',
       'import portfolio',
-      'import strategy',
-      'var strat = strategy.configure(',
+      'import trade',
+      'var strat = trade.lots(',
       '    broker = broker.new(processOrdersOnClose = true),',
       '    portfolio = portfolio.lots(initialCash = 100.0, maxOpenTrades = 2)',
       ')',
-      'strat.begin_immediate(bar_index)',
-      'strat.entry("Wrong API", strategy.Direction.long, qty = 1.0)',
+      'strat.begin_bar(close, bar_index)',
       'strat.process_close(close)',
-      'strat.mark(close)',
-      'plot(strat.open_trade_count())',
-      'plot(strat.fill_count())',
     ].join('\n');
-    const {program, sink} = await execute(
-      source,
-      ['open,close', '10,10', ''].join('\n'),
-    );
 
-    expect(valuesFor(sink, 1)).toEqual([0]);
-    expect(valuesFor(sink, 2)).toEqual([0]);
-    expect(sink.effects.map(emission => effectName(program, emission))).toEqual(
-      ['OrderRejected'],
-    );
+    await expect(
+      execute(source, ['open,close', '10,10', ''].join('\n')),
+    ).rejects.toThrow(/process_close/);
   });
 
-  test('rejects immediate APIs for scalar portfolios and invalid lot indices', async () => {
+  test('rejects an unknown stable lot id before execution', async () => {
     const source = [
       'strategy("immediate policy boundary")',
       'import broker',
       'import portfolio',
-      'import strategy',
-      'var scalar = strategy.configure(broker.new(), portfolio.new(initialCash = 100.0))',
-      'var lots = strategy.configure(broker.new(), portfolio.lots(initialCash = 100.0, maxOpenTrades = 1))',
-      'scalar.begin_immediate(bar_index)',
-      'lots.begin_immediate(bar_index)',
-      'scalar.entry_now("Unsupported entry", "Cover", strategy.Direction.long, close, qty = 1.0)',
-      'scalar.close_trade("Unsupported close", 0, close)',
-      'lots.close_trade("Invalid index", 0, close)',
-      'scalar.mark(close)',
-      'lots.mark(close)',
-      'plot(scalar.fill_count())',
-      'plot(lots.fill_count())',
-      'plot(lots.open_trade_count())',
+      'import trade',
+      'var lots = trade.lots(broker.new(), portfolio.lots(initialCash = 100.0, maxOpenTrades = 1))',
+      'lots.begin_bar(close, bar_index)',
+      'lots.close_trade("Invalid id", 404, close)',
+      'lots.mark()',
+      'metrics = lots.snapshot()',
+      'plot(metrics.positionQuantity)',
+      'plot(metrics.fillCount)',
+      'plot(metrics.openTradeCount)',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -331,7 +315,7 @@ describe('canonical bounded lot strategy components', () => {
     expect(valuesFor(sink, 2)).toEqual([0]);
     expect(valuesFor(sink, 3)).toEqual([0]);
     expect(sink.effects.map(emission => effectName(program, emission))).toEqual(
-      ['OrderRejected', 'OrderRejected', 'OrderRejected'],
+      ['OrderRejected'],
     );
   });
 
@@ -340,23 +324,24 @@ describe('canonical bounded lot strategy components', () => {
       'strategy("reversal failure atomicity")',
       'import broker',
       'import portfolio',
-      'import strategy',
-      'var strat = strategy.configure(',
+      'import trade',
+      'var strat = trade.lots(',
       '    broker = broker.new(),',
       '    portfolio = portfolio.lots(initialCash = 100.0, maxOpenTrades = 1)',
       ')',
-      'strat.begin_immediate(bar_index)',
+      'referencePrice = bar_index == 2 ? 0.0 : close',
+      'strat.begin_bar(referencePrice, bar_index)',
       'if bar_index == 0',
-      '    strat.entry_now("Long", "Short cover", strategy.Direction.long, close, qty = 1.0)',
+      '    strat.entry("Long", "Short cover", trade.Direction.long, qty = 1.0)',
       'if bar_index == 1',
-      '    strat.entry_now("Invalid short", "Long close", strategy.Direction.short, close)',
+      '    strat.entry("Invalid short", "Long close", trade.Direction.short)',
       'if bar_index == 2',
-      '    strat.portfolio.maxOpenTrades := 0',
-      '    strat.entry_now("Rejected short", "Rejected long close", strategy.Direction.short, close, qty = 1.0)',
-      'strat.mark(close)',
+      '    strat.entry("Rejected short", "Rejected long close", trade.Direction.short, qty = 1.0)',
+      'strat.mark()',
+      'metrics = strat.snapshot()',
       'plot(strat.position_quantity())',
-      'plot(strat.open_trade_count())',
-      'plot(strat.fill_count())',
+      'plot(metrics.openTradeCount)',
+      'plot(metrics.fillCount)',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -371,27 +356,28 @@ describe('canonical bounded lot strategy components', () => {
     );
   });
 
-  test('preserves fill-owned fields while applying policy updates', async () => {
+  test('keeps strategy policy keyed by the returned stable trade id', async () => {
     const source = [
       'strategy("lot accounting ownership")',
       'import broker',
       'import portfolio',
-      'import strategy',
-      'var strat = strategy.configure(',
+      'import trade',
+      'var strat = trade.lots(',
       '    broker = broker.new(),',
       '    portfolio = portfolio.lots(initialCash = 100.0, maxOpenTrades = 1)',
       ')',
-      'strat.begin_immediate(bar_index)',
-      'strat.entry_now("First", "Cover", strategy.Direction.long, close, qty = 1.0)',
-      'trade = strat.open_trade(0)',
-      'trade.quantity := 2.0',
-      'trade.targetPrice := 12.0',
-      'updated = strat.update_open_trade(0, trade)',
-      'strat.mark(close)',
-      'plot(updated)',
+      'var int policyTradeId = 0',
+      'var float policyTarget = na',
+      'strat.begin_bar(close, bar_index)',
+      'execution = strat.entry("First", "Cover", trade.Direction.long, qty = 1.0)',
+      'policyTradeId := execution.tradeId',
+      'policyTarget := 12.0',
+      'strat.mark()',
+      'metrics = strat.snapshot()',
+      'plot(policyTradeId == execution.tradeId ? 1 : 0)',
       'plot(strat.position_quantity())',
-      'plot(strat.equity())',
-      'plot(strat.open_trade(0).targetPrice)',
+      'plot(metrics.equity)',
+      'plot(policyTarget)',
     ].join('\n');
     const {sink} = await execute(
       source,

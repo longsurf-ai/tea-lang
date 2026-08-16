@@ -171,6 +171,27 @@ describe('trade library', () => {
     expect(messages.some(message => message.includes('open_trade'))).toBeTrue();
   });
 
+  test('rejects cross-policy broker and ledger composition', () => {
+    const result = checkText(
+      [
+        'strategy("invalid trade composition")',
+        'import broker',
+        'import portfolio',
+        'import trade',
+        'badNet = trade.net(broker.new(), portfolio.lots())',
+        'badLots = trade.lots(broker.new(), portfolio.new())',
+      ].join('\n'),
+    );
+    const messages = result.errors.map(error => error.msg);
+
+    expect(messages).toContain(
+      "LotPortfolio does not satisfy NetLedger: missing method 'apply_net'",
+    );
+    expect(messages).toContain(
+      "NetPortfolio does not satisfy LotLedger: missing method 'apply_lot'",
+    );
+  });
+
   test('executes stable-id immediate lot entry and close on CPU', async () => {
     const source = [
       'strategy("trade lot cpu")',
@@ -187,7 +208,7 @@ describe('trade library', () => {
       '    execution = state.entry("Long", "Short cover", trade.Direction.long, qty = 1.0)',
       '    activeTradeId := execution.tradeId',
       'if bar_index == 1',
-      '    state.close_trade("Long close", activeTradeId)',
+      '    state.close_trade("Long close", activeTradeId, close)',
       'state.mark()',
       'metrics = state.snapshot()',
       'plot(metrics.cash)',
