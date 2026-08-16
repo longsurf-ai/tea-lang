@@ -17,13 +17,16 @@ to each candidate. The publication's trading-window option is explicitly off
 for the checked-in daily BTC profile; `trading_window_mode=1` is rejected until
 Tea owns an exchange-timezone/session-calendar contract.
 
-The strategy-local engine replays each daily OHLC bar using TradingView's
-documented broker-emulator path heuristic: open to the nearer extreme, then the
-opposite extreme, then close. It resolves gap-through stops at the open and
-allows a newly triggered entry's bracket to fill later on the same replayed
-path. That makes bars touching entry, stop, and target deterministic without
-inventing lower-timeframe data. Fixed quantity is one unit and commission is
-zero, matching the publication's declared profile.
+The strategy composes Tea's canonical `broker.new`, `portfolio.new`, and
+`strategy.configure` components. The broker's fixed-scalar path matcher replays
+each daily OHLC bar using TradingView's documented heuristic: open to the nearer
+extreme, then the opposite extreme, then close. It records where a stop entry
+filled, applies that fill to the portfolio, and lets the attached bracket inspect
+only the remaining path. Gap-through stops use the open. This makes bars touching
+entry, stop, and target deterministic without inventing lower-timeframe data.
+Fixed quantity is one unit and commission is zero, matching the publication's
+declared profile; the example contains no private account, fill factory, or
+broker emulator.
 
 Every fill emits `broker.FillExecuted` with unambiguous command IDs. The current
 dashboard nevertheless labels every buy as entry and every sell as exit, so
@@ -37,11 +40,18 @@ stop/reward multiples on the pinned BTCUSDT daily snapshot:
 tea execute examples/strategy/atr-zigzag-breakout/sweep.yaml
 ```
 
-Measured on 2026-08-14 with `js-f64`, the sweep executed 36 bindings and
-118,188 rows. Lowering took 18.62 ms, execution 37,829.88 ms, reported total
-time 37,848.50 ms, and parallel-test wall time 38.19 seconds. Total return
-ranged from -0.693712 to 0.644221, maximum drawdown from 0.077097 to 0.799150,
-fill count from 58 to 188, and completed round trips from 29 to 94.
+The strategy source is eligible for Tea's current WGSL lowering subset. The
+published sweep below intentionally uses the JavaScript `f64` runtime so its
+audited metrics remain directly comparable; it is not presented as a measured
+GPU run.
+
+Revalidated on 2026-08-16 with `js-f64`, the sweep executed 36 bindings and
+118,188 rows and reproduced the prior result extrema and fill counts exactly.
+Runtime is intentionally not quoted here: the current scalar path matcher has
+known interpreter overhead that must be optimized before it is presented as a
+representative benchmark. Total return ranged from -0.693712 to 0.644221,
+maximum drawdown from 0.077097 to 0.799150, fill count from 58 to 188, and
+completed round trips from 29 to 94.
 
 The highest-return binding was `ATR length=70, ZigZag multiple=3, stop
 multiple=1.25, reward=2.5`: ending equity 82,211.03, return 0.644221,

@@ -14,7 +14,8 @@ public historical profile is implemented and executed through Tea's ordinary
 frontend and runtime. It does not mean every presentation option, realtime
 tick behavior, or proprietary broker-emulator detail is reproduced. Turtle's
 default grid targets WebGPU and includes an equivalent JS/f64 oracle config;
-the other profiles currently target JS/f64.
+ATR ZigZag now also lowers to WGSL, while its published config and the other
+profiles currently retain JS/f64.
 
 | Published strategy                                                                                                           | Runnable Tea profile                                                                                            | Stress sweep |
 | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -----------: |
@@ -39,8 +40,8 @@ are runtime fixtures, not parameter recommendations or profitability claims.
 
 ## Why these are Tea programs rather than compiler features
 
-Tea's shipped `BrokerEmulator` and `NetPortfolio` provide a reusable canonical
-path for scalar net-position strategies:
+All twelve audited profiles compose Tea's shipped strategy components. The
+scalar `BrokerEmulator` + `NetPortfolio` path handles net-position strategies:
 
 ```tea
 var strat = strategy.configure(
@@ -66,41 +67,43 @@ commission; signed positions; aggregate same-direction pyramiding; partial
 target rebalances; and ordered reversals. It also supports one scalar atomic
 stop/target exit attached to a pending or open long or short entry, explicit
 cancellation, and bounded primary-then-exit matching through
-`strat.begin_bar(...)`. All same-direction adds in this scalar model reuse one
-entry id; the attached exit closes that aggregate net position. Both
+`strat.begin_bar(...)`, plus segment-ordered OHLC replay through
+`strat.begin_path(...)`. The path lifecycle resumes after an intrabar entry and
+supports fixed and trailing exits without reusing a pre-entry extreme. All
+same-direction adds in this scalar model reuse one entry id; the attached exit
+closes that aggregate net position. Both
 `marginLong` and `marginShort` accept `100` (new exposure plus fees must fit
 available capital) or `0` (the gate is disabled). Intermediate leverage fails
 closed until the portfolio has true free-margin accounting.
 
-The canonical scalar path does not yet cover per-entry lots, independently
-addressed partial closes, general margin accounting, multiple independent
-exits, true limit orders, general OCA groups, or segment-by-segment intrabar
-paths. Examples that need those behaviors still demonstrate the broader CPU
-surface with ordinary Tea-authored components and state:
+Alice Grid selects the separate `portfolio.lots(...)` policy. It provides an
+explicit `maxOpenTrades` capacity, per-entry basis and fees, newest-first lot
+closes, signed aggregate reporting, and immediate broker execution through
+`strat.entry_now(...)` / `strat.close_trade(...)`. Capacity overflow is rejected
+before a fill is published. The collection-backed lot policy is intentionally
+CPU-only today; choosing it does not add collection state to scalar programs.
 
-- signed and quantity-aware positions;
-- weighted cost and target allocation;
-- pyramiding and independent per-entry lots;
-- pending stop orders, cancellation, replacement, and reversal;
-- partial reductions and per-lot exits;
-- deterministic same-bar stop/target matching; and
-- typed `broker.FillExecuted` effects through the normal output contract.
-
-Nothing in the compiler or runtime recognizes these strategy names. Their
-canonical or strategy-specific components compile through the same parser →
-checker → noder → codegen path as any other Tea source. The current canonical
-`Broker` is explicitly a scalar, at-most-two-fill interface; a general order
-book will use a bounded fill-drain revision rather than forcing many fills
-through this shape.
+Nothing in the compiler or runtime recognizes these strategy names, and no
+example constructs a fill or maintains a private account engine. The canonical
+components compile through the same parser → checker → noder → codegen path
+as any other Tea source. The current broker remains an explicitly bounded
+scalar matcher rather than a general order book: multiple independent resting
+orders, arbitrary OCA groups, general margin calls, and an unbounded fill drain
+remain outside this interface.
 
 ## Explicit boundaries
 
 - Turtle's default config targets `webgpu`/`wgsl-f32-i32`; its numeric range
   loops, core math calls, and bind-sized channel history now lower generically.
   It also ships `sweep-cpu.yaml` for JS/f64 verification. The remaining eleven
-  configs target `javascript`/`js-f64`: their collections, requests, while
-  loops, or advanced dynamic effect multiplicity still fall outside today's
-  fail-closed WGSL subset. There is no silent CPU fallback.
+  published configs retain `javascript`/`js-f64` so their audited results stay
+  on one numeric profile. ATR ZigZag's migrated scalar program now also passes
+  WGSL lowering, although this change does not publish a second GPU sweep for
+  it. The remaining ten fail closed at concrete unsupported features: AI and
+  Alice at collections/effect multiplicity; Alpha, MTF PSAR, and Pair Spread at
+  string parameters before their request contexts; BB and VWAP at tuple layout;
+  and Cluster, Cowabunga, and Donchian at time-input mapping. There is no silent
+  CPU fallback.
 - Historical bars cannot reproduce Pine's realtime `calc_on_every_tick`
   behavior. Session-heavy profiles either use the pinned UTC policy documented
   in their README or select a published session-disabled mode.

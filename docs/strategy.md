@@ -38,9 +38,10 @@ Tea ships three ordinary, explicitly imported source packages:
 
 - `broker` owns `Side`, `Order`, `Fill`, the static `Broker` interface, and
   the deterministic `BrokerEmulator` execution policy;
-- `portfolio` owns the static `Portfolio` interface and the deterministic
-  `NetPortfolio` accounting implementation;
-- `strategy` owns `Strategy<B, P>` and the strategy-facing calls.
+- `portfolio` owns the static `Portfolio` interface, the scalar
+  `NetPortfolio`, and the explicitly bounded per-entry `LotPortfolio`;
+- `strategy` owns the static `Strategy` interface, the concrete
+  `ConfiguredStrategy<B, P>` composition, and the strategy-facing calls.
 
 Configure one rooted value per scenario:
 
@@ -60,11 +61,33 @@ var strat = strategy.configure(
 )
 ```
 
-`Strategy` stores the concrete broker and portfolio values. The checker uses
-the interfaces only to verify their method sets, specializes the generic type
-for those concrete implementations, and erases the interfaces before Program
+`ConfiguredStrategy` stores the concrete broker and portfolio values and
+implicitly satisfies the exported `Strategy` method set. `configure()` still
+returns that inferred concrete specialization; Tea interfaces are static
+checker contracts, not runtime values. Interface satisfaction compares the
+receiver mode and the full-arity ordered parameter and result types. Parameter
+names and defaults do not participate. The concrete `ConfiguredStrategy`
+methods therefore own the ergonomic defaults and the names used by named
+arguments at ordinary call sites. The checker specializes the generic type for
+the concrete implementations and erases all three interfaces before Program
 IR. There is no dynamic dispatch, hidden strategy singleton, or host-side
 matching/accounting state.
+
+The `Strategy` method set is intentionally smaller than the concrete type. It
+contains common order-command shapes and read-only position, snapshot, and
+pending-order observations. Those command signatures do not establish a bar
+lifecycle or promise that every broker/portfolio pair will accept them. The
+caller must first use the lifecycle appropriate to the configured execution
+policy, and a command may fail closed for an incompatible configuration; in
+particular, the scheduled aggregate commands reject `LotPortfolio` today.
+
+The remaining open-only, high/low, ordered-path, immediate-lot, and per-lot
+methods stay outside the structural method set. Their presence on
+`ConfiguredStrategy` is not a statically checked capability claim: the current
+`Broker` and `Portfolio` interfaces are themselves supersets, and some method
+combinations reject at runtime. A policy-neutral lifecycle requires a separate
+redesign of those component contracts rather than a larger `Strategy`
+interface.
 
 The policy values are nominal. Commission can be expressed as a decimal rate,
 percentage points, cash per contract, or cash per order with
@@ -166,6 +189,25 @@ bar's exit check. The portfolio is updated between the phases, so the exit
 always sees the filled quantity and average price; calling the split phases
 does not expose or move matching into the host runtime.
 
+Strategies whose result depends on the order of intrabar crossings use the
+path-preserving variants:
+
+```tea
+primary = strat.begin_path_primary(open, high, low, close, bar_index)
+// A fill-derived exit may be attached here.
+strat.process_path_exit(open, high, low, close)
+```
+
+`begin_path(...)` is the corresponding convenience call. The broker replays
+`open -> nearer extreme -> farther extreme -> close`; equal distances choose
+the low first. A stop entry records its exact path cursor, so an attached exit
+can inspect only the untraversed part of the bar rather than using a low or high
+that occurred before the entry. Trailing activation and ratcheting likewise
+advance segment by segment; `trailPrice` is the absolute activation level and
+`trailOffset` is an absolute price distance. Supplying either trailing field
+therefore requires this path lifecycle; the ordinary high/low-only lifecycle
+fails closed instead of silently approximating a trail.
+
 Calling `entry` again with the same id replaces a resting directional stop; calling
 `exit` again with the same exit id replaces the atomic attached order. Skipping
 either call leaves the prior order live. `strat.cancel(id)` explicitly cancels
@@ -174,8 +216,10 @@ every add must reuse the same entry id; the exit closes the resulting aggregate
 net position. A different id in the same direction fails closed while that
 aggregate position is open. An opposite-direction entry performs an ordered
 close fill, applies it to the portfolio, and then sizes and fills the new side;
-this is distinct from a one-fill target rebalance. This fixed two-stage path can
-produce at most two fills on one bar without a strategy-local account or matcher.
+this is distinct from a one-fill target rebalance. This fixed path can produce
+at most two fills on one bar without a strategy-local account or matcher. An
+ordered close-then-open reversal consumes both slots, so an attached exit cannot
+also fill on that bar.
 
 `end(close, isLast)` remains the normal close-phase convenience. Strategies
 whose policy requires an observation between close-time fills may explicitly
@@ -190,14 +234,45 @@ profiles. Intermediate leverage values fail closed until the portfolio
 publishes true free-margin accounting. Default quantity remains
 all-available-capital sizing rather than leveraged sizing.
 
-This slice does not provide per-entry lots, independently addressed partial
-closes, general margin accounting or margin calls, multiple independent exits,
-true limit orders, general OCA groups, or segment-by-segment OHLC path replay. Its
-one primary slot and one atomic attached-exit slot form a scalar,
-at-most-two-fill boundary. A general order book will require an explicit
-bounded fill-drain revision rather than pretending an arbitrary number of fills
-fits this interface. That future component remains ordinary Tea source and
-does not require compiler/runtime dispatch by strategy name.
+For strategies that genuinely need independently accounted entries, select the
+bounded lot policy explicitly:
+
+```tea
+var strat = strategy.configure(
+    broker = broker.new(commission = broker.commissionRate(fee)),
+    portfolio = portfolio.lots(
+        initialCash = initial_cash,
+        maxOpenTrades = maximum_open_trades,
+        marginLong = 0.0,
+        marginShort = 0.0
+    )
+)
+```
+
+`LotPortfolio` owns the fixed-capacity collection of `OpenTrade` records,
+per-entry basis and fees, newest-first removal, realized P&L, and aggregate
+reporting. An immediate-only strategy calls `begin_immediate(bar_index)`,
+`entry_now(...)`, and `close_trade(...)`; the broker still owns the execution
+price, commission, fill identity, rejection, and typed effects. Capacity is a
+bind-time policy and overflow is rejected before any `FillExecuted` event.
+Immediate-entry size is validated before any opposite lot is closed, and a
+failed close prevents the remaining reversal work and new entry, so an invalid
+immediate command cannot silently liquidate the portfolio first.
+`snapshot()` returns one immutable reporting value so a strategy does not need
+to cross the component boundary once per plotted metric.
+
+The scalar scheduled-order calls and the immediate lot calls deliberately fail
+closed when used with the wrong portfolio policy. `portfolio.lots` is
+collection-backed and therefore CPU-only under today's WGSL subset;
+`portfolio.new` remains scalar and GPU-lowerable.
+
+The shipped components still do not pretend to be a general order book. The
+scalar broker has one primary slot and one atomic attached exit, while the lot
+policy executes explicitly selected entries immediately rather than holding
+many independent pending orders. General margin calls, multiple independent
+resting exits, arbitrary OCA groups, and an unbounded fill drain require a
+separate explicitly bounded revision. That future component remains ordinary
+Tea source and does not require compiler/runtime dispatch by strategy name.
 
 ## Observables and effects
 
@@ -211,7 +286,7 @@ plot(strat.realized_pnl(), "Realized PnL")
 The canonical broker package also owns nominal order, fill, cancellation,
 expiry, and rejection event payloads. `broker.BrokerEmulator` emits those
 values at the point where it makes the corresponding execution decision; the
-generic `Strategy<B, P>` does not guess why an arbitrary broker accepted or
+generic `ConfiguredStrategy<B, P>` does not guess why an arbitrary broker accepted or
 rejected a command. Sparse, non-column records use the generic
 `effect.emit(value)` path; the host transports typed Tea values and does not
 reconstruct strategy events in a bespoke journal.

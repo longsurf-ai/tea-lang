@@ -1,6 +1,7 @@
 //@version=1
-// Canonical scalar net-portfolio accounting. It consumes broker.Fill values
-// but never decides whether, when, or at what price an order fills.
+// Canonical scalar-net and bounded-lot accounting policies. They consume
+// broker.Fill values but never decide whether, when, or at what price an order
+// fills.
 library("portfolio")
 
 import broker
@@ -11,6 +12,13 @@ export interface Portfolio
 	float buying_power() const
 	float position_quantity() const
 	float position_avg_price() const
+	bool supports_open_trades() const
+	int open_trade_count() const
+	OpenTrade open_trade(int index) const
+	int update_open_trade(int index, OpenTrade trade)
+	int max_long_stack() const
+	int max_short_stack() const
+	PortfolioSnapshot snapshot() const
 	int apply(broker.Fill execution)
 	float mark(float price)
 	float cash() const
@@ -23,6 +31,41 @@ export interface Portfolio
 	float profit_factor() const
 	float max_drawdown() const
 	float total_return() const
+
+// OpenTrade is the canonical per-entry portfolio record used by bounded lot
+// portfolios. Exit policy remains strategy-owned; this value carries only the
+// deterministic state needed to evaluate and account for one open entry.
+export type OpenTrade
+	int id
+	broker.Side entrySide
+	int tag
+	float entryPrice
+	float quantity
+	float targetPrice = na
+	float stopPrice = na
+	float entryFee = 0.0
+	bool trailingArmed = false
+	float trailExtreme = na
+	float trailDistance = na
+
+// PortfolioSnapshot is an immutable reporting projection. It lets a strategy
+// read a coherent set of account metrics with one component-boundary call.
+export type PortfolioSnapshot
+	float cash
+	float positionQuantity
+	float positionAveragePrice
+	int openTradeCount
+	int maxLongStack
+	int maxShortStack
+	float equity
+	float realizedPnl
+	float totalFees
+	int fillCount
+	int roundTripCount
+	float winRate
+	float profitFactor
+	float maxDrawdown
+	float totalReturn
 
 export type NetPortfolio
 	float initialCash
@@ -66,6 +109,43 @@ export type NetPortfolio
 
 	float position_avg_price() const =>
 		this.entryPrice
+
+	bool supports_open_trades() const =>
+		false
+
+	int open_trade_count() const =>
+		0
+
+	OpenTrade open_trade(int index) const =>
+		na
+
+	int update_open_trade(int index, OpenTrade trade) =>
+		0
+
+	int max_long_stack() const =>
+		0
+
+	int max_short_stack() const =>
+		0
+
+	PortfolioSnapshot snapshot() const =>
+		PortfolioSnapshot.new(
+			cash = this.cashValue,
+			positionQuantity = this.positionQuantityValue,
+			positionAveragePrice = this.entryPrice,
+			openTradeCount = this.openEntryCountValue,
+			maxLongStack = 0,
+			maxShortStack = 0,
+			equity = this.equityValue,
+			realizedPnl = this.realizedPnlValue,
+			totalFees = this.totalFeesValue,
+			fillCount = this.fillCountValue,
+			roundTripCount = this.roundTripCountValue,
+			winRate = this.win_rate(),
+			profitFactor = this.profit_factor(),
+			maxDrawdown = this.maxDrawdownValue,
+			totalReturn = this.total_return()
+		)
 
 	int apply(broker.Fill execution) =>
 		if not na(execution)
@@ -182,6 +262,197 @@ export type NetPortfolio
 	float total_return() const =>
 		this.initialCash == 0.0 ? na : (this.equityValue - this.initialCash) / this.initialCash
 
+// LotPortfolio is the canonical bounded per-entry accounting policy. Its
+// collection state is isolated from NetPortfolio, so selecting this policy is
+// explicit and does not change the scalar GPU profile of portfolio.new().
+export type LotPortfolio
+	float initialCash
+	int maxOpenTrades
+	float marginLong
+	float marginShort
+	array<OpenTrade> openTrades
+	float cashValue = 0.0
+	float equityValue = 0.0
+	float peakEquity = 0.0
+	float maxDrawdownValue = 0.0
+	float realizedPnlValue = 0.0
+	float totalFeesValue = 0.0
+	int fillCountValue = 0
+	int roundTripCountValue = 0
+	int winningTradeCountValue = 0
+	int losingTradeCountValue = 0
+	float grossProfitValue = 0.0
+	float grossLossValue = 0.0
+	int maxLongStackValue = 0
+	int maxShortStackValue = 0
+
+	broker.Account account() const =>
+		longMarginValid = this.marginLong == 0.0 or this.marginLong == 100.0
+		shortMarginValid = this.marginShort == 0.0 or this.marginShort == 100.0
+		configurationValid = this.initialCash > 0.0 and this.maxOpenTrades >= 1 and this.openTrades.size() <= this.maxOpenTrades and longMarginValid and shortMarginValid
+		broker.Account.new(this.cashValue, this.position_quantity(), this.openTrades.size(), this.maxOpenTrades, this.marginLong, this.marginShort, configurationValid)
+
+	bool is_flat() const =>
+		this.openTrades.size() == 0
+
+	float buying_power() const =>
+		this.cashValue
+
+	float position_quantity() const =>
+		quantity = 0.0
+		for trade in this.openTrades
+			direction = trade.entrySide == broker.Side.buy ? 1.0 : -1.0
+			quantity := quantity + direction * trade.quantity
+		quantity
+
+	float position_avg_price() const =>
+		totalQuantity = 0.0
+		totalNotional = 0.0
+		for trade in this.openTrades
+			totalQuantity := totalQuantity + trade.quantity
+			totalNotional := totalNotional + trade.quantity * trade.entryPrice
+		totalQuantity == 0.0 ? na : totalNotional / totalQuantity
+
+	bool supports_open_trades() const =>
+		true
+
+	int open_trade_count() const =>
+		this.openTrades.size()
+
+	OpenTrade open_trade(int index) const =>
+		this.openTrades.get(index)
+
+	int update_open_trade(int index, OpenTrade trade) =>
+		updated = 0
+		if index >= 0 and index < this.openTrades.size()
+			current = this.openTrades.get(index)
+			next = OpenTrade.new(current.id, current.entrySide, trade.tag, current.entryPrice, current.quantity, trade.targetPrice, trade.stopPrice, current.entryFee, trade.trailingArmed, trade.trailExtreme, trade.trailDistance)
+			this.openTrades.set(index, next)
+			updated := 1
+		updated
+
+	int max_long_stack() const =>
+		this.maxLongStackValue
+
+	int max_short_stack() const =>
+		this.maxShortStackValue
+
+	PortfolioSnapshot snapshot() const =>
+		PortfolioSnapshot.new(
+			cash = this.cashValue,
+			positionQuantity = this.position_quantity(),
+			positionAveragePrice = this.position_avg_price(),
+			openTradeCount = this.openTrades.size(),
+			maxLongStack = this.maxLongStackValue,
+			maxShortStack = this.maxShortStackValue,
+			equity = this.equityValue,
+			realizedPnl = this.realizedPnlValue,
+			totalFees = this.totalFeesValue,
+			fillCount = this.fillCountValue,
+			roundTripCount = this.roundTripCountValue,
+			winRate = this.win_rate(),
+			profitFactor = this.profit_factor(),
+			maxDrawdown = this.maxDrawdownValue,
+			totalReturn = this.total_return()
+		)
+
+	int apply(broker.Fill execution) =>
+		if not na(execution)
+			quantityValid = execution.quantity > 0.0
+			priceValid = execution.price > 0.0
+			feeValid = execution.fee >= 0.0
+			if quantityValid and priceValid and feeValid
+				if execution.commandKind == broker.CommandKind.entry
+					// Broker.execute_now checks the Account capacity before it
+					// publishes FillExecuted. Keep this defensive guard so an
+					// out-of-contract Fill cannot grow the bounded portfolio.
+					if this.openTrades.size() < this.maxOpenTrades
+						tradeId = execution.tradeId > 0 ? execution.tradeId : execution.id
+						this.totalFeesValue := this.totalFeesValue + execution.fee
+						this.fillCountValue := this.fillCountValue + 1
+						this.cashValue := execution.side == broker.Side.buy ? this.cashValue - execution.notional - execution.fee : this.cashValue + execution.notional - execution.fee
+						this.openTrades.push(OpenTrade.new(tradeId, execution.side, 0, execution.price, execution.quantity, entryFee = execution.fee))
+						longCount = 0
+						shortCount = 0
+						for trade in this.openTrades
+							if trade.entrySide == broker.Side.buy
+								longCount := longCount + 1
+							else
+								shortCount := shortCount + 1
+						this.maxLongStackValue := math.max(this.maxLongStackValue, longCount)
+						this.maxShortStackValue := math.max(this.maxShortStackValue, shortCount)
+				else if execution.commandKind == broker.CommandKind.close or execution.commandKind == broker.CommandKind.exit
+					tradeIndex = this.openTrades.size() - 1
+					matchedIndex = -1
+					while tradeIndex >= 0 and matchedIndex < 0
+						trade = this.openTrades.get(tradeIndex)
+						if trade.id == execution.tradeId
+							matchedIndex := tradeIndex
+						tradeIndex := tradeIndex - 1
+					if matchedIndex >= 0
+						trade = this.openTrades.get(matchedIndex)
+						exitSideValid = trade.entrySide == broker.Side.buy ? execution.side == broker.Side.sell : execution.side == broker.Side.buy
+						quantityMatches = execution.quantity == trade.quantity
+						if exitSideValid and quantityMatches
+							this.totalFeesValue := this.totalFeesValue + execution.fee
+							this.fillCountValue := this.fillCountValue + 1
+							this.cashValue := execution.side == broker.Side.buy ? this.cashValue - execution.notional - execution.fee : this.cashValue + execution.notional - execution.fee
+							grossPnl = trade.entrySide == broker.Side.buy ? trade.quantity * (execution.price - trade.entryPrice) : trade.quantity * (trade.entryPrice - execution.price)
+							closedPnl = grossPnl - trade.entryFee - execution.fee
+							this.realizedPnlValue := this.realizedPnlValue + grossPnl - trade.entryFee - execution.fee
+							this.roundTripCountValue := this.roundTripCountValue + 1
+							if closedPnl > 0.0
+								this.winningTradeCountValue := this.winningTradeCountValue + 1
+								this.grossProfitValue := this.grossProfitValue + closedPnl
+							else
+								this.losingTradeCountValue := this.losingTradeCountValue + 1
+								this.grossLossValue := this.grossLossValue + math.abs(closedPnl)
+							lastTrade = this.openTrades.pop()
+							if matchedIndex < this.openTrades.size()
+								this.openTrades.set(matchedIndex, lastTrade)
+		this.fillCountValue
+
+	float mark(float price) =>
+		value = this.cashValue
+		for trade in this.openTrades
+			direction = trade.entrySide == broker.Side.buy ? 1.0 : -1.0
+			value := value + direction * trade.quantity * price
+		this.equityValue := value
+		this.peakEquity := math.max(this.peakEquity, value)
+		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - value) / this.peakEquity
+		this.maxDrawdownValue := math.max(this.maxDrawdownValue, drawdown)
+		value
+
+	float cash() const =>
+		this.cashValue
+
+	float equity() const =>
+		this.equityValue
+
+	float realized_pnl() const =>
+		this.realizedPnlValue
+
+	float total_fees() const =>
+		this.totalFeesValue
+
+	int fill_count() const =>
+		this.fillCountValue
+
+	int round_trip_count() const =>
+		this.roundTripCountValue
+
+	float win_rate() const =>
+		this.roundTripCountValue == 0 ? 0.0 : float(this.winningTradeCountValue) / float(this.roundTripCountValue)
+
+	float profit_factor() const =>
+		this.grossLossValue == 0.0 ? 0.0 : this.grossProfitValue / this.grossLossValue
+
+	float max_drawdown() const =>
+		this.maxDrawdownValue
+
+	float total_return() const =>
+		this.initialCash == 0.0 ? na : (this.equityValue - this.initialCash) / this.initialCash
+
 export new(
 	float initialCash = 1000000.0,
 	int pyramiding = 1,
@@ -189,6 +460,14 @@ export new(
 	float marginShort = 100.0
 ) =>
 	NetPortfolio.new(initialCash = initialCash, pyramiding = pyramiding, marginLong = marginLong, marginShort = marginShort, cashValue = initialCash, equityValue = initialCash, peakEquity = initialCash)
+
+export lots(
+	float initialCash = 1000000.0,
+	int maxOpenTrades = 1,
+	float marginLong = 0.0,
+	float marginShort = 0.0
+) =>
+	LotPortfolio.new(initialCash = initialCash, maxOpenTrades = maxOpenTrades, marginLong = marginLong, marginShort = marginShort, openTrades = array.new<OpenTrade>(), cashValue = initialCash, equityValue = initialCash, peakEquity = initialCash)
 
 // Compatibility wrapper for the original flat-or-long reference account.
 export basic(float initialCash) =>

@@ -240,10 +240,10 @@ describe('Tea strategy components end to end', () => {
         'BrokerEmulator.finish',
         'NetPortfolio.apply',
         'NetPortfolio.mark',
-        'Strategy<BrokerEmulator, NetPortfolio>.begin',
-        'Strategy<BrokerEmulator, NetPortfolio>.entry',
-        'Strategy<BrokerEmulator, NetPortfolio>.close',
-        'Strategy<BrokerEmulator, NetPortfolio>.end',
+        'ConfiguredStrategy<BrokerEmulator, NetPortfolio>.begin',
+        'ConfiguredStrategy<BrokerEmulator, NetPortfolio>.entry',
+        'ConfiguredStrategy<BrokerEmulator, NetPortfolio>.close',
+        'ConfiguredStrategy<BrokerEmulator, NetPortfolio>.end',
       ]),
     );
     expect(program.outputs[0]?.effect).toBe('strategy');
@@ -2260,5 +2260,213 @@ describe('Tea strategy components end to end', () => {
     expect(valuesFor(sink, 5)).toEqual([0, 0, 0, 0, 0, 0, 0, -50]);
     expect(valuesFor(sink, 6)).toEqual([0, 0, 0, 0, 0, 1, 1, 2]);
     expect(valuesFor(sink, 7)).toEqual([0, 0, 0, 0, 0, 0, 0, 1]);
+  });
+
+  test('resumes an intrabar stop entry after its fill instead of replaying an earlier extreme', async () => {
+    const source = [
+      'strategy("path cursor")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.new(initialCash = 100.0, marginLong = 0.0)',
+      ')',
+      'strat.begin_path(open, high, low, close, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0, stop = 11.0)',
+      '    strat.exit("Bracket", fromEntry = "Long", stop = 9.0, target = 13.0, activateOnEntryBar = true)',
+      'strat.mark(close)',
+      'strat.finish(barstate.islast)',
+      'plot(strat.position_quantity())',
+      'plot(strat.fill_count())',
+      'plot(strat.realized_pnl())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '10,12,8,10', ''].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [0, 1]);
+    expect(valuesFor(sink, 2)).toEqual([0, 1]);
+    expectNumbersClose(valuesFor(sink, 3), [0, 0]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderExpired'],
+    ]);
+    expect(effectField(program, sink, 2, 'fill', 'referencePrice')).toBe(11);
+  });
+
+  test('activates and updates a trailing exit only along the remaining OHLC path', async () => {
+    const source = [
+      'strategy("path trailing")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.new(initialCash = 100.0, marginLong = 0.0)',
+      ')',
+      'strat.begin_path(open, high, low, close, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0)',
+      '    strat.exit("Trail", fromEntry = "Long", activateOnEntryBar = true, trailPrice = 12.0, trailOffset = 1.0)',
+      'strat.mark(close)',
+      'strat.finish(barstate.islast)',
+      'plot(strat.position_quantity())',
+      'plot(strat.fill_count())',
+      'plot(strat.realized_pnl())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      [
+        'open,high,low,close',
+        '10,10,10,10',
+        '10,13,9,12.5',
+        '12.5,14,12.2,12.5',
+        '',
+      ].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [0, 1, 0]);
+    expect(valuesFor(sink, 2)).toEqual([0, 1, 2]);
+    expectNumbersClose(valuesFor(sink, 3), [0, 0, 3]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [2, 'FillExecuted'],
+    ]);
+    expect(effectField(program, sink, 3, 'fill', 'referencePrice')).toBe(13);
+  });
+
+  test('rejects a trailing exit under the ordinary whole-bar lifecycle', async () => {
+    const source = [
+      'strategy("path-only trailing")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.new(initialCash = 100.0, marginLong = 0.0)',
+      ')',
+      'strat.begin_bar(open, high, low, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0)',
+      '    strat.exit("Trail", fromEntry = "Long", activateOnEntryBar = true, trailPrice = 12.0, trailOffset = 1.0)',
+      'strat.mark(close)',
+      'strat.finish(barstate.islast)',
+      'plot(strat.position_quantity())',
+      'plot(strat.fill_count())',
+      'plot(strat.has_pending() ? 1 : 0)',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '10,13,9,12', ''].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [0, 1]);
+    expect(valuesFor(sink, 2)).toEqual([0, 1]);
+    expect(valuesFor(sink, 3)).toEqual([1, 0]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderRejected'],
+    ]);
+  });
+
+  test('continues a path-capped reversal exactly once at the next open', async () => {
+    const source = [
+      'strategy("path deferred reversal")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var strat = strategy.configure(',
+      '    broker = broker.new(processOrdersOnClose = true),',
+      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 2, marginLong = 0.0, marginShort = 0.0)',
+      ')',
+      'strat.begin_path(open, high, low, close, bar_index)',
+      'if bar_index == 0',
+      '    strat.entry("Long", strategy.Direction.long, qty = 1.0)',
+      'if bar_index == 1',
+      '    strat.entry("Short", strategy.Direction.short, qty = 1.0)',
+      '    strat.process_close(close)',
+      'strat.mark(close)',
+      'strat.finish(barstate.islast)',
+      'plot(strat.position_quantity())',
+      'plot(strat.fill_count())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      [
+        'open,high,low,close',
+        '10,10,10,10',
+        '10,10,10,10',
+        '12,12,12,12',
+        '',
+      ].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [0, 0, -1]);
+    expect(valuesFor(sink, 2)).toEqual([0, 2, 3]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [1, 'OrderSubmitted'],
+      [1, 'FillExecuted'],
+      [2, 'FillExecuted'],
+    ]);
+    expect(effectField(program, sink, 4, 'fill', 'referencePrice')).toBe(12);
+  });
+
+  test('rejects scalar and lot lifecycle methods on the wrong portfolio policy', async () => {
+    const source = [
+      'strategy("portfolio policy guards")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'var lots = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.lots(initialCash = 100.0, maxOpenTrades = 2)',
+      ')',
+      'var scalar = strategy.configure(',
+      '    broker = broker.new(),',
+      '    portfolio = portfolio.new(initialCash = 100.0)',
+      ')',
+      'lots.begin_immediate(bar_index)',
+      'scalar.begin_immediate(bar_index)',
+      'if bar_index == 0',
+      '    lots.entry_now("Lot", "Reverse", strategy.Direction.long, close, qty = 1.0)',
+      '    lots.close("Scheduled close")',
+      '    lots.exit("Scheduled exit", fromEntry = "Lot", stop = 9.0)',
+      '    scalar.entry_now("Immediate on scalar", "Reverse", strategy.Direction.long, close, qty = 1.0)',
+      '    scalar.close_trade("Indexed close on scalar", 0, close)',
+      'lots.mark(close)',
+      'scalar.mark(close)',
+      'plot(lots.position_quantity())',
+      'plot(lots.fill_count())',
+      'plot(scalar.position_quantity())',
+      'plot(scalar.fill_count())',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', ''].join('\n'),
+    );
+
+    expectNumbersClose(valuesFor(sink, 1), [1]);
+    expect(valuesFor(sink, 2)).toEqual([1]);
+    expectNumbersClose(valuesFor(sink, 3), [0]);
+    expect(valuesFor(sink, 4)).toEqual([0]);
+    expect(effectTimeline(program, sink)).toEqual([
+      [0, 'OrderSubmitted'],
+      [0, 'FillExecuted'],
+      [0, 'OrderRejected'],
+      [0, 'OrderRejected'],
+      [0, 'OrderRejected'],
+      [0, 'OrderRejected'],
+    ]);
   });
 });

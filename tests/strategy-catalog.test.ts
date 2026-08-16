@@ -45,6 +45,21 @@ describe('clean-room strategy catalog', () => {
     expect(catalog).toEqual([...expectedStrategies]);
   });
 
+  test('routes every audited profile through the canonical strategy components', () => {
+    for (const name of expectedStrategies) {
+      const source = readFileSync(
+        join(STRATEGY_ROOT, name, 'strategy.tea'),
+        'utf8',
+      );
+      expect(source).toContain('import broker');
+      expect(source).toContain('import portfolio');
+      expect(source).toContain('import strategy');
+      expect(source).toContain('strategy.configure(');
+      expect(source).not.toContain('broker.Fill.new');
+      expect(source).not.toContain('effect.emit');
+    }
+  });
+
   for (const name of expectedStrategies) {
     test(`${name} compiles and resolves its declared grid`, () => {
       const directory = join(STRATEGY_ROOT, name);
@@ -203,6 +218,43 @@ describe('clean-room strategy catalog', () => {
     expect(source).not.toContain('broker.Fill.new');
   });
 
+  test('Alice Grid composes the canonical broker and bounded lot portfolio', () => {
+    const source = readFileSync(
+      join(STRATEGY_ROOT, 'alice-grid', 'strategy.tea'),
+      'utf8',
+    );
+
+    expect(source).toContain('broker.new(');
+    expect(source).toContain('portfolio.lots(');
+    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('maximum_open_trades = input.int(');
+    expect(source).toContain('strat.entry_now(');
+    expect(source).toContain('strat.close_trade(');
+    expect(source).toContain('strat.snapshot()');
+    expect(source).not.toContain('type GridLot');
+    expect(source).not.toContain('type GridAccount');
+    expect(source).not.toContain('broker.Fill.new');
+    expect(source).not.toContain('effect.emit');
+  });
+
+  test('ATR ZigZag composes the canonical broker path and portfolio', () => {
+    const source = readFileSync(
+      join(STRATEGY_ROOT, 'atr-zigzag-breakout', 'strategy.tea'),
+      'utf8',
+    );
+
+    expect(source).toContain('broker.new(');
+    expect(source).toContain('portfolio.new(');
+    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('strat.begin_path_primary(');
+    expect(source).toContain('strat.process_path_exit(');
+    expect(source).toContain('strat.entry(');
+    expect(source).toContain('strat.exit(');
+    expect(source).not.toContain('type BracketAccount');
+    expect(source).not.toContain('broker.Fill.new');
+    expect(source).not.toContain('effect.emit');
+  });
+
   test('BB mean reversion composes the canonical broker and portfolio', () => {
     const source = readFileSync(
       join(STRATEGY_ROOT, 'bb-spy-mean-reversion', 'strategy.tea'),
@@ -250,6 +302,24 @@ describe('clean-room strategy catalog', () => {
     expect(source).toContain('strat.begin_bar(');
     expect(source).toContain('strat.exit(');
     expect(source).not.toContain('type SignedAccount');
+    expect(source).not.toContain('broker.Fill.new');
+    expect(source).not.toContain('effect.emit');
+  });
+
+  test('Cowabunga composes canonical target rebalances and path exits', () => {
+    const source = readFileSync(
+      join(STRATEGY_ROOT, 'cowabunga', 'strategy.tea'),
+      'utf8',
+    );
+
+    expect(source).toContain('broker.new(');
+    expect(source).toContain('portfolio.new(');
+    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('strat.begin_path_primary(');
+    expect(source).toContain('strat.process_path_exit(');
+    expect(source).toContain('strat.rebalance(');
+    expect(source).toContain('strat.exit(');
+    expect(source).not.toContain('type SignedBracketEngine');
     expect(source).not.toContain('broker.Fill.new');
     expect(source).not.toContain('effect.emit');
   });

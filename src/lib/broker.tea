@@ -1,7 +1,8 @@
 //@version=1
 // Canonical order/fill vocabulary and the deterministic reference broker.
-// Every BrokerEmulator value is explicit scenario state; the package hides no
-// broker, order book, or account state.
+// Every BrokerEmulator value is explicit scenario state, including its single
+// pending command, attached fixed/trailing exit, and deterministic OHLC path
+// cursor; the package hides no broker, order book, or account state.
 library("broker")
 
 export enum Side
@@ -82,6 +83,9 @@ export type Command
 	float equityPercent = na
 	bool commissionIncluded = false
 	PositionTarget positionTarget = na
+	float trailPrice = na
+	float trailOffset = na
+	int tradeId = 0
 
 export type Order
 	int id
@@ -100,6 +104,9 @@ export type Order
 	float equityPercent = na
 	bool commissionIncluded = false
 	PositionTarget positionTarget = na
+	float trailPrice = na
+	float trailOffset = na
+	int tradeId = 0
 
 export type Fill
 	int id
@@ -114,6 +121,7 @@ export type Fill
 	float fee
 	OrderType orderType = OrderType.market
 	CommandKind commandKind = CommandKind.entry
+	int tradeId = 0
 
 export type OrderSubmitted
 	Order order
@@ -148,17 +156,21 @@ export interface Broker
 	Order submit(Command command)
 	Order submit_exit(Command command)
 	int cancel(string commandId)
+	int reject(string commandId, Side side, int barIndex, Rejection reason)
 	Fill on_open(float referencePrice, Account account, int barIndex)
 	Fill match_pending(float openPrice, float highPrice, float lowPrice, Account account, int barIndex)
+	Fill match_path_primary(float openPrice, float highPrice, float lowPrice, float closePrice, Account account, int barIndex)
 	Fill continue_reversal(Account account, int barIndex)
 	Fill match_exit(float openPrice, float highPrice, float lowPrice, Account account, int barIndex)
+	Fill match_path_exit(float openPrice, float highPrice, float lowPrice, float closePrice, Account account, int barIndex)
+	Fill execute_now(Command command, float referencePrice, Account account, int barIndex)
 	Fill on_close(float referencePrice, Account account, int barIndex)
 	FinishResult finish()
 
 // This reference emulator intentionally owns a bounded scalar order model: one
 // pending directional market-or-stop command and one symmetric atomic
-// stop/target exit. It is not a general order book or a true limit-order
-// implementation.
+// stop/target/trailing exit. The path cursor is scalar state as well. It is not
+// a general order book or a true limit-order implementation.
 export type BrokerEmulator
 	CommissionKind commissionKind
 	float commissionValue
@@ -168,6 +180,7 @@ export type BrokerEmulator
 	bool processOrdersOnClose
 	int nextOrderId = 1
 	int nextFillId = 1
+	int nextTradeId = 1
 	Order pending = na
 	Order attachedExit = na
 	string activeEntryId = na
@@ -179,12 +192,32 @@ export type BrokerEmulator
 	float reversalReferencePrice = na
 	bool reversalAtClose = false
 	bool reversalOrderFeePaid = false
+	int pathBarIndex = -1
+	bool pathPrimaryFilled = false
+	int pathCursorSegment = 0
+	float pathCursorPrice = na
+	bool trailActivated = false
+	float trailBestPrice = na
+	float trailStopPrice = na
+	bool matchingPathExit = false
 
 	bool has_pending() const =>
 		not na(this.pending) or not na(this.attachedExit)
 
 	bool has_pending_entry() const =>
 		not na(this.pending) and this.pending.kind == CommandKind.entry
+
+	int reset_trail() =>
+		this.trailActivated := false
+		this.trailBestPrice := na
+		this.trailStopPrice := na
+		0
+
+	float effective_exit_stop(Account account) const =>
+		result = this.attachedExit.stop
+		if this.trailActivated and not na(this.trailStopPrice)
+			result := na(result) ? this.trailStopPrice : account.positionQuantity > 0.0 ? math.max(result, this.trailStopPrice) : math.min(result, this.trailStopPrice)
+		result
 
 	float execution_price(float referencePrice, Side side) const =>
 		isBuy = side == Side.buy
@@ -250,6 +283,9 @@ export type BrokerEmulator
 		Order order = na
 		stopPresent = not na(command.stop)
 		targetPresent = not na(command.target)
+		trailPricePresent = not na(command.trailPrice)
+		trailOffsetPresent = not na(command.trailOffset)
+		trailPresent = trailPricePresent and trailOffsetPresent
 		pendingEntryMatches = this.has_pending_entry() and not na(command.fromEntry) and this.pending.commandId == command.fromEntry
 		activeEntryMatches = not na(this.activeEntryId) and not na(command.fromEntry) and this.activeEntryId == command.fromEntry
 		entryMatches = pendingEntryMatches or activeEntryMatches
@@ -257,7 +293,7 @@ export type BrokerEmulator
 		exitSide = entrySide == Side.sell ? Side.buy : Side.sell
 		isLong = entrySide == Side.buy
 		orderedPrices = not stopPresent or not targetPresent or isLong and command.stop < command.target or not isLong and command.target < command.stop
-		pricesValid = (stopPresent or targetPresent) and (not stopPresent or command.stop > 0.0) and (not targetPresent or command.target > 0.0) and orderedPrices
+		pricesValid = (stopPresent or targetPresent or trailPresent) and trailPricePresent == trailOffsetPresent and (not stopPresent or command.stop > 0.0) and (not targetPresent or command.target > 0.0) and (not trailPresent or command.trailPrice > 0.0 and command.trailOffset > 0.0) and orderedPrices
 		canReplace = na(this.attachedExit) or this.attachedExit.commandId == command.commandId and this.attachedExit.fromEntry == command.fromEntry
 		if command.kind != CommandKind.exit
 			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidAccountState))
@@ -269,10 +305,11 @@ export type BrokerEmulator
 			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.pendingOrder))
 		else
 			replaced = this.attachedExit
-			orderType = stopPresent and targetPresent ? OrderType.bracket : stopPresent ? OrderType.stop : OrderType.target
-			order := Order.new(this.nextOrderId, command.commandId, exitSide, command.signalBarIndex, command.kind, command.quantity, command.notional, command.fromEntry, command.stop, command.activateOnEntryBar, command.target, command.cashBudget, orderType, command.equityPercent, command.commissionIncluded, command.positionTarget)
+			orderType = targetPresent and (stopPresent or trailPresent) ? OrderType.bracket : targetPresent ? OrderType.target : OrderType.stop
+			order := Order.new(this.nextOrderId, command.commandId, exitSide, command.signalBarIndex, command.kind, command.quantity, command.notional, command.fromEntry, command.stop, command.activateOnEntryBar, command.target, command.cashBudget, orderType, command.equityPercent, command.commissionIncluded, command.positionTarget, command.trailPrice, command.trailOffset)
 			this.nextOrderId := this.nextOrderId + 1
 			this.attachedExit := order
+			this.reset_trail()
 			if not na(replaced)
 				effect.emit(OrderCancelled.new(replaced))
 			effect.emit(OrderSubmitted.new(order))
@@ -294,15 +331,61 @@ export type BrokerEmulator
 				cancelledExit = this.attachedExit
 				Order noDependentExit = na
 				this.attachedExit := noDependentExit
+				this.reset_trail()
 				effect.emit(OrderCancelled.new(cancelledExit))
 				cancelled := cancelled + 1
 		if not na(this.attachedExit) and this.attachedExit.commandId == commandId
 			cancelledExit = this.attachedExit
 			Order noExit = na
 			this.attachedExit := noExit
+			this.reset_trail()
 			effect.emit(OrderCancelled.new(cancelledExit))
 			cancelled := cancelled + 1
 		cancelled
+
+	int reject(string commandId, Side side, int barIndex, Rejection reason) =>
+		effect.emit(OrderRejected.new(commandId, side, barIndex, reason))
+		0
+
+	Fill execute_now(Command command, float referencePrice, Account account, int barIndex) =>
+		Fill execution = na
+		kindValid = command.kind == CommandKind.entry or command.kind == CommandKind.close
+		sideValid = command.side == Side.buy or command.side == Side.sell
+		hasExplicitQuantity = not na(command.quantity)
+		hasExplicitNotional = not na(command.notional)
+		sizeValid = (hasExplicitQuantity ? 1 : 0) + (hasExplicitNotional ? 1 : 0) == 1 and (not hasExplicitQuantity or command.quantity > 0.0) and (not hasExplicitNotional or command.notional > 0.0)
+		if not kindValid or not sideValid
+			effect.emit(OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidAccountState))
+		else if not sizeValid
+			effect.emit(OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidQuantity))
+		else if not this.configuration_valid() or not account.configurationValid
+			effect.emit(OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidConfiguration))
+		else
+			price = this.execution_price(referencePrice, command.side)
+			quantityPrice = price > 0.0 ? price : 1.0
+			quantity = hasExplicitQuantity ? command.quantity : command.notional / quantityPrice
+			notional = quantity * price
+			fee = this.commission_for(quantity, notional)
+			entryCapacity = account.openEntryCount < account.pyramiding
+			closeSideValid = account.positionQuantity > 0.0 and command.side == Side.sell or account.positionQuantity < 0.0 and command.side == Side.buy
+			accountStateValid = command.kind == CommandKind.entry ? entryCapacity : command.tradeId > 0 and closeSideValid
+			marginRate = command.side == Side.buy ? account.marginLong : account.marginShort
+			capitalAvailable = command.side == Side.buy ? account.buyingPower : this.equity_at(referencePrice, account)
+			capitalRequired = notional * marginRate / 100.0 + fee
+			capitalValid = command.kind == CommandKind.close or marginRate == 0.0 or capitalAvailable >= capitalRequired
+			if accountStateValid and capitalValid and referencePrice > 0.0 and price > 0.0 and quantity > 0.0 and fee >= 0.0
+				tradeId = command.kind == CommandKind.entry ? this.nextTradeId : command.tradeId
+				if command.kind == CommandKind.entry
+					this.nextTradeId := this.nextTradeId + 1
+				order = Order.new(this.nextOrderId, command.commandId, command.side, command.signalBarIndex, command.kind, command.quantity, command.notional, command.fromEntry, command.stop, command.activateOnEntryBar, command.target, command.cashBudget, OrderType.market, command.equityPercent, command.commissionIncluded, command.positionTarget, command.trailPrice, command.trailOffset, tradeId)
+				this.nextOrderId := this.nextOrderId + 1
+				effect.emit(OrderSubmitted.new(order))
+				execution := Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, referencePrice, price, quantity, notional, fee, OrderType.market, command.kind, tradeId)
+				this.nextFillId := this.nextFillId + 1
+				effect.emit(FillExecuted.new(execution))
+			else
+				effect.emit(OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidAccountState))
+		execution
 
 	Fill execute(float referencePrice, Account account, int barIndex, bool atClose, bool priceTriggered = true, bool reversalContinuation = false) =>
 		Fill execution = na
@@ -355,6 +438,7 @@ export type BrokerEmulator
 								cancelledExit := this.attachedExit
 								Order noExit = na
 								this.attachedExit := noExit
+								this.reset_trail()
 							if projectedQuantity == 0.0
 								string noEntry = na
 								Side noEntrySide = na
@@ -423,6 +507,7 @@ export type BrokerEmulator
 									cancelledExit := this.attachedExit
 									Order noExit = na
 									this.attachedExit := noExit
+									this.reset_trail()
 								string noEntry = na
 								Side noEntrySide = na
 								this.activeEntryId := noEntry
@@ -443,6 +528,7 @@ export type BrokerEmulator
 					orphanedExit = this.attachedExit
 					Order noOrphanedExit = na
 					this.attachedExit := noOrphanedExit
+					this.reset_trail()
 					effect.emit(OrderCancelled.new(orphanedExit))
 				if not this.reversalPending
 					Order empty = na
@@ -474,6 +560,56 @@ export type BrokerEmulator
 				execution := this.execute(referencePrice, account, barIndex, false, triggered)
 		execution
 
+	Fill match_path_primary(float openPrice, float highPrice, float lowPrice, float closePrice, Account account, int barIndex) =>
+		this.pathBarIndex := barIndex
+		this.pathPrimaryFilled := false
+		this.pathCursorSegment := 0
+		this.pathCursorPrice := openPrice
+		highFirst = math.abs(highPrice - openPrice) < math.abs(openPrice - lowPrice)
+		firstExtreme = highFirst ? highPrice : lowPrice
+		secondExtreme = highFirst ? lowPrice : highPrice
+		triggerSegment = 0
+		Fill execution = na
+		deferredReversal = this.reversalPending and this.matchedBarIndex != barIndex
+		if deferredReversal
+			execution := this.execute(openPrice, account, barIndex, false, true, true)
+		else
+			triggered = false
+			float referencePrice = na
+			if not na(this.pending) and barIndex > this.pending.signalBarIndex
+				if this.pending.orderType == OrderType.market
+					triggered := true
+					referencePrice := openPrice
+				else
+					isBuy = this.pending.side == Side.buy
+					gapTriggered = isBuy ? openPrice >= this.pending.stop : openPrice <= this.pending.stop
+					if gapTriggered
+						triggered := true
+						referencePrice := openPrice
+					else
+						firstCross = isBuy ? openPrice <= this.pending.stop and firstExtreme >= this.pending.stop : openPrice >= this.pending.stop and firstExtreme <= this.pending.stop
+						secondCross = isBuy ? firstExtreme <= this.pending.stop and secondExtreme >= this.pending.stop : firstExtreme >= this.pending.stop and secondExtreme <= this.pending.stop
+						thirdCross = isBuy ? secondExtreme <= this.pending.stop and closePrice >= this.pending.stop : secondExtreme >= this.pending.stop and closePrice <= this.pending.stop
+						if firstCross
+							triggered := true
+							referencePrice := this.pending.stop
+							triggerSegment := 1
+						else if secondCross
+							triggered := true
+							referencePrice := this.pending.stop
+							triggerSegment := 2
+						else if thirdCross
+							triggered := true
+							referencePrice := this.pending.stop
+							triggerSegment := 3
+			if triggered
+				execution := this.execute(referencePrice, account, barIndex, false, true)
+		if not na(execution)
+			this.pathPrimaryFilled := true
+			this.pathCursorSegment := triggerSegment
+			this.pathCursorPrice := execution.referencePrice
+		execution
+
 	Fill continue_reversal(Account account, int barIndex) =>
 		Fill execution = na
 		if this.reversalPending and not na(this.pending) and this.fillsThisBar < 2
@@ -487,14 +623,22 @@ export type BrokerEmulator
 		if this.matchedBarIndex != barIndex
 			this.matchedBarIndex := barIndex
 			this.fillsThisBar := 0
-		if not na(this.attachedExit) and not na(this.activeEntryId) and this.attachedExit.fromEntry == this.activeEntryId and account.positionQuantity != 0.0 and this.fillsThisBar < 2
+		trailRequiresPath = not na(this.attachedExit) and not na(this.attachedExit.trailPrice) and not na(this.attachedExit.trailOffset)
+		if trailRequiresPath and not this.matchingPathExit
+			rejectedExit = this.attachedExit
+			this.reject(rejectedExit.commandId, rejectedExit.side, barIndex, Rejection.invalidAccountState)
+			Order noPathExit = na
+			this.attachedExit := noPathExit
+			this.reset_trail()
+		else if not na(this.attachedExit) and not na(this.activeEntryId) and this.attachedExit.fromEntry == this.activeEntryId and account.positionQuantity != 0.0 and this.fillsThisBar < 2
 			activationAllowed = this.attachedExit.activateOnEntryBar or barIndex > this.activeEntryBar
-			stopPresent = not na(this.attachedExit.stop)
+			effectiveStop = this.effective_exit_stop(account)
+			stopPresent = not na(effectiveStop)
 			targetPresent = not na(this.attachedExit.target)
 			isLong = account.positionQuantity > 0.0
-			gapStop = activationAllowed and stopPresent and (isLong and openPrice <= this.attachedExit.stop or not isLong and openPrice >= this.attachedExit.stop)
+			gapStop = activationAllowed and stopPresent and (isLong and openPrice <= effectiveStop or not isLong and openPrice >= effectiveStop)
 			gapTarget = activationAllowed and targetPresent and (isLong and openPrice >= this.attachedExit.target or not isLong and openPrice <= this.attachedExit.target)
-			stopTouched = activationAllowed and stopPresent and (isLong and lowPrice <= this.attachedExit.stop or not isLong and highPrice >= this.attachedExit.stop)
+			stopTouched = activationAllowed and stopPresent and (isLong and lowPrice <= effectiveStop or not isLong and highPrice >= effectiveStop)
 			targetTouched = activationAllowed and targetPresent and (isLong and highPrice >= this.attachedExit.target or not isLong and lowPrice <= this.attachedExit.target)
 			triggered = gapStop or gapTarget or stopTouched or targetTouched
 			if triggered
@@ -508,10 +652,10 @@ export type BrokerEmulator
 					targetDistance = isLong ? math.abs(highPrice - openPrice) : math.abs(openPrice - lowPrice)
 					stopDistance = isLong ? math.abs(openPrice - lowPrice) : math.abs(highPrice - openPrice)
 					targetFirst = targetDistance < stopDistance
-					referencePrice := targetFirst ? order.target : order.stop
+					referencePrice := targetFirst ? order.target : effectiveStop
 					matchedType := targetFirst ? OrderType.target : OrderType.stop
 				else if stopTouched
-					referencePrice := order.stop
+					referencePrice := effectiveStop
 					matchedType := OrderType.stop
 				else
 					referencePrice := order.target
@@ -533,12 +677,58 @@ export type BrokerEmulator
 						effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState))
 				Order noExit = na
 				this.attachedExit := noExit
+				this.reset_trail()
 				if not na(execution)
 					string noEntry = na
 					Side noEntrySide = na
 					this.activeEntryId := noEntry
 					this.activeEntrySide := noEntrySide
 					this.activeEntryBar := -1
+		execution
+
+	int update_trail(float fromPrice, float toPrice, Account account, int barIndex) =>
+		if not na(this.attachedExit) and not na(this.activeEntryId) and this.attachedExit.fromEntry == this.activeEntryId and account.positionQuantity != 0.0 and this.fillsThisBar < 2
+			activationAllowed = this.attachedExit.activateOnEntryBar or barIndex > this.activeEntryBar
+			trailPresent = not na(this.attachedExit.trailPrice) and not na(this.attachedExit.trailOffset)
+			if activationAllowed and trailPresent
+				isLong = account.positionQuantity > 0.0
+				isPoint = fromPrice == toPrice
+				favorable = isLong ? toPrice > fromPrice : toPrice < fromPrice
+				activationReached = isLong ? toPrice >= this.attachedExit.trailPrice : toPrice <= this.attachedExit.trailPrice
+				if (isPoint or favorable) and (this.trailActivated or activationReached)
+					this.trailActivated := true
+					this.trailBestPrice := na(this.trailBestPrice) ? toPrice : isLong ? math.max(this.trailBestPrice, toPrice) : math.min(this.trailBestPrice, toPrice)
+					this.trailStopPrice := isLong ? this.trailBestPrice - this.attachedExit.trailOffset : this.trailBestPrice + this.attachedExit.trailOffset
+		0
+
+	Fill match_path_exit_segment(float fromPrice, float toPrice, Account account, int barIndex) =>
+		execution = this.match_exit(fromPrice, math.max(fromPrice, toPrice), math.min(fromPrice, toPrice), account, barIndex)
+		if na(execution)
+			this.update_trail(fromPrice, toPrice, account, barIndex)
+		execution
+
+	Fill match_path_exit(float openPrice, float highPrice, float lowPrice, float closePrice, Account account, int barIndex) =>
+		highFirst = math.abs(highPrice - openPrice) < math.abs(openPrice - lowPrice)
+		firstExtreme = highFirst ? highPrice : lowPrice
+		secondExtreme = highFirst ? lowPrice : highPrice
+		hasPrimaryCursor = this.pathBarIndex == barIndex and this.pathPrimaryFilled
+		cursorSegment = hasPrimaryCursor ? this.pathCursorSegment : 0
+		cursorPrice = hasPrimaryCursor ? this.pathCursorPrice : openPrice
+		this.matchingPathExit := true
+		Fill execution = this.match_path_exit_segment(cursorPrice, cursorPrice, account, barIndex)
+		if na(execution) and cursorSegment == 0
+			execution := this.match_path_exit_segment(cursorPrice, firstExtreme, account, barIndex)
+		if na(execution) and cursorSegment == 1
+			execution := this.match_path_exit_segment(cursorPrice, firstExtreme, account, barIndex)
+		if na(execution) and cursorSegment <= 1
+			execution := this.match_path_exit_segment(firstExtreme, secondExtreme, account, barIndex)
+		if na(execution) and cursorSegment == 2
+			execution := this.match_path_exit_segment(cursorPrice, secondExtreme, account, barIndex)
+		if na(execution) and cursorSegment <= 2
+			execution := this.match_path_exit_segment(secondExtreme, closePrice, account, barIndex)
+		if na(execution) and cursorSegment == 3
+			execution := this.match_path_exit_segment(cursorPrice, closePrice, account, barIndex)
+		this.matchingPathExit := false
 		execution
 
 	Fill on_close(float referencePrice, Account account, int barIndex) =>
@@ -552,6 +742,7 @@ export type BrokerEmulator
 		Order empty = na
 		this.pending := empty
 		this.attachedExit := empty
+		this.reset_trail()
 		string noEntry = na
 		Side noEntrySide = na
 		this.activeEntryId := noEntry
@@ -561,6 +752,7 @@ export type BrokerEmulator
 		this.reversalReferencePrice := na
 		this.reversalAtClose := false
 		this.reversalOrderFeePaid := false
+		this.matchingPathExit := false
 		if not na(expired)
 			effect.emit(OrderExpired.new(expired))
 		if not na(expiredExit)

@@ -5,6 +5,7 @@
 import {describe, expect, test} from 'bun:test';
 import {funcsOf} from '../ir/visit';
 import {mustBuild} from '../noder/testing';
+import {ObjectKind} from './object';
 import {checkText} from './testing';
 
 const ALTERNATIVE_COMPONENTS = [
@@ -15,10 +16,14 @@ const ALTERNATIVE_COMPONENTS = [
   '    broker.Order submit(broker.Command command) => na',
   '    broker.Order submit_exit(broker.Command command) => na',
   '    int cancel(string commandId) => 0',
+  '    int reject(string commandId, broker.Side side, int barIndex, broker.Rejection reason) => 0',
   '    broker.Fill on_open(float referencePrice, broker.Account account, int barIndex) => na',
   '    broker.Fill match_pending(float openPrice, float highPrice, float lowPrice, broker.Account account, int barIndex) => na',
+  '    broker.Fill match_path_primary(float openPrice, float highPrice, float lowPrice, float closePrice, broker.Account account, int barIndex) => na',
   '    broker.Fill continue_reversal(broker.Account account, int barIndex) => na',
   '    broker.Fill match_exit(float openPrice, float highPrice, float lowPrice, broker.Account account, int barIndex) => na',
+  '    broker.Fill match_path_exit(float openPrice, float highPrice, float lowPrice, float closePrice, broker.Account account, int barIndex) => na',
+  '    broker.Fill execute_now(broker.Command command, float referencePrice, broker.Account account, int barIndex) => na',
   '    broker.Fill on_close(float referencePrice, broker.Account account, int barIndex) => na',
   '    broker.FinishResult finish() => na',
   'type AlternatePortfolio',
@@ -28,6 +33,13 @@ const ALTERNATIVE_COMPONENTS = [
   '    float buying_power() const => this.balance',
   '    float position_quantity() const => 0.0',
   '    float position_avg_price() const => na',
+  '    bool supports_open_trades() const => false',
+  '    int open_trade_count() const => 0',
+  '    portfolio.OpenTrade open_trade(int index) const => na',
+  '    int update_open_trade(int index, portfolio.OpenTrade trade) => 0',
+  '    int max_long_stack() const => 0',
+  '    int max_short_stack() const => 0',
+  '    portfolio.PortfolioSnapshot snapshot() const => na',
   '    int apply(broker.Fill execution) => 0',
   '    float mark(float price) => this.balance',
   '    float cash() const => this.balance',
@@ -103,12 +115,17 @@ describe('Tea-authored strategy libraries', () => {
       'slippageTicks',
     ]);
     expect([...portfolio!.exports.keys()].sort()).toEqual([
+      'LotPortfolio',
       'NetPortfolio',
+      'OpenTrade',
       'Portfolio',
+      'PortfolioSnapshot',
       'basic',
+      'lots',
       'new',
     ]);
     expect([...strategy!.exports.keys()].sort()).toEqual([
+      'ConfiguredStrategy',
       'Direction',
       'Sizing',
       'SizingKind',
@@ -118,6 +135,23 @@ describe('Tea-authored strategy libraries', () => {
       'percentOfEquityAtFill',
       'targetPercentOfEquity',
       'targetQuantity',
+    ]);
+    const strategyContract = strategy!.exports.get('Strategy');
+    expect(strategyContract?.kind).toBe(ObjectKind.Interface);
+    if (strategyContract?.kind !== ObjectKind.Interface) {
+      throw new Error('strategy package did not export its Strategy contract');
+    }
+    expect(strategyContract.methods.map(method => method.name)).toEqual([
+      'entry',
+      'exit',
+      'close',
+      'rebalance',
+      'cancel',
+      'position_quantity',
+      'position_avg_price',
+      'snapshot',
+      'has_pending',
+      'has_pending_entry',
     ]);
   });
 
@@ -144,6 +178,59 @@ describe('Tea-authored strategy libraries', () => {
         'strat.begin(open, bar_index)',
         'strat.entry("Long", strategy.Direction.long, qty = 1.0)',
         'strat.end(close, barstate.islast)',
+      ].join('\n'),
+    );
+
+    expect(result.errors).toEqual([]);
+  });
+
+  test('the configured implementation satisfies the exported Strategy contract', () => {
+    const source = [
+      'strategy("strategy contract")',
+      'import broker',
+      'import portfolio',
+      'import strategy',
+      'type Holder<S: strategy.Strategy>',
+      '    S value',
+      '    broker.Order submit() => this.value.entry("Long", strategy.Direction.long, na, na, na)',
+      '    portfolio.PortfolioSnapshot observe() const => this.value.snapshot()',
+      'var strat = strategy.configure(broker.basic(), portfolio.basic(100.0))',
+      'var holder = Holder.new(strat)',
+      'submitted = holder.submit()',
+      'observed = holder.observe()',
+      'plot(observed.equity)',
+    ].join('\n');
+    const result = checkText(source);
+
+    expect(result.errors).toEqual([]);
+    expect(funcsOf(mustBuild(source)).map(func => func.name)).toEqual(
+      expect.arrayContaining([
+        'Holder<ConfiguredStrategy<BrokerEmulator, NetPortfolio>>.submit',
+        'ConfiguredStrategy<BrokerEmulator, NetPortfolio>.entry',
+        'Holder<ConfiguredStrategy<BrokerEmulator, NetPortfolio>>.observe',
+        'ConfiguredStrategy<BrokerEmulator, NetPortfolio>.snapshot',
+      ]),
+    );
+  });
+
+  test('accepts the explicit bounded lot portfolio constructor', () => {
+    const result = checkText(
+      [
+        'strategy("bounded lot portfolio")',
+        'import broker',
+        'import portfolio',
+        'import strategy',
+        'var strat = strategy.configure(',
+        '    broker = broker.new(commission = broker.commissionRate(0.001)),',
+        '    portfolio = portfolio.lots(',
+        '        initialCash = 1000.0,',
+        '        maxOpenTrades = 5,',
+        '        marginLong = 0.0,',
+        '        marginShort = 0.0',
+        '    )',
+        ')',
+        'strat.begin_immediate(bar_index)',
+        'plot(strat.open_trade_count())',
       ].join('\n'),
     );
 
@@ -208,8 +295,8 @@ describe('Tea-authored strategy libraries', () => {
     );
     expect(funcsOf(program).map(func => func.name)).toEqual(
       expect.arrayContaining([
-        'Strategy<BrokerEmulator, NetPortfolio>.begin',
-        'Strategy<AlternateBroker, AlternatePortfolio>.begin',
+        'ConfiguredStrategy<BrokerEmulator, NetPortfolio>.begin',
+        'ConfiguredStrategy<AlternateBroker, AlternatePortfolio>.begin',
       ]),
     );
   });

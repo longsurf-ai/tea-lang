@@ -13,14 +13,24 @@ per-lot manual stops, commission, signed cash/equity accounting, and maximum
 long/short stack tracking. Every open and close emits a standard
 `broker.FillExecuted` effect with an unambiguous command id.
 
+The script composes `broker.new(...)`, `portfolio.lots(...)`, and
+`strategy.configure(...)`; its per-entry accounting and immediate market-fill
+lifecycle are compiler-shipped Tea library code rather than a strategy-local
+account. `maximum_open_trades` is the explicit bind-time storage policy. A
+command that would exceed it is rejected before a fill is published. This cap
+is independent of `maximum_steps`: daily trigger state resets while a lot can
+remain open across a session boundary.
+
 The measured stress config is intentionally not the publication's all-default
 input set: it caps each side at five rather than twenty levels, sweeps the
 take-profit reversal switch, disables trailing activation, and enables manual
-per-lot stops. It leaves the custom session and end-of-session close disabled,
-matching their defaults. UTC day boundaries over the checked-in 15-minute bars
-define the baseline and provide a genuine multi-bar session path. Tea can also
-express a fixed numeric UTC session; arbitrary Pine session-string parsing is
-not part of this profile. Presentation lines and tables are omitted.
+per-lot stops. It fixes the simultaneous-open-trade cap at 100, well above the
+three-lot maximum observed in this fixture. It leaves the custom session and
+end-of-session close disabled, matching their defaults. UTC day boundaries
+over the checked-in 15-minute bars define the baseline and provide a genuine
+multi-bar session path. Tea can also express a fixed numeric UTC session;
+arbitrary Pine session-string parsing is not part of this profile.
+Presentation lines and tables are omitted.
 
 The current dashboard infers entry/exit solely from buy/sell. It therefore
 renders a short open (sell) as an exit and a short cover (buy) as an entry; the
@@ -34,8 +44,8 @@ tea execute examples/strategy/alice-grid/sweep.yaml
 ```
 
 The 8-scenario JavaScript sweep processes 160,000 rows from the SHA-pinned
-20,000-bar Binance BTCUSDT 15-minute snapshot and completed in **29.76 s** on
-the 2026-08-14 development run. The best scenario returned **0.0015%**, with
+20,000-bar Binance BTCUSDT 15-minute snapshot and completed in **50.18 s** on
+the 2026-08-16 development run. The best scenario returned **0.0015%**, with
 **0.54%** maximum drawdown and **428** closed per-entry lots
 (`entry_reversal_mode=0`, 1% grid, five levels, standard take-profit). The
 published breach/reclaim mode also trades on this intraday fixture; its best

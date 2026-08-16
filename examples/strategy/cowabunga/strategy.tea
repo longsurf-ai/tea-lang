@@ -5,6 +5,8 @@
 strategy("Cowabunga System — inspected Pine v2", shorttitle="Cowabunga v2", overlay=true)
 
 import broker
+import portfolio
+import strategy
 
 pine_rma(float source, int length) =>
 	seed = ta.sma(source, length)
@@ -20,174 +22,6 @@ pine_rsi(float source, int length) =>
 	up = pine_rma(math.max(change, 0.0), length)
 	down = pine_rma(math.max(-change, 0.0), length)
 	down == 0.0 ? 100.0 : up == 0.0 ? 0.0 : 100.0 - 100.0 / (1.0 + up / down)
-
-// Signed fixed-quantity execution with next-open reversals and strategy.exit
-// brackets. The checked-in default activates the source's profit target only:
-// stop loss is zero/na and trail_offset is zero/na, so no trailing pair exists.
-type SignedBracketEngine
-	float initialCash
-	float fixedQuantity
-	float tickSize
-	float takeProfitTicks
-	float stopLossTicks
-	float trailingPoints
-	float trailingOffset
-	float cashValue = 0.0
-	float positionQuantity = 0.0
-	float entryPrice = na
-	float equityValue = 0.0
-	float peakEquity = 0.0
-	float maximumDrawdown = 0.0
-	float realizedPnl = 0.0
-	float takeProfitPrice = na
-	float stopPrice = na
-	float trailActivationPrice = na
-	float trailingStopPrice = na
-	float bestExtreme = na
-	int fills = 0
-	int roundTrips = 0
-	int nextOrderId = 1
-	int nextFillId = 1
-	int pendingSignalBar = -1
-	float pendingTarget = 0.0
-
-	bool has_pending() const =>
-		this.pendingSignalBar >= 0
-
-	int submit_target(float target, int signalBarIndex) =>
-		if target != this.positionQuantity
-			this.pendingTarget := target
-			this.pendingSignalBar := signalBarIndex
-		this.pendingSignalBar
-
-	int clear_exits() =>
-		float empty = na
-		this.takeProfitPrice := empty
-		this.stopPrice := empty
-		this.trailActivationPrice := empty
-		this.trailingStopPrice := empty
-		this.bestExtreme := empty
-		0
-
-	int install_exits(float price) =>
-		this.clear_exits()
-		if this.positionQuantity > 0.0
-			if this.takeProfitTicks >= 1.0
-				this.takeProfitPrice := price + this.takeProfitTicks * this.tickSize
-			if this.stopLossTicks >= 1.0
-				this.stopPrice := price - this.stopLossTicks * this.tickSize
-			if this.trailingPoints >= 1.0 and this.trailingOffset >= 1.0
-				this.trailActivationPrice := price + this.trailingPoints * this.tickSize
-		else if this.positionQuantity < 0.0
-			if this.takeProfitTicks >= 1.0
-				this.takeProfitPrice := price - this.takeProfitTicks * this.tickSize
-			if this.stopLossTicks >= 1.0
-				this.stopPrice := price + this.stopLossTicks * this.tickSize
-			if this.trailingPoints >= 1.0 and this.trailingOffset >= 1.0
-				this.trailActivationPrice := price - this.trailingPoints * this.tickSize
-		0
-
-	int execute_to(float target, string commandId, float referencePrice, float price, int barIndex) =>
-		oldPosition = this.positionQuantity
-		delta = target - oldPosition
-		quantity = math.abs(delta)
-		side = delta > 0.0 ? broker.Side.buy : broker.Side.sell
-		notional = quantity * price
-		execution = broker.Fill.new(this.nextFillId, this.nextOrderId, commandId, side, barIndex, referencePrice, price, quantity, notional, 0.0)
-		this.nextFillId := this.nextFillId + 1
-		this.nextOrderId := this.nextOrderId + 1
-		effect.emit(broker.FillExecuted.new(execution))
-		this.cashValue := this.cashValue - delta * price
-		closedLong = oldPosition > 0.0 and target <= 0.0
-		closedShort = oldPosition < 0.0 and target >= 0.0
-		if closedLong
-			this.realizedPnl := this.realizedPnl + oldPosition * (price - this.entryPrice)
-			this.roundTrips := this.roundTrips + 1
-		if closedShort
-			this.realizedPnl := this.realizedPnl + math.abs(oldPosition) * (this.entryPrice - price)
-			this.roundTrips := this.roundTrips + 1
-		this.positionQuantity := target
-		if target == 0.0
-			float empty = na
-			this.entryPrice := empty
-			this.clear_exits()
-		else
-			this.entryPrice := price
-			this.install_exits(price)
-		this.fills := this.fills + 1
-		this.fills
-
-	float effective_stop() const =>
-		result = this.stopPrice
-		if not na(this.trailingStopPrice)
-			result := na(result) ? this.trailingStopPrice : (this.positionQuantity > 0.0 ? math.max(result, this.trailingStopPrice) : math.min(result, this.trailingStopPrice))
-		result
-
-	int close_position(string commandId, float referencePrice, float price, int barIndex) =>
-		this.execute_to(0.0, commandId, referencePrice, price, barIndex)
-
-	int process_brackets(float openPrice, float highPrice, float lowPrice, float closePrice, int barIndex) =>
-		if this.positionQuantity != 0.0
-			isLong = this.positionQuantity > 0.0
-			activeStop = this.effective_stop()
-			targetGap = not na(this.takeProfitPrice) and (isLong ? openPrice >= this.takeProfitPrice : openPrice <= this.takeProfitPrice)
-			stopGap = not na(activeStop) and (isLong ? openPrice <= activeStop : openPrice >= activeStop)
-			if targetGap
-				this.close_position("Cowabunga Target", openPrice, openPrice, barIndex)
-			else if stopGap
-				this.close_position("Cowabunga Stop", openPrice, openPrice, barIndex)
-			else
-				targetHit = not na(this.takeProfitPrice) and (isLong ? highPrice >= this.takeProfitPrice : lowPrice <= this.takeProfitPrice)
-				stopHit = not na(activeStop) and (isLong ? lowPrice <= activeStop : highPrice >= activeStop)
-				highFirst = math.abs(highPrice - openPrice) < math.abs(openPrice - lowPrice)
-				targetFirst = isLong ? highFirst : not highFirst
-				if targetHit and (not stopHit or targetFirst)
-					this.close_position("Cowabunga Target", this.takeProfitPrice, this.takeProfitPrice, barIndex)
-				else if stopHit
-					this.close_position("Cowabunga Stop", activeStop, activeStop, barIndex)
-				else
-					// Optional trailing behavior follows TradingView's documented
-					// inferred OHLC path. It is inactive for the published defaults.
-					activationHit = not na(this.trailActivationPrice) and (isLong ? highPrice >= this.trailActivationPrice : lowPrice <= this.trailActivationPrice)
-					if activationHit
-						if isLong
-							this.bestExtreme := na(this.bestExtreme) ? highPrice : math.max(this.bestExtreme, highPrice)
-							candidate = this.bestExtreme - this.trailingOffset * this.tickSize
-							this.trailingStopPrice := na(this.trailingStopPrice) ? candidate : math.max(this.trailingStopPrice, candidate)
-							canHitAfterActivation = highFirst ? lowPrice <= this.trailingStopPrice : closePrice <= this.trailingStopPrice
-							if canHitAfterActivation
-								this.close_position("Cowabunga Trail", this.trailingStopPrice, this.trailingStopPrice, barIndex)
-						else
-							this.bestExtreme := na(this.bestExtreme) ? lowPrice : math.min(this.bestExtreme, lowPrice)
-							candidate = this.bestExtreme + this.trailingOffset * this.tickSize
-							this.trailingStopPrice := na(this.trailingStopPrice) ? candidate : math.min(this.trailingStopPrice, candidate)
-							canHitAfterActivation = not highFirst ? highPrice >= this.trailingStopPrice : closePrice >= this.trailingStopPrice
-							if canHitAfterActivation
-								this.close_position("Cowabunga Trail", this.trailingStopPrice, this.trailingStopPrice, barIndex)
-		this.fills
-
-	int begin(float openPrice, float highPrice, float lowPrice, float closePrice, int barIndex) =>
-		// Pine market reversals execute at the next open before the bracket orders
-		// associated with the resulting position are evaluated.
-		if this.pendingSignalBar >= 0 and barIndex > this.pendingSignalBar
-			target = this.pendingTarget
-			commandId = target > 0.0 ? "Cowabunga Long" : "Cowabunga Short"
-			this.execute_to(target, commandId, openPrice, openPrice, barIndex)
-			this.pendingSignalBar := -1
-			this.pendingTarget := 0.0
-		this.process_brackets(openPrice, highPrice, lowPrice, closePrice, barIndex)
-
-	float mark(float closePrice) =>
-		this.equityValue := this.cashValue + this.positionQuantity * closePrice
-		if this.equityValue > this.peakEquity
-			this.peakEquity := this.equityValue
-		drawdown = this.peakEquity == 0.0 ? 0.0 : (this.peakEquity - this.equityValue) / this.peakEquity
-		if drawdown > this.maximumDrawdown
-			this.maximumDrawdown := drawdown
-		this.equityValue
-
-	float total_return() const =>
-		(this.equityValue - this.initialCash) / this.initialCash
 
 long_stoch_length = input.int(162, "4h-proxy stochastic length", minval=1, maxval=1000)
 long_stoch_smooth_k = input.int(48, "4h-proxy stochastic K smoothing", minval=1, maxval=500)
@@ -210,20 +44,45 @@ initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 fixed_quantity = input.float(10000.0, "Fixed order quantity", minval=0.00000001)
 tick_size = input.float(0.01, "Instrument tick size", minval=0.00000001)
 
-var engine = SignedBracketEngine.new(
-	initialCash = initial_cash,
-	fixedQuantity = fixed_quantity,
-	tickSize = tick_size,
-	takeProfitTicks = take_profit_ticks,
-	stopLossTicks = stop_loss_ticks,
-	trailingPoints = trailing_points,
-	trailingOffset = trailing_offset,
-	cashValue = initial_cash,
-	equityValue = initial_cash,
-	peakEquity = initial_cash
+var strat = strategy.configure(
+	broker = broker.new(
+		commission = broker.commissionRate(0.0),
+		slippage = broker.slippageRate(0.0)
+	),
+	portfolio = portfolio.new(
+		initialCash = initial_cash,
+		pyramiding = 1,
+		marginLong = 0.0,
+		marginShort = 0.0
+	)
 )
 
-engine.begin(open, high, low, close, bar_index)
+// A market target fills at the next open. The split path phases let the
+// resulting fill-derived exit inspect that open and only the path after it.
+primary = strat.begin_path_primary(open, high, low, close, bar_index)
+if not na(primary.pending) and strat.position_quantity() != 0.0
+	average = strat.position_avg_price()
+	is_long_position = strat.position_quantity() > 0.0
+	float exit_target = na
+	float fixed_stop = na
+	float trail_price = na
+	float trail_distance = na
+	if take_profit_ticks >= 1.0
+		exit_target := is_long_position ? average + take_profit_ticks * tick_size : average - take_profit_ticks * tick_size
+	if stop_loss_ticks >= 1.0
+		fixed_stop := is_long_position ? average - stop_loss_ticks * tick_size : average + stop_loss_ticks * tick_size
+	if trailing_points >= 1.0 and trailing_offset >= 1.0
+		trail_price := is_long_position ? average + trailing_points * tick_size : average - trailing_points * tick_size
+		trail_distance := trailing_offset * tick_size
+	if not na(exit_target) and na(fixed_stop) and na(trail_price)
+		strat.exit("Cowabunga Target", fromEntry = primary.pending.commandId, target = exit_target, activateOnEntryBar = true)
+	else if na(exit_target) and not na(fixed_stop) and na(trail_price)
+		strat.exit("Cowabunga Stop", fromEntry = primary.pending.commandId, stop = fixed_stop, activateOnEntryBar = true)
+	else if na(exit_target) and na(fixed_stop) and not na(trail_price)
+		strat.exit("Cowabunga Trail", fromEntry = primary.pending.commandId, activateOnEntryBar = true, trailPrice = trail_price, trailOffset = trail_distance)
+	else if not na(exit_target) or not na(fixed_stop) or not na(trail_price)
+		strat.exit("Cowabunga Exit", fromEntry = primary.pending.commandId, stop = fixed_stop, target = exit_target, activateOnEntryBar = true, trailPrice = trail_price, trailOffset = trail_distance)
+strat.process_path_exit(open, high, low, close)
 
 stoch_long_raw = ta.stoch(close, high, low, long_stoch_length)
 stoch_long_k = ta.sma(stoch_long_raw, long_stoch_smooth_k)
@@ -254,13 +113,18 @@ short_trigger_filter = rsi_short >= 20.0 and stoch_short_k <= stoch_short_d and 
 short_signal = ta.crossunder(close, ema_5) and short_filter and short_trigger_filter
 
 if long_signal
-	engine.submit_target(fixed_quantity, bar_index)
+	if strat.position_quantity() != fixed_quantity
+		strat.cancel("Cowabunga Short")
+		strat.rebalance("Cowabunga Long", strategy.targetQuantity(fixed_quantity))
 if short_signal
 	// The source evaluates the short block after the long block, so a rare
 	// same-bar conflict is resolved to the short target.
-	engine.submit_target(-fixed_quantity, bar_index)
+	if strat.position_quantity() != -fixed_quantity
+		strat.cancel("Cowabunga Long")
+		strat.rebalance("Cowabunga Short", strategy.targetQuantity(-fixed_quantity))
 
-engine.mark(close)
+strat.mark(close)
+strat.finish(barstate.islast)
 
 plot(close, "close")
 plot(ema_5, "EMA 5")
@@ -269,10 +133,10 @@ plot(macd_line, "MACD line")
 plot(macd_signal, "MACD signal (source computes but does not filter on it)")
 plot(long_signal ? 1.0 : 0.0, "long signal")
 plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(engine.positionQuantity, "signed position quantity")
-plot(engine.equityValue, "equity")
-plot(engine.realizedPnl, "realized pnl")
-plot(engine.fills, "fill count")
-plot(engine.roundTrips, "round trips")
-plot(engine.maximumDrawdown, "maximum drawdown")
-plot(engine.total_return(), "total return")
+plot(strat.position_quantity(), "signed position quantity")
+plot(strat.equity(), "equity")
+plot(strat.realized_pnl(), "realized pnl")
+plot(strat.fill_count(), "fill count")
+plot(strat.round_trip_count(), "round trips")
+plot(strat.max_drawdown(), "maximum drawdown")
+plot(strat.total_return(), "total return")

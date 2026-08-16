@@ -12,6 +12,17 @@ Clean-room Tea conversion of TradingView's open-source [Cowabunga System from ba
 - Long and short signals, next-open reversals, fixed quantity 10,000, pyramiding zero, and zero commission/slippage are preserved. A reversal fill includes the quantity needed to close the old side and open the new fixed-size side.
 - The source defaults are take profit 1,000 ticks, stop loss disabled (`0 → na`), trailing activation 400 ticks, and trailing offset disabled (`0 → na`). Because Pine trailing exits require both activation and offset, the selected default has a profit target but no active stop or trailing pair. Tea still implements the nonzero stop and complete trailing pair for direct parameter overrides; simultaneous intrabar levels follow TradingView's documented inferred OHLC path.
 
+Execution is composed from Tea's canonical `broker.new`, `portfolio.new`, and
+`strategy.configure` components. Signed quantity targets use `strat.rebalance`,
+so a next-open reversal remains one delta fill, while fill-derived exits use the
+broker's fixed-scalar OHLC path phases. The nondefault trailing branch is now
+strictly path-causal: activation and the favorable-extreme update happen on one
+segment, and the resulting trail can fill only on the remaining path. This fixes
+the former example-local approximation that could compare a newly activated
+trail with an earlier extreme. The checked sweep has `trailing_offset=0`, so its
+published/default fill tape is unaffected. The strategy contains no private
+account or fill implementation.
+
 The strategy is two-sided because that is the published source behavior. In the current dashboard contract, a short opening sell is labeled as an exit and a short-cover buy as an entry; use the signed-position plot to disambiguate those markers.
 
 ## Data
@@ -28,10 +39,12 @@ bun src/main.ts execute examples/strategy/cowabunga/sweep.yaml
 
 ## Measured result
 
-Validated on 2026-08-14 with the checked-in 20,000-row BTCUSDT 15-minute snapshot:
+Revalidated on 2026-08-16 with the checked-in 20,000-row BTCUSDT 15-minute
+snapshot. The canonical migration reproduced the prior result extrema and fill
+counts exactly. Runtime is intentionally omitted until the scalar path matcher's
+known interpreter overhead is optimized:
 
 - 18 bindings / 360,000 evaluated rows
-- Tea lowering: 8.97 ms; execution: 283,808.64 ms; reported core total: 283,817.61 ms; process wall time: 284.05 s
 - Best total return: 94.5 (9,450%), maximum drawdown 1,304.75%, 63 round trips — bindings `long_stoch_length=120`, `long_rsi_length=240`, and `take_profit_ticks=1500`
 - Worst total return: 30.5 (3,050%), maximum drawdown 176.84%, 61 round trips — bindings `long_stoch_length=141`, `take_profit_ticks=500`, and either swept RSI length
 - Exact source-default binding (`long_stoch_length=162`, `long_rsi_length=240`, `take_profit_ticks=1000`): total return 62.0 (6,200%), maximum drawdown 110.53%, 62 round trips
