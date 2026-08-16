@@ -1,6 +1,9 @@
 # Tea strategy composition, effects, and resumable execution
 
-Status: approved direction; implementation in progress.
+Status: superseded by
+[`20260816-trade-component-decoupling.md`](20260816-trade-component-decoupling.md).
+The historical `strategy.configure` shape below was replaced by direct
+`trade.nextOpen`, `trade.ohlc`, `trade.path`, and `trade.lots` coordinators.
 
 ## 1. Objective
 

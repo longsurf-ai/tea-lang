@@ -1,6 +1,15 @@
 # Trade component decoupling
 
-Status: accepted design, implementation in progress.
+Status: implemented and verified.
+
+Implementation note (2026-08-16): `src/lib/strategy.tea` has been replaced by
+`src/lib/trade.tea`; the universal `trade.net` and broad broker/portfolio
+supersets are gone. The shipped direct families are `trade.nextOpen`,
+`trade.ohlc`, `trade.path`, and `trade.lots`, each storing its compatible
+concrete broker and portfolio values directly. All fourteen examples use those
+families, and the WGSL boundary remains exactly four eligible sources. The
+`trade.net` examples below record the accepted design stage and are superseded
+by those direct factories.
 
 ## Objective
 

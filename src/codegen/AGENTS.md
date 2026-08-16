@@ -20,8 +20,11 @@ WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
 - Both targets consume `Program` directly. There is no strategy wrapper IR and
   no strategy-only lowering entry. A backend may reject unsupported Program
   constructs, but it must not reconstruct source semantics from output effect
-  spellings or recognize `broker`, `portfolio`, `strategy`, or another Tea library by
-  package/type name.
+  spellings or recognize `broker`, `portfolio`, `trade`, a coordinator family,
+  lifecycle method, or another Tea library by package/type name. The native
+  `strategy()` declaration is ordinary output metadata; direct trade-family
+  values and their statically specialized methods are ordinary Program state
+  and calls. Checker-only interfaces have no runtime representation.
 - Target lowering is pure and bind-independent. JS/WGSL generation receives no
   provider, series payload, parameter sweep, job list, result capacity, GPU
   device, or dispatch policy. CPU/GPU runtimes own those physical inputs after

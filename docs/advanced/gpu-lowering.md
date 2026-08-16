@@ -32,7 +32,8 @@ Program
 
 Both backends consume the same canonical Tea `Program`. WGSL codegen never
 receives datasets, binding identities, capacities, or a device, and it never
-special-cases `broker`, `portfolio`, `strategy`, or the `strategy()` header.
+special-cases `broker`, `portfolio`, `trade`, a coordinator type, or the
+`strategy()` header.
 An indicator inside the same generic subset follows the identical path.
 
 `analyzeWgslEligibility(program)` reports support.
@@ -76,6 +77,21 @@ example, including:
 At least one numeric provider series is currently needed to define each
 binding's extent. Persistent roots, dense output channels, and sparse effects
 are otherwise independent: a Program need not have all three.
+
+The strategy catalog pins the exact current boundary. Four of fourteen sources
+are WGSL-eligible: `atr-zigzag-breakout`, `cpu-gpu-next-open`, `ema-cross`, and
+`turtle-system`. The other ten fail closed on a specific first unsupported
+construct. Eligibility is a property of each reachable Program closure, not of
+its selected `trade.nextOpen`, `trade.ohlc`, `trade.path`, or `trade.lots`
+factory. A checked-in execution config may still choose JavaScript even when
+its source can lower to WGSL.
+
+The trade families are direct Tea values, not a host or IR wrapper. A scalar
+coordinator stores its concrete broker and portfolio fields directly, and
+unreachable matcher families and lot collections stay outside its closed call
+graph. Catalog tests guard the four eligible closures with function, frame,
+fixed-state, generated-source, and effect-count ceilings so a source
+abstraction cannot silently enlarge GPU work.
 
 ## Numeric contract
 
@@ -258,10 +274,10 @@ tea execute examples/strategy/turtle-system/sweep.yaml
 
 The EMA source calls `ta.ema`, `ta.crossover`, and `ta.crossunder` directly.
 Turtle additionally exercises parameter-bound `ta.sma`, `ta.highest`, and
-`ta.lowest` ranges, core math natives, custom account methods, and typed fill
-effects. Their function-local state and parameter history use the generic
-call-site frame machine and bind phase; no `ta` or strategy name is recognized
-by the backend.
+`ta.lowest` ranges, core math natives, the direct scalar trade coordinator, and
+typed fill effects. Their function-local state and parameter history use the
+generic call-site frame machine and bind phase; no `ta`, trade family, broker,
+or portfolio name is recognized by the backend.
 
 ## Fail-closed exclusions
 

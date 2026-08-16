@@ -16,16 +16,22 @@ use live data providers, while automated tests never reach the network.
 Code under `src/` and fixtures under `tests/fixtures/` must not depend on this
 directory. Add reusable test inputs to `tests/fixtures/`, not here.
 
-## TradingView-derived strategy stress catalog
+## Strategy stress catalog
 
 [`strategy/README.md`](strategy/README.md) audits twelve open-source
-TradingView strategies and links each clean-room Tea implementation. Every
-conversion owns a CPU execution config, a documented historical execution
-profile, and measured results over real market data. The set deliberately
-exercises rolling statistics, requests, arrays, nested loops, per-lot state,
-long/short accounting, target allocations, pyramiding, pending orders,
-cancel/replace, brackets, trailing exits, and deterministic same-bar OHLC
-matching.
+TradingView strategies and links each clean-room Tea implementation. Together
+with the first-party `cpu-gpu-next-open` and `ema-cross` examples, the runnable
+strategy catalog contains fourteen sources. Every conversion owns an execution
+config, a documented historical profile, and measured results over real market
+data. The set deliberately exercises rolling statistics, requests, arrays,
+nested loops, per-lot state, long/short accounting, target allocations,
+pyramiding, pending orders, cancel/replace, brackets, trailing exits, and
+deterministic same-bar OHLC matching.
+
+Every source composes an explicit direct trade family: `trade.nextOpen`,
+`trade.ohlc`, `trade.path`, or `trade.lots`. The coordinator stores its concrete
+broker and portfolio values directly; examples do not implement accounts,
+construct fills, or emit broker lifecycle effects.
 
 Compile every conversion and validate its exact Cartesian grid without making
 network requests:
@@ -41,11 +47,14 @@ tea execute examples/strategy/turtle-system/sweep.yaml
 tea execute examples/strategy/alice-grid/sweep.yaml
 ```
 
-These Pine-derived profiles currently target the JavaScript runtime. Their
-loops, collections, dynamic history, requests, or advanced Tea-authored order
-engines are outside the current WGSL subset; they do not silently fall back to
-CPU. Each strategy README records its selected public mode, deliberate
-boundaries, data provenance, and any source-page discrepancy.
+The catalog pins four of fourteen sources as currently WGSL-eligible:
+`atr-zigzag-breakout`, `cpu-gpu-next-open`, `ema-cross`, and `turtle-system`.
+The other ten fail closed on a specific unsupported generic Program construct;
+they do not silently fall back to CPU. A source may be WGSL-eligible while its
+checked-in measured config deliberately selects JavaScript. Among the twelve
+audited profiles, Turtle publishes a WebGPU sweep and the others publish
+JavaScript sweeps. Each strategy README records its selected public mode,
+deliberate boundaries, data provenance, and any source-page discrepancy.
 
 ## Real market data
 
@@ -112,7 +121,7 @@ The snapshot is a reproducible stress input, not a claim about future returns.
 [`strategy/cpu-gpu-next-open/strategy.tea`](strategy/cpu-gpu-next-open/strategy.tea)
 is a small deterministic strategy for exercising the same compiled `Program`
 on both runtimes. It delegates next-open fills, fees, and accounting to the
-shipped Tea-authored strategy libraries.
+shipped Tea-authored broker, portfolio, and trade libraries.
 
 ```sh
 tea run examples/strategy/cpu-gpu-next-open/strategy.tea \

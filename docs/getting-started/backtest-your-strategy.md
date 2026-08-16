@@ -5,9 +5,9 @@ hide_title: true
 
 # Backtest your strategy
 
-This walkthrough uses Tea's explicit broker, portfolio, and strategy values.
-All execution and accounting policy is Tea source compiled into the same
-`Program` as the user's signals.
+This walkthrough uses Tea's explicit broker, portfolio, and trade coordinator
+values. All execution and accounting policy is Tea source compiled into the
+same `Program` as the user's signals.
 
 ## 1. Read the strategy
 
@@ -19,13 +19,13 @@ strategy("CPU/GPU next-open strategy", shorttitle="CPU/GPU", overlay=false)
 
 import broker
 import portfolio
-import strategy
+import trade
 
 slippage = input.float(0.1, "Slippage", minval=0.0)
 fee = input.float(0.1, "Fee", minval=0.0)
 initial_cash = input.float(121.0, "Initial cash", minval=1.0)
 
-var strat = strategy.configure(
+var strat = trade.nextOpen(
     broker = broker.new(
         commission = broker.commissionRate(fee),
         slippage = broker.slippageRate(slippage),
@@ -39,36 +39,41 @@ var strat = strategy.configure(
     )
 )
 
-strat.begin(open, bar_index)
+strat.begin_bar(open, bar_index)
 
 if bar_index == 0
-    strat.entry("Long", strategy.Direction.long)
+    strat.entry("Long", trade.Direction.long)
 if bar_index == 1
     strat.close("Long")
 if bar_index == 2
-    strat.entry("Long", strategy.Direction.long)
+    strat.entry("Long", trade.Direction.long)
 
-finished = strat.end(close, barstate.islast)
+expired = strat.end_bar(close, barstate.islast)
+metrics = strat.snapshot()
 
-plot(strat.cash(), "cash")
-plot(strat.position_quantity(), "position quantity")
-plot(strat.equity(), "equity")
-plot(strat.realized_pnl(), "realized pnl")
-plot(strat.total_fees(), "total fees")
-plot(strat.fill_count(), "fill count")
-plot(strat.round_trip_count(), "round-trip count")
-plot(strat.max_drawdown(), "maximum drawdown")
-plot(na(finished) or na(finished.pending) ? 0 : finished.pending.id, "expired order id")
+plot(metrics.cash, "cash")
+plot(metrics.positionQuantity, "position quantity")
+plot(metrics.equity, "equity")
+plot(metrics.realizedPnl, "realized pnl")
+plot(metrics.totalFees, "total fees")
+plot(metrics.fillCount, "fill count")
+plot(metrics.roundTripCount, "round-trip count")
+plot(metrics.maxDrawdown, "maximum drawdown")
+plot(na(expired) or na(expired.pending) ? 0 : expired.pending.id, "expired order id")
 ```
 
-`strategy()` is contextual first-statement metadata. `import strategy` binds
-the ordinary package used by later selectors. All three packages are explicit
-because their policy is part of the program, not a platform setting.
+`strategy()` is the native first-statement declaration; it publishes script
+metadata and does not create an execution object. `import trade` binds the
+ordinary coordinator library. There is no `strategy` package. `broker`,
+`portfolio`, and `trade` are explicit because their policy is part of the
+program, not a platform setting.
 
 `broker.new` selects decimal commission and slippage rates and keeps fills at
 the next open. `portfolio.new` selects a signed net portfolio with a 100%
 capital requirement in either direction. This example only opens long and
 omits `qty`, so the broker uses its commission-aware all-available-cash sizing.
+`trade.nextOpen` stores those two concrete values directly and exposes only the
+next-open lifecycle; it does not wrap a universal strategy object.
 
 ## 2. Read the bars
 
@@ -81,9 +86,9 @@ open,close
 20,18
 ```
 
-The entry submitted after row 0's `begin` fills at row 1's open. The close
+The entry submitted after row 0's `begin_bar` fills at row 1's open. The close
 submitted after row 1 fills at row 2's open. The final entry has no later open,
-so the last `end` expires order id `3`.
+so the last `end_bar` expires order id `3`.
 
 ## 3. Run it
 
@@ -263,15 +268,18 @@ not merge CLI parameter or runtime overrides into that file.
 
 The calls are ordinary Tea:
 
-1. `begin(open, bar_index)` processes a previously pending order and applies
-   its fill.
+1. `begin_bar(open, bar_index)` processes a previously pending order and
+   applies its fill.
 2. Signal logic calls `entry` or `close`.
-3. `end(close, isLast)` optionally processes and applies an on-close fill when
-   `processOrdersOnClose=true`, then marks the portfolio.
-4. On the final bar, `end` expires any command that remains pending.
+3. `end_bar(close, isLast)` optionally processes and applies an on-close fill
+   when `processOrdersOnClose=true`, then marks the portfolio.
+4. On the final bar, `end_bar` expires any command that remains pending.
 
 The compiler does not insert, reorder, count, or enforce these calls. A custom
-strategy library can define a different explicit lifecycle.
+strategy can select `trade.ohlc`, `trade.path`, or `trade.lots` when it needs a
+different explicit lifecycle. Each family is a direct concrete coordinator
+constrained by compatible broker and portfolio interfaces; no host dispatches
+on the family name.
 
 ## Parameter sweeps and GPU execution
 

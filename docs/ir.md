@@ -417,13 +417,17 @@ There is no strategy-specific IR or compiler path. `compileToProgram()` owns
 the one load → import resolution/check → noding sequence, and both target
 backends consume its `Program` directly. `indicator()` and `strategy()` remain
 ordinary declaration `OutputDecl`s; downstream code does not copy them into a
-second semantic object.
+second semantic object. The native `strategy()` declaration is unrelated to
+the explicitly imported ordinary `trade` library.
 
-The broker, portfolio, configured strategy, and their reachable methods are
-ordinary Tea code in the closed Program graph. WGSL codegen neither inspects
-their package names nor gives them privileged nodes or ABI slots. Its
-fail-closed audit describes only which generic Program constructs its current
-target profile can represent.
+The selected direct trade coordinator, its concrete broker and portfolio
+fields, and their reachable methods are ordinary Tea code in the closed Program
+graph. Checker-only broker and portfolio interfaces have already been resolved
+by generic specialization; they do not become Program values, witness tables,
+or dynamic calls. WGSL codegen neither inspects package or family names nor
+gives these values privileged nodes or ABI slots. Its fail-closed audit
+describes only which generic Program constructs its current target profile can
+represent.
 
 Concrete bindings are not Program facts. After codegen, the CPU runtime may
 bind one ordinary JS module repeatedly to isolated providers/parameters and
