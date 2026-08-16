@@ -65,6 +65,7 @@ describe('import resolution', () => {
       'builtin:portfolio',
       'builtin:strategy',
       'builtin:ta',
+      'builtin:trade',
     ]);
     expect(files.map(file => basename(file.filename))).toEqual([
       'first.tea',
@@ -73,6 +74,7 @@ describe('import resolution', () => {
       'portfolio.tea',
       'strategy.tea',
       'ta.tea',
+      'trade.tea',
     ]);
   });
 

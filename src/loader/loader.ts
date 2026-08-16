@@ -43,6 +43,7 @@ const BUILTIN_FILES: ReadonlyMap<string, string> = new Map([
   ['broker', 'broker.tea'],
   ['portfolio', 'portfolio.tea'],
   ['strategy', 'strategy.tea'],
+  ['trade', 'trade.tea'],
 ]);
 
 // Pine-compatible technical analysis remains the sole implicit library.

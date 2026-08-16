@@ -1,0 +1,295 @@
+//@version=1
+// Policy-specific trade coordinators. NetTrade owns scheduled scalar-net
+// lifecycle calls; LotTrade owns immediate bounded-lot calls. Broker matching
+// and portfolio accounting remain in their respective components.
+library("trade")
+
+import broker
+import portfolio
+
+export enum Direction
+	long
+	short
+
+export enum SizingKind
+	percentOfEquity
+	percentOfEquityAtFill
+
+export type Sizing
+	SizingKind kind
+	float value
+	bool commissionIncluded = false
+
+export type NetTrade<B: broker.ScheduledBroker, P: portfolio.NetLedger>
+	B broker
+	P portfolio
+	int idx = -1
+
+	broker.Fill begin(float openPrice, int barIndex) =>
+		this.idx := barIndex
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		execution = currentBroker.on_open(openPrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(execution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(continuation)
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		not na(continuation) ? continuation : execution
+
+	broker.BarMatches begin_primary(float openPrice, float highPrice, float lowPrice, int barIndex) =>
+		this.idx := barIndex
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		firstExecution = currentBroker.match_pending(openPrice, highPrice, lowPrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(firstExecution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(continuation)
+		pendingExecution = not na(continuation) ? continuation : firstExecution
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		broker.BarMatches.new(pendingExecution, na, not na(continuation) ? firstExecution : na)
+
+	broker.Fill process_exit(float openPrice, float highPrice, float lowPrice) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		execution = currentBroker.match_exit(openPrice, highPrice, lowPrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(execution)
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		execution
+
+	broker.BarMatches begin_bar(float openPrice, float highPrice, float lowPrice, int barIndex) =>
+		primary = this.begin_primary(openPrice, highPrice, lowPrice, barIndex)
+		exitExecution = this.process_exit(openPrice, highPrice, lowPrice)
+		broker.BarMatches.new(primary.pending, exitExecution, primary.reversalClose)
+
+	broker.BarMatches begin_path_primary(float openPrice, float highPrice, float lowPrice, float closePrice, int barIndex) =>
+		this.idx := barIndex
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		firstExecution = currentBroker.match_path_primary(openPrice, highPrice, lowPrice, closePrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(firstExecution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(continuation)
+		pendingExecution = not na(continuation) ? continuation : firstExecution
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		broker.BarMatches.new(pendingExecution, na, not na(continuation) ? firstExecution : na)
+
+	broker.Fill process_path_exit(float openPrice, float highPrice, float lowPrice, float closePrice) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		execution = currentBroker.match_path_exit(openPrice, highPrice, lowPrice, closePrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(execution)
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		execution
+
+	broker.BarMatches begin_path(float openPrice, float highPrice, float lowPrice, float closePrice, int barIndex) =>
+		primary = this.begin_path_primary(openPrice, highPrice, lowPrice, closePrice, barIndex)
+		exitExecution = this.process_path_exit(openPrice, highPrice, lowPrice, closePrice)
+		broker.BarMatches.new(primary.pending, exitExecution, primary.reversalClose)
+
+	broker.Order entry(string commandId, Direction direction, float qty = na, Sizing sizing = na, float stop = na) =>
+		side = direction == Direction.long ? broker.Side.buy : broker.Side.sell
+		float notional = na
+		float cashBudget = na
+		float equityPercent = na
+		commissionIncluded = false
+		if not na(sizing)
+			sizingValid = (sizing.kind == SizingKind.percentOfEquity or sizing.kind == SizingKind.percentOfEquityAtFill) and not na(sizing.value) and sizing.value > 0.0 and sizing.value <= 100.0
+			if sizing.kind == SizingKind.percentOfEquityAtFill
+				commissionIncluded := sizing.commissionIncluded
+				equityPercent := sizingValid ? sizing.value : -1.0
+			else
+				metrics = this.portfolio.snapshot()
+				equity = metrics.equity
+				markedSizingValid = sizingValid and not na(equity) and equity > 0.0
+				budget = markedSizingValid ? equity * sizing.value / 100.0 : -1.0
+				if sizing.commissionIncluded
+					cashBudget := budget
+				else
+					notional := budget
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.entry, side, qty, this.idx, notional, na, stop, false, na, cashBudget, equityPercent, commissionIncluded))
+
+	broker.Order exit(string commandId, string fromEntry, float stop = na, float target = na, bool activateOnEntryBar = false, float trailPrice = na, float trailOffset = na) =>
+		currentQuantity = this.portfolio.position_quantity()
+		side = currentQuantity < 0.0 ? broker.Side.buy : broker.Side.sell
+		this.broker.submit_exit(broker.Command.new(commandId, broker.CommandKind.exit, side, na, this.idx, na, fromEntry, stop, activateOnEntryBar, target, trailPrice = trailPrice, trailOffset = trailOffset))
+
+	broker.Order close(string commandId) =>
+		currentQuantity = this.portfolio.position_quantity()
+		side = currentQuantity < 0.0 ? broker.Side.buy : broker.Side.sell
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.close, side, na, this.idx))
+
+	broker.Order rebalance(string commandId, broker.PositionTarget target) =>
+		currentQuantity = this.portfolio.position_quantity()
+		side = target.value > 0.0 ? broker.Side.buy : target.value < 0.0 ? broker.Side.sell : currentQuantity > 0.0 ? broker.Side.sell : broker.Side.buy
+		this.broker.submit(broker.Command.new(commandId, broker.CommandKind.rebalance, side, na, this.idx, positionTarget = target))
+
+	int cancel(string commandId) =>
+		this.broker.cancel(commandId)
+
+	broker.Fill process_close(float closePrice) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		firstExecution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(firstExecution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(continuation)
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		not na(continuation) ? continuation : firstExecution
+
+	float mark(float price) =>
+		currentPortfolio = this.portfolio
+		value = currentPortfolio.mark(price)
+		this.portfolio := currentPortfolio
+		value
+
+	broker.FinishResult finish(bool isLast) =>
+		broker.FinishResult expired = na
+		if isLast
+			currentBroker = this.broker
+			expired := currentBroker.finish()
+			this.broker := currentBroker
+		expired
+
+	broker.FinishResult end(float closePrice, bool isLast) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		execution = currentBroker.on_close(closePrice, currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(execution)
+		continuation = currentBroker.continue_reversal(currentPortfolio.account(), this.idx)
+		currentPortfolio.apply(continuation)
+		currentPortfolio.mark(closePrice)
+		broker.FinishResult expired = na
+		if isLast
+			expired := currentBroker.finish()
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		expired
+
+	float cash() const =>
+		this.portfolio.cash()
+
+	float position_quantity() const =>
+		this.portfolio.position_quantity()
+
+	float position_avg_price() const =>
+		this.portfolio.position_avg_price()
+
+	portfolio.PortfolioSnapshot snapshot() const =>
+		this.portfolio.snapshot()
+
+	bool has_pending() const =>
+		this.broker.has_pending()
+
+	bool has_pending_entry() const =>
+		this.broker.has_pending_entry()
+
+export type LotTrade<B: broker.ImmediateBroker, P: portfolio.LotLedger>
+	B broker
+	P portfolio
+	int idx = -1
+	float referencePrice = na
+
+	int begin_bar(float referencePrice, int barIndex) =>
+		this.referencePrice := referencePrice
+		this.idx := barIndex
+		this.idx
+
+	broker.Fill entry(string commandId, string reversalCommandId, Direction direction, float qty = na, float notional = na) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		broker.Fill execution = na
+		entrySide = direction == Direction.long ? broker.Side.buy : broker.Side.sell
+		qtyPresent = not na(qty)
+		notionalPresent = not na(notional)
+		sizeValid = qtyPresent != notionalPresent and (qtyPresent ? qty > 0.0 : notional > 0.0)
+		if not sizeValid
+			currentBroker.reject(commandId, entrySide, this.idx, broker.Rejection.invalidQuantity)
+			broker.Fill noExecution = na
+			execution := noExecution
+		else
+			reversalValid = true
+			tradeIndex = currentPortfolio.open_trade_count() - 1
+			while tradeIndex >= 0 and reversalValid
+				openTrade = currentPortfolio.open_trade(tradeIndex)
+				if openTrade.entrySide != entrySide
+					closeSide = openTrade.entrySide == broker.Side.buy ? broker.Side.sell : broker.Side.buy
+					closeCommand = broker.Command.new(reversalCommandId, broker.CommandKind.close, closeSide, openTrade.quantity, this.idx, tradeId = openTrade.id)
+					closeExecution = currentBroker.execute_now(closeCommand, this.referencePrice, currentPortfolio.account(), this.idx)
+					currentPortfolio.apply(closeExecution)
+					reversalValid := not na(closeExecution)
+				tradeIndex := tradeIndex - 1
+			if reversalValid
+				entryCommand = broker.Command.new(commandId, broker.CommandKind.entry, entrySide, qty, this.idx, notional, tradeId = 0)
+				execution := currentBroker.execute_now(entryCommand, this.referencePrice, currentPortfolio.account(), this.idx)
+				currentPortfolio.apply(execution)
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		execution
+
+	broker.Fill close_trade(string commandId, int tradeId) =>
+		currentBroker = this.broker
+		currentPortfolio = this.portfolio
+		broker.Fill execution = na
+		matchedIndex = -1
+		tradeIndex = currentPortfolio.open_trade_count() - 1
+		while tradeIndex >= 0 and matchedIndex < 0
+			openTrade = currentPortfolio.open_trade(tradeIndex)
+			if openTrade.id == tradeId
+				matchedIndex := tradeIndex
+			tradeIndex := tradeIndex - 1
+		if matchedIndex >= 0
+			openTrade = currentPortfolio.open_trade(matchedIndex)
+			side = openTrade.entrySide == broker.Side.buy ? broker.Side.sell : broker.Side.buy
+			command = broker.Command.new(commandId, broker.CommandKind.close, side, openTrade.quantity, this.idx, tradeId = openTrade.id)
+			execution := currentBroker.execute_now(command, this.referencePrice, currentPortfolio.account(), this.idx)
+			currentPortfolio.apply(execution)
+		else
+			side = currentPortfolio.position_quantity() < 0.0 ? broker.Side.buy : broker.Side.sell
+			currentBroker.reject(commandId, side, this.idx, broker.Rejection.invalidAccountState)
+			broker.Fill noExecution = na
+			execution := noExecution
+		this.broker := currentBroker
+		this.portfolio := currentPortfolio
+		execution
+
+	float mark() =>
+		currentPortfolio = this.portfolio
+		value = currentPortfolio.mark(this.referencePrice)
+		this.portfolio := currentPortfolio
+		value
+
+	float cash() const =>
+		this.portfolio.cash()
+
+	float position_quantity() const =>
+		this.portfolio.position_quantity()
+
+	float position_avg_price() const =>
+		this.portfolio.position_avg_price()
+
+	portfolio.PortfolioSnapshot snapshot() const =>
+		this.portfolio.snapshot()
+
+export percentOfEquity(float percent, bool commissionIncluded = false) =>
+	Sizing.new(SizingKind.percentOfEquity, percent, commissionIncluded)
+
+export percentOfEquityAtFill(float percent, bool commissionIncluded = false) =>
+	Sizing.new(SizingKind.percentOfEquityAtFill, percent, commissionIncluded)
+
+export targetQuantity(float quantity) =>
+	broker.PositionTarget.new(broker.PositionTargetKind.quantity, quantity)
+
+export targetPercentOfEquity(float percent) =>
+	broker.PositionTarget.new(broker.PositionTargetKind.percentOfEquity, percent)
+
+export net(broker, portfolio) =>
+	NetTrade.new(broker, portfolio)
+
+export lots(broker, portfolio) =>
+	LotTrade.new(broker, portfolio)
