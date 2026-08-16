@@ -5,7 +5,7 @@ strategy("AI SuperTrend KNN — WMA long mode", shorttitle="AI ST KNN Long", ove
 
 import broker
 import portfolio
-import strategy
+import trade
 
 pine_rma(float source, int length) =>
 	seed = ta.sma(source, length)
@@ -61,7 +61,7 @@ allocation_percent = input.float(10.0, "Entry equity percent", minval=0.1, maxva
 commission_percent = input.float(0.1, "Commission (%)", minval=0.0, maxval=10.0)
 tick_size = input.float(0.01, "Instrument tick size", minval=0.00000001)
 
-var strat = strategy.configure(
+var strat = trade.net(
 	broker = broker.new(
 		commission = broker.commissionPercent(commission_percent),
 		slippage = broker.slippageTicks(1.0, tick_size),
@@ -138,7 +138,7 @@ long_exit_condition = not aligned_bullish and not aligned_bearish
 long_stop = supertrend - atr_value * supertrend_factor
 
 if long_signal and strat.position_quantity() == 0.0 and not strat.has_pending_entry()
-	strat.entry("AI Long", strategy.Direction.long, sizing = strategy.percentOfEquity(allocation_percent))
+	strat.entry("AI Long", trade.Direction.long, sizing = trade.percentOfEquity(allocation_percent))
 
 // Skipping this call is the Pine `when=false` behavior: the last submitted
 // stop remains live rather than being cancelled or replaced.
@@ -147,6 +147,7 @@ if long_exit_condition and not na(long_stop) and (strat.position_quantity() > 0.
 	display_active_stop := long_stop
 
 strat.end(close, barstate.islast)
+metrics = strat.snapshot()
 
 plot(close, "close")
 plot(supertrend, "volume supertrend")
@@ -155,11 +156,11 @@ plot(long_stop, "long stop candidate")
 plot(display_active_stop, "active stop")
 plot(long_signal ? 1.0 : 0.0, "long signal")
 plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(strat.position_quantity(), "position quantity")
-plot(strat.equity(), "equity")
-plot(strat.realized_pnl(), "realized pnl")
-plot(strat.total_fees(), "total fees")
-plot(strat.fill_count(), "fill count")
-plot(strat.round_trip_count(), "round trips")
-plot(strat.max_drawdown(), "maximum drawdown")
-plot(strat.total_return(), "total return")
+plot(metrics.positionQuantity, "position quantity")
+plot(metrics.equity, "equity")
+plot(metrics.realizedPnl, "realized pnl")
+plot(metrics.totalFees, "total fees")
+plot(metrics.fillCount, "fill count")
+plot(metrics.roundTripCount, "round trips")
+plot(metrics.maxDrawdown, "maximum drawdown")
+plot(metrics.totalReturn, "total return")

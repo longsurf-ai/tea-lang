@@ -18,7 +18,7 @@ for the checked-in daily BTC profile; `trading_window_mode=1` is rejected until
 Tea owns an exchange-timezone/session-calendar contract.
 
 The strategy composes Tea's canonical `broker.new`, `portfolio.new`, and
-`strategy.configure` components. The broker's fixed-scalar path matcher replays
+`trade.net` components. The broker's fixed-scalar path matcher replays
 each daily OHLC bar using TradingView's documented heuristic: open to the nearer
 extreme, then the opposite extreme, then close. It records where a stop entry
 filled, applies that fill to the portfolio, and lets the attached bracket inspect

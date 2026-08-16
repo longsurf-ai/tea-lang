@@ -14,7 +14,7 @@ long/short stack tracking. Every open and close emits a standard
 `broker.FillExecuted` effect with an unambiguous command id.
 
 The script composes `broker.new(...)`, `portfolio.lots(...)`, and
-`strategy.configure(...)`; its per-entry accounting and immediate market-fill
+`trade.lots(...)`; its per-entry accounting and immediate market-fill
 lifecycle are compiler-shipped Tea library code rather than a strategy-local
 account. `maximum_open_trades` is the explicit bind-time storage policy. A
 command that would exceed it is rejected before a fill is published. This cap
@@ -23,10 +23,11 @@ remain open across a session boundary.
 
 Alice-specific exit policy is separate from that accounting. The script owns a
 `GridPosition` array keyed by the `tradeId` returned by each successful entry
-fill; tag, target, stop, and trailing state live there. Its ordering mirrors the
-lot portfolio's push and swap-pop rules, and it changes only after a successful
-`entry_now` or `close_trade` fill. The strategy therefore never reads or edits
-the portfolio's open-trade records to implement grid policy.
+fill; tag, target, stop, and trailing state live there. Stable trade ids let the
+policy close the intended lot without depending on portfolio array ordering,
+and it changes only after a successful `entry` or `close_trade` fill. The
+strategy therefore never reads or edits the portfolio's open-trade records to
+implement grid policy.
 
 The measured stress config is intentionally not the publication's all-default
 input set: it caps each side at five rather than twenty levels, sweeps the

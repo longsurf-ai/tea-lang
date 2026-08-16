@@ -6,7 +6,7 @@ strategy("AliceTears Grid", shorttitle="Alice Grid", overlay=true)
 
 import broker
 import portfolio
-import strategy
+import trade
 
 type GridPosition
 	int tradeId
@@ -34,7 +34,7 @@ cash_per_order = input.float(10.0, "Cash per grid order", minval=0.01)
 initial_cash = input.float(1000.0, "Initial cash", minval=1.0)
 fee_rate = input.float(0.00025, "Fee rate", minval=0.0, maxval=0.05)
 
-var strat = strategy.configure(
+var strat = trade.lots(
 	broker = broker.new(
 		commission = broker.commissionRate(fee_rate)
 	),
@@ -53,7 +53,7 @@ var grid_positions = array.new<GridPosition>()
 var float session_base = na
 var float prior_day = na
 
-strat.begin_immediate(bar_index)
+strat.begin_bar(close, bar_index)
 
 day_key = math.floor(time / 86400000.0)
 new_session = na(prior_day) or day_key != prior_day
@@ -108,7 +108,7 @@ while position_index >= 0
 				grid_position.trailDistance := close * trailing_offset_percent / 100.0
 				policy_changed := true
 	if close_now
-		close_fill = strat.close_trade(is_long ? "Alice long close" : "Alice short cover", position_index, close_price)
+		close_fill = strat.close_trade(is_long ? "Alice long close" : "Alice short cover", grid_position.tradeId, close_price)
 		if not na(close_fill) and close_fill.tradeId == grid_position.tradeId
 			last_position = grid_positions.pop()
 			if position_index < grid_positions.size()
@@ -138,7 +138,7 @@ for level = 1 to maximum_steps
 		while short_reverse_index >= 0 and short_reversal_valid
 			short_reverse_position = grid_positions.get(short_reverse_index)
 			if short_reverse_position.entrySide != broker.Side.sell
-				short_reverse_fill = strat.close_trade("Alice long close", short_reverse_index, close)
+				short_reverse_fill = strat.close_trade("Alice long close", short_reverse_position.tradeId, close)
 				if not na(short_reverse_fill) and short_reverse_fill.tradeId == short_reverse_position.tradeId
 					short_last_position = grid_positions.pop()
 					if short_reverse_index < grid_positions.size()
@@ -147,7 +147,7 @@ for level = 1 to maximum_steps
 					short_reversal_valid := false
 			short_reverse_index := short_reverse_index - 1
 		if short_reversal_valid
-			short_fill = strat.entry_now("Alice short open", "Alice long close", strategy.Direction.short, close, notional = cash_per_order)
+			short_fill = strat.entry("Alice short open", "Alice long close", trade.Direction.short, notional = cash_per_order)
 			if not na(short_fill) and short_fill.tradeId > 0
 				grid_positions.push(GridPosition.new(short_fill.tradeId, broker.Side.sell, level, short_target, short_stop))
 		triggered_shorts.set(level, true)
@@ -170,7 +170,7 @@ for level = 1 to maximum_steps
 		while long_reverse_index >= 0 and long_reversal_valid
 			long_reverse_position = grid_positions.get(long_reverse_index)
 			if long_reverse_position.entrySide != broker.Side.buy
-				long_reverse_fill = strat.close_trade("Alice short cover", long_reverse_index, close)
+				long_reverse_fill = strat.close_trade("Alice short cover", long_reverse_position.tradeId, close)
 				if not na(long_reverse_fill) and long_reverse_fill.tradeId == long_reverse_position.tradeId
 					long_last_position = grid_positions.pop()
 					if long_reverse_index < grid_positions.size()
@@ -179,12 +179,12 @@ for level = 1 to maximum_steps
 					long_reversal_valid := false
 			long_reverse_index := long_reverse_index - 1
 		if long_reversal_valid
-			long_fill = strat.entry_now("Alice long open", "Alice short cover", strategy.Direction.long, close, notional = cash_per_order)
+			long_fill = strat.entry("Alice long open", "Alice short cover", trade.Direction.long, notional = cash_per_order)
 			if not na(long_fill) and long_fill.tradeId > 0
 				grid_positions.push(GridPosition.new(long_fill.tradeId, broker.Side.buy, level, long_target, long_stop))
 		triggered_longs.set(level, true)
 
-strat.mark(close)
+strat.mark()
 metrics = strat.snapshot()
 
 plot(close, "close")

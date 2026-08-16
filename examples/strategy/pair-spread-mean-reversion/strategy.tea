@@ -5,7 +5,7 @@ strategy("Pair-spread mean reversion", shorttitle="Pair Spread", overlay=false)
 
 import broker
 import portfolio
-import strategy
+import trade
 
 symbol_one = input.symbol("YM=F", "Spread leg one")
 symbol_two = input.symbol("ES=F", "Spread leg two")
@@ -18,7 +18,7 @@ slippage_ticks = input.float(1.0, "Adverse slippage in ticks", minval=0.0)
 commission_per_contract = input.float(0.05, "Commission per contract", minval=0.0)
 contracts = input.float(1.0, "Contracts per entry", minval=0.00000001)
 
-var strat = strategy.configure(
+var strat = trade.net(
 	broker = broker.new(
 		commission = broker.commissionCashPerContract(commission_per_contract),
 		slippage = broker.slippageTicks(slippage_ticks, tick_size),
@@ -46,23 +46,24 @@ enter_long = spread < lower_band
 exit_long = spread > spread_mean
 
 if enter_long and strat.position_quantity() == 0.0 and not strat.has_pending()
-	strat.entry("Spread Long", strategy.Direction.long, qty = contracts)
+	strat.entry("Spread Long", trade.Direction.long, qty = contracts)
 
 if exit_long and strat.position_quantity() > 0.0 and not strat.has_pending()
 	strat.close("Spread Long")
 
 strat.end(close, barstate.islast)
+metrics = strat.snapshot()
 
 plot(spread, "spread")
 plot(spread_mean, "spread mean")
 plot(lower_band, "entry threshold")
 plot(enter_long ? 1.0 : 0.0, "long signal")
 plot(exit_long ? 1.0 : 0.0, "close signal")
-plot(strat.position_quantity(), "position quantity")
-plot(strat.equity(), "equity")
-plot(strat.realized_pnl(), "realized pnl")
-plot(strat.total_fees(), "total fees")
-plot(strat.fill_count(), "fill count")
-plot(strat.round_trip_count(), "round trips")
-plot(strat.max_drawdown(), "maximum drawdown")
-plot(strat.total_return(), "total return")
+plot(metrics.positionQuantity, "position quantity")
+plot(metrics.equity, "equity")
+plot(metrics.realizedPnl, "realized pnl")
+plot(metrics.totalFees, "total fees")
+plot(metrics.fillCount, "fill count")
+plot(metrics.roundTripCount, "round trips")
+plot(metrics.maxDrawdown, "maximum drawdown")
+plot(metrics.totalReturn, "total return")

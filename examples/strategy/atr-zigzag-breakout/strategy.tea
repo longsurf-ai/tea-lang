@@ -5,7 +5,7 @@ strategy("ATR ZigZag breakout", shorttitle="ATR ZigZag", overlay=true)
 
 import broker
 import portfolio
-import strategy
+import trade
 
 pine_rma(float source, int length) =>
 	seed = ta.sma(source, length)
@@ -28,7 +28,7 @@ risk_reward = input.float(2.0, "Reward multiple", minval=0.1, maxval=20.0)
 trading_window_mode = input.int(0, "Trading window profile: 0 disabled", minval=0, maxval=1)
 initial_cash = input.float(50000.0, "Initial cash", minval=1.0)
 
-var strat = strategy.configure(
+var strat = trade.net(
 	broker = broker.new(
 		commission = broker.commissionRate(0.0),
 		slippage = broker.slippageRate(0.0)
@@ -184,28 +184,29 @@ if strat.position_quantity() == 0.0 and valid_profile
 		stop_distance = stop_atr_multiple * atr_value
 		pending_stop := last_high_level - stop_distance
 		pending_target := last_high_level + risk_reward * stop_distance
-		strat.entry("Long Open", strategy.Direction.long, qty = 1.0, stop = last_high_level)
+		strat.entry("Long Open", trade.Direction.long, qty = 1.0, stop = last_high_level)
 		strat.exit("Long Bracket", fromEntry = "Long Open", stop = pending_stop, target = pending_target, activateOnEntryBar = true)
 	else if base_short and not na(last_low_level)
 		stop_distance = stop_atr_multiple * atr_value
 		pending_stop := last_low_level + stop_distance
 		pending_target := last_low_level - risk_reward * stop_distance
-		strat.entry("Short Open", strategy.Direction.short, qty = 1.0, stop = last_low_level)
+		strat.entry("Short Open", trade.Direction.short, qty = 1.0, stop = last_low_level)
 		strat.exit("Short Bracket", fromEntry = "Short Open", stop = pending_stop, target = pending_target, activateOnEntryBar = true)
 
 strat.mark(close)
 strat.finish(barstate.islast)
+metrics = strat.snapshot()
 
 plot(close, "close")
 plot(base_long ? last_high_level : na, "candidate long")
 plot(base_short ? last_low_level : na, "candidate short")
-plot(strat.position_quantity() != 0.0 ? active_stop : na, "active stop")
-plot(strat.position_quantity() != 0.0 ? active_target : na, "active target")
-plot(strat.position_quantity(), "signed position")
-plot(strat.position_avg_price(), "entry price")
-plot(strat.equity(), "equity")
-plot(strat.realized_pnl(), "realized pnl")
-plot(strat.fill_count(), "fill count")
-plot(strat.round_trip_count(), "round trips")
-plot(strat.max_drawdown(), "maximum drawdown")
-plot(strat.total_return(), "total return")
+plot(metrics.positionQuantity != 0.0 ? active_stop : na, "active stop")
+plot(metrics.positionQuantity != 0.0 ? active_target : na, "active target")
+plot(metrics.positionQuantity, "signed position")
+plot(metrics.positionAveragePrice, "entry price")
+plot(metrics.equity, "equity")
+plot(metrics.realizedPnl, "realized pnl")
+plot(metrics.fillCount, "fill count")
+plot(metrics.roundTripCount, "round trips")
+plot(metrics.maxDrawdown, "maximum drawdown")
+plot(metrics.totalReturn, "total return")

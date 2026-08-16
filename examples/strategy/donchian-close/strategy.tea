@@ -6,7 +6,7 @@ strategy("Donchian close breakout", shorttitle="Donchian Close", overlay=true)
 
 import broker
 import portfolio
-import strategy
+import trade
 
 upper_length = input.int(20, "Upper channel length", minval=2, maxval=200)
 lower_length = input.int(10, "Lower channel length", minval=2, maxval=200)
@@ -20,7 +20,7 @@ initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 slippage = input.float(0.0, "Adverse slippage rate", minval=0.0, maxval=0.05)
 fee = input.float(0.001, "Taker fee rate", minval=0.0, maxval=0.05)
 
-var strat = strategy.configure(
+var strat = trade.net(
 	broker = broker.new(
 		commission = broker.commissionRate(fee),
 		slippage = broker.slippageRate(slippage),
@@ -74,12 +74,13 @@ long_signal = valid_parameters and in_window and close >= upper_channel[1]
 close_signal = valid_parameters and in_position and close <= active_stop[1]
 
 if long_signal and not in_position and not strat.has_pending()
-	strat.entry("Donchian Long", strategy.Direction.long)
+	strat.entry("Donchian Long", trade.Direction.long)
 
 if close_signal and not strat.has_pending()
 	strat.close("Donchian Long")
 
 strat.end(close, barstate.islast)
+metrics = strat.snapshot()
 
 plot(close, "close")
 plot(upper_channel, "upper channel")
@@ -89,11 +90,11 @@ plot(active_stop, "active stop")
 plot(long_signal ? 1.0 : 0.0, "long signal")
 plot(close_signal ? 1.0 : 0.0, "close signal")
 plot(valid_parameters ? 1.0 : 0.0, "valid parameters")
-plot(strat.position_quantity(), "position quantity")
-plot(strat.equity(), "equity")
-plot(strat.realized_pnl(), "realized pnl")
-plot(strat.total_fees(), "total fees")
-plot(strat.fill_count(), "fill count")
-plot(strat.round_trip_count(), "round trips")
-plot(strat.max_drawdown(), "maximum drawdown")
-plot(strat.total_return(), "total return")
+plot(metrics.positionQuantity, "position quantity")
+plot(metrics.equity, "equity")
+plot(metrics.realizedPnl, "realized pnl")
+plot(metrics.totalFees, "total fees")
+plot(metrics.fillCount, "fill count")
+plot(metrics.roundTripCount, "round trips")
+plot(metrics.maxDrawdown, "maximum drawdown")
+plot(metrics.totalReturn, "total return")

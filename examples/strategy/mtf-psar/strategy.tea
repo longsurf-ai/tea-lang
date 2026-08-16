@@ -5,7 +5,7 @@ strategy("Multi-timeframe PSAR — inspected v2.0", shorttitle="MTF PSAR v2", ov
 
 import broker
 import portfolio
-import strategy
+import trade
 
 request_symbol = input.symbol("BTC-USD", "Requested symbol equivalent")
 higher_timeframe = input.timeframe("D", "Higher timeframe")
@@ -22,7 +22,7 @@ take_profit_percent = input.float(2.0, "Take profit (%)", minval=0.1, maxval=100
 initial_cash = input.float(10000.0, "Initial cash", minval=1.0)
 commission_percent = input.float(0.1, "Commission (%)", minval=0.0, maxval=10.0)
 
-var strat = strategy.configure(
+var strat = trade.net(
 	broker = broker.new(
 		commission = broker.commissionPercent(commission_percent),
 		slippage = broker.slippageRate(0.0),
@@ -85,7 +85,7 @@ else if strat.position_quantity() < 0.0
 
 if long_signal
 	if strat.position_quantity() <= 0.0 and not strat.has_pending()
-		strat.entry("MTF Position", strategy.Direction.long, sizing = strategy.percentOfEquityAtFill(100.0))
+		strat.entry("MTF Position", trade.Direction.long, sizing = trade.percentOfEquityAtFill(100.0))
 	// The source resets these on every true condition, even when pyramiding=0
 	// rejects a redundant same-direction entry.
 	stop_loss_price := missing_value
@@ -94,7 +94,7 @@ if long_signal
 
 if short_signal
 	if strat.position_quantity() >= 0.0 and not strat.has_pending()
-		strat.entry("MTF Position", strategy.Direction.short, sizing = strategy.percentOfEquityAtFill(100.0))
+		strat.entry("MTF Position", trade.Direction.short, sizing = trade.percentOfEquityAtFill(100.0))
 	stop_loss_price := missing_value
 	take_profit_price := missing_value
 	trailing_stop := missing_value
@@ -115,19 +115,20 @@ if strat.position_quantity() < 0.0 and not strat.has_pending()
 
 strat.mark(close)
 strat.finish(barstate.islast)
+metrics = strat.snapshot()
 
 plot(close, "close")
 plot(current_sar, "current SAR")
 plot(higher_sar, "higher-timeframe SAR")
 plot(long_signal ? 1.0 : 0.0, "long signal")
 plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(strat.position_quantity(), "signed position quantity")
-plot(strat.equity(), "equity")
-plot(strat.realized_pnl(), "realized pnl")
-plot(strat.total_fees(), "total fees")
-plot(strat.fill_count(), "fill count")
-plot(strat.round_trip_count(), "round trips")
-plot(strat.win_rate(), "win rate")
-plot(strat.profit_factor(), "profit factor")
-plot(strat.max_drawdown(), "maximum drawdown")
-plot(strat.total_return(), "total return")
+plot(metrics.positionQuantity, "signed position quantity")
+plot(metrics.equity, "equity")
+plot(metrics.realizedPnl, "realized pnl")
+plot(metrics.totalFees, "total fees")
+plot(metrics.fillCount, "fill count")
+plot(metrics.roundTripCount, "round trips")
+plot(metrics.winRate, "win rate")
+plot(metrics.profitFactor, "profit factor")
+plot(metrics.maxDrawdown, "maximum drawdown")
+plot(metrics.totalReturn, "total return")

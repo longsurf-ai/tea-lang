@@ -40,11 +40,12 @@ are runtime fixtures, not parameter recommendations or profitability claims.
 
 ## Why these are Tea programs rather than compiler features
 
-All twelve audited profiles compose Tea's shipped strategy components. The
-scalar `BrokerEmulator` + `NetPortfolio` path handles net-position strategies:
+All twelve audited profiles compose Tea's shipped broker, portfolio, and trade
+components. The scalar `BrokerEmulator` + `NetPortfolio` path is coordinated
+by `trade.net` for net-position strategies:
 
 ```tea
-var strat = strategy.configure(
+var strat = trade.net(
     broker = broker.new(
         commission = broker.commissionRate(fee),
         slippage = broker.slippageRate(slippage),
@@ -76,10 +77,11 @@ closes that aggregate net position. Both
 available capital) or `0` (the gate is disabled). Intermediate leverage fails
 closed until the portfolio has true free-margin accounting.
 
-Alice Grid selects the separate `portfolio.lots(...)` policy. It provides an
-explicit `maxOpenTrades` capacity, per-entry basis and fees, newest-first lot
-closes, signed aggregate reporting, and immediate broker execution through
-`strat.entry_now(...)` / `strat.close_trade(...)`. Capacity overflow is rejected
+Alice Grid selects `trade.lots(...)` with the separate
+`portfolio.lots(...)` policy. It provides an explicit `maxOpenTrades`
+capacity, per-entry basis and fees, stable-trade-id lot closes, signed
+aggregate reporting, and immediate broker execution through
+`strat.entry(...)` / `strat.close_trade(...)`. Capacity overflow is rejected
 before a fill is published. The collection-backed lot policy is intentionally
 CPU-only today; choosing it does not add collection state to scalar programs.
 

@@ -6,7 +6,7 @@ strategy("Cowabunga System — inspected Pine v2", shorttitle="Cowabunga v2", ov
 
 import broker
 import portfolio
-import strategy
+import trade
 
 pine_rma(float source, int length) =>
 	seed = ta.sma(source, length)
@@ -44,7 +44,7 @@ initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 fixed_quantity = input.float(10000.0, "Fixed order quantity", minval=0.00000001)
 tick_size = input.float(0.01, "Instrument tick size", minval=0.00000001)
 
-var strat = strategy.configure(
+var strat = trade.net(
 	broker = broker.new(
 		commission = broker.commissionRate(0.0),
 		slippage = broker.slippageRate(0.0)
@@ -115,16 +115,17 @@ short_signal = ta.crossunder(close, ema_5) and short_filter and short_trigger_fi
 if long_signal
 	if strat.position_quantity() != fixed_quantity
 		strat.cancel("Cowabunga Short")
-		strat.rebalance("Cowabunga Long", strategy.targetQuantity(fixed_quantity))
+		strat.rebalance("Cowabunga Long", trade.targetQuantity(fixed_quantity))
 if short_signal
 	// The source evaluates the short block after the long block, so a rare
 	// same-bar conflict is resolved to the short target.
 	if strat.position_quantity() != -fixed_quantity
 		strat.cancel("Cowabunga Long")
-		strat.rebalance("Cowabunga Short", strategy.targetQuantity(-fixed_quantity))
+		strat.rebalance("Cowabunga Short", trade.targetQuantity(-fixed_quantity))
 
 strat.mark(close)
 strat.finish(barstate.islast)
+metrics = strat.snapshot()
 
 plot(close, "close")
 plot(ema_5, "EMA 5")
@@ -133,10 +134,10 @@ plot(macd_line, "MACD line")
 plot(macd_signal, "MACD signal (source computes but does not filter on it)")
 plot(long_signal ? 1.0 : 0.0, "long signal")
 plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(strat.position_quantity(), "signed position quantity")
-plot(strat.equity(), "equity")
-plot(strat.realized_pnl(), "realized pnl")
-plot(strat.fill_count(), "fill count")
-plot(strat.round_trip_count(), "round trips")
-plot(strat.max_drawdown(), "maximum drawdown")
-plot(strat.total_return(), "total return")
+plot(metrics.positionQuantity, "signed position quantity")
+plot(metrics.equity, "equity")
+plot(metrics.realizedPnl, "realized pnl")
+plot(metrics.fillCount, "fill count")
+plot(metrics.roundTripCount, "round trips")
+plot(metrics.maxDrawdown, "maximum drawdown")
+plot(metrics.totalReturn, "total return")

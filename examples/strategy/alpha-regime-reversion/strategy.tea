@@ -5,7 +5,7 @@ strategy("Alpha Regime Reversion - Swing Core + Dip", shorttitle="ARR Swing", ov
 
 import broker
 import portfolio
-import strategy
+import trade
 
 // Keep Pine's SMA-seeded Wilder RSI state explicit and self-contained in this
 // historical profile.
@@ -69,7 +69,7 @@ fee_rate = input.float(0.0005, "Fee rate", minval=0.0, maxval=0.05)
 tick_size = input.float(0.01, "Instrument tick size", minval=0.00000001)
 slippage_ticks = input.float(1.0, "Adverse slippage in ticks", minval=0.0, maxval=100.0)
 
-var strat = strategy.configure(
+var strat = trade.net(
 	broker = broker.new(
 		commission = broker.commissionRate(fee_rate),
 		slippage = broker.slippageTicks(slippage_ticks, tick_size),
@@ -160,7 +160,7 @@ if swing_risk_on and not lockout_active
 	target_percent := math.floor(target_percent / 5.0) * 5.0
 
 if math.abs(target_percent - commanded_target) >= 0.5
-	strat.rebalance("ARR allocation", strategy.targetPercentOfEquity(target_percent))
+	strat.rebalance("ARR allocation", trade.targetPercentOfEquity(target_percent))
 	commanded_target := target_percent
 
 if position_increased
@@ -172,6 +172,7 @@ if strat.position_quantity() == 0.0
 
 strat.mark(close)
 strat.finish(barstate.islast)
+metrics = strat.snapshot()
 
 plot(close, "close")
 plot(stock_average, "stock regime average")
@@ -181,11 +182,11 @@ plot(fast_ema, "fast EMA")
 plot(slow_ema, "slow EMA")
 plot(target_percent, "target allocation percent")
 plot(dip_active ? 1.0 : 0.0, "dip active")
-plot(strat.position_quantity(), "position quantity")
-plot(strat.equity(), "equity")
-plot(strat.realized_pnl(), "realized pnl")
-plot(strat.total_fees(), "total fees")
-plot(strat.fill_count(), "fill count")
-plot(strat.round_trip_count(), "round trips")
-plot(strat.max_drawdown(), "maximum drawdown")
-plot(strat.total_return(), "total return")
+plot(metrics.positionQuantity, "position quantity")
+plot(metrics.equity, "equity")
+plot(metrics.realizedPnl, "realized pnl")
+plot(metrics.totalFees, "total fees")
+plot(metrics.fillCount, "fill count")
+plot(metrics.roundTripCount, "round trips")
+plot(metrics.maxDrawdown, "maximum drawdown")
+plot(metrics.totalReturn, "total return")

@@ -25,6 +25,8 @@ test('keeps Alice grid policy out of the portfolio facade', () => {
   const source = readFileSync(SOURCE, 'utf8');
 
   expect(source).toContain('type GridPosition');
+  expect(source).toContain('import trade');
+  expect(source).toContain('trade.lots(');
   expect(source).toContain('array.new<GridPosition>()');
   expect(source).toContain('close_fill.tradeId == grid_position.tradeId');
   expect(source).toContain('GridPosition.new(short_fill.tradeId');
@@ -35,6 +37,7 @@ test('keeps Alice grid policy out of the portfolio facade', () => {
   expect(source).not.toMatch(
     /\bstrat\.entry_now\([^\n]*(?:tag|target|stop)\s*=/,
   );
+  expect(source).not.toContain('strat.entry_now(');
 });
 
 test('preserves Alice binding 0 metrics and both normalized fill tapes', async () => {

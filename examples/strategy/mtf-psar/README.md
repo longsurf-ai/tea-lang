@@ -14,7 +14,7 @@ Clean-room Tea conversion of the current public source behind TradingView's [Mul
 The source is genuinely two-sided. With the current dashboard event contract, a short opening sell appears as an exit marker and a short-cover buy appears as an entry marker; use the signed-position plot to interpret those fills.
 
 Execution and accounting use Tea's canonical `broker.new`, `portfolio.new`,
-and `strategy.configure` components. Fill-time percent sizing and ordered
+and `trade.net` components. Fill-time percent sizing and ordered
 reversal continuation let the broker close the old side, apply that fill and
 commission to the portfolio, and only then size and open the new side. The
 strategy source retains only PSAR signals and the publication's deliberately

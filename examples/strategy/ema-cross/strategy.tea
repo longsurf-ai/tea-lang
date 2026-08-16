@@ -1,12 +1,9 @@
 //@version=1
-// Long-only EMA crossover with next-open execution. The ordinary Tea-authored
-// ta functions keep their own call-site state, so this exact source runs on
-// both the JavaScript and WebGPU targets.
 strategy("EMA crossover strategy", shorttitle="EMA Cross", overlay=true)
 
 import broker
 import portfolio
-import strategy
+import trade
 
 fast_length = input.int(5, "Fast EMA length", minval=2, maxval=20)
 slow_length = input.int(13, "Slow EMA length", minval=3, maxval=60)
@@ -14,7 +11,7 @@ initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 slippage = input.float(0.0005, "Adverse slippage rate", minval=0.0, maxval=0.05)
 fee = input.float(0.001, "Taker fee rate", minval=0.0, maxval=0.05)
 
-var strat = strategy.configure(
+var strat = trade.net(
 	broker = broker.new(
 		commission = broker.commissionRate(fee),
 		slippage = broker.slippageRate(slippage),
@@ -28,8 +25,6 @@ var strat = strategy.configure(
 	)
 )
 
-// Resolve orders submitted on an earlier bar before evaluating this bar's
-// signal. Basic broker fills them at this bar's open.
 strat.begin(open, bar_index)
 
 fast_value = ta.ema(close, fast_length)
@@ -40,23 +35,24 @@ crossed_below = ta.crossunder(fast_value, slow_value)
 valid_lengths = fast_length < slow_length
 
 if valid_lengths and crossed_above and strat.position_quantity() == 0.0 and not strat.has_pending()
-	strat.entry("EMA Long", strategy.Direction.long)
+	strat.entry("EMA Long", trade.Direction.long)
 
 if valid_lengths and crossed_below and strat.position_quantity() > 0.0 and not strat.has_pending()
 	strat.close("EMA Long")
 
 strat.end(close, barstate.islast)
+metrics = strat.snapshot()
 
 plot(close, "close")
 plot(fast_value, "fast ema")
 plot(slow_value, "slow ema")
 plot(crossed_above ? 1.0 : 0.0, "long signal")
 plot(crossed_below ? 1.0 : 0.0, "close signal")
-plot(strat.position_quantity(), "position quantity")
-plot(strat.equity(), "equity")
-plot(strat.realized_pnl(), "realized pnl")
-plot(strat.total_fees(), "total fees")
-plot(strat.fill_count(), "fill count")
-plot(strat.round_trip_count(), "round trips")
-plot(strat.max_drawdown(), "maximum drawdown")
-plot(strat.total_return(), "total return")
+plot(metrics.positionQuantity, "position quantity")
+plot(metrics.equity, "equity")
+plot(metrics.realizedPnl, "realized pnl")
+plot(metrics.totalFees, "total fees")
+plot(metrics.fillCount, "fill count")
+plot(metrics.roundTripCount, "round trips")
+plot(metrics.maxDrawdown, "maximum drawdown")
+plot(metrics.totalReturn, "total return")

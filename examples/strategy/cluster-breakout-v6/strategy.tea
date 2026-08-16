@@ -1,12 +1,12 @@
 //@version=1
 // Clean-room implementation pinned to the publication's original v6 logic.
 // Fixed-size long/short positions and persistent stop orders run through Tea's
-// canonical strategy, broker, and portfolio components.
+// canonical trade, broker, and portfolio components.
 strategy("Cluster breakout v6", shorttitle="Cluster v6", overlay=true)
 
 import broker
 import portfolio
-import strategy
+import trade
 
 pine_rma(float source, int length) =>
 	seed = ta.sma(source, length)
@@ -50,7 +50,7 @@ adx_length = input.int(14, "ADX length", minval=2, maxval=200)
 adx_minimum = input.float(20.0, "Minimum ADX", minval=0.0, maxval=100.0)
 initial_cash = input.float(100000.0, "Initial cash", minval=1.0)
 
-var strat = strategy.configure(
+var strat = trade.net(
 	broker = broker.new(
 		commission = broker.commissionRate(0.0),
 		slippage = broker.slippageRate(0.0),
@@ -143,7 +143,7 @@ short_risk = box_top - close
 
 entered_this_bar = false
 if position_at_calculation == 0.0 and long_signal and long_risk > 0.0
-	strat.entry("Cluster Position", strategy.Direction.long, qty = order_size)
+	strat.entry("Cluster Position", trade.Direction.long, qty = order_size)
 	execution = strat.process_close(close)
 	if not na(execution)
 		strategy_entry_price := close
@@ -156,7 +156,7 @@ if position_at_calculation == 0.0 and long_signal and long_risk > 0.0
 		entered_this_bar := true
 
 if position_at_calculation == 0.0 and not entered_this_bar and short_signal and short_risk > 0.0
-	strat.entry("Cluster Position", strategy.Direction.short, qty = order_size)
+	strat.entry("Cluster Position", trade.Direction.short, qty = order_size)
 	execution = strat.process_close(close)
 	if not na(execution)
 		strategy_entry_price := close
@@ -219,18 +219,19 @@ if strat.position_quantity() == 0.0 and not entered_this_bar
 
 strat.mark(close)
 strat.finish(barstate.islast)
+metrics = strat.snapshot()
 
 plot(close, "close")
 plot(box_top, "cluster top")
 plot(box_bottom, "cluster bottom")
-plot(strat.position_quantity() != 0.0 ? current_stop : na, "active stop")
-plot(strat.position_quantity() != 0.0 ? target_line : na, "target line")
+plot(metrics.positionQuantity != 0.0 ? current_stop : na, "active stop")
+plot(metrics.positionQuantity != 0.0 ? target_line : na, "target line")
 plot(long_signal ? 1.0 : 0.0, "long signal")
 plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(strat.position_quantity(), "signed position")
-plot(strat.equity(), "equity")
-plot(strat.realized_pnl(), "realized pnl")
-plot(strat.fill_count(), "fill count")
-plot(strat.round_trip_count(), "round trips")
-plot(strat.max_drawdown(), "maximum drawdown")
-plot(strat.total_return(), "total return")
+plot(metrics.positionQuantity, "signed position")
+plot(metrics.equity, "equity")
+plot(metrics.realizedPnl, "realized pnl")
+plot(metrics.fillCount, "fill count")
+plot(metrics.roundTripCount, "round trips")
+plot(metrics.maxDrawdown, "maximum drawdown")
+plot(metrics.totalReturn, "total return")

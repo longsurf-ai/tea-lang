@@ -82,7 +82,7 @@ const EXPECTED_FIRST_BLOCKERS: Readonly<Record<string, FirstBlocker>> = {
 };
 
 // These nominal values are all declared by the canonical broker, portfolio,
-// and strategy libraries. Any other reachable user type is strategy-owned
+// and trade libraries. Any other reachable user type is strategy-owned
 // state and must be reviewed before it becomes part of an eligible GPU frame.
 const SHARED_SCALAR_EXECUTION_TYPES = new Set([
   'Account',
@@ -90,17 +90,18 @@ const SHARED_SCALAR_EXECUTION_TYPES = new Set([
   'BrokerEmulator',
   'Command',
   'Commission',
-  'ConfiguredStrategy<BrokerEmulator, NetPortfolio>',
   'Fill',
   'FillExecuted',
   'FinishResult',
   'NetPortfolio',
+  'NetTrade<BrokerEmulator, NetPortfolio>',
   'Order',
   'OrderCancelled',
   'OrderExpired',
   'OrderRejected',
   'OrderSubmitted',
   'PositionTarget',
+  'PortfolioSnapshot',
   'Sizing',
   'Slippage',
 ]);

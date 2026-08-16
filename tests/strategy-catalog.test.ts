@@ -167,13 +167,15 @@ describe('clean-room strategy catalog', () => {
     expect(catalog).toEqual([...expectedStrategies]);
   });
 
-  test('routes every audited profile through the canonical strategy components', () => {
+  test('routes every audited profile through the canonical trade components', () => {
     for (const name of expectedStrategies) {
       const source = strategySource(name);
       expect(source).toContain('import broker');
       expect(source).toContain('import portfolio');
-      expect(source).toContain('import strategy');
-      expect(source).toContain('strategy.configure(');
+      expect(source).toContain('import trade');
+      expect(source).toContain(
+        name === 'alice-grid' ? 'trade.lots(' : 'trade.net(',
+      );
       expect(source).not.toContain('broker.Fill.new');
       expect(source).not.toContain('effect.emit');
     }
@@ -302,7 +304,7 @@ describe('clean-room strategy catalog', () => {
     expect(compiled.artifact.bindingModule.source.length).toBeGreaterThan(0);
     expect(compiled.artifact.state.frames.length).toBeGreaterThan(1);
     const source = readFileSync(gpu.config.program.source, 'utf8');
-    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('trade.net(');
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
     expect(source).not.toContain('type TurtleAccount');
@@ -335,8 +337,8 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('strategy.configure(');
-    expect(source).toContain('strategy.percentOfEquity(');
+    expect(source).toContain('trade.net(');
+    expect(source).toContain('trade.percentOfEquity(');
     expect(source).toContain('strat.begin_bar(');
     expect(source).toContain('strat.exit(');
     expect(source).not.toContain('type LongStopEngine');
@@ -351,9 +353,9 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.lots(');
-    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('trade.lots(');
     expect(source).toContain('maximum_open_trades = input.int(');
-    expect(source).toContain('strat.entry_now(');
+    expect(source).toContain('strat.entry(');
     expect(source).toContain('strat.close_trade(');
     expect(source).toContain('strat.snapshot()');
     expect(source).not.toContain('type GridLot');
@@ -370,7 +372,7 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('trade.net(');
     expect(source).toContain('strat.begin_path_primary(');
     expect(source).toContain('strat.process_path_exit(');
     expect(source).toContain('strat.entry(');
@@ -388,7 +390,7 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('trade.net(');
     expect(source).toContain('commissionIncluded = true');
     expect(source).toContain('strat.begin_bar(');
     expect(source).toContain('strat.exit(');
@@ -405,8 +407,8 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('strategy.configure(');
-    expect(source).toContain('strategy.targetPercentOfEquity(');
+    expect(source).toContain('trade.net(');
+    expect(source).toContain('trade.targetPercentOfEquity(');
     expect(source).toContain('strat.begin_bar(');
     expect(source).toContain('strat.rebalance(');
     expect(source).toContain('strat.exit(');
@@ -423,7 +425,7 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('trade.net(');
     expect(source).toContain('strat.begin_bar(');
     expect(source).toContain('strat.exit(');
     expect(source).not.toContain('type SignedAccount');
@@ -439,7 +441,7 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('trade.net(');
     expect(source).toContain('strat.begin_path_primary(');
     expect(source).toContain('strat.process_path_exit(');
     expect(source).toContain('strat.rebalance(');
@@ -457,8 +459,8 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('strategy.configure(');
-    expect(source).toContain('strategy.percentOfEquityAtFill(');
+    expect(source).toContain('trade.net(');
+    expect(source).toContain('trade.percentOfEquityAtFill(');
     expect(source).not.toContain('type SignedPercentEngine');
     expect(source).not.toContain('broker.Fill.new');
     expect(source).not.toContain('effect.emit');
@@ -472,7 +474,7 @@ describe('clean-room strategy catalog', () => {
 
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
-    expect(source).toContain('strategy.configure(');
+    expect(source).toContain('trade.net(');
     expect(source).toContain('strat.rebalance(');
     expect(source).toContain('strat.exit(');
     expect(source).not.toContain('type DirectionalAccount');

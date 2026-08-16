@@ -13,7 +13,7 @@ allocation cap, next-open market entry, ATR- or band-based stops, VWAP or
 opposite-band targets, optional break-even replacement, fees, and
 deterministic same-bar stop/target collision handling. Execution and signed
 accounting compose Tea's canonical `broker.new`, `portfolio.new`, and
-`strategy.configure` components, which emit the standard
+`trade.net` components, which emit the standard
 `broker.FillExecuted` event.
 
 ## Pinned runnable profile

@@ -5,7 +5,7 @@ strategy("BB SPY Mean Reversion", shorttitle="BB Mean Reversion", overlay=true)
 
 import broker
 import portfolio
-import strategy
+import trade
 
 // Keep the selected Pine directional-smoothing contract explicit and
 // self-contained in this historical profile.
@@ -111,7 +111,7 @@ fee_rate = input.float(0.0003, "Fee rate", minval=0.0, maxval=0.05)
 tick_size = input.float(0.01, "Tick size", minval=0.00000001)
 slippage_ticks = input.float(3.0, "Slippage ticks", minval=0.0, maxval=100.0)
 
-var strat = strategy.configure(
+var strat = trade.net(
 	broker = broker.new(
 		commission = broker.commissionRate(fee_rate),
 		slippage = broker.slippageTicks(slippage_ticks, tick_size),
@@ -203,8 +203,8 @@ want_long = current_bias == 1 and regime_ok and strat.position_quantity() == 0.0
 if want_long
 	strat.entry(
 		"BB long",
-		strategy.Direction.long,
-		sizing = strategy.percentOfEquity(allocation_percent, commissionIncluded = true),
+		trade.Direction.long,
+		sizing = trade.percentOfEquity(allocation_percent, commissionIncluded = true),
 		stop = signal_lower
 	)
 	execution = strat.process_close(close)
@@ -224,6 +224,7 @@ if strat.position_quantity() > 0.0 and not na(monthly_atr)
 	strat.exit("BB ATR exit", fromEntry = "BB long", stop = active_stop > 0.0 ? active_stop : na, target = active_target)
 
 strat.finish(barstate.islast)
+metrics = strat.snapshot()
 
 plot(close, "close")
 plot(basis, "BB basis")
@@ -234,11 +235,11 @@ plot(use_adaptive_multiplier == 1 ? lower_adaptive : na, "BB lower adaptive")
 plot(monthly_atr, "confirmed monthly ATR")
 plot(long_signal ? 1.0 : 0.0, "long signal")
 plot(current_bias, "bias")
-plot(strat.position_quantity(), "position quantity")
-plot(strat.equity(), "equity")
-plot(strat.realized_pnl(), "realized pnl")
-plot(strat.total_fees(), "total fees")
-plot(strat.fill_count(), "fill count")
-plot(strat.round_trip_count(), "round trips")
-plot(strat.max_drawdown(), "maximum drawdown")
-plot(strat.total_return(), "total return")
+plot(metrics.positionQuantity, "position quantity")
+plot(metrics.equity, "equity")
+plot(metrics.realizedPnl, "realized pnl")
+plot(metrics.totalFees, "total fees")
+plot(metrics.fillCount, "fill count")
+plot(metrics.roundTripCount, "round trips")
+plot(metrics.maxDrawdown, "maximum drawdown")
+plot(metrics.totalReturn, "total return")
