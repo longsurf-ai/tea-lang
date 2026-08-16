@@ -76,6 +76,9 @@ function ownershipViolations(source: string): readonly string[] {
   )) {
     violations.push(`direct broker.${match[1]}.new`);
   }
+  for (const match of source.matchAll(/\bbroker\s*\.\s*stop_touched\s*\(/g)) {
+    violations.push(`direct broker stop preflight ${match[0]}`);
+  }
 
   const lifecycleNames = brokerLifecycleEffects.join('|');
   for (const match of source.matchAll(
@@ -91,6 +94,11 @@ function ownershipViolations(source: string): readonly string[] {
     /\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*portfolio\b/g,
   )) {
     violations.push(`direct configured portfolio access ${match[0]}`);
+  }
+  for (const match of source.matchAll(
+    /\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*broker\b/g,
+  )) {
+    violations.push(`direct configured broker access ${match[0]}`);
   }
 
   const portfolioBindings = new Set(
@@ -140,11 +148,13 @@ describe('clean-room strategy catalog', () => {
         'fill = broker.Fill.new()',
         'order = broker.Order.new()',
         'account = broker.Account.new()',
+        'touched = broker.stop_touched(broker.Side.sell, high, low, close)',
         'effect.emit(broker.FillExecuted.new(fill))',
         'var book = portfolio.new(initialCash = 100.0)',
         'book.apply(fill)',
         'book.cashValue := 0.0',
         'strat.portfolio.account()',
+        'strat.broker.execute(close, account, bar_index, true)',
       ].join('\n'),
     );
     expect(violations).toEqual(
@@ -155,6 +165,7 @@ describe('clean-room strategy catalog', () => {
         'direct broker.Fill.new',
         'direct broker.Order.new',
         'direct broker.Account.new',
+        'direct broker stop preflight broker.stop_touched(',
         'direct portfolio mutation through book',
         'direct portfolio field mutation through book',
       ]),
@@ -167,6 +178,11 @@ describe('clean-room strategy catalog', () => {
     expect(
       violations.some(violation =>
         violation.startsWith('direct configured portfolio access'),
+      ),
+    ).toBe(true);
+    expect(
+      violations.some(violation =>
+        violation.startsWith('direct configured broker access'),
       ),
     ).toBe(true);
   });

@@ -80,7 +80,9 @@ describe('broker policy contracts', () => {
     expect(path.methods.map(method => method.name)).toEqual([...PATH_METHODS]);
     expect(immediate.methods.map(method => method.name)).toEqual([
       'reject',
-      'execute_now',
+      'stop_touched',
+      'execute_at_close',
+      'execute_if_stop_touched',
     ]);
 
     expect(satisfies(emulator, commands)).toBeTrue();
@@ -108,7 +110,9 @@ describe('broker policy contracts', () => {
       '    broker.Fill match_path(float openPrice, float highPrice, float lowPrice, float closePrice, broker.Account account, int barIndex) => this.value.match_path_primary(openPrice, highPrice, lowPrice, closePrice, account, barIndex)',
       'type ImmediateView<B: broker.ImmediateBroker>',
       '    B value',
-      '    broker.Fill execute(broker.Command command, float price, broker.Account account, int barIndex) => this.value.execute_now(command, price, account, barIndex)',
+      '    bool stop_touched(broker.Side closeSide, float highPrice, float lowPrice, float stopPrice) const => this.value.stop_touched(closeSide, highPrice, lowPrice, stopPrice)',
+      '    broker.Fill execute_close(broker.Command command, float closePrice, broker.Account account, int barIndex) => this.value.execute_at_close(command, closePrice, account, barIndex)',
+      '    broker.Fill execute_stop(broker.Command command, float openPrice, float highPrice, float lowPrice, float stopPrice, broker.Account account, int barIndex) => this.value.execute_if_stop_touched(command, openPrice, highPrice, lowPrice, stopPrice, account, barIndex)',
       'var commands = CommandView.new(broker.basic())',
       'var nextOpen = NextOpenView.new(broker.basic())',
       'var ohlc = OhlcView.new(broker.basic())',
@@ -119,7 +123,10 @@ describe('broker policy contracts', () => {
       'ohlc_fill = ohlc.match_bar(open, high, low, account, bar_index)',
       'path_fill = path.match_path(open, high, low, close, account, bar_index)',
       'command = broker.Command.new("now", broker.CommandKind.entry, broker.Side.buy, 1.0, bar_index)',
-      'immediate_fill = immediate.execute(command, open, account, bar_index)',
+      'close_fill = immediate.execute_close(command, close, account, bar_index)',
+      'stop_command = broker.Command.new("stop", broker.CommandKind.close, broker.Side.sell, 1.0, bar_index, tradeId = 1)',
+      'stop_fill = immediate.execute_stop(stop_command, open, high, low, close, account, bar_index)',
+      'stop_touched = immediate.stop_touched(broker.Side.sell, high, low, close)',
       'plot(commands.pending() ? 1 : 0)',
     ].join('\n');
 
@@ -130,12 +137,16 @@ describe('broker policy contracts', () => {
         'NextOpenView<BrokerEmulator>.match_open',
         'OhlcView<BrokerEmulator>.match_bar',
         'PathView<BrokerEmulator>.match_path',
-        'ImmediateView<BrokerEmulator>.execute',
+        'ImmediateView<BrokerEmulator>.execute_close',
+        'ImmediateView<BrokerEmulator>.execute_stop',
+        'ImmediateView<BrokerEmulator>.stop_touched',
         'BrokerEmulator.has_pending',
         'BrokerEmulator.on_open',
         'BrokerEmulator.match_pending',
         'BrokerEmulator.match_path_primary',
-        'BrokerEmulator.execute_now',
+        'BrokerEmulator.execute_at_close',
+        'BrokerEmulator.execute_if_stop_touched',
+        'BrokerEmulator.stop_touched',
       ]),
     );
   });
@@ -188,7 +199,9 @@ describe('broker policy contracts', () => {
         'type BadImmediate',
         '    int marker',
         '    int reject(string commandId, broker.Side side, int barIndex, broker.Rejection reason) => 0',
-        '    broker.Fill execute_now(broker.Command command, float referencePrice, broker.Account account) => na',
+        '    bool stop_touched(broker.Side closeSide, float highPrice, float lowPrice, float stopPrice) const => false',
+        '    broker.Fill execute_at_close(broker.Command command, float closePrice, broker.Account account) => na',
+        '    broker.Fill execute_if_stop_touched(broker.Command command, float openPrice, float highPrice, float lowPrice, float stopPrice, broker.Account account, int barIndex) => na',
         'type Holder<B: broker.ImmediateBroker>',
         '    B value',
         'bad = Holder.new(BadImmediate.new(0))',
@@ -196,7 +209,7 @@ describe('broker policy contracts', () => {
     );
 
     expect(result.errors.map(error => error.msg)).toContain(
-      "BadImmediate does not satisfy ImmediateBroker: method 'execute_now' has 3 parameters, want 4",
+      "BadImmediate does not satisfy ImmediateBroker: method 'execute_at_close' has 3 parameters, want 4",
     );
   });
 });

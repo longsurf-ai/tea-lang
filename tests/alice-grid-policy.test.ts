@@ -38,6 +38,12 @@ test('keeps Alice grid policy out of the portfolio facade', () => {
     /\bstrat\.entry_now\([^\n]*(?:tag|target|stop)\s*=/,
   );
   expect(source).not.toContain('strat.entry_now(');
+  expect(source).toContain('strat.close_trade_at_stop(');
+  expect(source).not.toContain('trail_hit');
+  expect(source).not.toContain('close_price');
+  expect(source).not.toMatch(
+    /\bstrat\.close_trade\([^\n]*,\s*(?:open|high|low|close)\s*\)/,
+  );
 });
 
 test('preserves Alice binding 0 metrics and both normalized fill tapes', async () => {
@@ -91,34 +97,7 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
   expect(finalMetric(sink, 'maximum drawdown')).toBe(0.005379891680331017);
   expect(finalMetric(sink, 'total return')).toBe(0.000015096784610932446);
 
-  const fillEffectIds = new Set(
-    sink.effectSchemas.flatMap((effect, effectId) =>
-      effect.payload.kind === 'user-type' &&
-      effect.payload.typeId === 'broker.FillExecuted'
-        ? [effectId]
-        : [],
-    ),
-  );
-  const timeByRow = new Map(
-    sink.publications.map(publication => [publication.row, publication.time]),
-  );
-  const fills = sink.effectEmissions
-    .filter(emission => fillEffectIds.has(emission.effectId))
-    .map(emission => {
-      const fields = fillFields(emission.payload);
-      return {
-        row: emission.row,
-        time: timeByRow.get(emission.row),
-        commandId: fields[2],
-        side: fields[3],
-        barIndex: fields[4],
-        referencePrice: fields[5],
-        price: fields[6],
-        quantity: fields[7],
-        notional: fields[8],
-        fee: fields[9],
-      };
-    });
+  const {fills, timeByRow} = fillTape(sink);
   expect(fills).toHaveLength(858);
 
   const economicFills = fills.map(({commandId: _commandId, ...fill}) => fill);
@@ -127,6 +106,70 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
   );
   expect(hash(fills)).toBe(
     '385f0e707ebdc95121563b74c984611fcaa6b3214e545765f1367f17269ba64c',
+  );
+
+  const lifecycle = lifecycleTape(sink, timeByRow);
+  expect(hash(lifecycle)).toBe(
+    '9715dc5b883e9b8971016fc7a64bcde87ee95548d67b97ceded0d138bd3d22a3',
+  );
+});
+
+test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
+  const loaded = loadExecutionConfig(SWEEP);
+  if (loaded.config.execution.kind !== 'sweep') {
+    throw new Error('Alice policy fixture must remain a sweep');
+  }
+  const errors = new Errors();
+  const program = compileToProgram([loaded.config.program.source], errors);
+  if (program === null) {
+    throw new Error(
+      errors
+        .flushErrors()
+        .map(error => error.msg)
+        .join('; '),
+    );
+  }
+  const timeNow = loaded.config.execution.timeNow;
+  if (timeNow === undefined) {
+    throw new Error('Alice policy fixture must pin execution.timeNow');
+  }
+  const selected = selectSweepScenarioConfig(
+    program,
+    loaded.config,
+    0,
+    timeNow,
+  );
+  if (selected.execution.kind !== 'run') {
+    throw new Error('selected Alice binding must be a run');
+  }
+  const config = {
+    ...selected,
+    execution: {
+      ...selected.execution,
+      parameters: {
+        ...selected.execution.parameters,
+        use_trailing: 1,
+        use_stop_loss: 0,
+      },
+    },
+  };
+  const sink = new MemorySink();
+  const result = await executeConfiguredProgram(program, config, {
+    sinkForExecution: () => sink,
+  });
+  expect(result.summary.bindings[0]?.rows).toBe(20_000);
+
+  const {fills, timeByRow} = fillTape(sink);
+  expect(fills).toHaveLength(858);
+  const economicFills = fills.map(({commandId: _commandId, ...fill}) => fill);
+  expect(hash(economicFills)).toBe(
+    '2dc570fd8b4b785f5a60c37c553a08213a9221ed1c3604196e54e23f3f57cc15',
+  );
+  expect(hash(fills)).toBe(
+    'ceb1eaf1a12b2967d554396e292dec3f43274304241d34095f07dba7eb99a48f',
+  );
+  expect(hash(lifecycleTape(sink, timeByRow))).toBe(
+    'f9e7fe6d8c11bffad001a7b4ae24587fe8fb0dd34633ba195b4c306441f06bc0',
   );
 });
 
@@ -161,6 +204,56 @@ function fillFields(payload: EffectValue): readonly EffectValue[] {
   return fill.fields;
 }
 
+function fillTape(sink: MemorySink) {
+  const fillEffectIds = new Set(
+    sink.effectSchemas.flatMap((effect, effectId) =>
+      effect.payload.kind === 'user-type' &&
+      effect.payload.typeId === 'broker.FillExecuted'
+        ? [effectId]
+        : [],
+    ),
+  );
+  const timeByRow = new Map(
+    sink.publications.map(publication => [publication.row, publication.time]),
+  );
+  const fills = sink.effectEmissions
+    .filter(emission => fillEffectIds.has(emission.effectId))
+    .map(emission => {
+      const fields = fillFields(emission.payload);
+      return {
+        row: emission.row,
+        time: timeByRow.get(emission.row),
+        commandId: fields[2],
+        side: fields[3],
+        barIndex: fields[4],
+        referencePrice: fields[5],
+        price: fields[6],
+        quantity: fields[7],
+        notional: fields[8],
+        fee: fields[9],
+      };
+    });
+  return {fills, timeByRow};
+}
+
+function lifecycleTape(
+  sink: MemorySink,
+  timeByRow: ReadonlyMap<number, number | null | undefined>,
+) {
+  return sink.effectEmissions.map(emission => ({
+    row: emission.row,
+    time: timeByRow.get(emission.row),
+    kind: lifecycleKind(sink, emission.effectId),
+    payload: emission.payload,
+  }));
+}
+
 function hash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function lifecycleKind(sink: MemorySink, effectId: number): string {
+  const payload = sink.effectSchemas[effectId]?.payload;
+  if (payload === undefined) return `unknown:${effectId}`;
+  return payload.kind === 'user-type' ? payload.typeId : payload.kind;
 }

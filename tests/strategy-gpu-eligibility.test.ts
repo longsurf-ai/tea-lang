@@ -43,7 +43,7 @@ interface ClosureCeiling {
   readonly maxEffectsPerRow: number;
 }
 
-// These are the direct NetTrade baselines captured before the lifecycle
+// These are the direct scalar-trade baselines captured before the lifecycle
 // family split. A narrower abstraction may improve them, but never enlarge a
 // previously eligible Program merely because its coordinator became clearer.
 const CLOSURE_CEILINGS: Readonly<
@@ -247,8 +247,24 @@ function expectNoExecutionAbstractionRegression(
   const functionNames = funcsOf(program).map(func => func.name);
   const forbidden =
     strategyName === 'atr-zigzag-breakout'
-      ? ['.on_open', '.on_close', '.match_pending', '.execute_now']
-      : ['.match_pending', '.match_exit', '.match_path_', '.execute_now'];
+      ? [
+          '.on_open',
+          '.on_close',
+          '.match_pending',
+          '.execute_now',
+          '.execute_at_close',
+          '.execute_if_stop_touched',
+          '.execute_immediate',
+        ]
+      : [
+          '.match_pending',
+          '.match_exit',
+          '.match_path_',
+          '.execute_now',
+          '.execute_at_close',
+          '.execute_if_stop_touched',
+          '.execute_immediate',
+        ];
   expect(
     functionNames.filter(name =>
       forbidden.some(fragment => name.includes(fragment)),
@@ -288,7 +304,7 @@ function expectScalarSharedClosure(
       name =>
         name.includes('LotPortfolio') ||
         /\bOpenTrade\b/.test(name) ||
-        /\.(?:entry_now|close_trade|open_trade|update_open_trade)(?:<|$)/.test(
+        /\.(?:entry_now|close_trade|close_trade_at_stop|open_trade|update_open_trade)(?:<|$)/.test(
           name,
         ) ||
         /^(?:array|matrix|map)\./.test(name),

@@ -74,32 +74,26 @@ while position_index >= 0
 	is_long = grid_position.entrySide == broker.Side.buy
 	close_now = false
 	policy_changed = false
-	float close_price = na
+	broker.Fill close_fill = na
 	if use_stop_loss == 1 and not na(grid_position.stopPrice)
 		stop_hit = is_long ? close <= grid_position.stopPrice : close >= grid_position.stopPrice
 		if stop_hit
 			close_now := true
-			close_price := close
 	if not close_now and use_trailing == 0
 		if tp_reversal_mode == 1
 			target_reversal = is_long ? close[1] > grid_position.targetPrice and close < grid_position.targetPrice : close[1] < grid_position.targetPrice and close > grid_position.targetPrice
 			if target_reversal
 				close_now := true
-				close_price := close
 		else
 			target_hit = is_long ? close >= grid_position.targetPrice : close <= grid_position.targetPrice
 			if target_hit
 				close_now := true
-				close_price := close
 	if not close_now and use_trailing == 1
 		if grid_position.trailingArmed
 			grid_position.trailExtreme := is_long ? math.max(grid_position.trailExtreme, high) : math.min(grid_position.trailExtreme, low)
 			policy_changed := true
 			trail_stop = is_long ? grid_position.trailExtreme - grid_position.trailDistance : grid_position.trailExtreme + grid_position.trailDistance
-			trail_hit = is_long ? low <= trail_stop : high >= trail_stop
-			if trail_hit
-				close_now := true
-				close_price := is_long ? (open <= trail_stop ? open : trail_stop) : (open >= trail_stop ? open : trail_stop)
+			close_fill := strat.close_trade_at_stop(is_long ? "Alice long close" : "Alice short cover", grid_position.tradeId, grid_position.entrySide, open, high, low, trail_stop)
 		else
 			activation = tp_reversal_mode == 1 ? (is_long ? close[1] > grid_position.targetPrice and close < grid_position.targetPrice : close[1] < grid_position.targetPrice and close > grid_position.targetPrice) : (is_long ? high >= grid_position.targetPrice : low <= grid_position.targetPrice)
 			if activation
@@ -108,11 +102,11 @@ while position_index >= 0
 				grid_position.trailDistance := close * trailing_offset_percent / 100.0
 				policy_changed := true
 	if close_now
-		close_fill = strat.close_trade(is_long ? "Alice long close" : "Alice short cover", grid_position.tradeId, close_price)
-		if not na(close_fill) and close_fill.tradeId == grid_position.tradeId
-			last_position = grid_positions.pop()
-			if position_index < grid_positions.size()
-				grid_positions.set(position_index, last_position)
+		close_fill := strat.close_trade(is_long ? "Alice long close" : "Alice short cover", grid_position.tradeId)
+	if not na(close_fill) and close_fill.tradeId == grid_position.tradeId
+		last_position = grid_positions.pop()
+		if position_index < grid_positions.size()
+			grid_positions.set(position_index, last_position)
 	else if policy_changed
 		grid_positions.set(position_index, grid_position)
 	position_index := position_index - 1
@@ -138,7 +132,7 @@ for level = 1 to maximum_steps
 		while short_reverse_index >= 0 and short_reversal_valid
 			short_reverse_position = grid_positions.get(short_reverse_index)
 			if short_reverse_position.entrySide != broker.Side.sell
-				short_reverse_fill = strat.close_trade("Alice long close", short_reverse_position.tradeId, close)
+				short_reverse_fill = strat.close_trade("Alice long close", short_reverse_position.tradeId)
 				if not na(short_reverse_fill) and short_reverse_fill.tradeId == short_reverse_position.tradeId
 					short_last_position = grid_positions.pop()
 					if short_reverse_index < grid_positions.size()
@@ -170,7 +164,7 @@ for level = 1 to maximum_steps
 		while long_reverse_index >= 0 and long_reversal_valid
 			long_reverse_position = grid_positions.get(long_reverse_index)
 			if long_reverse_position.entrySide != broker.Side.buy
-				long_reverse_fill = strat.close_trade("Alice short cover", long_reverse_position.tradeId, close)
+				long_reverse_fill = strat.close_trade("Alice short cover", long_reverse_position.tradeId)
 				if not na(long_reverse_fill) and long_reverse_fill.tradeId == long_reverse_position.tradeId
 					long_last_position = grid_positions.pop()
 					if long_reverse_index < grid_positions.size()

@@ -341,7 +341,7 @@ export type LotPortfolio
 			feeValid = execution.fee >= 0.0
 			if quantityValid and priceValid and feeValid
 				if execution.commandKind == broker.CommandKind.entry
-					// Broker.execute_now checks the Account capacity before it
+					// ImmediateBroker execution checks the Account capacity before it
 					// publishes FillExecuted. Keep this defensive guard so an
 					// out-of-contract Fill cannot grow the bounded portfolio.
 					if this.openTrades.size() < this.maxOpenTrades

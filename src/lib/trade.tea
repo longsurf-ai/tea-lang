@@ -356,10 +356,10 @@ export type LotTrade<B: broker.ImmediateBroker, P: portfolio.LotLedger>
 	B broker
 	P portfolio
 	int idx = -1
-	float referencePrice = na
+	float closePrice = na
 
-	int begin_bar(float referencePrice, int barIndex) =>
-		this.referencePrice := referencePrice
+	int begin_bar(float closePrice, int barIndex) =>
+		this.closePrice := closePrice
 		this.idx := barIndex
 		this.idx
 
@@ -383,19 +383,19 @@ export type LotTrade<B: broker.ImmediateBroker, P: portfolio.LotLedger>
 				if openTrade.entrySide != entrySide
 					closeSide = openTrade.entrySide == broker.Side.buy ? broker.Side.sell : broker.Side.buy
 					closeCommand = broker.Command.new(reversalCommandId, broker.CommandKind.close, closeSide, openTrade.quantity, this.idx, tradeId = openTrade.id)
-					closeExecution = currentBroker.execute_now(closeCommand, this.referencePrice, currentPortfolio.account(), this.idx)
+					closeExecution = currentBroker.execute_at_close(closeCommand, this.closePrice, currentPortfolio.account(), this.idx)
 					currentPortfolio.apply_lot(closeExecution)
 					reversalValid := not na(closeExecution)
 				tradeIndex := tradeIndex - 1
 			if reversalValid
 				entryCommand = broker.Command.new(commandId, broker.CommandKind.entry, entrySide, qty, this.idx, notional, tradeId = 0)
-				execution := currentBroker.execute_now(entryCommand, this.referencePrice, currentPortfolio.account(), this.idx)
+				execution := currentBroker.execute_at_close(entryCommand, this.closePrice, currentPortfolio.account(), this.idx)
 				currentPortfolio.apply_lot(execution)
 		this.broker := currentBroker
 		this.portfolio := currentPortfolio
 		execution
 
-	broker.Fill close_trade(string commandId, int tradeId, float referencePrice) =>
+	broker.Fill close_trade(string commandId, int tradeId) =>
 		currentBroker = this.broker
 		currentPortfolio = this.portfolio
 		broker.Fill execution = na
@@ -410,7 +410,7 @@ export type LotTrade<B: broker.ImmediateBroker, P: portfolio.LotLedger>
 			openTrade = currentPortfolio.open_trade(matchedIndex)
 			side = openTrade.entrySide == broker.Side.buy ? broker.Side.sell : broker.Side.buy
 			command = broker.Command.new(commandId, broker.CommandKind.close, side, openTrade.quantity, this.idx, tradeId = openTrade.id)
-			execution := currentBroker.execute_now(command, referencePrice, currentPortfolio.account(), this.idx)
+			execution := currentBroker.execute_at_close(command, this.closePrice, currentPortfolio.account(), this.idx)
 			currentPortfolio.apply_lot(execution)
 		else
 			side = currentPortfolio.position_quantity() < 0.0 ? broker.Side.buy : broker.Side.sell
@@ -421,9 +421,38 @@ export type LotTrade<B: broker.ImmediateBroker, P: portfolio.LotLedger>
 		this.portfolio := currentPortfolio
 		execution
 
+	broker.Fill close_trade_at_stop(string commandId, int tradeId, broker.Side entrySide, float openPrice, float highPrice, float lowPrice, float stopPrice) =>
+		broker.Fill execution = na
+		closeSide = entrySide == broker.Side.buy ? broker.Side.sell : broker.Side.buy
+		if this.broker.stop_touched(closeSide, highPrice, lowPrice, stopPrice)
+			currentBroker = this.broker
+			currentPortfolio = this.portfolio
+			matchedIndex = -1
+			tradeIndex = currentPortfolio.open_trade_count() - 1
+			while tradeIndex >= 0 and matchedIndex < 0
+				openTrade = currentPortfolio.open_trade(tradeIndex)
+				if openTrade.id == tradeId
+					matchedIndex := tradeIndex
+				tradeIndex := tradeIndex - 1
+			if matchedIndex >= 0
+				openTrade = currentPortfolio.open_trade(matchedIndex)
+				if openTrade.entrySide != entrySide
+					currentBroker.reject(commandId, closeSide, this.idx, broker.Rejection.invalidAccountState)
+				else
+					command = broker.Command.new(commandId, broker.CommandKind.close, closeSide, openTrade.quantity, this.idx, tradeId = openTrade.id)
+					execution := currentBroker.execute_if_stop_touched(command, openPrice, highPrice, lowPrice, stopPrice, currentPortfolio.account(), this.idx)
+					currentPortfolio.apply_lot(execution)
+			else
+				currentBroker.reject(commandId, closeSide, this.idx, broker.Rejection.invalidAccountState)
+				broker.Fill noExecution = na
+				execution := noExecution
+			this.broker := currentBroker
+			this.portfolio := currentPortfolio
+		execution
+
 	float mark() =>
 		currentPortfolio = this.portfolio
-		value = currentPortfolio.mark(this.referencePrice)
+		value = currentPortfolio.mark(this.closePrice)
 		this.portfolio := currentPortfolio
 		value
 

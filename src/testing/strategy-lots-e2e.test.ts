@@ -167,6 +167,218 @@ function effectField(
 }
 
 describe('canonical bounded lot trade components', () => {
+  test('matches immediate long and short stops without consuming ids on misses', async () => {
+    const source = [
+      'strategy("immediate stop ownership")',
+      'import broker',
+      'var emulator = broker.new()',
+      'longAccount = broker.Account.new(1000.0, 1.0, 1, 10, 0.0, 0.0)',
+      'shortAccount = broker.Account.new(1000.0, -1.0, 1, 10, 0.0, 0.0)',
+      'longCommand = broker.Command.new("Long touch", broker.CommandKind.close, broker.Side.sell, 1.0, bar_index, tradeId = 101)',
+      'longGapCommand = broker.Command.new("Long gap", broker.CommandKind.close, broker.Side.sell, 1.0, bar_index, tradeId = 101)',
+      'shortCommand = broker.Command.new("Short touch", broker.CommandKind.close, broker.Side.buy, 1.0, bar_index, tradeId = 202)',
+      'shortGapCommand = broker.Command.new("Short gap", broker.CommandKind.close, broker.Side.buy, 1.0, bar_index, tradeId = 202)',
+      'invalidCommand = broker.Command.new("Invalid touched stop", broker.CommandKind.close, broker.Side.sell, 1.0, bar_index, tradeId = 101)',
+      'longMiss = emulator.execute_if_stop_touched(longCommand, 10.0, 10.5, 9.5, 9.0, longAccount, bar_index)',
+      'longTouch = emulator.execute_if_stop_touched(longCommand, 10.0, 10.5, 9.0, 9.0, longAccount, bar_index)',
+      'longGap = emulator.execute_if_stop_touched(longGapCommand, 8.0, 9.0, 7.0, 9.0, longAccount, bar_index)',
+      'shortMiss = emulator.execute_if_stop_touched(shortCommand, 10.0, 10.5, 9.5, 11.0, shortAccount, bar_index)',
+      'invalidStop = emulator.execute_if_stop_touched(invalidCommand, 10.0, 10.0, -2.0, -1.0, longAccount, bar_index)',
+      'shortTouch = emulator.execute_if_stop_touched(shortCommand, 10.0, 11.0, 9.5, 11.0, shortAccount, bar_index)',
+      'shortGap = emulator.execute_if_stop_touched(shortGapCommand, 12.0, 13.0, 11.5, 11.0, shortAccount, bar_index)',
+      'plot(na(longMiss) ? 1 : 0)',
+      'plot(na(shortMiss) ? 1 : 0)',
+      'plot(na(invalidStop) ? 1 : 0)',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,close', '10,10', ''].join('\n'),
+    );
+
+    expect(valuesFor(sink, 1)).toEqual([1]);
+    expect(valuesFor(sink, 2)).toEqual([1]);
+    expect(valuesFor(sink, 3)).toEqual([1]);
+    expect(sink.effects.map(emission => effectName(program, emission))).toEqual(
+      [
+        'OrderSubmitted',
+        'FillExecuted',
+        'OrderSubmitted',
+        'FillExecuted',
+        'OrderRejected',
+        'OrderSubmitted',
+        'FillExecuted',
+        'OrderSubmitted',
+        'FillExecuted',
+      ],
+    );
+
+    const submitted = sink.effects.filter(
+      emission => effectName(program, emission) === 'OrderSubmitted',
+    );
+    expect(
+      submitted.map(emission => effectField(program, emission, 'order', 'id')),
+    ).toEqual([1, 2, 3, 4]);
+    expect(
+      submitted.map(emission =>
+        effectField(program, emission, 'order', 'commandId'),
+      ),
+    ).toEqual(['Long touch', 'Long gap', 'Short touch', 'Short gap']);
+
+    const fills = sink.effects.filter(
+      emission => effectName(program, emission) === 'FillExecuted',
+    );
+    expect(
+      fills.map(emission => effectField(program, emission, 'fill', 'id')),
+    ).toEqual([1, 2, 3, 4]);
+    expect(
+      fills.map(emission => effectField(program, emission, 'fill', 'orderId')),
+    ).toEqual([1, 2, 3, 4]);
+    expect(
+      fills.map(emission =>
+        effectField(program, emission, 'fill', 'referencePrice'),
+      ),
+    ).toEqual([9, 8, 11, 12]);
+    expect(
+      fills.map(emission => effectField(program, emission, 'fill', 'tradeId')),
+    ).toEqual([101, 101, 202, 202]);
+
+    const rejection = sink.effects.find(
+      emission => effectName(program, emission) === 'OrderRejected',
+    );
+    if (rejection === undefined)
+      throw new Error('missing invalid-stop rejection');
+    expect(effectField(program, rejection, 'commandId')).toBe(
+      'Invalid touched stop',
+    );
+    expect(effectField(program, rejection, 'reason')).toBe('invalidPrice');
+  });
+
+  test('keeps trailing policy through activation and a miss before a gap fill', async () => {
+    const source = [
+      'strategy("lot trailing policy")',
+      'import broker',
+      'import portfolio',
+      'import trade',
+      'var strat = trade.lots(',
+      '    broker.new(),',
+      '    portfolio.lots(initialCash = 100.0, maxOpenTrades = 1)',
+      ')',
+      'var int activeTradeId = 0',
+      'var bool trailingArmed = false',
+      'var float trailExtreme = na',
+      'var float trailDistance = na',
+      'var float stopReference = 0.0',
+      'strat.begin_bar(close, bar_index)',
+      'if bar_index == 0',
+      '    entryFill = strat.entry("Trail entry", "Trail cover", trade.Direction.long, qty = 1.0)',
+      '    activeTradeId := entryFill.tradeId',
+      'broker.Fill stopFill = na',
+      'if activeTradeId > 0',
+      '    if trailingArmed',
+      '        trailExtreme := math.max(trailExtreme, high)',
+      '        trailStop = trailExtreme - trailDistance',
+      '        stopFill := strat.close_trade_at_stop("Trail close", activeTradeId, broker.Side.buy, open, high, low, trailStop)',
+      '        if not na(stopFill)',
+      '            stopReference := stopFill.referencePrice',
+      '            activeTradeId := 0',
+      '    else if high >= 11.0',
+      '        trailingArmed := true',
+      '        trailExtreme := close',
+      '        trailDistance := 1.0',
+      'strat.mark()',
+      'metrics = strat.snapshot()',
+      'plot(trailingArmed ? 1 : 0)',
+      'plot(na(trailExtreme) ? 0.0 : trailExtreme)',
+      'plot(stopReference)',
+      'plot(metrics.openTradeCount)',
+      'plot(metrics.fillCount)',
+      'plot(metrics.positionQuantity)',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      [
+        'open,high,low,close',
+        '10,10,10,10',
+        '10,12,10,11',
+        '12.8,13,12.2,12.8',
+        '11,11.5,10.5,11',
+        '',
+      ].join('\n'),
+    );
+
+    expect(valuesFor(sink, 1)).toEqual([0, 1, 1, 1]);
+    expect(valuesFor(sink, 2)).toEqual([0, 11, 13, 13]);
+    expect(valuesFor(sink, 3)).toEqual([0, 0, 0, 11]);
+    expect(valuesFor(sink, 4)).toEqual([1, 1, 1, 0]);
+    expect(valuesFor(sink, 5)).toEqual([1, 1, 1, 2]);
+    expect(valuesFor(sink, 6)).toEqual([1, 1, 1, 0]);
+    expect(sink.effects.map(emission => emission.row)).toEqual([0, 0, 3, 3]);
+    expect(sink.effects.map(emission => effectName(program, emission))).toEqual(
+      ['OrderSubmitted', 'FillExecuted', 'OrderSubmitted', 'FillExecuted'],
+    );
+    expect(
+      sink.effects
+        .filter(emission => effectName(program, emission) === 'FillExecuted')
+        .map(emission => effectField(program, emission, 'fill', 'commandId')),
+    ).toEqual(['Trail entry', 'Trail close']);
+  });
+
+  test('fails closed when stop intent direction disagrees with the stable lot', async () => {
+    const source = [
+      'strategy("lot stop direction")',
+      'import broker',
+      'import portfolio',
+      'import trade',
+      'var strat = trade.lots(broker.new(), portfolio.lots(initialCash = 100.0, maxOpenTrades = 1))',
+      'var int activeTradeId = 0',
+      'strat.begin_bar(close, bar_index)',
+      'if bar_index == 0',
+      '    entryFill = strat.entry("Long entry", "Short cover", trade.Direction.long, qty = 1.0)',
+      '    activeTradeId := entryFill.tradeId',
+      'if bar_index == 1',
+      '    strat.close_trade_at_stop("Wrong short intent", activeTradeId, broker.Side.sell, open, high, low, 11.0)',
+      '    strat.close_trade_at_stop("Correct long intent", activeTradeId, broker.Side.buy, open, high, low, 9.0)',
+      'strat.mark()',
+      'metrics = strat.snapshot()',
+      'plot(metrics.positionQuantity)',
+      'plot(metrics.openTradeCount)',
+      'plot(metrics.fillCount)',
+    ].join('\n');
+    const {program, sink} = await execute(
+      source,
+      ['open,high,low,close', '10,10,10,10', '10,12,8,10', ''].join('\n'),
+    );
+
+    expect(valuesFor(sink, 1)).toEqual([1, 0]);
+    expect(valuesFor(sink, 2)).toEqual([1, 0]);
+    expect(valuesFor(sink, 3)).toEqual([1, 2]);
+    expect(sink.effects.map(emission => effectName(program, emission))).toEqual(
+      [
+        'OrderSubmitted',
+        'FillExecuted',
+        'OrderRejected',
+        'OrderSubmitted',
+        'FillExecuted',
+      ],
+    );
+    expect(
+      sink.effects
+        .filter(emission => effectName(program, emission) === 'OrderSubmitted')
+        .map(emission => effectField(program, emission, 'order', 'id')),
+    ).toEqual([1, 2]);
+    const rejection = sink.effects.find(
+      emission => effectName(program, emission) === 'OrderRejected',
+    );
+    if (rejection === undefined)
+      throw new Error('missing side-mismatch rejection');
+    expect(effectField(program, rejection, 'commandId')).toBe(
+      'Wrong short intent',
+    );
+    expect(effectField(program, rejection, 'reason')).toBe(
+      'invalidAccountState',
+    );
+  });
+
   test('closes exact lots newest-first before an immediate reversal', async () => {
     const source = [
       'strategy("bounded lots")',
@@ -184,7 +396,7 @@ describe('canonical bounded lot trade components', () => {
       '    longBExecution = strat.entry("Long B", "Short cover", trade.Direction.long, notional = 20.0)',
       '    longBTradeId := longBExecution.tradeId',
       'if bar_index == 1',
-      '    strat.close_trade("Long B close", longBTradeId, close)',
+      '    strat.close_trade("Long B close", longBTradeId)',
       '    strat.entry("Long C", "Short cover", trade.Direction.long, notional = 10.0)',
       'if bar_index == 2',
       '    strat.entry("Short A", "Long reversal close", trade.Direction.short, notional = 10.0)',
@@ -299,7 +511,7 @@ describe('canonical bounded lot trade components', () => {
       'import trade',
       'var lots = trade.lots(broker.new(), portfolio.lots(initialCash = 100.0, maxOpenTrades = 1))',
       'lots.begin_bar(close, bar_index)',
-      'lots.close_trade("Invalid id", 404, close)',
+      'lots.close_trade("Invalid id", 404)',
       'lots.mark()',
       'metrics = lots.snapshot()',
       'plot(metrics.positionQuantity)',

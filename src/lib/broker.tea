@@ -201,11 +201,14 @@ export interface PathBroker
 	Fill match_path_exit(float openPrice, float highPrice, float lowPrice, float closePrice, Account account, int barIndex)
 	FinishResult finish()
 
-// ImmediateBroker is intentionally narrow: preflight rejection and one
-// synchronous execution. It makes no pending-order or finalization promise.
+// ImmediateBroker is intentionally narrow: pure stop preflight, rejection,
+// and broker-owned execution. closeSide is the side of the closing order, not
+// the entry position. Callers never choose the fill reference price.
 export interface ImmediateBroker
 	int reject(string commandId, Side side, int barIndex, Rejection reason)
-	Fill execute_now(Command command, float referencePrice, Account account, int barIndex)
+	bool stop_touched(Side closeSide, float highPrice, float lowPrice, float stopPrice) const
+	Fill execute_at_close(Command command, float closePrice, Account account, int barIndex)
+	Fill execute_if_stop_touched(Command command, float openPrice, float highPrice, float lowPrice, float stopPrice, Account account, int barIndex)
 
 // This reference emulator intentionally owns a bounded scalar order model: one
 // pending directional market-or-stop command and one symmetric atomic
@@ -387,7 +390,23 @@ export type BrokerEmulator
 		effect.emit(OrderRejected.new(commandId, side, barIndex, reason))
 		0
 
-	Fill execute_now(Command command, float referencePrice, Account account, int barIndex) =>
+	bool stop_touched(Side closeSide, float highPrice, float lowPrice, float stopPrice) const =>
+		closeSide == Side.sell and lowPrice <= stopPrice or closeSide == Side.buy and highPrice >= stopPrice
+
+	Fill execute_if_stop_touched(Command command, float openPrice, float highPrice, float lowPrice, float stopPrice, Account account, int barIndex) =>
+		Fill execution = na
+		isSellClose = command.side == Side.sell
+		isBuyClose = command.side == Side.buy
+		touched = command.kind == CommandKind.close and this.stop_touched(command.side, highPrice, lowPrice, stopPrice)
+		if touched
+			if stopPrice <= 0.0
+				this.reject(command.commandId, command.side, barIndex, Rejection.invalidPrice)
+			else
+				referencePrice = isSellClose ? (openPrice <= stopPrice ? openPrice : stopPrice) : (openPrice >= stopPrice ? openPrice : stopPrice)
+				execution := this.execute_at_close(command, referencePrice, account, barIndex)
+		execution
+
+	Fill execute_at_close(Command command, float closePrice, Account account, int barIndex) =>
 		Fill execution = na
 		kindValid = command.kind == CommandKind.entry or command.kind == CommandKind.close
 		sideValid = command.side == Side.buy or command.side == Side.sell
@@ -401,7 +420,7 @@ export type BrokerEmulator
 		else if not this.configuration_valid() or not account.configurationValid
 			effect.emit(OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidConfiguration))
 		else
-			price = this.execution_price(referencePrice, command.side)
+			price = this.execution_price(closePrice, command.side)
 			quantityPrice = price > 0.0 ? price : 1.0
 			quantity = hasExplicitQuantity ? command.quantity : command.notional / quantityPrice
 			notional = quantity * price
@@ -410,17 +429,17 @@ export type BrokerEmulator
 			closeSideValid = account.positionQuantity > 0.0 and command.side == Side.sell or account.positionQuantity < 0.0 and command.side == Side.buy
 			accountStateValid = command.kind == CommandKind.entry ? entryCapacity : command.tradeId > 0 and closeSideValid
 			marginRate = command.side == Side.buy ? account.marginLong : account.marginShort
-			capitalAvailable = command.side == Side.buy ? account.buyingPower : this.equity_at(referencePrice, account)
+			capitalAvailable = command.side == Side.buy ? account.buyingPower : this.equity_at(closePrice, account)
 			capitalRequired = notional * marginRate / 100.0 + fee
 			capitalValid = command.kind == CommandKind.close or marginRate == 0.0 or capitalAvailable >= capitalRequired
-			if accountStateValid and capitalValid and referencePrice > 0.0 and price > 0.0 and quantity > 0.0 and fee >= 0.0
+			if accountStateValid and capitalValid and closePrice > 0.0 and price > 0.0 and quantity > 0.0 and fee >= 0.0
 				tradeId = command.kind == CommandKind.entry ? this.nextTradeId : command.tradeId
 				if command.kind == CommandKind.entry
 					this.nextTradeId := this.nextTradeId + 1
 				order = Order.new(this.nextOrderId, command.commandId, command.side, command.signalBarIndex, command.kind, command.quantity, command.notional, command.fromEntry, command.stop, command.activateOnEntryBar, command.target, command.cashBudget, OrderType.market, command.equityPercent, command.commissionIncluded, command.positionTarget, command.trailPrice, command.trailOffset, tradeId)
 				this.nextOrderId := this.nextOrderId + 1
 				effect.emit(OrderSubmitted.new(order))
-				execution := Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, referencePrice, price, quantity, notional, fee, OrderType.market, command.kind, tradeId)
+				execution := Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, closePrice, price, quantity, notional, fee, OrderType.market, command.kind, tradeId)
 				this.nextFillId := this.nextFillId + 1
 				effect.emit(FillExecuted.new(execution))
 			else
