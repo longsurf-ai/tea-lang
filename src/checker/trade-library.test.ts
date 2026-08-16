@@ -1,5 +1,5 @@
-// Purpose: Import, specialization, and CPU execution gates for the additive
-// policy-specific trade package. The legacy strategy package remains loadable.
+// Purpose: Import, specialization, and CPU execution gates for the
+// policy-specific trade package.
 
 import {describe, expect, test} from 'bun:test';
 import {generate} from '../codegen/codegen';
@@ -77,19 +77,14 @@ function valuesFor(sink: Sink, oid: number): readonly Value[] {
 }
 
 describe('trade library', () => {
-  test('registers beside strategy and exports constrained policy coordinators', () => {
+  test('registers and exports constrained policy coordinators', () => {
     const result = checkText(
-      [
-        'indicator("trade imports")',
-        'import strategy',
-        'import trade',
-        'value = 1',
-      ].join('\n'),
+      ['indicator("trade imports")', 'import trade', 'value = 1'].join('\n'),
     );
 
     expect(result.errors).toEqual([]);
     expect(result.checked.pkg.imports.map(pkg => pkg.path)).toEqual(
-      expect.arrayContaining(['strategy', 'trade']),
+      expect.arrayContaining(['trade']),
     );
     expect([...tradePackage(result).exports.keys()].sort()).toEqual([
       'Direction',

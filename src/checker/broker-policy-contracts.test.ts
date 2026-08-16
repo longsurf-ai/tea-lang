@@ -32,20 +32,6 @@ const SCHEDULED_METHODS = [
   'finish',
 ] as const;
 
-const BROAD_METHODS = [
-  ...COMMON_METHODS,
-  'reject',
-  'on_open',
-  'match_pending',
-  'match_path_primary',
-  'continue_reversal',
-  'match_exit',
-  'match_path_exit',
-  'execute_now',
-  'on_close',
-  'finish',
-] as const;
-
 const COMMON_IMPLEMENTATION = [
   '    bool has_pending() const => false',
   '    bool has_pending_entry() const => false',
@@ -65,7 +51,6 @@ describe('broker policy contracts', () => {
     const commands = exportedInterface(result, 'BrokerCommands');
     const scheduled = exportedInterface(result, 'ScheduledBroker');
     const immediate = exportedInterface(result, 'ImmediateBroker');
-    const broad = exportedInterface(result, 'Broker');
 
     expect(commands.methods.map(method => method.name)).toEqual([
       ...COMMON_METHODS,
@@ -77,14 +62,10 @@ describe('broker policy contracts', () => {
       'reject',
       'execute_now',
     ]);
-    expect(broad.methods.map(method => method.name)).toEqual([
-      ...BROAD_METHODS,
-    ]);
 
     expect(satisfies(emulator, commands)).toBeTrue();
     expect(satisfies(emulator, scheduled)).toBeTrue();
     expect(satisfies(emulator, immediate)).toBeTrue();
-    expect(satisfies(emulator, broad)).toBeTrue();
   });
 
   test('specializes every capability view through the noder', () => {

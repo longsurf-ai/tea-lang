@@ -96,9 +96,7 @@ describe('portfolio policy contracts', () => {
       'open_trade_count',
       'open_trade',
     ]);
-    expect(importedPortfolio(result).exports.get('Portfolio')?.kind).toBe(
-      ObjectKind.Interface,
-    );
+    expect(importedPortfolio(result).exports.has('Portfolio')).toBeFalse();
   });
 
   test('checks and nodes the canonical implementation for each intended policy', () => {

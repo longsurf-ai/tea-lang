@@ -63,7 +63,6 @@ describe('import resolution', () => {
       'entry:1',
       'builtin:broker',
       'builtin:portfolio',
-      'builtin:strategy',
       'builtin:ta',
       'builtin:trade',
     ]);
@@ -72,7 +71,6 @@ describe('import resolution', () => {
       'second.tea',
       'broker.tea',
       'portfolio.tea',
-      'strategy.tea',
       'ta.tea',
       'trade.tea',
     ]);
@@ -88,14 +86,14 @@ describe('import resolution', () => {
           'strategy("components")',
           'import broker',
           'import portfolio',
-          'import strategy',
+          'import trade',
         ].join('\n'),
       ).file,
     ]);
     expect(explicit.implicit().map(pkg => pkg.path)).toEqual(['ta']);
     expect(sourcePackage(explicit.import('broker')).path).toBe('broker');
     expect(sourcePackage(explicit.import('portfolio')).path).toBe('portfolio');
-    expect(sourcePackage(explicit.import('strategy')).path).toBe('strategy');
+    expect(sourcePackage(explicit.import('trade')).path).toBe('trade');
   });
 
   test('prewarms raw transitive imports and memoizes source packages', () => {

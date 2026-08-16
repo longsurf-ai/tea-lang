@@ -40,49 +40,15 @@ export interface LotLedger
 	int open_trade_count() const
 	OpenTrade open_trade(int index) const
 
-// Compatibility contract retained until configured strategies migrate to the
-// policy-specific ledger surfaces.
-export interface Portfolio
-	broker.Account account() const
-	bool is_flat() const
-	float buying_power() const
-	float position_quantity() const
-	float position_avg_price() const
-	bool supports_open_trades() const
-	int open_trade_count() const
-	OpenTrade open_trade(int index) const
-	int update_open_trade(int index, OpenTrade trade)
-	int max_long_stack() const
-	int max_short_stack() const
-	PortfolioSnapshot snapshot() const
-	int apply(broker.Fill execution)
-	float mark(float price)
-	float cash() const
-	float equity() const
-	float realized_pnl() const
-	float total_fees() const
-	int fill_count() const
-	int round_trip_count() const
-	float win_rate() const
-	float profit_factor() const
-	float max_drawdown() const
-	float total_return() const
-
 // OpenTrade is the canonical per-entry portfolio record used by bounded lot
 // portfolios. Exit policy remains strategy-owned; this value carries only the
 // deterministic state needed to evaluate and account for one open entry.
 export type OpenTrade
 	int id
 	broker.Side entrySide
-	int tag
 	float entryPrice
 	float quantity
-	float targetPrice = na
-	float stopPrice = na
 	float entryFee = 0.0
-	bool trailingArmed = false
-	float trailExtreme = na
-	float trailDistance = na
 
 // PortfolioSnapshot is an immutable reporting projection. It lets a strategy
 // read a coherent set of account metrics with one component-boundary call.
@@ -146,18 +112,6 @@ export type NetPortfolio
 	float position_avg_price() const =>
 		this.entryPrice
 
-	bool supports_open_trades() const =>
-		false
-
-	int open_trade_count() const =>
-		0
-
-	OpenTrade open_trade(int index) const =>
-		na
-
-	int update_open_trade(int index, OpenTrade trade) =>
-		0
-
 	int max_long_stack() const =>
 		0
 
@@ -182,9 +136,6 @@ export type NetPortfolio
 			maxDrawdown = this.maxDrawdownValue,
 			totalReturn = this.total_return()
 		)
-
-	int apply(broker.Fill execution) =>
-		this.apply_net(execution)
 
 	int apply_net(broker.Fill execution) =>
 		if not na(execution)
@@ -352,23 +303,11 @@ export type LotPortfolio
 			totalNotional := totalNotional + trade.quantity * trade.entryPrice
 		totalQuantity == 0.0 ? na : totalNotional / totalQuantity
 
-	bool supports_open_trades() const =>
-		true
-
 	int open_trade_count() const =>
 		this.openTrades.size()
 
 	OpenTrade open_trade(int index) const =>
 		this.openTrades.get(index)
-
-	int update_open_trade(int index, OpenTrade trade) =>
-		updated = 0
-		if index >= 0 and index < this.openTrades.size()
-			current = this.openTrades.get(index)
-			next = OpenTrade.new(current.id, current.entrySide, trade.tag, current.entryPrice, current.quantity, trade.targetPrice, trade.stopPrice, current.entryFee, trade.trailingArmed, trade.trailExtreme, trade.trailDistance)
-			this.openTrades.set(index, next)
-			updated := 1
-		updated
 
 	int max_long_stack() const =>
 		this.maxLongStackValue
@@ -395,9 +334,6 @@ export type LotPortfolio
 			totalReturn = this.total_return()
 		)
 
-	int apply(broker.Fill execution) =>
-		this.apply_lot(execution)
-
 	int apply_lot(broker.Fill execution) =>
 		if not na(execution)
 			quantityValid = execution.quantity > 0.0
@@ -413,7 +349,7 @@ export type LotPortfolio
 						this.totalFeesValue := this.totalFeesValue + execution.fee
 						this.fillCountValue := this.fillCountValue + 1
 						this.cashValue := execution.side == broker.Side.buy ? this.cashValue - execution.notional - execution.fee : this.cashValue + execution.notional - execution.fee
-						this.openTrades.push(OpenTrade.new(tradeId, execution.side, 0, execution.price, execution.quantity, entryFee = execution.fee))
+						this.openTrades.push(OpenTrade.new(tradeId, execution.side, execution.price, execution.quantity, execution.fee))
 						longCount = 0
 						shortCount = 0
 						for trade in this.openTrades

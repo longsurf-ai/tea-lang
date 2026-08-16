@@ -373,7 +373,7 @@ unreachable never enter `requests` — dead-request elimination by construction.
   and loads libraries recursively (cycle detection included); the checker
   consumes the injected `Importer` and is provenance-blind. Compiler-shipped
   libraries and the implicit prelude are separate sets: `ta` is implicit,
-  while strategy components such as `broker`, `portfolio`, and `strategy` are
+  while trade components such as `broker`, `portfolio`, and `trade` are
   explicit imports. External `owner/name/version` paths error until a distribution
   story exists. The Program is always a closed script; a
   distributable compiled-library artifact, if ever needed, is a separate

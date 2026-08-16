@@ -37,12 +37,11 @@ export type Registry = (path: string) => PackageSource | 'external' | null;
 
 // Compiler-shipped libraries use single-segment import paths. Shipping a
 // library and placing it in the implicit prelude are separate decisions:
-// strategy components stay visible as explicit source imports.
+// trade components stay visible as explicit source imports.
 const BUILTIN_FILES: ReadonlyMap<string, string> = new Map([
   ['ta', 'ta.tea'],
   ['broker', 'broker.tea'],
   ['portfolio', 'portfolio.tea'],
-  ['strategy', 'strategy.tea'],
   ['trade', 'trade.tea'],
 ]);
 

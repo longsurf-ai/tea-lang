@@ -223,10 +223,6 @@ class Checker {
   >();
   private readonly pendingGenericMethodValidation = new Set<UserTypeObject>();
   private substitutions: ReadonlyMap<string, TypeSubstitution> | null = null;
-  // Exact syntax identity of the root strategy header. An explicit package
-  // named strategy may own every later selector without shadowing this one
-  // contextual declaration call.
-  private strategyHeaderCall: syntax.CallExpr | null = null;
   // Names bound by the implicit imports — the redeclare guard's set; the
   // checker never learns where these libraries come from.
   private readonly implicitNames = new Set<string>();
@@ -494,11 +490,6 @@ class Checker {
     const header = strategies[0];
     if (header === undefined) {
       return;
-    }
-    if (header.stmt.kind === NodeKind.ExprStmt) {
-      const headerExpr = unwrapParens(header.stmt.x);
-      this.strategyHeaderCall =
-        headerExpr.kind === NodeKind.CallExpr ? headerExpr : null;
     }
     if (file.stmtList[0] !== header.stmt) {
       this.error(
@@ -1924,12 +1915,7 @@ class Checker {
       return;
     }
     if (
-      (isNativeRoot(name) &&
-        !(
-          name === 'strategy' &&
-          stmt.path.value === 'strategy' &&
-          imported.name === 'strategy'
-        )) ||
+      isNativeRoot(name) ||
       (this.currentPackage === this.rootState && this.implicitNames.has(name))
     ) {
       this.error(stmt.path.pos, `cannot redeclare built-in '${name}'`);
@@ -3434,13 +3420,6 @@ class Checker {
       this.checkExpr(arg.value);
     }
     const fun = c.fun;
-    if (
-      c === this.strategyHeaderCall &&
-      fun.kind === NodeKind.Name &&
-      fun.value === 'strategy'
-    ) {
-      return this.resolveNativeCall(c, 'strategy', fun.pos, null);
-    }
     if (fun.kind === NodeKind.Name) {
       const entry = this.scope.lookup(fun.value);
       if (entry !== null) {

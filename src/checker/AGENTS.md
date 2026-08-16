@@ -50,10 +50,8 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   is the first source statement, appears exactly once, and excludes
   `indicator()` and `library()`. Its arguments stay ordinary declaration
   catalog policy; broker and portfolio configuration never enters this call.
-  An exact unaliased `import strategy` may bind the shipped source package:
-  only the header call retains native resolution, while later
-  `strategy.configure` selectors use the package. No lifecycle call order is
-  checker policy.
+  The execution package is named `trade`, so the header needs no import-name
+  exception. No lifecycle call order is checker policy.
 - Qualifier propagation takes the later-known operand: expression results
   join their operands, native results follow the catalog (`'join'` or a
   fixed qualifier), control structures yield series, and writes join the
