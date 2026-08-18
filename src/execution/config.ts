@@ -1,7 +1,6 @@
 // Purpose: Load and strictly validate one versioned Tea execution configuration snapshot.
 
 import {createHash} from 'node:crypto';
-import {accessSync, constants, readFileSync, statSync} from 'node:fs';
 import {dirname, resolve} from 'node:path';
 import {
   isAlias,
@@ -15,6 +14,12 @@ import {
   type Scalar,
   type YAMLMap,
 } from 'yaml';
+import {
+  decodeUtf8,
+  FileError,
+  readFileBytes,
+  resolveReadableFile,
+} from '../base/files';
 
 export const EXECUTION_CONFIG_SCHEMA = 'tea.execution/v1' as const;
 export const MAX_EXECUTION_CONFIG_BYTES = 1024 * 1024;
@@ -101,32 +106,57 @@ export class ExecutionConfigError extends Error {
 export function loadExecutionConfig(
   configArgument: string,
 ): LoadedExecutionConfig {
-  const configPath = resolve(configArgument);
-  const baseDirectory = dirname(configPath);
-  const bytes = readRegularFile(
-    configPath,
-    'execution config',
-    MAX_EXECUTION_CONFIG_BYTES,
-  );
-  const source = decodeUtf8(bytes, 'execution config');
-  const parsed = parseConfig(source);
-  const programSource = resolveReferencedFile(
-    baseDirectory,
-    parsed.program.source,
-    'program.source',
-  );
-  const providerPath = resolveReferencedFile(
-    baseDirectory,
-    parsed.execution.provider.path,
-    'execution.provider.path',
-  );
-  const config = rebuildWithPaths(parsed, programSource, providerPath);
-  return Object.freeze({
-    configPath,
-    baseDirectory,
-    bytesHash: createHash('sha256').update(bytes).digest('hex'),
-    config,
-  });
+  try {
+    const configPath = resolve(configArgument);
+    const baseDirectory = dirname(configPath);
+    const bytes = readFileBytes(
+      configPath,
+      'execution config',
+      MAX_EXECUTION_CONFIG_BYTES,
+    );
+    let source: string;
+    try {
+      source = decodeUtf8(bytes);
+    } catch (error) {
+      if (error instanceof FileError && error.kind === 'invalid-utf8') {
+        throw new ExecutionConfigError('execution config must be valid UTF-8');
+      }
+      throw error;
+    }
+    const parsed = parseConfig(source);
+    const programSource = resolveReadableFile(
+      baseDirectory,
+      parsed.program.source,
+      'program.source',
+    );
+    const providerPath = resolveReadableFile(
+      baseDirectory,
+      parsed.execution.provider.path,
+      'execution.provider.path',
+    );
+    const config = object({
+      ...parsed,
+      program: object({...parsed.program, source: programSource}),
+      execution: object({
+        ...parsed.execution,
+        provider: object({
+          ...parsed.execution.provider,
+          path: providerPath,
+        }),
+      }),
+    });
+    return Object.freeze({
+      configPath,
+      baseDirectory,
+      bytesHash: createHash('sha256').update(bytes).digest('hex'),
+      config,
+    });
+  } catch (error) {
+    if (error instanceof FileError) {
+      throw new ExecutionConfigError(error.message);
+    }
+    throw error;
+  }
 }
 
 function parseConfig(source: string): ExecutionConfig {
@@ -404,80 +434,6 @@ function buildRange(
       step: finiteNumber(range, 'step', `parameter '${parameter}'.range`),
     }),
   });
-}
-
-function rebuildWithPaths(
-  config: ExecutionConfig,
-  source: string,
-  providerPath: string,
-): ExecutionConfig {
-  return object({
-    ...config,
-    program: object({...config.program, source}),
-    execution: object({
-      ...config.execution,
-      provider: object({...config.execution.provider, path: providerPath}),
-    }),
-  });
-}
-
-function readRegularFile(
-  path: string,
-  label: string,
-  maxBytes?: number,
-): Buffer {
-  try {
-    const stat = statSync(path);
-    if (!stat.isFile()) {
-      throw new ExecutionConfigError(
-        `${label} '${path}' is not a regular file`,
-      );
-    }
-    if (maxBytes !== undefined && stat.size > maxBytes) {
-      throw new ExecutionConfigError(
-        `${label} exceeds the ${maxBytes} byte limit`,
-      );
-    }
-    const bytes = readFileSync(path);
-    if (maxBytes !== undefined && bytes.byteLength > maxBytes) {
-      throw new ExecutionConfigError(
-        `${label} exceeds the ${maxBytes} byte limit`,
-      );
-    }
-    return bytes;
-  } catch (error) {
-    if (error instanceof ExecutionConfigError) throw error;
-    throw new ExecutionConfigError(`${label} '${path}' is not readable`);
-  }
-}
-
-function resolveReferencedFile(
-  baseDirectory: string,
-  path: string,
-  label: string,
-): string {
-  const resolved = resolve(baseDirectory, path);
-  try {
-    const stat = statSync(resolved);
-    if (!stat.isFile()) {
-      throw new ExecutionConfigError(
-        `${label} '${resolved}' is not a regular file`,
-      );
-    }
-    accessSync(resolved, constants.R_OK);
-  } catch (error) {
-    if (error instanceof ExecutionConfigError) throw error;
-    throw new ExecutionConfigError(`${label} '${resolved}' is not readable`);
-  }
-  return resolved;
-}
-
-function decodeUtf8(bytes: Buffer, label: string): string {
-  try {
-    return new TextDecoder('utf-8', {fatal: true}).decode(bytes);
-  } catch {
-    throw new ExecutionConfigError(`${label} must be valid UTF-8`);
-  }
 }
 
 function mapping(node: Node, label: string): YAMLMap<unknown, unknown> {

@@ -2,6 +2,7 @@
 
 import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
+import {decodeUtf8, FileError} from '../base/files';
 import {paramSpecsOf} from '../codegen/params';
 import type {Program} from '../ir/program';
 import {builtinSources} from '../providers/data/builtin-sources';
@@ -143,8 +144,11 @@ async function createCsvExecutionProviderSnapshot(
   }
   let text: string;
   try {
-    text = new TextDecoder('utf-8', {fatal: true}).decode(bytes);
-  } catch {
+    text = decodeUtf8(bytes);
+  } catch (error) {
+    if (!(error instanceof FileError) || error.kind !== 'invalid-utf8') {
+      throw error;
+    }
     throw new ExecutionConfigError(
       `CSV provider '${config.path}' is not valid UTF-8`,
     );

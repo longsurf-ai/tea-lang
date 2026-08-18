@@ -19,3 +19,6 @@ tabwriter); `base` imports nothing outside itself.
 - Scope names are dot paths owned by the emitting module
   (`runtime.request`, `compile`, `provider.yahoo`); tests assert through
   `captureSink`, never by scraping stderr.
+- `files.ts` owns domain-neutral regular-file, bounded-byte-read, path, and
+  strict UTF-8 primitives. Callers translate `FileError` into their own typed
+  boundary errors instead of making base depend on execution or compiler code.
