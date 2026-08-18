@@ -16,13 +16,13 @@ Tea `Program` execution. It is host orchestration, not another compiler or IR.
   and expands bounded sweeps in declaration order. Omitted parameters remain
   omitted so the Program's defaults stay authoritative.
 - `context.ts` constructs each selected provider once and resolves complete,
-  target-neutral `BindInputs[]`. Provider I/O and host capabilities remain
+  backend-neutral `BindInputs[]`. Provider I/O and host capabilities remain
   injected seams; the context never selects a compiler backend.
-- `target.ts` owns only runtime-host acquisition and disposal. WebGPU resource
+- `backend.ts` owns only runtime-host acquisition and disposal. WebGPU resource
   fields map directly to the GPU runtime contract; JavaScript acquires no host
   resource.
 - `run.ts` compiles through `compileToProgram()` exactly once, then resolves the
-  context, acquires the target, executes, and disposes it. Presentation remains
+  context, acquires the backend, executes, and disposes it. Presentation remains
   a caller concern.
 - The first-class `tea run` and `tea sweep` commands adapt their dynamic flags
   into an in-memory v1 config and use this same context and runtime path. Do not

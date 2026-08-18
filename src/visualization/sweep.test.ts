@@ -170,9 +170,9 @@ function spec() {
 function result(): SweepResult {
   return {
     axes: [
-      {name: 'fast', type: 'float', values: [2, 1]},
-      {name: 'slow', type: 'int', values: [20, 10]},
-      {name: 'risk', type: 'float', values: [0, 1]},
+      {name: 'fast', values: [2, 1]},
+      {name: 'slow', values: [20, 10]},
+      {name: 'risk', values: [0, 1]},
     ],
     parameters: [
       {

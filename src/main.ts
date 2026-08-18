@@ -16,8 +16,8 @@ import {
 import {CliParameterError} from './cli/parameters';
 import {compile, compileToProgram, parseFile} from './compile';
 import {startDocsServer} from './docs/server';
-import {UnsupportedExecutionTargetError} from './execute';
-import {ExecutionConfigError, loadExecutionConfig} from './execution/config';
+import {UnsupportedExecutionBackendError} from './execute';
+import {ExecutionConfigError, loadConfig} from './execution/config';
 import {ExecutionParameterError} from './execution/parameters';
 import {dumpProgram} from './ir/dumper';
 import {GpuDeviceError} from './providers/gpu/dawn';
@@ -62,7 +62,7 @@ function isExecutionHostError(error: unknown): error is Error {
     error instanceof BindError ||
     error instanceof RequestError ||
     error instanceof ExecutionError ||
-    error instanceof UnsupportedExecutionTargetError ||
+    error instanceof UnsupportedExecutionBackendError ||
     error instanceof GpuBindingError ||
     error instanceof GpuExecutionError ||
     error instanceof GpuDeviceError ||
@@ -136,9 +136,9 @@ tea
   .argument('<config>', 'execution configuration file')
   .option('--json', 'print a structured machine-readable result')
   .action(async (configArgument: string, options: {json?: boolean}) => {
-    const loaded = loadExecutionConfig(configArgument);
+    const config = loadConfig(configArgument);
     finishExecution(
-      await executeConfigCommand(loaded, options.json === true, executionHost),
+      await executeConfigCommand(config, options.json === true, executionHost),
     );
   });
 

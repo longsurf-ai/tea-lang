@@ -1,14 +1,13 @@
 // Purpose: Prove execution configuration parsing is closed, bounded, and path-stable.
 
 import {afterEach, beforeEach, describe, expect, test} from 'bun:test';
-import {createHash} from 'node:crypto';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {
   ExecutionConfigError,
   MAX_EXECUTION_CONFIG_BYTES,
-  loadExecutionConfig,
+  loadConfig,
 } from './config';
 
 let directory: string;
@@ -26,7 +25,7 @@ afterEach(() => {
 });
 
 describe('execution config loader', () => {
-  test('loads one complete snapshot and resolves paths from the config file', () => {
+  test('loads one config and resolves paths from its directory', () => {
     const hash = 'AB'.repeat(32);
     const source = `schema: tea.execution/v1
 program:
@@ -53,48 +52,40 @@ execution:
   timeNow: 1786579200000
 `;
     const path = writeConfig(source);
-    const loaded = loadExecutionConfig(path);
+    const config = loadConfig(path);
 
-    expect(loaded).toEqual({
-      configPath: path,
-      baseDirectory: directory,
-      bytesHash: createHash('sha256').update(source).digest('hex'),
-      config: {
-        schema: 'tea.execution/v1',
-        program: {source: join(directory, 'programs/strategy.tea')},
-        runtime: {
-          kind: 'webgpu',
-          maxRowsPerChunk: 65536,
-          effectRecordsPerExecution: 0,
-          maxGpuBytes: 1073741824,
-          maxCacheBytesPerWorkgroup: 0,
+    expect(config).toEqual({
+      schema: 'tea.execution/v1',
+      program: {source: join(directory, 'programs/strategy.tea')},
+      runtime: {
+        kind: 'webgpu',
+        maxRowsPerChunk: 65536,
+        effectRecordsPerExecution: 0,
+        maxGpuBytes: 1073741824,
+        maxCacheBytesPerWorkgroup: 0,
+      },
+      execution: {
+        kind: 'sweep',
+        provider: {
+          kind: 'csv',
+          path: join(directory, 'data/bars.csv'),
+          sha256: hash.toLowerCase(),
         },
-        execution: {
-          kind: 'sweep',
-          provider: {
-            kind: 'csv',
-            path: join(directory, 'data/bars.csv'),
-            sha256: hash.toLowerCase(),
-          },
-          parameters: {
-            enabled: true,
-            label: 'trial',
-            cash: 100000,
-            length: {range: {start: 2, stop: 20, step: 2}},
-          },
-          maxExecutions: 10000,
-          timeNow: 1786579200000,
+        parameters: {
+          enabled: true,
+          label: 'trial',
+          cash: 100000,
+          length: {range: {start: 2, stop: 20, step: 2}},
         },
+        maxExecutions: 10000,
+        timeNow: 1786579200000,
       },
     });
-    expect(Object.getPrototypeOf(loaded.config)).toBeNull();
-    expect(
-      Object.getPrototypeOf(loaded.config.execution.parameters),
-    ).toBeNull();
-    expect(Object.getPrototypeOf(loaded.config.execution.provider)).toBeNull();
-    expect(Object.isFrozen(loaded)).toBe(true);
-    expect(Object.isFrozen(loaded.config)).toBe(true);
-    expect(Object.isFrozen(loaded.config.execution.parameters)).toBe(true);
+    expect(Object.getPrototypeOf(config)).toBeNull();
+    expect(Object.getPrototypeOf(config.execution.parameters)).toBeNull();
+    expect(Object.getPrototypeOf(config.execution.provider)).toBeNull();
+    expect(Object.isFrozen(config)).toBe(true);
+    expect(Object.isFrozen(config.execution.parameters)).toBe(true);
   });
 
   test('accepts JSON and defaults an omitted parameter map to empty', () => {
@@ -110,7 +101,7 @@ execution:
       }),
     );
 
-    const {config} = loadExecutionConfig(path);
+    const config = loadConfig(path);
     expect(config.runtime).toEqual({kind: 'javascript'});
     expect(config.execution.parameters).toEqual({});
     expect(Object.getPrototypeOf(config.execution.parameters)).toBeNull();
@@ -125,7 +116,7 @@ execution:
       ),
     );
 
-    const parameters = loadExecutionConfig(path).config.execution.parameters;
+    const parameters = loadConfig(path).execution.parameters;
     expect(Object.keys(parameters)).toEqual(['__proto__', 'constructor']);
     expect(parameters['__proto__']).toBe(1);
     expect(parameters['constructor']).toBe(2);
@@ -139,26 +130,22 @@ execution:
     writeFileSync(join(nested, 'bars.csv'), 'time,close\n0,2\n');
     const path = writeConfig(validRun('./strategy.tea', './bars.csv'), nested);
 
-    const {config} = loadExecutionConfig(path);
+    const config = loadConfig(path);
     expect(config.program.source).toBe(join(nested, 'strategy.tea'));
     expect(config.execution.provider.path).toBe(join(nested, 'bars.csv'));
   });
 
   test('requires config, program, and provider paths to be regular files', () => {
-    expect(() => loadExecutionConfig(directory)).toThrow('not a regular file');
+    expect(() => loadConfig(directory)).toThrow('not a regular file');
     expect(() =>
-      loadExecutionConfig(
-        writeConfig(validRun('./programs', './data/bars.csv')),
-      ),
+      loadConfig(writeConfig(validRun('./programs', './data/bars.csv'))),
     ).toThrow('program.source');
     expect(() =>
-      loadExecutionConfig(
-        writeConfig(validRun('./programs/strategy.tea', './data')),
-      ),
+      loadConfig(writeConfig(validRun('./programs/strategy.tea', './data'))),
     ).toThrow('execution.provider.path');
-    expect(() =>
-      loadExecutionConfig(join(directory, 'does-not-exist.yaml')),
-    ).toThrow('is not readable');
+    expect(() => loadConfig(join(directory, 'does-not-exist.yaml'))).toThrow(
+      'is not readable',
+    );
   });
 
   test('rejects oversized and invalid UTF-8 config bytes', () => {
@@ -167,11 +154,11 @@ execution:
       oversized,
       Buffer.alloc(MAX_EXECUTION_CONFIG_BYTES + 1, 0x20),
     );
-    expect(() => loadExecutionConfig(oversized)).toThrow('byte limit');
+    expect(() => loadConfig(oversized)).toThrow('byte limit');
 
     const invalid = join(directory, 'invalid.yaml');
     writeFileSync(invalid, Buffer.from([0xff]));
-    expect(() => loadExecutionConfig(invalid)).toThrow('valid UTF-8');
+    expect(() => loadConfig(invalid)).toThrow('valid UTF-8');
   });
 });
 
@@ -213,7 +200,7 @@ describe('closed schema', () => {
       "parameter 'x'.range has unknown field 'extra'",
     ],
   ])('rejects an unknown %s field', (_label, source, message) => {
-    expect(() => loadExecutionConfig(writeConfig(source))).toThrow(message);
+    expect(() => loadConfig(writeConfig(source))).toThrow(message);
   });
 
   test.each([
@@ -234,7 +221,7 @@ describe('closed schema', () => {
       'provider.kind',
     ],
   ])('rejects an unsupported %s discriminator', (_label, source, message) => {
-    expect(() => loadExecutionConfig(writeConfig(source))).toThrow(message);
+    expect(() => loadConfig(writeConfig(source))).toThrow(message);
   });
 
   test('requires every top-level section and its required fields', () => {
@@ -243,10 +230,10 @@ describe('closed schema', () => {
         .split('\n')
         .filter(line => !line.startsWith(`${field}:`))
         .join('\n');
-      expect(() => loadExecutionConfig(writeConfig(source))).toThrow();
+      expect(() => loadConfig(writeConfig(source))).toThrow();
     }
     expect(() =>
-      loadExecutionConfig(
+      loadConfig(
         writeConfig(
           validRun().replace('  source: ./programs/strategy.tea\n', ''),
         ),
@@ -256,7 +243,7 @@ describe('closed schema', () => {
 
   test('run rejects maxExecutions while sweep accepts a bounded positive integer', () => {
     expect(() =>
-      loadExecutionConfig(
+      loadConfig(
         writeConfig(
           validRun().replace(
             '  parameters: {}',
@@ -268,13 +255,11 @@ describe('closed schema', () => {
 
     for (const value of ['0', '-1', '1.5', '9007199254740992']) {
       expect(() =>
-        loadExecutionConfig(
-          writeConfig(validSweep(`  maxExecutions: ${value}\n`)),
-        ),
+        loadConfig(writeConfig(validSweep(`  maxExecutions: ${value}\n`))),
       ).toThrow('positive safe integer');
     }
     expect(() =>
-      loadExecutionConfig(writeConfig(validSweep('  maxExecutions: 10001\n'))),
+      loadConfig(writeConfig(validSweep('  maxExecutions: 10001\n'))),
     ).toThrow('execution.maxExecutions must not exceed 10000');
   });
 
@@ -286,14 +271,14 @@ describe('closed schema', () => {
     ['maxCacheBytesPerWorkgroup', '-1', 'nonnegative'],
   ])('validates WebGPU option %s', (field, value, message) => {
     expect(() =>
-      loadExecutionConfig(writeConfig(validWebGpu(`  ${field}: ${value}\n`))),
+      loadConfig(writeConfig(validWebGpu(`  ${field}: ${value}\n`))),
     ).toThrow(message);
   });
 
   test('validates timeNow, provider hash, parameter scalars, and range shape', () => {
     for (const value of ['null', '.nan', '.inf', '1.5', '9007199254740992']) {
       expect(() =>
-        loadExecutionConfig(
+        loadConfig(
           writeConfig(
             validRun().replace(
               '  parameters: {}',
@@ -304,7 +289,7 @@ describe('closed schema', () => {
       ).toThrow('finite safe epoch-ms integer');
     }
     expect(() =>
-      loadExecutionConfig(
+      loadConfig(
         writeConfig(
           validRun().replace(
             '    path: ./data/bars.csv',
@@ -322,7 +307,7 @@ describe('closed schema', () => {
       'x: {range: {start: one, stop: 2, step: 1}}',
     ]) {
       expect(() =>
-        loadExecutionConfig(
+        loadConfig(
           writeConfig(
             validRun().replace(
               '  parameters: {}',
@@ -389,14 +374,14 @@ describe('YAML trust boundary', () => {
       'keys must be strings',
     ],
   ])('rejects %s', (_label, source, message) => {
-    expect(() => loadExecutionConfig(writeConfig(source))).toThrow(message);
+    expect(() => loadConfig(writeConfig(source))).toThrow(message);
   });
 
   test('enforces depth, node, and per-collection entry limits', () => {
     let nested = 'value';
     for (let index = 0; index < 70; index++) nested = `{level: ${nested}}`;
     expect(() =>
-      loadExecutionConfig(
+      loadConfig(
         writeConfig(
           validRun().replace('parameters: {}', `parameters: {x: ${nested}}`),
         ),
@@ -408,7 +393,7 @@ describe('YAML trust boundary', () => {
       (_, index) => `x${index}: 1`,
     ).join(',');
     expect(() =>
-      loadExecutionConfig(
+      loadConfig(
         writeConfig(
           validRun().replace('parameters: {}', `parameters: {${entries}}`),
         ),
@@ -420,7 +405,7 @@ describe('YAML trust boundary', () => {
       (_, index) => `x${index}: 1`,
     ).join(',');
     expect(() =>
-      loadExecutionConfig(
+      loadConfig(
         writeConfig(
           validRun().replace(
             'parameters: {}',
@@ -434,7 +419,7 @@ describe('YAML trust boundary', () => {
 
 test('configuration errors have one stable public type', () => {
   try {
-    loadExecutionConfig(writeConfig('schema: tea.execution/v1'));
+    loadConfig(writeConfig('schema: tea.execution/v1'));
     throw new Error('expected config error');
   } catch (error) {
     expect(error).toBeInstanceOf(ExecutionConfigError);

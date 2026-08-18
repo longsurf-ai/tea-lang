@@ -4,71 +4,54 @@ import type {ErrorMsg, Errors} from '../base/print';
 import {compileToProgram, hashProgramSourceClosure} from '../compile';
 import {executeProgram, type ExecutionSummary} from '../execute';
 import type {Program} from '../ir/program';
-import {
-  ExecutionConfigError,
-  type LoadedExecutionConfig,
-  type ExecutionConfig,
-} from './config';
-import {
-  resolveExecutionContext,
-  type ExecutionContextDependencies,
-} from './context';
-import {
-  acquireExecutionTarget,
-  type ExecutionTargetDependencies,
-} from './target';
-import type {ResolvedParameterAxis} from './parameters';
+import {ExecutionConfigError, type ExecutionConfig} from './config';
+import {resolveExecutionContext, type ExecutionDependencies} from './context';
+import {acquireBackend} from './backend';
+import type {SweepRange} from './parameters';
 
-export interface ConfiguredExecutionDependencies extends ExecutionContextDependencies {
-  readonly target?: ExecutionTargetDependencies;
-}
-
-export interface ConfiguredExecutionResult {
+export interface RunResult {
   readonly kind: 'run' | 'sweep';
-  readonly axes: readonly ResolvedParameterAxis[];
+  readonly ranges: readonly SweepRange[];
   readonly summary: ExecutionSummary;
   readonly device?: string;
   readonly timeNow: number;
-  readonly providerBytesHash?: string;
+  readonly providerHash?: string;
 }
 
-export interface LoadedExecutionSuccess {
+export interface ConfigRunSuccess {
   readonly ok: true;
-  readonly execution: ConfiguredExecutionResult;
+  readonly run: RunResult;
   // Hash of the root source plus every compiler-shipped Tea library source.
-  readonly programBytesHash: string;
+  readonly programHash: string;
 }
 
-export type LoadedExecutionResult =
-  | LoadedExecutionSuccess
+export type ConfigRunResult =
+  | ConfigRunSuccess
   | {readonly ok: false; readonly errors: readonly ErrorMsg[]};
 
 // The config selects host inputs and a runtime; the Program remains the one
 // canonical Core product. Runtime resources are always released here.
-export async function executeConfiguredProgram(
+export async function runProgram(
   program: Program,
   config: ExecutionConfig,
-  dependencies: ConfiguredExecutionDependencies,
-): Promise<ConfiguredExecutionResult> {
+  dependencies: ExecutionDependencies,
+): Promise<RunResult> {
   const context = await resolveExecutionContext(program, config, dependencies);
-  const lease = await acquireExecutionTarget(
-    context.runtime,
-    dependencies.target,
-  );
+  const lease = await acquireBackend(context.runtime);
   try {
     const summary = await executeProgram(
       program,
       context.bindings,
-      lease.target,
+      lease.backend,
     );
     return {
       kind: context.kind,
-      axes: context.axes,
+      ranges: context.ranges,
       summary,
       timeNow: context.timeNow,
-      ...(context.providerBytesHash === undefined
+      ...(context.providerHash === undefined
         ? {}
-        : {providerBytesHash: context.providerBytesHash}),
+        : {providerHash: context.providerHash}),
       ...(lease.device === undefined ? {} : {device: lease.device}),
     };
   } finally {
@@ -76,27 +59,23 @@ export async function executeConfiguredProgram(
   }
 }
 
-// Canonical file-config entry: compile once through compileToProgram(), then
-// enter the same configured execution path used by direct run/sweep commands.
-export async function executeLoadedConfig(
-  loaded: LoadedExecutionConfig,
+// Compile the config's source once, then enter the same Program execution path
+// used by direct run/sweep commands.
+export async function runConfig(
+  config: ExecutionConfig,
   errors: Errors,
-  dependencies: ConfiguredExecutionDependencies,
-): Promise<LoadedExecutionResult> {
-  const programBytesHash = hashProgramSnapshot(loaded.config.program.source);
-  const program = compileToProgram([loaded.config.program.source], errors);
-  verifyProgramSnapshot(loaded.config.program.source, programBytesHash);
+  dependencies: ExecutionDependencies,
+): Promise<ConfigRunResult> {
+  const programHash = hashProgramSnapshot(config.program.source);
+  const program = compileToProgram([config.program.source], errors);
+  verifyProgramSnapshot(config.program.source, programHash);
   if (program === null) {
     return {ok: false, errors: errors.flushErrors()};
   }
   return {
     ok: true,
-    programBytesHash,
-    execution: await executeConfiguredProgram(
-      program,
-      loaded.config,
-      dependencies,
-    ),
+    programHash,
+    run: await runProgram(program, config, dependencies),
   };
 }
 

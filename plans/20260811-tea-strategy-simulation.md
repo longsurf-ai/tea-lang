@@ -365,7 +365,7 @@ not mandatory runtime semantics.
 ## 6. Generic multi-binding runtime
 
 Delete the separate plan/job types, parameter-only metadata, and
-target-specific job wrappers. The target-neutral batch input is simply:
+backend-specific job wrappers. The backend-neutral batch input is simply:
 
 ```ts
 readonly BindInputs[]
@@ -630,7 +630,7 @@ its focused tests, typecheck, formatting, and diff check pass.
    - repository-wide stale-name and strategy-special-case audit.
 
 9. **Public execution and CLI**
-   - expose `executeProgram(program, bindings, target)` as the one generic
+   - expose `executeProgram(program, bindings, backend)` as the one generic
      CPU/GPU host harness;
    - parse source-declared parameter flags after the fixed CLI options;
    - make `tea run` print system, parameter, dense, and typed-effect sections;

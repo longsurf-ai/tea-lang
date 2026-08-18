@@ -64,12 +64,10 @@ describe('execution context', () => {
     expect(clockCalls).toBe(1);
     expect(context.kind).toBe('sweep');
     expect(context.runtime).toEqual({kind: 'javascript'});
-    expect(context.providerBytesHash).toBe(
+    expect(context.providerHash).toBe(
       createHash('sha256').update(CSV).digest('hex'),
     );
-    expect(context.axes).toEqual([
-      {name: 'initial_cash', type: 'float', values: [1, 2, 3]},
-    ]);
+    expect(context.ranges).toEqual([{name: 'initial_cash', values: [1, 2, 3]}]);
     expect(context.bindings.map(binding => binding.params)).toEqual([
       {scale: 2, initial_cash: 1},
       {scale: 2, initial_cash: 2},
@@ -197,23 +195,6 @@ describe('execution context', () => {
         dependencies(invalid),
       ),
     ).rejects.toThrow("CSV provider '/data/bars.csv' is not valid UTF-8");
-  });
-
-  test('verifies replay provider bytes even without a configured sha256', async () => {
-    await expect(
-      resolveExecutionContext(
-        program(),
-        config({
-          kind: 'run',
-          provider: {kind: 'csv', path: '/data/bars.csv'},
-          parameters: {},
-        }),
-        {
-          ...dependencies(CSV),
-          expectedProviderBytesHash: '0'.repeat(64),
-        },
-      ),
-    ).rejects.toThrow(/changed after sweep: SHA-256 .* expected 000000/);
   });
 
   test('wraps provider reads and rejects an invalid captured clock', async () => {

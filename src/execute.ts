@@ -1,4 +1,4 @@
-// Purpose: Public target-neutral orchestration from one checked Program to ordered CPU or GPU bindings.
+// Purpose: Public backend-neutral orchestration from one checked Program to ordered CPU or GPU bindings.
 
 /// <reference types="@webgpu/types" />
 
@@ -16,11 +16,11 @@ import {
 } from './runtime/gpu';
 import {loadModule} from './runtime/load';
 
-export interface CpuExecutionTarget {
+export interface CpuExecutionBackend {
   readonly kind: 'cpu';
 }
 
-export interface GpuExecutionTarget {
+export interface GpuExecutionBackend {
   readonly kind: 'gpu';
   // Device creation is a host concern. executeProgram owns and disposes only
   // the execution session it creates; the caller retains ownership here.
@@ -28,7 +28,7 @@ export interface GpuExecutionTarget {
   readonly options?: GpuExecutionOptions;
 }
 
-export type ExecutionTarget = CpuExecutionTarget | GpuExecutionTarget;
+export type ExecutionBackend = CpuExecutionBackend | GpuExecutionBackend;
 
 export interface ExecutionBindingSummary {
   readonly bindingIndex: number;
@@ -76,7 +76,7 @@ export interface GpuExecutionSummary extends ExecutionSummaryBase {
 
 export type ExecutionSummary = CpuExecutionSummary | GpuExecutionSummary;
 
-export class UnsupportedExecutionTargetError extends Error {
+export class UnsupportedExecutionBackendError extends Error {
   readonly backend = 'gpu' as const;
 
   constructor(readonly issues: readonly WgslEligibilityIssue[]) {
@@ -87,22 +87,22 @@ export class UnsupportedExecutionTargetError extends Error {
             .map(issue => issue.message)
             .join('; ')}`,
     );
-    this.name = 'UnsupportedExecutionTargetError';
+    this.name = 'UnsupportedExecutionBackendError';
   }
 }
 
-// Lower one already-compiled Program exactly once for the selected target,
+// Lower one already-compiled Program exactly once for the selected backend,
 // then execute every binding in caller order. This layer has no knowledge of
 // indicator, strategy, or any other source-library convention.
 export async function executeProgram(
   program: Program,
   bindings: readonly BindInputs[],
-  target: ExecutionTarget,
+  backend: ExecutionBackend,
 ): Promise<ExecutionSummary> {
   const totalStarted = now();
   const loweringStarted = totalStarted;
 
-  if (target.kind === 'cpu') {
+  if (backend.kind === 'cpu') {
     const module = loadModule(generate(program));
     const loweringFinished = now();
     const results = await runCpuBatch(module, bindings);
@@ -126,15 +126,15 @@ export async function executeProgram(
 
   const compiled = compileProgramToWgsl(program);
   if (compiled.status !== 'compiled') {
-    throw new UnsupportedExecutionTargetError(compiled.eligibility.issues);
+    throw new UnsupportedExecutionBackendError(compiled.eligibility.issues);
   }
   const loweringFinished = now();
   const preparationStarted = loweringFinished;
   const session = await createGpuExecution(
-    target.device,
+    backend.device,
     compiled.artifact,
     bindings,
-    target.options,
+    backend.options,
   );
   const preparationFinished = now();
   try {

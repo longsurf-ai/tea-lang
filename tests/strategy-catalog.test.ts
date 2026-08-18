@@ -8,10 +8,7 @@ import {Errors} from '../src/base/print';
 import {paramSpecsOf} from '../src/codegen/params';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
 import {compileToProgram} from '../src/compile';
-import {
-  loadExecutionConfig,
-  resolveExecutionParameters,
-} from '../src/execution';
+import {loadConfig, resolveExecutionParameters} from '../src/execution';
 
 const ROOT = join(import.meta.dir, '..');
 const STRATEGY_ROOT = join(ROOT, 'examples/strategy');
@@ -225,21 +222,19 @@ describe('clean-room strategy catalog', () => {
       const readme = readFileSync(join(directory, 'README.md'), 'utf8');
       expect(readme).toContain('tradingview.com/script/');
 
-      const loaded = loadExecutionConfig(join(directory, 'sweep.yaml'));
-      expect(loaded.config.program.source).toBe(
-        join(directory, 'strategy.tea'),
-      );
-      expect(loaded.config.runtime.kind).toBe(
+      const config = loadConfig(join(directory, 'sweep.yaml'));
+      expect(config.program.source).toBe(join(directory, 'strategy.tea'));
+      expect(config.runtime.kind).toBe(
         name === 'turtle-system' ? 'webgpu' : 'javascript',
       );
-      expect(loaded.config.execution.kind).toBe('sweep');
-      if (loaded.config.execution.kind !== 'sweep') {
+      expect(config.execution.kind).toBe('sweep');
+      if (config.execution.kind !== 'sweep') {
         throw new Error('strategy catalog configs must be sweeps');
       }
-      expect(loaded.config.execution.maxExecutions).toBeDefined();
+      expect(config.execution.maxExecutions).toBeDefined();
 
       const errors = new Errors();
-      const program = compileToProgram([loaded.config.program.source], errors);
+      const program = compileToProgram([config.program.source], errors);
       if (program === null) {
         throw new Error(
           errors
@@ -252,19 +247,14 @@ describe('clean-room strategy catalog', () => {
 
       const resolved = resolveExecutionParameters(
         paramSpecsOf(program.params),
-        loaded.config.execution,
+        config.execution,
       );
-      expect(resolved.axes.length).toBeGreaterThan(0);
-      expect(new Set(resolved.axes.map(axis => axis.name)).size).toBe(
-        resolved.axes.length,
+      expect(resolved.ranges.length).toBeGreaterThan(0);
+      expect(new Set(resolved.ranges.map(range => range.name)).size).toBe(
+        resolved.ranges.length,
       );
-      expect(
-        resolved.axes.every(
-          axis => axis.type === 'int' || axis.type === 'float',
-        ),
-      ).toBe(true);
-      expect(resolved.parameterSets.length).toBeLessThanOrEqual(
-        loaded.config.execution.maxExecutions!,
+      expect(resolved.sets.length).toBeLessThanOrEqual(
+        config.execution.maxExecutions!,
       );
 
       const outputTitles = new Set(
@@ -287,13 +277,13 @@ describe('clean-room strategy catalog', () => {
 
   test('Turtle publishes a checked-in CPU oracle subset of its GPU grid', () => {
     const directory = join(STRATEGY_ROOT, 'turtle-system');
-    const gpu = loadExecutionConfig(join(directory, 'sweep.yaml'));
-    const cpu = loadExecutionConfig(join(directory, 'sweep-cpu.yaml'));
-    expect(gpu.config.runtime.kind).toBe('webgpu');
-    expect(cpu.config.runtime.kind).toBe('javascript');
+    const gpu = loadConfig(join(directory, 'sweep.yaml'));
+    const cpu = loadConfig(join(directory, 'sweep-cpu.yaml'));
+    expect(gpu.runtime.kind).toBe('webgpu');
+    expect(cpu.runtime.kind).toBe('javascript');
 
     const errors = new Errors();
-    const program = compileToProgram([gpu.config.program.source], errors);
+    const program = compileToProgram([gpu.program.source], errors);
     if (program === null) {
       throw new Error(
         errors
@@ -303,21 +293,12 @@ describe('clean-room strategy catalog', () => {
       );
     }
     expect(errors.count).toBe(0);
-    if (
-      gpu.config.execution.kind !== 'sweep' ||
-      cpu.config.execution.kind !== 'sweep'
-    ) {
+    if (gpu.execution.kind !== 'sweep' || cpu.execution.kind !== 'sweep') {
       throw new Error('Turtle configs must both be sweeps');
     }
     const specs = paramSpecsOf(program.params);
-    const gpuParameters = resolveExecutionParameters(
-      specs,
-      gpu.config.execution,
-    ).parameterSets;
-    const cpuParameters = resolveExecutionParameters(
-      specs,
-      cpu.config.execution,
-    ).parameterSets;
+    const gpuParameters = resolveExecutionParameters(specs, gpu.execution).sets;
+    const cpuParameters = resolveExecutionParameters(specs, cpu.execution).sets;
     expect(gpuParameters).toHaveLength(780);
     expect(cpuParameters).toHaveLength(36);
     const gpuKeys = new Set(
@@ -335,7 +316,7 @@ describe('clean-room strategy catalog', () => {
     }
     expect(compiled.artifact.bindingModule.source.length).toBeGreaterThan(0);
     expect(compiled.artifact.state.frames.length).toBeGreaterThan(1);
-    const source = readFileSync(gpu.config.program.source, 'utf8');
+    const source = readFileSync(gpu.program.source, 'utf8');
     expect(source).toContain('trade.nextOpen(');
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');

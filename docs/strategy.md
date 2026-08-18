@@ -268,4 +268,4 @@ and effect-count ceilings. The other ten fail closed on their first unsupported
 language/input construct; they do not silently fall back to CPU.
 
 See [Runtime](runtime.md) for host orchestration and
-[GPU Lowering](advanced/gpu-lowering.md) for the target boundary.
+[GPU Lowering](advanced/gpu-lowering.md) for the backend boundary.

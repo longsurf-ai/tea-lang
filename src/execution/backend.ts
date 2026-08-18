@@ -1,41 +1,37 @@
-// Purpose: Acquire one host-owned execution target from a validated runtime configuration.
+// Purpose: Acquire one host-owned execution backend from a validated runtime configuration.
 
-import type {ExecutionTarget} from '../execute';
+import type {ExecutionBackend} from '../execute';
 import {createDawnDevice, type GpuDeviceLease} from '../providers/gpu/dawn';
 import type {RuntimeConfig, WebGpuRuntimeConfig} from './config';
 
-export interface ExecutionTargetLease {
-  readonly target: ExecutionTarget;
+export interface BackendLease {
+  readonly backend: ExecutionBackend;
   readonly device?: string;
   dispose(): Promise<void>;
 }
 
-export interface ExecutionTargetDependencies {
-  readonly createDawnDevice?: () => Promise<GpuDeviceLease>;
-}
-
-// Runtime selection is a host-resource concern. The Program and its bindings
+// Backend selection is a host-resource concern. The Program and its bindings
 // stay outside this seam; the returned lease owns only resources it acquired.
-export async function acquireExecutionTarget(
+export async function acquireBackend(
   runtime: RuntimeConfig,
-  dependencies: ExecutionTargetDependencies = {},
-): Promise<ExecutionTargetLease> {
+  createDevice: () => Promise<GpuDeviceLease> = createDawnDevice,
+): Promise<BackendLease> {
   switch (runtime.kind) {
     case 'javascript':
       return {
-        target: {kind: 'cpu'},
+        backend: {kind: 'cpu'},
         dispose: async () => {},
       };
     case 'webgpu':
-      return acquireWebGpuTarget(runtime, dependencies);
+      return acquireWebGpuBackend(runtime, createDevice);
   }
 }
 
-async function acquireWebGpuTarget(
+async function acquireWebGpuBackend(
   runtime: WebGpuRuntimeConfig,
-  dependencies: ExecutionTargetDependencies,
-): Promise<ExecutionTargetLease> {
-  const lease = await (dependencies.createDawnDevice ?? createDawnDevice)();
+  createDevice: () => Promise<GpuDeviceLease>,
+): Promise<BackendLease> {
+  const lease = await createDevice();
   const options = {
     ...(runtime.maxRowsPerChunk === undefined
       ? {}
@@ -51,7 +47,7 @@ async function acquireWebGpuTarget(
       : {maxCacheBytesPerWorkgroup: runtime.maxCacheBytesPerWorkgroup}),
   };
   return {
-    target: {
+    backend: {
       kind: 'gpu',
       device: lease.device,
       ...(Object.keys(options).length === 0 ? {} : {options}),

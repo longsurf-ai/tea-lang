@@ -1,10 +1,10 @@
-// Purpose: The public executor lowers one generic Program, preserves binding order, and reports target-neutral results.
+// Purpose: The public executor lowers one generic Program, preserves binding order, and reports backend-neutral results.
 
 import {describe, expect, test} from 'bun:test';
 import {mustBuild} from './noder/testing';
 import {csvProvider} from './providers/data/csv';
 import {MemorySink} from './providers/sinks/memory-sink';
-import {executeProgram, UnsupportedExecutionTargetError} from './execute';
+import {executeProgram, UnsupportedExecutionBackendError} from './execute';
 
 describe('executeProgram', () => {
   test('executes ordered CPU bindings and reports resolved inputs', async () => {
@@ -77,10 +77,10 @@ describe('executeProgram', () => {
       });
       throw new Error('expected GPU lowering to fail');
     } catch (error) {
-      expect(error).toBeInstanceOf(UnsupportedExecutionTargetError);
-      expect((error as UnsupportedExecutionTargetError).issues.length).toBe(1);
+      expect(error).toBeInstanceOf(UnsupportedExecutionBackendError);
+      expect((error as UnsupportedExecutionBackendError).issues.length).toBe(1);
       expect(
-        (error as UnsupportedExecutionTargetError).issues[0]?.message.length,
+        (error as UnsupportedExecutionBackendError).issues[0]?.message.length,
       ).toBeGreaterThan(0);
     }
   });

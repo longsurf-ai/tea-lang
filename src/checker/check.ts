@@ -68,8 +68,8 @@ import {
   type FunctionInstance,
   type Info,
   type NativeCall,
-  type ResolvedMethodReceiver,
-  type ResolvedNativeReceiver,
+  type MethodReceiver,
+  type NativeReceiver,
   type SemanticDependency,
 } from './info';
 import {
@@ -3797,7 +3797,7 @@ class Checker {
       return INVALID_TV;
     }
 
-    let resolvedReceiver: ResolvedMethodReceiver | null = null;
+    let resolvedReceiver: MethodReceiver | null = null;
     let receiverQualifier: Qualifier | null = null;
     if (template.receiver !== null) {
       if (receiver === null) {
@@ -4217,7 +4217,7 @@ class Checker {
             outcome.argumentEvaluationOrder,
           );
         }
-        let receiver: ResolvedNativeReceiver | null = null;
+        let receiver: NativeReceiver | null = null;
         const receiverExpr =
           candidate.params[0]?.name === 'self' ? outcome.args[0] : null;
         if (receiverExpr !== null && receiverExpr !== undefined) {

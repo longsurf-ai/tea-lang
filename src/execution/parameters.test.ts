@@ -78,8 +78,8 @@ describe('structured execution parameters', () => {
         run({length: 20, enabled: false, mode: 'slow'}),
       ),
     ).toEqual({
-      axes: [],
-      parameterSets: [{length: 20, enabled: false, mode: 'slow'}],
+      ranges: [],
+      sets: [{length: 20, enabled: false, mode: 'slow'}],
     });
   });
 
@@ -98,7 +98,7 @@ describe('structured execution parameters', () => {
     ).toThrow('run execution does not accept maxExecutions');
   });
 
-  test('expands axes and parameter sets in declaration order', () => {
+  test('expands ranges and parameter sets in declaration order', () => {
     expect(
       resolveExecutionParameters(
         specs,
@@ -112,11 +112,11 @@ describe('structured execution parameters', () => {
         ),
       ),
     ).toEqual({
-      axes: [
-        {name: 'length', type: 'int', values: [1, 2]},
-        {name: 'factor', type: 'float', values: [1, 1.2, 1.4]},
+      ranges: [
+        {name: 'length', values: [1, 2]},
+        {name: 'factor', values: [1, 1.2, 1.4]},
       ],
-      parameterSets: [
+      sets: [
         {length: 1, factor: 1, enabled: false},
         {length: 1, factor: 1.2, enabled: false},
         {length: 1, factor: 1.4, enabled: false},
@@ -127,19 +127,19 @@ describe('structured execution parameters', () => {
     });
   });
 
-  test('keeps one-value ranges as axes and no-range sweeps as one execution', () => {
+  test('keeps one-value ranges as ranges and no-range sweeps as one execution', () => {
     expect(
       resolveExecutionParameters(
         specs,
         sweep({length: {range: {start: 3, stop: 3, step: 1}}}, 1),
       ),
     ).toEqual({
-      axes: [{name: 'length', type: 'int', values: [3]}],
-      parameterSets: [{length: 3}],
+      ranges: [{name: 'length', values: [3]}],
+      sets: [{length: 3}],
     });
     expect(resolveExecutionParameters(specs, sweep({}))).toEqual({
-      axes: [],
-      parameterSets: [{}],
+      ranges: [],
+      sets: [{}],
     });
   });
 
@@ -148,7 +148,7 @@ describe('structured execution parameters', () => {
       resolveExecutionParameters(
         specs,
         sweep({factor: {range: {start: 0.3, stop: 0.1, step: -0.1}}}, 3),
-      ).parameterSets,
+      ).sets,
     ).toEqual([{factor: 0.3}, {factor: 0.2}, {factor: 0.1}]);
   });
 

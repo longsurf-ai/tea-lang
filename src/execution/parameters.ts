@@ -19,15 +19,14 @@ export class ExecutionParameterError extends Error {
   }
 }
 
-export interface ResolvedParameterAxis {
+export interface SweepRange {
   readonly name: string;
-  readonly type: 'int' | 'float';
   readonly values: readonly number[];
 }
 
-export interface ResolvedExecutionParameters {
-  readonly axes: readonly ResolvedParameterAxis[];
-  readonly parameterSets: readonly Readonly<Record<string, ParameterScalar>>[];
+export interface ParameterGrid {
+  readonly ranges: readonly SweepRange[];
+  readonly sets: readonly Readonly<Record<string, ParameterScalar>>[];
 }
 
 export type ParameterExecutionConfig =
@@ -68,7 +67,7 @@ interface ParameterExpansionPlan {
 export function resolveExecutionParameters(
   specs: readonly ParamSpec[],
   execution: ParameterExecutionConfig,
-): ResolvedExecutionParameters {
+): ParameterGrid {
   const plan = planExecutionParameters(specs, execution);
   return materializeExecutionParameters(plan);
 }
@@ -214,30 +213,29 @@ function planRange(
 // Stage B runs only after Stage A has proved the full expansion is bounded.
 function materializeExecutionParameters(
   plan: ParameterExpansionPlan,
-): ResolvedExecutionParameters {
-  const axes: ResolvedParameterAxis[] = [];
-  let parameterSets: Readonly<Record<string, ParameterScalar>>[] = [{}];
+): ParameterGrid {
+  const ranges: SweepRange[] = [];
+  let sets: Readonly<Record<string, ParameterScalar>>[] = [{}];
   for (const selection of plan.selections) {
     let values: readonly ParameterScalar[];
     if (selection.kind === 'range') {
       const rangeValues = materializeRange(selection);
-      axes.push({
+      ranges.push({
         name: selection.spec.name,
-        type: selection.spec.type,
         values: rangeValues,
       });
       values = rangeValues;
     } else {
       values = [selection.value];
     }
-    parameterSets = parameterSets.flatMap(parameterSet =>
+    sets = sets.flatMap(parameterSet =>
       values.map(value => ({
         ...parameterSet,
         [selection.spec.name]: value,
       })),
     );
   }
-  return {axes, parameterSets};
+  return {ranges, sets};
 }
 
 function materializeRange(plan: RangePlan): readonly number[] {

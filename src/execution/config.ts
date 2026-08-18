@@ -1,6 +1,5 @@
-// Purpose: Load and strictly validate one versioned Tea execution configuration snapshot.
+// Purpose: Load and strictly validate one versioned Tea execution configuration.
 
-import {createHash} from 'node:crypto';
 import {dirname, resolve} from 'node:path';
 import {
   isAlias,
@@ -89,13 +88,6 @@ export interface ExecutionConfig {
   readonly execution: RunExecutionConfig | SweepExecutionConfig;
 }
 
-export interface LoadedExecutionConfig {
-  readonly configPath: string;
-  readonly baseDirectory: string;
-  readonly bytesHash: string;
-  readonly config: ExecutionConfig;
-}
-
 export class ExecutionConfigError extends Error {
   constructor(message: string) {
     super(message);
@@ -103,9 +95,7 @@ export class ExecutionConfigError extends Error {
   }
 }
 
-export function loadExecutionConfig(
-  configArgument: string,
-): LoadedExecutionConfig {
+export function loadConfig(configArgument: string): ExecutionConfig {
   try {
     const configPath = resolve(configArgument);
     const baseDirectory = dirname(configPath);
@@ -145,12 +135,7 @@ export function loadExecutionConfig(
         }),
       }),
     });
-    return Object.freeze({
-      configPath,
-      baseDirectory,
-      bytesHash: createHash('sha256').update(bytes).digest('hex'),
-      config,
-    });
+    return config;
   } catch (error) {
     if (error instanceof FileError) {
       throw new ExecutionConfigError(error.message);

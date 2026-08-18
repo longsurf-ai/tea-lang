@@ -1,24 +1,19 @@
-// Purpose: Runtime configurations acquire exactly one matching disposable execution target.
+// Purpose: Runtime configurations acquire exactly one matching disposable execution backend.
 
 import {describe, expect, test} from 'bun:test';
 import type {GpuDeviceLease} from '../providers/gpu/dawn';
 import type {RuntimeConfig} from './config';
-import {acquireExecutionTarget} from './target';
+import {acquireBackend} from './backend';
 
-describe('execution target host', () => {
+describe('execution backend host', () => {
   test('JavaScript needs no host resource', async () => {
     let dawnCalls = 0;
-    const lease = await acquireExecutionTarget(
-      {kind: 'javascript'},
-      {
-        createDawnDevice: async () => {
-          dawnCalls++;
-          return gpuLease({label: 'unused'} as GPUDevice, () => {});
-        },
-      },
-    );
+    const lease = await acquireBackend({kind: 'javascript'}, async () => {
+      dawnCalls++;
+      return gpuLease({label: 'unused'} as GPUDevice, () => {});
+    });
 
-    expect(lease.target).toEqual({kind: 'cpu'});
+    expect(lease.backend).toEqual({kind: 'cpu'});
     expect(lease.device).toBeUndefined();
     expect(dawnCalls).toBe(0);
     await lease.dispose();
@@ -35,16 +30,14 @@ describe('execution target host', () => {
       maxGpuBytes: 4096,
       maxCacheBytesPerWorkgroup: 0,
     };
-    const lease = await acquireExecutionTarget(runtime, {
-      createDawnDevice: async () => {
-        dawnCalls++;
-        return gpuLease(device, () => disposeCalls++);
-      },
+    const lease = await acquireBackend(runtime, async () => {
+      dawnCalls++;
+      return gpuLease(device, () => disposeCalls++);
     });
 
     expect(dawnCalls).toBe(1);
     expect(lease.device).toBe('Injected Dawn');
-    expect(lease.target).toEqual({
+    expect(lease.backend).toEqual({
       kind: 'gpu',
       device,
       options: {
@@ -60,13 +53,12 @@ describe('execution target host', () => {
 
   test('WebGPU omits an empty options object', async () => {
     const device = {label: ''} as GPUDevice;
-    const lease = await acquireExecutionTarget(
-      {kind: 'webgpu'},
-      {createDawnDevice: async () => gpuLease(device, () => {})},
+    const lease = await acquireBackend({kind: 'webgpu'}, async () =>
+      gpuLease(device, () => {}),
     );
 
     expect(lease.device).toBe('Dawn WebGPU');
-    expect(lease.target).toEqual({kind: 'gpu', device});
+    expect(lease.backend).toEqual({kind: 'gpu', device});
   });
 });
 

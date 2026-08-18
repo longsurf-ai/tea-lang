@@ -99,15 +99,15 @@ const EXPECTED_FIRST_BLOCKERS: Readonly<Record<string, FirstBlocker>> = {
   },
   'cluster-breakout-v6': {
     code: 'execution-input-mapping-unimplemented',
-    message: 'execution input time.time is not derived by this GPU target',
+    message: 'execution input time.time is not derived by this GPU backend',
   },
   cowabunga: {
     code: 'execution-input-mapping-unimplemented',
-    message: 'execution input time.time is not derived by this GPU target',
+    message: 'execution input time.time is not derived by this GPU backend',
   },
   'donchian-close': {
     code: 'execution-input-mapping-unimplemented',
-    message: 'execution input time.time is not derived by this GPU target',
+    message: 'execution input time.time is not derived by this GPU backend',
   },
   'mtf-psar': {
     code: 'parameter-packing-unimplemented',

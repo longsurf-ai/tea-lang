@@ -33,8 +33,8 @@ describe('sweep renderer model', () => {
 function result(): SweepResult {
   return {
     axes: [
-      {name: 'fast', type: 'int', values: [3, 5]},
-      {name: 'slow', type: 'int', values: [10, 12]},
+      {name: 'fast', values: [3, 5]},
+      {name: 'slow', values: [10, 12]},
     ],
     parameters: [
       {

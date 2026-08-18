@@ -228,7 +228,7 @@ function projectedAxis(
     );
   }
   const axis = result.axes.find(candidate => candidate.name === parameter.name);
-  if (axis === undefined || axis.type !== parameter.type) {
+  if (axis === undefined) {
     throw new SweepProjectionError(
       `sweep ${role} parameter '${id}' has no matching numeric axis`,
     );

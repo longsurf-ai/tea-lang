@@ -158,13 +158,12 @@ function machineSweep(rows = 0) {
           },
         ];
   return {
-    schema: 'tea.execution-result/v1',
-    config: {
-      bytesHash: '0'.repeat(64),
+    schema: 'tea.execution-result/v2',
+    snapshot: {
       programSource: '/work/program.tea',
-      programBytesHash: '1'.repeat(64),
-      providerBytesHash: '2'.repeat(64),
-      effectiveTimeNow: 123,
+      programHash: '1'.repeat(64),
+      providerHash: '2'.repeat(64),
+      timeNow: 123,
     },
     system: {
       kind: 'sweep',

@@ -148,7 +148,7 @@ interface DenseDecoderPlan {
   readonly outputs: readonly DenseOutputDecoder[];
 }
 
-interface ResolvedContextSeries {
+interface ContextSeries {
   readonly bindingIndex: number;
   readonly series: readonly SeriesData[];
 }
@@ -1429,10 +1429,7 @@ async function prepareGpuExecutionInputsWithLimits(
 
   const executions: PreparedGpuExecutionInstance[] = [];
   const contextSeriesOffsets = new Map<ProviderContext, number>();
-  const resolvedContextSeries = new Map<
-    ProviderContext,
-    ResolvedContextSeries
-  >();
+  const seriesByContext = new Map<ProviderContext, ContextSeries>();
   let scalarCount = 0;
   let nextStateWord = 0;
   for (const {
@@ -1460,7 +1457,7 @@ async function prepareGpuExecutionInputsWithLimits(
         }
         return handle;
       });
-      resolvedContextSeries.set(context, {bindingIndex, series});
+      seriesByContext.set(context, {bindingIndex, series});
       const contextScalars = checkedProduct(
         context.rows,
         artifact.requiredSeries.length,
@@ -1558,7 +1555,7 @@ async function prepareGpuExecutionInputsWithLimits(
   const seriesPayload = packSeries(
     artifact,
     contextSeriesOffsets,
-    resolvedContextSeries,
+    seriesByContext,
     scalarCount,
   );
   let nextResultOffset = 0;
@@ -1904,7 +1901,7 @@ function memoizedSeriesContext(context: ProviderContext): ProviderContext {
 function packSeries(
   artifact: CompiledWgslProgram,
   contextOffsets: ReadonlyMap<ProviderContext, number>,
-  resolvedContextSeries: ReadonlyMap<ProviderContext, ResolvedContextSeries>,
+  seriesByContext: ReadonlyMap<ProviderContext, ContextSeries>,
   scalarCount: number,
 ): Uint8Array {
   const bytes = allocateBytes(
@@ -1917,7 +1914,7 @@ function packSeries(
   );
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (const [context, contextOffset] of contextOffsets) {
-    const resolved = resolvedContextSeries.get(context);
+    const resolved = seriesByContext.get(context);
     if (resolved === undefined) {
       throw new GpuBindingError('GPU series context lost its resolved series');
     }

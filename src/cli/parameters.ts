@@ -3,8 +3,8 @@
 import {
   ExecutionParameterError,
   resolveExecutionParameters,
+  type ParameterGrid,
   type ParameterExecutionConfig,
-  type ResolvedParameterAxis,
 } from '../execution/parameters';
 import type {ParameterScalar, ParameterSelection} from '../execution/config';
 import type {ParamSpec} from '../runtime/abi';
@@ -23,15 +23,6 @@ export interface SweepParameterOptions {
   readonly reservedNames?: ReadonlySet<string>;
 }
 
-export type SweepAxis = ResolvedParameterAxis;
-
-export interface ExpandedParameterSweep {
-  readonly axes: readonly SweepAxis[];
-  readonly parameterSets: readonly Readonly<
-    Record<string, CliParameterValue>
-  >[];
-}
-
 // Dynamic flags deliberately accept both conventional `--length` and the
 // Pine-friendly `-length` spelling. Commander owns fixed host flags first;
 // this parser sees only the tokens it did not recognize.
@@ -45,9 +36,9 @@ export function parseRunParameters(
     kind: 'run',
     parameters,
   } as const;
-  const resolved = invokeResolver(specs, execution).parameterSets[0]!;
+  const values = invokeResolver(specs, execution).sets[0]!;
   return Object.fromEntries(
-    Object.keys(parameters).map(name => [name, resolved[name]!]),
+    Object.keys(parameters).map(name => [name, values[name]!]),
   );
 }
 
@@ -67,7 +58,7 @@ export function parseSweepParameterSelections(
   return parseAssignments(specs, tokens, reservedNames, true);
 }
 
-// Parameter sets are ordinary binding maps. Axis provenance is kept separately
+// Parameter sets are ordinary binding maps. Range provenance is kept separately
 // because a scalar flag is not a swept dimension, even though it participates
 // in every parameter set. Both follow source declaration order regardless of
 // CLI flag order; unspecified parameters remain absent so the runtime applies
@@ -76,7 +67,7 @@ export function expandParameterSweep(
   specs: readonly ParamSpec[],
   tokens: readonly string[],
   options: SweepParameterOptions,
-): ExpandedParameterSweep {
+): ParameterGrid {
   if (!Number.isSafeInteger(options.maxScenarios) || options.maxScenarios < 1) {
     throw new CliParameterError(
       'max scenarios must be a positive safe integer',
@@ -101,13 +92,13 @@ export function expandSweepParameters(
   tokens: readonly string[],
   options: SweepParameterOptions,
 ): readonly Readonly<Record<string, CliParameterValue>>[] {
-  return expandParameterSweep(specs, tokens, options).parameterSets;
+  return expandParameterSweep(specs, tokens, options).sets;
 }
 
 function invokeResolver(
   specs: readonly ParamSpec[],
   execution: ParameterExecutionConfig,
-): ExpandedParameterSweep {
+): ParameterGrid {
   try {
     return resolveExecutionParameters(specs, execution);
   } catch (error) {

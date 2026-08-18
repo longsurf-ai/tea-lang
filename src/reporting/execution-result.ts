@@ -1,11 +1,11 @@
 // Purpose: Versioned machine-readable execution envelope shared by CLI and editor hosts.
 
 import type {ExecutionSummary} from '../execute';
-import type {ConfiguredExecutionResult} from '../execution/run';
+import type {RunResult} from '../execution/run';
 import type {SweepResult} from './sweep';
 import type {TrajectoryResult} from './trajectory';
 
-export const EXECUTION_RESULT_SCHEMA = 'tea.execution-result/v1' as const;
+export const EXECUTION_RESULT_SCHEMA = 'tea.execution-result/v2' as const;
 
 export interface ExecutionSystemResult {
   readonly kind: 'run' | 'sweep';
@@ -25,19 +25,18 @@ export interface ExecutionSystemResult {
   };
 }
 
-export interface ExecutionSnapshotResult {
-  readonly bytesHash: string;
+export interface ExecutionSnapshot {
   // Absolute source path resolved from the canonical execution config.
   readonly programSource: string;
   // Root Tea source plus the conservative full compiler-shipped library set.
-  readonly programBytesHash: string;
-  readonly providerBytesHash: string;
-  readonly effectiveTimeNow: number;
+  readonly programHash: string;
+  readonly providerHash: string;
+  readonly timeNow: number;
 }
 
 interface ExecutionMachineResultBase {
   readonly schema: typeof EXECUTION_RESULT_SCHEMA;
-  readonly config: ExecutionSnapshotResult;
+  readonly snapshot: ExecutionSnapshot;
   readonly system: ExecutionSystemResult;
 }
 
@@ -58,7 +57,7 @@ export type ExecutionMachineResult =
   | TrajectoryMachineResult;
 
 export function buildExecutionSystemResult(
-  execution: ConfiguredExecutionResult,
+  execution: RunResult,
 ): ExecutionSystemResult {
   const summary = execution.summary;
   return {

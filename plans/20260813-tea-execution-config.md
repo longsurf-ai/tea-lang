@@ -121,8 +121,8 @@ substituting another buffer.
 - `src/execution/run.ts` is the orchestration owner: compile once, resolve the
   execution context, acquire the runtime host, execute, and dispose. It does
   not own compiler stage order or presentation.
-- `src/execute.ts` remains the only target-neutral Program execution harness.
-- A small host adapter acquires JavaScript or Dawn/WebGPU target resources and
+- `src/execute.ts` remains the only backend-neutral Program execution harness.
+- A small host adapter acquires JavaScript or Dawn/WebGPU backend resources and
   returns an explicit disposable lease.
 - `src/cli/parameters.ts` owns direct dynamic-parameter flag spelling and converts those
   tokens into the shared structured parameter selections.
@@ -170,8 +170,8 @@ invocation working directory, then adapted into the shared in-memory config;
 they never inherit a synthetic YAML directory.
 
 The `tea` executable runs under Node with the packaged `tsx` loader. Each
-configured action loads one immutable `{config, bytesHash}` snapshot and uses
-it directly; a `webgpu` config dynamically loads Dawn in that same process.
+configured action loads one immutable config value and uses it directly; a
+`webgpu` config dynamically loads Dawn in that same process.
 There is no second partial YAML parser, host relay, or mutable hook-to-action
 state. Typed host errors use the normal `tea: ...`, exit-1 user-error path.
 

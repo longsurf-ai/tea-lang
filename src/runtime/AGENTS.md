@@ -8,7 +8,7 @@ and owns the main loop — binding, exact value layouts, frame trees, rings,
 immutable collection storage, provisional/commit, and emission flushing.
 Generic batch execution and GPU binding/execution also live here because bindings,
 datasets, buffers, devices, dispatch, and readback are runtime facts.
-The target-neutral `executeProgram()` host harness lives one level above in
+The backend-neutral `executeProgram()` host harness lives one level above in
 `src/execute.ts`; CLI reporting and Dawn process selection are host concerns.
 
 ## Invariants

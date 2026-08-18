@@ -160,7 +160,7 @@ export class SweepDashboardPanel implements vscode.Disposable {
     try {
       const result = await execution.result;
       if (!this.isCurrent(execution, runId)) return;
-      if (result.schema !== 'tea.execution-result/v1') {
+      if (result.schema !== 'tea.execution-result/v2') {
         throw new TeaCliError('Tea CLI did not return the sweep result');
       }
       if (
@@ -172,7 +172,10 @@ export class SweepDashboardPanel implements vscode.Disposable {
           'dashboard execution config must describe a sweep',
         );
       }
-      await revealProgramSource(result.config.programSource, this.sourceColumn);
+      await revealProgramSource(
+        result.snapshot.programSource,
+        this.sourceColumn,
+      );
       if (!this.isCurrent(execution, runId)) return;
       this.result = result;
       await this.postSweep(result, runId);
@@ -257,8 +260,8 @@ export class SweepDashboardPanel implements vscode.Disposable {
       ...(this.result === null
         ? {}
         : {
-            programName: basename(this.result.config.programSource),
-            programPath: this.result.config.programSource,
+            programName: basename(this.result.snapshot.programSource),
+            programPath: this.result.snapshot.programSource,
           }),
     });
   }

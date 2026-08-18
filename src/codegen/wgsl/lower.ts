@@ -2332,7 +2332,7 @@ class WgslEmitter {
     }
     return this.unsupported(
       'execution-input-mapping-unimplemented',
-      `execution input ${execution.source.domain}.${execution.source.field} is not derived by this GPU target`,
+      `execution input ${execution.source.domain}.${execution.source.field} is not derived by this GPU backend`,
       pos,
     );
   }

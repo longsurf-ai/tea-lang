@@ -1,7 +1,7 @@
 // Purpose: Renderer-neutral sweep results and their terminal report projection.
 
-import type {SweepAxis} from '../cli/parameters';
 import type {ExecutionSummary} from '../execute';
+import type {SweepRange} from '../execution/parameters';
 import type {DeclaredOutput, ExecutionDeclaration, Value} from '../runtime/abi';
 import {reportValue, type ReportSection} from './report';
 
@@ -55,7 +55,7 @@ export interface SweepScenario {
 }
 
 export interface SweepResult {
-  readonly axes: readonly SweepAxis[];
+  readonly axes: readonly SweepRange[];
   readonly parameters: readonly SweepParameter[];
   readonly outputs: readonly SweepOutput[];
   readonly metrics: readonly SweepMetric[];
@@ -67,7 +67,7 @@ export interface DenseOutputColumn extends SweepOutput {}
 export function buildSweepResult(
   summary: ExecutionSummary,
   snapshots: readonly SweepReportSnapshot[],
-  axes: readonly SweepAxis[] = [],
+  ranges: readonly SweepRange[] = [],
 ): SweepResult {
   if (snapshots.length !== summary.bindings.length) {
     throw new Error(
@@ -164,7 +164,7 @@ export function buildSweepResult(
     };
   });
 
-  const axisNames = new Set(axes.map(axis => axis.name));
+  const rangeNames = new Set(ranges.map(range => range.name));
   const parameterSpecs = uniqueByName(
     summary.bindings.flatMap(binding =>
       binding.inputs.map(input => input.spec),
@@ -180,7 +180,7 @@ export function buildSweepResult(
           ? spec.title
           : spec.name,
       type: spec.type,
-      swept: axisNames.has(spec.name),
+      swept: rangeNames.has(spec.name),
       values: uniqueCells(
         scenarios.map(scenario => scenario.parameters[id] ?? null),
       ),
@@ -188,7 +188,7 @@ export function buildSweepResult(
   });
 
   return {
-    axes: axes.map(axis => ({...axis, values: [...axis.values]})),
+    axes: ranges.map(range => ({...range, values: [...range.values]})),
     parameters,
     outputs,
     metrics: [...numericOutputs.values()],

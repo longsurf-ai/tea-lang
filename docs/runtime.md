@@ -492,11 +492,11 @@ only. The CLI serializes the completed result once and exits. Consumers select
 a trajectory locally—there is no persistent editor session or selected-binding
 replay.
 
-The result remains pinned to the config bytes, complete Tea source closure,
-primary-provider bytes, effective clock, binding identity, and effective
-parameters. Request-backed executions are safe because every trajectory comes
-from its original sweep execution. Unsupported aggregate/resource output
-transports or an exceeded archive budget fail before JSON is published.
+The result identifies the complete Tea source closure, primary-provider bytes,
+effective clock, binding identity, and effective parameters. Request-backed
+executions are safe because every trajectory comes from its original sweep
+execution. Unsupported aggregate/resource output transports or an exceeded
+archive budget fail before JSON is published.
 
 The resulting `TrajectoryResult` is renderer-neutral: it contains a row-aligned
 provider time axis, declared dense output columns, logical effect schemas, and
@@ -541,7 +541,7 @@ await execution.runAll();
 execution.dispose();
 ```
 
-`executeProgram(program, bindings, target)` is the public target-neutral host
+`executeProgram(program, bindings, backend)` is the public backend-neutral host
 harness. It lowers the already checked Program once, executes the ordered
 bindings, and returns row/input/timing statistics plus the arithmetic profile
 that produced the results (`js-f64` or artifact-derived `wgsl-f32-i32`). A GPU

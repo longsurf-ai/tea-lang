@@ -10,10 +10,7 @@ import {paramSpecsOf} from '../src/codegen/params';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
 import {compileToProgram} from '../src/compile';
 import {executeProgram} from '../src/execute';
-import {
-  loadExecutionConfig,
-  resolveExecutionParameters,
-} from '../src/execution';
+import {loadConfig, resolveExecutionParameters} from '../src/execution';
 import {csvProvider} from '../src/providers/data/csv';
 import {MemorySink} from '../src/providers/sinks/memory-sink';
 import type {EffectValue} from '../src/runtime/abi';
@@ -135,13 +132,13 @@ describe('canonical EMA crossover example', () => {
 
 describe('canonical component migration regressions', () => {
   test('pins BB SPY binding 0 final metrics and normalized fill tape', async () => {
-    const loaded = loadExecutionConfig(BB_SWEEP);
-    if (loaded.config.execution.kind !== 'sweep') {
+    const config = loadConfig(BB_SWEEP);
+    if (config.execution.kind !== 'sweep') {
       throw new Error('BB SPY migration fixture must remain a sweep');
     }
 
     const errors = new Errors();
-    const program = compileToProgram([loaded.config.program.source], errors);
+    const program = compileToProgram([config.program.source], errors);
     if (program === null) {
       throw new Error(
         errors
@@ -154,23 +151,21 @@ describe('canonical component migration regressions', () => {
 
     const params = resolveExecutionParameters(
       paramSpecsOf(program.params),
-      loaded.config.execution,
-    ).parameterSets[0];
+      config.execution,
+    ).sets[0];
     if (params === undefined) {
       throw new Error('BB SPY sweep must contain binding 0');
     }
-    const timeNow = loaded.config.execution.timeNow;
+    const timeNow = config.execution.timeNow;
     if (timeNow === undefined) {
       throw new Error('BB SPY migration fixture must pin execution.timeNow');
     }
-    const providerHash = loaded.config.execution.provider.sha256;
+    const providerHash = config.execution.provider.sha256;
     if (providerHash === undefined) {
       throw new Error('BB SPY migration fixture must pin the provider hash');
     }
-    const csv = readFileSync(loaded.config.execution.provider.path, 'utf8');
-    expect(createHash('sha256').update(csv).digest('hex')).toBe(
-      providerHash,
-    );
+    const csv = readFileSync(config.execution.provider.path, 'utf8');
+    expect(createHash('sha256').update(csv).digest('hex')).toBe(providerHash);
 
     const sink = new MemorySink();
     const result = await executeProgram(

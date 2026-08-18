@@ -17,7 +17,6 @@ import {
 import {assertScenarioTrajectory} from '../src/dashboard/selection';
 import type {TrajectoryResult} from '../../../src/reporting/trajectory';
 
-const HASH = 'a'.repeat(64);
 const PROGRAM_HASH = 'c'.repeat(64);
 const PROVIDER_HASH = 'b'.repeat(64);
 
@@ -25,8 +24,8 @@ describe('Tea dashboard integration', () => {
   test('accepts a versioned sweep result with a reproducible snapshot', () => {
     const result = parseMachineExecutionResult(sweepEnvelope());
     expect(result.system.kind).toBe('sweep');
-    expect(result.config.programSource).toBe('/work/strategy.tea');
-    expect(result.config.providerBytesHash).toBe(PROVIDER_HASH);
+    expect(result.snapshot.programSource).toBe('/work/strategy.tea');
+    expect(result.snapshot.providerHash).toBe(PROVIDER_HASH);
   });
 
   test('requires one captured trajectory for every sweep scenario', () => {
@@ -36,20 +35,20 @@ describe('Tea dashboard integration', () => {
   });
 
   test('rejects missing snapshot identity and malformed views', () => {
-    const withoutSnapshot = {...sweepEnvelope(), config: undefined};
+    const withoutSnapshot = {...sweepEnvelope(), snapshot: undefined};
     expect(() => parseMachineExecutionResult(withoutSnapshot)).toThrow(
       'invalid execution snapshot',
     );
     expect(() =>
       parseMachineExecutionResult({
         ...sweepEnvelope(),
-        config: {...sweepEnvelope().config, programSource: ''},
+        snapshot: {...sweepEnvelope().snapshot, programSource: ''},
       }),
     ).toThrow('invalid execution snapshot');
     expect(() =>
       parseMachineExecutionResult({
         ...sweepEnvelope(),
-        config: {...sweepEnvelope().config, programSource: 'strategy.tea'},
+        snapshot: {...sweepEnvelope().snapshot, programSource: 'strategy.tea'},
       }),
     ).toThrow('invalid execution snapshot');
     expect(
@@ -661,13 +660,12 @@ function dashboardFunction<T>(name: string, nextName: string): T {
 
 function sweepEnvelope() {
   return {
-    schema: 'tea.execution-result/v1',
-    config: {
-      bytesHash: HASH,
+    schema: 'tea.execution-result/v2',
+    snapshot: {
       programSource: '/work/strategy.tea',
-      programBytesHash: PROGRAM_HASH,
-      providerBytesHash: PROVIDER_HASH,
-      effectiveTimeNow: 1234,
+      programHash: PROGRAM_HASH,
+      providerHash: PROVIDER_HASH,
+      timeNow: 1234,
     },
     system: {
       kind: 'sweep',

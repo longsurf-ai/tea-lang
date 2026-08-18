@@ -41,7 +41,7 @@ export interface NativeCall {
   // defaults are absent; noder appends any synthetic typed empties afterward.
   readonly argumentEvaluationOrder: readonly number[];
   readonly resultType: Type;
-  readonly receiver: ResolvedNativeReceiver | null;
+  readonly receiver: NativeReceiver | null;
 }
 
 export interface FunctionCall {
@@ -52,7 +52,7 @@ export interface FunctionCall {
   // order, then omitted user defaults in canonical parameter order. A method
   // receiver is a separate semantic input evaluated before these arguments.
   readonly argumentEvaluationOrder: readonly number[];
-  readonly receiver: ResolvedMethodReceiver | null;
+  readonly receiver: MethodReceiver | null;
 }
 
 export interface ConstructorArgument {
@@ -103,7 +103,7 @@ export interface CheckedWritebackTarget {
   readonly fields: readonly FieldObject[];
 }
 
-export type ResolvedNativeReceiver =
+export type NativeReceiver =
   | {
       readonly mode: 'value';
       readonly value: CheckedExpression;
@@ -114,7 +114,7 @@ export type ResolvedNativeReceiver =
       readonly writeback: CheckedWritebackTarget;
     };
 
-export type ResolvedMethodReceiver =
+export type MethodReceiver =
   | {
       readonly mode: 'const';
       readonly value: CheckedExpression;

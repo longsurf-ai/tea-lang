@@ -1,4 +1,4 @@
-// Purpose: Resolve one validated execution config into provider-backed, target-neutral Program bindings.
+// Purpose: Resolve one validated execution config into provider-backed, backend-neutral Program bindings.
 
 import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
@@ -10,28 +10,24 @@ import {csvProvider} from '../providers/data/csv';
 import type {BindInputs, DataProvider, OutputSink} from '../runtime/abi';
 import type {CsvProviderConfig, RuntimeConfig} from './config';
 import {ExecutionConfigError, type ExecutionConfig} from './config';
-import {
-  resolveExecutionParameters,
-  type ResolvedParameterAxis,
-} from './parameters';
+import {resolveExecutionParameters, type SweepRange} from './parameters';
 
-export interface ResolvedExecutionContext {
+export interface ExecutionContext {
   readonly kind: 'run' | 'sweep';
-  readonly axes: readonly ResolvedParameterAxis[];
+  readonly ranges: readonly SweepRange[];
   readonly bindings: readonly BindInputs[];
   readonly runtime: RuntimeConfig;
   readonly timeNow: number;
-  readonly providerBytesHash?: string;
+  readonly providerHash?: string;
 }
 
-export interface ExecutionContextDependencies {
+export interface ExecutionDependencies {
   readonly readFileBytes?: (path: string) => Promise<Uint8Array>;
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly fetchImpl?: typeof fetch;
   readonly providerFactory?: ExecutionProviderFactory;
   readonly now?: () => number;
   readonly sinkForExecution: (executionIndex: number) => OutputSink;
-  readonly expectedProviderBytesHash?: string;
 }
 
 export interface ExecutionProviderFactoryDependencies {
@@ -45,9 +41,9 @@ export type ExecutionProviderFactory = (
   dependencies: ExecutionProviderFactoryDependencies,
 ) => Promise<DataProvider>;
 
-interface ResolvedProvider {
+interface ProviderInput {
   readonly provider: DataProvider;
-  readonly bytesHash?: string;
+  readonly hash?: string;
 }
 
 // Provider construction belongs to this host-side context boundary. One
@@ -55,8 +51,8 @@ interface ResolvedProvider {
 export async function resolveExecutionContext(
   program: Program,
   config: ExecutionConfig,
-  dependencies: ExecutionContextDependencies,
-): Promise<ResolvedExecutionContext> {
+  dependencies: ExecutionDependencies,
+): Promise<ExecutionContext> {
   const parameters = resolveExecutionParameters(
     paramSpecsOf(program.params),
     config.execution,
@@ -64,7 +60,7 @@ export async function resolveExecutionContext(
   const resolvedProvider = await createProvider(config, dependencies);
   const provider = resolvedProvider.provider;
   const timeNow = resolveTimeNow(config, dependencies.now ?? Date.now);
-  const bindings = parameters.parameterSets.map(
+  const bindings = parameters.sets.map(
     (params, executionIndex): BindInputs => ({
       params,
       provider,
@@ -74,20 +70,20 @@ export async function resolveExecutionContext(
   );
   return {
     kind: config.execution.kind,
-    axes: parameters.axes,
+    ranges: parameters.ranges,
     bindings,
     runtime: config.runtime,
     timeNow,
-    ...(resolvedProvider.bytesHash === undefined
+    ...(resolvedProvider.hash === undefined
       ? {}
-      : {providerBytesHash: resolvedProvider.bytesHash}),
+      : {providerHash: resolvedProvider.hash}),
   };
 }
 
 async function createProvider(
   config: ExecutionConfig,
-  dependencies: ExecutionContextDependencies,
-): Promise<ResolvedProvider> {
+  dependencies: ExecutionDependencies,
+): Promise<ProviderInput> {
   const factoryDependencies = {
     readFileBytes: dependencies.readFileBytes ?? defaultReadFileBytes,
     environment: dependencies.environment,
@@ -104,7 +100,6 @@ async function createProvider(
   return createCsvExecutionProviderSnapshot(
     config.execution.provider,
     factoryDependencies,
-    dependencies.expectedProviderBytesHash,
   );
 }
 
@@ -119,8 +114,7 @@ export async function createCsvExecutionProvider(
 async function createCsvExecutionProviderSnapshot(
   config: CsvProviderConfig,
   dependencies: ExecutionProviderFactoryDependencies,
-  expectedBytesHash?: string,
-): Promise<ResolvedProvider> {
+): Promise<ProviderInput> {
   let bytes: Uint8Array;
   try {
     bytes = await dependencies.readFileBytes(config.path);
@@ -136,11 +130,6 @@ async function createCsvExecutionProviderSnapshot(
         `CSV provider '${config.path}' has SHA-256 ${actual}, expected ${config.sha256}`,
       );
     }
-  }
-  if (expectedBytesHash !== undefined && actual !== expectedBytesHash) {
-    throw new ExecutionConfigError(
-      `CSV provider '${config.path}' changed after sweep: SHA-256 ${actual}, expected ${expectedBytesHash}`,
-    );
   }
   let text: string;
   try {
@@ -159,7 +148,7 @@ async function createCsvExecutionProviderSnapshot(
       config: dependencies.environment,
       fetchImpl: dependencies.fetchImpl,
     }),
-    bytesHash: actual,
+    hash: actual,
   };
 }
 

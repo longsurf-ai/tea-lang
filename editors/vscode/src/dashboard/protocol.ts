@@ -2,7 +2,7 @@
 
 import {isAbsolute} from 'node:path';
 import type {
-  ExecutionSnapshotResult,
+  ExecutionSnapshot,
   ExecutionSystemResult,
 } from '../../../../src/reporting/execution-result';
 import type {SweepResult} from '../../../../src/reporting/sweep';
@@ -10,13 +10,12 @@ import type {TrajectoryResult} from '../../../../src/reporting/trajectory';
 import type {SweepViewSpec} from '../../../../src/visualization/sweep';
 
 export interface MachineExecutionResult {
-  readonly schema: 'tea.execution-result/v1';
-  readonly config: {
-    readonly bytesHash: string;
+  readonly schema: 'tea.execution-result/v2';
+  readonly snapshot: {
     readonly programSource: string;
-    readonly programBytesHash: string;
-    readonly providerBytesHash: string;
-    readonly effectiveTimeNow: number;
+    readonly programHash: string;
+    readonly providerHash: string;
+    readonly timeNow: number;
   };
   readonly system: ExecutionSystemResult;
   readonly sweep?: SweepResult;
@@ -42,10 +41,10 @@ export type DashboardRequest =
 export function parseMachineExecutionResult(
   value: unknown,
 ): MachineExecutionResult {
-  if (!isRecord(value) || value.schema !== 'tea.execution-result/v1') {
-    throw new Error("Tea CLI did not return schema 'tea.execution-result/v1'");
+  if (!isRecord(value) || value.schema !== 'tea.execution-result/v2') {
+    throw new Error("Tea CLI did not return schema 'tea.execution-result/v2'");
   }
-  executionSnapshot(value.config);
+  executionSnapshot(value.snapshot);
   const system = value.system;
   if (
     !isRecord(system) ||
@@ -91,20 +90,19 @@ export function parseMachineExecutionResult(
   return value as unknown as MachineExecutionResult;
 }
 
-function executionSnapshot(value: unknown): ExecutionSnapshotResult {
+function executionSnapshot(value: unknown): ExecutionSnapshot {
   if (
     !isRecord(value) ||
-    !sha256(value.bytesHash) ||
     typeof value.programSource !== 'string' ||
     !isAbsolute(value.programSource) ||
     value.programSource.includes('\0') ||
-    !sha256(value.programBytesHash) ||
-    !sha256(value.providerBytesHash) ||
-    !Number.isSafeInteger(value.effectiveTimeNow)
+    !sha256(value.programHash) ||
+    !sha256(value.providerHash) ||
+    !Number.isSafeInteger(value.timeNow)
   ) {
     throw new Error('Tea CLI returned an invalid execution snapshot');
   }
-  return value as unknown as ExecutionSnapshotResult;
+  return value as unknown as ExecutionSnapshot;
 }
 
 export function parseDashboardRequest(value: unknown): DashboardRequest | null {

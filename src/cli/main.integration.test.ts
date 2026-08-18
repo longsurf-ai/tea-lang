@@ -116,13 +116,12 @@ describe('CLI execution host', () => {
 
   test('execute --json exposes stable sweep and trajectory contracts', () => {
     const sweep = JSON.parse(cli('execute', SWEEP_CONFIG, '--json'));
-    expect(sweep.schema).toBe('tea.execution-result/v1');
-    expect(sweep.config).toEqual({
-      bytesHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    expect(sweep.schema).toBe('tea.execution-result/v2');
+    expect(sweep.snapshot).toEqual({
       programSource: SOURCE,
-      programBytesHash: expect.stringMatching(/^[0-9a-f]{64}$/),
-      providerBytesHash: expect.stringMatching(/^[0-9a-f]{64}$/),
-      effectiveTimeNow: 1_700_000_000_000,
+      programHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      providerHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      timeNow: 1_700_000_000_000,
     });
     expect(sweep.system).toMatchObject({
       kind: 'sweep',

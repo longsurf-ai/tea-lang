@@ -1,4 +1,4 @@
-// Purpose: Generic report sections render deterministically from target-neutral execution summaries.
+// Purpose: Generic report sections render deterministically from backend-neutral execution summaries.
 
 import {describe, expect, test} from 'bun:test';
 import type {ExecutionSummary} from '../execute';

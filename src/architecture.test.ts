@@ -140,3 +140,32 @@ test('CLI wiring has no mutable module-level coordination state', () => {
   });
   expect(mutable).toEqual([]);
 });
+
+test('type names describe values rather than resolution history', () => {
+  const violations: string[] = [];
+  for (const filename of productionSources(import.meta.dir)) {
+    const source = ts.createSourceFile(
+      filename,
+      readFileSync(filename, 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const visit = (node: ts.Node): void => {
+      if (
+        (ts.isInterfaceDeclaration(node) ||
+          ts.isTypeAliasDeclaration(node) ||
+          ts.isClassDeclaration(node) ||
+          ts.isEnumDeclaration(node)) &&
+        node.name?.text.includes('Resolved')
+      ) {
+        violations.push(
+          `${relative(import.meta.dir, filename)}: ${node.name.text}`,
+        );
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  expect(violations).toEqual([]);
+});

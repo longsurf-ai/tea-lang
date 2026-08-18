@@ -6,16 +6,8 @@ import {Errors} from '../base/print';
 import {compileToProgram} from '../compile';
 import {paramSpecsOf} from '../codegen/params';
 import type {ExecutionSummary} from '../execute';
-import {
-  type ExecutionConfig,
-  ExecutionConfigError,
-  type LoadedExecutionConfig,
-} from '../execution/config';
-import {
-  executeConfiguredProgram,
-  executeLoadedConfig,
-  type ConfiguredExecutionResult,
-} from '../execution/run';
+import {type ExecutionConfig, ExecutionConfigError} from '../execution/config';
+import {runConfig, runProgram, type RunResult} from '../execution/run';
 import {RunReportSink, SweepReportSink} from '../providers/sinks/report-sink';
 import {
   TrajectoryArchive,
@@ -76,47 +68,47 @@ export type CliExecutionResult =
   | {readonly ok: false; readonly errors: readonly ErrorMsg[]};
 
 export async function executeConfigCommand(
-  loaded: LoadedExecutionConfig,
+  config: ExecutionConfig,
   json: boolean,
   host: CliExecutionHost,
 ): Promise<CliExecutionResult> {
   const errors = new Errors();
-  if (loaded.config.execution.kind === 'run') {
+  if (config.execution.kind === 'run') {
     const sink = new RunReportSink();
-    const result = await executeLoadedConfig(
-      loaded,
+    const result = await runConfig(
+      config,
       errors,
-      contextDependencies(host, () => sink),
+      executionDependencies(host, () => sink),
     );
     if (!result.ok) return result;
     if (json) {
-      const binding = result.execution.summary.bindings[0];
+      const binding = result.run.summary.bindings[0];
       if (binding === undefined) {
         throw new ExecutionConfigError('run execution produced no trajectory');
       }
       printJson(host, {
-        ...machineResultBase(loaded, result.execution, result.programBytesHash),
+        ...machineResultBase(config, result.run, result.programHash),
         trajectory: buildTrajectoryResult(binding, sink.snapshot()),
       });
     } else {
-      renderRunExecution(host, result.execution, sink);
+      renderRunExecution(host, result.run, sink);
     }
     return {ok: true};
   }
 
   if (!json) {
     const sinks: SweepReportSink[] = [];
-    const result = await executeLoadedConfig(
-      loaded,
+    const result = await runConfig(
+      config,
       errors,
-      contextDependencies(host, executionIndex => {
+      executionDependencies(host, executionIndex => {
         const sink = new SweepReportSink();
         sinks[executionIndex] = sink;
         return sink;
       }),
     );
     if (!result.ok) return result;
-    renderSweepExecution(host, result.execution, sinks);
+    renderSweepExecution(host, result.run, sinks);
     return {ok: true};
   }
 
@@ -126,10 +118,10 @@ export async function executeConfigCommand(
   });
   const sinks: TrajectoryArchiveSink[] = [];
   try {
-    const result = await executeLoadedConfig(
-      loaded,
+    const result = await runConfig(
+      config,
       errors,
-      contextDependencies(host, executionIndex => {
+      executionDependencies(host, executionIndex => {
         const sink = archive.createSink();
         sinks[executionIndex] = sink;
         return sink;
@@ -137,9 +129,9 @@ export async function executeConfigCommand(
     );
     if (!result.ok) return result;
     printJson(host, {
-      ...machineResultBase(loaded, result.execution, result.programBytesHash),
-      sweep: sweepResultForExecution(result.execution, sinks),
-      trajectories: archive.trajectories(result.execution.summary.bindings),
+      ...machineResultBase(config, result.run, result.programHash),
+      sweep: sweepResultForExecution(result.run, sinks),
+      trajectories: archive.trajectories(result.run.summary.bindings),
     });
     return {ok: true};
   } finally {
@@ -165,7 +157,7 @@ export async function runCommand(
   const reportSink = options.trace ? null : new RunReportSink();
   const sink: OutputSink =
     reportSink ?? new TraceSink(line => host.print(line));
-  const execution = await executeConfiguredProgram(
+  const execution = await runProgram(
     program,
     directConfig(
       'run',
@@ -174,7 +166,7 @@ export async function runCommand(
       {kind: options.gpu ? 'webgpu' : 'javascript'},
       parameters,
     ),
-    contextDependencies(host, () => sink),
+    executionDependencies(host, () => sink),
   );
   renderRunExecution(host, execution, reportSink);
   return {ok: true};
@@ -204,10 +196,10 @@ export async function sweepCommand(
     options.maxScenarios,
   );
   const sinks: SweepReportSink[] = [];
-  const execution = await executeConfiguredProgram(
+  const execution = await runProgram(
     program,
     config,
-    contextDependencies(host, executionIndex => {
+    executionDependencies(host, executionIndex => {
       const sink = new SweepReportSink();
       sinks[executionIndex] = sink;
       return sink;
@@ -243,7 +235,7 @@ function directConfig(
   };
 }
 
-function contextDependencies(
+function executionDependencies(
   host: CliExecutionHost,
   sinkForExecution: (executionIndex: number) => OutputSink,
 ) {
@@ -270,7 +262,7 @@ function reportSectionsForRun(
 
 function renderRunExecution(
   host: CliExecutionHost,
-  execution: ConfiguredExecutionResult,
+  execution: RunResult,
   sink: RunReportSink | null,
 ): void {
   if (sink === null) return;
@@ -282,7 +274,7 @@ function renderRunExecution(
 
 function renderSweepExecution(
   host: CliExecutionHost,
-  execution: ConfiguredExecutionResult,
+  execution: RunResult,
   sinks: readonly SweepReportSink[],
 ): void {
   const result = sweepResultForExecution(execution, sinks);
@@ -294,7 +286,7 @@ function renderSweepExecution(
 }
 
 function sweepResultForExecution(
-  execution: ConfiguredExecutionResult,
+  execution: RunResult,
   sinks: readonly {
     snapshot(bindingIndex: number): ReturnType<SweepReportSink['snapshot']>;
   }[],
@@ -304,28 +296,27 @@ function sweepResultForExecution(
     sinks.map((sink, index) =>
       sink.snapshot(execution.summary.bindings[index]!.bindingIndex),
     ),
-    execution.axes,
+    execution.ranges,
   );
 }
 
 function machineResultBase(
-  loaded: LoadedExecutionConfig,
-  execution: ConfiguredExecutionResult,
-  programBytesHash: string,
+  config: ExecutionConfig,
+  execution: RunResult,
+  programHash: string,
 ) {
-  if (execution.providerBytesHash === undefined) {
+  if (execution.providerHash === undefined) {
     throw new ExecutionConfigError(
       'machine execution did not capture provider bytes',
     );
   }
   return {
     schema: EXECUTION_RESULT_SCHEMA,
-    config: {
-      bytesHash: loaded.bytesHash,
-      programSource: loaded.config.program.source,
-      programBytesHash,
-      providerBytesHash: execution.providerBytesHash,
-      effectiveTimeNow: execution.timeNow,
+    snapshot: {
+      programSource: config.program.source,
+      programHash,
+      providerHash: execution.providerHash,
+      timeNow: execution.timeNow,
     },
     system: buildExecutionSystemResult(execution),
   } as const;

@@ -81,7 +81,7 @@ describe('dynamic CLI parameters', () => {
 });
 
 describe('parameter sweeps', () => {
-  test('reports only syntactic numeric ranges as declaration-ordered axes', () => {
+  test('reports only syntactic numeric ranges as declaration-ordered ranges', () => {
     expect(
       expandParameterSweep(
         specs,
@@ -98,11 +98,11 @@ describe('parameter sweeps', () => {
         {maxScenarios: 10},
       ),
     ).toEqual({
-      axes: [
-        {name: 'length', type: 'int', values: [1, 2]},
-        {name: 'factor', type: 'float', values: [1, 1.2, 1.4]},
+      ranges: [
+        {name: 'length', values: [1, 2]},
+        {name: 'factor', values: [1, 1.2, 1.4]},
       ],
-      parameterSets: [
+      sets: [
         {length: 1, factor: 1, enabled: false, mode: 'slow'},
         {length: 1, factor: 1.2, enabled: false, mode: 'slow'},
         {length: 1, factor: 1.4, enabled: false, mode: 'slow'},
@@ -113,23 +113,23 @@ describe('parameter sweeps', () => {
     });
   });
 
-  test('does not report scalar numeric flags as axes', () => {
+  test('does not report scalar numeric flags as ranges', () => {
     expect(
       expandParameterSweep(specs, ['--length', '3', '--factor', '1.5'], {
         maxScenarios: 1,
       }),
     ).toEqual({
-      axes: [],
-      parameterSets: [{length: 3, factor: 1.5}],
+      ranges: [],
+      sets: [{length: 3, factor: 1.5}],
     });
   });
 
-  test('keeps a one-value numeric range as an axis', () => {
+  test('keeps a one-value numeric range', () => {
     expect(
       expandParameterSweep(specs, ['--length', '3:3:1'], {maxScenarios: 1}),
     ).toEqual({
-      axes: [{name: 'length', type: 'int', values: [3]}],
-      parameterSets: [{length: 3}],
+      ranges: [{name: 'length', values: [3]}],
+      sets: [{length: 3}],
     });
   });
 
@@ -150,7 +150,7 @@ describe('parameter sweeps', () => {
     ]);
   });
 
-  test('supports descending ranges and scalar axes', () => {
+  test('supports descending ranges and scalar ranges', () => {
     expect(
       expandSweepParameters(specs, ['--length', '3:1:-1', '--mode', 'slow'], {
         maxScenarios: 3,

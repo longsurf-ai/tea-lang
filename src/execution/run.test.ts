@@ -1,4 +1,4 @@
-// Purpose: Configured execution compiles once, resolves bindings, and owns target disposal.
+// Purpose: Config execution compiles once, resolves bindings, and owns backend disposal.
 
 import {describe, expect, test} from 'bun:test';
 import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {Errors} from '../base/print';
 import {compileToProgram} from '../compile';
 import type {ExecutionConfig} from './config';
-import {executeConfiguredProgram, executeLoadedConfig} from './run';
+import {runConfig, runProgram} from './run';
 
 const SOURCE = join(
   import.meta.dir,
@@ -15,12 +15,12 @@ const SOURCE = join(
 );
 const CSV = new TextEncoder().encode('time,close\n100,1\n200,2\n');
 
-describe('configured execution', () => {
-  test('runs a compiled Program and releases its injected target', async () => {
+describe('config execution', () => {
+  test('runs a compiled Program and releases its backend', async () => {
     const errors = new Errors();
     const program = compileToProgram([SOURCE], errors);
     if (program === null) throw new Error('fixture did not compile');
-    const result = await executeConfiguredProgram(program, config('run'), {
+    const result = await runProgram(program, config('run'), {
       readFileBytes: async () => CSV,
       now: () => 123,
       sinkForExecution: () => ({declare() {}, publish() {}}),
@@ -30,23 +30,18 @@ describe('configured execution', () => {
     expect(result.summary.bindings).toHaveLength(1);
     expect(result.summary.bindings[0]?.rows).toBe(2);
     expect(result.timeNow).toBe(123);
-    expect(result.providerBytesHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.providerHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  test('the loaded entry returns Core diagnostics without executing', async () => {
+  test('runConfig returns Core diagnostics without executing', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'tea-config-run-'));
     const invalid = join(directory, 'invalid.tea');
     writeFileSync(invalid, 'indicator("broken"\n');
     try {
-      const result = await executeLoadedConfig(
+      const result = await runConfig(
         {
-          configPath: join(directory, 'run.yaml'),
-          baseDirectory: directory,
-          bytesHash: '0'.repeat(64),
-          config: {
-            ...config('run'),
-            program: {source: invalid},
-          },
+          ...config('run'),
+          program: {source: invalid},
         },
         new Errors(),
         {
@@ -61,22 +56,13 @@ describe('configured execution', () => {
     }
   });
 
-  test('loaded execution hashes the root and builtin source closure', async () => {
-    const result = await executeLoadedConfig(
-      {
-        configPath: '/run.yaml',
-        baseDirectory: '/',
-        bytesHash: '0'.repeat(64),
-        config: config('run'),
-      },
-      new Errors(),
-      {
-        readFileBytes: async () => CSV,
-        sinkForExecution: () => ({declare() {}, publish() {}}),
-      },
-    );
+  test('runConfig hashes the root and builtin source closure', async () => {
+    const result = await runConfig(config('run'), new Errors(), {
+      readFileBytes: async () => CSV,
+      sinkForExecution: () => ({declare() {}, publish() {}}),
+    });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.programBytesHash).toMatch(/^[0-9a-f]{64}$/);
+    if (result.ok) expect(result.programHash).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 

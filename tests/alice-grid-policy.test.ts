@@ -9,8 +9,8 @@ import {Errors} from '../src/base/print';
 import {paramSpecsOf} from '../src/codegen/params';
 import {compileToProgram} from '../src/compile';
 import {
-  executeConfiguredProgram,
-  loadExecutionConfig,
+  runProgram,
+  loadConfig,
   resolveExecutionParameters,
   type ExecutionConfig,
 } from '../src/execution';
@@ -47,13 +47,13 @@ test('keeps Alice grid policy out of the portfolio facade', () => {
 });
 
 test('preserves Alice binding 0 metrics and both normalized fill tapes', async () => {
-  const loaded = loadExecutionConfig(SWEEP);
-  if (loaded.config.execution.kind !== 'sweep') {
+  const config = loadConfig(SWEEP);
+  if (config.execution.kind !== 'sweep') {
     throw new Error('Alice policy fixture must remain a sweep');
   }
 
   const errors = new Errors();
-  const program = compileToProgram([loaded.config.program.source], errors);
+  const program = compileToProgram([config.program.source], errors);
   if (program === null) {
     throw new Error(
       errors
@@ -64,22 +64,22 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
   }
   expect(errors.count).toBe(0);
 
-  const timeNow = loaded.config.execution.timeNow;
+  const timeNow = config.execution.timeNow;
   if (timeNow === undefined) {
     throw new Error('Alice policy fixture must pin execution.timeNow');
   }
   const params = resolveExecutionParameters(
     paramSpecsOf(program.params),
-    loaded.config.execution,
-  ).parameterSets[0];
+    config.execution,
+  ).sets[0];
   if (params === undefined) {
     throw new Error('Alice policy fixture must contain binding 0');
   }
 
   const sink = new MemorySink();
-  const result = await executeConfiguredProgram(
+  const result = await runProgram(
     program,
-    runConfig(loaded.config, params, timeNow),
+    singleRunConfig(config, params, timeNow),
     {sinkForExecution: () => sink},
   );
   expect(result.summary.numericProfile).toBe('js-f64');
@@ -115,12 +115,12 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
 });
 
 test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
-  const loaded = loadExecutionConfig(SWEEP);
-  if (loaded.config.execution.kind !== 'sweep') {
+  const config = loadConfig(SWEEP);
+  if (config.execution.kind !== 'sweep') {
     throw new Error('Alice policy fixture must remain a sweep');
   }
   const errors = new Errors();
-  const program = compileToProgram([loaded.config.program.source], errors);
+  const program = compileToProgram([config.program.source], errors);
   if (program === null) {
     throw new Error(
       errors
@@ -129,22 +129,22 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
         .join('; '),
     );
   }
-  const timeNow = loaded.config.execution.timeNow;
+  const timeNow = config.execution.timeNow;
   if (timeNow === undefined) {
     throw new Error('Alice policy fixture must pin execution.timeNow');
   }
   const params = resolveExecutionParameters(
     paramSpecsOf(program.params),
-    loaded.config.execution,
-  ).parameterSets[0];
+    config.execution,
+  ).sets[0];
   if (params === undefined) {
     throw new Error('Alice policy fixture must contain binding 0');
   }
-  const selected = runConfig(loaded.config, params, timeNow);
+  const selected = singleRunConfig(config, params, timeNow);
   if (selected.execution.kind !== 'run') {
     throw new Error('selected Alice binding must be a run');
   }
-  const config = {
+  const run = {
     ...selected,
     execution: {
       ...selected.execution,
@@ -156,7 +156,7 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
     },
   };
   const sink = new MemorySink();
-  const result = await executeConfiguredProgram(program, config, {
+  const result = await runProgram(program, run, {
     sinkForExecution: () => sink,
   });
   expect(result.summary.bindings[0]?.rows).toBe(20_000);
@@ -191,7 +191,7 @@ function finalMetric(sink: MemorySink, title: string): number {
   return value;
 }
 
-function runConfig(
+function singleRunConfig(
   config: ExecutionConfig,
   parameters: ExecutionConfig['execution']['parameters'],
   timeNow: number,

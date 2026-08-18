@@ -97,7 +97,7 @@ tea run examples/strategy/cpu-gpu-next-open/strategy.tea \
   --input examples/data/demo/strategy-bars.csv
 ```
 
-`run` uses the JavaScript CPU target by default. It prints system statistics,
+`run` uses the JavaScript CPU backend by default. It prints system statistics,
 effective parameters, the complete dense table, and typed sparse effects.
 Source parameters become CLI options after compilation:
 
@@ -308,7 +308,7 @@ Plotly adapter uses pinned local assets, so visualization does not send strategy
 results to a CDN.
 
 See [Strategy model](../strategy.md) for the normative source contract and
-[GPU Lowering](../advanced/gpu-lowering.md) for the target boundary.
+[GPU Lowering](../advanced/gpu-lowering.md) for the backend boundary.
 
 For a fuller signal-driven example, `examples/strategy/ema-cross/strategy.tea` uses
 `ta.ema`, `ta.crossover`, and `ta.crossunder` directly, trades the signals with

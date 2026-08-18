@@ -95,7 +95,7 @@ abstraction cannot silently enlarge GPU work.
 
 ## Numeric contract
 
-The GPU target is explicit rather than pretending to be bit-identical to the
+The GPU backend is explicit rather than pretending to be bit-identical to the
 JavaScript f64 runtime:
 
 - Tea floats use `f32`;

@@ -39,7 +39,7 @@ const declaration: ExecutionDeclaration = {
 };
 
 describe('structured sweep results', () => {
-  test('projects axes, resolved parameters, outputs, and numeric metrics by stable IDs', () => {
+  test('projects axes, effective parameters, outputs, and numeric metrics by stable IDs', () => {
     const summary: ExecutionSummary = {
       backend: 'cpu',
       numericProfile: 'js-f64',
@@ -88,7 +88,7 @@ describe('structured sweep results', () => {
     ];
 
     const result = buildSweepResult(summary, snapshots, [
-      {name: 'fast', type: 'float', values: [5, 6]},
+      {name: 'fast', values: [5, 6]},
     ]);
 
     expect(result.parameters).toEqual([
