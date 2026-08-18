@@ -67,10 +67,12 @@ export type CliExecutionResult =
   | {readonly ok: true}
   | {readonly ok: false; readonly errors: readonly ErrorMsg[]};
 
+export type ExecuteOutput = 'text' | 'json';
+
 export async function execute(
   config: ExecutionConfig,
-  json: boolean,
   host: CliExecutionHost,
+  output: ExecuteOutput,
 ): Promise<CliExecutionResult> {
   const errors = new Errors();
   const program = compileToProgram([config.program.source], errors);
@@ -82,7 +84,7 @@ export async function execute(
       config,
       executionDependencies(host, () => sink),
     );
-    if (json) {
+    if (output === 'json') {
       const binding = run.summary.bindings[0];
       if (binding === undefined) {
         throw new ExecutionConfigError('run execution produced no trajectory');
@@ -97,7 +99,7 @@ export async function execute(
     return {ok: true};
   }
 
-  if (!json) {
+  if (output === 'text') {
     const sinks: SweepReportSink[] = [];
     const run = await runProgram(
       program,

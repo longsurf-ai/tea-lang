@@ -138,7 +138,11 @@ tea
   .action(async (configArgument: string, options: {json?: boolean}) => {
     const config = loadConfig(configArgument);
     finishExecution(
-      await execute(config, options.json === true, executionHost),
+      await execute(
+        config,
+        executionHost,
+        options.json === true ? 'json' : 'text',
+      ),
     );
   });
 
