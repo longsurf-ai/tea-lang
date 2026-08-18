@@ -27,12 +27,12 @@ when its explicit command is invoked.
 - Syntax highlighting stays declarative and must not require activation. The
   sweep dashboard owns a narrow activated host under `src/dashboard/`; it runs
   the public `tea execute <config> --json` process contract and must not import
-  or recreate compiler/runtime stages.
+  or recreate compiler/runtime stages. Projection and renderer-model logic
+  come from `src/visualization`; the editor owns only its Webview adapter.
 - Dashboard execution is workspace-hosted, trusted-workspace-only, and uses
-  `spawn` without a shell. Dashboard sweeps retain a bounded scalar trajectory
-  archive; selection reads that original result without rerunning. Requests
-  remain pinned to the config hash, provider hash, program source-closure hash,
-  and effective clock returned by the original sweep.
+  one `spawn` without a shell. The generic JSON sweep result contains every
+  bounded trajectory captured by the original execution; selection is local
+  and never opens a persistent Tea process or reruns a binding.
 - The webview accepts only validated messages and local packaged resources
   under a restrictive CSP. It uses VS Code theme variables and must not fetch
   code, fonts, or result data from a CDN or loopback server.

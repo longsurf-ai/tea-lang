@@ -24,9 +24,9 @@ Tea `Program` execution. It is host orchestration, not another compiler or IR.
 - `run.ts` compiles through `compileToProgram()` exactly once, then resolves the
   context, acquires the target, executes, and disposes it. Presentation remains
   a caller concern.
-- The legacy `tea run` and `tea sweep` commands may adapt flags into an in-memory
-  v1 config, but must use this same context and runtime path. Do not maintain a
-  second execution implementation for legacy spelling.
+- The first-class `tea run` and `tea sweep` commands adapt their dynamic flags
+  into an in-memory v1 config and use this same context and runtime path. Do not
+  maintain a second execution implementation for direct source commands.
 - Keep tests colocated and use only repository-owned fixtures or injected host
   dependencies. The Program snapshot hash covers exact root-source bytes plus
   the compiler-owned Tea source closure; provider hashes cover exact input

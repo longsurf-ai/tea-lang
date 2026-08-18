@@ -5,13 +5,7 @@ import {basename, dirname} from 'node:path';
 import * as vscode from 'vscode';
 import {createSweepRendererModel} from '../../../../src/visualization/renderer';
 import {projectSweepScene} from '../../../../src/visualization/sweep';
-import type {TrajectoryResult} from '../../../../src/reporting/trajectory';
-import {
-  disposeTeaCliSession,
-  executeTeaCli,
-  TeaCliError,
-  type TeaCliExecution,
-} from './cli';
+import {executeTeaCli, TeaCliError, type TeaCliExecution} from './cli';
 import {dashboardDocument} from './document';
 import {
   isSameDashboardGeneration,
@@ -25,7 +19,6 @@ import {assertScenarioTrajectory} from './selection';
 const VIEW_TYPE = 'tea.sweepDashboard';
 
 export class SweepDashboardPanel implements vscode.Disposable {
-  private readonly cliOwnerId = randomBytes(16).toString('hex');
   private readonly disposables: vscode.Disposable[] = [];
   private execution: TeaCliExecution | null = null;
   private result: MachineExecutionResult | null = null;
@@ -33,9 +26,6 @@ export class SweepDashboardPanel implements vscode.Disposable {
   private latestScenarioRequestId = -1;
   private phase: DashboardPhase = 'idle';
   private disposed = false;
-  // Drill-downs are projected from the retained sweep archive. Keep only the
-  // current materialized response; the CLI session remains the archive owner.
-  private readonly trajectoryCache = new Map<number, TrajectoryResult>();
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
@@ -75,10 +65,8 @@ export class SweepDashboardPanel implements vscode.Disposable {
     if (this.disposed) return;
     this.disposed = true;
     this.execution?.cancel();
-    disposeTeaCliSession(this.cliOwnerId);
     this.execution = null;
     this.result = null;
-    this.trajectoryCache.clear();
     this.phase = 'idle';
     while (this.disposables.length > 0) this.disposables.pop()!.dispose();
   }
@@ -134,7 +122,7 @@ export class SweepDashboardPanel implements vscode.Disposable {
           return;
         }
         case 'selectScenario':
-          await this.executeScenario(request.bindingIndex, request.requestId);
+          await this.selectScenario(request.bindingIndex, request.requestId);
           return;
       }
     } catch (error) {
@@ -144,14 +132,12 @@ export class SweepDashboardPanel implements vscode.Disposable {
 
   private async executeSweep(): Promise<void> {
     this.execution?.cancel();
-    disposeTeaCliSession(this.cliOwnerId);
     this.execution = null;
     const runId = ++this.runId;
     const configUri = this.configUri;
     this.latestScenarioRequestId = -1;
     this.phase = 'sweep';
     this.result = null;
-    this.trajectoryCache.clear();
     try {
       await this.postState('running', 'sweep', runId);
     } catch (error) {
@@ -162,7 +148,6 @@ export class SweepDashboardPanel implements vscode.Disposable {
     let execution: TeaCliExecution;
     try {
       execution = executeTeaCli({
-        ownerId: this.cliOwnerId,
         executable: teaExecutable(),
         configPath: configUri.fsPath,
         cwd: dirname(configUri.fsPath),
@@ -178,7 +163,11 @@ export class SweepDashboardPanel implements vscode.Disposable {
       if (result.schema !== 'tea.execution-result/v1') {
         throw new TeaCliError('Tea CLI did not return the sweep result');
       }
-      if (result.system.kind !== 'sweep' || result.sweep === undefined) {
+      if (
+        result.system.kind !== 'sweep' ||
+        result.sweep === undefined ||
+        result.trajectories === undefined
+      ) {
         throw new TeaCliError(
           'dashboard execution config must describe a sweep',
         );
@@ -214,122 +203,42 @@ export class SweepDashboardPanel implements vscode.Disposable {
     });
   }
 
-  private async executeScenario(
+  private async selectScenario(
     bindingIndex: number,
     requestId: number,
   ): Promise<void> {
     const snapshot = this.result;
-    if (snapshot?.sweep === undefined) return;
+    if (snapshot?.sweep === undefined || snapshot.trajectories === undefined) {
+      return;
+    }
     const scenario = snapshot.sweep.scenarios.find(
       candidate => candidate.bindingIndex === bindingIndex,
     );
     if (scenario === undefined) {
       throw new TeaCliError(`unknown sweep execution ${bindingIndex}`);
     }
-    const cached = this.trajectoryCache.get(bindingIndex);
-    if (cached !== undefined) {
-      this.execution?.cancel();
-      this.execution = null;
-      this.latestScenarioRequestId = requestId;
-      this.phase = 'idle';
-      await this.post({
-        type: 'trajectory',
-        runId: this.runId,
-        requestId,
-        trajectory: cached,
-      });
-      if (
-        !this.disposed &&
-        requestId === this.latestScenarioRequestId &&
-        snapshot === this.result
-      ) {
-        await this.postState('ready', undefined, this.runId);
-      }
-      return;
+    const trajectory = snapshot.trajectories.find(
+      candidate => candidate.bindingIndex === bindingIndex,
+    );
+    if (trajectory === undefined) {
+      throw new TeaCliError(
+        `Tea sweep result has no trajectory for execution ${bindingIndex}`,
+      );
     }
-    this.execution?.cancel();
-    this.execution = null;
-    const runId = this.runId;
-    const configUri = this.configUri;
+    assertScenarioTrajectory(scenario, trajectory);
     this.latestScenarioRequestId = requestId;
-    this.phase = 'trajectory';
-    try {
-      await this.postState('running', 'trajectory', runId);
-    } catch (error) {
-      this.settlePending(runId, requestId);
-      throw error;
-    }
+    await this.post({
+      type: 'trajectory',
+      runId: this.runId,
+      requestId,
+      trajectory,
+    });
     if (
-      this.disposed ||
-      runId !== this.runId ||
-      requestId !== this.latestScenarioRequestId ||
-      snapshot !== this.result
+      !this.disposed &&
+      requestId === this.latestScenarioRequestId &&
+      snapshot === this.result
     ) {
-      return;
-    }
-    let execution: TeaCliExecution;
-    try {
-      execution = executeTeaCli({
-        ownerId: this.cliOwnerId,
-        executable: teaExecutable(),
-        configPath: configUri.fsPath,
-        cwd: dirname(configUri.fsPath),
-        scenario: {
-          bindingIndex,
-          configBytesHash: snapshot.config.bytesHash,
-          programBytesHash: snapshot.config.programBytesHash,
-          providerBytesHash: snapshot.config.providerBytesHash,
-          effectiveTimeNow: snapshot.config.effectiveTimeNow,
-        },
-      });
-    } catch (error) {
-      this.settlePending(runId, requestId);
-      throw error;
-    }
-    this.execution = execution;
-    try {
-      const result = await execution.result;
-      if (!this.isCurrent(execution, runId, requestId)) {
-        return;
-      }
-      if (result.trajectory === undefined) {
-        throw new TeaCliError('Tea CLI did not return a scenario trajectory');
-      }
-      if (
-        result.config.bytesHash !== snapshot.config.bytesHash ||
-        result.config.programSource !== snapshot.config.programSource ||
-        result.config.programBytesHash !== snapshot.config.programBytesHash ||
-        result.config.providerBytesHash !== snapshot.config.providerBytesHash ||
-        result.config.effectiveTimeNow !== snapshot.config.effectiveTimeNow
-      ) {
-        throw new TeaCliError(
-          'scenario rerun did not preserve the sweep execution snapshot',
-        );
-      }
-      assertScenarioTrajectory(scenario, result.trajectory);
-      this.cacheTrajectory(result.trajectory);
-      await this.post({
-        type: 'trajectory',
-        runId,
-        requestId,
-        trajectory: result.trajectory,
-      });
-      if (!this.isCurrent(execution, runId, requestId)) return;
-      if (!this.settleCurrent(execution, runId, requestId)) return;
-      await this.postState('ready', undefined, runId);
-    } catch (error) {
-      if (!this.isCurrent(execution, runId, requestId)) return;
-      this.settleCurrent(execution, runId, requestId);
-      throw error;
-    } finally {
-      if (this.execution === execution) this.execution = null;
-      if (
-        runId === this.runId &&
-        requestId === this.latestScenarioRequestId &&
-        this.phase === 'trajectory'
-      ) {
-        this.phase = 'idle';
-      }
+      await this.postState('ready', undefined, this.runId);
     }
   }
 
@@ -352,17 +261,6 @@ export class SweepDashboardPanel implements vscode.Disposable {
             programPath: this.result.config.programSource,
           }),
     });
-  }
-
-  private cacheTrajectory(trajectory: TrajectoryResult): void {
-    this.trajectoryCache.delete(trajectory.bindingIndex);
-    this.trajectoryCache.set(trajectory.bindingIndex, trajectory);
-    // A trajectory can contain every output for millions of rows. Retain only
-    // the current drill-down; the protocol's byte bound remains the primary
-    // guard for a single oversized trajectory.
-    if (this.trajectoryCache.size <= 1) return;
-    const oldest = this.trajectoryCache.keys().next().value;
-    if (oldest !== undefined) this.trajectoryCache.delete(oldest);
   }
 
   private async report(error: unknown): Promise<void> {

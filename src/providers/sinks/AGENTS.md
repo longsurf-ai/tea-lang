@@ -18,4 +18,8 @@ runtime never formats or aggregates emissions.
   declarations and unified row publications, including recursively fixed
   sparse-effect payloads, but does not impose batch identity,
   capacity, schema serialization, or strategy-specific policy.
+- `TrajectoryArchive` is the bounded generic sweep-result capture. It stores
+  complete scalar trajectories and typed effects from the original execution;
+  JSON/reporting consumers project all bindings without replay or host-specific
+  request protocols.
 - Column padding belongs in `base/tabwriter.ts`, not in individual sinks.

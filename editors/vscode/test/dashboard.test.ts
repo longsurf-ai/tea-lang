@@ -1,4 +1,4 @@
-// Purpose: Lock the dashboard's machine protocol, replay arguments, and CSP shell.
+// Purpose: Lock the editor's generic Tea result boundary, shared visualization model, and CSP shell.
 
 import {describe, expect, test} from 'bun:test';
 import {readFileSync} from 'node:fs';
@@ -12,7 +12,6 @@ import {
 } from '../src/dashboard/operation';
 import {
   parseDashboardRequest,
-  parseDashboardTrajectoryResult,
   parseMachineExecutionResult,
 } from '../src/dashboard/protocol';
 import {assertScenarioTrajectory} from '../src/dashboard/selection';
@@ -22,12 +21,18 @@ const HASH = 'a'.repeat(64);
 const PROGRAM_HASH = 'c'.repeat(64);
 const PROVIDER_HASH = 'b'.repeat(64);
 
-describe('Tea dashboard protocol', () => {
+describe('Tea dashboard integration', () => {
   test('accepts a versioned sweep result with a reproducible snapshot', () => {
     const result = parseMachineExecutionResult(sweepEnvelope());
     expect(result.system.kind).toBe('sweep');
     expect(result.config.programSource).toBe('/work/strategy.tea');
     expect(result.config.providerBytesHash).toBe(PROVIDER_HASH);
+  });
+
+  test('requires one captured trajectory for every sweep scenario', () => {
+    expect(() =>
+      parseMachineExecutionResult({...sweepEnvelope(), trajectories: []}),
+    ).toThrow('mismatched sweep trajectories');
   });
 
   test('rejects missing snapshot identity and malformed views', () => {
@@ -67,6 +72,7 @@ describe('Tea dashboard protocol', () => {
       ...sweepEnvelope(),
       system: {...sweepEnvelope().system, kind: 'run'},
       sweep: undefined,
+      trajectories: undefined,
       trajectory: {
         bindingIndex: 0,
         rows: 1,
@@ -86,6 +92,7 @@ describe('Tea dashboard protocol', () => {
       ...sweepEnvelope(),
       system: {...sweepEnvelope().system, kind: 'run'},
       sweep: undefined,
+      trajectories: undefined,
       trajectory: {
         bindingIndex: 0,
         rows: 1,
@@ -101,62 +108,14 @@ describe('Tea dashboard protocol', () => {
     ]);
   });
 
-  test('accepts only the dedicated archived-trajectory frame for drill-down', () => {
-    const trajectory = {
-      bindingIndex: 2,
-      rows: 1,
-      time: [100],
-      parameters: [],
-      outputs: [],
-      effectSchemas: [],
-      effects: [],
-    };
-    const result = parseDashboardTrajectoryResult({
-      schema: 'tea.dashboard-trajectory/v1',
-      config: sweepEnvelope().config,
-      trajectory,
-    });
-    expect(result.trajectory.bindingIndex).toBe(2);
-    expect(() =>
-      parseDashboardTrajectoryResult({
-        ...result,
-        system: sweepEnvelope().system,
-      }),
-    ).toThrow('invalid dashboard trajectory');
-    expect(() => parseMachineExecutionResult(result)).toThrow(
-      "schema 'tea.execution-result/v1'",
-    );
-  });
-
-  test('pins scenario reruns to config, provider, and clock', () => {
+  test('invokes one generic JSON execution without editor protocol flags', () => {
     expect(
       teaCliArguments({
         executable: 'tea',
         configPath: '/work/sweep.yaml',
         cwd: '/work',
-        scenario: {
-          bindingIndex: 17,
-          configBytesHash: HASH,
-          programBytesHash: PROGRAM_HASH,
-          providerBytesHash: PROVIDER_HASH,
-          effectiveTimeNow: 1234,
-        },
       }),
-    ).toEqual([
-      'execute',
-      '/work/sweep.yaml',
-      '--json',
-      '--scenario',
-      '17',
-      '--expected-config-sha256',
-      HASH,
-      '--expected-program-sha256',
-      PROGRAM_HASH,
-      '--expected-provider-sha256',
-      PROVIDER_HASH,
-      '--replay-time-now',
-      '1234',
-    ]);
+    ).toEqual(['execute', '/work/sweep.yaml', '--json']);
   });
 
   test('rejects a trajectory whose parameters differ from the clicked execution', () => {
@@ -509,9 +468,7 @@ describe('Tea dashboard protocol', () => {
       'Plotly.Plots.resize(elements.trajectoryPlot)',
     );
     expect(trajectoryResize).not.toContain('elements.surfacePlot');
-    expect(globalResize).toContain(
-      'Plotly.Plots.resize(elements.surfacePlot)',
-    );
+    expect(globalResize).toContain('Plotly.Plots.resize(elements.surfacePlot)');
     expect(globalResize).toContain(
       'Plotly.Plots.resize(elements.trajectoryPlot)',
     );
@@ -755,5 +712,33 @@ function sweepEnvelope() {
         },
       ],
     },
+    trajectories: [
+      {
+        bindingIndex: 0,
+        rows: 2,
+        time: [100, 200],
+        parameters: [
+          {
+            id: 'parameter:x',
+            name: 'x',
+            label: 'X',
+            type: 'int',
+            value: 1,
+            active: true,
+          },
+          {
+            id: 'parameter:y',
+            name: 'y',
+            label: 'Y',
+            type: 'int',
+            value: 2,
+            active: true,
+          },
+        ],
+        outputs: [],
+        effectSchemas: [],
+        effects: [],
+      },
+    ],
   };
 }

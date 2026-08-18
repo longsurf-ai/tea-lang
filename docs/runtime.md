@@ -478,29 +478,25 @@ metrics as holes. Auto geometry keeps incomplete or degenerate grids as points;
 an explicitly requested surface retains missing coordinates as holes. It never
 invents scenarios or interpolates results.
 
-Renderer adapters consume a presentation model containing the available axes,
-metrics, current view specification, and its projected `SweepScene`. The
-current Plotly adapter is served with a pinned local asset from an
-IPv4-loopback HTTP server; it does not change execution, reporting, or
-projection semantics and does not fetch code or data from a CDN.
+Visualization hosts consume a presentation model containing the available
+axes, metrics, current view specification, and projected `SweepScene`. Tea's
+CLI does not import a renderer or start a browser server. The VS Code/Cursor
+host uses the same pure projection and packages its renderer assets locally.
 
-The VS Code/Cursor dashboard consumes the same `SweepResult` through the
-versioned `tea execute <config> --json` process contract. Its Webview loads a
-packaged local Plotly asset and communicates only with the extension host; it
-does not use the loopback browser server. Selecting a projected execution
-projects the exact row-aligned values already captured during that dashboard
-sweep. There is no selected-binding replay. A dedicated compact archive owns
-scalar dense columns and logical typed effects under one 1 GiB
-charged-retention budget; normal CLI sweeps keep their final-row-only capture.
-The initial machine message still carries only the compact `SweepResult`, and
-the CLI sends one selected trajectory on demand.
+`tea execute <config> --json` returns one versioned, renderer-neutral result.
+For a sweep it contains both the compact `SweepResult` and every complete
+`TrajectoryResult` captured during that same execution. A compact archive owns
+scalar dense columns and logical typed effects under one 256 MiB retention and
+projection budget while the sweep runs; human CLI sweeps retain final values
+only. The CLI serializes the completed result once and exits. Consumers select
+a trajectory locally—there is no persistent editor session or selected-binding
+replay.
 
-Archive selection remains pinned to the config bytes, complete Tea source
-closure, primary-provider bytes, effective clock, binding identity, and
-effective parameters of the original sweep. Request-backed executions are safe
-because selection reads their original captured result rather than fetching a
-secondary provider again. Unsupported aggregate/resource output transports or
-an exceeded archive budget fail before a dashboard result is presented.
+The result remains pinned to the config bytes, complete Tea source closure,
+primary-provider bytes, effective clock, binding identity, and effective
+parameters. Request-backed executions are safe because every trajectory comes
+from its original sweep execution. Unsupported aggregate/resource output
+transports or an exceeded archive budget fail before JSON is published.
 
 The resulting `TrajectoryResult` is renderer-neutral: it contains a row-aligned
 provider time axis, declared dense output columns, logical effect schemas, and

@@ -1,7 +1,6 @@
 // Purpose: Activate Tea execution tooling only when the dashboard command is invoked.
 
 import * as vscode from 'vscode';
-import {disposeTeaCliSessions} from './dashboard/cli';
 import {SweepDashboardPanel} from './dashboard/panel';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -24,8 +23,4 @@ export function activate(context: vscode.ExtensionContext): void {
       if (dashboard !== null) context.subscriptions.push(dashboard);
     }),
   );
-}
-
-export function deactivate(): void {
-  disposeTeaCliSessions();
 }

@@ -22,11 +22,12 @@ Tea editor's title bar runs the same command. Select a YAML or JSON execution
 config whose `execution.kind` is `sweep`.
 
 The dashboard opens beside the normal text editor. Its upper plot projects two
-swept parameters against any numeric metric. Dashboard sweeps retain a compact,
-bounded trajectory archive in the CLI process; clicking an execution reads that
-exact completed result instead of rerunning the strategy. The time-aligned plot
-below includes typed broker fill annotations when present. The header reports
-the actual runtime, row count, execution count, and timing.
+swept parameters against any numeric metric. Tea returns one bounded JSON sweep
+result containing the trajectories captured by the original execution;
+clicking an execution selects that result locally instead of contacting a
+persistent CLI process or rerunning the strategy. The time-aligned plot below
+includes typed broker fill annotations when present. The header reports the
+actual runtime, row count, execution count, and timing.
 
 The extension invokes Tea's machine interface, `tea execute <config> --json`,
 instead of compiling or interpreting Tea itself. Configure an absolute CLI path
@@ -35,10 +36,10 @@ extension host's `PATH`. Execution is disabled in untrusted workspaces. Plotly
 is packaged locally; the webview does not fetch code or data from a CDN or
 loopback server.
 
-The archive has a 1 GiB charged-retention limit and supports scalar output
-channels. A selected trajectory is sent as one bounded JSON result. This is
-intended for daily data and other moderate histories; multi-million-row minute
-histories need output selection plus a viewport-aware or disk-backed archive.
+Tea's JSON sweep capture has a 256 MiB charged retention/projection limit and
+supports scalar output channels. This is intended for daily data and other
+moderate histories; multi-million-row minute histories need output selection
+or a different generic result transport.
 
 ## Development
 
@@ -52,8 +53,8 @@ bun run check
 ```
 
 The tests run the generated grammar through the same `vscode-textmate` engine
-used by compatible editors. They also lock the dashboard's machine protocol,
-replay arguments, and content-security policy.
+used by compatible editors. They also lock the generic Tea JSON boundary,
+shared visualization projection, and content-security policy.
 
 ## Package and install
 

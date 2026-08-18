@@ -81,12 +81,10 @@ parameterized long-only EMA crossover over 3,283 Binance Spot BTCUSDT daily
 bars from 2017-08-17 through 2026-08-12 UTC. The CSV, immutable source record,
 and SHA-256 are under [`data/binance/`](data/binance/).
 
-Run the checked-in 100-scenario WebGPU sweep, optionally opening the local
-viewer:
+Run the checked-in 100-scenario WebGPU sweep:
 
 ```sh
 tea execute examples/strategy/ema-cross/sweep.yaml
-tea execute examples/strategy/ema-cross/sweep.yaml --view
 ```
 
 Paths in the execution config are relative to the YAML file. Its fixed
@@ -111,7 +109,7 @@ The direct sweep command remains available. It uses GPU by default; add
 tea sweep examples/strategy/ema-cross/strategy.tea \
   -i examples/data/binance/btcusdt-1d.csv \
   --fast_length 2:20:2 --slow_length 24:60:4 \
-  --initial_cash 100000 --slippage 0.0005 --fee 0.001 --view
+  --initial_cash 100000 --slippage 0.0005 --fee 0.001
 ```
 
 The snapshot is a reproducible stress input, not a claim about future returns.

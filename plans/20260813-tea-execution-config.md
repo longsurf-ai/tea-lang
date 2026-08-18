@@ -75,7 +75,7 @@ v1 feature.
 
 Omitted Tea parameters use their source declarations' defaults. `run` requires
 exactly one execution, rejects ranges and `maxExecutions`, and defaults to the
-JavaScript runtime only in the legacy CLI. `sweep.maxExecutions` is optional,
+JavaScript runtime only in the direct `run` command. `sweep.maxExecutions` is optional,
 defaults to 10,000, and must be a positive safe integer no greater than 10,000. A sweep with no ranges
 is a valid one-execution sweep. It expands ranges in Program parameter
 declaration order and rejects axis/product overflow before materializing axis
@@ -125,10 +125,11 @@ substituting another buffer.
 - `src/execute.ts` remains the only target-neutral Program execution harness.
 - A small host adapter acquires JavaScript or Dawn/WebGPU target resources and
   returns an explicit disposable lease.
-- `src/cli/parameters.ts` owns only legacy flag spelling and converts those
+- `src/cli/parameters.ts` owns direct dynamic-parameter flag spelling and converts those
   tokens into the shared structured parameter selections.
-- `src/main.ts` remains Commander/process I/O. It renders results but does not
-  own parameter, provider, or runtime semantics.
+- `src/cli/execution.ts` adapts the three first-class CLI entry points to the
+  shared execution and reporting contracts. `src/main.ts` remains only
+  Commander/process I/O.
 
 The execution context accepts one narrow injected provider factory. V1's
 closed config admits only `kind: csv`; the default factory owns byte/hash
@@ -145,16 +146,16 @@ and `axes` are retained only because sweep result projection needs them.
 Add the canonical command:
 
 ```text
-tea execute path/to/run.yaml [--view] [--trace]
+tea execute path/to/run.yaml [--json]
 ```
 
-`--view` is valid for `sweep`; `--trace` is valid for `run`. These remain host
-presentation choices, not execution-context fields. `tea execute` rejects
-unknown flags, rejects `--view --trace`, rejects `--view` unless the config is a
-sweep with at least two numeric ranges, and rejects `--trace` unless it is a
-run.
+The configuration is the command's single execution specification: `tea
+execute` accepts no runtime, parameter, tracing, or visualization overrides.
+`--json` changes only publication into the versioned renderer-neutral result;
+a sweep JSON result includes every bounded trajectory captured during that
+same execution.
 
-Existing commands remain valid:
+The source-and-dynamic-parameter commands remain first-class:
 
 ```text
 tea run strategy.tea -i data.csv --length 10
@@ -165,21 +166,21 @@ Their flags are translated to the same structured selections, provider,
 runtime, and resolved execution-context path. V1 does not combine a config
 file with CLI execution overrides, avoiding two sources of truth.
 
-Legacy positional source and `-i` paths are first resolved against the
+Direct positional source and `-i` paths are first resolved against the
 invocation working directory, then adapted into the shared in-memory config;
 they never inherit a synthetic YAML directory.
 
-The pre-Commander Bun-to-Node relay must call the same
-`loadExecutionConfig(path)` used by the command. A `webgpu` config is relayed
-to Node 22 before Dawn is loaded; there must not be a second partial YAML parser
-for this decision. Help/version do not read a config. The parent passes a hash
-of the bounded config bytes and the child verifies that hash before executing,
-so a changed file cannot silently select different semantics after relay.
-Preflight returns one immutable `{config, bytesHash}` snapshot. A same-process
-JavaScript execution consumes that exact snapshot instead of reading the path
-again; a relayed child reloads once and verifies the private parent hash before
-parsing/executing. Typed preflight configuration errors use the normal
-`tea: ...`, exit-1 user-error path.
+The Commander `preAction` Bun-to-Node relay hook calls the same
+`loadExecutionConfig(path)` used by the action. A `webgpu` config is relayed to
+Node 22 before Dawn dynamically loads the native binding; there is no second
+partial YAML parser. Help/version do not read a config. The parent passes a
+hash of the bounded config bytes and the child verifies that hash before
+executing, so a changed file cannot silently select different semantics after
+relay. The hook retains one immutable `{config, bytesHash}` snapshot. A
+same-process JavaScript execution consumes that exact snapshot instead of
+reading the path again; a relayed child reloads once and verifies the private
+parent hash before executing. Typed preflight configuration errors use the
+normal `tea: ...`, exit-1 user-error path.
 
 ## Validation and trust boundaries
 
@@ -225,7 +226,7 @@ to the future editor host, not to Tea Core or the configuration parser.
 - Calculate every range cardinality and the Cartesian product before allocating
   arrays; then materialize with the same scaled-integer algorithm used by CLI
   ranges (`String(number)` canonicalizes YAML/JSON numbers).
-- Refactor legacy CLI parameter syntax onto the shared expander.
+- Route direct CLI parameter syntax through the shared expander.
 
 ### B. Resolved execution context
 
@@ -237,10 +238,10 @@ to the future editor host, not to Tea Core or the configuration parser.
 ### C. Runtime selection and CLI
 
 - Add the disposable JavaScript/WebGPU host lease.
-- Add `tea execute` and migrate legacy run/sweep through the same resolution
+- Add `tea execute` and route direct run/sweep through the same resolution
   path.
 - Update the Node 22 relay for config-selected WebGPU.
-- Prove equivalent legacy flags and YAML produce identical traces/sweep values.
+- Prove equivalent direct flags and YAML produce identical run/sweep values.
 
 ### D. Documentation and real example
 

@@ -22,15 +22,6 @@ export interface SweepRendererModel {
   readonly initialScene: SweepScene;
 }
 
-export interface SweepRendererDocument {
-  readonly contentType: 'text/html; charset=utf-8';
-  readonly body: string;
-}
-
-export interface SweepRenderer {
-  document(model: SweepRendererModel): SweepRendererDocument;
-}
-
 export function createSweepRendererModel(
   result: SweepResult,
 ): SweepRendererModel {

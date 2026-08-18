@@ -8,8 +8,8 @@
 - Keep Plotly and result transport local to the extension host.
 - Resolve surface clicks from the rendered X/Y coordinates and add an exact
   hover marker so the highlighted execution is always the clickable one.
-- Retain a bounded sweep trajectory archive so daily-history drill-down returns
-  immediately instead of rerunning the selected strategy.
+- Consume the complete bounded trajectories in Tea's generic JSON sweep result,
+  so drill-down stays editor-local without a persistent CLI session or replay.
 
 ## 0.2.0
 

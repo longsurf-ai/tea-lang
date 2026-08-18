@@ -12,7 +12,7 @@ import {
   executeConfiguredProgram,
   loadExecutionConfig,
   resolveExecutionParameters,
-  selectSweepScenarioConfig,
+  type ExecutionConfig,
 } from '../src/execution';
 import {MemorySink} from '../src/providers/sinks/memory-sink';
 import type {EffectValue} from '../src/runtime/abi';
@@ -79,7 +79,7 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
   const sink = new MemorySink();
   const result = await executeConfiguredProgram(
     program,
-    selectSweepScenarioConfig(program, loaded.config, 0, timeNow),
+    runConfig(loaded.config, params, timeNow),
     {sinkForExecution: () => sink},
   );
   expect(result.summary.numericProfile).toBe('js-f64');
@@ -133,12 +133,14 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
   if (timeNow === undefined) {
     throw new Error('Alice policy fixture must pin execution.timeNow');
   }
-  const selected = selectSweepScenarioConfig(
-    program,
-    loaded.config,
-    0,
-    timeNow,
-  );
+  const params = resolveExecutionParameters(
+    paramSpecsOf(program.params),
+    loaded.config.execution,
+  ).parameterSets[0];
+  if (params === undefined) {
+    throw new Error('Alice policy fixture must contain binding 0');
+  }
+  const selected = runConfig(loaded.config, params, timeNow);
   if (selected.execution.kind !== 'run') {
     throw new Error('selected Alice binding must be a run');
   }
@@ -187,6 +189,22 @@ function finalMetric(sink: MemorySink, title: string): number {
     throw new Error(`Alice output '${title}' has no final numeric value`);
   }
   return value;
+}
+
+function runConfig(
+  config: ExecutionConfig,
+  parameters: ExecutionConfig['execution']['parameters'],
+  timeNow: number,
+): ExecutionConfig {
+  return {
+    ...config,
+    execution: {
+      kind: 'run',
+      provider: config.execution.provider,
+      parameters,
+      timeNow,
+    },
+  };
 }
 
 function fillFields(payload: EffectValue): readonly EffectValue[] {

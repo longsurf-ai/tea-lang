@@ -20,12 +20,10 @@ provider, runtime, parameters, and sweep ranges.
 The extension is a host for existing public products:
 
 - `tea execute <config> --json` returns one versioned, renderer-neutral sweep
-  result and execution summary;
-- dashboard session mode retains one bounded compact trajectory archive and
-  returns a selected binding through `tea.dashboard-trajectory/v1` without a
-  second execution;
-- the public `tea execute <config> --json --scenario <binding>` compatibility
-  path remains an explicit standalone replay, outside dashboard selection;
+  result, execution summary, and all bounded trajectories captured by that
+  sweep;
+- the CLI serializes that generic JSON result once and exits; the editor selects
+  trajectories locally without a persistent session or second execution;
 - the Webview never executes Tea, reads providers, parses terminal tables, or
   loads a native GPU implementation;
 - the CLI child retains the existing Bun-to-Node/Dawn relay and owns runtime
@@ -36,11 +34,11 @@ VS Code objects, HTML, camera state, or strategy-specific runtime behavior.
 
 ## Data policy
 
-Normal sweeps retain only each execution's final dense values and no effects.
-Dashboard session mode instead stores scalar dense columns and typed effects in
-a compact 128 MiB charged-retention archive while the original sweep runs. The
-initial JSON frame still contains only final metrics. Selecting a point lazily
-materializes one `TrajectoryResult` from the archive, with no rerun.
+Human sweeps retain only each execution's final dense values and no effects.
+`tea execute <config> --json` instead stores scalar dense columns and typed
+effects in a compact 256 MiB charged-retention/projection archive while the
+original sweep runs, then returns the sweep summary and every `TrajectoryResult`
+in one ordinary JSON document. Selection is local to the editor.
 
 Trajectory X uses the provider's bar-open timestamp when present and falls
 back to the absolute row otherwise.
@@ -64,7 +62,7 @@ The controller:
 5. projects X/Y/Z and slices in the extension host through the existing pure
    `projectSweepScene` function;
 6. cancels the child process when requested and ignores stale responses;
-7. reads one binding from the completed dashboard archive when the Webview
+7. reads one binding from the completed generic JSON result when the Webview
    selects a surface point.
 
 The Webview loads only packaged local assets through `asWebviewUri`, uses a
@@ -97,8 +95,8 @@ replace a newer dashboard state.
 
 - Reporting tests pin complete dense rows, logical effect schemas/payloads,
   non-finite normalization, and binding identity.
-- CLI integration tests parse both JSON envelopes and prove archive selection
-  returns the exact chosen parameter set without an execution summary.
+- CLI integration tests parse the generic JSON envelope and prove every
+  trajectory matches its sweep binding.
 - Extension tests pin command arguments, message validation, escaping/CSP, and
   child cancellation/failure behavior.
 - The extension build packages its CommonJS host and local Plotly asset; the

@@ -2,7 +2,6 @@
 
 import {isAbsolute} from 'node:path';
 import type {
-  DashboardTrajectoryResult,
   ExecutionSnapshotResult,
   ExecutionSystemResult,
 } from '../../../../src/reporting/execution-result';
@@ -22,11 +21,8 @@ export interface MachineExecutionResult {
   readonly system: ExecutionSystemResult;
   readonly sweep?: SweepResult;
   readonly trajectory?: TrajectoryResult;
+  readonly trajectories?: readonly TrajectoryResult[];
 }
-
-export type DashboardCliResult =
-  | MachineExecutionResult
-  | DashboardTrajectoryResult;
 
 export type DashboardRequest =
   | {readonly type: 'ready'}
@@ -65,34 +61,34 @@ export function parseMachineExecutionResult(
   }
 
   if (system.kind === 'sweep') {
-    if (!isSweepResult(value.sweep) || value.trajectory !== undefined) {
+    if (
+      !isSweepResult(value.sweep) ||
+      !Array.isArray(value.trajectories) ||
+      !value.trajectories.every(isTrajectoryResult) ||
+      value.trajectory !== undefined
+    ) {
       throw new Error('Tea CLI returned an invalid sweep result');
+    }
+    const scenarios = new Set(
+      value.sweep.scenarios.map(scenario => scenario.bindingIndex),
+    );
+    if (
+      value.trajectories.length !== scenarios.size ||
+      value.trajectories.some(
+        trajectory => !scenarios.delete(trajectory.bindingIndex),
+      ) ||
+      scenarios.size !== 0
+    ) {
+      throw new Error('Tea CLI returned mismatched sweep trajectories');
     }
   } else if (
     !isTrajectoryResult(value.trajectory) ||
-    value.sweep !== undefined
+    value.sweep !== undefined ||
+    value.trajectories !== undefined
   ) {
     throw new Error('Tea CLI returned an invalid trajectory result');
   }
   return value as unknown as MachineExecutionResult;
-}
-
-export function parseDashboardTrajectoryResult(
-  value: unknown,
-): DashboardTrajectoryResult {
-  if (!isRecord(value) || value.schema !== 'tea.dashboard-trajectory/v1') {
-    throw new Error(
-      "Tea CLI did not return schema 'tea.dashboard-trajectory/v1'",
-    );
-  }
-  executionSnapshot(value.config);
-  if (
-    !isTrajectoryResult(value.trajectory) ||
-    Object.keys(value).sort().join(',') !== 'config,schema,trajectory'
-  ) {
-    throw new Error('Tea CLI returned an invalid dashboard trajectory');
-  }
-  return value as unknown as DashboardTrajectoryResult;
 }
 
 function executionSnapshot(value: unknown): ExecutionSnapshotResult {

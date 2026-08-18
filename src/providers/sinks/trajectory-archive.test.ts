@@ -211,6 +211,32 @@ describe('trajectory archive', () => {
     expect(result.outputs[1]!.values).toEqual([null, 2]);
   });
 
+  test('projects every captured binding in order under one result budget', () => {
+    const archive = new TrajectoryArchive({maxBytes: 1 << 20});
+    const first = archive.createSink();
+    const second = archive.createSink();
+    first.declare(declaration);
+    second.declare(declaration);
+
+    expect(
+      archive
+        .trajectories([
+          {...binding(0), bindingIndex: 4},
+          {...binding(0), bindingIndex: 9},
+        ])
+        .map(trajectory => trajectory.bindingIndex),
+    ).toEqual([4, 9]);
+
+    const bounded = new TrajectoryArchive({
+      maxBytes: 1 << 20,
+      maxProjectionBytes: 1,
+    });
+    bounded.createSink().declare(declaration);
+    expect(() => bounded.trajectories([binding(0)])).toThrow(
+      TrajectoryArchiveProjectionBudgetError,
+    );
+  });
+
   test('fails closed before exceeding the budget and can be reset', () => {
     const archive = new TrajectoryArchive({maxBytes: 64 * 1024});
     const sink = archive.createSink();

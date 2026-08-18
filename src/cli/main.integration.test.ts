@@ -1,6 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {spawn, spawnSync} from 'node:child_process';
-import {createInterface} from 'node:readline';
+import {spawnSync} from 'node:child_process';
 import {join} from 'node:path';
 
 const ROOT = join(import.meta.dir, '../..');
@@ -129,31 +128,8 @@ describe('CLI execution host', () => {
       rows: 6,
     });
     expect(sweep.sweep.scenarios).toHaveLength(3);
-
-    const trajectory = JSON.parse(
-      cli(
-        'execute',
-        '--json',
-        '--scenario',
-        '1',
-        '--expected-config-sha256',
-        sweep.config.bytesHash,
-        '--expected-program-sha256',
-        sweep.config.programBytesHash,
-        '--expected-provider-sha256',
-        sweep.config.providerBytesHash,
-        '--replay-time-now',
-        String(sweep.config.effectiveTimeNow),
-        SWEEP_CONFIG,
-      ),
-    );
-    expect(trajectory.system).toMatchObject({
-      kind: 'run',
-      executions: 1,
-      rows: 2,
-    });
-    expect(trajectory.config).toEqual(sweep.config);
-    expect(trajectory.trajectory).toMatchObject({
+    expect(sweep.trajectories).toHaveLength(3);
+    expect(sweep.trajectories[1]).toMatchObject({
       bindingIndex: 1,
       rows: 2,
       time: [100, 200],
@@ -177,143 +153,24 @@ describe('CLI execution host', () => {
     expect(run.sweep).toBeUndefined();
   });
 
-  test('dashboard session keeps one framed process across scenario requests and errors', async () => {
-    const child = spawn(
-      process.execPath,
-      [MAIN, 'execute', SWEEP_CONFIG, '--json', '--dashboard-session'],
-      {cwd: ROOT, stdio: ['pipe', 'pipe', 'pipe']},
-    );
-    if (
-      child.stdin === null ||
-      child.stdout === null ||
-      child.stderr === null
-    ) {
-      throw new Error('dashboard session did not expose process pipes');
-    }
-    const lines = createInterface({input: child.stdout})[
-      Symbol.asyncIterator
-    ]();
-    const stderr: Buffer[] = [];
-    child.stderr.on('data', chunk => stderr.push(chunk as Buffer));
-    try {
-      const sweep = JSON.parse(await nextLine(lines, stderr));
-      expect(sweep.system.kind).toBe('sweep');
-
-      child.stdin.write('not json\n');
-      expect(JSON.parse(await nextLine(lines, stderr))).toEqual({
-        schema: 'tea.dashboard-error/v1',
-        error: 'dashboard scenario request must be one JSON object per line',
-      });
-
-      child.stdin.write(
-        `${JSON.stringify({
-          schema: 'tea.dashboard-scenario/v1',
-          bindingIndex: 1,
-          configBytesHash: sweep.config.bytesHash,
-          programBytesHash: sweep.config.programBytesHash,
-          providerBytesHash: sweep.config.providerBytesHash,
-          effectiveTimeNow: sweep.config.effectiveTimeNow,
-        })}\n`,
-      );
-      const trajectory = JSON.parse(await nextLine(lines, stderr));
-      expect(trajectory.schema).toBe('tea.dashboard-trajectory/v1');
-      expect(trajectory.config).toEqual(sweep.config);
-      expect(trajectory.system).toBeUndefined();
-      expect(trajectory.trajectory).toMatchObject({
-        bindingIndex: 1,
-        time: [100, 200],
-      });
-    } finally {
-      child.stdin.end();
-      await new Promise<void>(resolve => child.once('close', () => resolve()));
-    }
-  });
-
-  test('scenario replay rejects stale config, program closure, provider, and clock snapshots', () => {
-    const sweep = JSON.parse(cli('execute', SWEEP_CONFIG, '--json'));
-    const common = [
-      'execute',
-      SWEEP_CONFIG,
-      '--json',
-      '--scenario',
-      '1',
-      '--expected-config-sha256',
-      sweep.config.bytesHash,
-      '--expected-program-sha256',
-      sweep.config.programBytesHash,
-      '--expected-provider-sha256',
-      sweep.config.providerBytesHash,
-      '--replay-time-now',
-      String(sweep.config.effectiveTimeNow),
-    ];
-
-    const staleConfig = invokeCli(
-      ...common.map(value =>
-        value === sweep.config.bytesHash ? '0'.repeat(64) : value,
-      ),
-    );
-    expect(staleConfig.status).toBe(1);
-    expect(staleConfig.stdout).toBe('');
-    expect(staleConfig.stderr).toContain(
-      'execution config does not match the selected sweep snapshot',
-    );
-
-    const programIndex = common.indexOf(sweep.config.programBytesHash);
-    const staleProgramArgs = [...common];
-    staleProgramArgs[programIndex] = '0'.repeat(64);
-    const staleProgram = invokeCli(...staleProgramArgs);
-    expect(staleProgram.status).toBe(1);
-    expect(staleProgram.stdout).toBe('');
-    expect(staleProgram.stderr).toContain(
-      'program source closure changed after sweep',
-    );
-
-    const providerIndex = common.indexOf(sweep.config.providerBytesHash);
-    const staleProviderArgs = [...common];
-    staleProviderArgs[providerIndex] = '0'.repeat(64);
-    const staleProvider = invokeCli(...staleProviderArgs);
-    expect(staleProvider.status).toBe(1);
-    expect(staleProvider.stdout).toBe('');
-    expect(staleProvider.stderr).toContain('changed after sweep');
-
-    const clockIndex = common.indexOf(String(sweep.config.effectiveTimeNow));
-    const staleClockArgs = [...common];
-    staleClockArgs[clockIndex] = '1700000000001';
-    const staleClock = invokeCli(...staleClockArgs);
-    expect(staleClock.status).toBe(1);
-    expect(staleClock.stdout).toBe('');
-    expect(staleClock.stderr).toContain(
-      '--replay-time-now does not match execution.timeNow',
-    );
-  });
-
-  test('execute --trace prints a run trace instead of the report', () => {
-    const output = cli('execute', RUN_CONFIG, '--trace');
-    expect(output).toContain('# output[1] plot title=scaled close');
-    expect(output).toContain('# effect[0] type=@entry.Sample');
-    expect(output).toMatch(/^0 1 4$/m);
-    expect(output).toMatch(/^1 1 7$/m);
-    expect(output).toContain('0 effect[0] {"kind":"user-type","fields":[4]}');
-    expect(output).not.toContain('# System');
-  });
-
-  test('config execution matches the legacy run and sweep adapters', () => {
-    const configuredTrace = cli('execute', RUN_CONFIG, '--trace');
-    const legacyTrace = cli(
+  test('config execution matches the direct run and sweep entry points', () => {
+    const configuredRun = cli('execute', RUN_CONFIG);
+    const directRun = cli(
       'run',
       SOURCE,
       '-i',
       DATA,
-      '--trace',
       '--scale',
       '3',
       '--initial_cash',
       '1',
     );
-    expect(configuredTrace).toBe(legacyTrace);
+    expect(reportSection(configuredRun, '# Parameters')).toBe(
+      reportSection(directRun, '# Parameters'),
+    );
 
     const configuredSweep = cli('execute', SWEEP_CONFIG);
-    const legacySweep = cli(
+    const directSweep = cli(
       'sweep',
       SOURCE,
       '-i',
@@ -327,52 +184,21 @@ describe('CLI execution host', () => {
       '3',
     );
     expect(reportSection(configuredSweep, '# Sweep Results')).toBe(
-      reportSection(legacySweep, '# Sweep Results'),
+      reportSection(directSweep, '# Sweep Results'),
     );
   });
 
-  test('execute rejects presentation flags that do not match config mode', () => {
-    const traceSweep = invokeCli('execute', SWEEP_CONFIG, '--trace');
-    expect(traceSweep.status).toBe(1);
-    expect(traceSweep.stderr).toContain(
-      'tea: --trace requires a run execution config',
-    );
-
-    const viewRun = invokeCli('execute', RUN_CONFIG, '--view');
-    expect(viewRun.status).toBe(1);
-    expect(viewRun.stderr).toContain(
-      'tea: --view requires a sweep execution config',
-    );
-
-    const mutuallyExclusive = invokeCli(
-      'execute',
-      RUN_CONFIG,
-      '--view',
-      '--trace',
-    );
-    expect(mutuallyExclusive.status).toBe(1);
-    expect(mutuallyExclusive.stderr).toContain(
-      'tea: --view and --trace cannot be used together',
-    );
-
+  test('execute exposes no runtime or presentation overrides', () => {
+    for (const flag of ['--trace', '--view', '--scenario']) {
+      const result = invokeCli('execute', SWEEP_CONFIG, flag);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`unknown option '${flag}'`);
+    }
     const unknown = invokeCli('execute', '--runtime', 'javascript', RUN_CONFIG);
     expect(unknown.status).toBe(1);
-    expect(unknown.stderr).toContain("tea: unknown execute option '--runtime'");
+    expect(unknown.stderr).toContain("unknown option '--runtime'");
   });
 });
-
-async function nextLine(
-  lines: AsyncIterator<string>,
-  stderr: readonly Buffer[],
-): Promise<string> {
-  const next = await lines.next();
-  if (next.done) {
-    throw new Error(
-      `dashboard session closed before its response: ${Buffer.concat(stderr).toString('utf8')}`,
-    );
-  }
-  return next.value;
-}
 
 function reportSection(output: string, heading: string): string {
   const start = output.indexOf(heading);

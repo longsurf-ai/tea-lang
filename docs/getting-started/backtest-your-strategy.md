@@ -117,14 +117,13 @@ packages, not from the host runner.
 The canonical durable command is:
 
 ```text
-tea execute <config> [--view|--trace]
+tea execute <config> [--json]
 ```
 
 For example, the repository includes a real Binance Spot BTCUSDT daily sweep:
 
 ```sh
 tea execute examples/strategy/ema-cross/sweep.yaml
-tea execute examples/strategy/ema-cross/sweep.yaml --view
 ```
 
 The configuration is ordinary YAML (JSON is also accepted):
@@ -206,14 +205,12 @@ ceilings rather than language semantics. See [GPU Lowering](../advanced/gpu-lowe
 for their allocation behavior.
 
 `execution.kind: run` rejects ranges and `maxExecutions`, producing exactly one
-binding. `--trace` is valid only for a run and replaces its human table with
-the machine trace format. `execution.kind: sweep` forms the Cartesian product
-of its ranges; `maxExecutions` defaults to and cannot exceed 10,000, and
-rejects an oversized product before it is materialized. A sweep with no ranges
-is valid and has one binding. `--view` is valid only for a sweep with at least
-two numeric ranges.
-`--view` and `--trace` cannot be combined, and neither changes the execution
-context stored in the file.
+binding. `execution.kind: sweep` forms the Cartesian product of its ranges;
+`maxExecutions` defaults to and cannot exceed 10,000, and rejects an oversized
+product before it is materialized. A sweep with no ranges is valid and has one
+binding. `tea execute` accepts no runtime, parameter, tracing, or visualization
+overrides: the config is its single execution specification. `--json` changes
+only publication into the versioned renderer-neutral result.
 
 ### Explore a sweep in VS Code or Cursor
 
@@ -223,35 +220,34 @@ editor-specific run format. In a trusted local workspace, run
 editor stays open on the left; the dashboard opens beside it with a restrained
 3D parameter surface above a selected execution's trajectory.
 
-The initial message transports only final numeric outputs, but dashboard mode
-captures each execution's row-aligned scalar outputs and typed effects into a
-compact, bounded archive while the sweep is already running. Clicking a point
-reads the exact archived execution; it does not rerun the strategy. The
-trajectory uses provider timestamps and can annotate `broker.FillExecuted`
-entries and exits.
-The extension calls the versioned `tea execute <config> --json` machine
-interface and never embeds another compiler or runtime.
+Tea's one-shot JSON result contains the compact sweep summary plus each
+execution's row-aligned scalar outputs and typed effects captured during that
+same sweep. Clicking a point selects its trajectory locally; it does not retain
+a Tea process or rerun the strategy. The trajectory uses provider timestamps
+and can annotate `broker.FillExecuted` entries and exits. The extension calls
+the versioned `tea execute <config> --json` interface, then uses the shared
+visualization projection without embedding another compiler or runtime.
 
-Because drill-down comes from the completed sweep, Programs using request-backed
-contexts retain the same result they originally produced. Snapshot hashes still
-identify the config, Tea source closure, primary provider, and clock used by the
-sweep session.
+Because drill-down comes from the completed sweep, Programs using
+request-backed contexts retain the same result they originally produced.
+Snapshot hashes identify the config, Tea source closure, primary provider, and
+clock used by that result.
 
 If `tea` is not available on the extension host's `PATH`, set the
 application-scoped `tea.executablePath` setting to an absolute executable path.
 The command is intentionally unavailable in untrusted workspaces.
 
-The archive accepts scalar output transports and has a 1 GiB charged-retention
-limit. Use it for daily data and other moderate histories. Multi-million-row
-minute sweeps require an output-selective, viewport-aware, or disk-backed
-archive; the extension fails clearly rather than truncating or silently
+JSON sweep capture accepts scalar output transports and has a 256 MiB charged
+retention/projection limit. Use it for daily data and other moderate histories.
+Multi-million-row minute sweeps require output selection or another generic
+result transport; Tea fails clearly rather than truncating or silently
 rerunning them.
 
-### Direct-command compatibility
+### Direct source commands
 
-`tea run` and `tea sweep` remain supported for quick invocations. They translate
-their flags into the same structured parameter selections, provider, runtime,
-and execution-context path used by `tea execute`:
+`tea run` and `tea sweep` are the source-and-dynamic-parameter entry points.
+They translate their flags into the same structured parameter selections,
+provider, runtime, and execution-context path used by `tea execute`:
 
 ```sh
 tea run strategy.tea -i data.csv --length 10
@@ -296,22 +292,9 @@ tea sweep examples/strategy/cpu-gpu-next-open/strategy.tea \
   --slippage 0:0.2:0.1 --fee 0 --initial_cash 100 --cpu
 ```
 
-Add `--view` when at least two parameters use range syntax:
-
-```sh
-tea sweep examples/strategy/cpu-gpu-next-open/strategy.tea \
-  --input examples/data/demo/strategy-bars.csv \
-  --slippage 0:0.2:0.1 --fee 0:0.2:0.1 \
-  --initial_cash 100 --view
-```
-
-The browser view lets you select X and Y from the numeric range parameters and
-Z from the Program's final numeric outputs. A third or later range parameter
-becomes an explicit slice selector, so every plotted point still represents
-one concrete execution. Auto geometry uses a surface for a complete coordinate
-grid with at least two values per axis and preserves null metrics as holes;
-incomplete or degenerate grids render as points. Selecting Surface explicitly
-keeps missing coordinates as holes rather than interpolating them.
+Visualization is a separate consumer of Tea's renderer-neutral JSON result.
+The editor dashboard uses the shared visualization projection; the Tea CLI
+does not start a browser or own visualization state.
 
 Each binding has isolated runtime state and can eventually vary providers,
 symbols, or other inputs—not just parameters. The sweep reporter requests only
@@ -319,10 +302,9 @@ final dense values and no effect payloads. The Bun CLI relays native Dawn execut
 to Node 22; set `TEA_GPU_NODE` if Node 22 is not discovered automatically.
 No path introduces a strategy compiler or host-side matching/accounting.
 
-The result model and X/Y/Z/slice projection are renderer-neutral. The current
-Plotly adapter is a presentation choice served with pinned local assets on an
-IPv4 loopback address, so opening the view does not send strategy results to a
-CDN.
+The result model and X/Y/Z/slice projection are renderer-neutral. The editor's
+Plotly adapter uses pinned local assets, so visualization does not send strategy
+results to a CDN.
 
 See [Strategy model](../strategy.md) for the normative source contract and
 [GPU Lowering](../advanced/gpu-lowering.md) for the target boundary.

@@ -1,4 +1,4 @@
-// Purpose: Compact, budgeted full-trajectory capture for lazy sweep drill-down.
+// Purpose: Compact, budgeted full-trajectory capture for generic sweep results.
 
 import type {ExecutionBindingSummary} from '../../execute';
 import type {SweepReportSnapshot} from '../../reporting/sweep';
@@ -31,8 +31,9 @@ export interface TrajectoryArchiveOptions {
   // Maximum charged retained bytes. This is a deterministic capacity model,
   // not a claim about engine-specific JavaScript object RSS.
   readonly maxBytes: number;
-  // Bounds one selected TrajectoryResult's expanded row arrays and logical
-  // payloads. Defaults to maxBytes.
+  // Bounds expanded TrajectoryResult row arrays and logical payloads. When the
+  // archive projects a sweep result, this applies to their aggregate estimate.
+  // Defaults to maxBytes.
   readonly maxProjectionBytes?: number;
   readonly chunkRows?: number;
 }
@@ -109,6 +110,29 @@ export class TrajectoryArchive {
     const sink = new TrajectoryArchiveSink(this, this.chunkRows);
     this.children.push(sink);
     return sink;
+  }
+
+  trajectories(
+    bindings: readonly ExecutionBindingSummary[],
+  ): readonly TrajectoryResult[] {
+    if (bindings.length !== this.children.length) {
+      throw new Error(
+        `trajectory archive has ${this.children.length} captures for ${bindings.length} bindings`,
+      );
+    }
+    const projectionBytes = this.children.reduce(
+      (total, sink) =>
+        checkedAdd(
+          total,
+          sink.estimatedTrajectoryBytes(),
+          'sweep trajectory projection',
+        ),
+      0,
+    );
+    this.assertProjection(projectionBytes);
+    return this.children.map((sink, index) =>
+      sink.trajectory(bindings[index]!),
+    );
   }
 
   reset(): void {
@@ -305,6 +329,11 @@ export class TrajectoryArchiveSink implements OutputSink {
       },
       bindingIndex,
     );
+  }
+
+  estimatedTrajectoryBytes(): number {
+    this.assertReadable();
+    return this.estimatedProjectionBytes();
   }
 
   reset(): void {

@@ -1,4 +1,4 @@
-// Purpose: Refuse a drill-down rerun unless it reproduces the clicked sweep parameters.
+// Purpose: Refuse a drill-down unless its captured trajectory matches the clicked sweep parameters.
 
 import type {SweepScenario} from '../../../../src/reporting/sweep';
 import type {TrajectoryResult} from '../../../../src/reporting/trajectory';
@@ -9,7 +9,7 @@ export function assertScenarioTrajectory(
 ): void {
   if (trajectory.bindingIndex !== scenario.bindingIndex) {
     throw new Error(
-      `scenario rerun returned execution ${trajectory.bindingIndex}, expected ${scenario.bindingIndex}`,
+      `captured trajectory belongs to execution ${trajectory.bindingIndex}, expected ${scenario.bindingIndex}`,
     );
   }
 
@@ -34,6 +34,6 @@ export function assertScenarioTrajectory(
 
 function mismatch(bindingIndex: number): Error {
   return new Error(
-    `scenario rerun parameters do not match sweep execution ${bindingIndex}`,
+    `captured trajectory parameters do not match sweep execution ${bindingIndex}`,
   );
 }

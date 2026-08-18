@@ -5,14 +5,9 @@ import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Errors} from '../base/print';
-import {compileToProgram, hashProgramSourceClosure} from '../compile';
+import {compileToProgram} from '../compile';
 import type {ExecutionConfig} from './config';
-import {
-  executeConfiguredProgram,
-  executeLoadedConfig,
-  executeLoadedSweepScenario,
-  selectSweepScenarioConfig,
-} from './run';
+import {executeConfiguredProgram, executeLoadedConfig} from './run';
 
 const SOURCE = join(
   import.meta.dir,
@@ -36,38 +31,6 @@ describe('configured execution', () => {
     expect(result.summary.bindings[0]?.rows).toBe(2);
     expect(result.timeNow).toBe(123);
     expect(result.providerBytesHash).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  test('selects one sweep binding as an ordinary isolated run', () => {
-    const errors = new Errors();
-    const program = compileToProgram([SOURCE], errors);
-    if (program === null) throw new Error('fixture did not compile');
-    const selected = selectSweepScenarioConfig(
-      program,
-      {
-        ...config('sweep'),
-        execution: {
-          kind: 'sweep',
-          provider: {kind: 'csv', path: '/data.csv'},
-          parameters: {
-            scale: {range: {start: 1, stop: 2, step: 0.5}},
-            initial_cash: 1,
-          },
-          maxExecutions: 3,
-        },
-      },
-      1,
-      456,
-    );
-    expect(selected.execution).toEqual({
-      kind: 'run',
-      provider: {kind: 'csv', path: '/data.csv'},
-      parameters: {scale: 1.5, initial_cash: 1},
-      timeNow: 456,
-    });
-    expect(() =>
-      selectSweepScenarioConfig(program, config('sweep'), 1),
-    ).toThrow('outside sweep binding range');
   });
 
   test('the loaded entry returns Core diagnostics without executing', async () => {
@@ -114,51 +77,6 @@ describe('configured execution', () => {
     );
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.programBytesHash).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  test('selected replay rejects nested request contexts before provider I/O', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'tea-request-replay-'));
-    const source = join(directory, 'requests.tea');
-    writeFileSync(
-      source,
-      [
-        'scale = input.float(1.0)',
-        'value = request.security("X", "D", request.security("Y", "W", close) * scale)',
-        'plot(value)',
-      ].join('\n'),
-    );
-    let providerReads = 0;
-    try {
-      await expect(
-        executeLoadedSweepScenario(
-          {
-            configPath: join(directory, 'sweep.yaml'),
-            baseDirectory: directory,
-            bytesHash: '0'.repeat(64),
-            config: {
-              ...config('sweep'),
-              program: {source},
-            },
-          },
-          0,
-          123,
-          hashProgramSourceClosure([source]),
-          new Errors(),
-          {
-            readFileBytes: async () => {
-              providerReads++;
-              return CSV;
-            },
-            sinkForExecution: () => ({declare() {}, publish() {}}),
-          },
-        ),
-      ).rejects.toThrow(
-        'cannot run a Program with request edges (found 2): non-primary provider contexts are not captured',
-      );
-      expect(providerReads).toBe(0);
-    } finally {
-      rmSync(directory, {recursive: true, force: true});
-    }
   });
 });
 

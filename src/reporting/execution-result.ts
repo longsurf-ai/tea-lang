@@ -6,8 +6,6 @@ import type {SweepResult} from './sweep';
 import type {TrajectoryResult} from './trajectory';
 
 export const EXECUTION_RESULT_SCHEMA = 'tea.execution-result/v1' as const;
-export const DASHBOARD_TRAJECTORY_RESULT_SCHEMA =
-  'tea.dashboard-trajectory/v1' as const;
 
 export interface ExecutionSystemResult {
   readonly kind: 'run' | 'sweep';
@@ -45,6 +43,10 @@ interface ExecutionMachineResultBase {
 
 export interface SweepMachineResult extends ExecutionMachineResultBase {
   readonly sweep: SweepResult;
+  // Complete results captured by the same sweep execution. Visualization
+  // consumers select locally; Tea does not retain an editor session or rerun
+  // a selected binding.
+  readonly trajectories: readonly TrajectoryResult[];
 }
 
 export interface TrajectoryMachineResult extends ExecutionMachineResultBase {
@@ -54,14 +56,6 @@ export interface TrajectoryMachineResult extends ExecutionMachineResultBase {
 export type ExecutionMachineResult =
   | SweepMachineResult
   | TrajectoryMachineResult;
-
-// A dashboard selection is projected from the already completed sweep. It is
-// not a second execution and therefore must not invent a new system summary.
-export interface DashboardTrajectoryResult {
-  readonly schema: typeof DASHBOARD_TRAJECTORY_RESULT_SCHEMA;
-  readonly config: ExecutionSnapshotResult;
-  readonly trajectory: TrajectoryResult;
-}
 
 export function buildExecutionSystemResult(
   execution: ConfiguredExecutionResult,
