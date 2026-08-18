@@ -4,7 +4,7 @@
 import {describe, expect, test} from 'bun:test';
 import {generate} from '../codegen/codegen';
 import {funcsOf} from '../ir/visit';
-import {compilerSourceClosureFiles} from '../loader/loader';
+import {defaultRegistry} from '../loader/loader';
 import {mustBuild} from '../noder/testing';
 import {csvProvider} from '../providers/data/csv';
 import type {OutputSink, Value} from '../runtime/abi';
@@ -148,9 +148,7 @@ describe('trade library', () => {
       'ImmediateBroker',
       'LotLedger',
     ]);
-    expect(compilerSourceClosureFiles([]).map(file => file.id)).toContain(
-      'builtin:trade',
-    );
+    expect(defaultRegistry('trade')).toMatchObject({filename: 'lib/trade.tea'});
   });
 
   test('checks and nodes each direct policy surface', () => {

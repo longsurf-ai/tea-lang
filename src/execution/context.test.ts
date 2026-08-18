@@ -13,7 +13,7 @@ import {
 } from '../runtime/abi';
 import type {ExecutionConfig} from './config';
 import {ExecutionConfigError} from './config';
-import {resolveExecutionContext} from './context';
+import {createExecutionContext} from './context';
 
 const SOURCE = join(
   import.meta.dir,
@@ -26,7 +26,7 @@ describe('execution context', () => {
     let reads = 0;
     let clockCalls = 0;
     const sinks: OutputSink[] = [];
-    const context = await resolveExecutionContext(
+    const context = await createExecutionContext(
       program(),
       config({
         kind: 'sweep',
@@ -62,8 +62,6 @@ describe('execution context', () => {
 
     expect(reads).toBe(1);
     expect(clockCalls).toBe(1);
-    expect(context.kind).toBe('sweep');
-    expect(context.runtime).toEqual({kind: 'javascript'});
     expect(context.providerHash).toBe(
       createHash('sha256').update(CSV).digest('hex'),
     );
@@ -90,7 +88,7 @@ describe('execution context', () => {
 
   test('configured timeNow does not read the host clock', async () => {
     let clockCalls = 0;
-    const context = await resolveExecutionContext(
+    const context = await createExecutionContext(
       program(),
       config({
         kind: 'run',
@@ -127,7 +125,7 @@ describe('execution context', () => {
       }),
     };
     let factoryCalls = 0;
-    const context = await resolveExecutionContext(
+    const context = await createExecutionContext(
       program(),
       config({
         kind: 'sweep',
@@ -164,7 +162,7 @@ describe('execution context', () => {
   test('hashes exact bytes before strict UTF-8 decoding', async () => {
     const wrongHash = '0'.repeat(64);
     await expect(
-      resolveExecutionContext(
+      createExecutionContext(
         program(),
         config({
           kind: 'run',
@@ -181,7 +179,7 @@ describe('execution context', () => {
 
     const invalid = Uint8Array.of(0xff);
     await expect(
-      resolveExecutionContext(
+      createExecutionContext(
         program(),
         config({
           kind: 'run',
@@ -199,7 +197,7 @@ describe('execution context', () => {
 
   test('wraps provider reads and rejects an invalid captured clock', async () => {
     await expect(
-      resolveExecutionContext(
+      createExecutionContext(
         program(),
         config({
           kind: 'run',
@@ -218,7 +216,7 @@ describe('execution context', () => {
     );
 
     await expect(
-      resolveExecutionContext(
+      createExecutionContext(
         program(),
         config({
           kind: 'run',

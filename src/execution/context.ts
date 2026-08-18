@@ -8,15 +8,13 @@ import type {Program} from '../ir/program';
 import {builtinSources} from '../providers/data/builtin-sources';
 import {csvProvider} from '../providers/data/csv';
 import type {BindInputs, DataProvider, OutputSink} from '../runtime/abi';
-import type {CsvProviderConfig, RuntimeConfig} from './config';
+import type {CsvProviderConfig} from './config';
 import {ExecutionConfigError, type ExecutionConfig} from './config';
 import {resolveExecutionParameters, type SweepRange} from './parameters';
 
 export interface ExecutionContext {
-  readonly kind: 'run' | 'sweep';
   readonly ranges: readonly SweepRange[];
   readonly bindings: readonly BindInputs[];
-  readonly runtime: RuntimeConfig;
   readonly timeNow: number;
   readonly providerHash?: string;
 }
@@ -48,7 +46,7 @@ interface ProviderInput {
 
 // Provider construction belongs to this host-side context boundary. One
 // provider instance and one clock value are shared by all isolated bindings.
-export async function resolveExecutionContext(
+export async function createExecutionContext(
   program: Program,
   config: ExecutionConfig,
   dependencies: ExecutionDependencies,
@@ -57,8 +55,11 @@ export async function resolveExecutionContext(
     paramSpecsOf(program.params),
     config.execution,
   );
-  const resolvedProvider = await createProvider(config, dependencies);
-  const provider = resolvedProvider.provider;
+  const providerInput = await loadProvider(
+    config.execution.provider,
+    dependencies,
+  );
+  const provider = providerInput.provider;
   const timeNow = resolveTimeNow(config, dependencies.now ?? Date.now);
   const bindings = parameters.sets.map(
     (params, executionIndex): BindInputs => ({
@@ -69,19 +70,17 @@ export async function resolveExecutionContext(
     }),
   );
   return {
-    kind: config.execution.kind,
     ranges: parameters.ranges,
     bindings,
-    runtime: config.runtime,
     timeNow,
-    ...(resolvedProvider.hash === undefined
+    ...(providerInput.hash === undefined
       ? {}
-      : {providerHash: resolvedProvider.hash}),
+      : {providerHash: providerInput.hash}),
   };
 }
 
-async function createProvider(
-  config: ExecutionConfig,
+async function loadProvider(
+  config: CsvProviderConfig,
   dependencies: ExecutionDependencies,
 ): Promise<ProviderInput> {
   const factoryDependencies = {
@@ -91,27 +90,13 @@ async function createProvider(
   };
   if (dependencies.providerFactory !== undefined) {
     return {
-      provider: await dependencies.providerFactory(
-        config.execution.provider,
-        factoryDependencies,
-      ),
+      provider: await dependencies.providerFactory(config, factoryDependencies),
     };
   }
-  return createCsvExecutionProviderSnapshot(
-    config.execution.provider,
-    factoryDependencies,
-  );
+  return loadCsvProvider(config, factoryDependencies);
 }
 
-export async function createCsvExecutionProvider(
-  config: CsvProviderConfig,
-  dependencies: ExecutionProviderFactoryDependencies,
-): Promise<DataProvider> {
-  return (await createCsvExecutionProviderSnapshot(config, dependencies))
-    .provider;
-}
-
-async function createCsvExecutionProviderSnapshot(
+async function loadCsvProvider(
   config: CsvProviderConfig,
   dependencies: ExecutionProviderFactoryDependencies,
 ): Promise<ProviderInput> {

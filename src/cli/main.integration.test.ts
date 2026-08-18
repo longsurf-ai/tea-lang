@@ -119,7 +119,6 @@ describe('CLI execution host', () => {
     expect(sweep.schema).toBe('tea.execution-result/v2');
     expect(sweep.snapshot).toEqual({
       programSource: SOURCE,
-      programHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       providerHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       timeNow: 1_700_000_000_000,
     });

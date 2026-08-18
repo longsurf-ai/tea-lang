@@ -7,7 +7,7 @@ import {compileToProgram} from '../compile';
 import {paramSpecsOf} from '../codegen/params';
 import type {ExecutionSummary} from '../execute';
 import {type ExecutionConfig, ExecutionConfigError} from '../execution/config';
-import {runConfig, runProgram, type RunResult} from '../execution/run';
+import {runProgram, type RunResult} from '../execution/run';
 import {RunReportSink, SweepReportSink} from '../providers/sinks/report-sink';
 import {
   TrajectoryArchive,
@@ -67,48 +67,48 @@ export type CliExecutionResult =
   | {readonly ok: true}
   | {readonly ok: false; readonly errors: readonly ErrorMsg[]};
 
-export async function executeConfigCommand(
+export async function execute(
   config: ExecutionConfig,
   json: boolean,
   host: CliExecutionHost,
 ): Promise<CliExecutionResult> {
   const errors = new Errors();
+  const program = compileToProgram([config.program.source], errors);
+  if (program === null) return {ok: false, errors: errors.flushErrors()};
   if (config.execution.kind === 'run') {
     const sink = new RunReportSink();
-    const result = await runConfig(
+    const run = await runProgram(
+      program,
       config,
-      errors,
       executionDependencies(host, () => sink),
     );
-    if (!result.ok) return result;
     if (json) {
-      const binding = result.run.summary.bindings[0];
+      const binding = run.summary.bindings[0];
       if (binding === undefined) {
         throw new ExecutionConfigError('run execution produced no trajectory');
       }
       printJson(host, {
-        ...machineResultBase(config, result.run, result.programHash),
+        ...machineResultBase(config, run),
         trajectory: buildTrajectoryResult(binding, sink.snapshot()),
       });
     } else {
-      renderRunExecution(host, result.run, sink);
+      renderRunExecution(host, run, sink);
     }
     return {ok: true};
   }
 
   if (!json) {
     const sinks: SweepReportSink[] = [];
-    const result = await runConfig(
+    const run = await runProgram(
+      program,
       config,
-      errors,
       executionDependencies(host, executionIndex => {
         const sink = new SweepReportSink();
         sinks[executionIndex] = sink;
         return sink;
       }),
     );
-    if (!result.ok) return result;
-    renderSweepExecution(host, result.run, sinks);
+    renderSweepExecution(host, run, sinks);
     return {ok: true};
   }
 
@@ -118,20 +118,19 @@ export async function executeConfigCommand(
   });
   const sinks: TrajectoryArchiveSink[] = [];
   try {
-    const result = await runConfig(
+    const run = await runProgram(
+      program,
       config,
-      errors,
       executionDependencies(host, executionIndex => {
         const sink = archive.createSink();
         sinks[executionIndex] = sink;
         return sink;
       }),
     );
-    if (!result.ok) return result;
     printJson(host, {
-      ...machineResultBase(config, result.run, result.programHash),
-      sweep: sweepResultForExecution(result.run, sinks),
-      trajectories: archive.trajectories(result.run.summary.bindings),
+      ...machineResultBase(config, run),
+      sweep: sweepResultForExecution(run, sinks),
+      trajectories: archive.trajectories(run.summary.bindings),
     });
     return {ok: true};
   } finally {
@@ -300,11 +299,7 @@ function sweepResultForExecution(
   );
 }
 
-function machineResultBase(
-  config: ExecutionConfig,
-  execution: RunResult,
-  programHash: string,
-) {
+function machineResultBase(config: ExecutionConfig, execution: RunResult) {
   if (execution.providerHash === undefined) {
     throw new ExecutionConfigError(
       'machine execution did not capture provider bytes',
@@ -314,7 +309,6 @@ function machineResultBase(
     schema: EXECUTION_RESULT_SCHEMA,
     snapshot: {
       programSource: config.program.source,
-      programHash,
       providerHash: execution.providerHash,
       timeNow: execution.timeNow,
     },

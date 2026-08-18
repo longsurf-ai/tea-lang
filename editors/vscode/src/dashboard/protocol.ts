@@ -13,7 +13,6 @@ export interface MachineExecutionResult {
   readonly schema: 'tea.execution-result/v2';
   readonly snapshot: {
     readonly programSource: string;
-    readonly programHash: string;
     readonly providerHash: string;
     readonly timeNow: number;
   };
@@ -96,7 +95,6 @@ function executionSnapshot(value: unknown): ExecutionSnapshot {
     typeof value.programSource !== 'string' ||
     !isAbsolute(value.programSource) ||
     value.programSource.includes('\0') ||
-    !sha256(value.programHash) ||
     !sha256(value.providerHash) ||
     !Number.isSafeInteger(value.timeNow)
   ) {

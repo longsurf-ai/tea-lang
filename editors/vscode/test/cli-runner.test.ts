@@ -161,7 +161,6 @@ function machineSweep(rows = 0) {
     schema: 'tea.execution-result/v2',
     snapshot: {
       programSource: '/work/program.tea',
-      programHash: '1'.repeat(64),
       providerHash: '2'.repeat(64),
       timeNow: 123,
     },

@@ -17,11 +17,10 @@ import {
 import {assertScenarioTrajectory} from '../src/dashboard/selection';
 import type {TrajectoryResult} from '../../../src/reporting/trajectory';
 
-const PROGRAM_HASH = 'c'.repeat(64);
 const PROVIDER_HASH = 'b'.repeat(64);
 
 describe('Tea dashboard integration', () => {
-  test('accepts a versioned sweep result with a reproducible snapshot', () => {
+  test('accepts a versioned sweep result with an execution snapshot', () => {
     const result = parseMachineExecutionResult(sweepEnvelope());
     expect(result.system.kind).toBe('sweep');
     expect(result.snapshot.programSource).toBe('/work/strategy.tea');
@@ -663,7 +662,6 @@ function sweepEnvelope() {
     schema: 'tea.execution-result/v2',
     snapshot: {
       programSource: '/work/strategy.tea',
-      programHash: PROGRAM_HASH,
       providerHash: PROVIDER_HASH,
       timeNow: 1234,
     },

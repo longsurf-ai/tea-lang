@@ -8,7 +8,7 @@ import {formatPos, newFileBase} from './base/pos';
 import {Errors, type ErrorMsg} from './base/print';
 import {UnimplementedError} from './base/unimplemented';
 import {
-  executeConfigCommand,
+  execute,
   runCommand,
   sweepCommand,
   type CliExecutionResult,
@@ -138,7 +138,7 @@ tea
   .action(async (configArgument: string, options: {json?: boolean}) => {
     const config = loadConfig(configArgument);
     finishExecution(
-      await executeConfigCommand(config, options.json === true, executionHost),
+      await execute(config, options.json === true, executionHost),
     );
   });
 

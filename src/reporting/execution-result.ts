@@ -28,8 +28,6 @@ export interface ExecutionSystemResult {
 export interface ExecutionSnapshot {
   // Absolute source path resolved from the canonical execution config.
   readonly programSource: string;
-  // Root Tea source plus the conservative full compiler-shipped library set.
-  readonly programHash: string;
   readonly providerHash: string;
   readonly timeNow: number;
 }

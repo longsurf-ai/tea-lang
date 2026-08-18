@@ -28,6 +28,5 @@ Tea `Program` execution. It is host orchestration, not another compiler or IR.
   into an in-memory v1 config and use this same context and runtime path. Do not
   maintain a second execution implementation for direct source commands.
 - Keep tests colocated and use only repository-owned fixtures or injected host
-  dependencies. The Program snapshot hash covers exact root-source bytes plus
-  the compiler-owned Tea source closure; provider hashes cover exact input
-  bytes. UTF-8 decoding is fatal.
+  dependencies. Provider hashes cover exact input bytes. UTF-8 decoding is
+  fatal.

@@ -2,11 +2,9 @@
 // path shared by IR inspection and target lowering.
 
 import {describe, expect, test} from 'bun:test';
-import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Errors} from './base/print';
-import {compile, compileToProgram, hashProgramSourceClosure} from './compile';
+import {compile, compileToProgram} from './compile';
 import {loadModule} from './runtime/load';
 
 const TESTDATA = join(import.meta.dir, '../tests/fixtures');
@@ -19,25 +17,6 @@ const STRATEGY_SOURCE = join(
 );
 
 describe('generic compilation pipeline', () => {
-  test('source identity is stable across paths and changes with exact entry bytes', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'tea-source-closure-'));
-    const first = join(directory, 'first.tea');
-    const second = join(directory, 'second.tea');
-    try {
-      writeFileSync(first, 'indicator("same")\nvalue = close\n');
-      writeFileSync(second, 'indicator("same")\nvalue = close\n');
-
-      const expected = hashProgramSourceClosure([first]);
-      expect(hashProgramSourceClosure([first])).toBe(expected);
-      expect(hashProgramSourceClosure([second])).toBe(expected);
-
-      writeFileSync(second, 'indicator("changed")\nvalue = close\n');
-      expect(hashProgramSourceClosure([second])).not.toBe(expected);
-    } finally {
-      rmSync(directory, {recursive: true, force: true});
-    }
-  });
-
   test('compiles strategy source and its imports directly to the canonical Program', () => {
     const errors = new Errors();
     const program = compileToProgram([STRATEGY_SOURCE], errors);
