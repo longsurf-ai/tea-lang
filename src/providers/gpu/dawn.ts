@@ -1,4 +1,4 @@
-// Purpose: Optional Node/Bun host adapter that supplies a standard GPUDevice through Dawn.
+// Purpose: Optional Node host adapter that supplies a standard GPUDevice through Dawn.
 
 /// <reference types="@webgpu/types" />
 
@@ -17,7 +17,7 @@ export class GpuDeviceError extends Error {
 export async function createDawnDevice(): Promise<GpuDeviceLease> {
   if (process.versions.bun !== undefined) {
     throw new GpuDeviceError(
-      'Dawn GPU execution requires the Node 22 host; use --cpu or let the tea CLI relay this command to Node',
+      'Dawn GPU execution requires the Node-hosted tea CLI; use --cpu when embedding Tea in Bun',
     );
   }
   let binding: typeof import('webgpu');

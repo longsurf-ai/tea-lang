@@ -636,7 +636,7 @@ its focused tests, typecheck, formatting, and diff check pass.
    - make `tea run` print system, parameter, dense, and typed-effect sections;
    - make `tea sweep` expand bounded Cartesian bindings, default to GPU, and
      retain only final dense values plus effect counts;
-   - keep Dawn out of the Bun process by relaying GPU verbs to Node 22;
+   - run the Tea CLI under Node so Dawn never enters the Bun development/test process;
    - delete the bespoke example runner.
 
 ## 11. Final invariants

@@ -115,3 +115,28 @@ test('GPU artifact contract is neutral and shared by producer and consumer', () 
     ),
   ).toBe(true);
 });
+
+test('CLI wiring has no mutable module-level coordination state', () => {
+  const filename = resolve(import.meta.dir, 'main.ts');
+  const text = readFileSync(filename, 'utf8');
+  expect(text.split('\n')[0]).toBe('#!/usr/bin/env -S node --import tsx');
+  const source = ts.createSourceFile(
+    filename,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const mutable = source.statements.flatMap(statement => {
+    if (
+      !ts.isVariableStatement(statement) ||
+      (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+    ) {
+      return [];
+    }
+    return statement.declarationList.declarations.map(declaration =>
+      declaration.name.getText(source),
+    );
+  });
+  expect(mutable).toEqual([]);
+});

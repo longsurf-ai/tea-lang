@@ -7,9 +7,8 @@ import {parseMachineExecutionResult} from './protocol';
 
 const MAX_STDOUT_BYTES = 256 * 1024 * 1024;
 const MAX_STDERR_BYTES = 1024 * 1024;
-// The Bun GPU relay gives Dawn five seconds to stop. Killing the relay sooner
-// could orphan that child, so the outer host waits beyond the relay's grace.
-const TERMINATION_GRACE_MS = 6_500;
+// Give a native Dawn process a bounded grace period before forced termination.
+const TERMINATION_GRACE_MS = 5_000;
 
 export interface TeaCliChild {
   readonly stdout: Readable;

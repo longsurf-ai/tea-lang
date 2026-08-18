@@ -38,7 +38,7 @@
     "docs:serve": "node node_modules/@docusaurus/core/bin/docusaurus.mjs serve website",
     "docs:typecheck": "tsc --noEmit -p website/tsconfig.json",
     "prepack": "bun run docs:build",
-    "test:gpu": "bun run src/providers/gpu/run-dawn-tests.ts",
+    "test:gpu": "node --import tsx --test --test-concurrency=1 src/runtime/gpu/dawn.integration.ts tests/examples.gpu.integration.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
@@ -46,10 +46,10 @@
     "commander": "14.0.2",
     "open": "10.0.0",
     "plotly.js-gl3d-dist-min": "3.7.0",
+    "tsx": "4.23.10",
     "yaml": "2.9.0"
   },
   "optionalDependencies": {
-    "tsx": "4.23.10",
     "webgpu": "0.4.0"
   },
   "devDependencies": {

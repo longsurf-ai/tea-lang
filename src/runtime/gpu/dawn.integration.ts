@@ -57,11 +57,6 @@ class FinalDenseWithoutEffectsSink extends FinalDenseSink {
 }
 
 test('Dawn resumes independent executions and publishes dense values and effects', async () => {
-  assert.equal(
-    Number(process.versions.node.split('.')[0]),
-    22,
-    'Dawn GPU integration must run on Node 22',
-  );
   const compiled = compileFixture(
     join(
       process.cwd(),

@@ -298,8 +298,9 @@ does not start a browser or own visualization state.
 
 Each binding has isolated runtime state and can eventually vary providers,
 symbols, or other inputs—not just parameters. The sweep reporter requests only
-final dense values and no effect payloads. The Bun CLI relays native Dawn execution
-to Node 22; set `TEA_GPU_NODE` if Node 22 is not discovered automatically.
+final dense values and no effect payloads. The `tea` CLI runs under Node with
+the packaged `tsx` loader; GPU commands dynamically load the optional `webgpu`
+Dawn binding in that same process.
 No path introduces a strategy compiler or host-side matching/accounting.
 
 The result model and X/Y/Z/slice projection are renderer-neutral. The editor's

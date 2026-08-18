@@ -114,7 +114,7 @@ describe('Tea editor CLI runner', () => {
     execution.cancel();
     await expect(execution.result).rejects.toThrow('Tea execution cancelled');
     expect(child.signals).toEqual(['SIGTERM']);
-    expect(clock.delays).toEqual([6_500]);
+    expect(clock.delays).toEqual([5_000]);
     expect(clock.cleared).toBe(1);
   });
 

@@ -256,7 +256,7 @@ idempotent.
 
 Default Bun tests cover eligibility, artifact schemas/layouts, provider
 preparation, resource sizing, and decoding contracts without loading a native
-GPU device. The separate Node 22 Dawn gate exercises multiple independent
+GPU device. The separate Node/Dawn gate exercises multiple independent
 executions over multiple chunks and compares dense outputs plus typed sparse
 effects with CPU execution:
 

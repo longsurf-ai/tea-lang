@@ -83,10 +83,9 @@ values or parameter sets. Hyperparameters are ordinary Tea parameters selected
 as ranges; they are not a second concept.
 
 Configured or host-captured `timeNow` must be a finite safe epoch-ms integer.
-The executing process captures an omitted value exactly once after any GPU
-relay and copies it to every binding. This fixes time for one execution but
-does not by itself freeze Program files, libraries, or mutable network request
-data.
+The executing process captures an omitted value exactly once and copies it to
+every binding. This fixes time for one execution but does not by itself freeze
+Program files, libraries, or mutable network request data.
 
 The document deliberately excludes output presentation, X/Y/Z selection,
 camera state, GPU layouts, buffers, devices, API keys, environment expansion,
@@ -170,17 +169,11 @@ Direct positional source and `-i` paths are first resolved against the
 invocation working directory, then adapted into the shared in-memory config;
 they never inherit a synthetic YAML directory.
 
-The Commander `preAction` Bun-to-Node relay hook calls the same
-`loadExecutionConfig(path)` used by the action. A `webgpu` config is relayed to
-Node 22 before Dawn dynamically loads the native binding; there is no second
-partial YAML parser. Help/version do not read a config. The parent passes a
-hash of the bounded config bytes and the child verifies that hash before
-executing, so a changed file cannot silently select different semantics after
-relay. The hook retains one immutable `{config, bytesHash}` snapshot. A
-same-process JavaScript execution consumes that exact snapshot instead of
-reading the path again; a relayed child reloads once and verifies the private
-parent hash before executing. Typed preflight configuration errors use the
-normal `tea: ...`, exit-1 user-error path.
+The `tea` executable runs under Node with the packaged `tsx` loader. Each
+configured action loads one immutable `{config, bytesHash}` snapshot and uses
+it directly; a `webgpu` config dynamically loads Dawn in that same process.
+There is no second partial YAML parser, host relay, or mutable hook-to-action
+state. Typed host errors use the normal `tea: ...`, exit-1 user-error path.
 
 ## Validation and trust boundaries
 
@@ -240,7 +233,7 @@ to the future editor host, not to Tea Core or the configuration parser.
 - Add the disposable JavaScript/WebGPU host lease.
 - Add `tea execute` and route direct run/sweep through the same resolution
   path.
-- Update the Node 22 relay for config-selected WebGPU.
+- Run the CLI under Node so config-selected WebGPU needs no host relay.
 - Prove equivalent direct flags and YAML produce identical run/sweep values.
 
 ### D. Documentation and real example
@@ -254,7 +247,7 @@ to the future editor host, not to Tea Core or the configuration parser.
 - Run typecheck, the complete Bun suite, docs build, standalone npm install,
   real Dawn tests, CLI run/sweep/config equivalence, and scoped diff checks.
 - Perform an adversarial review for parser safety, path resolution, resource
-  ownership, GPU relay, and accidental Core/runtime coupling before committing.
+  ownership, Node/Dawn loading, and accidental Core/runtime coupling before committing.
 
 ## Deferred
 

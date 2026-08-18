@@ -54,11 +54,6 @@ interface TurtleScenario {
 }
 
 test('Dawn sweeps the canonical EMA strategy over real Binance daily history', async () => {
-  assert.equal(
-    Number(process.versions.node.split('.')[0]),
-    22,
-    'Dawn GPU integration must run on Node 22',
-  );
   const csv = readFileSync(DATA, 'utf8');
   const source = JSON.parse(readFileSync(DATA_SOURCE, 'utf8')) as {
     readonly sha256: string;
@@ -148,11 +143,6 @@ test('Dawn sweeps the canonical EMA strategy over real Binance daily history', a
 });
 
 test('Dawn runs bind-sized Turtle histories across chunks and publishes final metrics', async () => {
-  assert.equal(
-    Number(process.versions.node.split('.')[0]),
-    22,
-    'Dawn GPU integration must run on Node 22',
-  );
   const csv = readFileSync(DATA, 'utf8');
   const errors = new Errors();
   const program = compileToProgram([TURTLE_SOURCE], errors);

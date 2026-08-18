@@ -8,6 +8,7 @@
         "commander": "14.0.2",
         "open": "10.0.0",
         "plotly.js-gl3d-dist-min": "3.7.0",
+        "tsx": "4.23.10",
         "yaml": "2.9.0",
       },
       "devDependencies": {
@@ -33,7 +34,6 @@
         "vscode-textmate": "9.3.2",
       },
       "optionalDependencies": {
-        "tsx": "4.23.10",
         "webgpu": "0.4.0",
       },
     },

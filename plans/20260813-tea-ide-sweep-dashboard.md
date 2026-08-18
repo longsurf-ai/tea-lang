@@ -26,8 +26,7 @@ The extension is a host for existing public products:
   trajectories locally without a persistent session or second execution;
 - the Webview never executes Tea, reads providers, parses terminal tables, or
   loads a native GPU implementation;
-- the CLI child retains the existing Bun-to-Node/Dawn relay and owns runtime
-  disposal.
+- the Node-hosted CLI child owns Dawn and runtime disposal.
 
 The machine output is presentation-neutral. It contains no Plotly objects,
 VS Code objects, HTML, camera state, or strategy-specific runtime behavior.

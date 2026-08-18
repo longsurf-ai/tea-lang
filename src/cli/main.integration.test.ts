@@ -16,10 +16,14 @@ interface CliResult {
 }
 
 function invokeCli(...args: readonly string[]): CliResult {
-  const result = spawnSync(process.execPath, [MAIN, ...args], {
-    cwd: ROOT,
-    encoding: 'utf8',
-  });
+  const result = spawnSync(
+    process.env['TEA_TEST_NODE'] ?? 'node',
+    ['--import', import.meta.resolve('tsx'), MAIN, ...args],
+    {
+      cwd: ROOT,
+      encoding: 'utf8',
+    },
+  );
   return {
     status: result.status,
     stdout: result.stdout,

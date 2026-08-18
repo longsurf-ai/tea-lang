@@ -1,8 +1,7 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S node --import tsx
 // Purpose: CLI entry point — Commander argument parsing and process I/O only; all compilation lives in compile.ts.
 
 import {readFileSync, writeFileSync} from 'node:fs';
-import {resolve} from 'node:path';
 import {Command, InvalidArgumentError} from 'commander';
 import {configureLog, parseLogLevel} from './base/log';
 import {formatPos, newFileBase} from './base/pos';
@@ -18,18 +17,10 @@ import {CliParameterError} from './cli/parameters';
 import {compile, compileToProgram, parseFile} from './compile';
 import {startDocsServer} from './docs/server';
 import {UnsupportedExecutionTargetError} from './execute';
-import {
-  ExecutionConfigError,
-  loadExecutionConfig,
-  type LoadedExecutionConfig,
-} from './execution/config';
+import {ExecutionConfigError, loadExecutionConfig} from './execution/config';
 import {ExecutionParameterError} from './execution/parameters';
 import {dumpProgram} from './ir/dumper';
 import {GpuDeviceError} from './providers/gpu/dawn';
-import {
-  expectedRelayedConfigHash,
-  relayGpuCliToNode,
-} from './providers/gpu/node-host';
 import {
   TrajectoryArchiveBudgetError,
   TrajectoryArchiveProjectionBudgetError,
@@ -97,48 +88,6 @@ const tea = new Command('tea')
   .description('Tea language compiler and runner')
   .version('0.1.0');
 
-const cliArguments = process.argv.slice(2);
-let preloadedExecutionConfig: LoadedExecutionConfig | null = null;
-
-tea.hook('preAction', async (_root, command) => {
-  let executionRuntime: 'javascript' | 'webgpu' | undefined;
-  let configBytesHash: string | undefined;
-  if (command.name() === 'execute') {
-    const configArgument = command.processedArgs[0];
-    if (typeof configArgument !== 'string') {
-      throw new ExecutionConfigError('execute requires an execution config');
-    }
-    preloadedExecutionConfig = loadExecutionConfig(configArgument);
-    const expectedHash = expectedRelayedConfigHash();
-    if (
-      expectedHash !== null &&
-      preloadedExecutionConfig.bytesHash !== expectedHash
-    ) {
-      throw new ExecutionConfigError(
-        'execution config changed after GPU host selection',
-      );
-    }
-    executionRuntime = preloadedExecutionConfig.config.runtime.kind;
-    configBytesHash = preloadedExecutionConfig.bytesHash;
-  }
-  const relayed = await relayGpuCliToNode(cliArguments, import.meta.url, {
-    ...(executionRuntime === undefined ? {} : {executionRuntime}),
-    ...(configBytesHash === undefined ? {} : {configBytesHash}),
-  });
-  if (relayed !== null) process.exit(relayed);
-});
-
-function loadedConfigForArgument(argument: string): LoadedExecutionConfig {
-  const configPath = resolve(argument);
-  if (preloadedExecutionConfig === null) return loadExecutionConfig(configPath);
-  if (preloadedExecutionConfig.configPath !== configPath) {
-    throw new ExecutionConfigError(
-      'execution config argument changed after preflight',
-    );
-  }
-  return preloadedExecutionConfig;
-}
-
 function parsePort(value: string): number {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
@@ -187,12 +136,9 @@ tea
   .argument('<config>', 'execution configuration file')
   .option('--json', 'print a structured machine-readable result')
   .action(async (configArgument: string, options: {json?: boolean}) => {
+    const loaded = loadExecutionConfig(configArgument);
     finishExecution(
-      await executeConfigCommand(
-        loadedConfigForArgument(configArgument),
-        options.json === true,
-        executionHost,
-      ),
+      await executeConfigCommand(loaded, options.json === true, executionHost),
     );
   });
 
