@@ -23,35 +23,33 @@ export interface ArrayStorage {
   readonly logicalBytes: number;
 }
 
-interface ArrayStorageBuilder {
+interface ArrayStorageArgs {
   readonly values: readonly Value[];
   readonly logicalBytes: number;
 }
 
-export const ARRAY_STORAGE: StorageDescriptor<
-  ArrayStorage,
-  ArrayStorageBuilder
-> = {
-  id: Symbol('tea.array.storage'),
-  debugName: 'array storage',
-  builderLogicalBytes(builder) {
-    return builder.logicalBytes;
-  },
-  seal(builder) {
-    return Object.freeze({
-      values: Object.freeze([...builder.values]),
-      logicalBytes: builder.logicalBytes,
-    });
-  },
-  trace(payload, tracer) {
-    payload.values.forEach(value =>
-      visitRuntimeValueStorageRefs(value, ref => tracer.storage(ref)),
-    );
-  },
-  logicalBytes(payload) {
-    return payload.logicalBytes;
-  },
-};
+export const ARRAY_STORAGE: StorageDescriptor<ArrayStorage, ArrayStorageArgs> =
+  {
+    id: Symbol('tea.array.storage'),
+    debugName: 'array storage',
+    logicalBytesFor(args) {
+      return args.logicalBytes;
+    },
+    seal(args) {
+      return Object.freeze({
+        values: Object.freeze([...args.values]),
+        logicalBytes: args.logicalBytes,
+      });
+    },
+    trace(payload, tracer) {
+      payload.values.forEach(value =>
+        visitRuntimeValueStorageRefs(value, ref => tracer.storage(ref)),
+      );
+    },
+    logicalBytes(payload) {
+      return payload.logicalBytes;
+    },
+  };
 
 export function arrayCall(
   ctx: CollectionContext,
@@ -217,7 +215,7 @@ function values(
   ctx: Pick<CollectionContext, 'heap'>,
   receiver: ArrayValue,
 ): readonly Value[] {
-  const payload = ctx.heap.read<ArrayStorage, ArrayStorageBuilder>(
+  const payload = ctx.heap.read<ArrayStorage, ArrayStorageArgs>(
     receiver.storage,
     ARRAY_STORAGE,
   );
@@ -234,7 +232,7 @@ function allocateStorage(
   elementLayout: LayoutId,
   elements: readonly Value[],
 ): ArrayValue['storage'] {
-  return ctx.attempt.allocateSealed(ARRAY_STORAGE, {
+  return ctx.transaction.allocateSealed(ARRAY_STORAGE, {
     values: elements,
     logicalBytes:
       16 + elements.length * ctx.layouts.shallowBytes(elementLayout),

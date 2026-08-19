@@ -56,13 +56,13 @@ import {
 import {CollectionRuntime} from './collections';
 import {
   HeapArena,
-  type HeapAttempt,
-  type PreparedHeapPublication,
+  type HeapTransaction,
+  type PreparedHeapCommit,
   type StorageRef,
 } from './heap';
 import {assertMergeAxis, sampleMergeMap} from './merge';
 import {resolveParamValues} from './params';
-import {isHistoryOffset, Ring, type RingPublicationMode} from './ring';
+import {isHistoryOffset, Ring, type RingCommitMode} from './ring';
 import {rebuildUserPath, newUserValue, userField} from './user-value';
 import {type LayoutId, ValueLayoutRegistry} from './value-layout';
 
@@ -551,11 +551,11 @@ function reserveFixedValueStorage(
 }
 
 interface PendingFinalCommit {
-  readonly heap: PreparedHeapPublication;
-  readonly publication: AttemptPublication;
+  readonly heap: PreparedHeapCommit;
+  readonly publication: RowEmissionSnapshot;
 }
 
-interface AttemptPublication {
+interface RowEmissionSnapshot {
   readonly outputs: readonly DenseEmission[];
   readonly effects: readonly EffectEmission[];
 }
@@ -594,7 +594,7 @@ class JSRuntime implements Runtime, BoundProgram {
     timeframe: string;
   } | null = null;
   // A suspended execution vanishes: its retry restores varip scratch from
-  // the snapshot taken at the aborted attempt's start (var/perBar re-seed
+  // the snapshot taken at the aborted transaction's start (var/perBar re-seed
   // from committed anyway), so results are byte-identical to having had
   // the data upfront — including varip accumulated by prior COMPLETED
   // provisional ticks of the same row.
@@ -608,7 +608,7 @@ class JSRuntime implements Runtime, BoundProgram {
   private provisionalBindFrames = false;
   private readonly collections: CollectionRuntime;
   private readonly ringStorageLeases: FixedValueStorageLease[] = [];
-  private heapAttempt: HeapAttempt | null = null;
+  private heapTransaction: HeapTransaction | null = null;
   private pendingFinalCommit: PendingFinalCommit | null = null;
   private disposed = false;
 
@@ -662,8 +662,10 @@ class JSRuntime implements Runtime, BoundProgram {
     );
 
     try {
-      const attempt = shared.heap.beginAttempt(`bind:${shared.runtimes.size}`);
-      this.heapAttempt = attempt;
+      const transaction = shared.heap.beginTransaction(
+        `bind:${shared.runtimes.size}`,
+      );
+      this.heapTransaction = transaction;
       try {
         this.bindBuiltin();
         this.bindSeries();
@@ -701,8 +703,8 @@ class JSRuntime implements Runtime, BoundProgram {
           this.rootFrame = this.newFrame(0, true);
         }
       } finally {
-        attempt.abort();
-        this.heapAttempt = null;
+        transaction.abort();
+        this.heapTransaction = null;
         this.provisionalBindFrames = false;
       }
       shared.runtimes.add(this);
@@ -1371,21 +1373,21 @@ class JSRuntime implements Runtime, BoundProgram {
     // A suspended execution vanishes entirely. var/perBar re-seed from
     // committed state on every execution anyway; varip — which survives
     // same-row re-executions by design — restores from the snapshot taken
-    // at the aborted attempt's start, so accumulation from prior COMPLETED
+    // at the aborted transaction's start, so accumulation from prior COMPLETED
     // provisional ticks is preserved while the abort's writes are not.
     const sameRow = this.executedRow === row;
     this.suspendedRow = -1;
     this.cursor = row;
     this.executedRow = row;
-    const attempt = this.shared.heap.beginAttempt(`row:${row}`);
-    this.heapAttempt = attempt;
+    const transaction = this.shared.heap.beginTransaction(`row:${row}`);
+    this.heapTransaction = transaction;
     this.activationSnapshot = this.captureActivation(
       this.mustRoot(),
       new Map(),
     );
     const retryAfterAbort = sameRow && this.varipSnapshot !== null;
     if (!retryAfterAbort) {
-      // Capture the state that existed before this attempt. On a new row,
+      // Capture the state that existed before this transaction. On a new row,
       // committed values are the pre-state; a missing entry means the ring
       // has never committed and its initializer must run again after abort.
       this.varipSnapshot = this.captureVarip(
@@ -1394,7 +1396,7 @@ class JSRuntime implements Runtime, BoundProgram {
         sameRow,
       );
     }
-    let provisionalPublication: AttemptPublication | null = null;
+    let provisionalPublication: RowEmissionSnapshot | null = null;
     try {
       this.resetFrameScratch(this.mustRoot(), sameRow);
       if (retryAfterAbort) {
@@ -1406,8 +1408,8 @@ class JSRuntime implements Runtime, BoundProgram {
       this.emitBuf = new Map();
       this.effectBuf = [];
       this.module.main(this, this.mustRoot());
-      const publication = attempt.preparePublication(
-        this.publicationRoots(
+      const heapCommit = transaction.prepareCommit(
+        this.heapCommitRoots(
           provisional ? 'provisional-candidate' : 'final-candidate',
         ),
       );
@@ -1415,23 +1417,23 @@ class JSRuntime implements Runtime, BoundProgram {
         this.wantsDenseOutputs(row),
       );
       if (provisional) {
-        publication.publish();
-        this.heapAttempt = null;
+        heapCommit.commit();
+        this.heapTransaction = null;
         this.varipSnapshot = null;
         this.activationSnapshot = null;
         provisionalPublication = rowPublication;
       } else {
         this.pendingFinalCommit = {
-          heap: publication,
+          heap: heapCommit,
           publication: rowPublication,
         };
       }
     } catch (error) {
-      if (this.heapAttempt !== null) {
-        this.heapAttempt.abort();
-        this.heapAttempt = null;
+      if (this.heapTransaction !== null) {
+        this.heapTransaction.abort();
+        this.heapTransaction = null;
       }
-      this.discardAttemptScratch(this.mustRoot());
+      this.discardTransactionScratch(this.mustRoot());
       if (this.activationSnapshot !== null) {
         this.restoreActivation(this.mustRoot(), this.activationSnapshot);
         this.activationSnapshot = null;
@@ -1505,7 +1507,8 @@ class JSRuntime implements Runtime, BoundProgram {
         frame.scratchInitialization[slot] = snapshot.initialized;
         return;
       }
-      // The ring was born during the aborted attempt, or had no pre-attempt
+      // The ring was born during the aborted transaction, or had no
+      // pre-transaction
       // candidate: re-seed exactly as a fresh execution would.
       if (frame.committedInitialization[slot]) {
         ring.resetScratch(ring.lastCommitted());
@@ -1527,7 +1530,7 @@ class JSRuntime implements Runtime, BoundProgram {
     if (row !== this.executedRow || row !== this.committedRows) {
       return fatal(`commitRow(${row}) without a matching execute`);
     }
-    // Committing an aborted attempt would seal partial scratch into
+    // Committing an aborted transaction would seal partial scratch into
     // history — protocol misuse.
     if (this.suspendedRow === row) {
       return fatal(
@@ -1535,15 +1538,15 @@ class JSRuntime implements Runtime, BoundProgram {
       );
     }
     const pending = this.pendingFinalCommit;
-    if (pending === null || this.heapAttempt === null) {
+    if (pending === null || this.heapTransaction === null) {
       return fatal(`commitRow(${row}) has no prepared final transition`);
     }
-    pending.heap.publish();
+    pending.heap.commit();
     this.commitFrame(this.mustRoot());
     for (const ring of this.requestRings) {
       ring?.commit();
     }
-    this.heapAttempt = null;
+    this.heapTransaction = null;
     this.pendingFinalCommit = null;
     this.varipSnapshot = null;
     this.activationSnapshot = null;
@@ -1587,9 +1590,9 @@ class JSRuntime implements Runtime, BoundProgram {
       return;
     }
     this.shared.disposed = true;
-    if (this.heapAttempt !== null) {
-      this.heapAttempt.abort();
-      this.heapAttempt = null;
+    if (this.heapTransaction !== null) {
+      this.heapTransaction.abort();
+      this.heapTransaction = null;
     }
     this.pendingFinalCommit = null;
     for (const runtime of this.shared.runtimes) {
@@ -1666,7 +1669,7 @@ class JSRuntime implements Runtime, BoundProgram {
     return this.sink !== null && this.sink.capabilities?.effects !== 'none';
   }
 
-  private snapshotPublication(includeOutputs: boolean): AttemptPublication {
+  private snapshotPublication(includeOutputs: boolean): RowEmissionSnapshot {
     return {
       outputs: includeOutputs
         ? [...this.emitBuf].map(([outputId, channels]) => ({
@@ -1683,7 +1686,7 @@ class JSRuntime implements Runtime, BoundProgram {
   private publishRow(
     row: number,
     provisional: boolean,
-    publication: AttemptPublication,
+    publication: RowEmissionSnapshot,
   ): void {
     if (this.sink === null) {
       return;
@@ -1712,13 +1715,13 @@ class JSRuntime implements Runtime, BoundProgram {
     }
   }
 
-  visitPublicationHeapRoots(
-    mode: RingPublicationMode,
+  visitHeapCommitRoots(
+    mode: RingCommitMode,
     visit: (ref: StorageRef<unknown>) => void,
   ): void {
-    this.visitFramePublication(this.mustRoot(), mode, visit);
+    this.visitFrameCommit(this.mustRoot(), mode, visit);
     for (const ring of this.requestRings) {
-      ring?.visitPublicationValues(
+      ring?.visitCommitValues(
         mode === 'provisional-candidate' ? 'committed-only' : mode,
         value => this.visitValueStorage(ring.layout, value, visit),
       );
@@ -1737,10 +1740,12 @@ class JSRuntime implements Runtime, BoundProgram {
     }
   }
 
-  visitAttemptSafetyHeapRoots(visit: (ref: StorageRef<unknown>) => void): void {
-    this.visitFrameSafety(this.mustRoot(), visit);
+  visitHeapTransactionSafetyRoots(
+    visit: (ref: StorageRef<unknown>) => void,
+  ): void {
+    this.visitFrameTransactionSafety(this.mustRoot(), visit);
     for (const ring of this.requestRings) {
-      ring?.visitAttemptSafetyValues(value =>
+      ring?.visitTransactionSafetyValues(value =>
         this.visitValueStorage(ring.layout, value, visit),
       );
     }
@@ -1749,10 +1754,10 @@ class JSRuntime implements Runtime, BoundProgram {
     }
   }
 
-  private publicationRoots(mode: RingPublicationMode): StorageRef<unknown>[] {
+  private heapCommitRoots(mode: RingCommitMode): StorageRef<unknown>[] {
     const roots: StorageRef<unknown>[] = [];
     for (const runtime of this.shared.runtimes) {
-      runtime.visitPublicationHeapRoots(
+      runtime.visitHeapCommitRoots(
         runtime === this ? mode : 'committed-only',
         ref => roots.push(ref),
       );
@@ -1784,18 +1789,18 @@ class JSRuntime implements Runtime, BoundProgram {
     this.visitValueStorage(builder.layout, ring.peek(), visit);
   }
 
-  private collectShared(mode: RingPublicationMode): void {
-    const publication = this.publicationRoots(mode);
-    const roots = [...publication];
+  private collectShared(mode: RingCommitMode): void {
+    const committedRoots = this.heapCommitRoots(mode);
+    const roots = [...committedRoots];
     for (const runtime of this.shared.runtimes) {
-      runtime.visitAttemptSafetyHeapRoots(ref => roots.push(ref));
+      runtime.visitHeapTransactionSafetyRoots(ref => roots.push(ref));
     }
-    this.shared.heap.collect(roots, publication);
+    this.shared.heap.collect(roots, committedRoots);
   }
 
-  private visitFramePublication(
+  private visitFrameCommit(
     frame: FrameImpl,
-    mode: RingPublicationMode,
+    mode: RingCommitMode,
     visit: (ref: StorageRef<unknown>) => void,
   ): void {
     frame.rings.forEach((ring, slot) => {
@@ -1804,29 +1809,29 @@ class JSRuntime implements Runtime, BoundProgram {
         mode === 'provisional-candidate' && local.storage !== Storage.Varip
           ? 'committed-only'
           : mode;
-      ring.visitPublicationValues(ringMode, value =>
+      ring.visitCommitValues(ringMode, value =>
         this.visitValueStorage(ring.layout, value, visit),
       );
     });
     for (const sub of frame.subs) {
       if (sub !== null) {
-        this.visitFramePublication(sub, mode, visit);
+        this.visitFrameCommit(sub, mode, visit);
       }
     }
   }
 
-  private visitFrameSafety(
+  private visitFrameTransactionSafety(
     frame: FrameImpl,
     visit: (ref: StorageRef<unknown>) => void,
   ): void {
     for (const ring of frame.rings) {
-      ring.visitAttemptSafetyValues(value =>
+      ring.visitTransactionSafetyValues(value =>
         this.visitValueStorage(ring.layout, value, visit),
       );
     }
     for (const sub of frame.subs) {
       if (sub !== null) {
-        this.visitFrameSafety(sub, visit);
+        this.visitFrameTransactionSafety(sub, visit);
       }
     }
   }
@@ -1839,14 +1844,14 @@ class JSRuntime implements Runtime, BoundProgram {
     this.shared.aggregateLayouts.visitStorageRefs(layout, value, visit);
   }
 
-  private discardAttemptScratch(frame: FrameImpl): void {
+  private discardTransactionScratch(frame: FrameImpl): void {
     frame.rings.forEach((ring, slot) => {
       ring.resetScratch(ring.emptyValue);
       frame.scratchInitialization[slot] = false;
     });
     for (const sub of frame.subs) {
       if (sub !== null) {
-        this.discardAttemptScratch(sub);
+        this.discardTransactionScratch(sub);
       }
     }
   }
@@ -2052,7 +2057,7 @@ class JSRuntime implements Runtime, BoundProgram {
     args: readonly Value[],
   ): Value {
     return this.collections.call(
-      this.mustHeapAttempt(),
+      this.mustHeapTransaction(),
       operation,
       resultLayout,
       args,
@@ -2066,7 +2071,7 @@ class JSRuntime implements Runtime, BoundProgram {
     args: readonly Value[],
   ): CollectionMutation {
     return this.collections.mutate(
-      this.mustHeapAttempt(),
+      this.mustHeapTransaction(),
       operation,
       collectionLayout,
       receiver,
@@ -2364,11 +2369,11 @@ class JSRuntime implements Runtime, BoundProgram {
     }
   }
 
-  private mustHeapAttempt(): HeapAttempt {
-    if (this.heapAttempt === null) {
-      return fatal('aggregate operation outside a runtime attempt');
+  private mustHeapTransaction(): HeapTransaction {
+    if (this.heapTransaction === null) {
+      return fatal('aggregate operation outside a runtime transaction');
     }
-    return this.heapAttempt;
+    return this.heapTransaction;
   }
 
   private assertLive(): void {

@@ -33,7 +33,7 @@ JSRuntime: SharedExecutionState
         +------------------------------------------+
         | Rings: current values + history          |
         | Heap: immutable collection backing       |
-        | Emissions: attempt-local buffered output |
+        | Emissions: transaction-local buffered output |
         +------------------------------------------+
                        ^
                        |
@@ -52,10 +52,10 @@ The ownership boundaries are:
   copy, mutation, history, collection, user-type, and future pointer semantics.
 - `docs/ir.md` owns the checked semantic facts consumed by
   noder and the static Program operations. It does not own runtime layout IDs,
-  copy-on-write, Ring mechanics, or Heap publication.
+  copy-on-write, Ring mechanics, or Heap commits.
 - `docs/runtime.md` owns generated layout manifests, runtime
   value representations, the immutable Heap arena, Ring/Heap/buffered-emission
-  publication, request sharing, tracing, and deterministic limits.
+  commits, request sharing, tracing, and deterministic limits.
 - `Package -> Scope -> Object -> Type` is the checker source of truth. The exact
   active `Info` owns syntax-occurrence facts. Noder is the sole projection into
   Program-owned names, fields, functions, paths, slots, and requests. Codegen
@@ -89,7 +89,7 @@ execution stopped before aggregates:
 - codegen/runtime had no executable aggregate representation, layout manifest,
   immutable storage, or root visitor;
 - aggregate writes did not participate in Ring rollback, realtime replay,
-  dynamic-request suspension, or coordinated publication.
+  dynamic-request suspension, or coordinated commit.
 
 Tea adopts Go-like observable value semantics for user types and Tea-specific
 immutable/COW value semantics for collection headers. The header resembles a Go
@@ -161,16 +161,16 @@ These are semantic decisions, not optimization hints:
    expressions, temporaries, and collection `get()` results are rvalues.
 6. An aggregate mutation validates and builds its complete replacement before
    one root writeback. If it fails, the mutator performs no replacement. A
-   thrown execution error or suspension then aborts the entire runtime attempt,
-   so no RHS/argument state from that attempt is published.
+   thrown execution error or suspension then aborts the entire runtime transaction,
+   so no RHS/argument state from that transaction is committed.
 7. `[N]` selects a Ring value. It does not switch a value into a different
    representation and it never grants mutation rights to history.
 8. `var`/`varip` behavior is entirely a Ring-root property. Immutable backing
    storage carries no persistence bit and needs no edit journal.
 9. Root and request-child runtimes share one aggregate layout registry and one
    Heap arena. A `StorageRef` never crosses into an independently owned arena.
-10. Ring candidates, reachable tentative Heap storage, and attempt-local
-    buffered emissions prepare together and publish without user code between
+10. Ring candidates, reachable tentative Heap storage, and transaction-local
+    buffered emissions prepare together and commit without user code between
     them. External sink delivery happens after internal commit and is not
     claimed to be reversible. The future drawing/table effect registry must
     join this coordinated boundary when implemented.
@@ -401,13 +401,13 @@ A mutating call has one evaluation protocol:
 Failure before the final write adds no replacement from the mutator. Tentative
 immutable storage allocated while building the replacement becomes
 unreachable. A thrown execution error/suspension then follows the runtime's
-whole-attempt abort path, so no argument effect publishes either. On success,
+whole-transaction abort path, so no argument effect publishes either. On success,
 if argument evaluation wrote the same receiver leaf, the outer call still uses
 its captured base and its replacement wins. For a nested receiver such as
 `holder.values`, argument-side writes to other fields of `holder` survive
 because path reconstruction starts from the then-current `holder`. If an
 argument turns an enclosing path value into `na`, final validation throws, no
-receiver replacement is written, and the attempt aborts.
+receiver replacement is written, and the transaction aborts.
 
 Writable receivers are rooted current values:
 
@@ -434,7 +434,7 @@ inner.push(v)
 outer.set(0, inner)
 ```
 
-By-value argument passing freezes an attempt-local collection builder. An
+By-value argument passing isolates transaction-local collection construction. An
 `inout` receiver uses copy-in/copy-out. Transferring an exclusive edit token is
 a later optimization and cannot alter this protocol.
 
@@ -505,7 +505,7 @@ FIXED_VALUE_STORAGE_LIMIT_EXCEEDED
 invalid map-key type are checker diagnostics. `maxCollectionElements` is a
 per-value logical bound. `maxHeapStorageCells` and
 `maxHeapLogicalBytes` are shared-execution-state bounds; the Heap section adds
-a separate transient-attempt bound. `maxFixedValueLogicalBytes` (default
+a separate transient-transaction bound. `maxFixedValueLogicalBytes` (default
 64 MiB) separately bounds recursive fixed-width Ring/frame and materialized
 request-column values.
 
@@ -554,7 +554,7 @@ interface CollectionMutation<C, R = void> {
 
 The source cannot observe `StorageRef` or capacity. Capacity is copied with an
 array header but only guides allocation. Whether an append can reuse
-attempt-local exclusive storage must not affect aliasing. Every successful
+transaction-local exclusive storage must not affect aliasing. Every successful
 mutation returns a replacement header; all other current headers and every
 historical header continue to expose their previous contents.
 
@@ -580,12 +580,12 @@ iteration order, or copy behavior.
 unreachable or explicitly empty even when a future implementation retains
 capacity. A later append must never reveal a stale high-water slot.
 
-A collection implementation may use a private mutable builder while computing
-a replacement, but a builder is not a Heap cell and has no `StorageRef`.
+A collection implementation may use private mutable construction state while
+computing a replacement, but that state is not a Heap cell and has no `StorageRef`.
 Sealing must freeze or copy away every mutable alias before the first
 `StorageRef` is created. Only sealed immutable refs may enter a collection
 header, another payload, a Ring, an iterator, or history. Correctness never
-depends on a builder fast path.
+depends on a mutable-construction fast path.
 
 ### 3.3 User-defined value types
 
@@ -862,7 +862,7 @@ Call protocol:
    receiver leaf;
 6. write that root once;
 7. on throw/suspension, perform no copy-out and let JSRuntime abort the whole
-   attempt.
+   transaction.
 ```
 
 An ordinary by-value method may update its local receiver copy but cannot
@@ -890,21 +890,21 @@ interface StorageTracer {
   storage(ref: StorageRef<unknown>): void;
 }
 
-interface StorageDescriptor<TPayload, TBuilder> {
+interface StorageDescriptor<TPayload, TArgs> {
   readonly id: DescriptorId;
   readonly debugName: string;
   // Exact owned bytes the sealed payload will report. Heap checks transient
-  // capacity from the builder before seal is allowed to copy/freeze it.
-  builderLogicalBytes(builder: Readonly<TBuilder>): number;
+  // capacity from the args before seal is allowed to copy/freeze them.
+  logicalBytesFor(args: Readonly<TArgs>): number;
   // Called inside Heap. The result has no mutable alias reachable by caller.
-  seal(builder: TBuilder): TPayload;
+  seal(args: TArgs): TPayload;
   trace(payload: Readonly<TPayload>, tracer: StorageTracer): void;
   // Counts bytes owned by this cell only, excluding child StorageRefs.
   logicalBytes(payload: Readonly<TPayload>): number;
 }
 
 interface Heap {
-  beginAttempt(key: ExecutionKey): HeapAttempt;
+  beginTransaction(key: TransactionKey): HeapTransaction;
   read<TPayload>(ref: StorageRef<TPayload>): Readonly<TPayload>;
   collect(
     physicalRoots: Iterable<StorageRef<unknown>>,
@@ -913,64 +913,64 @@ interface Heap {
   dispose(): void;
 }
 
-interface HeapAttempt {
-  allocateSealed<TPayload, TBuilder>(
-    descriptor: StorageDescriptor<TPayload, TBuilder>,
-    builder: TBuilder,
+interface HeapTransaction {
+  allocateSealed<TPayload, TArgs>(
+    descriptor: StorageDescriptor<TPayload, TArgs>,
+    args: TArgs,
   ): StorageRef<TPayload>;
 
-  preparePublication(
+  prepareCommit(
     candidateRoots: Iterable<StorageRef<unknown>>,
-  ): PreparedHeapPublication;
+  ): PreparedHeapCommit;
 
   abort(): void;
 }
 
-interface PreparedHeapPublication {
-  publish(): void; // validation/accounting already finished; cannot throw
+interface PreparedHeapCommit {
+  commit(): void; // validation/accounting already finished; cannot throw
 }
 ```
 
 Descriptors, not Heap, understand the V1 sealed flat array, dense row-major
 matrix, and insertion-ordered map payloads, or how stored `Value`s contain
-further `StorageRef`s. A descriptor's `seal` must freeze or copy its builder so
+further `StorageRef`s. A descriptor's `seal` must freeze or copy its args so
 no mutable alias remains; Heap never accepts a supposedly immutable
 caller-owned payload. Future page/chunk/trie descriptors may replace those
 payloads behind the same interface. Heap has no edit type, `stageEdit`,
 `readRetained`, revision, historical snapshot, or persistence policy.
 
-Preparation is publication/cell-state side-effect-free: it traces, validates,
-accounts, freezes a promotion/discard plan, and moves the attempt to
+Preparation is commit/cell-state side-effect-free: it traces, validates,
+accounts, freezes a promotion/discard plan, and moves the transaction to
 `prepared`, but changes no cell state. Only
-`PreparedHeapPublication.publish()` promotes reachable tentative cells,
-discards the rest, closes the attempt, and does so without throwing. If any
+`PreparedHeapCommit.commit()` promotes reachable tentative cells,
+discards the rest, closes the transaction, and does so without throwing. If any
 other row component fails to prepare, `abort()` can still discard the entire
-prepared-but-unpublished attempt. Older published garbage is reclaimed only by
+prepared-but-uncommitted transaction. Older committed garbage is reclaimed only by
 later safe-point collection.
 
-A private `StorageRef` may contain an arena token, slot, reuse incarnation, and
+A private `StorageRef` may contain an arena token, slot, reuse version, and
 descriptor ID so stale, cross-arena, and wrong-descriptor reads fail loudly.
-The incarnation only detects slot reuse; it is not an iteration snapshot.
+The version only detects slot reuse; it is not an iteration snapshot.
 Host GC may reclaim a disposed arena implementation, but deterministic limits
 and semantic reachability use the arena registry, not host-GC timing.
 
-Attempt and reference state is explicit:
+Transaction and reference state is explicit:
 
 ```text
-active -> prepared -> published
+active -> prepared -> committed
 active -> aborted
 prepared -> aborted
 ```
 
 - allocation is legal only while active;
-- `preparePublication` is called once, freezes its candidate root set, and
-  moves active -> prepared without publishing;
-- exactly one terminal `publish` or `abort` invalidates the attempt object;
-- `Heap.read` accepts a published ref, or a tentative ref owned by the current
-  active/prepared attempt; abort/discard makes a tentative ref stale;
-- a sealed payload may point only to same-arena published refs or refs owned by
-  that same attempt;
-- preparation rejects any candidate closure that would publish a cell pointing
+- `prepareCommit` is called once, freezes its candidate root set, and
+  moves active -> prepared without committing;
+- exactly one terminal `commit` or `abort` invalidates the transaction object;
+- `Heap.read` accepts a committed ref, or a tentative ref owned by the current
+  active/prepared transaction; abort/discard makes a tentative ref stale;
+- a sealed payload may point only to same-arena committed refs or refs owned by
+  that same transaction;
+- preparation rejects any candidate closure that would commit a cell pointing
   to tentative storage outside the frozen reachable closure.
 
 If a future backend stores immutable `UserTypeValue` representations in this
@@ -978,49 +978,49 @@ arena, that remains an unobservable optimization: copying `Foo` still copies a
 value, and no such internal handle may enter source-visible equality or
 mutation rules. V1 need not introduce that optimization.
 
-#### Attempt lifecycle and atomic publication
+#### Transaction lifecycle and atomic commit
 
-Attempt allocation prevents failed writes from leaking physical storage:
+Transaction allocation prevents failed writes from leaking physical storage:
 
 ```text
-begin attempt
+begin transaction
   -> execute generated main
      -> provisional success:
           form Ring candidates
           retain only varip candidates according to Ring policy
           prepare reachable Heap storage + Ring/emission transition
-          publish internal state without throwing
+          commit internal state without throwing
           deliver explicitly provisional effects
      -> final success:
           form final Ring candidates
           prepare reachable Heap storage + Ring/emission transition
-          publish internal state without throwing
+          commit internal state without throwing
           deliver immutable final emissions to external sink
      -> suspension or failure:
-          invalidate this attempt's Ring scratch and emissions
-          restore the exact pre-attempt varip state
+          invalidate this transaction's Ring scratch and emissions
+          restore the exact pre-transaction varip state
           abort tentative Heap allocation
 ```
 
-All allocation/limit/layout checks occur before publication. `JSRuntime` owns
+All allocation/limit/layout checks occur before commit. `JSRuntime` owns
 one opaque prepared row transition:
 
 ```ts
 interface PreparedRowCommit {
-  publishInternalState(): void; // Heap + Rings + emission state; cannot throw
+  commitInternalState(): void; // Heap + Rings + emission state; cannot throw
   deliverEmissions(): void; // post-commit external boundary
 }
 ```
 
-Generated code cannot begin, prepare, publish, or abort Heap attempts. If an
+Generated code cannot begin, prepare, commit, or abort Heap transactions. If an
 external sink throws, Tea state remains committed and the host reports a
 delivery failure.
 
-At most one nonterminal (`active` or `prepared`) attempt exists in the shared
-Heap; `beginAttempt` fails while either state exists. Dynamic request suspension
-aborts the parent attempt and invalidates its scratch/emissions before a child
-runtime executes. Retry starts a new parent attempt. Bind-time aggregate work
-runs in a dedicated abort-only attempt so discarded bind frames cannot leave
+At most one nonterminal (`active` or `prepared`) transaction exists in the shared
+Heap; `beginTransaction` fails while either state exists. Dynamic request suspension
+aborts the parent transaction and invalidates its scratch/emissions before a child
+runtime executes. Retry starts a new parent transaction. Bind-time aggregate work
+runs in a dedicated abort-only transaction so discarded bind frames cannot leave
 storage cells.
 
 Because values/backing are immutable, mixed `var` and `varip` aliases require
@@ -1030,35 +1030,35 @@ reachable from those candidate roots.
 
 #### Reachability, limits, requests, and effects
 
-Physical collection runs only after the current attempt has published or
+Physical collection runs only after the current transaction has committed or
 aborted, invalid scratch/temporaries have been cleared, and unregistered JS
-temporaries can no longer be sole owners. `preparePublication` tracing is not
+temporaries can no longer be sole owners. `prepareCommit` tracing is not
 physical collection. Runtime owners expose two distinct root views:
 
 ```ts
-Ring.visitPublicationValues(mode, visit)
+Ring.visitCommitValues(mode, visit)
 MergedView.visitValues(visit)
-JSRuntime.visitPublicationHeapRoots(
+JSRuntime.visitHeapCommitRoots(
   mode: 'committed-only' | 'provisional-candidate' | 'final-candidate',
   visit,
 )
-JSRuntime.visitAttemptSafetyHeapRoots(visit)
+JSRuntime.visitHeapTransactionSafetyRoots(visit)
 ```
 
 The runtime layout walker finds `StorageRef`s inside collection headers nested
 in user values/tuples. Storage descriptors then trace refs inside collection
-payloads. Publication roots are the exact post-publication owner graph:
+payloads. Commit roots are the exact post-commit owner graph:
 
 - committed/history Ring cells that remain after candidate replacement and
   eviction;
 - the exact provisional/final candidate cells selected by Ring policy;
 - static/dynamic request result Rings, merged views, pair views, and registered
-  request-child result builders that remain owners after publication.
+  request-child result builders that remain owners after commit.
 
-Overwritten/evicted cells and a pre-attempt varip snapshot that disappears on
-success are not publication roots and are not charged to the retained limit.
-`visitAttemptSafetyHeapRoots` separately covers that snapshot and any other
-temporary owner needed until publish/abort; safety roots cannot influence the
+Overwritten/evicted cells and a pre-transaction varip snapshot that disappears on
+success are not commit roots and are not charged to the retained limit.
+`visitHeapTransactionSafetyRoots` separately covers that snapshot and any other
+temporary owner needed until commit/abort; safety roots cannot influence the
 prepared retention/accounting result.
 
 `runChildRows` registers a result builder before capturing its first aggregate
@@ -1069,16 +1069,16 @@ Direct recursive user values are rejected and V1 has no pointers, so aggregate
 graphs are finite immutable DAGs. Collection still uses visited-set tracing to
 handle structural sharing and to leave room for future explicit pointers.
 
-`preparePublication` traces the complete publication-root set and counts each
+`prepareCommit` traces the complete commit-root set and counts each
 reachable cell once. `logicalBytes(payload)` counts bytes owned by that cell,
 excluding child cells reached through `StorageRef`, so shared persistent
 subtrees are not double-counted. Deterministic limits never depend on host GC
 timing. Before calling a descriptor's potentially allocating `seal`, Heap
 validates the transient cell bound and the exact
-`builderLogicalBytes(builder)` estimate; after sealing, `logicalBytes(payload)`
+`logicalBytesFor(args)` estimate; after sealing, `logicalBytes(payload)`
 must equal that estimate or the descriptor has violated an internal invariant.
-Thus the separate transient-attempt bound prevents the allocation spike, not
-merely publication of an already oversized copy. Rename the source-facing
+Thus the separate transient-transaction bound prevents the allocation spike, not
+merely commitment of an already oversized copy. Rename the source-facing
 budget from `maxHeapObjects` to
 `maxHeapStorageCells`; ordinary user values are not heap objects.
 Their fixed-width footprint is recursively derived from `ValueLayout` (stopping
@@ -1107,8 +1107,8 @@ h[1].set_x(...)              // historical handle denotes same live resource
 ```
 
 When drawing/table execution lands, its separate effect registry will own
-construction, setter/delete ordering, rollback, publication, and resource
-limits. V1 currently has only attempt-local emission buffering plus
+construction, setter/delete ordering, rollback, commit, and resource
+limits. V1 currently has only transaction-local emission buffering plus
 post-commit sink delivery. Copying/storing a `ResourceHandle` copies that
 external identity; collection copy never clones the resource, and Heap does
 not trace its internals.
@@ -1273,7 +1273,7 @@ to its own projected `Name`.
 
 `WriteField`, which assumes arbitrary reference mutation, is replaced by the
 rooted atomic path operation. Separate Program `PrepareUpdate`/`ApplyUpdate`
-nodes are forbidden; allocation/publication belongs to runtime. Visitors,
+nodes are forbidden; allocation/commit belongs to runtime. Visitors,
 dumpers, depth analysis, and lowering switch exhaustively over new operations.
 
 Generic collection calls enrich the existing `NativeCall`. User methods remain
@@ -1326,8 +1326,8 @@ qualifier signature)`.
   empties, recursive layout walking, and runtime layout guards.
 - new `src/runtime/user-value.ts`: own `UserTypeValue` construction, field
   reads, and immutable path rebuilding.
-- new `src/runtime/heap.ts`: own immutable storage registry, attempts,
-  descriptors, validation, publication, tracing, deterministic accounting,
+- new `src/runtime/heap.ts`: own immutable storage registry, transactions,
+  descriptors, validation, commit, tracing, deterministic accounting,
   and disposal.
 - new `src/runtime/collections/{array,matrix,map}.ts`: own V1 sealed flat
   backing and semantic operations returning replacements; later structural
@@ -1337,8 +1337,8 @@ qualifier signature)`.
   `SharedExecutionState`, execution errors, Heap injection, and semantic `rt`
   calls.
 - `src/runtime/{ring,merge,js-runtime}.ts`: own root visitors, shared request
-  state, layout-aware request views, result-builder registration, attempt
-  lifecycle, suspension abort, coordinated publication, and the ABI gate.
+  state, layout-aware request views, result-builder registration, transaction
+  lifecycle, suspension abort, coordinated commit, and the ABI gate.
 - owning `AGENTS.md` files and `docs/{memory-model,ir,runtime,conformance}.md`:
   encode localized invariants at their authoritative layer.
 
@@ -1360,8 +1360,8 @@ qualifier signature)`.
    ownership, the ABI 2 -> 3 gate, runtime guards, and exhaustive
    Program/codegen support. Keep aggregate requests disabled until shared
    execution state exists.
-5. **Land immutable Heap + array core.** Add storage descriptors, attempt
-   state/publication, sealed builder boundaries, publication/safety roots and
+5. **Land immutable Heap + array core.** Add storage descriptors, transaction
+   state/commit, sealed args boundaries, commit/safety roots and
    limits, sealed eager-copy array operations, same-iteration and history COW,
    nested headers, iteration snapshots, and errors.
 6. **Land matrix then ordered map.** Reuse the same value-copy/writeback/Heap
@@ -1370,9 +1370,9 @@ qualifier signature)`.
 7. **Close realtime and request integration.** Coordinate Ring/Heap/emission
    preparation, suspension abort, shared root/request arena and layout table,
    keep-zero result-builder rooting, and aggregate request results.
-8. **Optimize only after conformance.** Add attempt-local transient builders,
+8. **Optimize only after conformance.** Add transaction-local transient builders,
    structural-sharing improvements, and collection-aware COW heuristics without
-   changing published semantics.
+   changing committed semantics.
 
 No step may encode a `StorageRef` into numeric NaN payloads, use host object
 identity as Tea value identity, or allow aggregate values to cross independent
@@ -1430,19 +1430,19 @@ Heap arenas.
       failed replacement allocation with no root write, final commit, and
       suspension after tentative allocation.
 - [x] Commit tests prove every fallible validation/limit check occurs before
-      publication; Heap preparation is publication/cell-state side-effect-free;
-      failed peer preparation can still abort the prepared-but-unpublished
-      attempt; Heap/Rings/emission state publish without throwing; sink failure
+      commit; Heap preparation is commit/cell-state side-effect-free;
+      failed peer preparation can still abort the prepared-but-uncommitted
+      transaction; Heap/Rings/emission state commits without throwing; sink failure
       cannot roll back committed Tea state.
 - [x] Request tests cover parent abort before dynamic child resolution, one
       shared arena/layout registry/budget, aggregate result history,
       keep-zero result builders, merged/pair-view roots, cross-arena rejection,
       and recursive request trees.
-- [x] Heap tests cover immutable publication, deterministic reachable
-      cell/logical-byte limits, transient-attempt limits, unreachable attempt
-      allocations, sealed-builder alias rejection, active-attempt reads,
+- [x] Heap tests cover immutable commit, deterministic reachable
+      cell/logical-byte limits, transient-transaction limits, unreachable transaction
+      allocations, sealed-args alias rejection, active-transaction reads,
       active/prepared/terminal transitions, stale aborted/reused/cross-arena/
-      wrong-descriptor refs, frozen publication closure, publication-root versus
+      wrong-descriptor refs, frozen commit closure, commit-root versus
       safety-root accounting, safe-point collection, bind abort-only allocation,
       sharing, disposal, and separate fixed Ring-value versus variable Heap
       accounting.

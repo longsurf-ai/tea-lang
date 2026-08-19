@@ -228,7 +228,7 @@ describe('frames', () => {
     ]);
   });
 
-  test('first activation is discarded when the row attempt throws', async () => {
+  test('first activation is discarded when the row transaction throws', async () => {
     let shouldThrow = true;
     const module: TeaModule = {
       ...COUNTER_MODULE,
@@ -1606,7 +1606,7 @@ const VARIP_DYNAMIC_MODULE: TeaModule = {
   },
   main(rt, fr) {
     if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, 0);
-    // varip increments BEFORE the request read, so an aborted attempt
+    // varip increments BEFORE the request read, so an aborted transaction
     // would contaminate it without the snapshot restore.
     rt.write(fr, 0, num(rt.read(fr, 0, 0)) + 1);
     const sym = rt.series(0, 0) > 3 ? 'X' : 'Y';
@@ -1680,7 +1680,7 @@ describe('suspension protocol', () => {
     expect(sink.emits.map(emit => emit.channels[0])).toEqual([1]);
   });
 
-  test('varip survives completed ticks but not aborted attempts', async () => {
+  test('varip survives completed ticks but not aborted transactions', async () => {
     const close = new ArraySeries([1, 2]);
     const sink = new RecordingSink();
     const bound = await bind(VARIP_DYNAMIC_MODULE, {
@@ -1692,7 +1692,7 @@ describe('suspension protocol', () => {
       }),
       sink,
     });
-    // Tick 1 on row 0: pair Y unresolved — the attempt aborts, resolves,
+    // Tick 1 on row 0: pair Y unresolved — the transaction aborts, resolves,
     // and the retry completes with p=1 (the abort vanished).
     expect(() => bound.executeRow(0, true)).toThrow('unresolved');
     await bound.resolvePending();

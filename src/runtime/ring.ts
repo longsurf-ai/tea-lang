@@ -11,7 +11,7 @@ export function isHistoryOffset(offset: number): boolean {
   return Number.isSafeInteger(offset) && offset >= 0;
 }
 
-export type RingPublicationMode =
+export type RingCommitMode =
   | 'committed-only'
   | 'provisional-candidate'
   | 'final-candidate';
@@ -76,10 +76,7 @@ export class Ring {
     return this.count > 0;
   }
 
-  visitPublicationValues(
-    mode: RingPublicationMode,
-    visit: (value: Value) => void,
-  ): void {
+  visitCommitValues(mode: RingCommitMode, visit: (value: Value) => void): void {
     if (mode === 'committed-only') {
       this.visitCommitted(visit, this.count);
       return;
@@ -96,7 +93,7 @@ export class Ring {
     this.visitCommitted(visit, Math.min(this.count, this.keep - 1));
   }
 
-  visitAttemptSafetyValues(visit: (value: Value) => void): void {
+  visitTransactionSafetyValues(visit: (value: Value) => void): void {
     this.visitCommitted(visit, this.count);
     visit(this.scratch);
   }
@@ -126,7 +123,7 @@ export class Ring {
         this.count += 1;
       }
     }
-    // Scratch belongs only to the execution attempt. Keeping it after commit
+    // Scratch belongs only to the execution transaction. Keeping it after commit
     // would make discarded tentative aggregate storage look like a live GC
     // safety root. Persisted values are owned exclusively by committed cells.
     this.scratch = this.emptyValue;

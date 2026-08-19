@@ -191,8 +191,8 @@ The child result builder registers as a Heap-root owner and reserves its exact
 value, including when the result Ring itself has zero history. Ownership and
 the lease then transfer to the merged view before the builder unregisters; the
 completed child releases unrelated frame/Ring reservations. Suspension closes
-and aborts the parent attempt before any child attempt starts, so one shared
-arena never has interleaved nonterminal attempts.
+and aborts the parent transaction before any child transaction starts, so one
+shared arena never has interleaved nonterminal transactions.
 
 Child instances are keyed `(edge, symbol, timeframe)` in a per-binding
 instance table. Identical pairs on one edge share an instance; cross-edge
@@ -306,8 +306,8 @@ Execution:
 - **Suspension**: an unresolved pair throws `ContextSuspension` out of
   `executeRow`; the host awaits `resolvePending()` (where
   `resolveContext`, the child's full-history run, and the merge happen)
-  and re-executes the same row. **The aborted attempt's tentative work
-  vanishes entirely**. Retry restores the exact pre-attempt varip candidate
+  and re-executes the same row. **The aborted transaction's tentative work
+  vanishes entirely**. Retry restores the exact pre-transaction varip candidate
   (including one from an earlier successful provisional tick); an absent
   first-row candidate reruns its declaration-site initializer. `runAll`
   performs this loop itself; live hosts follow the same protocol per tick.

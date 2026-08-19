@@ -154,7 +154,7 @@ rt.frame(fr, slot); // open the sub-frame at this call site
 rt.root(); // the program frame (globals read from funcs)
 // emissions
 rt.emit(oid, channel, v);
-rt.emitEffect(effectId, payload); // ordered sparse append for this row attempt
+rt.emitEffect(effectId, payload); // ordered sparse append for this row transaction
 // frame-aware bind section (against a provisional scratch-only frame)
 rt.historyDepth(offset); // invalid history offsets normalize to zero
 rt.bindDepth(fid, slot, bars); // a name's bound history depth
@@ -183,7 +183,7 @@ implicit source receiver `this` is never a runtime pointer or Heap reference.
 
 `rt.frame(fr, slot)` is the seam where per-call-site state materializes:
 fetch the sub-frame at compartment `slot` of `fr`, creating its physical
-storage on first use and tentatively activating it for this row attempt.
+storage on first use and tentatively activating it for this row transaction.
 Persistent initialization remains inside the callee's lexical `InitName`
 statements. A call site lowers to:
 
@@ -215,7 +215,7 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
   collection elements, and history. Host object identity is unobservable.
 - Array, matrix, and map values are immutable headers over a source-hidden
   `StorageRef`. Mutators allocate sealed replacement backing and return a new
-  header; they never edit a published payload. Capacity is implementation
+  header; they never edit a committed payload. Capacity is implementation
   state and is not exposed to Tea.
 - Storage is runtime-owned and invisible to source code: rings may use compact
   typed arrays plus validity, plain JS arrays, or anything else. Layout IDs
@@ -306,8 +306,8 @@ sub-frame box per call-site slot, materialized lazily by `rt.frame` (frame
 trees can also appear at runtime — dynamic requests instantiate whole trees
 per context). Physical allocation does not mean the call site has executed:
 each frame carries separate committed and scratch activation state. Calling
-`rt.frame` tentatively activates its child for the current row attempt; abort
-or suspension restores the pre-attempt activation tree, while final commit
+`rt.frame` tentatively activates its child for the current row transaction; abort
+or suspension restores the pre-transaction activation tree, while final commit
 promotes it. A successful provisional execution may retain a same-row
 activation candidate so `varip` state survives even when the final execution
 does not revisit that call site.
@@ -330,10 +330,10 @@ and the owning runtime releases it at disposal. Scratch-only bind Rings release
 before final frame allocation, and completed request children release their
 frame/request-Ring leases after result ownership transfers.
 
-Module `init` and `bind` run inside a dedicated abort-only Heap attempt. The
+Module `init` and `bind` run inside a dedicated abort-only Heap transaction. The
 provisional bind frame and every collection backing allocated while computing
 bind-time values are discarded before row execution; no bind temporary can
-become published Heap storage.
+become committed Heap storage.
 
 ## Main loop and the provisional protocol
 
@@ -377,16 +377,16 @@ there are no incremental update paths, by construction:
   (na until written). **varip** scratch value and initialization bit survive
   successful provisional executions of the same row — the one storage class
   whose writes ticks accumulate.
-- Each execution owns one Heap allocation attempt. Collection mutations may
-  allocate tentative sealed cells, readable only by that attempt. A successful
+- Each execution owns one Heap allocation transaction. Collection mutations may
+  allocate tentative sealed cells, readable only by that transaction. A successful
   execution first prepares one row commit: Ring candidates, buffered emission
   state, and the exact reachable tentative Heap closure are all validated
   and frozen before any internal owner changes.
-- Publishing the prepared internal commit is non-throwing: it pushes the Ring
+- Committing the prepared internal transition is non-throwing: it pushes the Ring
   heads, promotes reachable tentative storage, discards unreachable tentative
-  storage, publishes buffered internal state, and advances the cursor.
+  storage, commits buffered internal state, and advances the cursor.
   Final sink delivery happens afterward; a sink failure cannot roll back
-  already-published Tea state.
+  already-committed Tea state.
 - A provisional success retains only the candidate roots selected by Ring
   storage policy (`varip` versus ordinary rollback). Immutable backing makes
   mixed aliases harmless: Heap carries no `var`/`varip` policy and replays no
@@ -431,8 +431,8 @@ transport requirements, not strategy semantics; composed sinks request the
 union needed by their children.
 
 Dense output writes and sparse effects are snapshotted together after a
-successful row attempt and cross the sink boundary in one `publish` call.
-Suspended or failed attempts publish nothing. A sink exception makes the
+successful row transaction and cross the sink boundary in one `publish` call.
+Suspended or failed transactions publish nothing. A sink exception makes the
 binding terminal, so committed effects are never retried or duplicated.
 Effect payload layouts admit primitives, strings/colors, enums, and recursively
 fixed user values; collections, tuples, and resource handles are rejected.
@@ -633,37 +633,37 @@ GPU runtime recognizes none of them.
 The Heap is a type-neutral arena for variable-sized immutable backing. Its
 only handle is the source-hidden `StorageRef`; it is not a user-object store
 and does not give user-defined values identity. Collection descriptors own
-builder-byte estimation, payload sealing, tracing, and per-cell logical byte
+args-byte estimation, payload sealing, tracing, and per-cell logical byte
 accounting. The Heap owns
 allocation, stale/cross-arena/descriptor validation, reachability,
-publication, deterministic limits, and collection.
+transactions, deterministic limits, and collection.
 
-Before a descriptor may seal, copy, or freeze a builder, the Heap checks the
-transient cell limit and the descriptor's exact `builderLogicalBytes(builder)`
+Before a descriptor may seal, copy, or freeze its args, the Heap checks the
+transient cell limit and the descriptor's exact `logicalBytesFor(args)`
 against the transient byte limit. The sealed payload's `logicalBytes` must
 equal that estimate; disagreement is an internal descriptor-contract failure.
 This makes the transient budget a pre-allocation guard instead of a check on
 an oversized copy that was already built.
 
-An attempt has exactly one path through
-`active -> prepared -> published` or `active/prepared -> aborted`. At most one
-nonterminal attempt exists in an arena. Preparing publication changes only the
-attempt state and freezes a checked promotion plan; it does not publish or
-discard cells. A published cell may reference only published storage, while a
-tentative cell may reference published storage or storage from the same
-attempt. Abort/discard makes its refs stale.
+A transaction has exactly one path through
+`active -> prepared -> committed` or `active/prepared -> aborted`. At most one
+nonterminal transaction exists in an arena. `prepareCommit` changes only the
+transaction state and freezes a checked promotion plan; it does not commit or
+discard cells. A committed cell may reference only committed storage, while a
+tentative cell may reference committed storage or storage from the same
+transaction. Abort/discard makes its refs stale.
 
-Publication roots are the exact post-publication owner graph: surviving Ring
+Commit roots are the exact post-commit owner graph: surviving Ring
 cells and candidates, request result Rings/views/builders, and other registered
-runtime owners. Temporary pre-attempt snapshots are safety roots only and are
+runtime owners. Temporary pre-transaction snapshots are safety roots only and are
 not retained or charged after success. Physical collection runs only at a safe
-point after the attempt is terminal and generated/scratch temporaries cannot
+point after the transaction is terminal and generated/scratch temporaries cannot
 be sole owners. Root and all request-child runtimes share the same arena and
 layout registry.
 
 Limits count unique reachable cells and the logical bytes owned directly by
 each cell; child cells reached through `StorageRef` are counted separately and
-only once. Transient attempt limits are distinct from retained publication
+only once. Transient transaction limits are distinct from retained commit
 limits, so behavior never depends on host-GC timing.
 
 ## Determinism
@@ -685,10 +685,10 @@ feeds, and V8-isolate embedding. None of them change the surface above;
 they fill reserved entries.
 
 A dynamic-request suspension is part of the execution protocol: `executeRow`
-closes and aborts the parent attempt before child execution can begin. The host
+closes and aborts the parent transaction before child execution can begin. The host
 awaits `resolvePending()` and re-executes the SAME row. Tentative writes,
-buffered emissions, and tentative storage from the failed attempt vanish; the
-retry restores the exact pre-attempt varip candidate, which may come from an
+buffered emissions, and tentative storage from the failed transaction vanish; the
+retry restores the exact pre-transaction varip candidate, which may come from an
 earlier successful provisional tick. If a first-row varip Ring had no prior
 candidate, retry reaches and reruns its declaration-site initializer. `runAll`
 runs this loop itself.

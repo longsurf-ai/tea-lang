@@ -9,21 +9,21 @@ interface NodePayload {
   readonly children: readonly StorageRef[];
 }
 
-interface NodeBuilder {
+interface NodeArgs {
   readonly value: number;
   readonly children?: readonly StorageRef[];
 }
 
-const NODE: StorageDescriptor<NodePayload, NodeBuilder> = {
+const NODE: StorageDescriptor<NodePayload, NodeArgs> = {
   id: Symbol('node'),
   debugName: 'test node',
-  builderLogicalBytes(builder) {
-    return 8 + (builder.children?.length ?? 0) * 8;
+  logicalBytesFor(args) {
+    return 8 + (args.children?.length ?? 0) * 8;
   },
-  seal(builder) {
+  seal(args) {
     return Object.freeze({
-      value: builder.value,
-      children: Object.freeze([...(builder.children ?? [])]),
+      value: args.value,
+      children: Object.freeze([...(args.children ?? [])]),
     });
   },
   trace(payload, tracer) {
@@ -34,30 +34,30 @@ const NODE: StorageDescriptor<NodePayload, NodeBuilder> = {
   },
 };
 
-const OTHER: StorageDescriptor<NodePayload, NodeBuilder> = {
+const OTHER: StorageDescriptor<NodePayload, NodeArgs> = {
   ...NODE,
   id: Symbol('other'),
   debugName: 'other node',
 };
 
 describe('Heap arena', () => {
-  test('prepare is non-publishing; publish promotes only reachable cells', () => {
+  test('prepare is non-committing; commit promotes only reachable cells', () => {
     const heap = new HeapArena();
-    const attempt = heap.beginAttempt('row');
-    const kept = attempt.allocateSealed(NODE, {value: 1});
-    const dropped = attempt.allocateSealed(NODE, {value: 2});
+    const transaction = heap.beginTransaction('row');
+    const kept = transaction.allocateSealed(NODE, {value: 1});
+    const dropped = transaction.allocateSealed(NODE, {value: 2});
 
     expect(heap.read(kept, NODE).value).toBe(1);
-    const publication = attempt.preparePublication([kept]);
+    const commit = transaction.prepareCommit([kept]);
     expect(heap.stats()).toMatchObject({
-      publishedCells: 0,
+      committedCells: 0,
       tentativeCells: 2,
       retainedCells: 0,
     });
 
-    publication.publish();
+    commit.commit();
     expect(heap.stats()).toEqual({
-      publishedCells: 1,
+      committedCells: 1,
       retainedCells: 1,
       retainedLogicalBytes: 8,
       tentativeCells: 0,
@@ -67,11 +67,11 @@ describe('Heap arena', () => {
     expect(() => heap.read(dropped, NODE)).toThrow('stale StorageRef');
   });
 
-  test('a prepared attempt can abort when a peer prepare fails', () => {
+  test('a prepared transaction can abort when a peer prepare fails', () => {
     const heap = new HeapArena();
-    const attempt = heap.beginAttempt('row');
-    const ref = attempt.allocateSealed(NODE, {value: 1});
-    const publication = attempt.preparePublication([ref]);
+    const transaction = heap.beginTransaction('row');
+    const ref = transaction.allocateSealed(NODE, {value: 1});
+    const commit = transaction.prepareCommit([ref]);
 
     const preparePeer = () => {
       throw new Error('peer prepare failed');
@@ -80,62 +80,68 @@ describe('Heap arena', () => {
       try {
         preparePeer();
       } catch (error) {
-        attempt.abort();
+        transaction.abort();
         throw error;
       }
     }).toThrow('peer prepare failed');
 
-    expect(() => publication.publish()).toThrow(
-      'is aborted, expected prepared',
-    );
+    expect(() => commit.commit()).toThrow('is aborted, expected prepared');
     expect(() => heap.read(ref, NODE)).toThrow('stale StorageRef');
-    expect(() => attempt.abort()).toThrow('cannot abort Heap attempt');
+    expect(() => transaction.abort()).toThrow('cannot abort Heap transaction');
   });
 
-  test('attempt states reject overlapping, late allocation, and double publish', () => {
+  test('transaction states reject overlapping, late allocation, and double commit', () => {
     const heap = new HeapArena();
-    const attempt = heap.beginAttempt('one');
-    expect(() => heap.beginAttempt('two')).toThrow('cannot begin Heap attempt');
-    const ref = attempt.allocateSealed(NODE, {value: 1});
-    const publication = attempt.preparePublication([ref]);
-    expect(() => attempt.allocateSealed(NODE, {value: 2})).toThrow(
+    const transaction = heap.beginTransaction('one');
+    expect(() => heap.beginTransaction('two')).toThrow(
+      'cannot begin Heap transaction',
+    );
+    const ref = transaction.allocateSealed(NODE, {value: 1});
+    const commit = transaction.prepareCommit([ref]);
+    expect(() => transaction.allocateSealed(NODE, {value: 2})).toThrow(
       'expected active',
     );
-    expect(() => heap.beginAttempt('two')).toThrow('cannot begin Heap attempt');
-    publication.publish();
-    expect(() => publication.publish()).toThrow(
-      'is published, expected prepared',
+    expect(() => heap.beginTransaction('two')).toThrow(
+      'cannot begin Heap transaction',
     );
-    expect(() => attempt.abort()).toThrow('cannot abort Heap attempt');
-    expect(heap.beginAttempt('two')).toBeDefined();
+    commit.commit();
+    expect(() => commit.commit()).toThrow('is committed, expected prepared');
+    expect(() => transaction.abort()).toThrow('cannot abort Heap transaction');
+    expect(heap.beginTransaction('two')).toBeDefined();
   });
 
   test('cross-arena, wrong-descriptor, stale, and reused refs fail loudly', () => {
     const heap = new HeapArena();
     const other = new HeapArena();
-    const attempt = heap.beginAttempt('row');
-    const ref = attempt.allocateSealed(NODE, {value: 1});
-    attempt.preparePublication([ref]).publish();
+    const transaction = heap.beginTransaction('row');
+    const ref = transaction.allocateSealed(NODE, {value: 1});
+    transaction.prepareCommit([ref]).commit();
 
     expect(() => other.read(ref, NODE)).toThrow('another Heap arena');
     expect(() => heap.read(ref, OTHER)).toThrow('descriptor mismatch');
     heap.collect([]);
     expect(() => heap.read(ref, NODE)).toThrow('stale StorageRef');
 
-    const reuse = heap.beginAttempt('reuse');
+    const reuse = heap.beginTransaction('reuse');
     const replacement = reuse.allocateSealed(NODE, {value: 2});
-    reuse.preparePublication([replacement]).publish();
+    reuse.prepareCommit([replacement]).commit();
     expect(heap.read(replacement, NODE).value).toBe(2);
     expect(() => heap.read(ref, NODE)).toThrow('StorageRef');
   });
 
   test('shared children count once and safety roots do not alter retention', () => {
     const heap = new HeapArena();
-    const attempt = heap.beginAttempt('row');
-    const child = attempt.allocateSealed(NODE, {value: 1});
-    const left = attempt.allocateSealed(NODE, {value: 2, children: [child]});
-    const right = attempt.allocateSealed(NODE, {value: 3, children: [child]});
-    attempt.preparePublication([left, right]).publish();
+    const transaction = heap.beginTransaction('row');
+    const child = transaction.allocateSealed(NODE, {value: 1});
+    const left = transaction.allocateSealed(NODE, {
+      value: 2,
+      children: [child],
+    });
+    const right = transaction.allocateSealed(NODE, {
+      value: 3,
+      children: [child],
+    });
+    transaction.prepareCommit([left, right]).commit();
 
     expect(heap.stats()).toMatchObject({
       retainedCells: 3,
@@ -144,7 +150,7 @@ describe('Heap arena', () => {
     // `child` is a physical safety root, but only `left` is retained.
     heap.collect([left, child], [left]);
     expect(heap.stats()).toMatchObject({
-      publishedCells: 2,
+      committedCells: 2,
       retainedCells: 2,
       retainedLogicalBytes: 24,
     });
@@ -153,9 +159,9 @@ describe('Heap arena', () => {
 
   test('one-shot root iterables retain and account the same closure', () => {
     const heap = new HeapArena();
-    const attempt = heap.beginAttempt('row');
-    const ref = attempt.allocateSealed(NODE, {value: 1});
-    attempt.preparePublication([ref]).publish();
+    const transaction = heap.beginTransaction('row');
+    const ref = transaction.allocateSealed(NODE, {value: 1});
+    transaction.prepareCommit([ref]).commit();
 
     heap.collect(
       (function* roots() {
@@ -163,18 +169,18 @@ describe('Heap arena', () => {
       })(),
     );
     expect(heap.stats()).toMatchObject({
-      publishedCells: 1,
+      committedCells: 1,
       retainedCells: 1,
       retainedLogicalBytes: 8,
     });
   });
 
-  test('transient and retained limits fail before publication', () => {
+  test('transient and retained limits fail before commit', () => {
     const transient = new HeapArena({
       maxTransientStorageCells: 1,
       maxTransientLogicalBytes: 100,
     });
-    const first = transient.beginAttempt('row');
+    const first = transient.beginTransaction('row');
     first.allocateSealed(NODE, {value: 1});
     expect(() => first.allocateSealed(NODE, {value: 2})).toThrow(
       ExecutionError,
@@ -186,64 +192,64 @@ describe('Heap arena', () => {
       maxStorageCells: 1,
       maxLogicalBytes: 100,
     });
-    const second = retained.beginAttempt('row');
+    const second = retained.beginTransaction('row');
     const a = second.allocateSealed(NODE, {value: 1});
     const b = second.allocateSealed(NODE, {value: 2});
-    expect(() => second.preparePublication([a, b])).toThrow(ExecutionError);
+    expect(() => second.prepareCommit([a, b])).toThrow(ExecutionError);
     expect(retained.stats()).toMatchObject({
-      publishedCells: 0,
+      committedCells: 0,
       tentativeCells: 2,
     });
     second.abort();
   });
 
-  test('transient byte limits reject a builder before descriptor sealing', () => {
+  test('transient byte limits reject args before descriptor sealing', () => {
     let seals = 0;
-    const counted: StorageDescriptor<NodePayload, NodeBuilder> = {
+    const counted: StorageDescriptor<NodePayload, NodeArgs> = {
       ...NODE,
       id: Symbol('counted'),
-      builderLogicalBytes: () => 16,
-      seal(builder) {
+      logicalBytesFor: () => 16,
+      seal(args) {
         seals += 1;
-        return NODE.seal(builder);
+        return NODE.seal(args);
       },
       logicalBytes: () => 16,
     };
     const heap = new HeapArena({maxTransientLogicalBytes: 15});
-    const attempt = heap.beginAttempt('row');
-    expect(() => attempt.allocateSealed(counted, {value: 1})).toThrow(
+    const transaction = heap.beginTransaction('row');
+    expect(() => transaction.allocateSealed(counted, {value: 1})).toThrow(
       ExecutionError,
     );
     expect(seals).toBe(0);
     expect(heap.stats().tentativeCells).toBe(0);
-    attempt.abort();
+    transaction.abort();
   });
 
-  test('descriptors cannot publish mutable aliases', () => {
+  test('descriptors cannot commit mutable aliases', () => {
     const unsealed: StorageDescriptor<{items: number[]}, number[]> = {
       id: Symbol('unsealed'),
       debugName: 'unsealed',
-      builderLogicalBytes: builder => builder.length * 8,
-      seal: builder => Object.freeze({items: builder}),
+      logicalBytesFor: args => args.length * 8,
+      seal: args => Object.freeze({items: args}),
       trace() {},
       logicalBytes: payload => payload.items.length * 8,
     };
     const heap = new HeapArena();
-    const attempt = heap.beginAttempt('row');
-    expect(() => attempt.allocateSealed(unsealed, [1])).toThrow(
+    const transaction = heap.beginTransaction('row');
+    expect(() => transaction.allocateSealed(unsealed, [1])).toThrow(
       "descriptor 'unsealed' returned an unsealed payload",
     );
     expect(heap.stats().tentativeCells).toBe(0);
-    attempt.abort();
+    transaction.abort();
   });
 
-  test('dispose aborts an attempt and invalidates all refs', () => {
+  test('dispose aborts a transaction and invalidates all refs', () => {
     const heap = new HeapArena();
-    const attempt = heap.beginAttempt('row');
-    const ref = attempt.allocateSealed(NODE, {value: 1});
+    const transaction = heap.beginTransaction('row');
+    const ref = transaction.allocateSealed(NODE, {value: 1});
     heap.dispose();
     heap.dispose();
     expect(() => heap.read(ref, NODE)).toThrow('disposed');
-    expect(() => heap.beginAttempt('later')).toThrow('disposed');
+    expect(() => heap.beginTransaction('later')).toThrow('disposed');
   });
 });

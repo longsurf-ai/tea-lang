@@ -1,4 +1,4 @@
-// Purpose: Sparse effects share the JS runtime's row-attempt transaction and
+// Purpose: Sparse effects share the JS runtime's row transaction and
 // vanish on error/suspension instead of leaking or duplicating records.
 
 import {describe, expect, test} from 'bun:test';
@@ -61,12 +61,12 @@ function effectModule(main: TeaModule['main']): TeaModule {
 }
 
 describe('effect row transactions', () => {
-  test('a failed attempt discards effects before a successful retry', async () => {
+  test('a failed transaction discards effects before a successful retry', async () => {
     let fail = true;
     const module = effectModule(rt => {
       rt.emitEffect(0, 41);
       if (fail) {
-        throw new Error('attempt failed');
+        throw new Error('transaction failed');
       }
     });
     const sink = new MemorySink();
@@ -77,7 +77,7 @@ describe('effect row transactions', () => {
       timeNow: 0,
     });
 
-    expect(() => execution.executeRow(0, false)).toThrow('attempt failed');
+    expect(() => execution.executeRow(0, false)).toThrow('transaction failed');
     fail = false;
     execution.executeRow(0, false);
     execution.commitRow(0);
@@ -88,7 +88,7 @@ describe('effect row transactions', () => {
     execution.dispose();
   });
 
-  test('completed provisional and final attempts each publish one row unit', async () => {
+  test('completed provisional and final transactions each publish one row unit', async () => {
     const module = effectModule(rt => rt.emitEffect(0, 7));
     const sink = new MemorySink();
     const execution = await bind(module, {
@@ -113,7 +113,7 @@ describe('effect row transactions', () => {
     execution.dispose();
   });
 
-  test('dynamic-request suspension drops the aborted attempt effect', async () => {
+  test('dynamic-request suspension drops the aborted transaction effect', async () => {
     const axis: TimeAxis = {time: row => row, closeTime: row => row + 1};
     const contexts: DataProvider = {
       resolveContext: symbol =>
@@ -360,7 +360,12 @@ describe('effect row transactions', () => {
         publications.push(publication);
       },
     };
-    const execution = await bind(module, {params: {}, provider, sink, timeNow: 0});
+    const execution = await bind(module, {
+      params: {},
+      provider,
+      sink,
+      timeNow: 0,
+    });
 
     await execution.runAll();
 

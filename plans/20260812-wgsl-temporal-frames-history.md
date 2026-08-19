@@ -34,7 +34,7 @@ The shared contract is:
    `IrFunc` alone. Two written calls to `ta.ema` therefore own distinct state.
 3. Physical frame storage is distinct from semantic activation. A frame is
    semantically inactive until its call site first executes. Activation is
-   tentative within the current row attempt and becomes durable only through
+   tentative within the current row transaction and becomes durable only through
    the same commit protocol as values. Abort/suspension restores the previous
    activation state. Once durably active, the frame participates in every
    subsequent fixed-cadence row reset and commit, even when that call site is
@@ -92,8 +92,8 @@ then publishes the value with `initialize`. The runtime tracks tentative
 scratch initialization separately from committed initialization.
 
 Frame activation follows the same model. A physically allocated subframe has
-committed-active and attempt-active state. Opening the frame marks only the
-attempt. Abort restores the pre-attempt state recursively. A successful
+committed-active and transaction-active state. Opening the frame marks only the
+transaction. Abort restores the pre-transaction state recursively. A successful
 provisional execution may retain an explicit same-row activation candidate;
 the next execution of that row starts from that candidate, and the final row
 commit promotes it. Merely allocating a subframe never activates it.
@@ -105,7 +105,7 @@ Row reset and commit rules become:
 - an unreached persistent declaration does not become initialized merely
   because its frame commits;
 - successful final commit makes a reached initialization durable;
-- abort restores the pre-attempt initialization state;
+- abort restores the pre-transaction initialization state;
 - successful provisional `varip` initialization remains the same-row
   candidate, consistent with existing `varip` scratch behavior.
 
@@ -455,7 +455,7 @@ config completes on WebGPU.
 - outputs/effects: order and payload parity remain unchanged when requested;
   final-dense and effect-declining sink capabilities may elide unrequested
   transport. The first GPU slice admits only Programs that cannot suspend and
-  retains terminal failure on effect overflow; full GPU attempt rollback is a
+  retains terminal failure on effect overflow; full GPU transaction rollback is a
   later capability.
 
 ## 10. Non-goals of the first implementation

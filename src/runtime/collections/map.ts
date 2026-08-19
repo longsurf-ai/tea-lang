@@ -31,25 +31,25 @@ export interface MapStorage {
   readonly logicalBytes: number;
 }
 
-interface MapStorageBuilder {
+interface MapStorageArgs {
   readonly entries: readonly MapEntry[];
   readonly logicalBytes: number;
 }
 
-export const MAP_STORAGE: StorageDescriptor<MapStorage, MapStorageBuilder> = {
+export const MAP_STORAGE: StorageDescriptor<MapStorage, MapStorageArgs> = {
   id: Symbol('tea.map.storage'),
   debugName: 'map storage',
-  builderLogicalBytes(builder) {
-    return builder.logicalBytes;
+  logicalBytesFor(args) {
+    return args.logicalBytes;
   },
-  seal(builder) {
+  seal(args) {
     return Object.freeze({
       entries: Object.freeze(
-        builder.entries.map(entry =>
+        args.entries.map(entry =>
           Object.freeze({key: entry.key, value: entry.value}),
         ),
       ),
-      logicalBytes: builder.logicalBytes,
+      logicalBytes: args.logicalBytes,
     });
   },
   trace(payload, tracer) {
@@ -242,7 +242,7 @@ function entries(
   ctx: Pick<CollectionContext, 'heap'>,
   receiver: MapValue,
 ): readonly MapEntry[] {
-  const payload = ctx.heap.read<MapStorage, MapStorageBuilder>(
+  const payload = ctx.heap.read<MapStorage, MapStorageArgs>(
     receiver.storage,
     MAP_STORAGE,
   );
@@ -262,7 +262,7 @@ function allocateStorage(
 ): MapValue['storage'] {
   const entryBytes =
     ctx.layouts.shallowBytes(keyLayout) + ctx.layouts.shallowBytes(valueLayout);
-  return ctx.attempt.allocateSealed(MAP_STORAGE, {
+  return ctx.transaction.allocateSealed(MAP_STORAGE, {
     entries,
     logicalBytes: 16 + entries.length * entryBytes,
   });

@@ -9,7 +9,7 @@ import {
   type UserTypeValue,
   type Value,
 } from '../abi';
-import {HeapArena, type HeapAttempt, type StorageRef} from '../heap';
+import {HeapArena, type HeapTransaction, type StorageRef} from '../heap';
 import {newUserValue, rebuildUserPath} from '../user-value';
 import {
   type AggregateLayoutManifest,
@@ -68,7 +68,7 @@ interface Harness {
   readonly heap: HeapArena;
   readonly layouts: ValueLayoutRegistry;
   readonly collections: CollectionRuntime;
-  attempt: number;
+  transaction: number;
 }
 
 function harness(maxElements = 10_000): Harness {
@@ -78,7 +78,7 @@ function harness(maxElements = 10_000): Harness {
     heap,
     layouts,
     collections: new CollectionRuntime(heap, layouts, maxElements),
-    attempt: 0,
+    transaction: 0,
   };
 }
 
@@ -90,8 +90,8 @@ function roots(values: readonly Value[]): StorageRef[] {
   return result;
 }
 
-function publish(attempt: HeapAttempt, values: readonly Value[]): void {
-  attempt.preparePublication(roots(values)).publish();
+function commit(transaction: HeapTransaction, values: readonly Value[]): void {
+  transaction.prepareCommit(roots(values)).commit();
 }
 
 function call(
@@ -100,9 +100,11 @@ function call(
   layout: number,
   args: readonly Value[],
 ): Value {
-  const attempt = h.heap.beginAttempt(`call-${h.attempt++}-${operation}`);
-  const result = h.collections.call(attempt, operation, layout, args);
-  publish(attempt, [result]);
+  const transaction = h.heap.beginTransaction(
+    `call-${h.transaction++}-${operation}`,
+  );
+  const result = h.collections.call(transaction, operation, layout, args);
+  commit(transaction, [result]);
   return result;
 }
 
@@ -113,26 +115,30 @@ function mutate(
   receiver: Value,
   args: readonly Value[],
 ): CollectionMutation {
-  const attempt = h.heap.beginAttempt(`mutate-${h.attempt++}-${operation}`);
+  const transaction = h.heap.beginTransaction(
+    `mutate-${h.transaction++}-${operation}`,
+  );
   const result = h.collections.mutate(
-    attempt,
+    transaction,
     operation,
     layout,
     receiver,
     args,
   );
-  publish(attempt, [result.replacement]);
+  commit(transaction, [result.replacement]);
   return result;
 }
 
 function fail(
   h: Harness,
   code: string,
-  run: (attempt: HeapAttempt) => unknown,
+  run: (transaction: HeapTransaction) => unknown,
 ): void {
-  const attempt = h.heap.beginAttempt(`failure-${h.attempt++}-${code}`);
-  expect(() => run(attempt)).toThrow(code);
-  attempt.abort();
+  const transaction = h.heap.beginTransaction(
+    `failure-${h.transaction++}-${code}`,
+  );
+  expect(() => run(transaction)).toThrow(code);
+  transaction.abort();
 }
 
 function random(seed: number): () => number {
@@ -165,21 +171,21 @@ interface MatrixModel {
 }
 
 function matrixValues(h: Harness, value: Value): MatrixModel {
-  const attempt = h.heap.beginAttempt(`matrix-read-${h.attempt++}`);
-  const rows = h.collections.call(attempt, 'matrix.rows', INT, [
+  const transaction = h.heap.beginTransaction(`matrix-read-${h.transaction++}`);
+  const rows = h.collections.call(transaction, 'matrix.rows', INT, [
     value,
   ]) as number;
-  const columns = h.collections.call(attempt, 'matrix.columns', INT, [
+  const columns = h.collections.call(transaction, 'matrix.columns', INT, [
     value,
   ]) as number;
-  const count = h.collections.call(attempt, 'matrix.elements_count', INT, [
+  const count = h.collections.call(transaction, 'matrix.elements_count', INT, [
     value,
   ]);
   const values: number[] = [];
   for (let row = 0; row < rows; row += 1) {
     for (let column = 0; column < columns; column += 1) {
       values.push(
-        h.collections.call(attempt, 'matrix.get', INT, [
+        h.collections.call(transaction, 'matrix.get', INT, [
           value,
           row,
           column,
@@ -187,7 +193,7 @@ function matrixValues(h: Harness, value: Value): MatrixModel {
       );
     }
   }
-  publish(attempt, []);
+  commit(transaction, []);
   expect(count).toBe(rows * columns);
   return {rows, columns, values};
 }
@@ -446,32 +452,35 @@ describe('collection failure contracts', () => {
     const matrix = call(h, 'matrix.new', INT_MATRIX, [1, 1, 0]);
     const map = call(h, 'map.new', FLOAT_INT_MAP, []);
 
-    fail(h, 'NA_COLLECTION', attempt =>
-      h.collections.call(attempt, 'array.size', INT, [null]),
+    fail(h, 'NA_COLLECTION', transaction =>
+      h.collections.call(transaction, 'array.size', INT, [null]),
     );
-    fail(h, 'INDEX_OUT_OF_BOUNDS', attempt =>
-      h.collections.call(attempt, 'array.get', INT, [full, 1]),
+    fail(h, 'INDEX_OUT_OF_BOUNDS', transaction =>
+      h.collections.call(transaction, 'array.get', INT, [full, 1]),
     );
-    fail(h, 'INDEX_OUT_OF_BOUNDS', attempt =>
-      h.collections.call(attempt, 'matrix.get', INT, [matrix, -1, 0]),
+    fail(h, 'INDEX_OUT_OF_BOUNDS', transaction =>
+      h.collections.call(transaction, 'matrix.get', INT, [matrix, -1, 0]),
     );
-    fail(h, 'EMPTY_COLLECTION', attempt =>
-      h.collections.mutate(attempt, 'array.pop', INTS, empty, []),
+    fail(h, 'EMPTY_COLLECTION', transaction =>
+      h.collections.mutate(transaction, 'array.pop', INTS, empty, []),
     );
-    fail(h, 'INVALID_SHAPE', attempt =>
-      h.collections.call(attempt, 'array.new', INTS, [1.5, 0]),
+    fail(h, 'INVALID_SHAPE', transaction =>
+      h.collections.call(transaction, 'array.new', INTS, [1.5, 0]),
     );
-    fail(h, 'INVALID_SHAPE', attempt =>
-      h.collections.call(attempt, 'matrix.new', INT_MATRIX, [-1, 1, 0]),
+    fail(h, 'INVALID_SHAPE', transaction =>
+      h.collections.call(transaction, 'matrix.new', INT_MATRIX, [-1, 1, 0]),
     );
-    fail(h, 'INVALID_MAP_KEY', attempt =>
-      h.collections.mutate(attempt, 'map.put', FLOAT_INT_MAP, map, [NaN, 1]),
+    fail(h, 'INVALID_MAP_KEY', transaction =>
+      h.collections.mutate(transaction, 'map.put', FLOAT_INT_MAP, map, [
+        NaN,
+        1,
+      ]),
     );
-    fail(h, 'COLLECTION_LIMIT_EXCEEDED', attempt =>
-      h.collections.mutate(attempt, 'array.push', INTS, full, [2]),
+    fail(h, 'COLLECTION_LIMIT_EXCEEDED', transaction =>
+      h.collections.mutate(transaction, 'array.push', INTS, full, [2]),
     );
-    fail(h, 'VALUE_LAYOUT_MISMATCH', attempt =>
-      h.collections.mutate(attempt, 'array.push', INTS, empty, ['wrong']),
+    fail(h, 'VALUE_LAYOUT_MISMATCH', transaction =>
+      h.collections.mutate(transaction, 'array.push', INTS, empty, ['wrong']),
     );
     expect(() => rebuildUserPath(h.layouts, null, BOX, [0], null)).toThrow(
       'NA_USER_VALUE_WRITE',

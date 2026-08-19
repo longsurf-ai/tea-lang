@@ -1,4 +1,4 @@
-// Purpose: Collection ABI dispatcher — routes catalog operations into array, matrix, and ordered-map value implementations under the current Heap attempt.
+// Purpose: Collection ABI dispatcher — routes catalog operations into array, matrix, and ordered-map value implementations under the current Heap transaction.
 
 import {fatal} from '../../base/print';
 import {ExecutionError} from '../errors';
@@ -9,7 +9,7 @@ import {
   type CollectionOperation,
 } from '../module-abi';
 import {isArrayValue, isMapValue, isMatrixValue, type Value} from '../value';
-import type {Heap, HeapAttempt} from '../heap';
+import type {Heap, HeapTransaction} from '../heap';
 import {type LayoutId, ValueLayoutRegistry} from '../value-layout';
 import {arrayCall, arrayMutate, arraySnapshot} from './array';
 import type {CollectionContext} from './common';
@@ -28,12 +28,12 @@ export class CollectionRuntime {
   }
 
   call(
-    attempt: HeapAttempt,
+    transaction: HeapTransaction,
     operation: CollectionOperation,
     resultLayout: LayoutId,
     args: readonly Value[],
   ): Value {
-    const ctx = this.context(attempt);
+    const ctx = this.context(transaction);
     const result = operation.startsWith('array.')
       ? arrayCall(ctx, operation, resultLayout, args)
       : operation.startsWith('matrix.')
@@ -44,13 +44,13 @@ export class CollectionRuntime {
   }
 
   mutate(
-    attempt: HeapAttempt,
+    transaction: HeapTransaction,
     operation: CollectionMutationOperation,
     collectionLayout: LayoutId,
     receiver: Value,
     args: readonly Value[],
   ): CollectionMutation {
-    const ctx = this.context(attempt);
+    const ctx = this.context(transaction);
     const result = operation.startsWith('array.')
       ? arrayMutate(ctx, operation, collectionLayout, receiver, args)
       : operation.startsWith('matrix.')
@@ -81,10 +81,10 @@ export class CollectionRuntime {
     return fatal('collectionEntries received a non-collection object');
   }
 
-  private context(attempt: HeapAttempt): CollectionContext {
+  private context(transaction: HeapTransaction): CollectionContext {
     return {
       heap: this.heap,
-      attempt,
+      transaction,
       layouts: this.layouts,
       maxElements: this.maxElements,
     };

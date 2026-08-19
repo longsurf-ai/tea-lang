@@ -70,7 +70,7 @@ left-to-right once, validates and builds a replacement, then performs one
 root writeback. Rebuilding a nested path starts from the then-current root, so
 argument-side writes to sibling fields survive while the mutator replacement
 wins at its receiver leaf. A failed execution or suspension publishes none of
-the attempt.
+the transaction.
 
 ## User-defined value types
 
@@ -153,7 +153,7 @@ immutable sharing requires no per-object persistence metadata or edit replay.
 A persistent declaration initializes when execution first reaches that source
 location, not when its frame is allocated. Its initializer therefore observes
 the current call arguments and surrounding control flow. Initialization is
-transactional with the row attempt: an error or request suspension erases a
+transactional with the row transaction: an error or request suspension erases a
 tentative first initialization; final commit makes it durable. `varip` may
 retain both its value and initialized state after a successful provisional
 execution of the same row.

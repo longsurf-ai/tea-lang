@@ -77,15 +77,15 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   while the result-column lease remains with the merged view until disposal.
 - Ordinary user-defined values are nominal immutable records with value
   semantics. Collection values are immutable headers over source-hidden
-  `StorageRef`s. Published Heap payloads never mutate, Heap owns no semantic
+  `StorageRef`s. Committed Heap payloads never mutate, Heap owns no semantic
   object identity or `var`/`varip` policy, and generated code cannot control
-  attempts or publication.
-- Storage descriptors provide an exact builder-byte estimate. Heap enforces
+  transactions or commits.
+- Storage descriptors provide an exact args-byte estimate. Heap enforces
   transient cell/byte limits before descriptor sealing may allocate or copy,
   and the sealed payload's logical byte count must equal the estimate.
-- Exactly one nonterminal Heap attempt may exist. Row publication prepares all
+- Exactly one nonterminal Heap transaction may exist. The row transaction prepares all
   fallible Ring, Heap-reachability, and buffered-emission work before a
-  non-throwing internal publish; final sink delivery is post-commit. Abort and
+  non-throwing internal commit; final sink delivery is post-commit. Abort and
   suspension invalidate scratch/emissions and all tentative storage.
 - A history offset names a cell only when it is a non-negative safe integer.
   Every other offset (including na, infinity, fractions, and negatives) returns
@@ -105,14 +105,14 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   The runtime then discards that frame and allocates the final tree from the
   reported depths. All bind-reporting calls are illegal after execution
   begins; series depth demands are a provider contract, not an allocation.
-  Both sections share one abort-only Heap attempt, so bind-time aggregate
-  temporaries can never become published storage.
+  Both sections share one abort-only Heap transaction, so bind-time aggregate
+  temporaries can never become committed storage.
 - bind is async, and awaits otherwise happen only at suspension points:
   static contexts resolve before row 0; a dynamic pair's first encounter
   throws `ContextSuspension` out of `executeRow`, the host awaits
-  `resolvePending()`, and the SAME row re-executes — the aborted attempt
+  `resolvePending()`, and the SAME row re-executes — the aborted transaction
   vanishes entirely: tentative writes/storage disappear and retry restores the
-  exact pre-attempt varip candidate, including one produced by an earlier
+  exact pre-transaction varip candidate, including one produced by an earlier
   successful provisional tick. Persistent initialization happens only when an
   emitted lexical `InitName` calls `needsInit`/`initialize`; its scratch and
   committed bits follow the same transaction, so an absent first-row candidate

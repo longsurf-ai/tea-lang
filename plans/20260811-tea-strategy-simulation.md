@@ -234,10 +234,10 @@ thunk plus explicit package-initializer order. `Program.init` remains the
 separate bind-time/frame-free phase and is not repurposed for runtime state.
 Frame reach order must never become an accidental initializer schedule. Both
 targets execute package `Name.init` work inside the context's first row
-attempt:
+transaction:
 
 - successful row commit persists the initialized bit and values;
-- suspension/error/rollback discards the whole init attempt and retries it;
+- suspension/error/rollback discards the whole init transaction and retries it;
 - a zero-row binding does not execute it, matching ordinary Tea `var`;
 - init code cannot observe current-row values or publish outputs/effects.
 
@@ -255,7 +255,7 @@ one semantic Package/Object graph
 - Every request-child Program context gets fresh package state.
 - Every GPU lane gets fresh package state.
 - Re-execution and suspension use the ordinary provisional/commit rollback
-  rules; failed first-row attempts rerun state initialization.
+  rules; failed first-row transactions rerun state initialization.
 
 This deliberately differs from Go's once-per-process linked package storage.
 
@@ -324,7 +324,7 @@ reparsed as a machine type.
 
 ### 5.3 CPU transaction semantics
 
-The JS runtime buffers effects inside the existing row attempt. Suspension,
+The JS runtime buffers effects inside the existing row transaction. Suspension,
 error, and rollback discard the buffer. Dense writes and sparse effects form
 one publication unit:
 

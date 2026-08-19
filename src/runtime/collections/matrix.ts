@@ -24,24 +24,24 @@ export interface MatrixStorage {
   readonly logicalBytes: number;
 }
 
-interface MatrixStorageBuilder {
+interface MatrixStorageArgs {
   readonly values: readonly Value[];
   readonly logicalBytes: number;
 }
 
 export const MATRIX_STORAGE: StorageDescriptor<
   MatrixStorage,
-  MatrixStorageBuilder
+  MatrixStorageArgs
 > = {
   id: Symbol('tea.matrix.storage'),
   debugName: 'matrix storage',
-  builderLogicalBytes(builder) {
-    return builder.logicalBytes;
+  logicalBytesFor(args) {
+    return args.logicalBytes;
   },
-  seal(builder) {
+  seal(args) {
     return Object.freeze({
-      values: Object.freeze([...builder.values]),
-      logicalBytes: builder.logicalBytes,
+      values: Object.freeze([...args.values]),
+      logicalBytes: args.logicalBytes,
     });
   },
   trace(payload, tracer) {
@@ -225,7 +225,7 @@ function values(
   ctx: Pick<CollectionContext, 'heap'>,
   receiver: MatrixValue,
 ): readonly Value[] {
-  const payload = ctx.heap.read<MatrixStorage, MatrixStorageBuilder>(
+  const payload = ctx.heap.read<MatrixStorage, MatrixStorageArgs>(
     receiver.storage,
     MATRIX_STORAGE,
   );
@@ -243,7 +243,7 @@ function allocateStorage(
   elementLayout: LayoutId,
   elements: readonly Value[],
 ): MatrixValue['storage'] {
-  return ctx.attempt.allocateSealed(MATRIX_STORAGE, {
+  return ctx.transaction.allocateSealed(MATRIX_STORAGE, {
     values: elements,
     logicalBytes:
       16 + elements.length * ctx.layouts.shallowBytes(elementLayout),

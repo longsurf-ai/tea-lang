@@ -12,7 +12,7 @@ import {
   type MatrixValue,
   type Value,
 } from '../value';
-import type {Heap, HeapAttempt} from '../heap';
+import type {Heap, HeapTransaction} from '../heap';
 import {
   type LayoutId,
   type ValueLayout,
@@ -21,7 +21,7 @@ import {
 
 export interface CollectionContext {
   readonly heap: Heap;
-  readonly attempt: HeapAttempt;
+  readonly transaction: HeapTransaction;
   readonly layouts: ValueLayoutRegistry;
   readonly maxElements: number;
 }

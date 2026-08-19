@@ -198,7 +198,7 @@ describe('aggregate Ring and commit integration', () => {
     expect(recorded.values).toEqual([]);
   });
 
-  test('an aborted ordinary attempt restores the last completed varip header', async () => {
+  test('an aborted ordinary transaction restores the last completed varip header', async () => {
     const sink = new Sink();
     let fail = false;
     const base = arrayStateModule();
@@ -207,7 +207,7 @@ describe('aggregate Ring and commit integration', () => {
       main(rt, fr) {
         base.main(rt, fr);
         if (fail) {
-          throw new Error('attempt failed');
+          throw new Error('transaction failed');
         }
       },
     };
@@ -219,7 +219,7 @@ describe('aggregate Ring and commit integration', () => {
 
     bound.executeRow(0, true);
     fail = true;
-    expect(() => bound.executeRow(0, false)).toThrow('attempt failed');
+    expect(() => bound.executeRow(0, false)).toThrow('transaction failed');
     fail = false;
     bound.executeRow(0, false);
     bound.commitRow(0);
@@ -230,7 +230,7 @@ describe('aggregate Ring and commit integration', () => {
     ]);
   });
 
-  test('an aborted first attempt reruns aggregate varip initialization', async () => {
+  test('an aborted first transaction reruns aggregate varip initialization', async () => {
     const sink = new Sink();
     let fail = true;
     const base = arrayStateModule();
@@ -239,7 +239,7 @@ describe('aggregate Ring and commit integration', () => {
       main(rt, fr) {
         base.main(rt, fr);
         if (fail) {
-          throw new Error('first attempt failed');
+          throw new Error('first transaction failed');
         }
       },
     };
@@ -249,7 +249,9 @@ describe('aggregate Ring and commit integration', () => {
       sink,
     });
 
-    expect(() => bound.executeRow(0, false)).toThrow('first attempt failed');
+    expect(() => bound.executeRow(0, false)).toThrow(
+      'first transaction failed',
+    );
     fail = false;
     bound.executeRow(0, false);
     bound.commitRow(0);
@@ -832,7 +834,7 @@ describe('aggregate request ownership', () => {
         rt.write(fr, 0, mutation.replacement);
         // The replacement above is tentative when this first encounters a
         // pair. Suspension must abort that storage and restore the exact
-        // pre-attempt varip header before retrying the whole row.
+        // pre-transaction varip header before retrying the whole row.
         rt.requestFor(0, requestedSymbol, '');
         rt.emit(
           0,
@@ -858,7 +860,7 @@ describe('aggregate request ownership', () => {
     bound.executeRow(0, true);
 
     // A second unresolved pair starts from the completed first tick's
-    // candidate. Its failed append must disappear, while that pre-attempt
+    // candidate. Its failed append must disappear, while that pre-transaction
     // candidate survives for the retry.
     requestedSymbol = 'X';
     marker = 22;
@@ -1295,7 +1297,7 @@ describe('runtime boundaries', () => {
       params: {},
       provider: provider(context(1)),
       sink,
-      // Both bind and execution may allocate one cell in their own attempt;
+      // Both bind and execution may allocate one cell in their own transaction;
       // only execution's cell may remain retained afterward.
       maxHeapStorageCells: 1,
       maxHeapLogicalBytes: 24,

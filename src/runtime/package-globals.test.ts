@@ -41,20 +41,35 @@ function moduleFor(source: string) {
     resolveImports([file], registry, []),
   );
   if (errors.count !== 0) {
-    return fatal(errors.flushErrors().map(error => error.msg).join('; '));
+    return fatal(
+      errors
+        .flushErrors()
+        .map(error => error.msg)
+        .join('; '),
+    );
   }
   const program = buildProgram(checked, errors);
   if (errors.count !== 0) {
-    return fatal(errors.flushErrors().map(error => error.msg).join('; '));
+    return fatal(
+      errors
+        .flushErrors()
+        .map(error => error.msg)
+        .join('; '),
+    );
   }
   return loadModule(generate(program));
 }
 
-async function values(source: string, rows: number): Promise<readonly unknown[]> {
+async function values(
+  source: string,
+  rows: number,
+): Promise<readonly unknown[]> {
   const sink = new MemorySink();
   const bound = await bind(moduleFor(source), {
     params: {},
-    provider: csvProvider(`close\n${Array.from({length: rows}, () => '1').join('\n')}\n`),
+    provider: csvProvider(
+      `close\n${Array.from({length: rows}, () => '1').join('\n')}\n`,
+    ),
     sink,
     timeNow: 0,
   });
@@ -83,14 +98,17 @@ describe('package runtime globals in JS', () => {
     expect(await values(source, 1)).toEqual([1, 2]);
   });
 
-  test('rolls initialization back across a provisional first-row attempt', async () => {
+  test('rolls initialization back across a provisional first-row transaction', async () => {
     const sink = new MemorySink();
-    const bound = await bind(moduleFor('import counter\nplot(counter.next())'), {
-      params: {},
-      provider: csvProvider('close\n1\n'),
-      sink,
-      timeNow: 0,
-    });
+    const bound = await bind(
+      moduleFor('import counter\nplot(counter.next())'),
+      {
+        params: {},
+        provider: csvProvider('close\n1\n'),
+        sink,
+        timeNow: 0,
+      },
+    );
     try {
       bound.executeRow(0, true);
       bound.executeRow(0, false);
@@ -142,7 +160,7 @@ describe('package runtime globals in JS', () => {
     } finally {
       bound.dispose();
     }
-    // The aborted attempt's counter increment vanished; retry starts at 0.
+    // The aborted transaction's counter increment vanished; retry starts at 0.
     expect(sink.emissions.map(emission => emission.channels[0])).toEqual([2]);
   });
 });

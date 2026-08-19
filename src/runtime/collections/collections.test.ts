@@ -7,7 +7,7 @@ import {
   type UserTypeValue,
   type Value,
 } from '../abi';
-import {HeapArena, type HeapAttempt, type StorageRef} from '../heap';
+import {HeapArena, type HeapTransaction, type StorageRef} from '../heap';
 import {newUserValue, rebuildUserPath} from '../user-value';
 import {
   ValueLayoutRegistry,
@@ -81,8 +81,8 @@ function roots(values: readonly Value[]): StorageRef[] {
   return result;
 }
 
-function publish(attempt: HeapAttempt, values: readonly Value[]): void {
-  attempt.preparePublication(roots(values)).publish();
+function commit(transaction: HeapTransaction, values: readonly Value[]): void {
+  transaction.prepareCommit(roots(values)).commit();
 }
 
 function construct(
@@ -91,9 +91,9 @@ function construct(
   layout: number,
   args: readonly Value[],
 ): CollectionValue {
-  const attempt = h.heap.beginAttempt(operation);
-  const value = h.collections.call(attempt, operation, layout, args);
-  publish(attempt, [value]);
+  const transaction = h.heap.beginTransaction(operation);
+  const value = h.collections.call(transaction, operation, layout, args);
+  commit(transaction, [value]);
   return value as CollectionValue;
 }
 
@@ -110,9 +110,9 @@ function read(
   layout: number,
   args: readonly Value[],
 ): Value {
-  const attempt = h.heap.beginAttempt(operation);
-  const value = h.collections.call(attempt, operation, layout, args);
-  attempt.abort();
+  const transaction = h.heap.beginTransaction(operation);
+  const value = h.collections.call(transaction, operation, layout, args);
+  transaction.abort();
   return value;
 }
 
@@ -127,10 +127,16 @@ describe('array values', () => {
   test('assignment and retained history headers stay isolated', () => {
     const h = harness();
     const a = construct(h, 'array.from', INTS, [1, 2]);
-    const attempt = h.heap.beginAttempt('push');
-    const pushed = h.collections.mutate(attempt, 'array.push', INTS, a, [3]);
+    const transaction = h.heap.beginTransaction('push');
+    const pushed = h.collections.mutate(
+      transaction,
+      'array.push',
+      INTS,
+      a,
+      [3],
+    );
     const b = pushed.replacement;
-    publish(attempt, [a, b]);
+    commit(transaction, [a, b]);
 
     expect(h.collections.entries(a)).toEqual([1, 2]);
     expect(h.collections.entries(b)).toEqual([1, 2, 3]);
@@ -141,48 +147,48 @@ describe('array values', () => {
   test('element access guards the exact generated result layout', () => {
     const h = harness();
     const array = construct(h, 'array.from', INTS, [1]);
-    const attempt = h.heap.beginAttempt('wrong result layout');
+    const transaction = h.heap.beginTransaction('wrong result layout');
     expect(() =>
-      h.collections.call(attempt, 'array.get', FLOAT, [array, 0]),
+      h.collections.call(transaction, 'array.get', FLOAT, [array, 0]),
     ).toThrow('expected 0');
-    attempt.abort();
+    transaction.abort();
   });
 
   test('pop and clear remove logical high-water slots', () => {
     const h = harness();
     const original = construct(h, 'array.from', INTS, [1, 2, 99]);
-    const popAttempt = h.heap.beginAttempt('pop');
+    const popTransaction = h.heap.beginTransaction('pop');
     const popped = h.collections.mutate(
-      popAttempt,
+      popTransaction,
       'array.pop',
       INTS,
       original,
       [],
     );
-    publish(popAttempt, [original, popped.replacement]);
+    commit(popTransaction, [original, popped.replacement]);
     expect(popped.result).toBe(99);
     expect(h.collections.entries(popped.replacement)).toEqual([1, 2]);
 
-    const pushAttempt = h.heap.beginAttempt('push');
+    const pushTransaction = h.heap.beginTransaction('push');
     const pushed = h.collections.mutate(
-      pushAttempt,
+      pushTransaction,
       'array.push',
       INTS,
       popped.replacement,
       [3],
     );
-    publish(pushAttempt, [original, pushed.replacement]);
+    commit(pushTransaction, [original, pushed.replacement]);
     expect(h.collections.entries(pushed.replacement)).toEqual([1, 2, 3]);
 
-    const clearAttempt = h.heap.beginAttempt('clear');
+    const clearTransaction = h.heap.beginTransaction('clear');
     const cleared = h.collections.mutate(
-      clearAttempt,
+      clearTransaction,
       'array.clear',
       INTS,
       pushed.replacement,
       [],
     );
-    publish(clearAttempt, [original, cleared.replacement]);
+    commit(clearTransaction, [original, cleared.replacement]);
     expect(h.collections.entries(cleared.replacement)).toEqual([]);
     expect(h.collections.entries(original)).toEqual([1, 2, 99]);
   });
@@ -191,15 +197,15 @@ describe('array values', () => {
     const h = harness();
     const value = construct(h, 'array.from', INTS, [1, 2]);
     const snapshot = h.collections.entries(value);
-    const attempt = h.heap.beginAttempt('push');
+    const transaction = h.heap.beginTransaction('push');
     const mutation = h.collections.mutate(
-      attempt,
+      transaction,
       'array.push',
       INTS,
       value,
       [3],
     );
-    publish(attempt, [value, mutation.replacement]);
+    commit(transaction, [value, mutation.replacement]);
     expect(snapshot).toEqual([1, 2]);
     expect(Object.isFrozen(snapshot)).toBe(true);
   });
@@ -213,11 +219,11 @@ describe('array values', () => {
     for (let step = 0; step < 80; step += 1) {
       versions.push({value: current, model: [...model]});
       seed = (seed * 48_271) % 2_147_483_647;
-      const attempt = h.heap.beginAttempt(step);
+      const transaction = h.heap.beginTransaction(step);
       if (model.length === 0 || seed % 3 === 0) {
         const value = seed % 97;
         const mutation = h.collections.mutate(
-          attempt,
+          transaction,
           'array.push',
           INTS,
           current,
@@ -229,7 +235,7 @@ describe('array values', () => {
         const at = seed % model.length;
         const value = (seed + step) % 101;
         const mutation = h.collections.mutate(
-          attempt,
+          transaction,
           'array.set',
           INTS,
           current,
@@ -239,7 +245,7 @@ describe('array values', () => {
         model[at] = value;
       } else {
         const mutation = h.collections.mutate(
-          attempt,
+          transaction,
           'array.pop',
           INTS,
           current,
@@ -248,7 +254,7 @@ describe('array values', () => {
         expect(mutation.result).toBe(model.pop());
         current = mutation.replacement;
       }
-      publish(attempt, [...versions.map(version => version.value), current]);
+      commit(transaction, [...versions.map(version => version.value), current]);
     }
     expect(h.collections.entries(current)).toEqual(model);
     versions.forEach(version =>
@@ -261,34 +267,34 @@ describe('matrix values', () => {
   test('shape is fixed and row projections are independent arrays', () => {
     const h = harness();
     const matrix = construct(h, 'matrix.new', MATRIX, [2, 2, 1]);
-    const attempt = h.heap.beginAttempt('matrix.set');
+    const transaction = h.heap.beginTransaction('matrix.set');
     const changed = h.collections.mutate(
-      attempt,
+      transaction,
       'matrix.set',
       MATRIX,
       matrix,
       [0, 1, 9],
     );
-    publish(attempt, [matrix, changed.replacement]);
+    commit(transaction, [matrix, changed.replacement]);
     expect(read(h, 'matrix.get', INT, [matrix, 0, 1])).toBe(1);
     expect(read(h, 'matrix.get', INT, [changed.replacement, 0, 1])).toBe(9);
 
-    const rowAttempt = h.heap.beginAttempt('matrix.row');
-    const row = h.collections.call(rowAttempt, 'matrix.row', INTS, [
+    const rowTransaction = h.heap.beginTransaction('matrix.row');
+    const row = h.collections.call(rowTransaction, 'matrix.row', INTS, [
       changed.replacement,
       0,
     ]);
-    publish(rowAttempt, [changed.replacement, row]);
+    commit(rowTransaction, [changed.replacement, row]);
     expect(h.collections.entries(row)).toEqual([1, 9]);
   });
 
   test('invalid shapes and bounds use stable codes', () => {
     const h = harness();
-    const attempt = h.heap.beginAttempt('bad shape');
+    const transaction = h.heap.beginTransaction('bad shape');
     expect(() =>
-      h.collections.call(attempt, 'matrix.new', MATRIX, [-1, 2, 0]),
+      h.collections.call(transaction, 'matrix.new', MATRIX, [-1, 2, 0]),
     ).toThrow('INVALID_SHAPE');
-    attempt.abort();
+    transaction.abort();
     const matrix = construct(h, 'matrix.new', MATRIX, [1, 1, 0]);
     expect(() => read(h, 'matrix.get', INT, [matrix, 1, 0])).toThrow(
       'INDEX_OUT_OF_BOUNDS',
@@ -298,11 +304,11 @@ describe('matrix values', () => {
   test('empty projections still guard their array element layout', () => {
     const h = harness();
     const matrix = construct(h, 'matrix.new', MATRIX, [1, 0, 0]);
-    const attempt = h.heap.beginAttempt('wrong projection layout');
+    const transaction = h.heap.beginTransaction('wrong projection layout');
     expect(() =>
-      h.collections.call(attempt, 'matrix.row', STRINGS, [matrix, 0]),
+      h.collections.call(transaction, 'matrix.row', STRINGS, [matrix, 0]),
     ).toThrow('expected 0');
-    attempt.abort();
+    transaction.abort();
   });
 });
 
@@ -310,11 +316,11 @@ describe('ordered map values', () => {
   test('empty key/value projections guard their exact element layout', () => {
     const h = harness();
     const map = construct(h, 'map.new', MAP, []);
-    const attempt = h.heap.beginAttempt('wrong map projection layout');
-    expect(() => h.collections.call(attempt, 'map.keys', INTS, [map])).toThrow(
-      `expected ${STRING}`,
-    );
-    attempt.abort();
+    const transaction = h.heap.beginTransaction('wrong map projection layout');
+    expect(() =>
+      h.collections.call(transaction, 'map.keys', INTS, [map]),
+    ).toThrow(`expected ${STRING}`);
+    transaction.abort();
   });
 
   test('replacement keeps order; remove and reinsert moves to the end', () => {
@@ -325,39 +331,42 @@ describe('ordered map values', () => {
       ['b', 2],
       ['c', 3],
     ] as const) {
-      const attempt = h.heap.beginAttempt(`put ${key}`);
-      const mutation = h.collections.mutate(attempt, 'map.put', MAP, value, [
-        key,
-        item,
-      ]);
+      const transaction = h.heap.beginTransaction(`put ${key}`);
+      const mutation = h.collections.mutate(
+        transaction,
+        'map.put',
+        MAP,
+        value,
+        [key, item],
+      );
       value = mutation.replacement;
-      publish(attempt, [value]);
+      commit(transaction, [value]);
     }
-    const replace = h.heap.beginAttempt('replace');
+    const replace = h.heap.beginTransaction('replace');
     value = h.collections.mutate(replace, 'map.put', MAP, value, [
       'b',
       20,
     ]).replacement;
-    publish(replace, [value]);
+    commit(replace, [value]);
     expect(h.collections.entries(value)).toEqual([
       ['a', 1],
       ['b', 20],
       ['c', 3],
     ]);
 
-    const remove = h.heap.beginAttempt('remove');
+    const remove = h.heap.beginTransaction('remove');
     const removed = h.collections.mutate(remove, 'map.remove', MAP, value, [
       'b',
     ]);
     value = removed.replacement;
-    publish(remove, [value]);
+    commit(remove, [value]);
     expect(removed.result).toBe(20);
-    const reinsert = h.heap.beginAttempt('reinsert');
+    const reinsert = h.heap.beginTransaction('reinsert');
     value = h.collections.mutate(reinsert, 'map.put', MAP, value, [
       'b',
       21,
     ]).replacement;
-    publish(reinsert, [value]);
+    commit(reinsert, [value]);
     expect(h.collections.entries(value)).toEqual([
       ['a', 1],
       ['c', 3],
@@ -371,19 +380,21 @@ describe('ordered map values', () => {
     expect(
       Number.isNaN(read(h, 'map.get', INT, [map, 'missing']) as number),
     ).toBe(true);
-    const put = h.heap.beginAttempt('put');
+    const put = h.heap.beginTransaction('put');
     const filled = h.collections.mutate(put, 'map.put', MAP, map, [
       'a',
       1,
     ]).replacement;
-    publish(put, [map, filled]);
+    commit(put, [map, filled]);
 
-    const keysAttempt = h.heap.beginAttempt('keys');
-    const keys = h.collections.call(keysAttempt, 'map.keys', STRINGS, [filled]);
-    const values = h.collections.call(keysAttempt, 'map.values', INTS, [
+    const keysTransaction = h.heap.beginTransaction('keys');
+    const keys = h.collections.call(keysTransaction, 'map.keys', STRINGS, [
       filled,
     ]);
-    publish(keysAttempt, [filled, keys, values]);
+    const values = h.collections.call(keysTransaction, 'map.values', INTS, [
+      filled,
+    ]);
+    commit(keysTransaction, [filled, keys, values]);
     expect(h.collections.entries(keys)).toEqual(['a']);
     expect(h.collections.entries(values)).toEqual([1]);
   });
@@ -391,16 +402,16 @@ describe('ordered map values', () => {
   test('na keys and na collections fail with stable codes', () => {
     const h = harness();
     const map = construct(h, 'map.new', MAP, []);
-    const attempt = h.heap.beginAttempt('bad key');
+    const transaction = h.heap.beginTransaction('bad key');
     expect(() =>
-      h.collections.mutate(attempt, 'map.put', MAP, map, [null, 1]),
+      h.collections.mutate(transaction, 'map.put', MAP, map, [null, 1]),
     ).toThrow('INVALID_MAP_KEY');
-    attempt.abort();
-    const readAttempt = h.heap.beginAttempt('na collection');
+    transaction.abort();
+    const readTransaction = h.heap.beginTransaction('na collection');
     expect(() =>
-      h.collections.call(readAttempt, 'array.size', INT, [null]),
+      h.collections.call(readTransaction, 'array.size', INT, [null]),
     ).toThrow('NA_COLLECTION');
-    readAttempt.abort();
+    readTransaction.abort();
   });
 });
 
@@ -428,12 +439,15 @@ describe('user values and collection nesting', () => {
       (read(h, 'array.get', POINT, [points, 0]) as UserTypeValue).fields,
     ).toEqual([1, 2]);
 
-    const attempt = h.heap.beginAttempt('writeback');
-    const written = h.collections.mutate(attempt, 'array.set', POINTS, points, [
-      0,
-      changed,
-    ]);
-    publish(attempt, [points, written.replacement]);
+    const transaction = h.heap.beginTransaction('writeback');
+    const written = h.collections.mutate(
+      transaction,
+      'array.set',
+      POINTS,
+      points,
+      [0, changed],
+    );
+    commit(transaction, [points, written.replacement]);
     expect(
       (read(h, 'array.get', POINT, [written.replacement, 0]) as UserTypeValue)
         .fields,
@@ -445,7 +459,7 @@ describe('user values and collection nesting', () => {
     const h = harness();
     const values = construct(h, 'array.from', INTS, [1]);
     const a = newUserValue(h.layouts, HOLDER, [values]);
-    const push = h.heap.beginAttempt('nested push');
+    const push = h.heap.beginTransaction('nested push');
     const changed = h.collections.mutate(
       push,
       'array.push',
@@ -454,7 +468,7 @@ describe('user values and collection nesting', () => {
       [2],
     );
     const b = rebuildUserPath(h.layouts, a, HOLDER, [0], changed.replacement);
-    publish(push, [a, b]);
+    commit(push, [a, b]);
     expect(h.collections.entries(a.fields[0])).toEqual([1]);
     expect(h.collections.entries((b as UserTypeValue).fields[0])).toEqual([
       1, 2,
@@ -466,9 +480,9 @@ describe('user values and collection nesting', () => {
     const inner = construct(h, 'array.from', INTS, [1]);
     const outer = construct(h, 'array.from', ARRAYS, [inner]);
     const nested = read(h, 'array.get', INTS, [outer, 0]);
-    const push = h.heap.beginAttempt('nested');
+    const push = h.heap.beginTransaction('nested');
     const changed = h.collections.mutate(push, 'array.push', INTS, nested, [2]);
-    publish(push, [outer, changed.replacement]);
+    commit(push, [outer, changed.replacement]);
     expect(
       h.collections.entries(read(h, 'array.get', INTS, [outer, 0])),
     ).toEqual([1]);
@@ -480,7 +494,7 @@ describe('user values and collection nesting', () => {
     const oldChild = construct(h, 'array.from', INTS, [1]);
     const oldOuter = construct(h, 'array.from', ARRAYS, [oldChild]);
 
-    const replace = h.heap.beginAttempt('replace nested child');
+    const replace = h.heap.beginTransaction('replace nested child');
     const currentChild = h.collections.call(replace, 'array.from', INTS, [2]);
     const currentOuter = h.collections.mutate(
       replace,
@@ -489,7 +503,7 @@ describe('user values and collection nesting', () => {
       oldOuter,
       [0, currentChild],
     ).replacement;
-    publish(replace, [currentOuter]);
+    commit(replace, [currentOuter]);
     h.heap.collect(roots([currentOuter]));
 
     // The outer storage traces its nested collection header. The replacement
@@ -498,7 +512,7 @@ describe('user values and collection nesting', () => {
     expect(() => h.collections.entries(oldChild)).toThrow('stale StorageRef');
     expect(() => h.collections.entries(oldOuter)).toThrow('stale StorageRef');
 
-    const failed = h.heap.beginAttempt('aborted high-water append');
+    const failed = h.heap.beginTransaction('aborted high-water append');
     const highWater = h.collections.mutate(
       failed,
       'array.push',
@@ -509,7 +523,7 @@ describe('user values and collection nesting', () => {
     failed.abort();
     expect(() => h.collections.entries(highWater)).toThrow('stale StorageRef');
 
-    const retry = h.heap.beginAttempt('retry append');
+    const retry = h.heap.beginTransaction('retry append');
     const retriedChild = h.collections.mutate(
       retry,
       'array.push',
@@ -524,13 +538,13 @@ describe('user values and collection nesting', () => {
       currentOuter,
       [0, retriedChild],
     ).replacement;
-    publish(retry, [retriedOuter]);
+    commit(retry, [retriedOuter]);
     h.heap.collect(roots([retriedOuter]));
 
     const nested = read(h, 'array.get', INTS, [retriedOuter, 0]);
     expect(h.collections.entries(nested)).toEqual([2, 3]);
     expect(h.heap.stats()).toMatchObject({
-      publishedCells: 2,
+      committedCells: 2,
       retainedCells: 2,
     });
   });
@@ -538,11 +552,11 @@ describe('user values and collection nesting', () => {
   test('collection element limits fail before a replacement is published', () => {
     const h = harness(1);
     const array = construct(h, 'array.from', INTS, [1]);
-    const attempt = h.heap.beginAttempt('overflow');
+    const transaction = h.heap.beginTransaction('overflow');
     expect(() =>
-      h.collections.mutate(attempt, 'array.push', INTS, array, [2]),
+      h.collections.mutate(transaction, 'array.push', INTS, array, [2]),
     ).toThrow(ExecutionError);
-    attempt.abort();
+    transaction.abort();
     expect(h.collections.entries(array)).toEqual([1]);
   });
 });
