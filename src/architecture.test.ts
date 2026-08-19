@@ -139,6 +139,9 @@ test('CLI wiring has no mutable module-level coordination state', () => {
     );
   });
   expect(mutable).toEqual([]);
+  expect(text).not.toContain('.parseAsync(');
+  expect(text).not.toContain('process.exit(');
+  expect(text.match(/process\.exitCode\s*=/g)).toHaveLength(1);
 });
 
 test('type names describe values rather than resolution history', () => {

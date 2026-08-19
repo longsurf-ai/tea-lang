@@ -6,12 +6,13 @@ import {
   type ParameterGrid,
   type ParameterExecutionConfig,
 } from '../execution/parameters';
+import {OperationalError} from '../base/operational-error';
 import type {ParameterScalar, ParameterSelection} from '../execution/config';
 import type {ParamSpec} from '../runtime/abi';
 
 export type CliParameterValue = ParameterScalar;
 
-export class CliParameterError extends Error {
+export class CliParameterError extends OperationalError {
   constructor(message: string) {
     super(message);
     this.name = 'CliParameterError';

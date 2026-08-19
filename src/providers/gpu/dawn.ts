@@ -2,12 +2,14 @@
 
 /// <reference types="@webgpu/types" />
 
+import {OperationalError} from '../../base/operational-error';
+
 export interface GpuDeviceLease {
   readonly device: GPUDevice;
   dispose(): Promise<void>;
 }
 
-export class GpuDeviceError extends Error {
+export class GpuDeviceError extends OperationalError {
   constructor(message: string) {
     super(message);
     this.name = 'GpuDeviceError';

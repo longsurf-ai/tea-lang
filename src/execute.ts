@@ -2,6 +2,7 @@
 
 /// <reference types="@webgpu/types" />
 
+import {OperationalError} from './base/operational-error';
 import {generate} from './codegen/codegen';
 import {compileProgramToWgsl, type WgslEligibilityIssue} from './codegen/wgsl';
 import type {WgslNumericContract} from './gpu/contract';
@@ -76,7 +77,7 @@ export interface GpuExecutionSummary extends ExecutionSummaryBase {
 
 export type ExecutionSummary = CpuExecutionSummary | GpuExecutionSummary;
 
-export class UnsupportedExecutionBackendError extends Error {
+export class UnsupportedExecutionBackendError extends OperationalError {
   readonly backend = 'gpu' as const;
 
   constructor(readonly issues: readonly WgslEligibilityIssue[]) {

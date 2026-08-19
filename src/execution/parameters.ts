@@ -1,5 +1,6 @@
 // Purpose: Validate structured parameter selections and expand bounded executions.
 
+import {OperationalError} from '../base/operational-error';
 import type {ParamSpec} from '../runtime/abi';
 import {resolveParamValues} from '../runtime/params';
 import {
@@ -12,7 +13,7 @@ import {
 
 export const DEFAULT_MAX_EXECUTIONS = MAX_EXECUTIONS;
 
-export class ExecutionParameterError extends Error {
+export class ExecutionParameterError extends OperationalError {
   constructor(message: string) {
     super(message);
     this.name = 'ExecutionParameterError';

@@ -38,6 +38,13 @@ function cli(...args: readonly string[]): string {
 }
 
 describe('CLI execution host', () => {
+  test('help returns through the top-level exit code', () => {
+    const result = invokeCli('--help');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Usage: tea [options] [command]');
+    expect(result.stderr).toBe('');
+  });
+
   test('run discovers a source parameter and renders logical effects', () => {
     const output = cli('run', SOURCE, '-i', DATA, '-scale', '3');
     expect(output).toContain('# System');
@@ -199,6 +206,23 @@ describe('CLI execution host', () => {
     const unknown = invokeCli('execute', '--runtime', 'javascript', RUN_CONFIG);
     expect(unknown.status).toBe(1);
     expect(unknown.stderr).toContain("unknown option '--runtime'");
+  });
+
+  test('expected failures are concise and do not expose stacks', () => {
+    const parameter = invokeCli('run', SOURCE, '-i', DATA, '--missing', '1');
+    expect(parameter.status).toBe(1);
+    expect(parameter.stderr).toBe(
+      "tea: unknown parameter option '--missing'\n",
+    );
+
+    const config = invokeCli(
+      'execute',
+      join(ROOT, 'tests/fixtures/cli/configs/does-not-exist.yaml'),
+    );
+    expect(config.status).toBe(1);
+    expect(config.stderr).toContain('tea: execution config');
+    expect(config.stderr).not.toContain('ExecutionConfigError');
+    expect(config.stderr).not.toContain('\n    at ');
   });
 });
 

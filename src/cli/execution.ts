@@ -1,6 +1,7 @@
 // Purpose: CLI host adapters for the three first-class execution entry points: run, sweep, and configured execute.
 
 import {resolve} from 'node:path';
+import {OperationalError} from '../base/operational-error';
 import type {ErrorMsg} from '../base/print';
 import {Errors} from '../base/print';
 import {compileToProgram} from '../compile';
@@ -63,9 +64,20 @@ export interface CliExecutionHost {
   print(line: string): void;
 }
 
-export type CliExecutionResult =
+export type CliFailure = {
+  readonly ok: false;
+  readonly kind: 'failure';
+  readonly message: string;
+};
+
+export type CliResult =
   | {readonly ok: true}
-  | {readonly ok: false; readonly errors: readonly ErrorMsg[]};
+  | {
+      readonly ok: false;
+      readonly kind: 'diagnostics';
+      readonly errors: readonly ErrorMsg[];
+    }
+  | CliFailure;
 
 export type ExecuteOutput = 'text' | 'json';
 
@@ -73,10 +85,16 @@ export async function execute(
   config: ExecutionConfig,
   host: CliExecutionHost,
   output: ExecuteOutput,
-): Promise<CliExecutionResult> {
+): Promise<CliResult> {
   const errors = new Errors();
   const program = compileToProgram([config.program.source], errors);
-  if (program === null) return {ok: false, errors: errors.flushErrors()};
+  if (program === null) {
+    return {
+      ok: false,
+      kind: 'diagnostics',
+      errors: errors.flushErrors(),
+    };
+  }
   if (config.execution.kind === 'run') {
     const sink = new RunReportSink();
     const run = await runProgram(
@@ -146,10 +164,16 @@ export async function runCommand(
   options: {readonly trace: boolean; readonly gpu: boolean},
   dynamicTokens: readonly string[],
   host: CliExecutionHost,
-): Promise<CliExecutionResult> {
+): Promise<CliResult> {
   const errors = new Errors();
   const program = compileToProgram([file], errors);
-  if (program === null) return {ok: false, errors: errors.flushErrors()};
+  if (program === null) {
+    return {
+      ok: false,
+      kind: 'diagnostics',
+      errors: errors.flushErrors(),
+    };
+  }
   const parameters = parseRunParameterSelections(
     paramSpecsOf(program.params),
     dynamicTokens,
@@ -179,10 +203,16 @@ export async function sweepCommand(
   options: {readonly cpu: boolean; readonly maxScenarios: number},
   dynamicTokens: readonly string[],
   host: CliExecutionHost,
-): Promise<CliExecutionResult> {
+): Promise<CliResult> {
   const errors = new Errors();
   const program = compileToProgram([file], errors);
-  if (program === null) return {ok: false, errors: errors.flushErrors()};
+  if (program === null) {
+    return {
+      ok: false,
+      kind: 'diagnostics',
+      errors: errors.flushErrors(),
+    };
+  }
   const parameters = parseSweepParameterSelections(
     paramSpecsOf(program.params),
     dynamicTokens,
@@ -208,6 +238,11 @@ export async function sweepCommand(
   );
   renderSweepExecution(host, execution, sinks);
   return {ok: true};
+}
+
+export function cliFailure(error: unknown): CliFailure | null {
+  if (!(error instanceof OperationalError)) return null;
+  return {ok: false, kind: 'failure', message: error.message};
 }
 
 function directConfig(

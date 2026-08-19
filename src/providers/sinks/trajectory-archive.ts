@@ -1,5 +1,6 @@
 // Purpose: Compact, budgeted full-trajectory capture for generic sweep results.
 
+import {OperationalError} from '../../base/operational-error';
 import type {ExecutionBindingSummary} from '../../execute';
 import type {SweepReportSnapshot} from '../../reporting/sweep';
 import type {SweepCell} from '../../reporting/sweep';
@@ -38,7 +39,7 @@ export interface TrajectoryArchiveOptions {
   readonly chunkRows?: number;
 }
 
-export class TrajectoryArchiveBudgetError extends Error {
+export class TrajectoryArchiveBudgetError extends OperationalError {
   constructor(
     readonly maxBytes: number,
     readonly usedBytes: number,
@@ -51,7 +52,7 @@ export class TrajectoryArchiveBudgetError extends Error {
   }
 }
 
-export class TrajectoryArchiveUnsupportedTransportError extends Error {
+export class TrajectoryArchiveUnsupportedTransportError extends OperationalError {
   constructor(
     readonly outputId: number,
     readonly channel: number,
@@ -64,7 +65,7 @@ export class TrajectoryArchiveUnsupportedTransportError extends Error {
   }
 }
 
-export class TrajectoryArchiveProjectionBudgetError extends Error {
+export class TrajectoryArchiveProjectionBudgetError extends OperationalError {
   constructor(
     readonly maxBytes: number,
     readonly estimatedBytes: number,

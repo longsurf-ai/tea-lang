@@ -2,6 +2,7 @@
 
 /// <reference types="@webgpu/types" />
 
+import {OperationalError} from '../../base/operational-error';
 import {
   GPU_ARTIFACT_ABI_VERSION,
   GPU_BUFFER_GROUP,
@@ -215,14 +216,14 @@ export interface PreparedGpuExecution {
   readonly resources: GpuResourceSizes;
 }
 
-export class GpuBindingError extends Error {
+export class GpuBindingError extends OperationalError {
   constructor(message: string) {
     super(message);
     this.name = 'GpuBindingError';
   }
 }
 
-export class GpuExecutionError extends Error {
+export class GpuExecutionError extends OperationalError {
   constructor(message: string) {
     super(message);
     this.name = 'GpuExecutionError';

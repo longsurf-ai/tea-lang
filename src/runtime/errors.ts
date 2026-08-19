@@ -1,6 +1,8 @@
 // Purpose: User-facing runtime failures and execution control-flow errors.
 
-export class BindError extends Error {
+import {OperationalError} from '../base/operational-error';
+
+export class BindError extends OperationalError {
   constructor(msg: string) {
     super(msg);
     this.name = 'BindError';
@@ -19,7 +21,7 @@ export class ContextSuspension extends Error {
   }
 }
 
-export class RequestError extends Error {
+export class RequestError extends OperationalError {
   constructor(msg: string) {
     super(msg);
     this.name = 'RequestError';
@@ -38,7 +40,7 @@ export type ExecutionErrorCode =
   | 'NA_USER_VALUE_WRITE'
   | 'VALUE_LAYOUT_MISMATCH';
 
-export class ExecutionError extends Error {
+export class ExecutionError extends OperationalError {
   constructor(
     readonly code: ExecutionErrorCode,
     msg: string,

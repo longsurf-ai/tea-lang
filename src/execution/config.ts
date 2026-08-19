@@ -19,6 +19,7 @@ import {
   readFileBytes,
   resolveReadableFile,
 } from '../base/files';
+import {OperationalError} from '../base/operational-error';
 
 export const EXECUTION_CONFIG_SCHEMA = 'tea.execution/v1' as const;
 export const MAX_EXECUTION_CONFIG_BYTES = 1024 * 1024;
@@ -88,7 +89,7 @@ export interface ExecutionConfig {
   readonly execution: RunExecutionConfig | SweepExecutionConfig;
 }
 
-export class ExecutionConfigError extends Error {
+export class ExecutionConfigError extends OperationalError {
   constructor(message: string) {
     super(message);
     this.name = 'ExecutionConfigError';
