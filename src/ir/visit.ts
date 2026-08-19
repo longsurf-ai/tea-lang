@@ -13,7 +13,7 @@ import {
 } from './node';
 import {
   ParamDefaultKind,
-  type ExecutionInput,
+  type BuiltinInput,
   type IrFunc,
   type Program,
   type RequestEdge,
@@ -158,7 +158,7 @@ interface Reach {
   readonly funcs: Set<IrFunc>;
   readonly requests: Set<RequestEdge>;
   readonly series: Set<SeriesInput>;
-  readonly execution: Set<ExecutionInput>;
+  readonly builtin: Set<BuiltinInput>;
   readonly reads: HistReadExpr[];
   maxSlot: number;
 }
@@ -169,7 +169,7 @@ function reachProgram(program: Program): Reach {
     funcs: new Set(),
     requests: new Set(),
     series: new Set(),
-    execution: new Set(),
+    builtin: new Set(),
     reads: [],
     maxSlot: -1,
   };
@@ -263,8 +263,8 @@ function visitExpr(expr: IrExpr, reach: Reach): void {
       noteName(place.name, reach);
     } else if (place.kind === PlaceKind.Series) {
       visitSeries(place.series, reach);
-    } else if (place.kind === PlaceKind.Execution) {
-      visitExecution(place.execution, reach);
+    } else if (place.kind === PlaceKind.Builtin) {
+      visitBuiltin(place.builtin, reach);
     } else if (place.kind === PlaceKind.Request) {
       noteRequest(place.request, reach);
     }
@@ -302,12 +302,12 @@ function visitSeries(series: SeriesInput, reach: Reach): void {
   visitDepth(series.depth, reach);
 }
 
-function visitExecution(execution: ExecutionInput, reach: Reach): void {
-  if (reach.execution.has(execution)) {
+function visitBuiltin(builtin: BuiltinInput, reach: Reach): void {
+  if (reach.builtin.has(builtin)) {
     return;
   }
-  reach.execution.add(execution);
-  visitDepth(execution.depth, reach);
+  reach.builtin.add(builtin);
+  visitDepth(builtin.depth, reach);
 }
 
 // Whether an expression can evaluate without any frame: only constants,
@@ -320,13 +320,13 @@ export function bindEvaluable(e: IrExpr): boolean {
     case IrKind.HistRead:
       // Source params are excluded: their reads are series (a bound host
       // series), not bind-time scalars, and would lower to rt.series. A typed
-      // execution input is bind-visible only when its Tea qualifier is no
-      // later than simple; row-varying execution inputs remain per-row reads.
+      // A builtin is bind-visible only when its Tea qualifier is no later
+      // than simple; row-varying builtins remain per-row reads.
       return (
         e.offset === null &&
         ((e.place.kind === PlaceKind.Param &&
           e.place.param.defaultValue?.kind !== ParamDefaultKind.Series) ||
-          (e.place.kind === PlaceKind.Execution &&
+          (e.place.kind === PlaceKind.Builtin &&
             qualifierLE(e.qualifier, Qualifier.Simple)))
       );
     case IrKind.Binary:
@@ -371,8 +371,8 @@ export function seriesInputsOf(program: Program): readonly SeriesInput[] {
   return [...reachProgram(program).series];
 }
 
-export function executionInputsOf(program: Program): readonly ExecutionInput[] {
-  return [...reachProgram(program).execution];
+export function builtinInputsOf(program: Program): readonly BuiltinInput[] {
+  return [...reachProgram(program).builtin];
 }
 
 export function slotCountOf(program: Program): number {

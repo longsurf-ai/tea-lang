@@ -10,7 +10,7 @@ series open: series float depth=capped
   depth.cap: Const 300: const int
 series high: series float depth=none
 series low: series float depth=none
-execution bar.bar_index: series int depth=none
+builtin bar.bar_index: series int depth=none
 output[0] indicator static{title="Depth" max_bars_back=300}
 output[1] plot static{title="Sum"} channels{series: float}
 name a: perBar series float depth=none
@@ -28,7 +28,7 @@ body:
   WriteName c
     HistRead series:open: series float
       offset: Binary Mod: series int
-        HistRead execution:bar.bar_index: series int
+        HistRead builtin:bar.bar_index: series int
         Const 5: const int
   WriteName $hist@9:5
     Binary Add: series float

@@ -67,7 +67,7 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   emissions (outputs, effects)
   — explicit even where derivable, so codegen/runtime never walk trees to
   learn what a program needs. Numeric context data uses `SeriesInput`; typed
-  builtins use `ExecutionInput`, whose closed `ExecutionSource.domain` is only
+  builtins use `BuiltinInput`, whose closed `BuiltinSource.domain` is only
   identity and never implies domain-shaped runtime objects. Composition
   internals (names, funcs, call-site slots) come from the visit projections.
 - `ir` imports only `base/`; it must never import from `syntax/`,

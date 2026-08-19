@@ -408,12 +408,12 @@ describe('context builtins', () => {
       'hlcc4',
     ]);
 
-    const execution = [...CATALOG.vars.values()].flatMap(builtin =>
-      builtin.binding?.kind === 'execution'
+    const builtins = [...CATALOG.vars.values()].flatMap(builtin =>
+      builtin.binding?.kind === 'builtin'
         ? [[builtin.name, builtin.binding.source] as const]
         : [],
     );
-    expect(execution).toEqual([
+    expect(builtins).toEqual([
       ['bar_index', {domain: 'bar', field: 'bar_index'}],
       ['last_bar_index', {domain: 'bar', field: 'last_bar_index'}],
       ['time', {domain: 'time', field: 'time'}],
@@ -462,7 +462,7 @@ describe('context builtins', () => {
     const tickerid = [...r.info.selections.values()].find(
       selection =>
         selection.kind === SelectionKind.Builtin &&
-        selection.builtin.binding?.kind === 'execution' &&
+        selection.builtin.binding?.kind === 'builtin' &&
         selection.builtin.binding.source.domain === 'syminfo' &&
         selection.builtin.binding.source.field === 'tickerid',
     );
@@ -472,7 +472,7 @@ describe('context builtins', () => {
     }
   });
 
-  test('catalog bindings distinguish numeric series from typed execution inputs', () => {
+  test('catalog bindings distinguish numeric series from typed builtins', () => {
     const r = checkText(
       [
         'price = close',
@@ -498,27 +498,27 @@ describe('context builtins', () => {
     );
     expect(bindings.get('close')).toEqual({kind: 'series', id: 'close'});
     expect(bindings.get('time')).toEqual({
-      kind: 'execution',
+      kind: 'builtin',
       source: {domain: 'time', field: 'time'},
     });
     expect(bindings.get('time_close')).toEqual({
-      kind: 'execution',
+      kind: 'builtin',
       source: {domain: 'time', field: 'time_close'},
     });
     expect(bindings.get('bar_index')).toEqual({
-      kind: 'execution',
+      kind: 'builtin',
       source: {domain: 'bar', field: 'bar_index'},
     });
     expect(bindings.get('barstate.isfirst')).toEqual({
-      kind: 'execution',
+      kind: 'builtin',
       source: {domain: 'barstate', field: 'isfirst'},
     });
     expect(bindings.get('syminfo.tickerid')).toEqual({
-      kind: 'execution',
+      kind: 'builtin',
       source: {domain: 'syminfo', field: 'tickerid'},
     });
     expect(bindings.get('timeframe.period')).toEqual({
-      kind: 'execution',
+      kind: 'builtin',
       source: {domain: 'timeframe', field: 'period'},
     });
   });

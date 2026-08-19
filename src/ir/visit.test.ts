@@ -1,4 +1,4 @@
-// Purpose: Walker tests — derived enumerations reach names, funcs, request edges, series/execution inputs, and state counts through every reference path, counting shared objects once.
+// Purpose: Walker tests — derived enumerations reach names, funcs, request edges, series inputs, builtins, and state counts through every reference path, counting shared objects once.
 
 import {describe, expect, test} from 'bun:test';
 import {newFileBase, type Pos} from '../base/pos';
@@ -19,7 +19,7 @@ import {
 import {
   MergeMode,
   type ConstMethodIrFunc,
-  type ExecutionInput,
+  type BuiltinInput,
   type FreeIrFunc,
   type MutableMethodIrFunc,
   type Program,
@@ -28,7 +28,7 @@ import {
 } from './program';
 import {BoolType, FloatType, IntType, Qualifier, StringType} from './type';
 import {
-  executionInputsOf,
+  builtinInputsOf,
   funcsOf,
   namesOf,
   requestsOf,
@@ -80,7 +80,7 @@ const close: SeriesInput = {
   depth: {kind: DepthKind.Const, bars: 2},
 };
 
-const barIndex: ExecutionInput = {
+const barIndex: BuiltinInput = {
   source: {domain: 'bar', field: 'bar_index'},
   type: IntType,
   qualifier: Qualifier.Series,
@@ -232,7 +232,7 @@ const program: Program = {
         pos,
         type: IntType,
         qualifier: Qualifier.Series,
-        place: {kind: PlaceKind.Execution, execution: barIndex},
+        place: {kind: PlaceKind.Builtin, builtin: barIndex},
         offset: int(1),
       },
     },
@@ -389,13 +389,13 @@ describe('derived enumerations', () => {
     expect(namesOf(program)).toEqual([x, p]);
   });
 
-  test('funcs, requests, series, and execution inputs are each counted once', () => {
+  test('funcs, requests, series, and builtins are each counted once', () => {
     expect(funcsOf(program)).toEqual([inc]);
     expect(requestsOf(program)).toEqual([edge]);
     expect(seriesInputsOf(program)).toEqual([close]);
-    expect(executionInputsOf(program)).toEqual([barIndex]);
+    expect(builtinInputsOf(program)).toEqual([barIndex]);
     expect(dumpProgram(program)).toContain(
-      'execution bar.bar_index: series int depth=const(1)',
+      'builtin bar.bar_index: series int depth=const(1)',
     );
   });
 

@@ -75,7 +75,7 @@ export default {
   aggregateLayouts: {layouts: [...]},     // root-wide LayoutId registry
   manifest: {
     series:  [{id, depth}, ...],          // sid -> numeric provider column
-    execution: [{source, layout, depth}, ...], // eid -> typed execution builtin
+    builtin: [{source, layout, depth}, ...], // bid -> typed builtin
     params:  [{name, type, control, defaultValue, constraints, // control = UI flavor
                enumType, group, inline, tooltip, confirm,
                display, seriesSid?}, ...],
@@ -114,9 +114,9 @@ is a `ModuleCode` that inherits the same registry, Heap, and request-context
 budget from `SharedExecutionState`; a child cannot define a second layout-id
 namespace or move storage references across arenas.
 
-Dense ids (`sid`, `eid`, `pid`, `oid`, `fid`, local slots) are assigned by the
+Dense ids (`sid`, `bid`, `pid`, `oid`, `fid`, local slots) are assigned by the
 lowering walk; the manifest is their single source of truth — the runtime
-never re-derives ids from the Program. Series and execution inputs use
+never re-derives ids from the Program. Series inputs and builtins use
 separate id spaces; numeric Tea type alone never moves a builtin between them.
 
 **Portability contract.** The emitted source is a strict-mode ECMAScript
@@ -138,7 +138,7 @@ seam: JS renders these natively; another backend supplies another table).
 ```ts
 // reads and writes (offset 0 = current row)
 rt.series(sid, offset); // numeric provider series and input.source params
-rt.execution(eid, offset); // typed time/bar/barstate/syminfo/timeframe value
+rt.builtin(bid, offset); // typed time/bar/barstate/syminfo/timeframe value
 rt.param(pid); // bind-time scalar
 rt.read(fr, slot, offset); // a name's history
 rt.write(fr, slot, v);
@@ -159,7 +159,7 @@ rt.emitEffect(effectId, payload); // ordered sparse append for this row attempt
 rt.historyDepth(offset); // invalid history offsets normalize to zero
 rt.bindDepth(fid, slot, bars); // a name's bound history depth
 rt.bindSeriesDepth(sid, bars); // a series/input.source bound depth
-rt.bindExecutionDepth(eid, bars); // a typed execution input's bound depth
+rt.bindBuiltinDepth(bid, bars); // a typed builtin's bound depth
 rt.bindParamActive(pid, active); // resolved input enablement
 rt.bindOutput(oid, argName, v); // an output's bind-time argument
 rt.bindRequestOptions(rid, gaps, lookahead, ignoreInvalid, calcBars);
@@ -226,9 +226,9 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
   explicit root lease; a sink cannot silently retain an unregistered
   `StorageRef`.
 
-## Typed execution inputs
+## Typed builtins
 
-`ExecutionSpec.source` is a closed `{domain, field}` key. Its domain is only
+`BuiltinSpec.source` is a closed `{domain, field}` key. Its domain is only
 the builtin namespace — `time`, `bar`, `barstate`, `syminfo`, or `timeframe` —
 and never causes a corresponding runtime object to be constructed. One
 exhaustive runtime switch resolves the exact source key:
@@ -411,7 +411,7 @@ interface ProviderContext {
   readonly axis: TimeAxis | null;
   series(id: string): SeriesData | null;
   builtinValue(
-    source: Extract<ExecutionSource, {domain: 'syminfo' | 'timeframe'}>,
+    source: Extract<BuiltinSource, {domain: 'syminfo' | 'timeframe'}>,
   ): Value | undefined;
 }
 interface OutputSink {
@@ -438,7 +438,7 @@ Effect payload layouts admit primitives, strings/colors, enums, and recursively
 fixed user values; collections, tuples, and resource handles are rejected.
 
 The same resolution path supplies the primary context and every request
-child. Provider series remain numeric and aligned to `rows`; typed execution
+child. Provider series remain numeric and aligned to `rows`; typed builtin
 metadata uses `builtinValue`. `undefined` means that the provider cannot
 supply a demanded builtin and is never coerced to a Tea empty value.
 

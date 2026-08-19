@@ -37,7 +37,7 @@ import {
 import type {
   EffectDecl,
   EffectValueSchema,
-  ExecutionInput,
+  BuiltinInput,
   IrFunc,
   OutputDecl,
   ParamInput,
@@ -56,7 +56,7 @@ import {
   type UserType,
 } from '../../ir/type';
 import {
-  executionInputsOf,
+  builtinInputsOf,
   funcsOf,
   namesOf,
   seriesInputsOf,
@@ -199,7 +199,7 @@ function inventoryOf(program: Program): WgslProgramInventory {
     parameterCount: program.params.length,
     requestCount: program.requests.length,
     seriesInputCount: seriesInputsOf(program).length,
-    executionInputCount: executionInputsOf(program).length,
+    builtinInputCount: builtinInputsOf(program).length,
     persistentRootCount: namesOf(program).filter(
       name => name.storage === 'var' || name.storage === 'varip',
     ).length,
@@ -2218,15 +2218,15 @@ class WgslEmitter {
         }
         return result;
       }
-      case PlaceKind.Execution:
+      case PlaceKind.Builtin:
         if (offset !== 0) {
           return this.unsupported(
             'history-layout-unimplemented',
-            'historical execution-input reads are outside the current GPU subset',
+            'historical builtin reads are outside the current GPU subset',
             expr.pos,
           );
         }
-        return this.emitExecution(expr.place.execution, expr.pos, ctx, out);
+        return this.emitBuiltin(expr.place.builtin, expr.pos, ctx, out);
       case PlaceKind.Param: {
         // Bind-time parameters are constant over the full row axis, so every
         // valid historical read is the same fixed value.
@@ -2301,29 +2301,29 @@ class WgslEmitter {
     return offset.value;
   }
 
-  private emitExecution(
-    execution: ExecutionInput,
+  private emitBuiltin(
+    builtin: BuiltinInput,
     pos: Pos,
     ctx: WgslContext,
     out: string[],
   ): string {
     const result = this.fresh();
     if (
-      execution.source.domain === 'bar' &&
-      execution.source.field === 'bar_index'
+      builtin.source.domain === 'bar' &&
+      builtin.source.field === 'bar_index'
     ) {
-      if (execution.type.kind !== TypeKind.Int) {
-        return fatal('bar_index execution input is not int');
+      if (builtin.type.kind !== TypeKind.Int) {
+        return fatal('bar_index builtin is not int');
       }
       out.push(`let ${result}: TeaInt = TeaInt(1u, i32(${ctx.row}));`);
       return result;
     }
     if (
-      execution.source.domain === 'barstate' &&
-      execution.source.field === 'islast'
+      builtin.source.domain === 'barstate' &&
+      builtin.source.field === 'islast'
     ) {
-      if (execution.type.kind !== TypeKind.Bool) {
-        return fatal('barstate.islast execution input is not bool');
+      if (builtin.type.kind !== TypeKind.Bool) {
+        return fatal('barstate.islast builtin is not bool');
       }
       out.push(
         `let ${result}: u32 = select(0u, 1u, ${ctx.row} + 1u == ${ctx.job}.row_count);`,
@@ -2331,8 +2331,8 @@ class WgslEmitter {
       return result;
     }
     return this.unsupported(
-      'execution-input-mapping-unimplemented',
-      `execution input ${execution.source.domain}.${execution.source.field} is not derived by this GPU backend`,
+      'builtin-mapping-unimplemented',
+      `builtin ${builtin.source.domain}.${builtin.source.field} is not derived by this GPU backend`,
       pos,
     );
   }

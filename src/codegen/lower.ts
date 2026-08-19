@@ -15,7 +15,7 @@ import {
 import type {
   EffectDecl,
   IrFunc,
-  ExecutionInput,
+  BuiltinInput,
   OutputDecl,
   ParamInput,
   RequestEdge,
@@ -40,7 +40,7 @@ export interface LowerCtx {
   // writes their value into real state; history-bearing formals remain Rings.
   readonly directNames: ReadonlyMap<Name, string>;
   readonly seriesIds: Map<SeriesInput, number>;
-  readonly executionIds: Map<ExecutionInput, number>;
+  readonly builtinIds: Map<BuiltinInput, number>;
   readonly paramIds: Map<ParamInput, number>;
   // input.source params read as series through their bound slot.
   readonly paramSeriesIds: Map<ParamInput, number>;
@@ -388,14 +388,14 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           }
           return `rt.series(${sid}, ${off})`;
         }
-        case PlaceKind.Execution: {
-          const eid = ctx.executionIds.get(e.place.execution);
-          if (eid === undefined) {
+        case PlaceKind.Builtin: {
+          const bid = ctx.builtinIds.get(e.place.builtin);
+          if (bid === undefined) {
             return fatal(
-              `unmapped execution input '${e.place.execution.source.domain}.${e.place.execution.source.field}'`,
+              `unmapped builtin '${e.place.builtin.source.domain}.${e.place.builtin.source.field}'`,
             );
           }
-          return `rt.execution(${eid}, ${off})`;
+          return `rt.builtin(${bid}, ${off})`;
         }
         case PlaceKind.Param: {
           const sid = ctx.paramSeriesIds.get(e.place.param);

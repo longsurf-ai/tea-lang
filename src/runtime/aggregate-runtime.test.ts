@@ -95,7 +95,7 @@ function arrayStateModule(): TeaModule {
     aggregateLayouts: LAYOUTS,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
-      execution: [],
+      builtin: [],
       params: [],
       outputs: [
         {
@@ -267,7 +267,7 @@ describe('aggregate Ring and commit integration', () => {
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
-        execution: [
+        builtin: [
           {
             source: {domain: 'bar', field: 'bar_index'},
             layout: INT,
@@ -303,7 +303,7 @@ describe('aggregate Ring and commit integration', () => {
         if (rt.needsInit(fr, 0)) {
           rt.initialize(fr, 0, rt.callCollection('array.from', ARRAY, [7]));
         }
-        if (rt.execution(0, 0) === 1) {
+        if (rt.builtin(0, 0) === 1) {
           const before = rt.read(fr, 0, 0);
           let failedCode: string | null = null;
           try {
@@ -376,7 +376,7 @@ describe('aggregate Ring and commit integration', () => {
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
-        execution: [
+        builtin: [
           {
             source: {domain: 'bar', field: 'bar_index'},
             layout: INT,
@@ -423,7 +423,7 @@ describe('aggregate Ring and commit integration', () => {
         const current = rt.read(fr, 0, 0);
         const values = rt.userField(current, HOLDER, 0);
         const mutation = rt.mutateCollection('array.push', ARRAY, values, [
-          (rt.execution(0, 0) as number) + 1,
+          (rt.builtin(0, 0) as number) + 1,
         ]);
         const replacement = rt.rebuildUserPath(
           current,
@@ -437,7 +437,7 @@ describe('aggregate Ring and commit integration', () => {
           0,
           rt.callCollection('array.size', INT, [mutation.replacement]),
         );
-        if ((rt.execution(0, 0) as number) > 0) {
+        if ((rt.builtin(0, 0) as number) > 0) {
           const prior = rt.userField(rt.read(fr, 0, 1), HOLDER, 0);
           rt.emit(0, 1, rt.callCollection('array.size', INT, [prior]));
         } else {
@@ -484,7 +484,7 @@ describe('aggregate request ownership', () => {
     const leaf: ModuleCode = {
       manifest: {
         series: [],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [],
         effects: [],
@@ -509,7 +509,7 @@ describe('aggregate request ownership', () => {
     const middle: ModuleCode = {
       manifest: {
         series: [],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [],
         effects: [],
@@ -549,7 +549,7 @@ describe('aggregate request ownership', () => {
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [OUTPUT],
         effects: [],
@@ -642,7 +642,7 @@ describe('aggregate request ownership', () => {
     const child: ModuleCode = {
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [],
         effects: [],
@@ -673,7 +673,7 @@ describe('aggregate request ownership', () => {
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
-        execution: [
+        builtin: [
           {
             source: {domain: 'bar', field: 'bar_index'},
             layout: INT,
@@ -703,7 +703,7 @@ describe('aggregate request ownership', () => {
       },
       funcs: {},
       main(rt) {
-        const symbol = rt.execution(0, 0) === 1 ? 'Y' : 'X';
+        const symbol = rt.builtin(0, 0) === 1 ? 'Y' : 'X';
         const result = rt.requestFor(0, symbol, '');
         rt.emit(0, 0, rt.callCollection('array.first', INT, [result]));
       },
@@ -752,7 +752,7 @@ describe('aggregate request ownership', () => {
     const child: ModuleCode = {
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [],
         effects: [],
@@ -781,7 +781,7 @@ describe('aggregate request ownership', () => {
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [
           {
@@ -906,7 +906,7 @@ describe('aggregate request ownership', () => {
     const child: ModuleCode = {
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [],
         effects: [],
@@ -937,7 +937,7 @@ describe('aggregate request ownership', () => {
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [
           {
@@ -1044,7 +1044,7 @@ describe('aggregate request ownership', () => {
     const child: ModuleCode = {
       manifest: {
         series: [],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [],
         effects: [],
@@ -1071,7 +1071,7 @@ describe('aggregate request ownership', () => {
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [OUTPUT],
         effects: [],
@@ -1147,7 +1147,7 @@ describe('aggregate request ownership', () => {
     const child: ModuleCode = {
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [],
         effects: [],
@@ -1189,7 +1189,7 @@ describe('aggregate request ownership', () => {
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [OUTPUT],
         effects: [],
@@ -1252,7 +1252,7 @@ describe('runtime boundaries', () => {
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [OUTPUT],
         effects: [],
@@ -1363,7 +1363,7 @@ describe('runtime boundaries', () => {
       aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [],
         effects: [],

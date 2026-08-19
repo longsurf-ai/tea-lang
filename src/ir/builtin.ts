@@ -4,10 +4,10 @@
 // source-facing vocabulary; this alias keeps its projected carrier explicit.
 export type DataSeriesId = string;
 
-// A typed builtin supplied by the execution context rather than the numeric
+// A typed builtin supplied by the runtime context rather than the numeric
 // data-series plane. `domain` is only a stable namespace for builtin identity;
 // it does not imply a domain-shaped compiler or runtime object.
-export type ExecutionSource =
+export type BuiltinSource =
   | {
       readonly domain: 'time';
       readonly field: 'time' | 'time_close' | 'timenow';

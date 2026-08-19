@@ -19,7 +19,7 @@ import {
   type EffectDecl,
   type EffectValueSchema,
   type IrFunc,
-  type ExecutionInput,
+  type BuiltinInput,
   type OutputDecl,
   type ParamInput,
   type Program,
@@ -36,11 +36,11 @@ import {
   type ConstValue,
   type Type,
 } from '../ir/type';
-import {executionInputsOf, requestsOf, seriesInputsOf} from '../ir/visit';
+import {builtinInputsOf, requestsOf, seriesInputsOf} from '../ir/visit';
 import {RUNTIME_ABI_VERSION} from '../runtime/module-abi';
 import type {
+  BuiltinSpec,
   DepthSpec,
-  ExecutionSpec,
   FrameLayout,
   ModuleManifest,
   OutputChannelTransport,
@@ -271,11 +271,11 @@ class Generator {
   private readonly topology: FrameTopology;
   private readonly funcs: readonly IrFunc[];
   private readonly series: readonly SeriesInput[];
-  private readonly executions: readonly ExecutionInput[];
+  private readonly builtins: readonly BuiltinInput[];
   private readonly requests: readonly RequestEdge[];
   private readonly nameSlots = new Map<Name, {fid: number; slot: number}>();
   private readonly seriesIds = new Map<SeriesInput, number>();
-  private readonly executionIds = new Map<ExecutionInput, number>();
+  private readonly builtinIds = new Map<BuiltinInput, number>();
   private readonly paramIds = new Map<ParamInput, number>();
   private readonly paramSeriesIds = new Map<ParamInput, number>();
   private readonly outputIds = new Map<OutputDecl, number>();
@@ -296,7 +296,7 @@ class Generator {
       frame.owner === null ? [] : [frame.owner],
     );
     this.series = seriesInputsOf(program);
-    this.executions = executionInputsOf(program);
+    this.builtins = builtinInputsOf(program);
     this.requests = requestsOf(program);
     this.requests.forEach((edge, rid) => {
       this.requestIds.set(edge, rid);
@@ -308,8 +308,8 @@ class Generator {
     });
 
     this.series.forEach((s, sid) => this.seriesIds.set(s, sid));
-    this.executions.forEach((execution, eid) =>
-      this.executionIds.set(execution, eid),
+    this.builtins.forEach((builtin, bid) =>
+      this.builtinIds.set(builtin, bid),
     );
     let nextSid = this.series.length;
     // Bind-time params are compilation-global: a request child declares no
@@ -351,7 +351,7 @@ class Generator {
       nameSlots: this.nameSlots,
       directNames,
       seriesIds: this.seriesIds,
-      executionIds: this.executionIds,
+      builtinIds: this.builtinIds,
       paramIds: this.paramIds,
       paramSeriesIds: this.paramSeriesIds,
       outputIds: this.outputIds,
@@ -431,7 +431,7 @@ class Generator {
   }
 
   // Bind-time expressions may use immutable input/simple aliases and the
-  // context-constant execution inputs those aliases depend on.
+  // context-constant builtins those aliases depend on.
   // Evaluate their top-level writes against a provisional program frame,
   // report the resulting depths, then consume them for the remaining
   // host-facing bind contracts. The runtime rebuilds the final frame with
@@ -451,10 +451,10 @@ class Generator {
         lines.push(`rt.bindSeriesDepth(${sid}, (${expr}));`);
       }
     });
-    this.executions.forEach((execution, eid) => {
-      if (execution.depth.kind === DepthKind.Bound) {
-        const expr = lowerExpr(execution.depth.expr, lines, ctx);
-        lines.push(`rt.bindExecutionDepth(${eid}, (${expr}));`);
+    this.builtins.forEach((builtin, bid) => {
+      if (builtin.depth.kind === DepthKind.Bound) {
+        const expr = lowerExpr(builtin.depth.expr, lines, ctx);
+        lines.push(`rt.bindBuiltinDepth(${bid}, (${expr}));`);
       }
     });
     for (const [param, sid] of this.paramSeriesIds) {
@@ -599,7 +599,7 @@ class Generator {
       series.push({id: null, depth: depthSpec(param.depth)});
     }
 
-    const execution: ExecutionSpec[] = this.executions.map(input => ({
+    const builtin: BuiltinSpec[] = this.builtins.map(input => ({
       source: input.source,
       layout: this.emitter.layoutOf(input.type),
       depth: depthSpec(input.depth),
@@ -674,7 +674,7 @@ class Generator {
       };
     });
 
-    return {series, execution, params, outputs, effects, frames, requests};
+    return {series, builtin, params, outputs, effects, frames, requests};
   }
 }
 

@@ -49,8 +49,8 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   path.
 - The manifest is the runtime's single input besides code: ids (sid/pid/oid/
   fid/slots) are never re-derived from the Program.
-- Numeric provider series and typed execution inputs are separate carriers.
-  `ExecutionSource.domain` classifies builtin identifiers only; it never
+- Numeric provider series and typed builtins are separate carriers.
+  `BuiltinSource.domain` classifies builtin identifiers only; it never
   implies a domain-shaped runtime object. A demanded provider metadata key
   returning `undefined` is a bind error, while `null`, `NaN`, and `false` are
   legitimate typed-empty/value results validated against the manifest layout.

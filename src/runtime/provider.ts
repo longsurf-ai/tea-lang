@@ -1,6 +1,6 @@
 // Purpose: Host data-provider seam for fixed historical Program contexts.
 
-import type {ExecutionSource} from '../ir/builtin';
+import type {BuiltinSource} from '../ir/builtin';
 import type {Value} from './value';
 
 export interface SeriesData {
@@ -19,7 +19,7 @@ export interface ProviderContext {
   series(id: string): SeriesData | null;
   builtinValue(
     source: Extract<
-      ExecutionSource,
+      BuiltinSource,
       {readonly domain: 'syminfo' | 'timeframe'}
     >,
   ): Value | undefined;

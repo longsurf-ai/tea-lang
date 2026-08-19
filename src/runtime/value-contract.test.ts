@@ -92,7 +92,7 @@ const EMPTY_VALUES_MODULE: TeaModule = {
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [],
-    execution: [],
+    builtin: [],
     params: [],
     outputs: [
       {
@@ -147,7 +147,7 @@ function paramModule(spec: ParamSpec): TeaModule {
     aggregateLayouts: TEST_LAYOUTS,
     manifest: {
       series: [],
-      execution: [],
+      builtin: [],
       params: [spec],
       outputs: [],
       frames: [{locals: [], subs: []}],

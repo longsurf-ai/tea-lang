@@ -80,10 +80,10 @@ WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
   Program-owned source order and calls `rt.bindRequestOptions`; option values
   never duplicate into JSON metadata. Every module's code names its own funcs table via
   its const (`ctx.moduleRef`), never `M`.
-- Typed execution builtins are a distinct runtime carrier: dense eids and exact
-  `{source, layout, depth}` specs publish in `manifest.execution`, reads lower
-  to `rt.execution`, and bound history reports through
-  `rt.bindExecutionDepth`. Numeric provider series remain `rt.series` only.
+- Typed builtins are a distinct runtime carrier: dense bids and exact
+  `{source, layout, depth}` specs publish in `manifest.builtin`, reads lower
+  to `rt.builtin`, and bound history reports through
+  `rt.bindBuiltinDepth`. Numeric provider series remain `rt.series` only.
 - User-value construction/field updates, array/map iteration, and collection
   calls lower through exact manifest layouts. Const and mutable method calls
   capture the hidden receiver before explicit arguments; only mutable methods
@@ -93,6 +93,6 @@ WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
 - Staged constructs (matrix iteration, collect merge, unlisted natives) throw
   UnimplementedError at generation — exit 2, never wrong code.
 - Bound depth expressions may read root-frame immutable aliases and call
-  input-only UDFs; request options may also read context-constant execution
-  inputs. `bind()` evaluates them against the provisional root frame after the
+  input-only UDFs; request options may also read context-constant builtins.
+  `bind()` evaluates them against the provisional root frame after the
   immutable input/simple prelude; row-varying demands remain capped.

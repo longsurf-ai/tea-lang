@@ -30,7 +30,7 @@ import {
   MergeMode,
   ParamConstraintKind,
   ParamDefaultKind,
-  type ExecutionInput,
+  type BuiltinInput,
   type EffectDecl,
   type EffectValueSchema,
   type IrFunc,
@@ -121,7 +121,7 @@ interface FrameLoweringContext {
 class ProgramLoweringContext {
   readonly names = new Map<VariableObject, IrName>();
   readonly series = new Map<BuiltinObject, SeriesInput>();
-  readonly execution = new Map<BuiltinObject, ExecutionInput>();
+  readonly builtin = new Map<BuiltinObject, BuiltinInput>();
   readonly funcs = new Map<FunctionInstance, IrFunc>();
   readonly outputRefs = new Map<VariableObject, OutputDecl>();
   readonly aliasRefs = new Map<VariableObject, Place>();
@@ -484,21 +484,21 @@ class Noder {
     return series;
   }
 
-  private executionOf(builtin: BuiltinObject): ExecutionInput {
-    if (builtin.binding?.kind !== 'execution') {
-      return fatal(`builtin '${builtin.name}' is not an execution input`);
+  private builtinInputOf(builtin: BuiltinObject): BuiltinInput {
+    if (builtin.binding?.kind !== 'builtin') {
+      return fatal(`builtin '${builtin.name}' has no builtin runtime binding`);
     }
-    let execution = this.program.execution.get(builtin);
-    if (execution === undefined) {
-      execution = {
+    let input = this.program.builtin.get(builtin);
+    if (input === undefined) {
+      input = {
         source: builtin.binding.source,
         type: builtin.type,
         qualifier: builtin.qualifier,
         depth: {kind: DepthKind.None},
       };
-      this.program.execution.set(builtin, execution);
+      this.program.builtin.set(builtin, input);
     }
-    return execution;
+    return input;
   }
 
   // A checked default changes only the semantic fact view. It still lowers
@@ -961,10 +961,10 @@ class Noder {
       const place: Place =
         builtin.binding?.kind === 'series'
           ? {kind: PlaceKind.Series, series: this.seriesOf(builtin)}
-          : builtin.binding?.kind === 'execution'
+          : builtin.binding?.kind === 'builtin'
             ? {
-                kind: PlaceKind.Execution,
-                execution: this.executionOf(builtin),
+                kind: PlaceKind.Builtin,
+                builtin: this.builtinInputOf(builtin),
               }
             : fatal(`constant builtin '${builtin.name}' reached place noding`);
       return {

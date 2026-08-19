@@ -23,7 +23,7 @@ export type WgslEligibilityIssueCode =
   | 'request-execution-unimplemented'
   | 'bind-stage-unimplemented'
   | 'history-layout-unimplemented'
-  | 'execution-input-mapping-unimplemented'
+  | 'builtin-mapping-unimplemented'
   | 'persistent-state-initialization-unimplemented'
   | 'function-frame-lowering-unimplemented'
   | 'method-frame-lowering-unimplemented'
@@ -55,7 +55,7 @@ export interface WgslProgramInventory {
   readonly parameterCount: number;
   readonly requestCount: number;
   readonly seriesInputCount: number;
-  readonly executionInputCount: number;
+  readonly builtinInputCount: number;
   readonly persistentRootCount: number;
   readonly functionCount: number;
   readonly mutableMethodCount: number;

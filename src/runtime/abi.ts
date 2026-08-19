@@ -8,7 +8,7 @@ export * from './provider';
 export * from './schema';
 export * from './value';
 
-export type {ExecutionSource} from '../ir/builtin';
+export type {BuiltinSource} from '../ir/builtin';
 export type {HistoryDepth} from '../ir/node';
 export type {EffectValueSchema} from '../ir/program';
 export type {HeapLimits} from './heap';

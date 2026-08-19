@@ -12,7 +12,7 @@ import {
 } from './node';
 import type {IrFunc, Program, RequestEdge} from './program';
 import {
-  executionInputsOf,
+  builtinInputsOf,
   funcsOf,
   namesOf,
   requestsOf,
@@ -172,7 +172,7 @@ function walkRootFrame(
   );
   names.forEach(name => walkDepth(name.depth));
   seriesInputsOf(program).forEach(series => walkDepth(series.depth));
-  executionInputsOf(program).forEach(execution => walkDepth(execution.depth));
+  builtinInputsOf(program).forEach(builtin => walkDepth(builtin.depth));
   requestsOf(program).forEach(request => {
     // Static contexts are captured by module.bind in the root frame. Dynamic
     // contexts execute at their lexical HistRead site and are expanded by

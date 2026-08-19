@@ -2,7 +2,7 @@
 
 import {log} from '../base/log';
 import {fatal} from '../base/print';
-import type {ExecutionSource} from '../ir/builtin';
+import type {BuiltinSource} from '../ir/builtin';
 import {Storage} from '../ir/node';
 import type {EffectValueSchema} from '../ir/program';
 import type {BindInputs, BoundInput, BoundProgram} from './binding';
@@ -431,7 +431,7 @@ interface BoundRequestOptions {
   readonly range: RangeDemand;
 }
 
-function executionSourceName(source: ExecutionSource): string {
+function builtinSourceName(source: BuiltinSource): string {
   switch (source.domain) {
     case 'time':
     case 'bar':
@@ -570,7 +570,7 @@ class JSRuntime implements Runtime, BoundProgram {
   private readonly paramValues: readonly Value[];
   private readonly paramActive: boolean[];
   private readonly seriesData: (SeriesData | null)[] = [];
-  private readonly executionContextValues = new Map<number, Value>();
+  private readonly builtinContextValues = new Map<number, Value>();
   // Bind-time depth reports from the module's frame-aware bind section.
   private readonly boundLocalDepths = new Map<string, number>();
   private readonly boundOutputArgs: {name: string; value: Value}[][];
@@ -665,7 +665,7 @@ class JSRuntime implements Runtime, BoundProgram {
       const attempt = shared.heap.beginAttempt(`bind:${shared.runtimes.size}`);
       this.heapAttempt = attempt;
       try {
-        this.bindExecution();
+        this.bindBuiltin();
         this.bindSeries();
 
         // Reserved frame-free preparation runs after context carriers bind
@@ -1053,9 +1053,9 @@ class JSRuntime implements Runtime, BoundProgram {
     });
   }
 
-  private bindExecution(): void {
+  private bindBuiltin(): void {
     let axisValidated = false;
-    this.module.manifest.execution.forEach((spec, eid) => {
+    this.module.manifest.builtin.forEach((spec, bid) => {
       // Force every layout id through the registry even if this source is not
       // read until a later row.
       this.shared.aggregateLayouts.layout(spec.layout);
@@ -1064,15 +1064,15 @@ class JSRuntime implements Runtime, BoundProgram {
         const value = this.context.builtinValue(source);
         if (value === undefined) {
           throw new BindError(
-            `builtin '${executionSourceName(source)}' is not provided by this context`,
+            `builtin '${builtinSourceName(source)}' is not provided by this context`,
           );
         }
         this.shared.aggregateLayouts.assertValue(
           spec.layout,
           value,
-          `provider builtin '${executionSourceName(source)}'`,
+          `provider builtin '${builtinSourceName(source)}'`,
         );
-        this.executionContextValues.set(eid, value);
+        this.builtinContextValues.set(bid, value);
         return;
       }
       if (
@@ -1086,7 +1086,7 @@ class JSRuntime implements Runtime, BoundProgram {
           );
         }
         if (!axisValidated) {
-          assertMergeAxis(axis, this.rows, 'execution context');
+          assertMergeAxis(axis, this.rows, 'runtime context');
           axisValidated = true;
         }
       }
@@ -1885,10 +1885,10 @@ class JSRuntime implements Runtime, BoundProgram {
     );
   }
 
-  execution(eid: number, offset: number): Value {
-    const spec = this.module.manifest.execution[eid];
+  builtin(bid: number, offset: number): Value {
+    const spec = this.module.manifest.builtin[bid];
     if (spec === undefined) {
-      return fatal(`execution read from unknown input ${eid}`);
+      return fatal(`builtin read from unknown input ${bid}`);
     }
     const source = spec.source;
     if (this.phase === 'binding') {
@@ -1896,10 +1896,10 @@ class JSRuntime implements Runtime, BoundProgram {
         offset === 0 &&
         (source.domain === 'syminfo' || source.domain === 'timeframe')
       ) {
-        return this.mustExecutionContextValue(eid);
+        return this.mustBuiltinContextValue(bid);
       }
       return fatal(
-        `execution builtin '${executionSourceName(source)}' is not bind-visible`,
+        `builtin '${builtinSourceName(source)}' is not bind-visible`,
       );
     }
     const empty = this.shared.aggregateLayouts.empty(spec.layout);
@@ -1956,13 +1956,13 @@ class JSRuntime implements Runtime, BoundProgram {
         break;
       case 'syminfo':
       case 'timeframe':
-        value = this.mustExecutionContextValue(eid);
+        value = this.mustBuiltinContextValue(bid);
         break;
     }
     this.shared.aggregateLayouts.assertValue(
       spec.layout,
       value,
-      `execution builtin '${executionSourceName(source)}'`,
+      `builtin '${builtinSourceName(source)}'`,
     );
     return value;
   }
@@ -2246,10 +2246,10 @@ class JSRuntime implements Runtime, BoundProgram {
     void retentionForOffset(bars);
   }
 
-  bindExecutionDepth(eid: number, bars: number): void {
-    this.assertBinding('bindExecutionDepth');
-    if (this.module.manifest.execution[eid] === undefined) {
-      return fatal(`bindExecutionDepth on unknown execution input ${eid}`);
+  bindBuiltinDepth(bid: number, bars: number): void {
+    this.assertBinding('bindBuiltinDepth');
+    if (this.module.manifest.builtin[bid] === undefined) {
+      return fatal(`bindBuiltinDepth on unknown builtin ${bid}`);
     }
     void retentionForOffset(bars);
   }
@@ -2351,11 +2351,11 @@ class JSRuntime implements Runtime, BoundProgram {
     return options;
   }
 
-  private mustExecutionContextValue(eid: number): Value {
-    if (!this.executionContextValues.has(eid)) {
-      return fatal(`execution input ${eid} has no bound value`);
+  private mustBuiltinContextValue(bid: number): Value {
+    if (!this.builtinContextValues.has(bid)) {
+      return fatal(`builtin ${bid} has no bound value`);
     }
-    return this.executionContextValues.get(eid) as Value;
+    return this.builtinContextValues.get(bid) as Value;
   }
 
   private assertBinding(what: string): void {

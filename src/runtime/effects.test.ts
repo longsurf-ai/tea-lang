@@ -45,7 +45,7 @@ function effectModule(main: TeaModule['main']): TeaModule {
     aggregateLayouts: LAYOUTS,
     manifest: {
       series: [],
-      execution: [],
+      builtin: [],
       params: [],
       outputs: [],
       effects: [INT_EFFECT],
@@ -122,7 +122,7 @@ describe('effect row transactions', () => {
     const child: ModuleCode = {
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [],
         effects: [],

@@ -40,7 +40,7 @@ describe('finite-or-na helpers', () => {
       nameSlots: new Map(),
       directNames: new Map(),
       seriesIds: new Map(),
-      executionIds: new Map(),
+      builtinIds: new Map(),
       paramIds: new Map(),
       paramSeriesIds: new Map(),
       outputIds: new Map(),

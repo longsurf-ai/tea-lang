@@ -1,13 +1,13 @@
 // Purpose: Provider builtin-value helpers for exact syminfo/timeframe source keys; this module derives scalar fields only and owns no runtime context object.
 
-import type {ExecutionSource, Value} from '../../runtime/abi';
+import type {BuiltinSource, Value} from '../../runtime/abi';
 
 type ProviderBuiltinSource = Extract<
-  ExecutionSource,
+  BuiltinSource,
   {readonly domain: 'syminfo' | 'timeframe'}
 >;
 type ProviderSymbolSource = Extract<
-  ExecutionSource,
+  BuiltinSource,
   {readonly domain: 'syminfo'}
 >;
 

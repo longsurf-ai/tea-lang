@@ -14,7 +14,7 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
 - The noder is the sole semantic-to-backend projection. Each
   `ProgramLoweringContext` interns `VariableObject → IrName` and projects each
   `BuiltinObject` through its catalog-owned binding to either `SeriesInput` or
-  `ExecutionInput`; the noder also creates `ParamInput`,
+  `BuiltinInput`; the noder also creates `ParamInput`,
   `RequestEdge`, `IrFunc`, synthetic/result names, call-site slots, and the
   static frame layout. Checker objects never acquire backend depth, init,
   slot, or frame state.
@@ -72,7 +72,7 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   annotate the noder-created IR place objects (names, series, params, and
   requests) in place and accumulate across the recursive Program graph; every
   `bound` expression is normalized for lowering from the root bind frame.
-  Immutable root-safe `simple` aliases, including typed execution inputs, are
+  Immutable root-safe `simple` aliases, including typed builtins, are
   exact `DepthKind.Bound` demands rather than conservatively capped history.
   A history read indexed exactly by a numeric range induction variable uses
   that range's bind-safe maximum; compound induction arithmetic stays capped

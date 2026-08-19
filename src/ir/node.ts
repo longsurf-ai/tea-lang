@@ -10,7 +10,7 @@ import type {
   OutputDecl,
   ParamInput,
   RequestEdge,
-  ExecutionInput,
+  BuiltinInput,
   SeriesInput,
 } from './program';
 export {Storage} from './type';
@@ -134,13 +134,13 @@ export type IrUnaryOp = (typeof UNARY_OPS)[number];
 
 // A readable location, referencing its declaration object directly. Names are
 // script/function variables; params are bind-time inputs; series are numeric
-// data; execution places are typed builtins; requests are merged child-Program
+// data; builtin places are typed values; requests are merged child-Program
 // results. Only names are writable.
 export const PlaceKind = {
   Name: 'name',
   Param: 'param',
   Series: 'series',
-  Execution: 'execution',
+  Builtin: 'builtin',
   Request: 'request',
 } as const;
 
@@ -149,8 +149,8 @@ export type Place =
   | {readonly kind: typeof PlaceKind.Param; readonly param: ParamInput}
   | {readonly kind: typeof PlaceKind.Series; readonly series: SeriesInput}
   | {
-      readonly kind: typeof PlaceKind.Execution;
-      readonly execution: ExecutionInput;
+      readonly kind: typeof PlaceKind.Builtin;
+      readonly builtin: BuiltinInput;
     }
   | {readonly kind: typeof PlaceKind.Request; readonly request: RequestEdge};
 

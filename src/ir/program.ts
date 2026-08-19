@@ -1,7 +1,7 @@
 // Purpose: Tea Program contract — the compiler's complete static description of a script; the runtime implements the Time Machine (buffers, copy-on-write, rollback) from this description.
 
 import type {Pos} from '../base/pos';
-import type {DataSeriesId, ExecutionSource} from './builtin';
+import type {DataSeriesId, BuiltinSource} from './builtin';
 import type {HistoryDepth, IrExpr, IrStmt, Name} from './node';
 import type {ConstValue, Qualifier, Type} from './type';
 
@@ -69,8 +69,8 @@ export interface ParamInput {
 }
 
 // A numeric series in the Program's data context, provided by the runtime and
-// bound by host id (close, volume, hl2, ...). Typed context values live in
-// ExecutionInput instead of widening this numeric data plane.
+// bound by host id (close, volume, hl2, ...). Typed builtins live in
+// BuiltinInput instead of widening this numeric data plane.
 export interface SeriesInput {
   readonly id: DataSeriesId;
   readonly type: Type;
@@ -81,11 +81,11 @@ export interface SeriesInput {
   depth: HistoryDepth;
 }
 
-// @agent invariant: typed execution builtins remain distinct from numeric
+// @agent invariant: typed builtins remain distinct from numeric
 // SeriesInput values. Each Program projection owns and depth-annotates its own
 // carrier, including request-child Programs.
-export interface ExecutionInput {
-  readonly source: ExecutionSource;
+export interface BuiltinInput {
+  readonly source: BuiltinSource;
   readonly type: Type;
   readonly qualifier: Qualifier;
   depth: HistoryDepth;
@@ -258,7 +258,7 @@ export type IrFunc = FreeIrFunc | ConstMethodIrFunc | MutableMethodIrFunc;
 // binder, checker, and runtime read what the program needs from the world
 // here, never by walking trees. Context builtins are not declarations:
 // numeric and typed usage sets are projected by seriesInputsOf and
-// executionInputsOf for manifest publication. Composition internals (names,
+// builtinInputsOf for manifest publication. Composition internals (names,
 // funcs, call-site slots) are visit.ts projections; the noder fills requests
 // from the same reach walk.
 export interface Program {

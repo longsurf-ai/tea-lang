@@ -71,7 +71,7 @@ interface ProviderContext {
   axis: TimeAxis | null; // null = axis-less context
   series(id: string): SeriesData | null; // same alignment contract
   builtinValue(
-    source: Extract<ExecutionSource, {domain: 'syminfo' | 'timeframe'}>,
+    source: Extract<BuiltinSource, {domain: 'syminfo' | 'timeframe'}>,
   ): Value | undefined;
 }
 ```
@@ -107,7 +107,7 @@ BindError, so plain single-context scripts keep working on bare fixtures.
 unsupportedTimeframe | fetchFailed`), never a thrown string: the runtime
   maps it to BindError, runtime error, or `na` per `ignoreInvalidSymbol`.
 - `builtinValue` is the only typed symbol/timeframe metadata seam.
-  `ExecutionSource.domain` is merely the exact builtin namespace, not a
+  `BuiltinSource.domain` is merely the exact builtin namespace, not a
   factory for provider or runtime context classes. `undefined` means missing
   metadata and fails binding only when the compiled Program demands that
   source; `null`, `NaN`, and `false` remain legitimate typed empty values.

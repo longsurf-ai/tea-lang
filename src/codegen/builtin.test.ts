@@ -1,4 +1,4 @@
-// Purpose: Typed execution-input codegen tests — current-ABI manifests and reads must preserve source identity, value layout, depth, and the distinct execution carrier.
+// Purpose: Typed builtin codegen tests — current-ABI manifests and reads preserve source identity, value layout, depth, and the distinct builtin carrier.
 
 import {describe, expect, test} from 'bun:test';
 import {
@@ -8,14 +8,14 @@ import {
   type HistReadExpr,
   type IrExpr,
 } from '../ir/node';
-import type {ExecutionInput, Program} from '../ir/program';
+import type {BuiltinInput, Program} from '../ir/program';
 import {BoolType, IntType, Qualifier, StringType, type Type} from '../ir/type';
 import {mustBuild} from '../noder/testing';
 import {RUNTIME_ABI_VERSION} from '../runtime/abi';
 import {generate} from './codegen';
 
 const pos = {
-  base: {filename: 'execution-input.test.tea'},
+  base: {filename: 'builtin.test.tea'},
   line: 1,
   col: 1,
 };
@@ -31,27 +31,27 @@ function constant(value: number): IrExpr {
 }
 
 function input(
-  source: ExecutionInput['source'],
+  source: BuiltinInput['source'],
   type: Type,
   qualifier: Qualifier,
-  depth: ExecutionInput['depth'] = {kind: DepthKind.None},
-): ExecutionInput {
+  depth: BuiltinInput['depth'] = {kind: DepthKind.None},
+): BuiltinInput {
   return {source, type, qualifier, depth};
 }
 
-function read(execution: ExecutionInput, offset: IrExpr | null): HistReadExpr {
+function read(builtin: BuiltinInput, offset: IrExpr | null): HistReadExpr {
   return {
     kind: IrKind.HistRead,
     pos,
-    type: execution.type,
-    qualifier: execution.qualifier,
-    place: {kind: PlaceKind.Execution, execution},
+    type: builtin.type,
+    qualifier: builtin.qualifier,
+    place: {kind: PlaceKind.Builtin, builtin},
     offset,
   };
 }
 
-describe('typed execution input lowering', () => {
-  test('publishes dense current-ABI specs and lowers history through rt.execution', () => {
+describe('typed builtin lowering', () => {
+  test('publishes dense current-ABI specs and lowers history through rt.builtin', () => {
     const time = input(
       {domain: 'time', field: 'time'},
       IntType,
@@ -88,13 +88,13 @@ describe('typed execution input lowering', () => {
       readonly abi: number;
       readonly manifest: {
         readonly series: readonly unknown[];
-        readonly execution: readonly unknown[];
+        readonly builtin: readonly unknown[];
       };
     };
 
     expect(module.abi).toBe(RUNTIME_ABI_VERSION);
     expect(module.manifest.series).toEqual([]);
-    expect(module.manifest.execution).toEqual([
+    expect(module.manifest.builtin).toEqual([
       {
         source: {domain: 'time', field: 'time'},
         layout: 0,
@@ -111,33 +111,33 @@ describe('typed execution input lowering', () => {
         depth: {kind: 'none'},
       },
     ]);
-    expect(source).toContain('rt.bindExecutionDepth(0, (3));');
-    expect(source).toMatch(/rt\.execution\(0, t\d+\)/);
-    expect(source).toContain('rt.execution(1, 0)');
-    expect(source).toContain('rt.execution(2, 0)');
+    expect(source).toContain('rt.bindBuiltinDepth(0, (3));');
+    expect(source).toMatch(/rt\.builtin\(0, t\d+\)/);
+    expect(source).toContain('rt.builtin(1, 0)');
+    expect(source).toContain('rt.builtin(2, 0)');
   });
 
-  test('restarts execution ids in a request child module', () => {
+  test('restarts builtin ids in a request child module', () => {
     const source = generate(
       mustBuild('value = request.security("X", "D", bar_index)\nplot(value)'),
     );
     const module = new Function(source)() as {
       readonly manifest: {
-        readonly execution: readonly unknown[];
+        readonly builtin: readonly unknown[];
       };
       readonly requests: readonly {
         readonly manifest: {
           readonly series: readonly unknown[];
-          readonly execution: readonly {readonly source: unknown}[];
+          readonly builtin: readonly {readonly source: unknown}[];
         };
       }[];
     };
 
-    expect(module.manifest.execution).toEqual([]);
+    expect(module.manifest.builtin).toEqual([]);
     expect(module.requests[0].manifest.series).toEqual([]);
-    expect(module.requests[0].manifest.execution).toMatchObject([
+    expect(module.requests[0].manifest.builtin).toMatchObject([
       {source: {domain: 'bar', field: 'bar_index'}},
     ]);
-    expect(source).toContain('rt.execution(0, 0)');
+    expect(source).toContain('rt.builtin(0, 0)');
   });
 });

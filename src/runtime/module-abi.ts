@@ -1,6 +1,6 @@
 // Purpose: Versioned generated-JavaScript module manifest and Runtime operation contract.
 
-import type {ExecutionSource} from '../ir/builtin';
+import type {BuiltinSource} from '../ir/builtin';
 import type {NameStorage} from '../ir/node';
 import type {Heap} from './heap';
 import type {EffectSpec, ParamSpec} from './schema';
@@ -41,8 +41,8 @@ export interface SeriesSpec {
   readonly depth: DepthSpec;
 }
 
-export interface ExecutionSpec {
-  readonly source: ExecutionSource;
+export interface BuiltinSpec {
+  readonly source: BuiltinSource;
   readonly layout: LayoutId;
   readonly depth: DepthSpec;
 }
@@ -105,7 +105,7 @@ export interface RequestSpec {
 
 export interface ModuleManifest {
   readonly series: readonly SeriesSpec[];
-  readonly execution: readonly ExecutionSpec[];
+  readonly builtin: readonly BuiltinSpec[];
   readonly params: readonly ParamSpec[];
   readonly outputs: readonly OutputSpec[];
   readonly effects: readonly EffectManifestSpec[];
@@ -164,7 +164,7 @@ export interface SharedExecutionState {
 
 export interface Runtime {
   series(sid: number, offset: number): number;
-  execution(eid: number, offset: number): Value;
+  builtin(bid: number, offset: number): Value;
   param(pid: number): Value;
   read(fr: Frame, slot: number, offset: number): Value;
   write(fr: Frame, slot: number, v: Value): void;
@@ -179,7 +179,7 @@ export interface Runtime {
   historyDepth(offset: number): number;
   bindDepth(fid: number, slot: number, bars: number): void;
   bindSeriesDepth(sid: number, bars: number): void;
-  bindExecutionDepth(eid: number, bars: number): void;
+  bindBuiltinDepth(bid: number, bars: number): void;
   bindOutput(oid: number, argName: string, v: Value): void;
   bindParamActive(pid: number, active: Value): void;
   bindRequestOptions(

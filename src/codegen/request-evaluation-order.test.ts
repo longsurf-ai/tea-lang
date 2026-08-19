@@ -143,17 +143,17 @@ describe('request context evaluation order', () => {
     const js = generate(program);
     const rootBind = js.lastIndexOf('bind(rt, fr)');
     const bind = js.slice(rootBind, js.indexOf('funcs:', rootBind));
-    const executionRead = bind.indexOf('rt.execution(0, 0)');
+    const executionRead = bind.indexOf('rt.builtin(0, 0)');
     const optionCall = bind.indexOf('rt.bindRequestOptions(0,');
     expect(executionRead).toBeGreaterThanOrEqual(0);
     expect(optionCall).toBeGreaterThan(executionRead);
 
     const module = new Function(js)() as {
       readonly manifest: {
-        readonly execution: readonly {readonly source: unknown}[];
+        readonly builtin: readonly {readonly source: unknown}[];
       };
     };
-    expect(module.manifest.execution).toMatchObject([
+    expect(module.manifest.builtin).toMatchObject([
       {source: {domain: 'syminfo', field: 'type'}},
     ]);
   });

@@ -23,7 +23,7 @@ import {
 import {formatType, isNaValue, type ConstValue} from './type';
 import {
   funcsOf,
-  executionInputsOf,
+  builtinInputsOf,
   namesOf,
   requestsOf,
   seriesInputsOf,
@@ -113,10 +113,10 @@ export function dumpProgram(program: Program): string {
     dumpDepthLine(line, series.depth, '', out, labels);
   }
 
-  for (const execution of executionInputsOf(program)) {
-    const source = `${execution.source.domain}.${execution.source.field}`;
-    const line = `execution ${source}: ${execution.qualifier} ${formatType(execution.type)}`;
-    dumpDepthLine(line, execution.depth, '', out, labels);
+  for (const builtin of builtinInputsOf(program)) {
+    const source = `${builtin.source.domain}.${builtin.source.field}`;
+    const line = `builtin ${source}: ${builtin.qualifier} ${formatType(builtin.type)}`;
+    dumpDepthLine(line, builtin.depth, '', out, labels);
   }
 
   program.outputs.forEach((output, i) => {
@@ -240,8 +240,8 @@ function placeLabel(place: Place, labels: Labels): string {
       return `param:${place.param.name}`;
     case PlaceKind.Series:
       return `series:${place.series.id}`;
-    case PlaceKind.Execution:
-      return `execution:${place.execution.source.domain}.${place.execution.source.field}`;
+    case PlaceKind.Builtin:
+      return `builtin:${place.builtin.source.domain}.${place.builtin.source.field}`;
     case PlaceKind.Request:
       return labels.request(place.request);
   }

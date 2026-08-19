@@ -56,7 +56,7 @@ tables. Direct updates have one checked writeback target: a current root
 that target inside their existing `CallResolution`.
 
 The boundary is strict: checker results contain no `IrName`, `SeriesInput`,
-`ExecutionInput`, `ParamInput`, `RequestEdge`, `HistoryDepth`, slot, or frame.
+`BuiltinInput`, `ParamInput`, `RequestEdge`, `HistoryDepth`, slot, or frame.
 The noder creates those backend representations at the Program boundary.
 Only the closed identifier vocabulary in `ir/builtin.ts` and the shared type
 domain in `ir/type.ts` cross into the checker; backend nodes and Programs do
@@ -115,7 +115,7 @@ A Program is _a bar loop over one context_ — one symbol × timeframe axis —
 owning the following backend resources. The noder is their sole creator: its
 per-Program context projects `VariableObject → IrName` and each
 `BuiltinObject` through its checker-owned binding to either `SeriesInput` or
-`ExecutionInput`, creates `ParamInput` and `RequestEdge` objects, mints slots
+`BuiltinInput`, creates `ParamInput` and `RequestEdge` objects, mints slots
 and synthetic names, establishes static frame layouts, and hands the resulting
 places to its depth pass for annotation.
 
@@ -146,10 +146,10 @@ places to its depth pass for annotation.
   builtin in each Program. `input.source` is restricted to this closed
   vocabulary. Neither noder nor runtime classifies a builtin by parsing its
   spelling.
-- **typed execution inputs** (also a projection): `time`, `time_close`,
+- **typed builtins** (also a projection): `time`, `time_close`,
   `timenow`, `bar_index`, `last_bar_index`, `barstate.*`, `syminfo.*`, and
-  `timeframe.*` are typed values supplied by the execution context rather than
-  numeric provider columns. They project to `ExecutionInput`, which carries
+  `timeframe.*` are typed values supplied by the runtime context rather than
+  numeric provider columns. They project to `BuiltinInput`, which carries
   source, type, qualifier, and depth. Its source is a closed `{domain, field}`
   key. The domain is only the builtin namespace (`time`, `bar`, `barstate`,
   `syminfo`, or `timeframe`); it never implies a corresponding compiler or
@@ -174,7 +174,7 @@ places to its depth pass for annotation.
   in a body. This keeps evaluation order and control flow explicit: the value
   is evaluated only after execution reaches the statement and the runtime
   reports that the slot is still semantically uninitialized. Depth is owned by
-  the noder's depth pass. Series inputs, execution inputs, params, and request
+  the noder's depth pass. Series inputs, builtins, params, and request
   results carry the same depth field, so every history demand is resolved
   before execution.
 - **outputs**: statically-declared effect channels (plot/hline/
@@ -239,7 +239,7 @@ places to its depth pass for annotation.
 
 Typed and resolved: every expression carries `(type, qualifier)`; every use
 is a `Place` referencing its projected IR declaration object directly (Name |
-ParamInput | SeriesInput | ExecutionInput | RequestEdge — no ids), with
+ParamInput | SeriesInput | BuiltinInput | RequestEdge — no ids), with
 `HistRead {place, offset?}` — a
 read through the time machine, offset null meaning the current bar — and
 each use keeping its own position (unlike shared-node designs, diagnostics
@@ -335,9 +335,9 @@ Context builtins are NOT declared as Program fields: they are available only
 when used, and a child context's carriers are a product of its own request
 capture. Composition internals — names, funcs, call-site slots — are
 projections: `visit.ts` owns the exhaustive traversal and exposes `namesOf`,
-`funcsOf`, `slotCountOf`, `seriesInputsOf`, `executionInputsOf`, and
+`funcsOf`, `slotCountOf`, `seriesInputsOf`, `builtinInputsOf`, and
 `requestsOf`. The two input projections become separate id namespaces at the
-module boundary; a typed execution value can never become an input-source
+module boundary; a typed builtin can never become an input-source
 series merely because its Tea type is numeric. Request edges the noder finds
 unreachable never enter `requests` — dead-request elimination by construction.
 
@@ -403,7 +403,7 @@ unreachable never enter `requests` — dead-request elimination by construction.
 - Depth resolution walks UDF bodies in call-site context. Constant and
   immutable root-safe offsets no later than `simple` are substituted through
   parameters and single-write root locals, including aliases of `ParamInput`
-  and `ExecutionInput`, then combined into one exact `bound` maximum
+  and `BuiltinInput`, then combined into one exact `bound` maximum
   (invalid/na components contribute zero). A demand that still depends on
   per-bar or unresolved frame state is `capped` by
   `indicator(max_bars_back=…)` or the engine default (500). For a history read

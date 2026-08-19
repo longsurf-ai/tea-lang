@@ -140,9 +140,9 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   tolerates Bad syntax nodes the parser already reported.
 - Context builtin names resolve to semantic `BuiltinObject`s. The catalog owns their
   explicit discriminated binding: numeric sources are `series`, typed context
-  values are `execution`, and constants have no binding. They carry type,
+  values are `builtin`, and constants have no binding. They carry type,
   qualifier, and any fold value, but no backend depth or buffer state. The
-  noder interns the matching `SeriesInput` or `ExecutionInput` independently
+  noder interns the matching `SeriesInput` or `BuiltinInput` independently
   in each Program projection; no pass parses a builtin spelling to classify it.
 - Request captures re-check in a CHILD semantic context with fresh `Info`:
   only constant values and direct scalar input bindings cross contexts;

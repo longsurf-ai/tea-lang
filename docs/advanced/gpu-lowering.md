@@ -288,7 +288,7 @@ The current backend emits no artifact for Programs requiring any of these:
 - unresolved dynamic frame-history requirements without an explicit cap, or
   `varip` execution;
 - collections, tuples, collection iteration, or while loops;
-- unsupported bind-time initialization or typed execution inputs;
+- unsupported bind-time initialization or typed builtins;
 - dynamic string construction (effect string literals are interned and
   supported);
 - bound, multi-channel, conditional, nested, or non-scalar dense emissions;
@@ -299,7 +299,7 @@ Other unsupported native calls, receiver paths, or function-frame shapes also
 fail closed with a specific diagnostic. This is a target-subset boundary, not
 a separate strategy compiler or runtime model.
 
-Historical epoch-millisecond `time` is one remaining typed-execution-input
+Historical epoch-millisecond `time` is one remaining builtin
 exclusion. It does not fit this artifact's declared i32 integer carrier. That
 is not an inherent inability to compare time on WebGPU: a future artifact can
 publish an exact wide-integer representation such as two u32 words and lower

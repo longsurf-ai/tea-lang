@@ -2701,7 +2701,7 @@ class Checker {
   }
 
   // Native variables resolve to semantic builtin objects. Noding projects a
-  // bound builtin into the matching SeriesInput or ExecutionInput in each
+  // bound builtin into the matching SeriesInput or BuiltinInput in each
   // Program context.
   private nativeVarTv(nv: NativeVar, node: syntax.Expr): TypeAndValue {
     let builtin = this.builtins.get(nv.name);

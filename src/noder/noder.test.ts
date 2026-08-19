@@ -16,7 +16,7 @@ import {
 import {MergeMode, ParamConstraintKind, ParamDefaultKind} from '../ir/program';
 import {TypeKind, isNaValue} from '../ir/type';
 import {
-  executionInputsOf,
+  builtinInputsOf,
   funcsOf,
   namesOf,
   seriesInputsOf,
@@ -622,7 +622,7 @@ describe('depth resolution', () => {
     expect(base?.depth.kind).toBe(DepthKind.Bound);
   });
 
-  test('a simple execution input remains an exact bound depth', () => {
+  test('a simple builtin remains an exact bound depth', () => {
     const program = mustBuild(
       ['length = timeframe.multiplier', 'plot(close[length])'].join('\n'),
     );
@@ -631,7 +631,7 @@ describe('depth resolution', () => {
       kind: DepthKind.Bound,
       expr: {
         kind: IrKind.HistRead,
-        place: {kind: PlaceKind.Execution},
+        place: {kind: PlaceKind.Builtin},
       },
     });
   });
@@ -918,7 +918,7 @@ describe('function stencils', () => {
 });
 
 describe('requests', () => {
-  test('typed builtins use execution places and reproject in request children', () => {
+  test('typed builtins use builtin places and reproject in request children', () => {
     const program = mustBuild(
       [
         'root = time + time_close + bar_index',
@@ -928,8 +928,8 @@ describe('requests', () => {
       ].join('\n'),
     );
     expect(seriesInputsOf(program)).toEqual([]);
-    const rootInputs = executionInputsOf(program);
-    const childInputs = executionInputsOf(program.requests[0].child);
+    const rootInputs = builtinInputsOf(program);
+    const childInputs = builtinInputsOf(program.requests[0].child);
     expect(rootInputs.map(input => input.source)).toEqual([
       {domain: 'time', field: 'time'},
       {domain: 'time', field: 'time_close'},
@@ -1137,7 +1137,7 @@ describe('requests', () => {
     );
   });
 
-  test('request binding respects execution-input qualifiers inline and through aliases', () => {
+  test('request binding respects builtin qualifiers inline and through aliases', () => {
     const program = mustBuild(
       [
         'rowSymbol = barstate.isfirst ? "X" : "Y"',

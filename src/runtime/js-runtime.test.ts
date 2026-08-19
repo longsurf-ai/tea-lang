@@ -7,7 +7,7 @@ import {
   type AggregateLayoutManifest,
   type BindInputs,
   type DataProvider,
-  type ExecutionSpec,
+  type BuiltinSpec,
   type ModuleCode,
   type OutputSink,
   type ProviderContext,
@@ -112,7 +112,7 @@ const EMA_MODULE: TeaModule = {
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
-    execution: [],
+    builtin: [],
     params: [],
     outputs: [PLOT_OUTPUT],
     effects: [],
@@ -166,7 +166,7 @@ const COUNTER_MODULE: TeaModule = {
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
-    execution: [],
+    builtin: [],
     params: [],
     outputs: [
       {
@@ -262,7 +262,7 @@ const HISTORY_MODULE: TeaModule = {
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
-    execution: [],
+    builtin: [],
     params: [],
     outputs: [PLOT_OUTPUT],
     effects: [],
@@ -317,7 +317,7 @@ const TICK_MODULE: TeaModule = {
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
-    execution: [],
+    builtin: [],
     params: [],
     outputs: [
       {
@@ -493,7 +493,7 @@ const BIND_MODULE: TeaModule = {
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
-    execution: [],
+    builtin: [],
     params: [
       {
         name: 'level',
@@ -601,7 +601,7 @@ describe('binding', () => {
   });
 });
 
-describe('typed execution inputs', () => {
+describe('typed builtins', () => {
   const INT_LAYOUT = 0;
   const BOOL_LAYOUT = 1;
   const STRING_LAYOUT = 2;
@@ -612,7 +612,7 @@ describe('typed execution inputs', () => {
       {kind: 'nullable-scalar', scalar: 'string'},
     ],
   } as const satisfies AggregateLayoutManifest;
-  const execution = [
+  const builtins = [
     {
       source: {domain: 'time', field: 'time'},
       layout: INT_LAYOUT,
@@ -678,9 +678,9 @@ describe('typed execution inputs', () => {
       layout: STRING_LAYOUT,
       depth: {kind: 'const', bars: 1},
     },
-  ] as const satisfies readonly ExecutionSpec[];
+  ] as const satisfies readonly BuiltinSpec[];
 
-  function executionContext(
+  function builtinContext(
     builtinValue: ProviderContext['builtinValue'] = source =>
       source.domain === 'syminfo' && source.field === 'tickerid'
         ? 'NASDAQ:AAPL'
@@ -696,19 +696,19 @@ describe('typed execution inputs', () => {
     };
   }
 
-  function executionModule(): TeaModule {
+  function builtinModule(): TeaModule {
     return {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: layouts,
       manifest: {
         series: [],
-        execution,
+        builtin: builtins,
         params: [],
         outputs: [
           {
             effect: 'probe',
             staticArgs: [],
-            channels: execution.map((_, index) => ({
+            channels: builtins.map((_, index) => ({
               name: `value${index}`,
               type: 'value',
               transport:
@@ -739,20 +739,20 @@ describe('typed execution inputs', () => {
       bind() {},
       funcs: {},
       main(rt) {
-        execution.forEach((_, eid) => rt.emit(0, eid, rt.execution(eid, 0)));
-        rt.emit(1, 0, rt.execution(0, 1));
-        rt.emit(1, 1, rt.execution(7, 1));
-        rt.emit(1, 2, rt.execution(11, 1));
-        rt.emit(1, 3, rt.execution(2, 1));
+        builtins.forEach((_, bid) => rt.emit(0, bid, rt.builtin(bid, 0)));
+        rt.emit(1, 0, rt.builtin(0, 1));
+        rt.emit(1, 1, rt.builtin(7, 1));
+        rt.emit(1, 2, rt.builtin(11, 1));
+        rt.emit(1, 3, rt.builtin(2, 1));
       },
     };
   }
 
   test('resolves row, extent, context, and fixed-history values exactly', async () => {
     const sink = new RecordingSink();
-    const bound = await bind(executionModule(), {
+    const bound = await bind(builtinModule(), {
       params: {},
-      provider: providerFromContext(executionContext()),
+      provider: providerFromContext(builtinContext()),
       sink,
       timeNow: 1_777_777_777_777,
     });
@@ -785,35 +785,35 @@ describe('typed execution inputs', () => {
 
   test('simple context metadata is available during bind', async () => {
     const seen: Value[] = [];
-    const base = executionModule();
+    const base = builtinModule();
     const module: TeaModule = {
       ...base,
       bind(rt) {
-        seen.push(rt.execution(11, 0), rt.execution(12, 0));
+        seen.push(rt.builtin(11, 0), rt.builtin(12, 0));
       },
     };
     await bind(module, {
       params: {},
-      provider: providerFromContext(executionContext()),
+      provider: providerFromContext(builtinContext()),
       sink: new RecordingSink(),
       timeNow: 1_777_777_777_777,
     });
     expect(seen).toEqual(['NASDAQ:AAPL', 'D']);
   });
 
-  test('series-qualified execution inputs fail loudly during bind', async () => {
-    for (const eid of [0, 2, 3, 5]) {
-      const base = executionModule();
+  test('series-qualified builtins fail loudly during bind', async () => {
+    for (const bid of [0, 2, 3, 5]) {
+      const base = builtinModule();
       const module: TeaModule = {
         ...base,
         bind(rt) {
-          rt.execution(eid, 0);
+          rt.builtin(bid, 0);
         },
       };
       await expect(
         bind(module, {
           params: {},
-          provider: providerFromContext(executionContext()),
+          provider: providerFromContext(builtinContext()),
           sink: new RecordingSink(),
           timeNow: 1_777_777_777_777,
         }),
@@ -823,16 +823,16 @@ describe('typed execution inputs', () => {
 
   test('missing demanded metadata and a missing demanded axis fail at bind', async () => {
     await expect(
-      bind(executionModule(), {
+      bind(builtinModule(), {
         params: {},
-        provider: providerFromContext(executionContext(() => undefined)),
+        provider: providerFromContext(builtinContext(() => undefined)),
         sink: new RecordingSink(),
       }),
     ).rejects.toThrow("builtin 'syminfo.tickerid' is not provided");
 
-    const withoutAxis = {...executionContext(), axis: null};
+    const withoutAxis = {...builtinContext(), axis: null};
     await expect(
-      bind(executionModule(), {
+      bind(builtinModule(), {
         params: {},
         provider: providerFromContext(withoutAxis),
         sink: new RecordingSink(),
@@ -841,12 +841,12 @@ describe('typed execution inputs', () => {
   });
 
   test('provider typed empty metadata is a value, not missing', async () => {
-    const base = executionModule();
+    const base = builtinModule();
     const module: TeaModule = {
       ...base,
       manifest: {
         ...base.manifest,
-        execution: [execution[11]],
+        builtin: [builtins[11]],
         outputs: [
           {
             effect: 'probe',
@@ -858,13 +858,13 @@ describe('typed execution inputs', () => {
         ],
       },
       main(rt) {
-        rt.emit(0, 0, rt.execution(0, 0));
+        rt.emit(0, 0, rt.builtin(0, 0));
       },
     };
     const sink = new RecordingSink();
     const bound = await bind(module, {
       params: {},
-      provider: providerFromContext(executionContext(() => null)),
+      provider: providerFromContext(builtinContext(() => null)),
       sink,
     });
     await bound.runAll();
@@ -885,9 +885,9 @@ describe('typed execution inputs', () => {
       2 ** 53,
     ]) {
       await expect(
-        bindRuntime(executionModule(), {
+        bindRuntime(builtinModule(), {
           params: {},
-          provider: providerFromContext(executionContext()),
+          provider: providerFromContext(builtinContext()),
           sink: new RecordingSink(),
           timeNow: invalid,
         }),
@@ -937,7 +937,7 @@ function contexts(byId: Record<string, ProviderContext>): DataProvider {
 const CHILD_MODULE = {
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
-    execution: [],
+    builtin: [],
     params: [],
     outputs: [],
     effects: [],
@@ -988,7 +988,7 @@ function requestModule(
     aggregateLayouts: TEST_LAYOUTS,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
-      execution: [],
+      builtin: [],
       params: [
         {
           name: 'scale',
@@ -1194,7 +1194,7 @@ describe('requests', () => {
     const barIndexChild = {
       manifest: {
         series: [],
-        execution: [
+        builtin: [
           {
             source: {domain: 'bar', field: 'bar_index'},
             layout: NUMBER_LAYOUT,
@@ -1226,7 +1226,7 @@ describe('requests', () => {
         rt: Parameters<TeaModule['main']>[0],
         fr: Parameters<TeaModule['main']>[1],
       ) {
-        rt.write(fr, 0, rt.execution(0, 0));
+        rt.write(fr, 0, rt.builtin(0, 0));
       },
     } as const satisfies ModuleCode;
     const base = requestModule({calcBarsCount: 2});
@@ -1317,7 +1317,7 @@ describe('requests', () => {
     const innerChild = {
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [],
         effects: [],
@@ -1349,7 +1349,7 @@ describe('requests', () => {
     const outerChild = {
       manifest: {
         series: [],
-        execution: [],
+        builtin: [],
         params: [],
         outputs: [],
         effects: [],
@@ -1446,7 +1446,7 @@ describe('requests', () => {
 const IDENTITY_CHILD = {
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
-    execution: [],
+    builtin: [],
     params: [],
     outputs: [],
     effects: [],
@@ -1481,7 +1481,7 @@ const DYNAMIC_MODULE: TeaModule = {
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
-    execution: [],
+    builtin: [],
     params: [],
     outputs: [
       {

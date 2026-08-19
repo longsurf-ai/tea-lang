@@ -329,7 +329,7 @@ function normalize(
           expr.offset === null &&
           ((expr.place.kind === PlaceKind.Param &&
             expr.place.param.defaultValue?.kind !== ParamDefaultKind.Series) ||
-            (expr.place.kind === PlaceKind.Execution &&
+            (expr.place.kind === PlaceKind.Builtin &&
               qualifierLE(expr.qualifier, Qualifier.Simple))),
       };
     }
@@ -491,8 +491,8 @@ function carrierOf(read: HistReadExpr): DepthCarrier {
       return place.param;
     case PlaceKind.Series:
       return place.series;
-    case PlaceKind.Execution:
-      return place.execution;
+    case PlaceKind.Builtin:
+      return place.builtin;
     case PlaceKind.Request:
       return place.request;
   }

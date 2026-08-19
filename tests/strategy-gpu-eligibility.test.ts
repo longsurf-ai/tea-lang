@@ -13,7 +13,7 @@ import {compileToProgram} from '../src/compile';
 import type {Program} from '../src/ir/program';
 import {formatType, TypeKind, type Type} from '../src/ir/type';
 import {
-  executionInputsOf,
+  builtinInputsOf,
   funcsOf,
   namesOf,
   seriesInputsOf,
@@ -98,16 +98,16 @@ const EXPECTED_FIRST_BLOCKERS: Readonly<Record<string, FirstBlocker>> = {
     message: 'GPU tuple layout is unsupported for [float, float, float]',
   },
   'cluster-breakout-v6': {
-    code: 'execution-input-mapping-unimplemented',
-    message: 'execution input time.time is not derived by this GPU backend',
+    code: 'builtin-mapping-unimplemented',
+    message: 'builtin time.time is not derived by this GPU backend',
   },
   cowabunga: {
-    code: 'execution-input-mapping-unimplemented',
-    message: 'execution input time.time is not derived by this GPU backend',
+    code: 'builtin-mapping-unimplemented',
+    message: 'builtin time.time is not derived by this GPU backend',
   },
   'donchian-close': {
-    code: 'execution-input-mapping-unimplemented',
-    message: 'execution input time.time is not derived by this GPU backend',
+    code: 'builtin-mapping-unimplemented',
+    message: 'builtin time.time is not derived by this GPU backend',
   },
   'mtf-psar': {
     code: 'parameter-packing-unimplemented',
@@ -354,8 +354,8 @@ function collectProgramTypes(
     walkIrExpr(func.body, {expr: visitExpression});
   }
   for (const series of seriesInputsOf(program)) collectType(series.type, types);
-  for (const execution of executionInputsOf(program)) {
-    collectType(execution.type, types);
+  for (const builtin of builtinInputsOf(program)) {
+    collectType(builtin.type, types);
   }
   for (const request of program.requests) {
     collectType(request.resultType, types);

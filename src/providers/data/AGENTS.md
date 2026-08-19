@@ -43,7 +43,7 @@ range)` → a fixed-extent `ProviderContext` (or a typed `ContextError`,
   axes honest — the runtime never guesses session calendars.
 - Every resolved context exposes one exact `builtinValue` accessor for
   `syminfo`/`timeframe` keys. Missing metadata is `undefined`; typed empty
-  values remain values. `ExecutionSource.domain` is identifier taxonomy only
+  values remain values. `BuiltinSource.domain` is identifier taxonomy only
   and must never grow corresponding runtime context classes.
 - `RangeDemand` is either full or an exact positive trailing-bar count.
   Drivers may project the requested tail, but runtime independently clamps
