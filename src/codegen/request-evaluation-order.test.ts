@@ -1,6 +1,6 @@
 // Purpose: Request context lowering preserves the Program-owned source order while assembling the canonical symbol/timeframe ABI pair.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {mustBuild} from '../noder/testing';
 import {generate} from './codegen';
 

@@ -1,4 +1,4 @@
-// Purpose: Human-written metadata for the seven representative Tea reference pages used to review the final information architecture before exhaustive generation.
+// Purpose: Human-written metadata for generated Tea reference pages and their information architecture.
 
 export const REFERENCE_CATEGORIES = [
   'types',
@@ -125,8 +125,7 @@ export const REFERENCE_CATEGORY_SUMMARIES: Readonly<
 > = {
   types:
     'Value shapes that determine which operations a Tea expression supports.',
-  variables:
-    'Values supplied by the current data and execution context.',
+  variables: 'Values supplied by the current data and execution context.',
   constants:
     'Named values established before execution and reused in expressions and function calls.',
   functions:
@@ -135,8 +134,7 @@ export const REFERENCE_CATEGORY_SUMMARIES: Readonly<
     'Words and compound forms that introduce declarations, control flow, and other language constructs.',
   operators:
     'Symbols and words that combine, update, select, or retrieve values.',
-  annotations:
-    'Source comments with a defined meaning to the Tea compiler.',
+  annotations: 'Source comments with a defined meaning to the Tea compiler.',
 };
 
 export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
@@ -204,7 +202,7 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
       },
     ],
     remarks: [
-      '`array.new<Element>(size)` fills each position with the element type\'s empty value. Supply an initial value as the second argument when another value is required.',
+      "`array.new<Element>(size)` fills each position with the element type's empty value. Supply an initial value as the second argument when another value is required.",
       'An array update requires a writable variable or struct field. A temporary array or an array read through history is not a writable target.',
       'Reading outside the current array bounds stops the current execution with a runtime error.',
     ],
@@ -294,7 +292,8 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
     summary: '`array.push()` appends one element to an array.',
     arguments: {
       self: 'The array to update. It must be held by a writable variable or struct field.',
-      value: 'The element to append. Its type must match the array element type.',
+      value:
+        'The element to append. Its type must match the array element type.',
     },
     returns: 'No value.',
     description: [
@@ -589,7 +588,8 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
     category: 'annotations',
     title: '//@version',
     route: '/reference/annotations/version/',
-    summary: '`//@version` records the Tea language version declared by a source file.',
+    summary:
+      '`//@version` records the Tea language version declared by a source file.',
     syntax: ['//@version=1'],
     placement:
       'Write the annotation as a line comment, conventionally on the first line. If it appears more than once, the first value wins.',

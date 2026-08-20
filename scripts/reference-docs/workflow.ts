@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S node --import tsx
 // Purpose: Run the exhaustive Tea reference rewrite as a serial, resumable sequence of schema-checked Codex CLI turns.
 
 import {spawn} from 'node:child_process';
@@ -12,6 +12,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 
 import {CATALOG} from '../../src/checker/catalog';
 import {PUBLIC_TYPE_CATALOG} from '../../src/checker/type-catalog';
@@ -104,11 +105,7 @@ export interface WorkflowTask {
 }
 
 type TaskStatus = 'pending' | 'running' | 'completed' | 'blocked';
-type RunStatus =
-  | 'active'
-  | 'waiting-approval'
-  | 'completed'
-  | 'blocked';
+type RunStatus = 'active' | 'waiting-approval' | 'completed' | 'blocked';
 
 export interface TaskState {
   readonly id: string;
@@ -179,7 +176,8 @@ interface CliOptions {
   readonly runId?: string;
 }
 
-const SCRIPT_DIR = import.meta.dir;
+const SCRIPT_FILE = fileURLToPath(import.meta.url);
+const SCRIPT_DIR = path.dirname(SCRIPT_FILE);
 const DEFAULT_SCOPE = path.join(SCRIPT_DIR, 'scope.json');
 const RESULT_SCHEMA = path.join(SCRIPT_DIR, 'result.schema.json');
 const RUNS_DIR = '.codex/reference-docs';
@@ -228,7 +226,11 @@ export function validateScope(value: unknown): ReferenceScope {
     'operators',
     'annotations',
   ]);
-  if (categories.some(category => !validCategories.has(category as ReferenceCategory))) {
+  if (
+    categories.some(
+      category => !validCategories.has(category as ReferenceCategory),
+    )
+  ) {
     fail('scope.currentScope.categories contains an unknown category');
   }
 
@@ -253,14 +255,22 @@ export function validateScope(value: unknown): ReferenceScope {
       typeof specification !== 'string' ||
       specification.length < 20
     ) {
-      fail(`desiredFeatures[${index}] lacks an id, kind, or full specification`);
+      fail(
+        `desiredFeatures[${index}] lacks an id, kind, or full specification`,
+      );
     }
     return {
       id,
       kind: kind as DesiredFeature['kind'],
       specification,
-      acceptance: strings(raw['acceptance'], `desiredFeatures[${index}].acceptance`),
-      allowedPaths: strings(raw['allowedPaths'], `desiredFeatures[${index}].allowedPaths`),
+      acceptance: strings(
+        raw['acceptance'],
+        `desiredFeatures[${index}].acceptance`,
+      ),
+      allowedPaths: strings(
+        raw['allowedPaths'],
+        `desiredFeatures[${index}].allowedPaths`,
+      ),
       validate: strings(raw['validate'], `desiredFeatures[${index}].validate`),
     };
   });
@@ -307,7 +317,10 @@ export function validateScope(value: unknown): ReferenceScope {
     ...workstreams.map(workstream => workstream.id),
   ];
   assertUnique(taskIds, 'workflow task list');
-  assertUnique(approvalGates.map(gate => gate.id), 'approval gates');
+  assertUnique(
+    approvalGates.map(gate => gate.id),
+    'approval gates',
+  );
   const knownTasks = new Set(taskIds);
   for (const gate of approvalGates) {
     if (!knownTasks.has(gate.after)) {
@@ -395,7 +408,9 @@ export async function collectInventory(
   );
 
   const taSource = await readFile(path.join(root, 'src/lib/ta.tea'), 'utf8');
-  const taExports = [...taSource.matchAll(/^export\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm)]
+  const taExports = [
+    ...taSource.matchAll(/^export\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm),
+  ]
     .map(match => match[1]!)
     .sort();
 
@@ -404,7 +419,9 @@ export async function collectInventory(
     types: PUBLIC_TYPE_CATALOG.map(type => type.name).sort(),
     variables: variables.sort(),
     constants: constants.sort(),
-    nativeFunctions: nativeFunctions.sort((a, b) => a.name.localeCompare(b.name)),
+    nativeFunctions: nativeFunctions.sort((a, b) =>
+      a.name.localeCompare(b.name),
+    ),
     keywords: [...KEYWORDS].sort(),
     operators: [
       '=',
@@ -561,7 +578,9 @@ async function runValidation(
 }
 
 function truncate(value: string, max = 24_000): string {
-  return value.length <= max ? value : `${value.slice(-max)}\n[earlier output omitted]`;
+  return value.length <= max
+    ? value
+    : `${value.slice(-max)}\n[earlier output omitted]`;
 }
 
 function latestGate(
@@ -570,7 +589,10 @@ function latestGate(
 ): ApprovalGate | undefined {
   for (const gate of scope.approvalGates) {
     const task = state.tasks.find(candidate => candidate.id === gate.after);
-    if (task?.status === 'completed' && !state.approvedGates.includes(gate.id)) {
+    if (
+      task?.status === 'completed' &&
+      !state.approvedGates.includes(gate.id)
+    ) {
       return gate;
     }
   }
@@ -779,7 +801,8 @@ function selectTasks(
     const unknown = [...options.only].filter(
       id => !tasks.some(task => task.id === id),
     );
-    if (unknown.length > 0) fail(`--only names unknown tasks: ${unknown.join(', ')}`);
+    if (unknown.length > 0)
+      fail(`--only names unknown tasks: ${unknown.join(', ')}`);
     selected = selected.filter(
       task => task.kind === 'desired-feature' || options.only!.has(task.id),
     );
@@ -834,7 +857,7 @@ async function executeRun(args: {
       await saveState(args.runDir, args.state);
       console.log(`Waiting for approval '${gate.id}': ${gate.message}`);
       console.log(
-        `Review the pilot, update the workflow with feedback, then run: bun scripts/reference-docs/workflow.ts approve ${args.state.runId} ${gate.id}`,
+        `Review the pilot, update the workflow with feedback, then run: node --import tsx scripts/reference-docs/workflow.ts approve ${args.state.runId} ${gate.id}`,
       );
       return;
     }
@@ -861,7 +884,9 @@ async function executeRun(args: {
     console.log(`Waiting for approval '${gate.id}': ${gate.message}`);
     return;
   }
-  args.state.status = args.state.tasks.every(task => task.status === 'completed')
+  args.state.status = args.state.tasks.every(
+    task => task.status === 'completed',
+  )
     ? 'completed'
     : 'active';
   await saveState(args.runDir, args.state);
@@ -886,7 +911,8 @@ export function parseCli(argv: readonly string[]): CliOptions {
     fail(`unknown command '${command}'`);
   }
   const scopeFile = optionValue(args, '--scope') ?? DEFAULT_SCOPE;
-  const model = optionValue(args, '--model') ?? process.env['TEA_DOCS_CODEX_MODEL'];
+  const model =
+    optionValue(args, '--model') ?? process.env['TEA_DOCS_CODEX_MODEL'];
   const onlyValue = optionValue(args, '--only');
   const from = optionValue(args, '--from');
   const runId = optionValue(args, '--run-id');
@@ -900,7 +926,8 @@ export function parseCli(argv: readonly string[]): CliOptions {
   if (allowDirty) args.splice(allowDirtyAt, 1);
   const positional = args.filter(arg => !arg.startsWith('--'));
   const unknownFlags = args.filter(arg => arg.startsWith('--'));
-  if (unknownFlags.length > 0) fail(`unknown options: ${unknownFlags.join(', ')}`);
+  if (unknownFlags.length > 0)
+    fail(`unknown options: ${unknownFlags.join(', ')}`);
   return {
     command,
     positional,
@@ -930,7 +957,8 @@ async function repoRoot(): Promise<string> {
   const result = await runProcess('git', ['rev-parse', '--show-toplevel'], {
     cwd: process.cwd(),
   });
-  if (result.code !== 0) fail('reference workflow must run inside a Git repository');
+  if (result.code !== 0)
+    fail('reference workflow must run inside a Git repository');
   return result.stdout.trim();
 }
 
@@ -970,7 +998,10 @@ async function newRun(options: CliOptions): Promise<void> {
     throw error;
   }
   const codexVersion = await preflight(root);
-  const inventory = await collectInventory(root, loaded.scope.target.languageVersion);
+  const inventory = await collectInventory(
+    root,
+    loaded.scope.target.languageVersion,
+  );
   await writeFile(path.join(runDir, 'scope.snapshot.json'), loaded.raw);
   await writeJson(path.join(runDir, 'inventory.json'), inventory);
   await copyFile(RESULT_SCHEMA, path.join(runDir, 'result.schema.json'));
@@ -1001,14 +1032,19 @@ async function newRun(options: CliOptions): Promise<void> {
   await executeRun({root, runDir, scope: loaded.scope, tasks, state, options});
 }
 
-async function loadRun(root: string, runId: string): Promise<{
+async function loadRun(
+  root: string,
+  runId: string,
+): Promise<{
   readonly runDir: string;
   readonly scope: ReferenceScope;
   readonly tasks: WorkflowTask[];
   readonly state: RunState;
 }> {
   const runDir = path.join(root, RUNS_DIR, runId);
-  const scope = validateScope(await readJson(path.join(runDir, 'scope.snapshot.json')));
+  const scope = validateScope(
+    await readJson(path.join(runDir, 'scope.snapshot.json')),
+  );
   const state = (await readJson(path.join(runDir, 'state.json'))) as RunState;
   return {runDir, scope, tasks: buildTaskList(scope), state};
 }
@@ -1042,7 +1078,9 @@ async function showStatus(options: CliOptions): Promise<void> {
   const {state} = await loadRun(root, runId);
   console.log(`Run ${runId}: ${state.status}`);
   for (const task of state.tasks) {
-    console.log(`${task.status.padEnd(10)} ${task.id} (${task.attempts} turns)`);
+    console.log(
+      `${task.status.padEnd(10)} ${task.id} (${task.attempts} turns)`,
+    );
   }
 }
 
@@ -1065,17 +1103,26 @@ async function approveGate(options: CliOptions): Promise<void> {
   run.state.status = 'active';
   await saveState(run.runDir, run.state);
   console.log(`Approved gate ${gateId} for run ${runId}.`);
-  console.log(`Resume with: bun scripts/reference-docs/workflow.ts resume ${runId}`);
+  console.log(
+    `Resume with: node --import tsx scripts/reference-docs/workflow.ts resume ${runId}`,
+  );
 }
 
 async function printPlan(options: CliOptions): Promise<void> {
   const loaded = await loadScope(options.scopeFile);
   const tasks = selectTasks(buildTaskList(loaded.scope), options);
-  console.log(`${loaded.scope.name} (Tea ${loaded.scope.target.languageVersion})`);
+  console.log(
+    `${loaded.scope.name} (Tea ${loaded.scope.target.languageVersion})`,
+  );
   for (const [index, task] of tasks.entries()) {
-    console.log(`${String(index + 1).padStart(2, ' ')}. ${task.id}: ${task.title}`);
-    const gate = loaded.scope.approvalGates.find(item => item.after === task.id);
-    if (gate !== undefined) console.log(`    HUMAN GATE ${gate.id}: ${gate.message}`);
+    console.log(
+      `${String(index + 1).padStart(2, ' ')}. ${task.id}: ${task.title}`,
+    );
+    const gate = loaded.scope.approvalGates.find(
+      item => item.after === task.id,
+    );
+    if (gate !== undefined)
+      console.log(`    HUMAN GATE ${gate.id}: ${gate.message}`);
   }
 }
 
@@ -1095,9 +1142,14 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
 }
 
-if (import.meta.main) {
+if (
+  process.argv[1] !== undefined &&
+  path.resolve(process.argv[1]) === SCRIPT_FILE
+) {
   await main(process.argv.slice(2)).catch(error => {
-    console.error(`reference-docs: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `reference-docs: ${error instanceof Error ? error.message : String(error)}`,
+    );
     process.exitCode = 1;
   });
 }

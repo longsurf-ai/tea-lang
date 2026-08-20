@@ -1,7 +1,7 @@
 // Purpose: Generic sparse effects lower from Program call-site schemas into
 // the ordinary JS ABI and publish as one ordered row unit.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {IrKind} from '../ir/node';
 import type {Program} from '../ir/program';
 import {

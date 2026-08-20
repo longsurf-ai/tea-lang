@@ -623,8 +623,8 @@ its focused tests, typecheck, formatting, and diff check pass.
    - remove superseded journal and GPU entry points plus stale terminology only
      after repository-wide caller migration is complete.
 8. **Final verification**
-   - `bun run typecheck`;
-   - `bun test`;
+   - `npm run typecheck`;
+   - `npm test`;
    - generated docs/editor checks;
    - Node 22 Dawn multi-chunk integration;
    - repository-wide stale-name and strategy-special-case audit.
@@ -636,7 +636,7 @@ its focused tests, typecheck, formatting, and diff check pass.
    - make `tea run` print system, parameter, dense, and typed-effect sections;
    - make `tea sweep` expand bounded Cartesian bindings, default to GPU, and
      retain only final dense values plus effect counts;
-   - run the Tea CLI under Node so Dawn never enters the Bun development/test process;
+   - run Dawn only in the isolated Node integration process;
    - delete the bespoke example runner.
 
 ## 11. Final invariants

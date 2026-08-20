@@ -1,7 +1,7 @@
 // Purpose: Pin Pine-compatible Wilder seeding for RMA and the public
 // indicators that depend on it.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {executeProgram} from '../execute';
 import {mustBuild} from '../noder/testing';
 import {csvProvider} from '../providers/data/csv';

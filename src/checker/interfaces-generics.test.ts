@@ -1,6 +1,6 @@
 // Purpose: RED contracts for method-only interfaces and concrete generic struct specialization.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {formatType, TypeKind, typesEqual} from '../ir/type';
 import {funcsOf, namesOf} from '../ir/visit';
 import {
@@ -145,12 +145,12 @@ describe('static method-only interfaces', () => {
     if (api?.kind !== ObjectKind.PackageName) {
       throw new Error('fixture lost its imported package binding');
     }
-    expect(api.pkg.exports.has('PublicReader')).toBeTrue();
-    expect(api.pkg.exports.has('HiddenReader')).toBeFalse();
+    expect(api.pkg.exports.has('PublicReader')).toBe(true);
+    expect(api.pkg.exports.has('HiddenReader')).toBe(false);
     expect(messages(result)).toContain("unknown interface 'api.HiddenReader'");
     expect(
       messages(result).some(message => message.includes('api.PublicReader')),
-    ).toBeFalse();
+    ).toBe(false);
   });
 
   test('infers an exported generic constructor through a package alias', () => {
@@ -353,7 +353,7 @@ describe('constrained generic structs', () => {
     expect(sameA.type).toBe(sameB.type);
     expect(sameA.type.type).toBe(sameB.type.type);
     expect(different.type).not.toBe(sameA.type);
-    expect(typesEqual(different.type.type, sameA.type.type)).toBeFalse();
+    expect(typesEqual(different.type.type, sameA.type.type)).toBe(false);
     expect(sameA.type.type.name).toBe('Strategy<FastBroker, Book>');
     expect(different.type.type.name).toBe('Strategy<SlowBroker, Book>');
     expect(sameA.type.fields.map(field => formatType(field.type))).toEqual([
@@ -434,7 +434,7 @@ describe('constrained generic structs', () => {
     expect(messages(result)).toContain(
       "method 'Box<Source>.broken' returns int, want string",
     );
-    expect(result.info.calls.has(declarationCall(result, 'box'))).toBeTrue();
+    expect(result.info.calls.has(declarationCall(result, 'box'))).toBe(true);
   });
 
   test('allows only methods declared by the type-parameter constraint', () => {
@@ -460,7 +460,7 @@ describe('constrained generic structs', () => {
     );
     expect(
       messages(result).some(message => message.includes("method 'read'")),
-    ).toBeFalse();
+    ).toBe(false);
   });
 
   test('keeps constraint provenance on generic method parameters and aliases', () => {

@@ -1,6 +1,6 @@
 // Purpose: Runtime boundary locks for explicit empty-value families and the finite-or-na numeric contract.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {
   BindError,

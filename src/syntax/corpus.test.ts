@@ -2,11 +2,15 @@
 
 import {readdirSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import {formatPos, newFileBase} from '../base/pos';
 import {parse} from './syntax';
 
-const CORPUS = join(import.meta.dir, '../../tests/fixtures/corpus');
+const CORPUS = join(
+  fileURLToPath(new URL('.', import.meta.url)),
+  '../../tests/fixtures/corpus',
+);
 
 describe('conformance corpus parses cleanly', () => {
   const files = readdirSync(CORPUS).filter(name => name.endsWith('.tea'));

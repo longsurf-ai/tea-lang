@@ -1,5 +1,7 @@
 // Purpose: Generate the Tea TextMate grammar from compiler-owned syntax and semantic vocabulary.
 
+import {readFile, writeFile} from 'node:fs/promises';
+import {resolve} from 'node:path';
 import {fatal} from '../../../src/base/print';
 import {CATALOG, Effect} from '../../../src/checker/catalog';
 import {
@@ -714,21 +716,24 @@ export function renderGrammar(): string {
 
 async function main(): Promise<void> {
   const output = renderGrammar();
-  const target = new URL('../syntaxes/tea.tmLanguage.json', import.meta.url);
+  const target = resolve(__dirname, '../syntaxes/tea.tmLanguage.json');
   if (process.argv.includes('--check')) {
-    const current = await Bun.file(target).text();
+    const current = await readFile(target, 'utf8');
     if (current !== output) {
       console.error(
-        'Tea TextMate grammar is stale; run bun run generate in ' +
+        'Tea TextMate grammar is stale; run npm run generate in ' +
           'editors/vscode.',
       );
       process.exitCode = 1;
     }
     return;
   }
-  await Bun.write(target, output);
+  await writeFile(target, output, 'utf8');
 }
 
-if (import.meta.main) {
-  await main();
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === __filename) {
+  main().catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }

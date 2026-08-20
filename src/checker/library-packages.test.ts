@@ -1,7 +1,7 @@
 // Purpose: Red/regression tests for checking source libraries as complete
 // semantic packages rather than loader-shaped function namespaces.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {Qualifier, typesEqual} from '../ir/type';
 import {
   resolveImports,
@@ -62,13 +62,13 @@ describe('source library headers and package declarations', () => {
       {lib: 'export value() => 1\n'},
       'import lib\nvalue = 1',
     );
-    expect(hasMessage(missing, 'no library() declaration')).toBeTrue();
+    expect(hasMessage(missing, 'no library() declaration')).toBe(true);
 
     const late = checkWith(
       {lib: 'export value() => 1\nlibrary("lib")\n'},
       'import lib\nvalue = 1',
     );
-    expect(hasMessage(late, 'library() declaration', 'first')).toBeTrue();
+    expect(hasMessage(late, 'library() declaration', 'first')).toBe(true);
 
     const duplicate = checkWith(
       {lib: 'library("lib")\nlibrary("other")\nexport value() => 1\n'},
@@ -76,13 +76,13 @@ describe('source library headers and package declarations', () => {
     );
     expect(
       hasMessage(duplicate, 'duplicate', 'library() declaration'),
-    ).toBeTrue();
+    ).toBe(true);
 
     const invalidName = checkWith(
       {lib: 'library("not-addressable")\nexport value() => 1\n'},
       'import lib\nvalue = 1',
     );
-    expect(hasMessage(invalidName, 'not a valid source identifier')).toBeTrue();
+    expect(hasMessage(invalidName, 'not a valid source identifier')).toBe(true);
   });
 
   test('rejects duplicate functions, import aliases, and cross-kind names', () => {
@@ -98,7 +98,7 @@ describe('source library headers and package declarations', () => {
     );
     expect(
       hasMessage(duplicateFunctions, "'value' is already declared"),
-    ).toBeTrue();
+    ).toBe(true);
 
     const duplicateAliases = checkWith(
       {
@@ -115,7 +115,7 @@ describe('source library headers and package declarations', () => {
     );
     expect(
       hasMessage(duplicateAliases, "'dep' is already declared"),
-    ).toBeTrue();
+    ).toBe(true);
 
     const crossKind = checkWith(
       {
@@ -128,7 +128,7 @@ describe('source library headers and package declarations', () => {
       },
       'import lib\nvalue = 1',
     );
-    expect(hasMessage(crossKind, "'Item' is already declared")).toBeTrue();
+    expect(hasMessage(crossKind, "'Item' is already declared")).toBe(true);
   });
 
   test('predeclares functions for earlier package-owned defaults', () => {
@@ -151,7 +151,7 @@ describe('source library headers and package declarations', () => {
       {dependency: 'library("math")\nexport answer() => 1\n'},
       'import dependency\nvalue = math.answer()',
     );
-    expect(hasMessage(result, "cannot redeclare built-in 'math'")).toBeTrue();
+    expect(hasMessage(result, "cannot redeclare built-in 'math'")).toBe(true);
   });
 
   test('checks invalid unused type defaults and method bodies', () => {
@@ -168,15 +168,15 @@ describe('source library headers and package declarations', () => {
       // must own both diagnostics.
       'import broken\nvalue = 1',
     );
-    expect(hasMessage(result, 'string', 'int', "field 'value'")).toBeTrue();
+    expect(hasMessage(result, 'string', 'int', "field 'value'")).toBe(true);
     expect(
       hasMessage(result, "method 'Broken.wrong'", 'returns int', 'want string'),
-    ).toBeTrue();
+    ).toBe(true);
     expect(
       result.errors.every(
         error => error.pos.base.filename === 'memory/broken.tea',
       ),
-    ).toBeTrue();
+    ).toBe(true);
   });
 
   test('checks unused function signatures while leaving polymorphic bodies lazy', () => {
@@ -189,7 +189,7 @@ describe('source library headers and package declarations', () => {
       },
       'import broken\nvalue = 1',
     );
-    expect(hasMessage(unknownType, "unknown type 'Missing'")).toBeTrue();
+    expect(hasMessage(unknownType, "unknown type 'Missing'")).toBe(true);
 
     const duplicateParam = checkWith(
       {
@@ -199,7 +199,7 @@ describe('source library headers and package declarations', () => {
     );
     expect(
       hasMessage(duplicateParam, "duplicate parameter 'value'"),
-    ).toBeTrue();
+    ).toBe(true);
 
     const lazyBody = checkWith(
       {
@@ -234,12 +234,12 @@ describe('source library type API', () => {
         'badFunction = pkg.hidden()',
       ].join('\n'),
     );
-    expect(hasMessage(result, 'pkg.Hidden')).toBeTrue();
-    expect(hasMessage(result, 'pkg.Secret')).toBeTrue();
-    expect(hasMessage(result, 'pkg.hidden')).toBeTrue();
+    expect(hasMessage(result, 'pkg.Hidden')).toBe(true);
+    expect(hasMessage(result, 'pkg.Secret')).toBe(true);
+    expect(hasMessage(result, 'pkg.hidden')).toBe(true);
     expect(
       messages(result).some(message => message.includes('pkg.Public')),
-    ).toBeFalse();
+    ).toBe(false);
   });
 
   test('resolves pkg.Type annotations, constructors, and enum members', () => {
@@ -374,7 +374,7 @@ describe('source library type API', () => {
     expect(right?.kind).toBe(ObjectKind.Struct);
     if (left?.kind === ObjectKind.Struct && right?.kind === ObjectKind.Struct) {
       expect(left).not.toBe(right);
-      expect(typesEqual(left.type, right.type)).toBeFalse();
+      expect(typesEqual(left.type, right.type)).toBe(false);
     }
   });
 });

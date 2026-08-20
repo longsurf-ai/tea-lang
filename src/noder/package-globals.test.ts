@@ -1,6 +1,6 @@
 // Purpose: Imported runtime globals project through ordinary Names and function IR, with canonical identity across aliases and fresh child-Program projections.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {Errors, fatal} from '../base/print';
 import {newFileBase} from '../base/pos';
 import {checkPackage} from '../checker/check';

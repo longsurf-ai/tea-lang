@@ -1,6 +1,6 @@
 // Purpose: Package-runtime-global checker contract: V1 admits only private, explicitly typed library vars and enforces package-owned mutation.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {
   resolveImports,
   type PackageSource,
@@ -55,7 +55,7 @@ describe('library package runtime globals', () => {
     expect(result.errors).toEqual([]);
     const counter = result.checked.pkg.imports[0];
     expect(counter.scope.lookup('value')).not.toBeNull();
-    expect(counter.exports.has('value')).toBeFalse();
+    expect(counter.exports.has('value')).toBe(false);
     expect(result.checked.packageContexts.get(counter)?.initOrder).toHaveLength(
       1,
     );
@@ -81,7 +81,10 @@ describe('library package runtime globals', () => {
 
   test('keeps mutable globals out of the public package namespace', () => {
     const result = checkWith(
-      {counter: 'library("counter")\nvar int value = 1\nexport read() => value'},
+      {
+        counter:
+          'library("counter")\nvar int value = 1\nexport read() => value',
+      },
       ['import counter', 'value = counter.value'].join('\n'),
     );
     expect(result.errors.length).toBeGreaterThan(0);
@@ -103,8 +106,8 @@ describe('library package runtime globals', () => {
     expect(result.errors.length).toBeGreaterThan(0);
     expect(
       messages(result).some(message => message.includes('state.box')),
-    ).toBeTrue();
-    expect(result.checked.pkg.imports[0].exports.has('box')).toBeFalse();
+    ).toBe(true);
+    expect(result.checked.pkg.imports[0].exports.has('box')).toBe(false);
   });
 
   test('rejects a foreign write reached through a function argument', () => {
@@ -228,8 +231,10 @@ describe('library package runtime globals', () => {
       'import bad\nvalue = bad.read()',
     );
     expect(
-      messages(runtimeInput).some(message => message.includes('runtime builtin')),
-    ).toBeTrue();
+      messages(runtimeInput).some(message =>
+        message.includes('runtime builtin'),
+      ),
+    ).toBe(true);
 
     const request = checkWith(
       {
@@ -241,7 +246,9 @@ describe('library package runtime globals', () => {
       },
       'import bad\nvalue = bad.read()',
     );
-    expect(messages(request).some(message => message.includes('requests'))).toBeTrue();
+    expect(
+      messages(request).some(message => message.includes('requests')),
+    ).toBe(true);
 
     const mutation = checkWith(
       {
@@ -259,7 +266,7 @@ describe('library package runtime globals', () => {
     );
     expect(
       messages(mutation).some(message => message.includes('state-mutating')),
-    ).toBeTrue();
+    ).toBe(true);
 
     const output = checkWith(
       {
@@ -277,7 +284,7 @@ describe('library package runtime globals', () => {
           message.includes("cannot call 'plotshape'") &&
           message.includes('output'),
       ),
-    ).toBeTrue();
+    ).toBe(true);
 
     const directWrite = checkWith(
       {
@@ -293,8 +300,10 @@ describe('library package runtime globals', () => {
       'import bad\nvalue = bad.read()',
     );
     expect(
-      messages(directWrite).some(message => message.includes('cannot mutate state')),
-    ).toBeTrue();
+      messages(directWrite).some(message =>
+        message.includes('cannot mutate state'),
+      ),
+    ).toBe(true);
 
     const persistentLocal = checkWith(
       {
@@ -310,8 +319,10 @@ describe('library package runtime globals', () => {
       'import bad\nvalue = bad.read()',
     );
     expect(
-      messages(persistentLocal).some(message => message.includes('persistent local state')),
-    ).toBeTrue();
+      messages(persistentLocal).some(message =>
+        message.includes('persistent local state'),
+      ),
+    ).toBe(true);
 
     const mutableMethod = checkWith(
       {
@@ -330,8 +341,10 @@ describe('library package runtime globals', () => {
       'import bad\nvalue = bad.read()',
     );
     expect(
-      messages(mutableMethod).some(message => message.includes('mutable method')),
-    ).toBeTrue();
+      messages(mutableMethod).some(message =>
+        message.includes('mutable method'),
+      ),
+    ).toBe(true);
   });
 
   test('checks only constructor field defaults omitted by a global initializer', () => {
@@ -356,7 +369,7 @@ describe('library package runtime globals', () => {
           message.includes("cannot call 'effect.emit'") &&
           message.includes('emit'),
       ),
-    ).toBeTrue();
+    ).toBe(true);
 
     const supplied = checkWith(
       {

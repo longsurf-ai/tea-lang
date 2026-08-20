@@ -87,12 +87,12 @@ testable. Codegen/runtime are out of scope.
 
 ## 4. Verification
 
-- [x] `bun run typecheck` clean; `bun test` all pass with existing fixtures
+- [x] `npm run typecheck` clean; `npm test` passes with existing fixtures
       and goldens unchanged (behavior-preserving refactor).
 - [x] Loader unit tests: fake registry chain (lib imports lib) resolves;
       cycle errors with the chain in the message; unknown → `unknown library`;
       external path → staged error.
 - [x] `grep -r "from '../loader" src/checker` returns nothing (layering
       invariant holds).
-- [x] `bun src/main.ts parse --ir tests/fixtures/macd.tea` output identical to the
+- [x] `node --import tsx src/main.ts parse --ir tests/fixtures/macd.tea` output identical to the
       committed golden.

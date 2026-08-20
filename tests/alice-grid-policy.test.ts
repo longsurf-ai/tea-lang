@@ -1,10 +1,11 @@
 // Purpose: Alice Grid owns per-entry policy locally while preserving the
 // canonical lot portfolio's audited accounting and fill tape.
 
-import {expect, test} from 'bun:test';
+import {expect, test} from 'vitest';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
 import {paramSpecsOf} from '../src/codegen/params';
 import {compileToProgram} from '../src/compile';
@@ -17,7 +18,7 @@ import {
 import {MemorySink} from '../src/providers/sinks/memory-sink';
 import type {EffectValue} from '../src/runtime/abi';
 
-const ROOT = join(import.meta.dir, '..');
+const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const SOURCE = join(ROOT, 'examples/strategy/alice-grid/strategy.tea');
 const SWEEP = join(ROOT, 'examples/strategy/alice-grid/sweep.yaml');
 

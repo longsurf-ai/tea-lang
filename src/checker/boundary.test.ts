@@ -2,7 +2,8 @@
 
 import {readdirSync, readFileSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import ts from 'typescript';
 import {NodeKind, type CallExpr} from '../syntax/nodes';
 import {CallKind, type CallResolution} from './info';
@@ -73,7 +74,7 @@ function resolutionKind(resolution: CallResolution): string {
 
 describe('checker and IR boundaries', () => {
   test('checker may use shared type/builtin contracts, never backend nodes', () => {
-    const checker = import.meta.dir;
+    const checker = fileURLToPath(new URL('.', import.meta.url));
     const ir = resolve(checker, '../ir');
     const forbiddenCheckerTargets = new Set([
       resolve(ir, 'node'),

@@ -1,4 +1,7 @@
-# The Tea IR
+---
+title: The Tea IR
+sidebarTitle: Tea IR
+---
 
 How Tea represents semantics between the syntax tree and generated code. This
 document is the source of truth for the middle end; `src/ir/` implements it.

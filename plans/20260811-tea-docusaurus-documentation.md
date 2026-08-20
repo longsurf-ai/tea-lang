@@ -81,11 +81,11 @@ build will call a model, require credentials, or invent a signature.
 
 ## Verification
 
-- [x] `bun run docs:generate` produces stable Types and Functions pages.
-- [x] `bun run docs:check` verifies generated output, site types, strict links,
+- [x] `npm run docs:generate` produces stable Types and Functions pages.
+- [x] `npm run docs:check` verifies generated output, site types, strict links,
       and a production Docusaurus build.
-- [x] `bun run typecheck` passes for the Tea compiler and CLI.
-- [x] `bun test` passes, including docs-server routing, traversal, HEAD/404,
+- [x] `npm run typecheck` passes for the Tea compiler and CLI.
+- [x] `npm test` passes, including docs-server routing, traversal, HEAD/404,
       and browser-opening tests.
 - [x] `tea docs --no-open` serves `/`, a nested guide route, both reference
       routes, and static assets from an available loopback port.

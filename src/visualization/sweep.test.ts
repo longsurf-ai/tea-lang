@@ -1,6 +1,6 @@
 // Purpose: Deterministic validation and projection of sweep results into renderer-neutral scenes.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {
   SweepMetricId,
   SweepParameterId,

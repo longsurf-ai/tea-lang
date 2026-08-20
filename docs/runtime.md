@@ -1,4 +1,7 @@
-# The Tea runtime ABI (`rt`)
+---
+title: "The Tea runtime ABI (`rt`)"
+sidebarTitle: Runtime
+---
 
 How target artifacts bind and execute. This document is the source of truth for
 the JS Runtime ABI, its two external seams, generic CPU batching, and the GPU
@@ -125,7 +128,7 @@ host I/O, no nondeterminism, and only whitelisted standard globals —
 `Math.{abs, sign, floor, ceil, round, trunc, sqrt, pow, log, log10, exp,
 max, min}`, `Number.{isFinite,isNaN}`, `String`, `NaN` — everything else
 crosses the `rt` parameter. Any ES2015 engine loads it with
-`new Function(src)()` (Node, Bun, browsers, V8 isolates alike); an ES2015
+`new Function(src)()` (Node, browsers, and V8 isolates alike); an ES2015
 parse gate plus a deny-list test enforce the ceiling so it cannot drift.
 
 ## The rt surface

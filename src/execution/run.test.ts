@@ -1,14 +1,15 @@
 // Purpose: Config execution compiles once, resolves bindings, and owns backend disposal.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {Errors} from '../base/print';
 import {compileToProgram} from '../compile';
 import type {ExecutionConfig} from './config';
 import {runProgram} from './run';
 
 const SOURCE = join(
-  import.meta.dir,
+  fileURLToPath(new URL('.', import.meta.url)),
   '../../tests/fixtures/cli/parameter-report.tea',
 );
 const CSV = new TextEncoder().encode('time,close\n100,1\n200,2\n');

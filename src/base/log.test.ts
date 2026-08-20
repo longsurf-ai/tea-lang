@@ -1,6 +1,6 @@
 // Purpose: Logging tests — level gating, scope-prefix overrides, child scoping, field formatting, and timer events, all through the capture sink.
 
-import {afterEach, describe, expect, test} from 'bun:test';
+import {afterEach, describe, expect, test} from 'vitest';
 import {
   captureSink,
   configureLog,

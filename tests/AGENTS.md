@@ -10,7 +10,7 @@ example boundaries. Keep pass-local unit tests beside their owner under
   against the checked-in human example. It may read `examples/`; fixtures may
   not.
 - `examples.gpu.integration.ts` is part of the explicit Dawn gate run by
-  `bun run test:gpu`. It runs under the active Node runtime and requires a
+  `npm run test:gpu`. It runs under the active Node runtime and requires a
   usable WebGPU adapter; it is not a network test.
 - `strategy-catalog.test.ts` compiles the clean-room strategy conversions and
   validates their declared Cartesian grids without resolving live request

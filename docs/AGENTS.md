@@ -1,8 +1,9 @@
 # Tea documentation
 
 Human-authored language documentation and generated reference material for the
-standalone Tea toolchain. The Docusaurus reader experience is owned by
-`../website/`; this directory owns the content it publishes.
+standalone Tea toolchain. This directory is also the Mintlify project root;
+`docs.json` owns the hosted reader experience and navigation. The Docusaurus
+configuration in `../website/` exists only for the packaged offline renderer.
 
 ## Invariants
 
@@ -16,7 +17,8 @@ standalone Tea toolchain. The Docusaurus reader experience is owned by
   live in a metadata overlay only when completeness tests key them back to the
   owning compiler vocabulary. Generated reference files are never edited by
   hand.
-- Public navigation is owned by `../website/sidebars.ts`; directory nesting does
-  not create additional public sections implicitly.
+- Hosted navigation is owned by `docs.json`; `../website/sidebars.ts` mirrors it
+  for the packaged offline site. Directory nesting does not create additional
+  public sections implicitly.
 - All links, examples, and assets must remain inside the independently
   extractable `tea-lang` package.

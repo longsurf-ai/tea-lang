@@ -4,7 +4,7 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 
 const sidebars: SidebarsConfig = {
   documentationSidebar: [
-    'Introduction',
+    'introduction',
     {
       type: 'category',
       label: 'Getting Started',
@@ -69,11 +69,7 @@ const sidebars: SidebarsConfig = {
   ],
 };
 
-function referenceCategory(
-  label: string,
-  landing: string,
-  items: string[],
-) {
+function referenceCategory(label: string, landing: string, items: string[]) {
   return {
     type: 'category' as const,
     label,

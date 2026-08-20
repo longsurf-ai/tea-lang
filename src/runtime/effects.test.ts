@@ -1,7 +1,7 @@
 // Purpose: Sparse effects share the JS runtime's row transaction and
 // vanish on error/suspension instead of leaking or duplicating records.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {MemorySink} from '../providers/sinks/memory-sink';
 import {

@@ -1,6 +1,6 @@
 // Purpose: Sample-merge mapping tests — lookahead and gaps semantics pinned against hand-checked axes; the mapping never reads child values, only axes.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {TimeAxis} from './abi';
 import {sampleMergeMap} from './merge';
 

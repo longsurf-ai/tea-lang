@@ -1,13 +1,17 @@
-// Purpose: Golden dump tests — every tests/fixtures/*.tea has a committed .tokens.golden, and parseable fixtures also lock a .ast.golden; regenerate with UPDATE_GOLDENS=1 bun test.
+// Purpose: Golden dump tests — every tests/fixtures/*.tea has a committed .tokens.golden, and parseable fixtures also lock a .ast.golden; regenerate with UPDATE_GOLDENS=1 npm test.
 
 import {existsSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import {formatPos, newFileBase} from '../base/pos';
 import {dumpFile, dumpTokens} from './dumper';
 import {parse, tokenize} from './syntax';
 
-const TESTDATA = join(import.meta.dir, '../../tests/fixtures');
+const TESTDATA = join(
+  fileURLToPath(new URL('.', import.meta.url)),
+  '../../tests/fixtures',
+);
 const UPDATE = process.env['UPDATE_GOLDENS'] === '1';
 
 // Grows as parser slices land; every listed fixture must parse error-free.
@@ -26,7 +30,7 @@ function checkGolden(goldenPath: string, dump: string): void {
   }
   if (!existsSync(goldenPath)) {
     throw new Error(
-      `missing golden ${goldenPath}; run UPDATE_GOLDENS=1 bun test`,
+      `missing golden ${goldenPath}; run UPDATE_GOLDENS=1 npm test`,
     );
   }
   expect(dump).toBe(readFileSync(goldenPath, 'utf8'));

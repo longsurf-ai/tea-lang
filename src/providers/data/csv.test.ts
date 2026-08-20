@@ -1,6 +1,6 @@
 // Purpose: CSV provider tests pin the axis-only time column and exact trailing-range projection.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {isContextError, type SeriesData} from '../../runtime/abi';
 import {csvContext, csvProvider} from './csv';
 

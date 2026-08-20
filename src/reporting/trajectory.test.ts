@@ -1,6 +1,6 @@
 // Purpose: Full trajectory projection keeps stable output/effect ids and logical payloads.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {ExecutionBindingSummary} from '../execute';
 import type {ExecutionDeclaration} from '../runtime/abi';
 import {

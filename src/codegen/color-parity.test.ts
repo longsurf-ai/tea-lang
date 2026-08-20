@@ -1,6 +1,6 @@
 // Purpose: Parity lock — the emitted $colorNew/$colorRgb helper strings must agree with base/color.ts on every probed value; the formulas are deliberately duplicated (generated code cannot import TS) and this test is the invariant.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {applyTransparency, rgbColor} from '../base/color';
 import {HELPERS} from './lower';
 

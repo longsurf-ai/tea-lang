@@ -1459,7 +1459,7 @@ Heap arenas.
 
       ```sh
       # From the repository root:
-      NODE_OPTIONS=--max-old-space-size=8192 bun run check
+      NODE_OPTIONS=--max-old-space-size=8192 npm run check
       ```
 
       The standalone repository gate passes: compiler and website typechecks,

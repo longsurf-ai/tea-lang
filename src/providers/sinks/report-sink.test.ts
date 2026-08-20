@@ -1,6 +1,6 @@
 // Purpose: Run reports retain complete final output while sweep reports remain history-size independent.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {ExecutionSummary} from '../../execute';
 import type {
   EffectValue,

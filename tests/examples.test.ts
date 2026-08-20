@@ -2,10 +2,11 @@
 // the public CPU path and explicit about the deferred reference-struct WGSL
 // boundary.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {createHash} from 'node:crypto';
 import {existsSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
 import {paramSpecsOf} from '../src/codegen/params';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
@@ -16,7 +17,7 @@ import {csvProvider} from '../src/providers/data/csv';
 import {MemorySink} from '../src/providers/sinks/memory-sink';
 import type {EffectValue} from '../src/runtime/abi';
 
-const ROOT = join(import.meta.dir, '..');
+const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const SOURCE = join(ROOT, 'examples/strategy/ema-cross/strategy.tea');
 const BB_SWEEP = join(
   ROOT,
@@ -263,11 +264,7 @@ function effectFields(
   value: EffectValue,
   label: string,
 ): readonly EffectValue[] {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    value.kind !== 'struct'
-  ) {
+  if (typeof value !== 'object' || value === null || value.kind !== 'struct') {
     throw new Error(`${label} must be a struct effect value`);
   }
   return value.fields;

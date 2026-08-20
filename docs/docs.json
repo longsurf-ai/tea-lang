@@ -1,0 +1,97 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Tea",
+  "description": "Documentation for the Tea programming language.",
+  "colors": {
+    "primary": "#156453",
+    "light": "#70c9af",
+    "dark": "#0f463a"
+  },
+  "seo": {
+    "indexing": "all"
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["introduction"]
+          },
+          {
+            "group": "Getting started",
+            "pages": [
+              "getting-started/Write your first indicator",
+              "getting-started/backtest-your-strategy",
+              "getting-started/parameter-sweep-with-gpu",
+              "getting-started/instrument-sweep-with-gpu",
+              "getting-started/live-scanner",
+              "getting-started/live-trading"
+            ]
+          },
+          {
+            "group": "Language guide",
+            "pages": [
+              "language-guide/program-structure",
+              "language-guide/execution-model",
+              "strategy",
+              "memory-model"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": ["advanced/tea-compiler", "ir", "advanced/gpu-lowering"]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Reference",
+            "root": "reference/overview",
+            "pages": [
+              {
+                "group": "Types",
+                "root": "reference/types",
+                "pages": ["reference/types/array"]
+              },
+              {
+                "group": "Variables",
+                "root": "reference/variables",
+                "pages": ["reference/variables/close"]
+              },
+              {
+                "group": "Constants",
+                "root": "reference/constants",
+                "pages": ["reference/constants/color/red"]
+              },
+              {
+                "group": "Functions",
+                "root": "reference/functions",
+                "pages": ["reference/functions/array/push"]
+              },
+              {
+                "group": "Keywords",
+                "root": "reference/keywords",
+                "pages": ["reference/keywords/for-in"]
+              },
+              {
+                "group": "Operators",
+                "root": "reference/operators",
+                "pages": ["reference/operators/history"]
+              },
+              {
+                "group": "Annotations",
+                "root": "reference/annotations",
+                "pages": ["reference/annotations/version"]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

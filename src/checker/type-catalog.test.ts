@@ -1,6 +1,6 @@
 // Purpose: Lock the checker-owned public/internal partition of Tea's type domain and its annotation/collection projections.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {TypeKind} from '../ir/type';
 import {
   BUILTIN_ANNOTATION_TYPES,

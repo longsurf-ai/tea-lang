@@ -1,13 +1,17 @@
 // Purpose: Pipeline-entry tests for the single generic Program compilation
 // path shared by IR inspection and target lowering.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {Errors} from './base/print';
 import {compile, compileToProgram} from './compile';
 import {loadModule} from './runtime/load';
 
-const TESTDATA = join(import.meta.dir, '../tests/fixtures');
+const TESTDATA = join(
+  fileURLToPath(new URL('.', import.meta.url)),
+  '../tests/fixtures',
+);
 const STRATEGY_SOURCE = join(
   TESTDATA,
   'execution',

@@ -2,7 +2,8 @@
 
 import {createHash} from 'node:crypto';
 import {join} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import {Errors} from '../base/print';
 import {compileToProgram} from '../compile';
 import type {Program} from '../ir/program';
@@ -16,7 +17,7 @@ import {ExecutionConfigError} from './config';
 import {createExecutionContext} from './context';
 
 const SOURCE = join(
-  import.meta.dir,
+  fileURLToPath(new URL('.', import.meta.url)),
   '../../tests/fixtures/cli/parameter-report.tea',
 );
 const CSV = new TextEncoder().encode('time,close\n100,1\n200,2\n');

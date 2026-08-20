@@ -1,6 +1,6 @@
 // Purpose: Exercise one-shot process failure, result bounds, and cancellation at the editor CLI boundary.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {EventEmitter} from 'node:events';
 import {PassThrough} from 'node:stream';
 import {

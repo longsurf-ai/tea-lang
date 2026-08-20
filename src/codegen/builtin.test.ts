@@ -1,6 +1,6 @@
 // Purpose: Typed builtin codegen tests — current-ABI manifests and reads preserve source identity, value layout, depth, and the distinct builtin carrier.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {
   DepthKind,
   IrKind,

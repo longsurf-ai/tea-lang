@@ -101,13 +101,13 @@ Program behavior stay stable except for those correctness repairs.
 
 ## 4. Verification
 
-- [x] `bun test src/checker` passes, including field/default qualifier,
+- [x] `npm test -- src/checker` passes, including field/default qualifier,
       declaration identity, and per-instance request-capture regressions.
-- [x] `bun test src/noder` passes, including constructors inside UDF/request
+- [x] `npm test -- src/noder` passes, including constructors inside UDF/request
       contexts and distinct IR resources for parent/child Programs.
-- [x] `bun run typecheck` proves checker production code imports neither
+- [x] `npm run typecheck` proves checker production code imports neither
       `ir/node.ts` nor `ir/program.ts` and all call variants are exhaustive.
-- [x] `bun test` passes the complete standalone Tea suite and IR goldens.
+- [x] `npm test` passes the complete standalone Tea suite and IR goldens.
 - [x] Exact-file Prettier and typed ESLint pass for every changed Tea source and
       documentation file.
 - [x] `just check` was run on the final branch state. Repository preflight

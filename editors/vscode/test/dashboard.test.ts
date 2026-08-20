@@ -1,8 +1,8 @@
 // Purpose: Lock the editor's generic Tea result boundary, shared visualization model, and CSP shell.
 
-import {describe, expect, test} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
+import {describe, expect, test} from 'vitest';
 import {teaCliArguments} from '../src/dashboard/cli';
 import {dashboardDocument} from '../src/dashboard/document';
 import {
@@ -205,11 +205,11 @@ describe('Tea dashboard integration', () => {
 
   test('uses native editor styling and theme-readable Plotly hovers', () => {
     const css = readFileSync(
-      resolve(import.meta.dir, '../media/dashboard.css'),
+      resolve(__dirname, '../media/dashboard.css'),
       'utf8',
     );
     const script = readFileSync(
-      resolve(import.meta.dir, '../media/dashboard.js'),
+      resolve(__dirname, '../media/dashboard.js'),
       'utf8',
     );
     expect(css).toContain('font-size: var(--vscode-font-size, 13px)');
@@ -225,7 +225,7 @@ describe('Tea dashboard integration', () => {
 
   test('shows selection outside WebGL without mutating the 3D plot', () => {
     const script = readFileSync(
-      resolve(import.meta.dir, '../media/dashboard.js'),
+      resolve(__dirname, '../media/dashboard.js'),
       'utf8',
     );
     const html = dashboardDocument({
@@ -236,7 +236,7 @@ describe('Tea dashboard integration', () => {
       dashboardScript: 'vscode-webview:/dashboard.js',
     });
     const css = readFileSync(
-      resolve(import.meta.dir, '../media/dashboard.css'),
+      resolve(__dirname, '../media/dashboard.css'),
       'utf8',
     );
     const requestBody = functionSource(
@@ -319,7 +319,7 @@ describe('Tea dashboard integration', () => {
       dashboardScript: 'vscode-webview:/dashboard.js',
     });
     const css = readFileSync(
-      resolve(import.meta.dir, '../media/dashboard.css'),
+      resolve(__dirname, '../media/dashboard.css'),
       'utf8',
     );
     const script = dashboardScript();
@@ -453,7 +453,7 @@ describe('Tea dashboard integration', () => {
       'scheduleTrajectoryResize',
     );
     const css = readFileSync(
-      resolve(import.meta.dir, '../media/dashboard.css'),
+      resolve(__dirname, '../media/dashboard.css'),
       'utf8',
     );
 
@@ -626,7 +626,7 @@ describe('Tea dashboard integration', () => {
 
 function dashboardScript(): string {
   return readFileSync(
-    resolve(import.meta.dir, '../media/dashboard.js'),
+    resolve(__dirname, '../media/dashboard.js'),
     'utf8',
   );
 }

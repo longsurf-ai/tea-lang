@@ -244,7 +244,7 @@ to the future editor host, not to Tea Core or the configuration parser.
 
 ### E. Verification and review
 
-- Run typecheck, the complete Bun suite, docs build, standalone npm install,
+- Run typecheck, the complete test suite, docs build, standalone npm install,
   real Dawn tests, CLI run/sweep/config equivalence, and scoped diff checks.
 - Perform an adversarial review for parser safety, path resolution, resource
   ownership, Node/Dawn loading, and accidental Core/runtime coupling before committing.

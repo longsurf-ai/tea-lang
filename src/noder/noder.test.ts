@@ -1,6 +1,6 @@
 // Purpose: Noder unit tests — desugarings (compound assign, tuple patterns, history-on-expression), param/output extraction with reference binding, and depth resolution observed on the built Program.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {newFileBase} from '../base/pos';
 import {Errors, fatal} from '../base/print';
 import {checkPackage} from '../checker/check';

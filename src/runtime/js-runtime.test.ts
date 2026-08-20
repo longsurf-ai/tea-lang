@@ -1,6 +1,6 @@
 // Purpose: JSRuntime tests — hand-lowered modules (the exact shape codegen will emit) drive bind, frames, rings, and the provisional/commit protocol end to end.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {
   BindError,
@@ -582,22 +582,21 @@ describe('binding', () => {
       provider: provider({close: new ArraySeries([1])}),
       sink: new RecordingSink(),
     };
-    expect(() => bind(BIND_MODULE, {...inputs, params: {level: -1}})).toThrow(
-      BindError,
-    );
-    expect(() => bind(BIND_MODULE, {...inputs, params: {nope: 1}})).toThrow(
-      "unknown parameter 'nope'",
-    );
-    expect(() =>
+    await expect(
+      bind(BIND_MODULE, {...inputs, params: {level: -1}}),
+    ).rejects.toThrow(BindError);
+    await expect(
+      bind(BIND_MODULE, {...inputs, params: {nope: 1}}),
+    ).rejects.toThrow("unknown parameter 'nope'");
+    await expect(
       bind(EMA_MODULE, {...inputs, params: {}, provider: provider({})}),
-    ).toThrow("series 'close' is not provided");
-    expect(() =>
-      bind(TICK_MODULE, {
-        ...inputs,
-        params: {},
-        provider: provider({close: new ArraySeries([1, 2])}),
-      }),
-    ).not.toThrow();
+    ).rejects.toThrow("series 'close' is not provided");
+    const bound = await bind(TICK_MODULE, {
+      ...inputs,
+      params: {},
+      provider: provider({close: new ArraySeries([1, 2])}),
+    });
+    bound.dispose();
   });
 });
 
@@ -1271,7 +1270,7 @@ describe('requests', () => {
       provider: contexts({'': parent()}),
       sink: new RecordingSink(),
     };
-    expect(() => bind(requestModule({}), inputs)).toThrow(BindError);
+    await expect(bind(requestModule({}), inputs)).rejects.toThrow(BindError);
 
     const sink = new RecordingSink();
     const bound = await bind(
@@ -1304,13 +1303,13 @@ describe('requests', () => {
 
   test('merge without a time axis on either context is a BindError', async () => {
     const noAxis = context({close: new ArraySeries([1, 2, 3])}, null);
-    expect(() =>
+    await expect(
       bind(requestModule({}), {
         params: {},
         provider: contexts({'': noAxis, X: child()}),
         sink: new RecordingSink(),
       }),
-    ).toThrow('time axis');
+    ).rejects.toThrow('time axis');
   });
 
   test('nested empty request args inherit the child provider-normalized identity', async () => {

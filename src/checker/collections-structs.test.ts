@@ -1,6 +1,6 @@
 // Purpose: Checker conformance tests for collection generics, canonical structs, reference-field stores, and receiver modes.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {Qualifier, TypeKind, typesEqual} from '../ir/type';
 import {NodeKind, type CallExpr, type DeclStmt} from '../syntax/nodes';
 import {CallKind, SelectionKind, type NativeCall} from './info';
@@ -273,7 +273,7 @@ describe('collection type checking', () => {
       expect(push.receiver.location).toEqual({kind: 'name', name: xs});
       expect(push.args[0]).toBe(push.receiver.value.expr);
     }
-    expect(result.info.reassigned.has(xs)).toBeTrue();
+    expect(result.info.reassigned.has(xs)).toBe(true);
   });
 
   test('numeric inference widens but nested collection parameters stay invariant', () => {
@@ -328,7 +328,7 @@ describe('collection type checking', () => {
     for (const {src, error} of invalidCases) {
       expect(
         checkText(src).errors.some(item => item.msg.includes(error)),
-      ).toBeTrue();
+      ).toBe(true);
     }
   });
 
@@ -444,7 +444,7 @@ describe('struct field stores and collection locations', () => {
         expect(push.receiver.location.object.expr.kind).toBe(NodeKind.Name);
       }
     }
-    expect(result.info.reassigned.has(holder)).toBeFalse();
+    expect(result.info.reassigned.has(holder)).toBe(false);
   });
 
   test('allows struct stores through arbitrary refs and rejects collection rvalues', () => {
@@ -473,7 +473,7 @@ describe('struct field stores and collection locations', () => {
             'collection mutation requires a writable name or struct field',
           ),
         ),
-      ).toBeTrue();
+      ).toBe(true);
     }
   });
 
@@ -501,7 +501,7 @@ describe('struct field stores and collection locations', () => {
       messages.some(message =>
         message.includes('aggregate equality is not defined'),
       ),
-    ).toBeTrue();
+    ).toBe(true);
     expect(messages).toContain("Point has no method 'copy'");
     expect(result.info.updates.size).toBe(0);
   });
@@ -535,7 +535,7 @@ describe('method receivers', () => {
         methods[0].receiver.owner.type,
         methods[1].receiver.owner.type,
       ),
-    ).toBeFalse();
+    ).toBe(false);
     expect(methods[0].receiver.owner.methods).toContain(methods[0]);
     expect(methods[1].receiver.owner.methods).toContain(methods[1]);
 
@@ -573,7 +573,7 @@ describe('method receivers', () => {
       });
       expect(setCall.instance.params[0].name).toBe('value');
     }
-    expect(result.info.reassigned.has(foo)).toBeFalse();
+    expect(result.info.reassigned.has(foo)).toBe(false);
   });
 
   test('mutable methods accept temporary, historical, and accessor references', () => {
@@ -731,10 +731,10 @@ describe('method receivers', () => {
     // accidentally project or lower it in the caller's frame.
     expect(
       result.info.calls.has(declarationCall(result, 'badThis')),
-    ).toBeFalse();
+    ).toBe(false);
     expect(
       result.info.calls.has(declarationCall(result, 'badSibling')),
-    ).toBeFalse();
+    ).toBe(false);
   });
 
   test('validates every method body without requiring a call site', () => {
@@ -781,7 +781,7 @@ describe('tuple transport boundary', () => {
       messages.some(message =>
         message.startsWith('aggregate equality is not defined'),
       ),
-    ).toBeTrue();
+    ).toBe(true);
     expect(messages).toContain(
       'history operand must be a direct readable binding',
     );
@@ -826,7 +826,7 @@ describe('history binding boundary', () => {
             'history operand must be a direct readable binding',
           ),
         ),
-      ).toBeTrue();
+      ).toBe(true);
     }
   });
 
@@ -862,7 +862,7 @@ describe('reserved future aggregate surfaces', () => {
       output.errors.some(error =>
         error.msg.startsWith("argument 'series' to 'plot':"),
       ),
-    ).toBeTrue();
+    ).toBe(true);
 
     const pointer = checkText(
       ['type Point', '    int x', '*Point pointer = na'].join('\n'),

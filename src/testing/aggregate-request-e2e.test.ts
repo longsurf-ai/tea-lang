@@ -1,7 +1,8 @@
 // Purpose: Compile-to-runtime coverage for aggregate request results sharing Heap storage across child completion, parent merge, and history.
 
 import {join} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import {formatPos} from '../base/pos';
 import {compile} from '../compile';
 import {csvContext} from '../providers/data/csv';
@@ -16,17 +17,17 @@ import {bind} from '../runtime/js-runtime';
 import {loadModule} from '../runtime/load';
 
 const SOURCE = join(
-  import.meta.dir,
+  fileURLToPath(new URL('.', import.meta.url)),
   '../../tests/fixtures/requests/aggregate-result.tea',
 );
 
 const CONTEXT_ORDER_SOURCE = join(
-  import.meta.dir,
+  fileURLToPath(new URL('.', import.meta.url)),
   '../../tests/fixtures/requests/context-evaluation-order.tea',
 );
 
 const MUTABLE_METHOD_SUSPENSION_SOURCE = join(
-  import.meta.dir,
+  fileURLToPath(new URL('.', import.meta.url)),
   '../../tests/fixtures/requests/mutable-method-suspension.tea',
 );
 
@@ -140,7 +141,7 @@ describe('aggregate requests end to end', () => {
       [101, 101, 1, 1],
       [102, 101, 2, 1],
     ]);
-    expect(sink.emissions.every(emission => !emission.provisional)).toBeTrue();
+    expect(sink.emissions.every(emission => !emission.provisional)).toBe(true);
     bound.dispose();
   });
 
@@ -203,7 +204,7 @@ describe('aggregate requests end to end', () => {
 
     const module = loadModule(result.js);
     expect(module.manifest.requests).toHaveLength(1);
-    expect(module.manifest.requests[0]?.dynamic).toBeTrue();
+    expect(module.manifest.requests[0]?.dynamic).toBe(true);
 
     const resolvedPairs: [string, string][] = [];
     const provider: DataProvider = {
@@ -243,7 +244,7 @@ describe('aggregate requests end to end', () => {
         .map(emission => emission.channels[0]);
     expect(valuesFor(1)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(valuesFor(2)).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(sink.emissions.every(emission => !emission.provisional)).toBeTrue();
+    expect(sink.emissions.every(emission => !emission.provisional)).toBe(true);
     bound.dispose();
   });
 });

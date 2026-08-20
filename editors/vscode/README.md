@@ -48,8 +48,8 @@ catalog vocabulary. After changing the language, regenerate and verify it:
 
 ```bash
 cd editors/vscode
-bun run generate
-bun run check
+npm run generate
+npm run check
 ```
 
 The tests run the generated grammar through the same `vscode-textmate` engine
@@ -62,16 +62,16 @@ Create a VSIX:
 
 ```bash
 cd editors/vscode
-bun run package:vsix
+npm run package:vsix
 ```
 
 That command always regenerates and checks the grammar before packaging. To
 build and install the fresh artifact in one step, use:
 
 ```bash
-bun run install:code
+npm run install:code
 # or
-bun run install:cursor
+npm run install:cursor
 ```
 
 Install the same artifact in either editor:

@@ -1,6 +1,6 @@
 // Purpose: MemorySink snapshots declaration and emission arrays without adding batch policy.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {
   EffectValue,
   OutputSink,

@@ -1,6 +1,6 @@
 // Purpose: Token-level scanner tests — sample-token table, streaming, refinements, version pragma, and literal error cases.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {scanText, kinds} from './testing';
 import {
   CONTEXTUAL_KEYWORDS,
@@ -144,7 +144,7 @@ test('positions are monotonic', () => {
   for (let i = 1; i < result.tokens.length; i += 1) {
     const a = result.tokens[i - 1].pos;
     const b = result.tokens[i].pos;
-    expect(b.line > a.line || (b.line === a.line && b.col >= a.col)).toBeTrue();
+    expect(b.line > a.line || (b.line === a.line && b.col >= a.col)).toBe(true);
   }
 });
 

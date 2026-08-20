@@ -1,6 +1,6 @@
 // Purpose: Portability gate — generated modules must stay strict-mode ES2015 FunctionBody with whitelisted globals only, so any ES2015 engine executes them; parse-enforced so the ceiling cannot drift.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {parse} from 'acorn';
 import {mustBuild} from '../noder/testing';
 import {generate} from './codegen';

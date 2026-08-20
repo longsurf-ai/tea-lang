@@ -37,7 +37,7 @@
     "finalNewline": true
   },
   "reproducibility": {
-    "command": "bun examples/data/binance/derive-btcusdt-15m.ts <normalized-parent.csv> <new-output.csv>",
+    "command": "node --import tsx examples/data/binance/derive-btcusdt-15m.ts <normalized-parent.csv> <new-output.csv>",
     "scope": "derivation-verifiable from the exact normalized parent; not independently source-reproducible from the raw Binance archives",
     "note": "The script verifies the exact normalized parent SHA-256 and row count before deriving this immutable snapshot. Binance publishes archive .CHECKSUM sidecars, uses microsecond timestamps for Spot archive data from 2025 onward, and may later correct historical files."
   }

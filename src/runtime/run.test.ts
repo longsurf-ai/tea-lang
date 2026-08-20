@@ -1,8 +1,9 @@
-// Purpose: Execution tests — hand-checked numeric vectors as ground truth, plus golden traces over the deterministic csv fixture; regenerate with UPDATE_GOLDENS=1 bun test.
+// Purpose: Execution tests — hand-checked numeric vectors as ground truth, plus golden traces over the deterministic csv fixture; regenerate with UPDATE_GOLDENS=1 npm test.
 
 import {existsSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import {generate} from '../codegen/codegen';
 import {captureSink, configureLog, logConfig} from '../base/log';
 import {buildText, mustBuild} from '../noder/testing';
@@ -12,7 +13,10 @@ import {BindError, RequestError, type DataProvider, type Value} from './abi';
 import {bind} from './js-runtime';
 import {loadModule} from './load';
 
-const TESTDATA = join(import.meta.dir, '../../tests/fixtures');
+const TESTDATA = join(
+  fileURLToPath(new URL('.', import.meta.url)),
+  '../../tests/fixtures',
+);
 const UPDATE = process.env['UPDATE_GOLDENS'] === '1';
 
 async function runSource(
@@ -627,7 +631,7 @@ describe('requests end to end', () => {
   test('a corrupt or shuffled time axis is a BindError, never silent na', async () => {
     const src = 'plot(request.security("X", "D", close))';
     // Blank time cell in the parent axis.
-    expect(() =>
+    await expect(
       runSource(
         src,
         '',
@@ -637,10 +641,10 @@ describe('requests end to end', () => {
           X: childCsv,
         }),
       ),
-    ).toThrow('invalid time axis');
+    ).rejects.toThrow('invalid time axis');
     // A shuffled child axis trips the close-before-open check (next-open
     // closeTime convention), a duplicated timestamp the monotonicity check.
-    expect(() =>
+    await expect(
       runSource(
         src,
         '',
@@ -650,8 +654,8 @@ describe('requests end to end', () => {
           X: ['time,close', '2,30', '0,10', '3,40', ''].join(chr10()),
         }),
       ),
-    ).toThrow('invalid time axis');
-    expect(() =>
+    ).rejects.toThrow('invalid time axis');
+    await expect(
       runSource(
         src,
         '',
@@ -661,7 +665,7 @@ describe('requests end to end', () => {
           X: ['time,close', '0,10', '0,20', '2,30', ''].join(chr10()),
         }),
       ),
-    ).toThrow('not strictly increasing');
+    ).rejects.toThrow('not strictly increasing');
   });
 
   test('the captured expression computes with state inside the child context', async () => {
@@ -935,8 +939,10 @@ describe('the input family end to end', () => {
       module.manifest.params.find(param => param.name === 'gate'),
     ).toBeDefined();
     expect(
-      module.manifest.params.find(param => param.title === 'value')?.name,
-    ).toStartWith('input@');
+      module.manifest.params
+        .find(param => param.title === 'value')
+        ?.name.startsWith('input@'),
+    ).toBe(true);
 
     const byTitle = new Map(
       module.manifest.params.map(param => [param.title, param.name]),
@@ -1140,14 +1146,14 @@ describe('dynamic requests end to end', () => {
   });
 
   test('an unknown dynamic pair without the flag is a RequestError', async () => {
-    expect(() =>
+    await expect(
       runSource(
         'plot(request.security(close > 3 ? "MISSING" : "Y", "D", close))',
         '',
         {},
         csvContexts({'': primaryCsv, Y: contextY}),
       ),
-    ).toThrow(RequestError);
+    ).rejects.toThrow(RequestError);
   });
 
   test('dynamic_requests=false rejects series context args', () => {

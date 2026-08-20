@@ -975,10 +975,10 @@ behavior and measurements are stable.
 At each green stage run the focused owner tests, then finish with:
 
 ```sh
-bun run typecheck
-bun test
-bun run test:gpu
-bun run docs:check
+npm run typecheck
+npm test
+npm run test:gpu
+npm run docs:check
 git diff --check
 ```
 

@@ -15,8 +15,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.10
-      - run: bun install --frozen-lockfile
-      - run: bun run check
+          cache: npm
+      - run: npm ci
+      - run: npm run check

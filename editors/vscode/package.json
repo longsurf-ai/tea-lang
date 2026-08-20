@@ -85,12 +85,13 @@
     ]
   },
   "scripts": {
-    "generate": "bun run scripts/generate-syntax.ts",
-    "build": "bun run scripts/build-extension.ts",
-    "check": "bun run scripts/generate-syntax.ts --check && bun run build && bun test test",
-    "package:vsix": "bun run generate && bun run check && bunx @vscode/vsce@3.9.2 package --no-dependencies --out tea-language-support.vsix",
-    "install:code": "bun run package:vsix && code --install-extension ./tea-language-support.vsix --force",
-    "install:cursor": "bun run package:vsix && cursor --install-extension ./tea-language-support.vsix --force"
+    "generate": "node --import tsx scripts/generate-syntax.ts",
+    "build": "node --import tsx scripts/build-extension.ts",
+    "test": "vitest run test",
+    "check": "npm run generate -- --check && npm run build && npm test",
+    "package:vsix": "npm run generate && npm run check && npx --yes @vscode/vsce@3.9.2 package --no-dependencies --out tea-language-support.vsix",
+    "install:code": "npm run package:vsix && code --install-extension ./tea-language-support.vsix --force",
+    "install:cursor": "npm run package:vsix && cursor --install-extension ./tea-language-support.vsix --force"
   },
   "files": [
     "dist/extension.js",

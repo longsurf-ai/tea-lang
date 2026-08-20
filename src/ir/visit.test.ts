@@ -1,6 +1,6 @@
 // Purpose: Walker tests — derived enumerations reach names, funcs, request edges, series inputs, builtins, and state counts through every reference path, counting shared objects once.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {newFileBase, type Pos} from '../base/pos';
 import {dumpProgram} from './dumper';
 import {frameTopologyOf} from './frames';

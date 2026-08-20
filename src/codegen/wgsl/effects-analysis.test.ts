@@ -1,6 +1,6 @@
 // Purpose: Lock deterministic literal-string interning to the reachable WGSL Program graph.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {IrKind} from '../../ir/node';
 import type {Program} from '../../ir/program';
 import {namesOf} from '../../ir/visit';

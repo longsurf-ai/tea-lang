@@ -1,6 +1,6 @@
 // Purpose: Type-domain tests — qualifier ordering rules, assignability and unification rules, and type formatting.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {
   BoolType,
   NA_VALUE,
@@ -62,9 +62,9 @@ describe('qualifier ordering', () => {
   test('ordering is total and consistent with the combine rule', () => {
     for (const a of QUALIFIERS) {
       for (const b of QUALIFIERS) {
-        expect(qualifierLE(a, b) || qualifierLE(b, a)).toBeTrue();
-        expect(qualifierLE(a, joinQualifiers(a, b))).toBeTrue();
-        expect(qualifierLE(b, joinQualifiers(a, b))).toBeTrue();
+        expect(qualifierLE(a, b) || qualifierLE(b, a)).toBe(true);
+        expect(qualifierLE(a, joinQualifiers(a, b))).toBe(true);
+        expect(qualifierLE(b, joinQualifiers(a, b))).toBe(true);
       }
     }
   });
@@ -79,29 +79,29 @@ const structType = (name: string): StructType => ({
 
 describe('assignability', () => {
   test('int widens to float, never the reverse', () => {
-    expect(assignable(IntType, FloatType)).toBeTrue();
-    expect(assignable(FloatType, IntType)).toBeFalse();
+    expect(assignable(IntType, FloatType)).toBe(true);
+    expect(assignable(FloatType, IntType)).toBe(false);
   });
 
   test('na is assignable to nullable types; never void, func, or bool', () => {
-    expect(assignable(NaType, FloatType)).toBeTrue();
-    expect(assignable(NaType, StringType)).toBeTrue();
-    expect(assignable(NaType, arrayOf(FloatType))).toBeTrue();
-    expect(assignable(NaType, VoidType)).toBeFalse();
-    expect(assignable(NaType, BoolType)).toBeFalse(); // Pine v6: bool is never na
+    expect(assignable(NaType, FloatType)).toBe(true);
+    expect(assignable(NaType, StringType)).toBe(true);
+    expect(assignable(NaType, arrayOf(FloatType))).toBe(true);
+    expect(assignable(NaType, VoidType)).toBe(false);
+    expect(assignable(NaType, BoolType)).toBe(false); // Pine v6: bool is never na
   });
 
   test('collections are invariant', () => {
-    expect(assignable(arrayOf(IntType), arrayOf(FloatType))).toBeFalse();
-    expect(assignable(arrayOf(IntType), arrayOf(IntType))).toBeTrue();
+    expect(assignable(arrayOf(IntType), arrayOf(FloatType))).toBe(false);
+    expect(assignable(arrayOf(IntType), arrayOf(IntType))).toBe(true);
   });
 
   test('struct identity is by declaration, not structure', () => {
     const a = structType('Point');
     const b = structType('Point');
-    expect(typesEqual(a, a)).toBeTrue();
-    expect(typesEqual(a, b)).toBeFalse();
-    expect(assignable(a, b)).toBeFalse();
+    expect(typesEqual(a, a)).toBe(true);
+    expect(typesEqual(a, b)).toBe(false);
+    expect(assignable(a, b)).toBe(false);
   });
 });
 
@@ -111,19 +111,19 @@ describe('collection domains', () => {
     const array = arrayOf(point);
     const tuple: Type = {kind: TypeKind.Tuple, elems: [IntType, FloatType]};
 
-    expect(isStorableType(point)).toBeTrue();
-    expect(isStorableType(array)).toBeTrue();
-    expect(isStorableType(tuple)).toBeFalse();
-    expect(isStorableType(NaType)).toBeFalse();
+    expect(isStorableType(point)).toBe(true);
+    expect(isStorableType(array)).toBe(true);
+    expect(isStorableType(tuple)).toBe(false);
+    expect(isStorableType(NaType)).toBe(false);
 
-    expect(isMapKeyType(IntType)).toBeTrue();
-    expect(isMapKeyType(StringType)).toBeTrue();
-    expect(isMapKeyType(point)).toBeFalse();
-    expect(isMapKeyType(array)).toBeFalse();
+    expect(isMapKeyType(IntType)).toBe(true);
+    expect(isMapKeyType(StringType)).toBe(true);
+    expect(isMapKeyType(point)).toBe(false);
+    expect(isMapKeyType(array)).toBe(false);
 
-    expect(isAggregateType(point)).toBeTrue();
-    expect(isAggregateType(array)).toBeTrue();
-    expect(isAggregateType(IntType)).toBeFalse();
+    expect(isAggregateType(point)).toBe(true);
+    expect(isAggregateType(array)).toBe(true);
+    expect(isAggregateType(IntType)).toBe(false);
   });
 });
 
@@ -169,9 +169,9 @@ describe('formatting', () => {
 
 describe('na constant', () => {
   test('NA_VALUE is the only object-shaped constant', () => {
-    expect(isNaValue(NA_VALUE)).toBeTrue();
-    expect(isNaValue(1)).toBeFalse();
-    expect(isNaValue('na')).toBeFalse();
-    expect(isNaValue(false)).toBeFalse();
+    expect(isNaValue(NA_VALUE)).toBe(true);
+    expect(isNaValue(1)).toBe(false);
+    expect(isNaValue('na')).toBe(false);
+    expect(isNaValue(false)).toBe(false);
   });
 });

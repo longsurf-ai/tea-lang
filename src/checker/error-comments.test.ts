@@ -2,11 +2,15 @@
 
 import {readdirSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import {collectExpectations, diffExpectations} from '../testing/error-comments';
 import {checkText} from './testing';
 
-const TESTDATA = join(import.meta.dir, '../../tests/fixtures/checker');
+const TESTDATA = join(
+  fileURLToPath(new URL('.', import.meta.url)),
+  '../../tests/fixtures/checker',
+);
 
 describe('typecheck error comments', () => {
   const files = readdirSync(TESTDATA).filter(name => name.endsWith('.tea'));

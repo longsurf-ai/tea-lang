@@ -1,6 +1,6 @@
 // Purpose: Built-in registry routing tests — '' reaches the host primary, unprefixed symbols default to yahoo, prefixes reach their drivers, FRED without a key is a typed configuration error.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {
   DataProvider,
   ProviderContext,

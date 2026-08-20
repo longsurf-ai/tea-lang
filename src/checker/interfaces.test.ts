@@ -1,6 +1,6 @@
 // Purpose: Static-interface semantic declarations and exact implicit method-set satisfaction.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {
   resolveImports,
   type PackageSource,
@@ -121,7 +121,7 @@ describe('static interfaces', () => {
     expect(binding.pkg.scope.lookup('Broker')?.kind).toBe(ObjectKind.Interface);
     expect(binding.pkg.scope.lookup('Hidden')?.kind).toBe(ObjectKind.Interface);
     expect(binding.pkg.exports.get('Broker')?.kind).toBe(ObjectKind.Interface);
-    expect(binding.pkg.exports.has('Hidden')).toBeFalse();
+    expect(binding.pkg.exports.has('Hidden')).toBe(false);
   });
 
   test('interfaces never enter value typing or construction', () => {
@@ -172,7 +172,7 @@ describe('implicit interface satisfaction', () => {
 
     expect(result.errors).toEqual([]);
     const broker = interfaceNamed(result, 'Broker');
-    expect(satisfies(structNamed(result, 'Exact'), broker)).toBeTrue();
+    expect(satisfies(structNamed(result, 'Exact'), broker)).toBe(true);
     for (const name of [
       'Missing',
       'Arity',
@@ -181,7 +181,7 @@ describe('implicit interface satisfaction', () => {
       'Result',
       'Receiver',
     ]) {
-      expect(satisfies(structNamed(result, name), broker)).toBeFalse();
+      expect(satisfies(structNamed(result, name), broker)).toBe(false);
     }
   });
 });

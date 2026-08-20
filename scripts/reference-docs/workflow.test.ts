@@ -1,8 +1,9 @@
 // Purpose: Verify the Codex documentation workflow's scope, inventory, task ordering, safety boundaries, and resumable event parsing without invoking Codex.
 
-import {describe, expect, test} from 'bun:test';
 import path from 'node:path';
 import {readFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 
 import {
   buildPrompt,
@@ -18,11 +19,14 @@ import {
   type ReferenceScope,
 } from './workflow';
 
-const ROOT = path.resolve(import.meta.dir, '../..');
-const SCOPE_FILE = path.join(import.meta.dir, 'scope.json');
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(TEST_DIR, '../..');
+const SCOPE_FILE = path.join(TEST_DIR, 'scope.json');
 
 async function scope(): Promise<ReferenceScope> {
-  return validateScope(JSON.parse(await readFile(SCOPE_FILE, 'utf8')) as unknown);
+  return validateScope(
+    JSON.parse(await readFile(SCOPE_FILE, 'utf8')) as unknown,
+  );
 }
 
 describe('reference documentation Codex workflow', () => {
@@ -60,7 +64,7 @@ describe('reference documentation Codex workflow', () => {
         'Sample source-observable semantics detailed enough for an implementation task.',
       acceptance: ['A valid result', 'A stable invalid-source diagnostic'],
       allowedPaths: ['src/', 'tests/'],
-      validate: ['bun run typecheck'],
+      validate: ['npm run typecheck'],
     };
     const tasks = buildTaskList({...current, desiredFeatures: [desired]});
 
@@ -108,15 +112,17 @@ describe('reference documentation Codex workflow', () => {
     expect(inventory.types).toContain('array');
     expect(inventory.variables).toContain('close');
     expect(inventory.constants).toContain('color.red');
-    expect(inventory.nativeFunctions.some(item => item.name === 'array.push')).toBe(
-      true,
-    );
+    expect(
+      inventory.nativeFunctions.some(item => item.name === 'array.push'),
+    ).toBe(true);
     expect(
       inventory.nativeFunctions.find(item => item.name === 'request.security')
         ?.stagedParameters,
     ).toContain('currency');
     expect(inventory.taExports).toContain('ema');
-    expect(inventory.taExports.some(name => name.startsWith('broker'))).toBe(false);
+    expect(inventory.taExports.some(name => name.startsWith('broker'))).toBe(
+      false,
+    );
     expect(inventory.keywords).toContain('struct');
     expect(inventory.operators).toContain('[] history');
   });
@@ -148,12 +154,10 @@ describe('reference documentation Codex workflow', () => {
         ].join('\n'),
       ),
     ).toBe('thread-123');
-    expect(pathAllowed('docs/reference/types/array.md', ['docs/reference/'])).toBe(
-      true,
-    );
-    expect(pathAllowed('website/sidebars.ts', ['website/sidebars.ts'])).toBe(
-      true,
-    );
+    expect(
+      pathAllowed('docs/reference/types/array.md', ['docs/reference/']),
+    ).toBe(true);
+    expect(pathAllowed('docs/docs.json', ['docs/docs.json'])).toBe(true);
     expect(pathAllowed('package.json', ['docs/reference/'])).toBe(false);
   });
 

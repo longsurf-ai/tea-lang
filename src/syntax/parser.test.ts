@@ -1,6 +1,6 @@
 // Purpose: Parser unit tests for expressions and simple statements — exact AST dumps for small sources, precedence shapes, and recovery behavior.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {dumpFile} from './dumper';
 import {parseText} from './testing';
 

@@ -1,6 +1,6 @@
 // Purpose: Checker unit tests — semantic objects, inferred types, qualifier propagation, constant folding, and call resolution observed through Info.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {NodeKind, type CallExpr, type ExprStmt} from '../syntax/nodes';
 import {Qualifier, TypeKind, isNaValue} from '../ir/type';
 import {CallKind, SelectionKind} from './info';
@@ -74,8 +74,8 @@ describe('inference and folding', () => {
         object !== outer,
     );
     expect(inner).toBeDefined();
-    expect(r.info.reassigned.has(outer)).toBeFalse();
-    expect(r.info.reassigned.has(inner!)).toBeTrue();
+    expect(r.info.reassigned.has(outer)).toBe(false);
+    expect(r.info.reassigned.has(inner!)).toBe(true);
     expect(outer.qualifier).toBe(Qualifier.Const);
     expect(inner!.qualifier).toBe(Qualifier.Series);
     expect(initTvOf(r, 'folded').value).toBe(6);
@@ -94,7 +94,7 @@ describe('inference and folding', () => {
     expect(r.errors).toEqual([]);
 
     const x = declaredName(r, 'x');
-    expect(r.info.reassigned.has(x)).toBeTrue();
+    expect(r.info.reassigned.has(x)).toBe(true);
     expect(x.qualifier).toBe(Qualifier.Series);
     expect(initTvOf(r, 'before').value).toBeNull();
     expect(initTvOf(r, 'after').value).toBeNull();
@@ -126,8 +126,8 @@ describe('inference and folding', () => {
     );
     expect(instance).toBeDefined();
     expect(local).toBeDefined();
-    expect(r.info.reassigned.has(outer)).toBeFalse();
-    expect(instance!.info.reassigned.has(local!)).toBeTrue();
+    expect(r.info.reassigned.has(outer)).toBe(false);
+    expect(instance!.info.reassigned.has(local!)).toBe(true);
     expect(initTvOf(r, 'folded').value).toBe(6);
   });
 
@@ -141,7 +141,7 @@ describe('inference and folding', () => {
       expect(r.errors).toEqual([]);
       const sum = declaredName(r, 'sum');
       expect(sum.qualifier).toBe(Qualifier.Const);
-      expect(r.info.reassigned.has(sum)).toBeFalse();
+      expect(r.info.reassigned.has(sum)).toBe(false);
     }
   });
 
@@ -261,19 +261,19 @@ describe('semantic ownership', () => {
     expect(r.checked.pkg.scope.lookup('identity')?.kind).toBe(
       ObjectKind.Function,
     );
-    expect(r.checked.pkg.exports.has('identity')).toBeTrue();
+    expect(r.checked.pkg.exports.has('identity')).toBe(true);
 
     const ta = r.checked.pkg.imports.find(pkg => pkg.name === 'ta');
     expect(ta?.name).toBe('ta');
     expect(ta?.path).toBe('ta');
     expect(ta?.files).toHaveLength(1);
     expect(ta?.scope.lookup('sma')?.kind).toBe(ObjectKind.Function);
-    expect(ta?.exports.has('sma')).toBeTrue();
+    expect(ta?.exports.has('sma')).toBe(true);
     expect(
       [...r.info.uses.values()].some(
         object => object.kind === ObjectKind.PackageName && object.pkg === ta,
       ),
-    ).toBeTrue();
+    ).toBe(true);
     expect(
       [...r.info.uses.values()].filter(
         object => object.kind === ObjectKind.Function,
@@ -318,7 +318,7 @@ describe('semantic ownership', () => {
           dependency.binding?.kind === 'series' &&
           dependency.binding.id === 'close',
       ),
-    ).toBeTrue();
+    ).toBe(true);
   });
 
   test('request policy follows transitive declaration dependencies', () => {
@@ -359,7 +359,7 @@ describe('semantic ownership', () => {
       functionDefault.errors.some(
         error => error.pos.line === 3 && error.msg.includes('source'),
       ),
-    ).toBeFalse();
+    ).toBe(false);
 
     const constructorDefault = checkText(
       [
@@ -377,7 +377,7 @@ describe('semantic ownership', () => {
       constructorDefault.errors.some(
         error => error.pos.line === 4 && error.msg.includes('source'),
       ),
-    ).toBeFalse();
+    ).toBe(false);
   });
 });
 
@@ -936,7 +936,7 @@ describe('diagnostics', () => {
     expect(r.errors.map(error => error.msg)).toContain(
       'for-in tuple pattern takes two values',
     );
-    expect(r.info.reassigned.has(declaredName(r, 'x'))).toBeTrue();
+    expect(r.info.reassigned.has(declaredName(r, 'x'))).toBe(true);
   });
 
   test('rejects a compile-time zero numeric range step', () => {

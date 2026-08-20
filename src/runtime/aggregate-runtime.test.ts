@@ -1,6 +1,6 @@
 // Purpose: JSRuntime aggregate integration tests for Ring history, var/varip provisional policy, sink boundaries, request rooting, ABI gating, and disposal.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {InternalError} from '../base/print';
 import {Storage} from '../ir/node';
 import {

@@ -1,6 +1,6 @@
 // Purpose: Registry routing tests — prefix dispatch, prefix stripping, and default-driver fallthrough for unregistered prefixes and empty symbols.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {DataProvider, ProviderContext} from '../../runtime/abi';
 import {registryProvider} from './registry';
 

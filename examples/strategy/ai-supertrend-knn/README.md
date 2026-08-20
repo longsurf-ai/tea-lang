@@ -25,7 +25,7 @@ This is behavior-preserving for the selected WMA + Long mode. The other publishe
 ## Run
 
 ```sh
-bun src/main.ts execute examples/strategy/ai-supertrend-knn/sweep.yaml
+node --import tsx src/main.ts execute examples/strategy/ai-supertrend-knn/sweep.yaml
 ```
 
 ## Measured result

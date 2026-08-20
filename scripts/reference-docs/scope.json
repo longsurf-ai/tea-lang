@@ -52,10 +52,11 @@
   ],
   "allowedPaths": [
     "docs/AGENTS.md",
+    "docs/docs.json",
     "docs/reference/",
     "website/sidebars.ts",
     "website/docusaurus.config.ts",
-    "website/scripts/",
+    "scripts/docs/",
     "website/src/",
     "website/static/",
     "src/checker/catalog.ts",
@@ -79,9 +80,9 @@
       "title": "Reference architecture and supported inventory",
       "objective": "Replace the flat prototype with a supported-public-surface inventory, discriminated entry schemas, per-entry routes, category indexes, generated navigation, and exhaustive validation. Remove public status labels and keep unsupported inventory internal.",
       "validate": [
-        "bun run typecheck",
-        "bun test website/scripts/generate-reference.test.ts",
-        "bun run docs:check:generated"
+        "npm run typecheck",
+        "npm test -- scripts/docs/generate-reference.test.ts",
+        "npm run docs:check:generated"
       ]
     },
     {
@@ -89,8 +90,8 @@
       "title": "Seven representative reference entries",
       "objective": "Implement and render the pilot entries array, close, color.red, array.push(), for...in, history [], and //@version using the final per-kind schemas. Each page must contain useful human prose, a checked example, remarks, and related links.",
       "validate": [
-        "bun test website/scripts/generate-reference.test.ts",
-        "bun run docs:check"
+        "npm test -- scripts/docs/generate-reference.test.ts",
+        "npm run docs:check"
       ]
     },
     {
@@ -98,8 +99,8 @@
       "title": "Exhaustive supported type reference",
       "objective": "Document every usable public Tea type and declared-type form with syntax, behavior, construction or operations, examples, remarks, and links. Exclude parser-only, compiler-only, and unusable placeholder forms.",
       "validate": [
-        "bun test website/scripts/generate-reference.test.ts",
-        "bun run docs:check:generated"
+        "npm test -- scripts/docs/generate-reference.test.ts",
+        "npm run docs:check:generated"
       ]
     },
     {
@@ -107,8 +108,8 @@
       "title": "Exhaustive built-in variable reference",
       "objective": "Document every supported non-constant built-in variable, grouped by price and volume, bar and time, bar state, symbol information, and timeframe information. Explain qualified type, update cadence, na and history behavior, provider meaning, examples, and related entries.",
       "validate": [
-        "bun test website/scripts/generate-reference.test.ts",
-        "bun run docs:check:generated"
+        "npm test -- scripts/docs/generate-reference.test.ts",
+        "npm run docs:check:generated"
       ]
     },
     {
@@ -116,8 +117,8 @@
       "title": "Exhaustive constant reference",
       "objective": "Document every supported source-facing constant with type, meaning, allowed use, an example, remarks, and links. Group namespace constants and omit constants whose owning feature has no usable public path.",
       "validate": [
-        "bun test website/scripts/generate-reference.test.ts",
-        "bun run docs:check:generated"
+        "npm test -- scripts/docs/generate-reference.test.ts",
+        "npm run docs:check:generated"
       ]
     },
     {
@@ -125,8 +126,8 @@
       "title": "Declarations, inputs, plots, and alerts",
       "objective": "Document supported script declaration, input, output, plot, fill, color-output, and alert functions. Show only supported parameters and overloads, with argument meanings, returns, examples, remarks, and runtime errors.",
       "validate": [
-        "bun test website/scripts/generate-reference.test.ts",
-        "bun run docs:check:generated"
+        "npm test -- scripts/docs/generate-reference.test.ts",
+        "npm run docs:check:generated"
       ]
     },
     {
@@ -134,8 +135,8 @@
       "title": "Math, string, conversion, and color functions",
       "objective": "Document all supported math, string, conversion, and color functions exhaustively. Explain numeric and na behavior, overloads, return types, named examples, errors, and related entries.",
       "validate": [
-        "bun test website/scripts/generate-reference.test.ts",
-        "bun run docs:check:generated"
+        "npm test -- scripts/docs/generate-reference.test.ts",
+        "npm run docs:check:generated"
       ]
     },
     {
@@ -143,9 +144,9 @@
       "title": "Array, matrix, and map functions",
       "objective": "Document all supported array, matrix, and map functions exhaustively. Explain mutation targets, return values, historical behavior, iteration order, typed empty results, runtime errors, and current complexity only where the contract is established.",
       "validate": [
-        "bun test website/scripts/generate-reference.test.ts",
-        "bun test src/runtime/collections",
-        "bun run docs:check:generated"
+        "npm test -- scripts/docs/generate-reference.test.ts",
+        "npm test -- src/runtime/collections",
+        "npm run docs:check:generated"
       ]
     },
     {
@@ -153,9 +154,9 @@
       "title": "Request functions",
       "objective": "Document the supported request surface with exact context, merge, history, option, error, and example behavior. Omit staged arguments entirely and do not imply unsupported lower-timeframe or financial request APIs.",
       "validate": [
-        "bun test src/checker/check.test.ts src/runtime/run.test.ts src/runtime/js-runtime.test.ts src/testing/aggregate-request-e2e.test.ts",
-        "bun test website/scripts/generate-reference.test.ts",
-        "bun run docs:check:generated"
+        "npm test -- src/checker/check.test.ts src/runtime/run.test.ts src/runtime/js-runtime.test.ts src/testing/aggregate-request-e2e.test.ts",
+        "npm test -- scripts/docs/generate-reference.test.ts",
+        "npm run docs:check:generated"
       ]
     },
     {
@@ -163,8 +164,8 @@
       "title": "Technical analysis library",
       "objective": "Inventory and document every supported exported ta function from the checked Tea library. Include signatures, state and history behavior, warmup and na behavior, examples, remarks, and related entries. Do not include any trading library.",
       "validate": [
-        "bun test src/lib/ta.test.ts website/scripts/generate-reference.test.ts",
-        "bun run docs:check:generated"
+        "npm test -- src/lib/ta.test.ts scripts/docs/generate-reference.test.ts",
+        "npm run docs:check:generated"
       ]
     },
     {
@@ -172,8 +173,8 @@
       "title": "Keywords and language constructs",
       "objective": "Document every supported keyword and contextual construct. Group related tokens into user concepts such as if...else, for...to, for...in, and import...as. Include syntax, parts, evaluation rules, examples, remarks, and links; omit reserved future syntax.",
       "validate": [
-        "bun test src/syntax website/scripts/generate-reference.test.ts",
-        "bun run docs:check:generated"
+        "npm test -- src/syntax scripts/docs/generate-reference.test.ts",
+        "npm run docs:check:generated"
       ]
     },
     {
@@ -181,8 +182,8 @@
       "title": "Operators and accessors",
       "objective": "Document the complete supported operator surface including declaration =, reassignment and compound assignment, arithmetic, comparison, logical operators, conditional ?:, selectors, calls where appropriate, and history []. Include operands, results, precedence, associativity, evaluation, na behavior, examples, and links.",
       "validate": [
-        "bun test src/syntax src/checker/check.test.ts website/scripts/generate-reference.test.ts",
-        "bun run docs:check:generated"
+        "npm test -- src/syntax src/checker/check.test.ts scripts/docs/generate-reference.test.ts",
+        "npm run docs:check:generated"
       ]
     },
     {
@@ -190,26 +191,23 @@
       "title": "Annotations and source directives",
       "objective": "Document every supported source annotation or directive, currently //@version, with syntax, placement, effect, examples, remarks, and links. Do not invent Pine annotations Tea does not implement.",
       "validate": [
-        "bun test src/syntax website/scripts/generate-reference.test.ts",
-        "bun run docs:check:generated"
+        "npm test -- src/syntax scripts/docs/generate-reference.test.ts",
+        "npm run docs:check:generated"
       ]
     },
     {
       "id": "navigation-search",
       "title": "Reference navigation, linking, and lookup",
       "objective": "Finish category navigation, stable routes, alphabetical and namespace indexes, related links, responsive sidebars, and a local lookup experience appropriate for the packaged offline site. The right table of contents must describe only the selected entry.",
-      "validate": [
-        "bun run docs:check",
-        "bun test src/docs/server.test.ts"
-      ]
+      "validate": ["npm run docs:check", "npm test -- src/docs/server.test.ts"]
     },
     {
       "id": "coverage-audit",
       "title": "Exhaustive public-surface audit",
       "objective": "Compare every generated route with compiler-owned types, variables, constants, supported native signatures, ta exports, keywords, operators, and annotations. Fix all omissions, duplicates, staged leaks, unsupported routes, broken links, and untested examples. Report exact category totals with no remaining coverage gaps.",
       "validate": [
-        "bun test website/scripts/generate-reference.test.ts",
-        "bun run docs:check"
+        "npm test -- scripts/docs/generate-reference.test.ts",
+        "npm run docs:check"
       ]
     },
     {
@@ -217,8 +215,8 @@
       "title": "Human editorial and usability audit",
       "objective": "Read every generated entry as user documentation. Replace compiler jargon and catalog dumps with clear explanations, useful named examples, honest remarks, runtime errors, and cross-links. Fix thin, repetitive, misleading, or status-oriented content without changing language semantics.",
       "validate": [
-        "bun test website/scripts/generate-reference.test.ts",
-        "bun run docs:check"
+        "npm test -- scripts/docs/generate-reference.test.ts",
+        "npm run docs:check"
       ]
     },
     {
@@ -226,9 +224,9 @@
       "title": "Final package and served-site verification",
       "objective": "Run the complete package checks, generated freshness, GPU boundary tests, and literal tea docs server. Verify representative category and entry routes return HTTP 200, the old flat pages are redirected or removed deliberately, and no documentation scope remains incomplete.",
       "validate": [
-        "bun run check",
-        "bun run test:gpu",
-        "bun test src/docs/server.test.ts"
+        "npm run check",
+        "npm run test:gpu",
+        "npm test -- src/docs/server.test.ts"
       ]
     }
   ]

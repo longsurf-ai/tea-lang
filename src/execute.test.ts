@@ -1,6 +1,6 @@
 // Purpose: The public executor lowers one generic Program, preserves binding order, and reports backend-neutral results.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {mustBuild} from './noder/testing';
 import {csvProvider} from './providers/data/csv';
 import {MemorySink} from './providers/sinks/memory-sink';

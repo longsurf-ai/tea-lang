@@ -37,7 +37,7 @@ Compile every conversion and validate its exact Cartesian grid without making
 network requests:
 
 ```sh
-bun test tests/strategy-catalog.test.ts
+npm test -- tests/strategy-catalog.test.ts
 ```
 
 Run a particular measured sweep through its checked-in config, for example:

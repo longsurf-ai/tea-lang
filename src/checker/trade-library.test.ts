@@ -1,7 +1,7 @@
 // Purpose: Import, specialization, and CPU execution gates for the
 // policy-specific trade package.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {generate} from '../codegen/codegen';
 import {funcsOf} from '../ir/visit';
 import {defaultRegistry} from '../loader/loader';
@@ -203,15 +203,15 @@ describe('trade library', () => {
 
     expect(
       messages.some(message => message.includes('close_trade')),
-    ).toBeTrue();
+    ).toBe(true);
     expect(
       messages.some(message => message.includes('continue_bar')),
-    ).toBeTrue();
+    ).toBe(true);
     expect(
       messages.some(message => message.includes('process_close')),
-    ).toBeTrue();
-    expect(messages.some(message => message.includes('cancel'))).toBeTrue();
-    expect(messages.some(message => message.includes('open_trade'))).toBeTrue();
+    ).toBe(true);
+    expect(messages.some(message => message.includes('cancel'))).toBe(true);
+    expect(messages.some(message => message.includes('open_trade'))).toBe(true);
   });
 
   test('rejects cross-policy broker and ledger composition', () => {

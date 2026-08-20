@@ -1,7 +1,8 @@
 // Purpose: Lock the generated Tea TextMate grammar to compiler vocabulary and representative lexical forms.
 
-import {describe, expect, test} from 'bun:test';
+import {readFile} from 'node:fs/promises';
 import {createRequire} from 'node:module';
+import {describe, expect, test} from 'vitest';
 import {createOnigScanner, createOnigString, loadWASM} from 'vscode-oniguruma';
 import {
   INITIAL,
@@ -25,11 +26,9 @@ interface ScopedToken {
   readonly scopes: readonly string[];
 }
 
-const require = createRequire(import.meta.url);
+const require = createRequire(__filename);
 await loadWASM(
-  await Bun.file(
-    require.resolve('vscode-oniguruma/release/onig.wasm'),
-  ).arrayBuffer(),
+  await readFile(require.resolve('vscode-oniguruma/release/onig.wasm')),
 );
 const registry = new Registry({
   onigLib: Promise.resolve({createOnigScanner, createOnigString}),
@@ -99,7 +98,7 @@ function collectRegexes(value: unknown): string[] {
 describe('Tea TextMate grammar', () => {
   test('generated file is current', async () => {
     const target = new URL('../syntaxes/tea.tmLanguage.json', import.meta.url);
-    expect(await Bun.file(target).text()).toBe(renderGrammar());
+    expect(await readFile(target, 'utf8')).toBe(renderGrammar());
   });
 
   test('all generated regular expressions compile', () => {
@@ -124,17 +123,17 @@ describe('Tea TextMate grammar', () => {
         control.test(keyword) ||
           storage.test(keyword) ||
           receiver.test(keyword),
-      ).toBeTrue();
+      ).toBe(true);
     }
     for (const keyword of CONTEXTUAL_KEYWORDS) {
-      expect(control.test(keyword) || storage.test(keyword)).toBeFalse();
+      expect(control.test(keyword) || storage.test(keyword)).toBe(false);
     }
 
     const importPattern = new RegExp(
       grammar.repository.imports.patterns[0].match,
     );
-    expect(importPattern.test('import owner/library/1 as lib')).toBeTrue();
-    expect(importPattern.test('import = enum')).toBeFalse();
+    expect(importPattern.test('import owner/library/1 as lib')).toBe(true);
+    expect(importPattern.test('import = enum')).toBe(false);
   });
 
   test('declaration scopes remain stable across enums, interfaces, aliases, and generic types', () => {
@@ -169,7 +168,7 @@ describe('Tea TextMate grammar', () => {
     typeKeywords.forEach(token => {
       expect(
         token.scopes.some(scope => scope.startsWith('storage.type.')),
-      ).toBeTrue();
+      ).toBe(true);
       expect(token.scopes).not.toContain(TEA_SCOPES.typeName);
     });
     for (const parameter of ['B', 'P']) {
@@ -285,10 +284,10 @@ describe('Tea TextMate grammar', () => {
       for (const token of tokensNamed(tokens, word)) {
         expect(
           token.scopes.some(scope => scope.startsWith('storage.')),
-        ).toBeFalse();
+        ).toBe(false);
         expect(
           token.scopes.some(scope => scope.startsWith('keyword.')),
-        ).toBeFalse();
+        ).toBe(false);
       }
     }
   });
@@ -297,18 +296,18 @@ describe('Tea TextMate grammar', () => {
     const grammar = generateGrammar();
     const numbers = grammar.repository.numbers.patterns;
     for (const number of ['0', '42', '3.14', '1.', '.5', '6.02e23', '1e-9']) {
-      expect(matches(numbers, number)).toBeTrue();
+      expect(matches(numbers, number)).toBe(true);
     }
     for (const number of ['1e', '.']) {
-      expect(matches(numbers, number)).toBeFalse();
+      expect(matches(numbers, number)).toBe(false);
     }
 
     const colors = grammar.repository.colors.patterns;
     for (const color of ['#ff0000', '#FF00AA80']) {
-      expect(matches(colors, color)).toBeTrue();
+      expect(matches(colors, color)).toBe(true);
     }
     for (const color of ['#fff', '#ff00000', '#ff0000000']) {
-      expect(matches(colors, color)).toBeFalse();
+      expect(matches(colors, color)).toBe(false);
     }
   });
 });

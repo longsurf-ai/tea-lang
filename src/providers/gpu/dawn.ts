@@ -17,11 +17,6 @@ export class GpuDeviceError extends OperationalError {
 }
 
 export async function createDawnDevice(): Promise<GpuDeviceLease> {
-  if (process.versions.bun !== undefined) {
-    throw new GpuDeviceError(
-      'Dawn GPU execution requires the Node-hosted tea CLI; use --cpu when embedding Tea in Bun',
-    );
-  }
   let binding: typeof import('webgpu');
   try {
     binding = await import('webgpu');

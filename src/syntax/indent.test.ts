@@ -1,6 +1,6 @@
 // Purpose: Indentation-machinery tests — block open/close, dedent drains, continuation lines, blank/comment lines, tabs, CRLF, and indent errors.
 
-import {expect, test} from 'bun:test';
+import {expect, test} from 'vitest';
 import {scanText, kinds} from './testing';
 
 test('simple block', () => {

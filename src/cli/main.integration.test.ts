@@ -1,8 +1,9 @@
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {spawnSync} from 'node:child_process';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 
-const ROOT = join(import.meta.dir, '../..');
+const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '../..');
 const MAIN = join(ROOT, 'src/main.ts');
 const SOURCE = join(ROOT, 'tests/fixtures/cli/parameter-report.tea');
 const DATA = join(ROOT, 'tests/fixtures/cli/data.csv');

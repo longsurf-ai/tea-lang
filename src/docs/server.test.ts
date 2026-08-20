@@ -4,7 +4,7 @@ import {mkdir, mkdtemp, rm, symlink, writeFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {afterEach, beforeEach, describe, expect, test} from 'bun:test';
+import {afterEach, beforeEach, describe, expect, test} from 'vitest';
 import {startDocsServer, type DocsServerOptions} from './server';
 
 describe('startDocsServer', () => {
@@ -39,7 +39,7 @@ describe('startDocsServer', () => {
     return server;
   }
 
-  test('serves Docusaurus pages and static assets with correct metadata', async () => {
+  test('serves documentation pages and static assets with correct metadata', async () => {
     await mkdir(join(root, 'language-guide'), {recursive: true});
     await mkdir(join(root, 'assets'), {recursive: true});
     await writeFile(
@@ -87,7 +87,7 @@ describe('startDocsServer', () => {
     );
   });
 
-  test('returns the Docusaurus 404 page without a homepage fallback', async () => {
+  test('returns the packaged 404 page without a homepage fallback', async () => {
     const docs = await start();
 
     for (const path of ['/missing-page', '/assets/missing.js']) {
@@ -156,7 +156,6 @@ describe('startDocsServer', () => {
     const moduleUrl = new URL('./server.ts', import.meta.url).href;
     const script = `
       import {startDocsServer} from ${JSON.stringify(moduleUrl)};
-      if ('Bun' in globalThis) throw new Error('expected the Node runtime');
       const docs = await startDocsServer({
         root: ${JSON.stringify(root)},
         port: 0,
@@ -210,7 +209,7 @@ describe('startDocsServer', () => {
         print: line => printed.push(line),
         warn: line => warnings.push(line),
       }),
-    ).rejects.toThrow('Run "bun run docs:build"');
+    ).rejects.toThrow('Run "npm run docs:build"');
     expect(printed).toEqual([]);
   });
 });

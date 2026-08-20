@@ -2,7 +2,8 @@
 
 import {existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import {formatPos} from '../base/pos';
 import {compile} from '../compile';
 import {csvProvider} from '../providers/data/csv';
@@ -23,7 +24,10 @@ import {
   sha256,
 } from './execution-conformance-schema';
 
-const EXECUTION_ROOT = join(import.meta.dir, '../../tests/fixtures/execution');
+const EXECUTION_ROOT = join(
+  fileURLToPath(new URL('.', import.meta.url)),
+  '../../tests/fixtures/execution',
+);
 const CONFORMANCE_TIME_NOW = 1_700_000_000_000;
 
 function allFiles(root: string): string[] {

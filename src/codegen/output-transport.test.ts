@@ -1,6 +1,6 @@
 // Purpose: Output manifest transport tags come directly from Program types; display spellings never become machine type information.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {Program} from '../ir/program';
 import {
   BoolType,

@@ -1,6 +1,6 @@
 // Purpose: Aggregate-layout projection tests — layouts remain exact, nominal, deterministic, and finite through collection recursion.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {DepthKind, IrKind, Storage, type Name} from '../ir/node';
 import type {Program} from '../ir/program';
 import {RUNTIME_ABI_VERSION} from '../runtime/abi';

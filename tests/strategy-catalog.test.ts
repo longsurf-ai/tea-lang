@@ -1,16 +1,17 @@
 // Purpose: Keep every checked-in TradingView strategy profile compileable and
 // its declared stress grid structurally honest without fetching live data.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {existsSync, readFileSync, readdirSync} from 'node:fs';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
 import {paramSpecsOf} from '../src/codegen/params';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
 import {compileToProgram} from '../src/compile';
 import {loadConfig, resolveExecutionParameters} from '../src/execution';
 
-const ROOT = join(import.meta.dir, '..');
+const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const STRATEGY_ROOT = join(ROOT, 'examples/strategy');
 
 const expectedStrategies = [

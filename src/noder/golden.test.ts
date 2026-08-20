@@ -1,12 +1,16 @@
-// Purpose: IR dump goldens — every tests/fixtures/ir/*.tea must node cleanly and lock its Program dump; regenerate with UPDATE_GOLDENS=1 bun test.
+// Purpose: IR dump goldens — every tests/fixtures/ir/*.tea must node cleanly and lock its Program dump; regenerate with UPDATE_GOLDENS=1 npm test.
 
 import {existsSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import {dumpProgram} from '../ir/dumper';
 import {buildText} from './testing';
 
-const TESTDATA = join(import.meta.dir, '../../tests/fixtures/ir');
+const TESTDATA = join(
+  fileURLToPath(new URL('.', import.meta.url)),
+  '../../tests/fixtures/ir',
+);
 const UPDATE = process.env['UPDATE_GOLDENS'] === '1';
 
 function checkGolden(goldenPath: string, dump: string): void {
@@ -16,7 +20,7 @@ function checkGolden(goldenPath: string, dump: string): void {
   }
   if (!existsSync(goldenPath)) {
     throw new Error(
-      `missing golden ${goldenPath}; run UPDATE_GOLDENS=1 bun test`,
+      `missing golden ${goldenPath}; run UPDATE_GOLDENS=1 npm test`,
     );
   }
   expect(dump).toBe(readFileSync(goldenPath, 'utf8'));

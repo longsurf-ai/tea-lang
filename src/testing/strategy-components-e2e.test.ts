@@ -3,7 +3,8 @@
 
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import {newFileBase} from '../base/pos';
 import {Errors} from '../base/print';
 import {checkPackage} from '../checker/check';
@@ -24,13 +25,22 @@ import {loadModule} from '../runtime/load';
 import {parse} from '../syntax/syntax';
 
 const LIBRARIES: Readonly<Record<string, string>> = {
-  ta: readFileSync(join(import.meta.dir, '../lib/ta.tea'), 'utf8'),
-  broker: readFileSync(join(import.meta.dir, '../lib/broker.tea'), 'utf8'),
-  portfolio: readFileSync(
-    join(import.meta.dir, '../lib/portfolio.tea'),
+  ta: readFileSync(
+    join(fileURLToPath(new URL('.', import.meta.url)), '../lib/ta.tea'),
     'utf8',
   ),
-  trade: readFileSync(join(import.meta.dir, '../lib/trade.tea'), 'utf8'),
+  broker: readFileSync(
+    join(fileURLToPath(new URL('.', import.meta.url)), '../lib/broker.tea'),
+    'utf8',
+  ),
+  portfolio: readFileSync(
+    join(fileURLToPath(new URL('.', import.meta.url)), '../lib/portfolio.tea'),
+    'utf8',
+  ),
+  trade: readFileSync(
+    join(fileURLToPath(new URL('.', import.meta.url)), '../lib/trade.tea'),
+    'utf8',
+  ),
 };
 
 const REGISTRY: Registry = (path: string): PackageSource | null => {

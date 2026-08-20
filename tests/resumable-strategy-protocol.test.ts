@@ -4,7 +4,8 @@
 
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import {Errors} from '../src/base/print';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
 import {compile, compileToProgram} from '../src/compile';
@@ -15,7 +16,7 @@ import {csvProvider} from '../src/providers/data/csv';
 import {MemorySink} from '../src/providers/sinks/memory-sink';
 
 const SOURCE = join(
-  import.meta.dir,
+  fileURLToPath(new URL('.', import.meta.url)),
   'fixtures/gpu/resumable-strategy-protocol/source.tea',
 );
 

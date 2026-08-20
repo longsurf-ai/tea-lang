@@ -1,6 +1,6 @@
 // Purpose: Heap arena state-machine, descriptor-owned storage policy, mutation journaling, reachability, accounting, limit, and stale-reference regression tests.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {ExecutionError} from './abi';
 import {HeapArena, type StorageDescriptor, type StorageRef} from './heap';
 

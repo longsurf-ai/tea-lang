@@ -1,6 +1,6 @@
 // Purpose: Compact sweep trajectory archives preserve values while enforcing one aggregate budget.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {ExecutionBindingSummary} from '../../execute';
 import type {
   EffectValue,

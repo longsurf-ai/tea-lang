@@ -1,4 +1,4 @@
-// Purpose: Serve packaged Docusaurus output on loopback for the tea docs command.
+// Purpose: Serve packaged static documentation on loopback for the tea docs command.
 
 import {createReadStream} from 'node:fs';
 import {realpath, stat} from 'node:fs/promises';
@@ -210,14 +210,14 @@ export async function startDocsServer(
   } catch {
     throw new Error(
       `Tea documentation assets are missing at ${join(configuredRoot, 'index.html')}. ` +
-        'Run "bun run docs:build" from the Tea package or reinstall Tea.',
+        'Run "npm run docs:build" from the Tea package or reinstall Tea.',
     );
   }
 
   if ((await findFile(root, 'index.html')) === null) {
     throw new Error(
       `Tea documentation assets are missing at ${join(configuredRoot, 'index.html')}. ` +
-        'Run "bun run docs:build" from the Tea package or reinstall Tea.',
+        'Run "npm run docs:build" from the Tea package or reinstall Tea.',
     );
   }
 

@@ -1,6 +1,6 @@
 // Purpose: Yahoo driver tests — offline via an injected fake fetch; pin URL construction, quote-array normalization, axis conventions, and the typed error taxonomy.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {
   ContextError,
   ProviderContext,
@@ -45,7 +45,7 @@ const DAILY = chartPayload([DAY_S, 2 * DAY_S, 3 * DAY_S], {
 });
 
 // A fake fetch that records requested URLs and answers a canned payload;
-// the tests never touch the network (bun test must pass offline).
+// the tests never touch the network (npm test must pass offline).
 function fetchStub(
   payload: unknown,
   status = 200,

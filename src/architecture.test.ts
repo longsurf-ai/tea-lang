@@ -1,8 +1,9 @@
 // Purpose: Lock the production dependency seams shared by compiler targets and runtimes.
 
-import {readdirSync, readFileSync} from 'node:fs';
-import {dirname, join, relative, resolve} from 'node:path';
-import {expect, test} from 'bun:test';
+import {existsSync, readdirSync, readFileSync} from 'node:fs';
+import {dirname, extname, join, relative, resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {expect, test} from 'vitest';
 import ts from 'typescript';
 
 function productionSources(root: string): string[] {
@@ -17,6 +18,48 @@ function productionSources(root: string): string[] {
       !entry.name.endsWith('.test.ts') &&
       !entry.name.endsWith('.integration.ts')
     ) {
+      files.push(path);
+    }
+  }
+  return files;
+}
+
+const repositoryTextExtensions = new Set([
+  '.cjs',
+  '.js',
+  '.json',
+  '.md',
+  '.mjs',
+  '.sh',
+  '.tea',
+  '.toml',
+  '.ts',
+  '.tsx',
+  '.txt',
+  '.yaml',
+  '.yml',
+]);
+
+const ignoredRepositoryDirectories = new Set([
+  '.codex',
+  '.docusaurus',
+  '.git',
+  '.obsidian',
+  'build',
+  'dist',
+  'node_modules',
+]);
+
+function repositoryTextFiles(root: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(root, {withFileTypes: true})) {
+    if (entry.isDirectory() && ignoredRepositoryDirectories.has(entry.name)) {
+      continue;
+    }
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...repositoryTextFiles(path));
+    } else if (entry.isFile() && repositoryTextExtensions.has(extname(path))) {
       files.push(path);
     }
   }
@@ -42,7 +85,7 @@ function importsInto(
       .filter(target => isWithin(target, targetRoot))
       .map(
         target =>
-          `${relative(import.meta.dir, source)} -> ${relative(import.meta.dir, target)}`,
+          `${relative(fileURLToPath(new URL('.', import.meta.url)), source)} -> ${relative(fileURLToPath(new URL('.', import.meta.url)), target)}`,
       ),
   );
 }
@@ -53,13 +96,22 @@ function isWithin(target: string, root: string): boolean {
 }
 
 test('runtime does not depend on codegen implementation', () => {
-  const runtime = resolve(import.meta.dir, 'runtime');
-  const codegen = resolve(import.meta.dir, 'codegen');
+  const runtime = resolve(
+    fileURLToPath(new URL('.', import.meta.url)),
+    'runtime',
+  );
+  const codegen = resolve(
+    fileURLToPath(new URL('.', import.meta.url)),
+    'codegen',
+  );
   expect(importsInto(productionSources(runtime), codegen)).toEqual([]);
 });
 
 test('runtime implementation modules bypass their public ABI facade', () => {
-  const runtime = resolve(import.meta.dir, 'runtime');
+  const runtime = resolve(
+    fileURLToPath(new URL('.', import.meta.url)),
+    'runtime',
+  );
   const facade = resolve(runtime, 'abi');
   const facadeImports = productionSources(runtime)
     .filter(source => source !== `${facade}.ts`)
@@ -68,31 +120,46 @@ test('runtime implementation modules bypass their public ABI facade', () => {
         .filter(target => target === facade)
         .map(
           sourceTarget =>
-            `${relative(import.meta.dir, source)} -> ${relative(import.meta.dir, sourceTarget)}`,
+            `${relative(fileURLToPath(new URL('.', import.meta.url)), source)} -> ${relative(fileURLToPath(new URL('.', import.meta.url)), sourceTarget)}`,
         ),
     );
   expect(facadeImports).toEqual([]);
 });
 
 test('codegen imports narrow runtime contracts instead of the public facade', () => {
-  const runtime = resolve(import.meta.dir, 'runtime');
-  const codegen = resolve(import.meta.dir, 'codegen');
+  const runtime = resolve(
+    fileURLToPath(new URL('.', import.meta.url)),
+    'runtime',
+  );
+  const codegen = resolve(
+    fileURLToPath(new URL('.', import.meta.url)),
+    'codegen',
+  );
   const facade = resolve(runtime, 'abi');
   const codegenFacadeImports = productionSources(codegen).flatMap(source =>
     localTargets(source)
       .filter(target => target === facade)
       .map(
         target =>
-          `${relative(import.meta.dir, source)} -> ${relative(import.meta.dir, target)}`,
+          `${relative(fileURLToPath(new URL('.', import.meta.url)), source)} -> ${relative(fileURLToPath(new URL('.', import.meta.url)), target)}`,
       ),
   );
   expect(codegenFacadeImports).toEqual([]);
 });
 
 test('GPU artifact contract is neutral and shared by producer and consumer', () => {
-  const codegen = resolve(import.meta.dir, 'codegen');
-  const runtime = resolve(import.meta.dir, 'runtime');
-  const contract = resolve(import.meta.dir, 'gpu/contract');
+  const codegen = resolve(
+    fileURLToPath(new URL('.', import.meta.url)),
+    'codegen',
+  );
+  const runtime = resolve(
+    fileURLToPath(new URL('.', import.meta.url)),
+    'runtime',
+  );
+  const contract = resolve(
+    fileURLToPath(new URL('.', import.meta.url)),
+    'gpu/contract',
+  );
   const schema = resolve(runtime, 'schema');
   const contractSource = `${contract}.ts`;
 
@@ -117,7 +184,10 @@ test('GPU artifact contract is neutral and shared by producer and consumer', () 
 });
 
 test('CLI wiring has no mutable module-level coordination state', () => {
-  const filename = resolve(import.meta.dir, 'main.ts');
+  const filename = resolve(
+    fileURLToPath(new URL('.', import.meta.url)),
+    'main.ts',
+  );
   const text = readFileSync(filename, 'utf8');
   expect(text.split('\n')[0]).toBe('#!/usr/bin/env -S node --import tsx');
   const source = ts.createSourceFile(
@@ -144,9 +214,24 @@ test('CLI wiring has no mutable module-level coordination state', () => {
   expect(text.match(/process\.exitCode\s*=/g)).toHaveLength(1);
 });
 
+test('repository tooling uses only Node and npm', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const legacyRuntime = ['b', 'un'].join('');
+  const legacyWord = new RegExp(`\\b${legacyRuntime}\\b`, 'i');
+  const violations = repositoryTextFiles(root).flatMap(filename => {
+    const source = readFileSync(filename, 'utf8');
+    return legacyWord.test(source) ? [relative(root, filename)] : [];
+  });
+
+  expect(existsSync(resolve(root, `${legacyRuntime}.lock`))).toBe(false);
+  expect(violations).toEqual([]);
+});
+
 test('type names describe values rather than resolution history', () => {
   const violations: string[] = [];
-  for (const filename of productionSources(import.meta.dir)) {
+  for (const filename of productionSources(
+    fileURLToPath(new URL('.', import.meta.url)),
+  )) {
     const source = ts.createSourceFile(
       filename,
       readFileSync(filename, 'utf8'),
@@ -163,7 +248,7 @@ test('type names describe values rather than resolution history', () => {
         node.name?.text.includes('Resolved')
       ) {
         violations.push(
-          `${relative(import.meta.dir, filename)}: ${node.name.text}`,
+          `${relative(fileURLToPath(new URL('.', import.meta.url)), filename)}: ${node.name.text}`,
         );
       }
       ts.forEachChild(node, visit);

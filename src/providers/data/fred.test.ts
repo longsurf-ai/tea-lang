@@ -1,6 +1,6 @@
 // Purpose: Offline FRED driver tests — a fake fetch dispatches on URL, pinning normalization, the native-frequency timeframe gate, and the typed error mapping without the network.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {
   ContextError,
   ProviderContext,

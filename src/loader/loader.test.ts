@@ -1,6 +1,6 @@
 // Purpose: Loader tests — source-package parsing, recursive import prewarming, cache identity, cycle detection, and staged resolution errors.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {
   isImportError,
   type ImportOutcome,

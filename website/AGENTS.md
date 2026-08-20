@@ -1,8 +1,9 @@
-# Tea documentation website
+# Tea offline documentation renderer
 
-Docusaurus shell for reading the human-authored Tea manual and the mechanical
-language reference. Content lives in `../docs`; this directory owns only site
-configuration, navigation, and presentation.
+Docusaurus shell used only to build the static, version-matched site packaged
+for `tea docs`. Hosted documentation uses Mintlify from `../docs/docs.json`.
+Content lives in `../docs`; this directory owns only offline configuration,
+navigation, and presentation.
 
 ## Invariants
 
@@ -11,8 +12,9 @@ configuration, navigation, and presentation.
 - `website/package.json` is only the CommonJS build-tool boundary Docusaurus
   needs beneath Tea's ESM package; all dependency versions remain owned by the
   parent package manifest.
-- Documentation and Reference remain separate navbar entries and sidebars;
-  generated reference pages never enter the learning sequence.
+- Offline Documentation and Reference remain separate navbar entries and
+  sidebars and mirror the hosted Mintlify navigation; generated reference pages
+  never enter the learning sequence.
 - Broken links, Markdown links, and anchors fail the build.
 - Styling stays reading-first, uses local system fonts, and loads no remote
   assets.

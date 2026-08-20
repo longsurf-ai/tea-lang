@@ -1,6 +1,6 @@
 // Purpose: Viewer defaults are deterministic, informative, and renderer-neutral.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {SweepResult} from '../reporting/sweep';
 import {createSweepRendererModel} from './renderer';
 

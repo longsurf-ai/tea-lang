@@ -2,7 +2,8 @@
 
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {expect} from 'bun:test';
+import {readFile} from 'node:fs/promises';
+import {expect} from 'vitest';
 
 export type JsonScalar = string | number | boolean | null;
 
@@ -208,7 +209,7 @@ export function sha256(path: string): string {
 }
 
 export async function readJson(path: string): Promise<unknown> {
-  return (await Bun.file(path).json()) as unknown;
+  return JSON.parse(await readFile(path, 'utf8')) as unknown;
 }
 
 function safeFixturePath(path: unknown, label: string): string {

@@ -1,6 +1,6 @@
 // Purpose: Aggregate codegen contract tests — layouts, reference field stores, and collection locations preserve exact types and evaluation order.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {
   CollectionLocationKind,
   DepthKind,
@@ -274,7 +274,7 @@ describe('aggregate expression and reference-store lowering', () => {
     module.main(executionRuntime(frame, []) as never, frame as never);
 
     expect(frame.values[0]).toBeNull();
-    expect(Number.isNaN(frame.values[1] as number)).toBeTrue();
+    expect(Number.isNaN(frame.values[1] as number)).toBe(true);
   });
 
   test('constructs, reads, and stores through a captured reference after RHS writes', () => {

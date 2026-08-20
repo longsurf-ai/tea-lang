@@ -1,6 +1,6 @@
 // Purpose: Codegen's final static-boundary tests — malformed hand-built aggregate Programs fail before becoming untyped generated JavaScript.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {
   DepthKind,
   IrKind,

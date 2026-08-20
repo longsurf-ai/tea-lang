@@ -1,6 +1,6 @@
 // Purpose: TraceSink presentation — locks the machine/golden line format at the owner (declare + emit, including provisional and na).
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {OutputSpec} from '../../runtime/abi';
 import {TraceSink} from './trace-sink';
 

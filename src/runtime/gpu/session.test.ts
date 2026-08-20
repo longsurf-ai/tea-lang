@@ -1,6 +1,6 @@
 // Purpose: Verify generic GPU session preparation resolves providers, packs executions, and bounds all device resources.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {CompiledWgslProgram} from '../../gpu/contract';
 import {compileProgramToWgsl} from '../../codegen/wgsl';
 import {mustBuild} from '../../noder/testing';

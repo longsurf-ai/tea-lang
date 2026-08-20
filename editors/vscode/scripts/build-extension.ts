@@ -2,38 +2,44 @@
 
 import {copyFileSync, mkdirSync} from 'node:fs';
 import {resolve} from 'node:path';
+import {build} from 'esbuild';
 
-const extensionRoot = resolve(import.meta.dir, '..');
-const repositoryRoot = resolve(extensionRoot, '../..');
-const outputDirectory = resolve(extensionRoot, 'dist');
-const mediaDirectory = resolve(extensionRoot, 'media');
+async function main(): Promise<void> {
+  const extensionRoot = resolve(__dirname, '..');
+  const repositoryRoot = resolve(extensionRoot, '../..');
+  const outputDirectory = resolve(extensionRoot, 'dist');
+  const mediaDirectory = resolve(extensionRoot, 'media');
 
-mkdirSync(outputDirectory, {recursive: true});
-mkdirSync(mediaDirectory, {recursive: true});
+  mkdirSync(outputDirectory, {recursive: true});
+  mkdirSync(mediaDirectory, {recursive: true});
 
-const build = await Bun.build({
-  entrypoints: [resolve(extensionRoot, 'src/extension.ts')],
-  outdir: outputDirectory,
-  target: 'node',
-  format: 'cjs',
-  external: ['vscode'],
-  sourcemap: 'none',
-});
+  await build({
+    entryPoints: [resolve(extensionRoot, 'src/extension.ts')],
+    outdir: outputDirectory,
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'cjs',
+    external: ['vscode'],
+    sourcemap: false,
+    logLevel: 'info',
+  });
 
-if (!build.success) {
-  for (const message of build.logs) console.error(message);
-  process.exit(1);
+  const plotlyDirectory = resolve(
+    repositoryRoot,
+    'node_modules/plotly.js-gl3d-dist-min',
+  );
+  copyFileSync(
+    resolve(plotlyDirectory, 'plotly-gl3d.min.js'),
+    resolve(mediaDirectory, 'plotly-gl3d.min.js'),
+  );
+  copyFileSync(
+    resolve(plotlyDirectory, 'LICENSE'),
+    resolve(mediaDirectory, 'plotly.LICENSE.txt'),
+  );
 }
 
-const plotlyDirectory = resolve(
-  repositoryRoot,
-  'node_modules/plotly.js-gl3d-dist-min',
-);
-copyFileSync(
-  resolve(plotlyDirectory, 'plotly-gl3d.min.js'),
-  resolve(mediaDirectory, 'plotly-gl3d.min.js'),
-);
-copyFileSync(
-  resolve(plotlyDirectory, 'LICENSE'),
-  resolve(mediaDirectory, 'plotly.LICENSE.txt'),
-);
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

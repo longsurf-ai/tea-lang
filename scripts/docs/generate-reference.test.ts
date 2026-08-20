@@ -1,7 +1,8 @@
-// Purpose: Verify the seven representative reference pages join real compiler facts with complete human-facing sections and checked examples.
+// Purpose: Verify the generated reference pages join real compiler facts with complete human-facing sections and checked examples.
 
-import {describe, expect, test} from 'bun:test';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 
 import {generate} from '../../src/codegen/codegen';
 import {CATALOG} from '../../src/checker/catalog';
@@ -25,7 +26,8 @@ import {
   type VariableEntry,
 } from './reference-pilot';
 
-const ROOT = path.resolve(import.meta.dir, '../..');
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(TEST_DIR, '../..');
 
 function entry<T extends (typeof PILOT_REFERENCE_ENTRIES)[number]['kind']>(
   kind: T,
@@ -47,15 +49,17 @@ describe('reference pilot information architecture', () => {
       'annotations',
     ]);
     expect(PILOT_REFERENCE_ENTRIES).toHaveLength(7);
-    expect(
-      PILOT_REFERENCE_ENTRIES.map(item => item.category).sort(),
-    ).toEqual([...REFERENCE_CATEGORIES].sort());
+    expect(PILOT_REFERENCE_ENTRIES.map(item => item.category).sort()).toEqual(
+      [...REFERENCE_CATEGORIES].sort(),
+    );
     expect(new Set(PILOT_REFERENCE_ENTRIES.map(item => item.route)).size).toBe(
       7,
     );
 
     const outputs = referenceOutputs(ROOT);
-    expect(outputs.has(path.join(ROOT, 'docs/reference/overview.md'))).toBe(true);
+    expect(outputs.has(path.join(ROOT, 'docs/reference/overview.md'))).toBe(
+      true,
+    );
     for (const category of REFERENCE_CATEGORIES) {
       expect(
         outputs.has(path.join(ROOT, 'docs/reference', `${category}.md`)),
@@ -148,9 +152,7 @@ describe('reference pilot information architecture', () => {
     const keyword = entry('keyword');
     const markdown = entryPage(keyword);
 
-    expect(markdown).toContain(
-      '[result = | result :=] for element in array',
-    );
+    expect(markdown).toContain('[result = | result :=] for element in array');
     expect(markdown).toContain('return_expression');
     expect(markdown).toContain('array<Element>');
     expect(markdown).toContain('map<Key, Value>');

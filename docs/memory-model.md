@@ -1,4 +1,7 @@
-# Tea value and memory model
+---
+title: Tea value and memory model
+sidebarTitle: Memory model
+---
 
 This document owns source-observable assignment, mutation, history,
 collections, structs, and persistence. [ir.md](ir.md) owns the static Program

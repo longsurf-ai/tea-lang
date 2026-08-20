@@ -1,6 +1,6 @@
 // Purpose: Deterministic collection traces compare immutable runtime headers with independent eager-copy reference models.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {
   type CollectionMutation,
   type CollectionMutationOperation,
@@ -484,8 +484,11 @@ describe('collection failure contracts', () => {
     expect(call(h, 'map.contains', BOOL, [removed.replacement, 'key'])).toBe(
       false,
     );
-    expect(call(h, 'map.keys', STRINGS, [removed.replacement])).toSatisfy(
-      result => arrayValues(h, result as Value).length === 0,
-    );
+    expect(
+      arrayValues(
+        h,
+        call(h, 'map.keys', STRINGS, [removed.replacement]) as Value,
+      ),
+    ).toHaveLength(0);
   });
 });

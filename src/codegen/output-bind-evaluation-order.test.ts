@@ -1,6 +1,6 @@
 // Purpose: Output bind lowering preserves source evaluation order while assembling canonical host arguments.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {mustBuild} from '../noder/testing';
 import {
   ExecutionError,

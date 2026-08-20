@@ -71,4 +71,4 @@ Request options have a second correctness hole. The IR retains `calcBarsCount`, 
 - [x] Codegen tests prove ABI 4 manifests, typed `rt.builtin` reads, option evaluation order, and static/dynamic bind calls.
 - [x] Runtime tests cover every domain, the row/extent/context history classes, typed out-of-range values, missing versus typed-empty metadata, deterministic historical `timenow`, and fixed-history bar-state behavior.
 - [x] Request/provider tests cover omitted, zero, positive, oversized, negative, fractional, and na counts; provider over-return; nested inheritance; reset child indices; and typed-empty merge prefixes.
-- [x] Add one hash-pinned compile-through conformance case, regenerate public reference output, and run `bun run check`; preserve every pre-existing or concurrent working-tree change.
+- [x] Add one hash-pinned compile-through conformance case, regenerate public reference output, and run `npm run check`; preserve every pre-existing or concurrent working-tree change.

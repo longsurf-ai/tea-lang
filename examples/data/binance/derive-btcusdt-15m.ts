@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S node --import tsx
 
 // Rebuild the checked-in 15-minute BTCUSDT example from the normalized
 // one-minute parent snapshot recorded in btcusdt-15m.source.json.
@@ -41,7 +41,7 @@ interface Bucket {
 
 function usage(): never {
   throw new Error(
-    'usage: bun examples/data/binance/derive-btcusdt-15m.ts <normalized-1m.csv> <new-output.csv>',
+    'usage: node --import tsx examples/data/binance/derive-btcusdt-15m.ts <normalized-1m.csv> <new-output.csv>',
   );
 }
 

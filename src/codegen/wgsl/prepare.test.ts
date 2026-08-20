@@ -2,7 +2,8 @@
 
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {describe, expect, test} from 'bun:test';
+import {fileURLToPath} from 'node:url';
+import {describe, expect, test} from 'vitest';
 import {mustBuild} from '../../noder/testing';
 import {compileProgramToWgsl} from './lower';
 import {analyzeWgslEligibility} from './prepare';
@@ -11,7 +12,7 @@ function componentProgram() {
   return mustBuild(
     readFileSync(
       join(
-        import.meta.dir,
+        fileURLToPath(new URL('.', import.meta.url)),
         '../../../tests/fixtures/execution/compile/strategy-components/source.tea',
       ),
       'utf8',

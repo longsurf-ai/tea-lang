@@ -2,8 +2,6 @@
 title: Strategy model
 ---
 
-# Strategy model
-
 A Tea strategy is the entry source plus the policy state it declares. Broker
 execution, portfolio accounting, and their sequencing are reusable ordinary Tea
 libraries compiled into the same `Program` as the strategy.

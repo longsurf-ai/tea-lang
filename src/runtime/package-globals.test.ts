@@ -1,6 +1,6 @@
 // Purpose: End-to-end JS proof that imported package globals use ordinary transactional var storage isolated per binding and request context.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {Errors, fatal} from '../base/print';
 import {newFileBase} from '../base/pos';
 import {checkPackage} from '../checker/check';

@@ -1,6 +1,6 @@
 // Purpose: Generated-helper parity locks for finite-or-na normalization and type-directed na behavior.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {IrKind} from '../ir/node';
 import {FloatType, NaType, Qualifier} from '../ir/type';
 import {HELPERS, lowerExpr, valueClassOf, type LowerCtx} from './lower';

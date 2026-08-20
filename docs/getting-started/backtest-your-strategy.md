@@ -1,9 +1,6 @@
 ---
 title: Backtest your strategy
-hide_title: true
 ---
-
-# Backtest your strategy
 
 This walkthrough uses Tea's explicit broker, portfolio, and trade coordinator
 values. All execution and accounting policy is Tea source compiled into the

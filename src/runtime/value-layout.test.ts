@@ -1,6 +1,6 @@
 // Purpose: Runtime layout registry tests for immutable manifest ownership, typed empties, fixed-width struct carriers, and finite recursive declarations.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {ValueClass} from './abi';
 import {
   type AggregateLayoutManifest,

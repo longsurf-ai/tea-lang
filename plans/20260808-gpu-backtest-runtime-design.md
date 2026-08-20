@@ -137,4 +137,4 @@ backend are follow-up plans.
 - [ ] CPU baseline documented: `totalBarSteps/s` CPU (1 core / N workers) vs
       GPU for the same grid.
 - [ ] `npm ci && npm test` green in both experiment packages on Node 22;
-      root `bun test` untouched.
+      root `npm test` remains untouched.

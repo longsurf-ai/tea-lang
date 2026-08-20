@@ -1,4 +1,4 @@
-import {expect, test} from 'bun:test';
+import {expect, test} from 'vitest';
 import {OperationalError} from '../base/operational-error';
 import {cliFailure} from './execution';
 

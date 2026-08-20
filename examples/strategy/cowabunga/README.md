@@ -34,7 +34,7 @@ This is deliberately a runtime/language stress case, not an economically compara
 ## Run
 
 ```sh
-bun src/main.ts execute examples/strategy/cowabunga/sweep.yaml
+node --import tsx src/main.ts execute examples/strategy/cowabunga/sweep.yaml
 ```
 
 ## Measured result

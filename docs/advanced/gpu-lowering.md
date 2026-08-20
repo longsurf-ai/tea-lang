@@ -1,9 +1,6 @@
 ---
 title: GPU Lowering
-hide_title: true
 ---
-
-# GPU Lowering
 
 Tea executes a deliberately narrow, generic `Program` subset on WebGPU. The
 boundary is fail closed: unsupported Program constructs produce diagnostics
@@ -249,14 +246,14 @@ idempotent.
 
 ## Real Dawn gate
 
-Default Bun tests cover eligibility, artifact schemas/layouts, provider
+Default unit tests cover eligibility, artifact schemas/layouts, provider
 preparation, resource sizing, and decoding contracts without loading a native
 GPU device. The separate Node/Dawn gate exercises multiple independent
 executions over multiple chunks and compares dense outputs plus typed sparse
 effects with CPU execution:
 
 ```sh
-bun run test:gpu
+npm run test:gpu
 ```
 
 The Dawn tests use small indicator programs to exercise `ta.ema`, numeric

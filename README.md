@@ -46,11 +46,16 @@ folding for `.tea` files. See its README for packaging and installation.
 
 ## Documentation
 
-The language documentation lives in [`docs`](docs), with the Docusaurus shell
-in [`website`](website). Run `bun run docs:dev` while writing, or
-`bun run docs:check` to verify generated references and the production build.
-Installed Tea releases include that static build, so `tea docs` serves the
-matching documentation locally and opens it in a browser.
+The language documentation and Mintlify configuration live in [`docs`](docs).
+Use an LTS Node release (20, 22, or 24), then run `npm run docs:dev` while
+writing or `npm run docs:check` to validate generated references, Mintlify
+navigation and links, and the packaged offline build. Configure the Mintlify
+GitHub deployment with `/docs` as its documentation subdirectory.
+
+The Docusaurus shell in [`website`](website) is retained only as the static
+offline renderer for installed Tea releases. It is not the hosted documentation
+framework: `tea docs` serves its version-matched build locally without requiring
+Mintlify, a network connection, or credentials.
 
 ## Why is
 

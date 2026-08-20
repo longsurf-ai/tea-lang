@@ -1,9 +1,10 @@
 // Purpose: Pin the offline strategy catalog's real WGSL eligibility boundary
 // while reference-struct GPU lowering is deliberately deferred.
 
-import {expect, test} from 'bun:test';
+import {expect, test} from 'vitest';
 import {existsSync, readdirSync} from 'node:fs';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
 import {
   compileProgramToWgsl,
@@ -12,7 +13,10 @@ import {
 import {compileToProgram} from '../src/compile';
 import type {Program} from '../src/ir/program';
 
-const STRATEGY_ROOT = join(import.meta.dir, '../examples/strategy');
+const STRATEGY_ROOT = join(
+  fileURLToPath(new URL('.', import.meta.url)),
+  '../examples/strategy',
+);
 
 interface FirstBlocker {
   readonly code: WgslEligibilityIssueCode;

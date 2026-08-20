@@ -17,7 +17,7 @@ The configured `tick_size` is `0.01`, matching the BTCUSDT fixture. The publishe
 Run the bounded 3 x 3 CPU sweep from the repository root:
 
 ```sh
-bun src/main.ts execute examples/strategy/pair-spread-mean-reversion/sweep.yaml
+node --import tsx src/main.ts execute examples/strategy/pair-spread-mean-reversion/sweep.yaml
 ```
 
 ## Observed reference run

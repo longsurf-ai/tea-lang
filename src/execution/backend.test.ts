@@ -1,6 +1,6 @@
 // Purpose: Runtime configurations acquire exactly one matching disposable execution backend.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {GpuDeviceLease} from '../providers/gpu/dawn';
 import type {RuntimeConfig} from './config';
 import {acquireBackend} from './backend';

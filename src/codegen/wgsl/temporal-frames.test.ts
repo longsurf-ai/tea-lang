@@ -1,6 +1,6 @@
 // Purpose: Acceptance boundary for generic call-site frames and bind-sized history in WGSL.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {DepthKind} from '../../ir/node';
 import {mustBuild} from '../../noder/testing';
 import {compileProgramToWgsl} from './lower';

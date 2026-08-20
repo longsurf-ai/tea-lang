@@ -1,6 +1,6 @@
 // Purpose: Observable array, matrix, ordered-map, nesting, struct-reference, snapshot, and eager-copy-model conformance tests.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {ExecutionError, type CollectionValue, type Value} from '../abi';
 import {HeapArena, type HeapTransaction, type StorageRef} from '../heap';
 import {StructStorageRuntime, type StructRef} from '../struct-storage';

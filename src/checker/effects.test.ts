@@ -1,7 +1,7 @@
 // Purpose: `effect.emit` is a generic checker-owned sparse-effect intrinsic
 // with fixed-payload and execution-context contracts, not strategy policy.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {CallKind} from './info';
 import type {NativeCall} from './info';
 import {checkText} from './testing';

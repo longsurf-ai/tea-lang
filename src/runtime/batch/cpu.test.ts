@@ -1,6 +1,6 @@
 // Purpose: CPU batch is only ordered repetition of the ordinary bind/run lifecycle.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {generate} from '../../codegen/codegen';
 import {mustBuild} from '../../noder/testing';
 import {csvProvider} from '../../providers/data/csv';
@@ -44,12 +44,12 @@ describe('runCpuBatch', () => {
     ]);
 
     expect(results.map(result => result.rows)).toEqual([2, 2]);
-    expect(
-      first.emissions.map(emission => emission.channels[0]),
-    ).toEqual([1, 3]);
-    expect(
-      second.emissions.map(emission => emission.channels[0]),
-    ).toEqual([30, 70]);
+    expect(first.emissions.map(emission => emission.channels[0])).toEqual([
+      1, 3,
+    ]);
+    expect(second.emissions.map(emission => emission.channels[0])).toEqual([
+      30, 70,
+    ]);
   });
 
   test('accepts an empty binding list', async () => {

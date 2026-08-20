@@ -1,4 +1,7 @@
-# Requests: cross-context data and the source facade
+---
+title: "Requests: cross-context data and the source facade"
+sidebarTitle: Requests
+---
 
 Authority for request execution and the data-source registry. `docs/ir.md`
 owns the compile-time shape (RequestEdge, capture rules); `docs/runtime.md`

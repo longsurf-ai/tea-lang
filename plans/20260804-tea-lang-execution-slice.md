@@ -102,9 +102,9 @@ traces become the execution-level regression surface.
 
 ## 4. Verification
 
-- [x] `bun run typecheck` and `bun test` green; new rt/codegen suites
+- [x] `npm run typecheck` and `npm test` green; new rt/codegen suites
       included.
-- [x] `bun src/main.ts run tests/fixtures/macd.tea --input tests/fixtures/dataset.csv`
+- [x] `node --import tsx src/main.ts run tests/fixtures/macd.tea --input tests/fixtures/dataset.csv`
       prints per-bar MACD/signal/histogram values; exit 0.
 - [x] Execution goldens locked under `tests/fixtures/run/`; rerun is
       byte-identical (determinism).

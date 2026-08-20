@@ -1,7 +1,7 @@
 // Purpose: Policy-specific broker interfaces remain static structural views
 // over the unchanged canonical BrokerEmulator implementation.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {funcsOf} from '../ir/visit';
 import {mustBuild} from '../noder/testing';
 import {
@@ -85,11 +85,11 @@ describe('broker policy contracts', () => {
       'execute_if_stop_touched',
     ]);
 
-    expect(satisfies(emulator, commands)).toBeTrue();
-    expect(satisfies(emulator, nextOpen)).toBeTrue();
-    expect(satisfies(emulator, ohlc)).toBeTrue();
-    expect(satisfies(emulator, path)).toBeTrue();
-    expect(satisfies(emulator, immediate)).toBeTrue();
+    expect(satisfies(emulator, commands)).toBe(true);
+    expect(satisfies(emulator, nextOpen)).toBe(true);
+    expect(satisfies(emulator, ohlc)).toBe(true);
+    expect(satisfies(emulator, path)).toBe(true);
+    expect(satisfies(emulator, immediate)).toBe(true);
   });
 
   test('specializes every capability view through the noder', () => {

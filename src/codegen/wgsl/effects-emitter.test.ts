@@ -1,7 +1,7 @@
 // Purpose: Lock chunked WGSL emission to generic Program facts: persistent
 // execution state, absolute rows, ordinary function effects, and fixed payloads.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {newFileBase} from '../../base/pos';
 import {Errors} from '../../base/print';
 import {checkPackage} from '../../checker/check';

@@ -25,7 +25,7 @@ The primary instrument is the immutable Binance BTCUSDT daily snapshot. The runt
 ## Run
 
 ```sh
-bun src/main.ts execute examples/strategy/mtf-psar/sweep.yaml
+node --import tsx src/main.ts execute examples/strategy/mtf-psar/sweep.yaml
 ```
 
 ## Measured result

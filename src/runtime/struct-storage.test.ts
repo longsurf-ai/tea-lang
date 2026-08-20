@@ -1,6 +1,6 @@
 // Purpose: Struct-reference runtime contracts — fresh identity, shared mutation, typed-empty reads, transaction rollback, nominal checks, and cyclic reachability.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {HeapArena} from './heap';
 import {StructStorageRuntime} from './struct-storage';
 import {

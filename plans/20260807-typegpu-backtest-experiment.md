@@ -117,5 +117,5 @@ the OpenChart monorepo.
 - [x] A bounded artifact smoke run streams orders, fills, round trips, and full
       equity curves; no all-curves in-memory allocation occurs.
 - [x] `npm run benchmark` reports repeated runs without silently batching jobs.
-- [x] Targeted Prettier and `git diff --check` pass; the existing dirty `bun.lock`
+- [x] Targeted Prettier and `git diff --check` pass; the existing dirty lockfile
       remains untouched.

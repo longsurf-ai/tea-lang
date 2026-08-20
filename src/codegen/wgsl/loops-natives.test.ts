@@ -1,7 +1,7 @@
 // Purpose: Lock numeric range and core math lowering to Tea evaluation and
 // nullable-value semantics without imposing an arbitrary GPU trip-count cap.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {mustBuild} from '../../noder/testing';
 import {compileProgramToWgsl} from './lower';
 

@@ -32,33 +32,33 @@ reliably distinguish an agent's edit from a pre-existing edit to the same file.
 Preview the complete task list without calling Codex:
 
 ```sh
-bun scripts/reference-docs/workflow.ts plan
+node --import tsx scripts/reference-docs/workflow.ts plan
 ```
 
 Start a new run:
 
 ```sh
-bun scripts/reference-docs/workflow.ts run
+node --import tsx scripts/reference-docs/workflow.ts run
 ```
 
 Inspect available runs or one run:
 
 ```sh
-bun scripts/reference-docs/workflow.ts status
-bun scripts/reference-docs/workflow.ts status <run-id>
+node --import tsx scripts/reference-docs/workflow.ts status
+node --import tsx scripts/reference-docs/workflow.ts status <run-id>
 ```
 
 Resume an interrupted or blocked run after addressing its external blocker:
 
 ```sh
-bun scripts/reference-docs/workflow.ts resume <run-id>
+node --import tsx scripts/reference-docs/workflow.ts resume <run-id>
 ```
 
 Approve a declared human-review gate only after its feedback has been applied
 to the scope and workflow:
 
 ```sh
-bun scripts/reference-docs/workflow.ts approve <run-id> <gate-id>
+node --import tsx scripts/reference-docs/workflow.ts approve <run-id> <gate-id>
 ```
 
 The default scope contains a mandatory `pilot-review` gate after the seven
@@ -101,8 +101,8 @@ To require a desired feature that Tea does not yet implement, add an item to
     "An invalid program and its exact diagnostic",
     "CPU rollback and history behavior where applicable"
   ],
-  "allowedPaths": ["src/", "tests/", "docs/reference/", "website/scripts/"],
-  "validate": ["bun run check"]
+  "allowedPaths": ["src/", "tests/", "docs/reference/", "scripts/docs/"],
+  "validate": ["npm run check"]
 }
 ```
 

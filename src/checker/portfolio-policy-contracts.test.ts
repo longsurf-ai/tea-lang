@@ -1,7 +1,7 @@
 // Purpose: Additive checker/noder gates for the policy-specific portfolio
 // contracts while the legacy broad Portfolio contract remains available.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {funcsOf} from '../ir/visit';
 import {mustBuild} from '../noder/testing';
 import {ObjectKind} from './object';
@@ -96,7 +96,7 @@ describe('portfolio policy contracts', () => {
       'open_trade_count',
       'open_trade',
     ]);
-    expect(importedPortfolio(result).exports.has('Portfolio')).toBeFalse();
+    expect(importedPortfolio(result).exports.has('Portfolio')).toBe(false);
   });
 
   test('checks and nodes the canonical implementation for each intended policy', () => {

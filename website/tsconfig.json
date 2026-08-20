@@ -3,7 +3,7 @@
   "compilerOptions": {
     "baseUrl": ".",
     "strict": true,
-    "types": ["@docusaurus/module-type-aliases", "bun"]
+    "types": ["@docusaurus/module-type-aliases", "node"]
   },
   "include": [
     "docusaurus.config.ts",

@@ -1,6 +1,6 @@
 // Purpose: TableSink presentation — headers from plot titles, preamble for channel-less outputs.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import type {OutputSpec} from '../../runtime/abi';
 import {TableSink} from './table-sink';
 
@@ -16,38 +16,41 @@ describe('TableSink', () => {
   test('prints a headed table and a preamble for channel-less outputs', () => {
     const chunks: string[] = [];
     const sink = new TableSink(text => chunks.push(text));
-    sink.declare({outputs: [
-      {
-        spec: spec(
-          'indicator',
-          [
-            {name: 'title', value: 'MACD'},
-            {name: 'shorttitle', value: 'MACD'},
-          ],
-          [],
-        ),
-        boundArgs: [],
-      },
-      {
-        spec: spec(
-          'plot',
-          [{name: 'title', value: 'Histogram'}],
-          [
-            {name: 'series', type: 'float', transport: {kind: 'float'}},
-            {name: 'color', type: 'color', transport: {kind: 'color'}},
-          ],
-        ),
-        boundArgs: [],
-      },
-      {
-        spec: spec(
-          'plot',
-          [{name: 'title', value: 'MACD'}],
-          [{name: 'series', type: 'float', transport: {kind: 'float'}}],
-        ),
-        boundArgs: [],
-      },
-    ], effects: []});
+    sink.declare({
+      outputs: [
+        {
+          spec: spec(
+            'indicator',
+            [
+              {name: 'title', value: 'MACD'},
+              {name: 'shorttitle', value: 'MACD'},
+            ],
+            [],
+          ),
+          boundArgs: [],
+        },
+        {
+          spec: spec(
+            'plot',
+            [{name: 'title', value: 'Histogram'}],
+            [
+              {name: 'series', type: 'float', transport: {kind: 'float'}},
+              {name: 'color', type: 'color', transport: {kind: 'color'}},
+            ],
+          ),
+          boundArgs: [],
+        },
+        {
+          spec: spec(
+            'plot',
+            [{name: 'title', value: 'MACD'}],
+            [{name: 'series', type: 'float', transport: {kind: 'float'}}],
+          ),
+          boundArgs: [],
+        },
+      ],
+      effects: [],
+    });
     sink.publish({
       row: 0,
       outputs: [

@@ -1,6 +1,6 @@
 // Purpose: TabWriter alignment — locks the pad-to-max-width rule used by CLI tables.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'vitest';
 import {TabWriter} from './tabwriter';
 
 describe('TabWriter', () => {
