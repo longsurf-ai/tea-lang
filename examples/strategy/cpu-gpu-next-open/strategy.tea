@@ -1,8 +1,7 @@
 //@version=1
-// One deterministic strategy source for both the JavaScript CPU runtime and
-// the WebGPU runtime. The deliberately large rates keep the three-bar result
-// easy to verify by hand.
-strategy("CPU/GPU next-open strategy", shorttitle="CPU/GPU", overlay=false)
+// A deterministic next-open strategy for the JavaScript runtime. The
+// deliberately large rates keep the three-bar result easy to verify by hand.
+strategy("Next-open strategy", shorttitle="Next open", overlay=false)
 
 import broker
 import portfolio

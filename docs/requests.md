@@ -180,8 +180,8 @@ the resolved ProviderContext, with two differences:
   values.
 
 The root binding constructs one `SharedExecutionState`: the exact value-layout
-registry, immutable Heap arena, unique-context budget, and fixed-value logical
-byte budget. Every static and dynamic child receives that same state. A request
+registry, shared Heap arena, unique-context budget, and fixed-value logical byte
+budget. Every static and dynamic child receives that same state. A request
 result therefore keeps its root module's `LayoutId`, and a collection-valued
 result may safely carry a `StorageRef` into the parent; independently owned
 layout namespaces or arenas are forbidden.
@@ -300,9 +300,9 @@ Execution:
   collapse onto the place. `r = request.security(sym, …)` stays a real
   per-row Name write and `r[1]` is a name-ring read (the parent-row
   history of "whatever the request returned", whichever pair served each
-  row); direct `request(...)[k]` rides the synthetic $hist name. The
-  edge's own result ring backs `rt.request(rid, offset)` for hand-written
-  modules. One merged view per `(edge, pair)`, built on first encounter.
+  row). History syntax only works on a directly readable name, so
+  `request.security(sym, …)[1]` is invalid. Bind the result first, then read
+  `r[1]`. One merged view per `(edge, pair)` is built on first encounter.
 - **Suspension**: an unresolved pair throws `ContextSuspension` out of
   `executeRow`; the host awaits `resolvePending()` (where
   `resolveContext`, the child's full-history run, and the merge happen)

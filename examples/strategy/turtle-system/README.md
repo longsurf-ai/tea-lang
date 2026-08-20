@@ -38,39 +38,24 @@ the strategy so the selected historical contract remains locally auditable.
 
 The supported parameter domain requires positive risk/stop/pyramid values,
 System 1 entry shorter than System 2 entry, and System 1 exit shorter than
-System 2 exit. The default WebGPU config is a 780-scenario stress sweep that
-varies stop distance, risk fraction, pyramid spacing, and maximum units.
-`sweep-cpu.yaml` is a representative 36-scenario JS/f64 subset used as the
-authoritative differential oracle; every one of its bindings also appears in
-the larger GPU grid.
+System 2 exit. The default JavaScript config is a 780-scenario stress sweep
+that varies stop distance, risk fraction, pyramid spacing, and maximum units.
+`sweep-cpu.yaml` keeps the earlier, representative 36-scenario JS/f64 subset;
+every one of its bindings also appears in the larger grid.
 
 ```sh
 tea execute examples/strategy/turtle-system/sweep.yaml
 tea execute examples/strategy/turtle-system/sweep-cpu.yaml
 ```
 
-With Dawn and the `wgsl-f32-i32` profile, the checked 36-binding oracle subset
-executes 118,188 rows in one dispatch. Total return ranges from 1.042421 to
-33.825901, maximum drawdown from 0.099307 to 0.534546, fill count from 77 to
-243, and completed round trips from 22 to 68.
+The checked 36-binding JS/f64 subset executes 118,188 rows. Its total return
+ranges from 1.042421 to 33.825902 and maximum drawdown from 0.099307 to
+0.534546. Binding 0 is pinned at 681,128.24 ending equity, 581,128.24 realized
+PnL, 156 fills, 44 completed round trips, 0.17942622143948717 maximum drawdown,
+and 5.8112824 total return.
 
-The matching `js-f64` run executed those 36 bindings and 118,188 rows. Its
-extrema were 1.042421 to 33.825902 total return and 0.099307 to 0.534546 maximum
-drawdown. A binding-by-binding differential found identical fill counts and
-round trips for all 36 scenarios; the largest absolute differences were 1.14
-in ending equity, 0.000000199 in maximum drawdown, and 0.00001358 in total
-return. This is strong evidence for this grid, but the numeric profiles are not
-bit-identical and another threshold-sensitive binding may take a different
-branch. The canonical-component migration additionally pins binding 0 at
-681,128.24 ending equity, 581,128.24 realized PnL, 156 fills, 44 completed round
-trips, 0.17942622143948717 maximum drawdown, and 5.8112824 total return; its
-normalized economic fill tape is unchanged.
-
-Within that 36-binding oracle subset, the WebGPU highest-return binding was
-`stop N=1.5, risk=0.015, pyramid N=0.5,
-max units=5`: ending equity 3,482,590.00, return 33.825901, drawdown 0.527433,
-203 fills, and 56 round trips. The lowest-return binding was `stop N=1.5,
-risk=0.005, pyramid N=1.0, max units=3`: ending equity 204,242.13, return
-1.042421, drawdown 0.103512, 81 fills, and 25 round trips. These are descriptive
-snapshot extrema, not parameter recommendations. This is a historical
-language/runtime stress fixture, not investment advice.
+The complete strategy cannot currently lower to WGSL because its canonical
+broker, portfolio, and trade values contain struct references. Selecting
+WebGPU stops with `struct-reference-lowering-unimplemented`; it does not fall
+back to CPU. These results are descriptive snapshot values, not parameter
+recommendations or investment advice.

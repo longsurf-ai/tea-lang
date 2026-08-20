@@ -47,14 +47,13 @@ tea execute examples/strategy/turtle-system/sweep.yaml
 tea execute examples/strategy/alice-grid/sweep.yaml
 ```
 
-The catalog pins four of fourteen sources as currently WGSL-eligible:
-`atr-zigzag-breakout`, `cpu-gpu-next-open`, `ema-cross`, and `turtle-system`.
-The other ten fail closed on a specific unsupported generic Program construct;
-they do not silently fall back to CPU. A source may be WGSL-eligible while its
-checked-in measured config deliberately selects JavaScript. Among the twelve
-audited profiles, Turtle publishes a WebGPU sweep and the others publish
-JavaScript sweeps. Each strategy README records its selected public mode,
-deliberate boundaries, data provenance, and any source-page discrepancy.
+All fourteen strategies use struct-backed broker, portfolio, or trade state,
+so their checked-in configs select JavaScript. Selecting WebGPU for one of
+these complete programs fails with
+`struct-reference-lowering-unimplemented`; Tea does not silently fall back to
+CPU. Scalar and numeric programs that do not reach a struct can still use the
+current WGSL subset. Each strategy README records its public mode, deliberate
+boundaries, data provenance, and any source-page discrepancy.
 
 ## Real market data
 
@@ -81,7 +80,7 @@ parameterized long-only EMA crossover over 3,283 Binance Spot BTCUSDT daily
 bars from 2017-08-17 through 2026-08-12 UTC. The CSV, immutable source record,
 and SHA-256 are under [`data/binance/`](data/binance/).
 
-Run the checked-in 100-scenario WebGPU sweep:
+Run the checked-in 100-scenario JavaScript sweep:
 
 ```sh
 tea execute examples/strategy/ema-cross/sweep.yaml
@@ -91,35 +90,31 @@ Paths in the execution config are relative to the YAML file. Its fixed
 `timeNow` and pinned provider digest make the historical run independent of the
 working directory, host clock, and later data changes.
 
-Run one scenario on CPU or GPU:
+Run one scenario on CPU:
 
 ```sh
 tea run examples/strategy/ema-cross/strategy.tea \
-  -i examples/data/binance/btcusdt-1d.csv
-
-tea run examples/strategy/ema-cross/strategy.tea \
-  -i examples/data/binance/btcusdt-1d.csv --gpu \
+  -i examples/data/binance/btcusdt-1d.csv \
   --fast_length 10 --slow_length 32 --initial_cash 100000
 ```
 
-The direct sweep command remains available. It uses GPU by default; add
-`--cpu` to select the JavaScript runtime.
+The direct `sweep` command selects WebGPU by default, so add `--cpu` for this
+struct-backed strategy:
 
 ```sh
 tea sweep examples/strategy/ema-cross/strategy.tea \
   -i examples/data/binance/btcusdt-1d.csv \
   --fast_length 2:20:2 --slow_length 24:60:4 \
-  --initial_cash 100000 --slippage 0.0005 --fee 0.001
+  --initial_cash 100000 --slippage 0.0005 --fee 0.001 --cpu
 ```
 
 The snapshot is a reproducible stress input, not a claim about future returns.
 
-## CPU/GPU lifecycle strategy
+## Small next-open strategy
 
 [`strategy/cpu-gpu-next-open/strategy.tea`](strategy/cpu-gpu-next-open/strategy.tea)
-is a small deterministic strategy for exercising the same compiled `Program`
-on both runtimes. It delegates next-open fills, fees, and accounting to the
-shipped Tea-authored broker, portfolio, and trade libraries.
+is a small deterministic CPU example. It delegates next-open fills, fees, and
+accounting to the shipped Tea-authored broker, portfolio, and trade libraries.
 
 ```sh
 tea run examples/strategy/cpu-gpu-next-open/strategy.tea \

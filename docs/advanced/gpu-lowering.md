@@ -51,8 +51,7 @@ Each binding instantiates one independent Program execution and advances its
 bars sequentially. One WebGPU compute invocation processes one such execution;
 the invocation index is a physical mapping, not Tea-visible identity. A
 workgroup only groups invocations for scheduling and has no semantic role. The
-current subset supports the constructs used by the deterministic strategy
-example, including:
+current scalar and numeric test programs cover:
 
 - required numeric series represented as f32 values or Tea `na`;
 - `bar_index` and `barstate.islast`, derived from absolute row and binding
@@ -260,25 +259,23 @@ effects with CPU execution:
 bun run test:gpu
 ```
 
-The canonical temporal-state examples use ordinary Tea library calls and the
-ordinary CLI path:
+The Dawn tests use small indicator programs to exercise `ta.ema`, numeric
+ranges, core math, parameter-sized history, one-row chunks, cache placement,
+and scalar outputs. They compare those programs with CPU execution. Separate
+eligibility tests compile the canonical strategies and verify that they stop
+before device execution with `struct-reference-lowering-unimplemented`.
 
-```sh
-tea execute examples/strategy/ema-cross/sweep.yaml
-tea execute examples/strategy/turtle-system/sweep.yaml
-```
-
-The EMA source calls `ta.ema`, `ta.crossover`, and `ta.crossunder` directly.
-Turtle additionally exercises parameter-bound `ta.sma`, `ta.highest`, and
-`ta.lowest` ranges, core math natives, the direct scalar trade coordinator, and
-typed fill effects. Their function-local state and parameter history use the
-generic call-site frame machine and bind phase; no `ta`, trade family, broker,
-or portfolio name is recognized by the backend.
+This split is intentional. It proves that the scalar WebGPU runtime still
+works without implying that a struct-backed broker or portfolio can run there
+yet. No `ta`, trade family, broker, or portfolio name is recognized by the
+backend.
 
 ## Fail-closed exclusions
 
 The current backend emits no artifact for Programs requiring any of these:
 
+- struct construction, field access or mutation, or any reachable struct-typed
+  value;
 - source/string/color parameters or request child contexts (fixed-width
   int/float/bool/enum parameters are packed per execution);
 - unresolved dynamic frame-history requirements without an explicit cap, or
@@ -295,10 +292,8 @@ Other unsupported native calls, receiver paths, or function-frame shapes also
 fail closed with a specific diagnostic. This is a target-subset boundary, not
 a separate strategy compiler or runtime model.
 
-Historical epoch-millisecond `time` is one remaining builtin
-exclusion. It does not fit this artifact's declared i32 integer carrier. That
-is not an inherent inability to compare time on WebGPU: a future artifact can
-publish an exact wide-integer representation such as two u32 words and lower
-comparison/arithmetic against it. Turtle is not a reason to add that carrier,
-because its former date inputs were generic TradingView backtest UI rather
-than trading-system semantics and have been removed from the example.
+Historical epoch-millisecond `time` is one remaining builtin exclusion. It
+does not fit this artifact's declared i32 integer carrier. That is not an
+inherent inability to compare time on WebGPU: a future artifact can publish an
+exact wide-integer representation such as two u32 words and lower comparison
+and arithmetic against it.

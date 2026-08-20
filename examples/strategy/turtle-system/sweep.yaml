@@ -4,7 +4,7 @@ program:
   source: ./strategy.tea
 
 runtime:
-  kind: webgpu
+  kind: javascript
 
 execution:
   kind: sweep

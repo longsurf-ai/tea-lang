@@ -15,7 +15,7 @@ The runnable source is `examples/strategy/cpu-gpu-next-open/strategy.tea`:
 
 ```tea
 //@version=1
-strategy("CPU/GPU next-open strategy", shorttitle="CPU/GPU", overlay=false)
+strategy("Next-open strategy", shorttitle="Next open", overlay=false)
 
 import broker
 import portfolio
@@ -135,7 +135,7 @@ program:
   source: ./strategy.tea
 
 runtime:
-  kind: webgpu
+  kind: javascript
 
 execution:
   kind: sweep
@@ -255,10 +255,12 @@ tea sweep strategy.tea -i data.csv --length 2:20:2
 ```
 
 The direct `run` spelling defaults to JavaScript and accepts `--gpu`; direct
-`sweep` defaults to WebGPU and accepts `--cpu`. Their source and input paths
-resolve from the invocation working directory. `tea execute` instead takes its
-runtime and execution choices entirely from the config; v1 intentionally does
-not merge CLI parameter or runtime overrides into that file.
+`sweep` defaults to WebGPU and accepts `--cpu`. A source still has to fit the
+selected backend. Today, every canonical strategy reaches struct-backed trade
+state and therefore needs JavaScript. Their source and input paths resolve from
+the invocation working directory. `tea execute` instead takes its runtime and
+execution choices entirely from the config; v1 intentionally does not merge
+CLI parameter or runtime overrides into that file.
 
 ## Lifecycle ownership
 
@@ -277,20 +279,23 @@ different explicit lifecycle. Each family is a direct concrete coordinator
 constrained by compatible broker and portfolio interfaces; no host dispatches
 on the family name.
 
-## Parameter sweeps and GPU execution
+## Parameter sweeps and the current GPU boundary
 
-`sweep` expands numeric `start:stop:step` axes in source declaration order and
-uses GPU by default. `--cpu` runs the same binding list through JavaScript:
+`sweep` expands numeric `start:stop:step` axes in source declaration order. It
+selects WebGPU by default, but this strategy contains struct-backed broker,
+portfolio, and trade values. Run it with `--cpu`:
 
 ```sh
 tea sweep examples/strategy/cpu-gpu-next-open/strategy.tea \
   --input examples/data/demo/strategy-bars.csv \
-  --slippage 0:0.2:0.1 --fee 0 --initial_cash 100
-
-tea sweep examples/strategy/cpu-gpu-next-open/strategy.tea \
-  --input examples/data/demo/strategy-bars.csv \
   --slippage 0:0.2:0.1 --fee 0 --initial_cash 100 --cpu
 ```
+
+If you omit `--cpu`, Tea stops during WGSL eligibility checking with
+`struct-reference-lowering-unimplemented`. It does not run part of the
+strategy on the GPU and it does not silently switch runtimes. The existing
+WebGPU backend remains usable for scalar and numeric programs that do not
+reach struct values.
 
 Visualization is a separate consumer of Tea's renderer-neutral JSON result.
 The editor dashboard uses the shared visualization projection; the Tea CLI
@@ -310,9 +315,9 @@ results to a CDN.
 See [Strategy model](../strategy.md) for the normative source contract and
 [GPU Lowering](../advanced/gpu-lowering.md) for the backend boundary.
 
-For a fuller signal-driven example, `examples/strategy/ema-cross/strategy.tea` uses
-`ta.ema`, `ta.crossover`, and `ta.crossunder` directly, trades the signals with
-next-open execution, and runs unchanged through the checked-in `tea execute`
-configuration or the compatible `tea run`, `tea run --gpu`, and `tea sweep`
-commands. The adjacent source record pins the Binance API, coverage dates, row
-count, and CSV SHA-256 for reproducibility.
+For a fuller signal-driven example, `examples/strategy/ema-cross/strategy.tea`
+uses `ta.ema`, `ta.crossover`, and `ta.crossunder` directly and trades the
+signals with next-open execution. Its checked-in `tea execute` configuration
+selects JavaScript; `tea run` and `tea sweep --cpu` use the same source. The
+adjacent source record pins the Binance API, coverage dates, row count, and CSV
+SHA-256 for reproducibility.

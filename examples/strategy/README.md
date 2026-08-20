@@ -12,10 +12,9 @@ TradingView pages were used to derive independent behavioral specifications;
 no Pine source is copied into this repository. “Converted” means the named
 public historical profile is implemented and executed through Tea's ordinary
 frontend and runtime. It does not mean every presentation option, realtime
-tick behavior, or proprietary broker-emulator detail is reproduced. Turtle's
-default grid targets WebGPU and includes an equivalent JS/f64 oracle config;
-ATR ZigZag now also lowers to WGSL, while its published config and the other
-profiles currently retain JS/f64.
+tick behavior, or proprietary broker-emulator detail is reproduced. All
+published strategy grids currently use the JavaScript runtime because their
+broker, portfolio, and trade state contains struct references.
 
 | Published strategy                                                                                                           | Runnable Tea profile                                                                                            | Stress sweep |
 | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -----------: |
@@ -103,17 +102,12 @@ remain outside this interface.
 
 ## Explicit boundaries
 
-- Turtle's default config targets `webgpu`/`wgsl-f32-i32`; its numeric range
-  loops, core math calls, and bind-sized channel history now lower generically.
-  It also ships `sweep-cpu.yaml` for JS/f64 verification. The remaining eleven
-  published configs retain `javascript`/`js-f64` so their audited results stay
-  on one numeric profile. ATR ZigZag's migrated scalar program now also passes
-  WGSL lowering, although this change does not publish a second GPU sweep for
-  it. The remaining ten fail closed at concrete unsupported features: AI and
-  Alice at collections/effect multiplicity; Alpha, MTF PSAR, and Pair Spread at
-  string parameters before their request contexts; BB and VWAP at tuple layout;
-  and Cluster, Cowabunga, and Donchian at time-input mapping. There is no silent
-  CPU fallback.
+- Every canonical strategy reaches struct-backed broker, portfolio, or trade
+  state. WGSL compilation therefore stops with
+  `struct-reference-lowering-unimplemented`. This is deliberate: Tea does not
+  silently fall back to CPU or revive the old inline struct representation.
+  Numeric indicators and other programs without struct references may still
+  use the current WebGPU subset.
 - Historical bars cannot reproduce Pine's realtime `calc_on_every_tick`
   behavior. Session-heavy profiles either use the pinned UTC policy documented
   in their README or select a published session-disabled mode.

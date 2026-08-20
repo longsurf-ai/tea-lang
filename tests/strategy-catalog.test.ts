@@ -224,9 +224,7 @@ describe('clean-room strategy catalog', () => {
 
       const config = loadConfig(join(directory, 'sweep.yaml'));
       expect(config.program.source).toBe(join(directory, 'strategy.tea'));
-      expect(config.runtime.kind).toBe(
-        name === 'turtle-system' ? 'webgpu' : 'javascript',
-      );
+      expect(config.runtime.kind).toBe('javascript');
       expect(config.execution.kind).toBe('sweep');
       if (config.execution.kind !== 'sweep') {
         throw new Error('strategy catalog configs must be sweeps');
@@ -275,15 +273,15 @@ describe('clean-room strategy catalog', () => {
     });
   }
 
-  test('Turtle publishes a CPU oracle subset while its GPU grid fails closed on structs', () => {
+  test('Turtle publishes two CPU grids while WGSL fails closed on structs', () => {
     const directory = join(STRATEGY_ROOT, 'turtle-system');
-    const gpu = loadConfig(join(directory, 'sweep.yaml'));
-    const cpu = loadConfig(join(directory, 'sweep-cpu.yaml'));
-    expect(gpu.runtime.kind).toBe('webgpu');
-    expect(cpu.runtime.kind).toBe('javascript');
+    const full = loadConfig(join(directory, 'sweep.yaml'));
+    const subset = loadConfig(join(directory, 'sweep-cpu.yaml'));
+    expect(full.runtime.kind).toBe('javascript');
+    expect(subset.runtime.kind).toBe('javascript');
 
     const errors = new Errors();
-    const program = compileToProgram([gpu.program.source], errors);
+    const program = compileToProgram([full.program.source], errors);
     if (program === null) {
       throw new Error(
         errors
@@ -293,20 +291,26 @@ describe('clean-room strategy catalog', () => {
       );
     }
     expect(errors.count).toBe(0);
-    if (gpu.execution.kind !== 'sweep' || cpu.execution.kind !== 'sweep') {
+    if (full.execution.kind !== 'sweep' || subset.execution.kind !== 'sweep') {
       throw new Error('Turtle configs must both be sweeps');
     }
     const specs = paramSpecsOf(program.params);
-    const gpuParameters = resolveExecutionParameters(specs, gpu.execution).sets;
-    const cpuParameters = resolveExecutionParameters(specs, cpu.execution).sets;
-    expect(gpuParameters).toHaveLength(780);
-    expect(cpuParameters).toHaveLength(36);
-    const gpuKeys = new Set(
-      gpuParameters.map(parameters => JSON.stringify(parameters)),
+    const fullParameters = resolveExecutionParameters(
+      specs,
+      full.execution,
+    ).sets;
+    const subsetParameters = resolveExecutionParameters(
+      specs,
+      subset.execution,
+    ).sets;
+    expect(fullParameters).toHaveLength(780);
+    expect(subsetParameters).toHaveLength(36);
+    const fullKeys = new Set(
+      fullParameters.map(parameters => JSON.stringify(parameters)),
     );
     expect(
-      cpuParameters.every(parameters =>
-        gpuKeys.has(JSON.stringify(parameters)),
+      subsetParameters.every(parameters =>
+        fullKeys.has(JSON.stringify(parameters)),
       ),
     ).toBe(true);
     const compiled = compileProgramToWgsl(program);
@@ -318,7 +322,7 @@ describe('clean-room strategy catalog', () => {
         message: 'GPU struct-reference lowering is deferred for OrderRejected',
       });
     }
-    const source = readFileSync(gpu.program.source, 'utf8');
+    const source = readFileSync(full.program.source, 'utf8');
     expect(source).toContain('trade.nextOpen(');
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');
