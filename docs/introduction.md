@@ -6,5 +6,4 @@ hide_title: true
 
 # Introduction
 
-<!-- Writing brief: Introduce Tea, the problems it is designed to solve, and the shortest useful mental model for a new reader. -->
-Tea
+Tea is a high-level programming language for iterative and parallel computation. It makes it easy to write programs that process data iteratively and AL programs can be transparently lowered to GPU devices to run

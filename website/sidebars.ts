@@ -4,12 +4,12 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 
 const sidebars: SidebarsConfig = {
   documentationSidebar: [
-    'introduction',
+    'Introduction',
     {
       type: 'category',
       label: 'Getting Started',
       items: [
-        'getting-started/write-your-first-indicator',
+        'getting-started/Write your first indicator',
         'getting-started/backtest-your-strategy',
         'getting-started/parameter-sweep-with-gpu',
         'getting-started/instrument-sweep-with-gpu',

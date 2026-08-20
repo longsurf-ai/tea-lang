@@ -10,3 +10,4 @@ dist/
 .env.*
 !.env.example
 .codex/reference-docs/
+.obsidian/
