@@ -16,6 +16,7 @@
   "include": [
     "src",
     "tests",
+    "scripts",
     "editors/vscode/scripts",
     "editors/vscode/test",
     "website/docusaurus.config.ts",

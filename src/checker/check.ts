@@ -16,6 +16,7 @@ import {
   isAggregateType,
   isMapKeyType,
   isStorableType,
+  isSourceQualifier,
   IntType,
   InvalidType,
   isNaValue,
@@ -2295,10 +2296,8 @@ class Checker {
   } {
     let qualifier: Qualifier | null = null;
     if (a.qualifier !== null) {
-      if (a.qualifier.value === Qualifier.Simple) {
-        qualifier = Qualifier.Simple;
-      } else if (a.qualifier.value === Qualifier.Series) {
-        qualifier = Qualifier.Series;
+      if (isSourceQualifier(a.qualifier.value)) {
+        qualifier = a.qualifier.value;
       } else {
         this.error(a.qualifier.pos, `unknown qualifier '${a.qualifier.value}'`);
       }

@@ -11,8 +11,11 @@ standalone Tea toolchain. The Docusaurus reader experience is owned by
 - `memory-model.md` remains the authority for source-observable value semantics,
   `ir.md` remains the authority for Program IR, and `runtime.md` remains the
   authority for physical execution and publication.
-- Reference pages are mechanical projections of compiler-owned functions and
-  types. Generated reference files are never edited by hand.
+- Reference pages are mechanical projections of compiler-owned language
+  vocabulary, functions, and types. Human-facing descriptions and examples may
+  live in a metadata overlay only when completeness tests key them back to the
+  owning compiler vocabulary. Generated reference files are never edited by
+  hand.
 - Public navigation is owned by `../website/sidebars.ts`; directory nesting does
   not create additional public sections implicitly.
 - All links, examples, and assets must remain inside the independently

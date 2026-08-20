@@ -31,7 +31,14 @@ import type {
 } from './nodes';
 import {AssignOp, COMPOUND_ASSIGN, Mode, NodeKind, ReceiverMode} from './nodes';
 import {Scanner} from './scanner';
-import {CONTEXTUAL_KEYWORDS, LitKind, Op, Tok, type TokenKind} from './tokens';
+import {
+  CONTEXTUAL_KEYWORDS,
+  isUnaryOperator,
+  LitKind,
+  Op,
+  Tok,
+  type TokenKind,
+} from './tokens';
 
 // Keywords that real Pine treats contextually: they act as keywords only in
 // their governing production and as ordinary names anywhere else (corpus
@@ -632,7 +639,7 @@ export class Parser {
   private unary(): Expr {
     if (this.tok() === Tok.Operator) {
       const op = this.op();
-      if (op === Op.Minus || op === Op.Plus || op === Op.Not) {
+      if (op !== null && isUnaryOperator(op)) {
         const pos = this.pos();
         this.next();
         return {kind: NodeKind.UnaryExpr, pos, op, x: this.unary()};

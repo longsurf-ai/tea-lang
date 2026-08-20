@@ -16,6 +16,19 @@ export const Qualifier = {
 
 export type Qualifier = (typeof Qualifier)[keyof typeof Qualifier];
 
+// Qualifiers users may write before a parameter type. Const and input remain
+// inferred semantic states; `const` at declaration start is a persistence
+// mode, not a written type qualifier.
+export const SOURCE_QUALIFIERS = [Qualifier.Simple, Qualifier.Series] as const;
+
+export type SourceQualifier = (typeof SOURCE_QUALIFIERS)[number];
+
+const SOURCE_QUALIFIER_SET: ReadonlySet<string> = new Set(SOURCE_QUALIFIERS);
+
+export function isSourceQualifier(value: string): value is SourceQualifier {
+  return SOURCE_QUALIFIER_SET.has(value);
+}
+
 // Persistence is semantic declaration metadata shared by checking and IR:
 // perBar reinitializes each iteration, var carries the prior committed value,
 // and varip additionally persists across provisional executions.

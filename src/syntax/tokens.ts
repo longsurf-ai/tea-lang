@@ -125,6 +125,33 @@ export const Op = {
 
 export type Op = (typeof Op)[keyof typeof Op];
 
+// The parser accepts these operators in prefix position. Binary roles remain
+// separate because `not` is unary-only while `+` and `-` have both roles.
+export const UNARY_OPERATORS = [Op.Plus, Op.Minus, Op.Not] as const;
+export type UnaryOperator = (typeof UNARY_OPERATORS)[number];
+const UNARY_OPERATOR_SET: ReadonlySet<Op> = new Set(UNARY_OPERATORS);
+
+export function isUnaryOperator(op: Op): op is UnaryOperator {
+  return UNARY_OPERATOR_SET.has(op);
+}
+
+export const BINARY_OPERATORS = [
+  Op.Or,
+  Op.And,
+  Op.EqEq,
+  Op.NotEq,
+  Op.Lt,
+  Op.Le,
+  Op.Gt,
+  Op.Ge,
+  Op.Plus,
+  Op.Minus,
+  Op.Star,
+  Op.Slash,
+  Op.Percent,
+] as const;
+export type BinaryOperator = (typeof BINARY_OPERATORS)[number];
+
 // Binding powers for precedence climbing, tightest last. 0 marks unary-only
 // operators that never bind as binary.
 export const PRECEDENCE: Record<Op, number> = {

@@ -50,17 +50,36 @@ const sidebars: SidebarsConfig = {
     },
   ],
   referenceSidebar: [
-    {
-      type: 'doc',
-      id: 'reference/types',
-      label: 'Types',
-    },
-    {
-      type: 'doc',
-      id: 'reference/functions',
-      label: 'Functions',
-    },
+    'reference/overview',
+    referenceCategory('Types', 'types', ['reference/types/array']),
+    referenceCategory('Variables', 'variables', ['reference/variables/close']),
+    referenceCategory('Constants', 'constants', [
+      'reference/constants/color/red',
+    ]),
+    referenceCategory('Functions', 'functions', [
+      'reference/functions/array/push',
+    ]),
+    referenceCategory('Keywords', 'keywords', ['reference/keywords/for-in']),
+    referenceCategory('Operators', 'operators', [
+      'reference/operators/history',
+    ]),
+    referenceCategory('Annotations', 'annotations', [
+      'reference/annotations/version',
+    ]),
   ],
 };
+
+function referenceCategory(
+  label: string,
+  landing: string,
+  items: string[],
+) {
+  return {
+    type: 'category' as const,
+    label,
+    link: {type: 'doc' as const, id: `reference/${landing}`},
+    items,
+  };
+}
 
 export default sidebars;

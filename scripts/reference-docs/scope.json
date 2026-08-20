@@ -1,0 +1,235 @@
+{
+  "$schema": "./scope.schema.json",
+  "version": 1,
+  "name": "tea-v1-public-reference",
+  "target": {
+    "languageVersion": "1",
+    "policy": "current-plus-desired"
+  },
+  "currentScope": {
+    "categories": [
+      "types",
+      "variables",
+      "constants",
+      "functions",
+      "keywords",
+      "operators",
+      "annotations"
+    ],
+    "sourceOfTruth": [
+      "src/checker/type-catalog.ts",
+      "src/checker/catalog.ts",
+      "src/syntax/tokens.ts",
+      "src/syntax/nodes.ts",
+      "src/lib/ta.tea"
+    ]
+  },
+  "desiredFeatures": [],
+  "publicationRules": [
+    "Presence in Reference means the feature is usable in Tea version 1; never render implemented, reserved, staged, or roadmap badges.",
+    "Generate one focused route per supported entry plus category landing pages for Types, Variables, Constants, Functions, Keywords, Operators, and Annotations.",
+    "Compiler-owned facts provide names and supported signatures; human metadata must provide summaries, descriptions, examples, remarks, errors or limits, and related links.",
+    "Every supported example must compile; behavior-sensitive examples must execute with an asserted result when practical.",
+    "Omit unsupported type aliases, staged arguments, internal functions, and any type or constant without a usable source-level producer or consumer path.",
+    "Do not document broker, portfolio, or trade. Include usable public ta exports under Technical analysis.",
+    "Do not expose Qualifier cap, Native effect class, inout, ABI details, StorageRef, Ring, or compiler implementation terminology.",
+    "Document restrictions naturally under Remarks, Runtime errors, Panics, or Limits only when they affect supported source code.",
+    "Examples must teach a named behavior rather than merely prove that source parses.",
+    "The generated left navigation is the reference taxonomy; the right table of contents describes sections within the selected entry."
+  ],
+  "excludedSymbols": [
+    "broker.*",
+    "portfolio.*",
+    "trade.*",
+    "type aliases",
+    "staged native parameters",
+    "compiler-only helpers"
+  ],
+  "reviewRequired": [
+    "effect.emit",
+    "drawing handle types and constants without a usable runtime producer",
+    "reference-only transport forms such as plot, hline, tuple, na, and void"
+  ],
+  "allowedPaths": [
+    "docs/AGENTS.md",
+    "docs/reference/",
+    "website/sidebars.ts",
+    "website/docusaurus.config.ts",
+    "website/scripts/",
+    "website/src/",
+    "website/static/",
+    "src/checker/catalog.ts",
+    "src/checker/type-catalog.ts",
+    "src/ir/type.ts",
+    "src/syntax/",
+    "src/lib/ta.tea",
+    "src/docs/",
+    "tests/"
+  ],
+  "approvalGates": [
+    {
+      "id": "pilot-review",
+      "after": "pilot",
+      "message": "Stop after rendering the seven pilot pages. A human must review their information architecture and writing, then update this workflow to incorporate that feedback before exhaustive generation may continue."
+    }
+  ],
+  "workstreams": [
+    {
+      "id": "foundation",
+      "title": "Reference architecture and supported inventory",
+      "objective": "Replace the flat prototype with a supported-public-surface inventory, discriminated entry schemas, per-entry routes, category indexes, generated navigation, and exhaustive validation. Remove public status labels and keep unsupported inventory internal.",
+      "validate": [
+        "bun run typecheck",
+        "bun test website/scripts/generate-reference.test.ts",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "pilot",
+      "title": "Seven representative reference entries",
+      "objective": "Implement and render the pilot entries array, close, color.red, array.push(), for...in, history [], and //@version using the final per-kind schemas. Each page must contain useful human prose, a checked example, remarks, and related links.",
+      "validate": [
+        "bun test website/scripts/generate-reference.test.ts",
+        "bun run docs:check"
+      ]
+    },
+    {
+      "id": "types",
+      "title": "Exhaustive supported type reference",
+      "objective": "Document every usable public Tea type and declared-type form with syntax, behavior, construction or operations, examples, remarks, and links. Exclude parser-only, compiler-only, and unusable placeholder forms.",
+      "validate": [
+        "bun test website/scripts/generate-reference.test.ts",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "variables",
+      "title": "Exhaustive built-in variable reference",
+      "objective": "Document every supported non-constant built-in variable, grouped by price and volume, bar and time, bar state, symbol information, and timeframe information. Explain qualified type, update cadence, na and history behavior, provider meaning, examples, and related entries.",
+      "validate": [
+        "bun test website/scripts/generate-reference.test.ts",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "constants",
+      "title": "Exhaustive constant reference",
+      "objective": "Document every supported source-facing constant with type, meaning, allowed use, an example, remarks, and links. Group namespace constants and omit constants whose owning feature has no usable public path.",
+      "validate": [
+        "bun test website/scripts/generate-reference.test.ts",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "functions-declarations-inputs-outputs",
+      "title": "Declarations, inputs, plots, and alerts",
+      "objective": "Document supported script declaration, input, output, plot, fill, color-output, and alert functions. Show only supported parameters and overloads, with argument meanings, returns, examples, remarks, and runtime errors.",
+      "validate": [
+        "bun test website/scripts/generate-reference.test.ts",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "functions-math-string-color",
+      "title": "Math, string, conversion, and color functions",
+      "objective": "Document all supported math, string, conversion, and color functions exhaustively. Explain numeric and na behavior, overloads, return types, named examples, errors, and related entries.",
+      "validate": [
+        "bun test website/scripts/generate-reference.test.ts",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "functions-collections",
+      "title": "Array, matrix, and map functions",
+      "objective": "Document all supported array, matrix, and map functions exhaustively. Explain mutation targets, return values, historical behavior, iteration order, typed empty results, runtime errors, and current complexity only where the contract is established.",
+      "validate": [
+        "bun test website/scripts/generate-reference.test.ts",
+        "bun test src/runtime/collections",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "functions-requests",
+      "title": "Request functions",
+      "objective": "Document the supported request surface with exact context, merge, history, option, error, and example behavior. Omit staged arguments entirely and do not imply unsupported lower-timeframe or financial request APIs.",
+      "validate": [
+        "bun test src/checker/check.test.ts src/runtime/run.test.ts src/runtime/js-runtime.test.ts src/testing/aggregate-request-e2e.test.ts",
+        "bun test website/scripts/generate-reference.test.ts",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "functions-ta",
+      "title": "Technical analysis library",
+      "objective": "Inventory and document every supported exported ta function from the checked Tea library. Include signatures, state and history behavior, warmup and na behavior, examples, remarks, and related entries. Do not include any trading library.",
+      "validate": [
+        "bun test src/lib/ta.test.ts website/scripts/generate-reference.test.ts",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "keywords",
+      "title": "Keywords and language constructs",
+      "objective": "Document every supported keyword and contextual construct. Group related tokens into user concepts such as if...else, for...to, for...in, and import...as. Include syntax, parts, evaluation rules, examples, remarks, and links; omit reserved future syntax.",
+      "validate": [
+        "bun test src/syntax website/scripts/generate-reference.test.ts",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "operators",
+      "title": "Operators and accessors",
+      "objective": "Document the complete supported operator surface including declaration =, reassignment and compound assignment, arithmetic, comparison, logical operators, conditional ?:, selectors, calls where appropriate, and history []. Include operands, results, precedence, associativity, evaluation, na behavior, examples, and links.",
+      "validate": [
+        "bun test src/syntax src/checker/check.test.ts website/scripts/generate-reference.test.ts",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "annotations",
+      "title": "Annotations and source directives",
+      "objective": "Document every supported source annotation or directive, currently //@version, with syntax, placement, effect, examples, remarks, and links. Do not invent Pine annotations Tea does not implement.",
+      "validate": [
+        "bun test src/syntax website/scripts/generate-reference.test.ts",
+        "bun run docs:check:generated"
+      ]
+    },
+    {
+      "id": "navigation-search",
+      "title": "Reference navigation, linking, and lookup",
+      "objective": "Finish category navigation, stable routes, alphabetical and namespace indexes, related links, responsive sidebars, and a local lookup experience appropriate for the packaged offline site. The right table of contents must describe only the selected entry.",
+      "validate": [
+        "bun run docs:check",
+        "bun test src/docs/server.test.ts"
+      ]
+    },
+    {
+      "id": "coverage-audit",
+      "title": "Exhaustive public-surface audit",
+      "objective": "Compare every generated route with compiler-owned types, variables, constants, supported native signatures, ta exports, keywords, operators, and annotations. Fix all omissions, duplicates, staged leaks, unsupported routes, broken links, and untested examples. Report exact category totals with no remaining coverage gaps.",
+      "validate": [
+        "bun test website/scripts/generate-reference.test.ts",
+        "bun run docs:check"
+      ]
+    },
+    {
+      "id": "editorial-audit",
+      "title": "Human editorial and usability audit",
+      "objective": "Read every generated entry as user documentation. Replace compiler jargon and catalog dumps with clear explanations, useful named examples, honest remarks, runtime errors, and cross-links. Fix thin, repetitive, misleading, or status-oriented content without changing language semantics.",
+      "validate": [
+        "bun test website/scripts/generate-reference.test.ts",
+        "bun run docs:check"
+      ]
+    },
+    {
+      "id": "final-verification",
+      "title": "Final package and served-site verification",
+      "objective": "Run the complete package checks, generated freshness, GPU boundary tests, and literal tea docs server. Verify representative category and entry routes return HTTP 200, the old flat pages are redirected or removed deliberately, and no documentation scope remains incomplete.",
+      "validate": [
+        "bun run check",
+        "bun run test:gpu",
+        "bun test src/docs/server.test.ts"
+      ]
+    }
+  ]
+}

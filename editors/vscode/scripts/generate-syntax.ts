@@ -6,7 +6,7 @@ import {
   BUILTIN_ANNOTATION_TYPES,
   COLLECTION_TYPE_CATALOG,
 } from '../../../src/checker/type-catalog';
-import {Qualifier} from '../../../src/ir/type';
+import {Qualifier, SOURCE_QUALIFIERS} from '../../../src/ir/type';
 import {
   CONTEXTUAL_KEYWORDS,
   Op,
@@ -24,7 +24,6 @@ const TYPE_SYNTAX =
 
 const MODES = [Tok.Var, Tok.Varip, Tok.Const] as const;
 const LOOP_KEYWORDS = [Tok.In, Tok.To, Tok.By] as const;
-const QUALIFIERS = [Qualifier.Simple, Qualifier.Series] as const;
 
 // The grammar owns scopes, never colors. Keeping each syntactic role behind
 // one canonical constant prevents equivalent declaration forms from drifting
@@ -353,7 +352,7 @@ export function generateGrammar() {
             name: 'meta.declaration.method.tea',
             begin:
               '^(\\s+)(?:(' +
-              words(QUALIFIERS) +
+              words(SOURCE_QUALIFIERS) +
               ')(\\s+))?(' +
               TYPE_SYNTAX +
               ')(\\s+)(' +
@@ -421,7 +420,7 @@ export function generateGrammar() {
           {
             match:
               '(?:(?<=\\()|(?<=,))(\\s*)(?:(' +
-              words(QUALIFIERS) +
+              words(SOURCE_QUALIFIERS) +
               ')(\\s+))?(' +
               IDENTIFIER +
               ')(\\.)(' +
@@ -440,7 +439,7 @@ export function generateGrammar() {
           {
             match:
               '(?:(?<=\\()|(?<=,))(\\s*)(?:(' +
-              words(QUALIFIERS) +
+              words(SOURCE_QUALIFIERS) +
               ')(\\s+))?(' +
               typeWords +
               ')(\\s+)(' +
@@ -455,7 +454,7 @@ export function generateGrammar() {
           {
             match:
               '(?:(?<=\\()|(?<=,))(\\s*)(?:(' +
-              words(QUALIFIERS) +
+              words(SOURCE_QUALIFIERS) +
               ')(\\s+))?(' +
               IDENTIFIER +
               ')(\\s+)(' +
@@ -470,7 +469,7 @@ export function generateGrammar() {
           {
             match:
               '(?:(?<=\\()|(?<=,))(\\s*)(?:(' +
-              words(QUALIFIERS) +
+              words(SOURCE_QUALIFIERS) +
               ')(\\s+))?(' +
               TYPE_SYNTAX +
               ')(\\s+)(' +
@@ -558,7 +557,7 @@ export function generateGrammar() {
               '^(\\s*)(?:(' +
               words(MODES) +
               ')(\\s+))?(?:(' +
-              words(QUALIFIERS) +
+              words(SOURCE_QUALIFIERS) +
               ')(\\s+))?(' +
               typeWords +
               ')(?=\\s+' +
@@ -575,7 +574,7 @@ export function generateGrammar() {
               '^(\\s*)(?:(' +
               words(MODES) +
               ')(\\s+))?(?:(' +
-              words(QUALIFIERS) +
+              words(SOURCE_QUALIFIERS) +
               ')(\\s+))?(' +
               IDENTIFIER +
               ')(\\.)(' +
@@ -596,7 +595,7 @@ export function generateGrammar() {
               '^(\\s*)(?:(' +
               words(MODES) +
               ')(\\s+))?(?:(' +
-              words(QUALIFIERS) +
+              words(SOURCE_QUALIFIERS) +
               ')(\\s+))?(' +
               IDENTIFIER +
               ')(?=\\s+' +
@@ -622,7 +621,7 @@ export function generateGrammar() {
               ')\\b)(?:(' +
               words(MODES) +
               ')(\\s+))?(?:(' +
-              words(QUALIFIERS) +
+              words(SOURCE_QUALIFIERS) +
               ')(\\s+))?(' +
               TYPE_SYNTAX +
               ')(?=\\s+' +

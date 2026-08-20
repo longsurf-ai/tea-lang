@@ -1,6 +1,7 @@
 // Purpose: Verify tea docs serves only packaged static documentation on loopback.
 
 import {mkdir, mkdtemp, rm, symlink, writeFile} from 'node:fs/promises';
+import {spawnSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {afterEach, beforeEach, describe, expect, test} from 'bun:test';
@@ -149,6 +150,53 @@ describe('startDocsServer', () => {
       },
     });
     expect(calls).toBe(0);
+  });
+
+  test('starts and serves through the Node-hosted source runtime', () => {
+    const moduleUrl = new URL('./server.ts', import.meta.url).href;
+    const script = `
+      import {startDocsServer} from ${JSON.stringify(moduleUrl)};
+      if ('Bun' in globalThis) throw new Error('expected the Node runtime');
+      const docs = await startDocsServer({
+        root: ${JSON.stringify(root)},
+        port: 0,
+        open: false,
+        print() {},
+        warn() {},
+      });
+      try {
+        const response = await fetch(docs.url);
+        console.log(JSON.stringify({
+          hostname: docs.hostname,
+          port: docs.port,
+          url: String(docs.url),
+          status: response.status,
+          body: await response.text(),
+        }));
+      } finally {
+        await docs.stop(true);
+      }
+    `;
+    const result = spawnSync(
+      process.env['TEA_TEST_NODE'] ?? 'node',
+      [
+        '--import',
+        import.meta.resolve('tsx'),
+        '--input-type=module',
+        '--eval',
+        script,
+      ],
+      {encoding: 'utf8'},
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      hostname: '127.0.0.1',
+      port: expect.any(Number),
+      url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/$/),
+      status: 200,
+      body: '<html>Tea docs</html>',
+    });
   });
 
   test('fails before binding when the documentation build is missing', async () => {
