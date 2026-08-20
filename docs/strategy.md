@@ -260,12 +260,10 @@ backends consume the same Program, and neither recognizes `trade`, `broker`,
 `portfolio`, a coordinator type, or a lifecycle method by name.
 
 GPU eligibility is determined only by the reachable generic Program closure.
-The catalog test currently pins four of fourteen strategy sources as WGSL
-eligible: `atr-zigzag-breakout`, `cpu-gpu-next-open`, `ema-cross`, and
-`turtle-system`. Their scalar closures exclude lot collections and unused
-matcher families and are guarded by function, frame, state-size, source-size,
-and effect-count ceilings. The other ten fail closed on their first unsupported
-language/input construct; they do not silently fall back to CPU.
+Reference structs are temporarily outside the WGSL subset, so the catalog
+currently pins every strategy source as fail closed on the same generic struct
+boundary before device binding. They continue to execute through the ordinary
+CPU artifact; there is no silent target fallback or package-name exception.
 
 See [Runtime](runtime.md) for host orchestration and
 [GPU Lowering](advanced/gpu-lowering.md) for the backend boundary.

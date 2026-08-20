@@ -29,7 +29,7 @@ const declaration: ExecutionDeclaration = {
   effects: [
     {
       payload: {
-        kind: 'user-type',
+        kind: 'struct',
         typeId: 'broker.FillExecuted',
         displayName: 'FillExecuted',
         fields: [
@@ -53,7 +53,7 @@ const declaration: ExecutionDeclaration = {
 };
 
 const payload: EffectValue = {
-  kind: 'user-type',
+  kind: 'struct',
   fields: [7, 'buy'],
 };
 

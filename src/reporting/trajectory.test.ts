@@ -22,14 +22,14 @@ const declaration: ExecutionDeclaration = {
   effects: [
     {
       payload: {
-        kind: 'user-type',
+        kind: 'struct',
         typeId: 'broker.FillExecuted',
         displayName: 'FillExecuted',
         fields: [
           {
             name: 'fill',
             value: {
-              kind: 'user-type',
+              kind: 'struct',
               typeId: 'broker.Fill',
               displayName: 'Fill',
               fields: [
@@ -97,8 +97,8 @@ describe('trajectory result', () => {
             row: 1,
             effectId: 0,
             payload: {
-              kind: 'user-type',
-              fields: [{kind: 'user-type', fields: [1, 'buy']}],
+              kind: 'struct',
+              fields: [{kind: 'struct', fields: [1, 'buy']}],
             },
           },
         ],

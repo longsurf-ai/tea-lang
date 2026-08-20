@@ -55,8 +55,11 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   and Tea prelude code.
 - Free functions, const methods, and mutable methods are an exhaustive
   Program union. A method owns one hidden receiver Name separate from every
-  source-visible param; const calls carry no writeback path, while mutable
-  calls carry the rooted path used by success-only copy-out.
+  source-visible param. Both method call forms carry the receiver expression;
+  mutable calls return only their declared result because the shared struct
+  reference is mutated in place. `StoreField` owns reference-property writes,
+  while a collection mutator carries exactly one `CollectionLocation` (Name
+  or captured struct field) for its replacement header.
 - `visit.ts` owns canonical lexical child enumeration and recursive IR
   traversal; specialized analyses add only semantic edges such as function
   bodies, request metadata, or history-depth expressions. Its switches are

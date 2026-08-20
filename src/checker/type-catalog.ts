@@ -186,10 +186,10 @@ export const PUBLIC_TYPE_CATALOG: readonly PublicTypeDescriptor[] = [
   },
   {
     kind: 'declaration',
-    name: 'user-defined type',
+    name: 'struct',
     forms: ['struct Name', 'type Name'],
-    summary: 'Nominal value type declared with struct or block-form type.',
-    typeKind: TypeKind.UserType,
+    summary: 'Nominal reference type declared with struct or block-form type.',
+    typeKind: TypeKind.Struct,
   },
   {
     kind: 'reference-only',

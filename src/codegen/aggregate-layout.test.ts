@@ -19,15 +19,15 @@ import {
   type EnumType,
   type MapType,
   type MatrixType,
-  type UserField,
-  type UserType,
+  type StructField,
+  type StructType,
 } from '../ir/type';
 import {generate} from './codegen';
 
 const pos = {base: {filename: 'aggregate-layout.test.tea'}, line: 1, col: 1};
 
-function userType(name: string, fields: readonly UserField[]): UserType {
-  return {kind: TypeKind.UserType, name, fields};
+function structType(name: string, fields: readonly StructField[]): StructType {
+  return {kind: TypeKind.Struct, name, fields};
 }
 
 describe('aggregate layout projection', () => {
@@ -42,8 +42,8 @@ describe('aggregate layout projection', () => {
       name: 'Mode',
       members: [{name: 'on', title: 'On'}],
     };
-    const recursiveFields: UserField[] = [];
-    const recursive = userType('Node', recursiveFields);
+    const recursiveFields: StructField[] = [];
+    const recursive = structType('Node', recursiveFields);
     const children: ArrayType = {kind: TypeKind.Array, elem: recursive};
     recursiveFields.push(
       {name: 'value', type: IntType},
@@ -56,7 +56,7 @@ describe('aggregate layout projection', () => {
       key: StringType,
       value: recursive,
     };
-    const envelope = userType('Envelope', [
+    const envelope = structType('Envelope', [
       {name: 'integer', type: IntType},
       {name: 'decimal', type: FloatType},
       {name: 'flag', type: BoolType},
@@ -91,11 +91,11 @@ describe('aggregate layout projection', () => {
           pos,
           name: root,
           value: {
-            kind: IrKind.NewUserValue,
+            kind: IrKind.NewStruct,
             pos,
             type: envelope,
             qualifier: Qualifier.Series,
-            userType: envelope,
+            structType: envelope,
             args: envelope.fields.map(field => ({
               kind: IrKind.Const,
               pos,
@@ -128,7 +128,7 @@ describe('aggregate layout projection', () => {
     ]);
     expect(module.aggregateLayouts.layouts).toEqual([
       {
-        kind: 'user-type',
+        kind: 'struct',
         name: 'Envelope',
         fields: [
           {name: 'integer', layout: 1},
@@ -158,7 +158,7 @@ describe('aggregate layout projection', () => {
       {kind: 'matrix', element: 2},
       {kind: 'map', key: 4, value: 13},
       {
-        kind: 'user-type',
+        kind: 'struct',
         name: 'Node',
         fields: [
           {name: 'value', layout: 1},

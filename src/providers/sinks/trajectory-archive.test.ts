@@ -58,7 +58,7 @@ const declaration: ExecutionDeclaration = {
   effects: [
     {
       payload: {
-        kind: 'user-type',
+        kind: 'struct',
         typeId: 'broker.FillExecuted',
         displayName: 'FillExecuted',
         fields: [
@@ -66,7 +66,7 @@ const declaration: ExecutionDeclaration = {
           {
             name: 'fill',
             value: {
-              kind: 'user-type',
+              kind: 'struct',
               typeId: 'broker.Fill',
               displayName: 'Fill',
               fields: [
@@ -83,8 +83,8 @@ const declaration: ExecutionDeclaration = {
 };
 
 const effect: EffectValue = {
-  kind: 'user-type',
-  fields: [7, {kind: 'user-type', fields: [101.25, 'entry', true]}],
+  kind: 'struct',
+  fields: [7, {kind: 'struct', fields: [101.25, 'entry', true]}],
 };
 
 const binding = (rows: number): ExecutionBindingSummary => ({
@@ -381,8 +381,8 @@ describe('trajectory archive', () => {
       false,
     ],
     [
-      'user-type',
-      {kind: 'user-type', name: 'Point'} satisfies OutputChannelTransport,
+      'struct',
+      {kind: 'struct', name: 'Point'} satisfies OutputChannelTransport,
       false,
     ],
     ['array', {kind: 'array'} satisfies OutputChannelTransport, false],

@@ -3,13 +3,13 @@
 import {fatal} from '../base/print';
 import {formatPos} from '../base/pos';
 import {
+  CollectionLocationKind,
   DepthKind,
   IrKind,
   PlaceKind,
   type HistoryDepth,
   type IrExpr,
   type IrStmt,
-  type IrValuePath,
   type Name,
   type Place,
 } from './node';
@@ -247,11 +247,6 @@ function placeLabel(place: Place, labels: Labels): string {
   }
 }
 
-function pathLabel(path: IrValuePath, labels: Labels): string {
-  const fields = path.fieldIndices.map(index => `[${index}]`).join('');
-  return `${labels.name(path.root)}${fields}`;
-}
-
 function dumpStmt(
   stmt: IrStmt,
   label: string,
@@ -272,10 +267,11 @@ function dumpStmt(
       out.push(`${indent}${label}WriteName ${labels.name(stmt.name)}`);
       dumpExpr(stmt.value, '', `${indent}  `, out, labels);
       return;
-    case IrKind.UpdateValuePath:
+    case IrKind.StoreField:
       out.push(
-        `${indent}${label}UpdateValuePath ${pathLabel(stmt.path, labels)}`,
+        `${indent}${label}StoreField ${stmt.owner.name}[${stmt.fieldIndex}]`,
       );
+      dumpExpr(stmt.object, 'object: ', `${indent}  `, out, labels);
       dumpExpr(stmt.value, 'value: ', `${indent}  `, out, labels);
       return;
     case IrKind.Emit:
@@ -357,9 +353,7 @@ function dumpExpr(
       }
       return;
     case IrKind.CallMutableMethod:
-      line(
-        ` ${expr.func.name} path=${pathLabel(expr.path, labels)} slot=${expr.slot}`,
-      );
+      line(` ${expr.func.name} slot=${expr.slot}`);
       child(expr.receiver, 'receiver: ');
       for (const arg of expr.args) {
         child(arg);
@@ -372,14 +366,22 @@ function dumpExpr(
       }
       return;
     case IrKind.MutateCollection:
-      line(` ${expr.operation} path=${pathLabel(expr.path, labels)}`);
-      child(expr.receiver, 'receiver: ');
+      if (expr.location.kind === CollectionLocationKind.Name) {
+        line(
+          ` ${expr.operation} location=name:${labels.name(expr.location.name)}`,
+        );
+      } else {
+        line(
+          ` ${expr.operation} location=${expr.location.owner.name}[${expr.location.fieldIndex}]`,
+        );
+        child(expr.location.object, 'object: ');
+      }
       for (const arg of expr.args) {
         child(arg);
       }
       return;
-    case IrKind.NewUserValue:
-      line(` ${expr.userType.name}`);
+    case IrKind.NewStruct:
+      line(` ${expr.structType.name}`);
       for (const arg of expr.args) {
         child(arg);
       }

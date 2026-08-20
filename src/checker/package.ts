@@ -1,7 +1,7 @@
 // Purpose: Checked-package ownership boundary pairing parsed files with their semantic package scope and root facts.
 
 import type * as syntax from '../syntax/nodes';
-import type {EnumType, UserType} from '../ir/type';
+import type {EnumType, StructType} from '../ir/type';
 import type {Info} from './info';
 import type {Object, VariableObject} from './object';
 import type {Scope} from './scope';
@@ -35,5 +35,5 @@ export interface CheckedPackage {
   // package/object provenance can distinguish equal display names. Generic
   // specializations recursively include the canonical ids of their concrete
   // type arguments.
-  readonly nominalTypeIds: ReadonlyMap<UserType | EnumType, string>;
+  readonly nominalTypeIds: ReadonlyMap<StructType | EnumType, string>;
 }

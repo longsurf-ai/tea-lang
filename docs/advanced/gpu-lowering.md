@@ -62,36 +62,32 @@ example, including:
 - constant, bind-resolved, or explicitly capped history on frame values, plus
   direct provider-series history, advancing once per committed bar rather than
   once per function call;
-- nullable floats and ints, bools, enums, interned literal strings/colors, and
-  acyclic fixed user values with explicit physical layouts;
-- closed acyclic free functions, const methods, and mutable methods, including
-  copy-out to a directly rooted receiver;
+- nullable floats and ints, bools, enums, and interned literal strings/colors;
+- closed acyclic free functions whose reachable value closure contains no
+  struct references;
 - arithmetic, comparisons, boolean operations, conditionals, numeric range
   loops, and the supported native surface including `math.abs`, `math.max`,
   `math.min`, and `math.floor`;
 - one unconditional top-level scalar channel per emitted output, of type
   float, int, bool, or enum;
-- typed sparse effects with primitive, enum, literal string/color, or
-  recursively fixed user-value payloads.
+- typed sparse effects with primitive, enum, or literal string/color payloads.
 
 At least one numeric provider series is currently needed to define each
 binding's extent. Persistent roots, dense output channels, and sparse effects
 are otherwise independent: a Program need not have all three.
 
-The strategy catalog pins the exact current boundary. Four of fourteen sources
-are WGSL-eligible: `atr-zigzag-breakout`, `cpu-gpu-next-open`, `ema-cross`, and
-`turtle-system`. The other ten fail closed on a specific first unsupported
-construct. Eligibility is a property of each reachable Program closure, not of
-its selected `trade.nextOpen`, `trade.ohlc`, `trade.path`, or `trade.lots`
-factory. A checked-in execution config may still choose JavaScript even when
-its source can lower to WGSL.
+Struct references are deliberately staged out of the current WGSL subset.
+Construction, field access/store, or a reachable struct-typed Name/method
+produces one fail-closed diagnostic; the backend never falls back to the old
+inline value representation. A later GPU-storage design may restore support
+after CPU reference semantics are stable. Eligibility remains a property of
+the complete reachable Program closure, and a checked-in execution config may
+select JavaScript regardless of WGSL eligibility.
 
-The trade families are direct Tea values, not a host or IR wrapper. A scalar
-coordinator stores its concrete broker and portfolio fields directly, and
-unreachable matcher families and lot collections stay outside its closed call
-graph. Catalog tests guard the four eligible closures with function, frame,
-fixed-state, generated-source, and effect-count ceilings so a source
-abstraction cannot silently enlarge GPU work.
+The trade families remain ordinary Tea code rather than host or IR wrappers.
+While their reachable state uses structs, they fail the generic StructType gate
+like any other program; codegen contains no package- or strategy-name special
+case.
 
 ## Numeric contract
 

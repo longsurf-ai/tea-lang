@@ -47,10 +47,9 @@ import {
   isArrayValue,
   isMapValue,
   isMatrixValue,
+  isStructRef,
   isTupleValue,
-  isUserTypeValue,
   type EffectValue,
-  type UserTypeValue,
   type Value,
 } from './value';
 import {CollectionRuntime} from './collections';
@@ -63,7 +62,7 @@ import {
 import {assertMergeAxis, sampleMergeMap} from './merge';
 import {resolveParamValues} from './params';
 import {isHistoryOffset, Ring, type RingCommitMode} from './ring';
-import {rebuildUserPath, newUserValue, userField} from './user-value';
+import {StructStorageRuntime} from './struct-storage';
 import {type LayoutId, ValueLayoutRegistry} from './value-layout';
 
 const FULL_RANGE: RangeDemand = {kind: 'full'};
@@ -164,9 +163,11 @@ export async function bind(
   const contextIdentity = effectiveContextIdentity(context, symbol, timeframe);
   const params = resolveParamValues(module.manifest.params, inputs.params);
   const layouts = new ValueLayoutRegistry(module.aggregateLayouts);
+  const heap = new HeapArena(heapLimits);
   const shared: SharedRuntimeState = {
     aggregateLayouts: layouts,
-    heap: new HeapArena(heapLimits),
+    heap,
+    structs: new StructStorageRuntime(heap, layouts),
     contextBudget: {used: 0, max: maxRequestContexts},
     fixedValueStorage: {
       usedLogicalBytes: 0,
@@ -234,26 +235,29 @@ export function resolveGeneratedBindingLayout(
   const timeframe = inputs.timeframe ?? '';
   const identity = effectiveContextIdentity(context, symbol, timeframe);
   const params = resolveParamValues(module.manifest.params, inputs.params);
+  const layouts = new ValueLayoutRegistry(module.aggregateLayouts);
+  const heap = new HeapArena({
+    maxStorageCells: optionalBindLimit(
+      inputs.maxHeapStorageCells,
+      'maxHeapStorageCells',
+    ),
+    maxLogicalBytes: optionalBindLimit(
+      inputs.maxHeapLogicalBytes,
+      'maxHeapLogicalBytes',
+    ),
+    maxTransientStorageCells: optionalBindLimit(
+      inputs.maxHeapTransientStorageCells,
+      'maxHeapTransientStorageCells',
+    ),
+    maxTransientLogicalBytes: optionalBindLimit(
+      inputs.maxHeapTransientLogicalBytes,
+      'maxHeapTransientLogicalBytes',
+    ),
+  });
   const shared: SharedRuntimeState = {
-    aggregateLayouts: new ValueLayoutRegistry(module.aggregateLayouts),
-    heap: new HeapArena({
-      maxStorageCells: optionalBindLimit(
-        inputs.maxHeapStorageCells,
-        'maxHeapStorageCells',
-      ),
-      maxLogicalBytes: optionalBindLimit(
-        inputs.maxHeapLogicalBytes,
-        'maxHeapLogicalBytes',
-      ),
-      maxTransientStorageCells: optionalBindLimit(
-        inputs.maxHeapTransientStorageCells,
-        'maxHeapTransientStorageCells',
-      ),
-      maxTransientLogicalBytes: optionalBindLimit(
-        inputs.maxHeapTransientLogicalBytes,
-        'maxHeapTransientLogicalBytes',
-      ),
-    }),
+    aggregateLayouts: layouts,
+    heap,
+    structs: new StructStorageRuntime(heap, layouts),
     contextBudget: {used: 0, max: maxRequestContexts},
     fixedValueStorage: {
       usedLogicalBytes: 0,
@@ -398,6 +402,11 @@ interface FrameImpl extends Frame {
   // like the Ring scratch value it qualifies.
   readonly committedInitialization: boolean[];
   readonly scratchInitialization: boolean[];
+  // A successful first ordinary-var initialization is visible to later
+  // executions of the same realtime row. The wrapper distinguishes an
+  // initialized null value from no candidate.
+  readonly sameRowInitialization: ({readonly value: Value} | null)[];
+  readonly transactionInitialization: ({readonly value: Value} | null)[];
   readonly subs: (FrameImpl | null)[];
 }
 
@@ -417,6 +426,7 @@ interface ResultBuilder {
 interface SharedRuntimeState {
   readonly aggregateLayouts: ValueLayoutRegistry;
   readonly heap: HeapArena;
+  readonly structs: StructStorageRuntime;
   readonly contextBudget: ContextBudget;
   readonly fixedValueStorage: FixedValueStorageBudget;
   readonly runtimes: Set<JSRuntime>;
@@ -659,6 +669,7 @@ class JSRuntime implements Runtime, BoundProgram {
       shared.heap,
       shared.aggregateLayouts,
       maxCollectionElements,
+      shared.structs,
     );
 
     try {
@@ -1069,7 +1080,7 @@ class JSRuntime implements Runtime, BoundProgram {
             `builtin '${builtinSourceName(source)}' is not provided by this context`,
           );
         }
-        this.shared.aggregateLayouts.assertValue(
+        this.shared.structs.assertValue(
           spec.layout,
           value,
           `provider builtin '${builtinSourceName(source)}'`,
@@ -1143,15 +1154,15 @@ class JSRuntime implements Runtime, BoundProgram {
             );
           }
           break;
-        case 'user-type':
+        case 'struct':
           if (
-            schema.kind !== 'user-type' ||
+            schema.kind !== 'struct' ||
             schema.typeId !== layout.typeId ||
             schema.displayName !== layout.name ||
             schema.fields.length !== layout.fields.length
           ) {
             return fatal(
-              `effect payload layout ${layoutId} disagrees with logical user-type schema`,
+              `effect payload layout ${layoutId} disagrees with logical struct schema`,
             );
           }
           for (const [index, field] of layout.fields.entries()) {
@@ -1203,6 +1214,8 @@ class JSRuntime implements Runtime, BoundProgram {
         ),
         committedInitialization: layout.locals.map(() => false),
         scratchInitialization: layout.locals.map(() => false),
+        sameRowInitialization: layout.locals.map(() => null),
+        transactionInitialization: layout.locals.map(() => null),
         subs: layout.subs.map(() => null),
       };
       return frame;
@@ -1285,10 +1298,17 @@ class JSRuntime implements Runtime, BoundProgram {
     }
     frame.layout.locals.forEach((local, slot) => {
       const ring = frame.rings[slot];
+      frame.transactionInitialization[slot] = null;
       if (local.storage === Storage.Varip && sameRow) {
         return;
       }
       if (local.storage === Storage.Var || local.storage === Storage.Varip) {
+        const candidate = frame.sameRowInitialization[slot];
+        if (sameRow && local.storage === Storage.Var && candidate !== null) {
+          ring.resetScratch(candidate.value);
+          frame.scratchInitialization[slot] = true;
+          return;
+        }
         if (frame.committedInitialization[slot]) {
           ring.resetScratch(ring.lastCommitted());
           frame.scratchInitialization[slot] = true;
@@ -1324,6 +1344,8 @@ class JSRuntime implements Runtime, BoundProgram {
       }
       ring.commit();
       frame.scratchInitialization[slot] = false;
+      frame.sameRowInitialization[slot] = null;
+      frame.transactionInitialization[slot] = null;
     });
     for (const sub of frame.subs) {
       if (sub !== null) {
@@ -1397,6 +1419,7 @@ class JSRuntime implements Runtime, BoundProgram {
       );
     }
     let provisionalPublication: RowEmissionSnapshot | null = null;
+    const stagedInitializations: {frame: FrameImpl; slot: number}[] = [];
     try {
       this.resetFrameScratch(this.mustRoot(), sameRow);
       if (retryAfterAbort) {
@@ -1408,6 +1431,12 @@ class JSRuntime implements Runtime, BoundProgram {
       this.emitBuf = new Map();
       this.effectBuf = [];
       this.module.main(this, this.mustRoot());
+      if (provisional) {
+        this.stageSameRowInitializations(
+          this.mustRoot(),
+          stagedInitializations,
+        );
+      }
       const heapCommit = transaction.prepareCommit(
         this.heapCommitRoots(
           provisional ? 'provisional-candidate' : 'final-candidate',
@@ -1429,6 +1458,9 @@ class JSRuntime implements Runtime, BoundProgram {
         };
       }
     } catch (error) {
+      for (const staged of stagedInitializations) {
+        staged.frame.sameRowInitialization[staged.slot] = null;
+      }
       if (this.heapTransaction !== null) {
         this.heapTransaction.abort();
         this.heapTransaction = null;
@@ -1457,6 +1489,34 @@ class JSRuntime implements Runtime, BoundProgram {
         ring?.resetScratch(ring.emptyValue);
       }
       this.collectShared('provisional-candidate');
+    }
+  }
+
+  private stageSameRowInitializations(
+    frame: FrameImpl,
+    staged: {frame: FrameImpl; slot: number}[],
+  ): void {
+    if (!frame.scratchActive) {
+      return;
+    }
+    frame.layout.locals.forEach((local, slot) => {
+      if (
+        local.storage === Storage.Var &&
+        !frame.committedInitialization[slot] &&
+        frame.sameRowInitialization[slot] === null &&
+        frame.transactionInitialization[slot] !== null
+      ) {
+        frame.sameRowInitialization[slot] = {
+          value: frame.transactionInitialization[slot].value,
+        };
+        frame.transactionInitialization[slot] = null;
+        staged.push({frame, slot});
+      }
+    });
+    for (const sub of frame.subs) {
+      if (sub !== null) {
+        this.stageSameRowInitializations(sub, staged);
+      }
     }
   }
 
@@ -1517,6 +1577,7 @@ class JSRuntime implements Runtime, BoundProgram {
       }
       ring.resetScratch(ring.emptyValue);
       frame.scratchInitialization[slot] = false;
+      frame.transactionInitialization[slot] = null;
     });
     for (const sub of frame.subs) {
       if (sub !== null) {
@@ -1812,6 +1873,12 @@ class JSRuntime implements Runtime, BoundProgram {
       ring.visitCommitValues(ringMode, value =>
         this.visitValueStorage(ring.layout, value, visit),
       );
+      if (mode === 'provisional-candidate' && local.storage === Storage.Var) {
+        const candidate = frame.sameRowInitialization[slot];
+        if (candidate !== null) {
+          this.visitValueStorage(ring.layout, candidate.value, visit);
+        }
+      }
     });
     for (const sub of frame.subs) {
       if (sub !== null) {
@@ -1848,6 +1915,7 @@ class JSRuntime implements Runtime, BoundProgram {
     frame.rings.forEach((ring, slot) => {
       ring.resetScratch(ring.emptyValue);
       frame.scratchInitialization[slot] = false;
+      frame.transactionInitialization[slot] = null;
     });
     for (const sub of frame.subs) {
       if (sub !== null) {
@@ -1862,6 +1930,7 @@ class JSRuntime implements Runtime, BoundProgram {
         frame.rings[slot].resetScratch(frame.rings[slot].emptyValue);
         frame.scratchInitialization[slot] = false;
       }
+      frame.transactionInitialization[slot] = null;
     });
     for (const sub of frame.subs) {
       if (sub !== null) {
@@ -1964,7 +2033,7 @@ class JSRuntime implements Runtime, BoundProgram {
         value = this.mustBuiltinContextValue(bid);
         break;
     }
-    this.shared.aggregateLayouts.assertValue(
+    this.shared.structs.assertValue(
       spec.layout,
       value,
       `builtin '${builtinSourceName(source)}'`,
@@ -1985,7 +2054,7 @@ class JSRuntime implements Runtime, BoundProgram {
     if (ring === undefined) {
       return fatal(`write to unknown frame slot ${slot}`);
     }
-    this.shared.aggregateLayouts.assertValue(ring.layout, v, 'Ring write');
+    this.shared.structs.assertValue(ring.layout, v, 'Ring write');
     ring.setScratch(v);
   }
 
@@ -2019,35 +2088,53 @@ class JSRuntime implements Runtime, BoundProgram {
     if (frame.scratchInitialization[slot]) {
       return fatal(`frame ${frame.fid} slot ${slot} is already initialized`);
     }
-    this.shared.aggregateLayouts.assertValue(
+    this.shared.structs.assertValue(
       ring.layout,
       v,
       'Persistent initialization',
     );
     ring.setScratch(v);
     frame.scratchInitialization[slot] = true;
+    if (
+      local.storage === Storage.Var &&
+      !frame.committedInitialization[slot] &&
+      frame.sameRowInitialization[slot] === null
+    ) {
+      frame.transactionInitialization[slot] = {value: v};
+    }
   }
 
-  newUser(layout: LayoutId, fields: readonly Value[]): UserTypeValue {
-    return newUserValue(this.shared.aggregateLayouts, layout, fields);
+  newStruct(layout: LayoutId, fields: readonly Value[]): StorageRef<unknown> {
+    if (this.phase !== 'executing') {
+      return fatal('newStruct outside the module execution phase');
+    }
+    return this.shared.structs.newStruct(
+      this.mustHeapTransaction(),
+      layout,
+      fields,
+    );
   }
 
-  userField(value: Value, ownerLayout: LayoutId, index: number): Value {
-    return userField(this.shared.aggregateLayouts, value, ownerLayout, index);
+  requireStruct(value: Value, layout: LayoutId): StorageRef<unknown> {
+    return this.shared.structs.requireStruct(value, layout);
   }
 
-  rebuildUserPath(
-    root: Value,
-    rootLayout: LayoutId,
-    fieldIndices: readonly number[],
-    leaf: Value,
-  ): Value {
-    return rebuildUserPath(
-      this.shared.aggregateLayouts,
-      root,
-      rootLayout,
-      fieldIndices,
-      leaf,
+  structField(value: Value, ownerLayout: LayoutId, index: number): Value {
+    return this.shared.structs.field(value, ownerLayout, index);
+  }
+
+  storeStructField(
+    value: Value,
+    ownerLayout: LayoutId,
+    index: number,
+    replacement: Value,
+  ): void {
+    this.shared.structs.storeField(
+      this.mustHeapTransaction(),
+      value,
+      ownerLayout,
+      index,
+      replacement,
     );
   }
 
@@ -2166,7 +2253,7 @@ class JSRuntime implements Runtime, BoundProgram {
 
   emit(oid: number, channel: number, v: Value): void {
     if (
-      isUserTypeValue(v) ||
+      isStructRef(v) ||
       isArrayValue(v) ||
       isMatrixValue(v) ||
       isMapValue(v) ||
@@ -2191,7 +2278,7 @@ class JSRuntime implements Runtime, BoundProgram {
     if (spec === undefined) {
       return fatal(`effect emission references unknown effect ${effectId}`);
     }
-    this.shared.aggregateLayouts.assertValue(
+    this.shared.structs.assertValue(
       spec.layout,
       payload,
       `effect ${effectId} payload`,
@@ -2201,15 +2288,20 @@ class JSRuntime implements Runtime, BoundProgram {
     }
     this.effectBuf.push({
       effectId,
-      payload: this.logicalEffectValue(spec.declaration.payload, payload),
+      payload: this.logicalEffectValue(
+        spec.layout,
+        spec.declaration.payload,
+        payload,
+      ),
     });
   }
 
   private logicalEffectValue(
+    layoutId: LayoutId,
     schema: EffectValueSchema,
     value: Value,
   ): EffectValue {
-    if (schema.kind !== 'user-type' || value === null) {
+    if (schema.kind !== 'struct' || value === null) {
       if (
         typeof value === 'number' ||
         typeof value === 'string' ||
@@ -2220,14 +2312,19 @@ class JSRuntime implements Runtime, BoundProgram {
       }
       return fatal(`non-scalar value reached logical ${schema.kind} effect`);
     }
-    if (!isUserTypeValue(value)) {
-      return fatal(`non-user value reached logical ${schema.typeId} effect`);
+    const layout = this.shared.aggregateLayouts.layout(layoutId);
+    if (!isStructRef(value) || layout.kind !== 'struct') {
+      return fatal(`non-struct value reached logical ${schema.typeId} effect`);
     }
     return Object.freeze({
-      kind: 'user-type' as const,
+      kind: 'struct' as const,
       fields: Object.freeze(
         schema.fields.map((field, index) =>
-          this.logicalEffectValue(field.value, value.fields[index]),
+          this.logicalEffectValue(
+            layout.fields[index].layout,
+            field.value,
+            this.shared.structs.field(value, layoutId, index),
+          ),
         ),
       ),
     });

@@ -6,5 +6,6 @@ lookback = input.int(20, "Lookback")
 a = close[3]
 b = close[lookback]
 c = open[bar_index % 5]
-d = (high + low)[2]
+hl = high + low
+d = hl[2]
 plot(a + b + c + d, "Sum")

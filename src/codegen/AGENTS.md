@@ -84,10 +84,14 @@ WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
   `{source, layout, depth}` specs publish in `manifest.builtin`, reads lower
   to `rt.builtin`, and bound history reports through
   `rt.bindBuiltinDepth`. Numeric provider series remain `rt.series` only.
-- User-value construction/field updates, array/map iteration, and collection
-  calls lower through exact manifest layouts. Const and mutable method calls
-  capture the hidden receiver before explicit arguments; only mutable methods
-  perform one path writeback, and only after success.
+- Struct construction and field access lower through `newStruct`,
+  `structField`, and `storeStructField` using exact manifest layouts. A field
+  store validates and captures its reference before the RHS. Collection
+  mutation captures either its Name or struct-field location before explicit
+  arguments and writes only the replacement header afterward. Mutable method
+  calls validate and capture the shared receiver before explicit arguments and
+  return only their declared result. WGSL fails closed for every reachable
+  struct reference until a later GPU storage design lands.
 - Output bind arguments and per-bar channels evaluate in their Program-owned
   source order before codegen assembles the canonical host argument order.
 - Staged constructs (matrix iteration, collect merge, unlisted natives) throw

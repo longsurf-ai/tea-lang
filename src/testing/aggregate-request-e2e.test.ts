@@ -106,7 +106,7 @@ describe('aggregate requests end to end', () => {
       layout: request.layout,
     });
     expect(module.aggregateLayouts.layouts[request.layout]).toMatchObject({
-      kind: 'user-type',
+      kind: 'struct',
       name: 'ChildSnapshot',
     });
 
@@ -119,9 +119,10 @@ describe('aggregate requests end to end', () => {
       }),
       sink,
       timeNow: 0,
-      // The child allocates exactly three array backings. The parent can read
-      // all of them only if the merged view owns those refs in the shared Heap.
-      maxHeapStorageCells: 3,
+      // The child allocates three struct bodies and their three array backings.
+      // The parent can read all of them only if the merged view owns the six
+      // refs in the shared Heap.
+      maxHeapStorageCells: 6,
     });
     await bound.runAll();
 
@@ -190,7 +191,7 @@ describe('aggregate requests end to end', () => {
     bound.dispose();
   });
 
-  test('a suspended mutable method writes its receiver back once per completed row', async () => {
+  test('a suspended mutable method rolls back in-place receiver mutation before retry', async () => {
     const result = compile([MUTABLE_METHOD_SUSPENSION_SOURCE]);
     if (!result.ok) {
       throw new Error(
@@ -234,8 +235,8 @@ describe('aggregate requests end to end', () => {
       ['Y', 'D'],
       ['X', 'D'],
     ]);
-    // Y and X each suspend on first discovery. The varip receiver may retain a
-    // completed candidate, but neither aborted attempt may reach the caller.
+    // Y and X each suspend on first discovery. The shared receiver body keeps
+    // completed mutations, but neither aborted attempt may reach the caller.
     const valuesFor = (oid: number): readonly Value[] =>
       sink.emissions
         .filter(emission => emission.oid === oid)

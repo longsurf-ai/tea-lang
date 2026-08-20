@@ -69,13 +69,13 @@ describe('simple statements', () => {
     expect(functions).toContain('stmtList[1]: FuncDecl @2:1 exported=true');
     expect(functions).toContain('name: Name @2:8 value="struct"');
 
-    const userType = dump(
+    const struct = dump(
       ['struct Holder', '    int struct', '    int value', ''].join('\n'),
     );
-    expect(userType).toContain(
-      'UserTypeDecl @1:1 exported=false writtenKeyword="struct"',
+    expect(struct).toContain(
+      'StructDecl @1:1 exported=false writtenKeyword="struct"',
     );
-    expect(userType).toContain('name: Name @2:9 value="struct"');
+    expect(struct).toContain('name: Name @2:9 value="struct"');
 
     const reserved = parseText('this(x) => x\n');
     expect(reserved.errors.length).toBeGreaterThan(0);
@@ -83,7 +83,7 @@ describe('simple statements', () => {
   });
 });
 
-describe('user types and methods', () => {
+describe('structs and methods', () => {
   test('struct members retain field and method source order', () => {
     const out = dump(
       [
@@ -98,7 +98,7 @@ describe('user types and methods', () => {
       ].join('\n'),
     );
     expect(out).toContain(
-      'UserTypeDecl @1:1 exported=false writtenKeyword="struct"',
+      'StructDecl @1:1 exported=false writtenKeyword="struct"',
     );
     expect(out).toContain('members[0]: FieldDecl @2:5');
     expect(out).toContain('members[1]: MethodDecl @3:5 receiverMode="mutable"');
@@ -117,7 +117,7 @@ describe('user types and methods', () => {
       ),
     );
     expect(out).toContain(
-      'UserTypeDecl @1:1 exported=false writtenKeyword="type"',
+      'StructDecl @1:1 exported=false writtenKeyword="type"',
     );
     expect(out).toContain('members[0]: FieldDecl @2:5');
     expect(out).toContain('members[1]: MethodDecl @3:5 receiverMode="mutable"');
@@ -144,7 +144,7 @@ describe('user types and methods', () => {
   });
 });
 
-describe('static interfaces and generic user types', () => {
+describe('static interfaces and generic structs', () => {
   test('interface declarations retain ordered method-only signatures', () => {
     const out = dump(
       [
@@ -158,9 +158,7 @@ describe('static interfaces and generic user types', () => {
       ].join('\n'),
     );
 
-    expect(out).toContain(
-      'stmtList[0]: InterfaceDecl @1:1 exported=true',
-    );
+    expect(out).toContain('stmtList[0]: InterfaceDecl @1:1 exported=true');
     expect(out).toContain('name: Name @1:18 value="Broker"');
     expect(out).toContain(
       'methods[0]: InterfaceMethodDecl @2:5 receiverMode="const"',
@@ -175,9 +173,7 @@ describe('static interfaces and generic user types', () => {
     expect(out).toContain(
       'methods[2]: InterfaceMethodDecl @4:5 receiverMode="mutable"',
     );
-    expect(out).toContain(
-      'stmtList[1]: InterfaceDecl @5:1 exported=false',
-    );
+    expect(out).toContain('stmtList[1]: InterfaceDecl @5:1 exported=false');
     expect(out).toContain(
       'methods[0]: InterfaceMethodDecl @6:5 receiverMode="const"',
     );
@@ -195,7 +191,7 @@ describe('static interfaces and generic user types', () => {
     );
 
     expect(out).toContain(
-      'stmtList[0]: UserTypeDecl @1:1 exported=true writtenKeyword="type"',
+      'stmtList[0]: StructDecl @1:1 exported=true writtenKeyword="type"',
     );
     expect(out).toContain('typeParams[0]: TypeParam @1:22');
     expect(out).toContain('constraint: SelectorExpr @1:25');
@@ -208,9 +204,12 @@ describe('static interfaces and generic user types', () => {
 
   test('interface remains contextual outside declaration shape', () => {
     const out = dump(
-      ['interface(x) => x', 'interface = 1', 'export interface(x) => x', ''].join(
-        '\n',
-      ),
+      [
+        'interface(x) => x',
+        'interface = 1',
+        'export interface(x) => x',
+        '',
+      ].join('\n'),
     );
     expect(out).toContain('stmtList[0]: FuncDecl @1:1 exported=false');
     expect(out).toContain('stmtList[1]: DeclStmt @2:1 mode="none"');

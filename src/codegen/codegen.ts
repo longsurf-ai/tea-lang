@@ -90,7 +90,7 @@ function effectScalarMatches(
   type: Type,
   schema: Exclude<
     EffectValueSchema,
-    {readonly kind: 'enum' | 'user-type'}
+    {readonly kind: 'enum' | 'struct'}
   >['kind'],
 ): boolean {
   switch (schema) {
@@ -150,13 +150,13 @@ class ModuleEmitter {
           typeId: this.sameNominalId(layout.typeId, schema.typeId),
         };
         return;
-      case 'user-type':
+      case 'struct':
         if (
-          type.kind !== TypeKind.UserType ||
-          layout?.kind !== 'user-type' ||
+          type.kind !== TypeKind.Struct ||
+          layout?.kind !== 'struct' ||
           type.fields.length !== schema.fields.length
         ) {
-          return fatal('user-type effect schema disagrees with its IR type');
+          return fatal('struct effect schema disagrees with its IR type');
         }
         this.layouts[layoutId] = {
           ...layout,
@@ -165,7 +165,7 @@ class ModuleEmitter {
         type.fields.forEach((field, index) => {
           const logical = schema.fields[index];
           if (logical === undefined || logical.name !== field.name) {
-            return fatal(`user-type effect schema disagrees at field ${index}`);
+            return fatal(`struct effect schema disagrees at field ${index}`);
           }
           this.registerEffectSchema(field.type, logical.value);
         });
@@ -217,9 +217,9 @@ class ModuleEmitter {
       case TypeKind.Polyline:
       case TypeKind.Linefill:
         return {kind: 'resource', handle: type.kind};
-      case TypeKind.UserType:
+      case TypeKind.Struct:
         return {
-          kind: 'user-type',
+          kind: 'struct',
           name: type.name,
           fields: type.fields.map(field => ({
             name: field.name,
@@ -308,9 +308,7 @@ class Generator {
     });
 
     this.series.forEach((s, sid) => this.seriesIds.set(s, sid));
-    this.builtins.forEach((builtin, bid) =>
-      this.builtinIds.set(builtin, bid),
-    );
+    this.builtins.forEach((builtin, bid) => this.builtinIds.set(builtin, bid));
     let nextSid = this.series.length;
     // Bind-time params are compilation-global: a request child declares no
     // params of its own and references the PARENT's ParamInput objects, so
@@ -566,20 +564,7 @@ class Generator {
       const bodyLines: string[] = [];
       const value = lowerExpr(func.body, bodyLines, ctx);
       lines.push(...indent(bodyLines));
-      if (func.callMode === 'mutable-method') {
-        const receiverSlot = this.nameSlots.get(func.receiver);
-        if (receiverSlot === undefined || receiverSlot.fid !== fid) {
-          return fatal(`mutable method '${func.name}' has an unowned receiver`);
-        }
-        const receiverValue =
-          directNames.get(func.receiver) ??
-          `rt.read(fr, ${receiverSlot.slot}, 0)`;
-        lines.push(
-          `  return {receiver: ${receiverValue}, result: (${value})};`,
-        );
-      } else {
-        lines.push(`  return (${value});`);
-      }
+      lines.push(`  return (${value});`);
       lines.push('},');
       bodies.set(fid, lines);
     });
@@ -712,8 +697,8 @@ function outputChannelTransport(type: Type): OutputChannelTransport {
       return {kind: 'output-ref', output: 'plot'};
     case TypeKind.Hline:
       return {kind: 'output-ref', output: 'hline'};
-    case TypeKind.UserType:
-      return {kind: 'user-type', name: type.name};
+    case TypeKind.Struct:
+      return {kind: 'struct', name: type.name};
     case TypeKind.Array:
       return {kind: 'array'};
     case TypeKind.Matrix:

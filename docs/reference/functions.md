@@ -223,12 +223,12 @@ _No parameters._
 
 ### Overload 2
 
-`array.new<T: storable>(size: int, initial: T) → array<T>`
+`array.new<T: storable>(size: int, initial?: T) → array<T>`
 
 | Parameter | Type  | Qualifier cap | Required | Rules  |
 | --------- | ----- | ------------- | -------- | ------ |
 | `size`    | `int` | `series`      | Yes      | not na |
-| `initial` | `T`   | `series`      | Yes      | —      |
+| `initial` | `T`   | `series`      | No       | —      |
 
 **Result qualifier:** `joined from arguments`
 

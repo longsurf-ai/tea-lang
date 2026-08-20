@@ -11,7 +11,7 @@ function messages(source: string): string[] {
 }
 
 describe('effect.emit semantic contract', () => {
-  test('accepts scalars, enums, and recursively fixed user values', () => {
+  test('accepts scalars, enums, and recursively fixed struct snapshots', () => {
     const result = checkText(
       [
         'enum Kind',
@@ -34,7 +34,7 @@ describe('effect.emit semantic contract', () => {
         call.kind === CallKind.Native && call.native.name === 'effect.emit',
     );
     expect(emits).toHaveLength(2);
-    expect(emits[0].argTypes[0].kind).toBe('UserType');
+    expect(emits[0].argTypes[0].kind).toBe('Struct');
   });
 
   test('rejects collections, tuples, resources, and untyped na', () => {

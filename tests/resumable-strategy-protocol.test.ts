@@ -1,5 +1,6 @@
 // Purpose: Prove a static resumable broker protocol can coordinate fill
-// application and concrete writeback through the ordinary CPU and WGSL paths.
+// application and shared struct mutation on CPU while reference-struct WGSL
+// lowering remains fail-closed.
 
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -80,7 +81,7 @@ describe('static resumable strategy protocol spike', () => {
     expect(
       names.some(
         name =>
-          name.type.kind === TypeKind.UserType &&
+          name.type.kind === TypeKind.Struct &&
           ['ResumableBroker', 'Accounting'].includes(name.type.name),
       ),
     ).toBe(false);
@@ -92,7 +93,7 @@ describe('static resumable strategy protocol spike', () => {
     expect(functions).toContain('PathLikeBroker.resume');
   });
 
-  test('compiles and executes through the ordinary CPU path with writeback', async () => {
+  test('compiles and executes through the ordinary CPU path with shared mutation', async () => {
     const result = compile([SOURCE]);
     expect(result.ok).toBe(true);
 
@@ -118,18 +119,16 @@ describe('static resumable strategy protocol spike', () => {
     expect(finalValue(sink, outputId(sink, 'path-like equity'))).toBe(996);
   });
 
-  test('specializes both broker types and lowers the same Program to WGSL', () => {
+  test('specializes both broker types and fails closed at the WGSL struct boundary', () => {
     const result = compileProgramToWgsl(program());
-    expect(result.status).toBe('compiled');
-    if (result.status !== 'compiled') {
-      throw new Error(JSON.stringify(result.eligibility.issues));
+    expect(result.status).toBe('staged-unsupported');
+    if (result.status === 'staged-unsupported') {
+      expect(result.artifact).toBeNull();
+      expect(result.eligibility.issues[0]).toMatchObject({
+        code: 'struct-reference-lowering-unimplemented',
+        message:
+          'GPU struct-reference lowering is deferred for Coordinator<SimpleBroker, Ledger>',
+      });
     }
-
-    const owners = result.artifact.state.frames.map(frame => frame.owner);
-    expect(owners).toContain('Coordinator<SimpleBroker, Ledger>.drain');
-    expect(owners).toContain('SimpleBroker.resume');
-    expect(owners).toContain('Coordinator<PathLikeBroker, Ledger>.drain');
-    expect(owners).toContain('PathLikeBroker.resume');
-    expect(result.eligibility.issues).toEqual([]);
   });
 });

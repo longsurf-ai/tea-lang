@@ -110,7 +110,7 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
 
   const lifecycle = lifecycleTape(sink, timeByRow);
   expect(hash(lifecycle)).toBe(
-    '9715dc5b883e9b8971016fc7a64bcde87ee95548d67b97ceded0d138bd3d22a3',
+    '8c51ee3f5a0794df55613d410db6ef8775c57c5bcee3289b578b5481743a88d7',
   );
 });
 
@@ -171,7 +171,7 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
     'ceb1eaf1a12b2967d554396e292dec3f43274304241d34095f07dba7eb99a48f',
   );
   expect(hash(lifecycleTape(sink, timeByRow))).toBe(
-    'f9e7fe6d8c11bffad001a7b4ae24587fe8fb0dd34633ba195b4c306441f06bc0',
+    'cf407d72c659372c18745aacbf90c91e328b6e261982d4afec5e70cfd866e946',
   );
 });
 
@@ -211,13 +211,13 @@ function fillFields(payload: EffectValue): readonly EffectValue[] {
   if (
     typeof payload !== 'object' ||
     payload === null ||
-    payload.kind !== 'user-type'
+    payload.kind !== 'struct'
   ) {
-    throw new Error('FillExecuted payload is not a user value');
+    throw new Error('FillExecuted payload is not a struct value');
   }
   const fill = payload.fields[0];
-  if (typeof fill !== 'object' || fill === null || fill.kind !== 'user-type') {
-    throw new Error('FillExecuted.fill is not a user value');
+  if (typeof fill !== 'object' || fill === null || fill.kind !== 'struct') {
+    throw new Error('FillExecuted.fill is not a struct value');
   }
   return fill.fields;
 }
@@ -225,7 +225,7 @@ function fillFields(payload: EffectValue): readonly EffectValue[] {
 function fillTape(sink: MemorySink) {
   const fillEffectIds = new Set(
     sink.effectSchemas.flatMap((effect, effectId) =>
-      effect.payload.kind === 'user-type' &&
+      effect.payload.kind === 'struct' &&
       effect.payload.typeId === 'broker.FillExecuted'
         ? [effectId]
         : [],
@@ -273,5 +273,5 @@ function hash(value: unknown): string {
 function lifecycleKind(sink: MemorySink, effectId: number): string {
   const payload = sink.effectSchemas[effectId]?.payload;
   if (payload === undefined) return `unknown:${effectId}`;
-  return payload.kind === 'user-type' ? payload.typeId : payload.kind;
+  return payload.kind === 'struct' ? payload.typeId : payload.kind;
 }

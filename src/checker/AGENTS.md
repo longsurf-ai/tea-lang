@@ -29,19 +29,26 @@ and expressions; and `importer.ts` is the import seam (loading lives in
 - Every call occurrence has exactly one discriminated `CallResolution`:
   native, function, constructor, or request. Noding switches on that result;
   parallel per-feature call maps are forbidden.
-- A `UserTypeObject` owns its nominal type, ordered `FieldObject`s, and nested
+- A `StructObject` owns its nominal type, ordered `FieldObject`s, and nested
   `MethodObject`s. Fields and methods share one declaration namespace while
   field indices ignore interleaved methods. Each field owns its checked default
   expression, including the `Info` and
   `TypeAndValue` from the context where the default was checked, plus its exact
   semantic dependencies. A constructor resolution aligns every supplied or
-  defaulted argument with its field, joins all argument qualifiers, and applies
-  capture policy only to defaults that call actually omits; user-type defaults
-  never live in a root-global auxiliary map.
-- Collection and user-type updates are rooted value writebacks. The checker
-  publishes one canonical `CheckedMutationTarget` inside the existing update
-  or call fact; it never models ordinary user values as object references or
-  assigns Heap persistence policy.
+  defaulted argument with its field and applies capture policy only to defaults
+  that call actually omits; construction is always series-qualified because it
+  allocates a fresh reference. Struct defaults never live in a root-global
+  auxiliary map.
+- Direct and mutual struct field cycles are legal because fields carry
+  nullable references rather than inline bodies. Cycle rejection belongs only
+  to bounded transports such as effect snapshots, not nominal declaration
+  layout.
+- Struct field mutation and collection-header replacement are distinct facts.
+  `StructFieldStore` captures one evaluated struct-reference expression plus
+  its direct canonical field; `CollectionLocation` is either a writable Name
+  or such a direct struct field. Mutating a struct body never marks a syntactic
+  root Name reassigned. The checker owns these semantic locations but no Heap
+  slot, transaction, or persistence policy.
 - The catalog lists a builtin only if it is inexpressible in Tea. All of
   `ta.*` is prelude source compiled by the ordinary pipeline; a new builtin
   family is a catalog entry plus at most a noding policy, never new checker
@@ -55,7 +62,10 @@ and expressions; and `importer.ts` is the import seam (loading lives in
 - Qualifier propagation takes the later-known operand: expression results
   join their operands, native results follow the catalog (`'join'` or a
   fixed qualifier), control structures yield series, and writes join the
-  enclosing flow qualifier (loop bodies join series).
+  enclosing flow qualifier (loop bodies join series). Struct construction,
+  field observation, and instance-method calls are always series-qualified;
+  merely transporting an existing struct reference adds no second qualifier
+  axis.
 - Fold values travel through a name only when reassignment is impossible:
   Tea `const` declarations, or plain declarations that never appear as an
   assignment target. This remains deliberately flow-insensitive, but the
@@ -95,10 +105,12 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   owns its explicit source-parameter objects and `Info`. A method instance also
   owns exactly one synthetic `this` receiver object, separate from its source
   signature, params, defaults, and argument order. `this` is valid only as the
-  receiver base of field/method selection; mutable methods require a current
-  rooted caller place, while const methods accept values and history and cannot
-  write through their receiver. A method's declared result type is resolved at
-  its owner and checked against every instantiated body. Method defaults are
+  receiver base of field/method selection. Mutable methods accept any struct
+  reference expression and mutate its body without a receiver copy-out.
+  Trailing `const` is shallow: a method cannot replace a direct field of `this`
+  or call a mutable method on `this`, but may mutate a referenced child struct.
+  A method's declared result type is resolved at its owner and checked against
+  every instantiated body. Method defaults are
   declaration-scope expressions: they may read globals but may not reference
   `this` or any method parameter, and a rejected omitted default never owns a
   lowerable call resolution. Every method also has one canonical checker-only
@@ -132,7 +144,7 @@ and expressions; and `importer.ts` is the import seam (loading lives in
 - Qualified APIs resolve through that canonical export map: `pkg.function`,
   `pkg.Type`, `pkg.Type.new`, and `pkg.Enum.member` all record their package and
   member occurrences in the active `Info`. Imported methods remain owned and
-  resolved by their exported `UserTypeObject`, not by the caller's lexical
+  resolved by their exported `StructObject`, not by the caller's lexical
   scope.
 - Checker errors queue into the compilation's `Errors` and poison with
   `TypeKind.Invalid` (assignable both ways, unify-absorbed) so one error
@@ -144,6 +156,10 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   qualifier, and any fold value, but no backend depth or buffer state. The
   noder interns the matching `SeriesInput` or `BuiltinInput` independently
   in each Program projection; no pass parses a builtin spelling to classify it.
+- History applies only to a direct readable semantic binding, including bound
+  catalog inputs. Offset zero follows the same rule. Field selections, calls,
+  collection accessors, arithmetic, and other computed operands never acquire
+  synthetic history Names.
 - Request captures re-check in a CHILD semantic context with fresh `Info`:
   only constant values and direct scalar input bindings cross contexts;
   computed root aliases fail closed because no child-frame projection exists

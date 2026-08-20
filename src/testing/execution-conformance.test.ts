@@ -8,7 +8,7 @@ import {compile} from '../compile';
 import {csvProvider} from '../providers/data/csv';
 import {TraceSink} from '../providers/sinks/trace-sink';
 import type {BoundInput, EffectValue, OutputSink, Value} from '../runtime/abi';
-import {isEffectUserTypeValue} from '../runtime/abi';
+import {isEffectStructValue} from '../runtime/abi';
 import {bind} from '../runtime/js-runtime';
 import {loadModule} from '../runtime/load';
 import {
@@ -97,7 +97,7 @@ function expectFiniteOrNa(value: Value | EffectValue, label: string): void {
     return;
   }
   const effectValue = value as EffectValue;
-  if (isEffectUserTypeValue(effectValue)) {
+  if (isEffectStructValue(effectValue)) {
     effectValue.fields.forEach((entry, i) =>
       expectFiniteOrNa(entry, `${label}.fields[${i}]`),
     );

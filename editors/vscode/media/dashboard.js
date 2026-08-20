@@ -893,7 +893,7 @@
     for (const effect of result.effects) {
       const schema = schemas.get(effect.effectId);
       if (
-        schema?.kind !== 'user-type' ||
+        schema?.kind !== 'struct' ||
         schema.typeId !== 'broker.FillExecuted'
       ) {
         continue;

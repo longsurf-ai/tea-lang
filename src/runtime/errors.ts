@@ -37,7 +37,7 @@ export type ExecutionErrorCode =
   | 'COLLECTION_LIMIT_EXCEEDED'
   | 'HEAP_LIMIT_EXCEEDED'
   | 'FIXED_VALUE_STORAGE_LIMIT_EXCEEDED'
-  | 'NA_USER_VALUE_WRITE'
+  | 'NA_STRUCT_WRITE'
   | 'VALUE_LAYOUT_MISMATCH';
 
 export class ExecutionError extends OperationalError {

@@ -34,14 +34,20 @@ function bind(
 const INT = 0;
 const ARRAY = 1;
 const HOLDER = 2;
+const COUNTER = 3;
 const LAYOUTS = {
   layouts: [
     {kind: 'number', numeric: 'int'},
     {kind: 'array', element: INT},
     {
-      kind: 'user-type',
+      kind: 'struct',
       name: 'Holder',
       fields: [{name: 'values', layout: ARRAY}],
+    },
+    {
+      kind: 'struct',
+      name: 'Counter',
+      fields: [{name: 'value', layout: INT}],
     },
   ],
 } as const satisfies AggregateLayoutManifest;
@@ -148,6 +154,60 @@ function arrayStateModule(): TeaModule {
 }
 
 describe('aggregate Ring and commit integration', () => {
+  test('a first-row var struct keeps its reference while its body accumulates across ticks', async () => {
+    const sink = new Sink();
+    let fail = false;
+    const module: TeaModule = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: LAYOUTS,
+      manifest: {
+        series: [],
+        builtin: [],
+        params: [],
+        outputs: [OUTPUT],
+        effects: [],
+        requests: [],
+        frames: [
+          {
+            locals: [
+              {storage: Storage.Var, depth: {kind: 'none'}, layout: COUNTER},
+            ],
+            subs: [],
+          },
+        ],
+      },
+      requests: [],
+      init() {},
+      bind() {},
+      funcs: {},
+      main(rt, fr) {
+        if (rt.needsInit(fr, 0)) {
+          rt.initialize(fr, 0, rt.newStruct(COUNTER, [0]));
+        }
+        const counter = rt.requireStruct(rt.read(fr, 0, 0), COUNTER);
+        const next = (rt.structField(counter, COUNTER, 0) as number) + 1;
+        rt.storeStructField(counter, COUNTER, 0, next);
+        if (fail) throw new Error('tick failed');
+        rt.emit(0, 0, next);
+      },
+    };
+    const bound = await bind(module, {
+      params: {},
+      provider: provider(context(1)),
+      sink,
+    });
+
+    bound.executeRow(0, true);
+    fail = true;
+    expect(() => bound.executeRow(0, true)).toThrow('tick failed');
+    fail = false;
+    bound.executeRow(0, true);
+    bound.executeRow(0, false);
+    bound.commitRow(0);
+
+    expect(sink.values.map(entry => entry.values[0])).toEqual([1, 2, 3]);
+  });
+
   test('provisional var rolls back while varip retains its immutable header', async () => {
     const sink = new Sink();
     const bound = await bind(arrayStateModule(), {
@@ -371,7 +431,7 @@ describe('aggregate Ring and commit integration', () => {
     expect(() => bound.executeRow(1, false)).toThrow('delivery failed');
   });
 
-  test('user-value history holds old collection headers', async () => {
+  test('struct history stores live references rather than body snapshots', async () => {
     const sink = new Sink();
     const module: TeaModule = {
       abi: RUNTIME_ABI_VERSION,
@@ -419,28 +479,22 @@ describe('aggregate Ring and commit integration', () => {
           rt.initialize(
             fr,
             0,
-            rt.newUser(HOLDER, [rt.callCollection('array.from', ARRAY, [0])]),
+            rt.newStruct(HOLDER, [rt.callCollection('array.from', ARRAY, [0])]),
           );
         }
         const current = rt.read(fr, 0, 0);
-        const values = rt.userField(current, HOLDER, 0);
+        const values = rt.structField(current, HOLDER, 0);
         const mutation = rt.mutateCollection('array.push', ARRAY, values, [
           (rt.builtin(0, 0) as number) + 1,
         ]);
-        const replacement = rt.rebuildUserPath(
-          current,
-          HOLDER,
-          [0],
-          mutation.replacement,
-        );
-        rt.write(fr, 0, replacement);
+        rt.storeStructField(current, HOLDER, 0, mutation.replacement);
         rt.emit(
           0,
           0,
           rt.callCollection('array.size', INT, [mutation.replacement]),
         );
         if ((rt.builtin(0, 0) as number) > 0) {
-          const prior = rt.userField(rt.read(fr, 0, 1), HOLDER, 0);
+          const prior = rt.structField(rt.read(fr, 0, 1), HOLDER, 0);
           rt.emit(0, 1, rt.callCollection('array.size', INT, [prior]));
         } else {
           rt.emit(0, 1, NaN);
@@ -455,7 +509,7 @@ describe('aggregate Ring and commit integration', () => {
     await bound.runAll();
     expect(sink.values.map(entry => entry.values)).toEqual([
       [2, NaN],
-      [3, 2],
+      [3, 3],
     ]);
   });
 });
@@ -1416,14 +1470,14 @@ describe('runtime boundaries', () => {
     let initialized = false;
     const old = {
       ...arrayStateModule(),
-      abi: 2,
+      abi: 1,
       init() {
         initialized = true;
       },
     } as unknown as TeaModule;
     await expect(
       bind(old, {params: {}, provider: provider(), sink: new Sink()}),
-    ).rejects.toThrow('unsupported module ABI 2; expected 1');
+    ).rejects.toThrow('unsupported module ABI 1; expected 2');
     expect(initialized).toBe(false);
   });
 

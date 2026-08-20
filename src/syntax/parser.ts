@@ -27,7 +27,7 @@ import type {
   TypeAnnotation,
   TypeName,
   TypeParam,
-  UserTypeMember,
+  StructMember,
 } from './nodes';
 import {AssignOp, COMPOUND_ASSIGN, Mode, NodeKind, ReceiverMode} from './nodes';
 import {Scanner} from './scanner';
@@ -227,9 +227,7 @@ export class Parser {
       }
       this.next();
       const typeParams =
-        keyword === Tok.Struct || keyword === Tok.Type
-          ? this.typeParams()
-          : [];
+        keyword === Tok.Struct || keyword === Tok.Type ? this.typeParams() : [];
       if (typeParams === null) {
         return false;
       }
@@ -333,7 +331,7 @@ export class Parser {
             return this.typeOrAliasDecl(pos, false);
           }
           if (keyword === Tok.Struct) {
-            return this.userTypeDecl(pos, false, Tok.Struct);
+            return this.structDecl(pos, false, Tok.Struct);
           }
           if (keyword === Tok.Interface) {
             return this.interfaceDecl(pos, false);
@@ -372,7 +370,7 @@ export class Parser {
         ) {
           this.next();
           if (keyword === Tok.Struct) {
-            return this.userTypeDecl(pos, true, Tok.Struct);
+            return this.structDecl(pos, true, Tok.Struct);
           }
           if (keyword === Tok.Type) {
             return this.typeOrAliasDecl(pos, true);
@@ -567,7 +565,7 @@ export class Parser {
     return t;
   }
 
-  // Optional `<T: Constraint, ...>` on nominal user types. A present list is
+  // Optional `<T: Constraint, ...>` on nominal structs. A present list is
   // all-or-nothing and every parameter is constrained in this first slice.
   private typeParams(): TypeParam[] | null {
     if (this.tok() !== Tok.Operator || this.op() !== Op.Lt) {
@@ -1053,7 +1051,7 @@ export class Parser {
         aliasedType: {kind: NodeKind.Name, pos: this.pos(), value: ''},
       };
     }
-    return this.userTypeDeclRest(pos, exported, Tok.Type, name);
+    return this.structDeclRest(pos, exported, Tok.Type, name);
   }
 
   private interfaceDecl(pos: Pos, exported: boolean): InterfaceDecl {
@@ -1097,7 +1095,10 @@ export class Parser {
     const params = this.typedParams();
     for (const param of params) {
       if (param.defaultValue !== null) {
-        this.error('interface method parameters cannot have defaults', param.pos);
+        this.error(
+          'interface method parameters cannot have defaults',
+          param.pos,
+        );
       }
     }
     const receiverMode = this.got(Tok.Const)
@@ -1124,17 +1125,17 @@ export class Parser {
     };
   }
 
-  private userTypeDecl(
+  private structDecl(
     pos: Pos,
     exported: boolean,
     writtenKeyword: 'struct' | 'type',
   ): Stmt {
-    return this.userTypeDeclRest(pos, exported, writtenKeyword, this.name());
+    return this.structDeclRest(pos, exported, writtenKeyword, this.name());
   }
 
   // `struct Name` and block-form `type Name` contain source-ordered fields
   // and methods. A method is distinguished by the `(` after its typed name.
-  private userTypeDeclRest(
+  private structDeclRest(
     pos: Pos,
     exported: boolean,
     writtenKeyword: 'struct' | 'type',
@@ -1148,19 +1149,19 @@ export class Parser {
     const typeParams = parsedTypeParams ?? [];
     this.want(Tok.Newline);
     this.want(Tok.Indent);
-    const members: UserTypeMember[] = [];
+    const members: StructMember[] = [];
     while (this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
       if (this.got(Tok.Newline)) {
         continue;
       }
       this.blockEnded = false;
-      members.push(this.userTypeMember());
+      members.push(this.structMember());
       this.stmtEnd();
     }
     this.want(Tok.Dedent);
     this.blockEnded = true;
     return {
-      kind: NodeKind.UserTypeDecl,
+      kind: NodeKind.StructDecl,
       pos,
       exported,
       writtenKeyword,
@@ -1170,7 +1171,7 @@ export class Parser {
     };
   }
 
-  private userTypeMember(): UserTypeMember {
+  private structMember(): StructMember {
     const pos = this.pos();
     const head = this.typedMemberHead();
     if (head === null) {

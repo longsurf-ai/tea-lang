@@ -93,7 +93,7 @@ describe('TraceSink', () => {
         {payload: {kind: 'float'}},
         {
           payload: {
-            kind: 'user-type',
+            kind: 'struct',
             typeId: 'broker.FillExecuted',
             displayName: 'FillExecuted',
             fields: [],

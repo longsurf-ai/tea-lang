@@ -6,11 +6,10 @@ import {
   type CollectionMutationOperation,
   type CollectionOperation,
   type CollectionValue,
-  type UserTypeValue,
   type Value,
 } from '../abi';
 import {HeapArena, type HeapTransaction, type StorageRef} from '../heap';
-import {newUserValue, rebuildUserPath} from '../user-value';
+import {StructStorageRuntime} from '../struct-storage';
 import {
   type AggregateLayoutManifest,
   ValueLayoutRegistry,
@@ -38,7 +37,7 @@ const MANIFEST = {
     {kind: 'number', numeric: 'float'},
     {kind: 'nullable-scalar', scalar: 'string'},
     {
-      kind: 'user-type',
+      kind: 'struct',
       name: 'Point',
       fields: [
         {name: 'x', layout: INT},
@@ -46,7 +45,7 @@ const MANIFEST = {
       ],
     },
     {
-      kind: 'user-type',
+      kind: 'struct',
       name: 'Box',
       fields: [
         {name: 'point', layout: POINT},
@@ -68,16 +67,19 @@ interface Harness {
   readonly heap: HeapArena;
   readonly layouts: ValueLayoutRegistry;
   readonly collections: CollectionRuntime;
+  readonly structs: StructStorageRuntime;
   transaction: number;
 }
 
 function harness(maxElements = 10_000): Harness {
   const heap = new HeapArena();
   const layouts = new ValueLayoutRegistry(MANIFEST);
+  const structs = new StructStorageRuntime(heap, layouts);
   return {
     heap,
     layouts,
-    collections: new CollectionRuntime(heap, layouts, maxElements),
+    structs,
+    collections: new CollectionRuntime(heap, layouts, maxElements, structs),
     transaction: 0,
   };
 }
@@ -388,59 +390,35 @@ describe('collection property traces', () => {
     expect(mapValues(h, value)).toEqual(model);
   });
 
-  test('nested user values require get-rebuild-set and preserve repeated values', () => {
+  test('nested struct refs stay aliased across repeated and historical collection headers', () => {
     const h = harness();
-    const next = random(0x5553_4552);
-    const point = newUserValue(h.layouts, POINT, [1, 2]);
-    const box = newUserValue(h.layouts, BOX, [point, 7]);
-    let value = call(h, 'array.from', BOXES, [box, box]);
-    let model = [
-      {point: [1, 2], stamp: 7},
-      {point: [1, 2], stamp: 7},
-    ];
-    const versions: {value: Value; model: typeof model}[] = [];
+    const allocation = h.heap.beginTransaction('nested structs');
+    const point = h.structs.newStruct(allocation, POINT, [1, 2]);
+    const box = h.structs.newStruct(allocation, BOX, [point, 7]);
+    commit(allocation, [box]);
+    const value = call(h, 'array.from', BOXES, [box, box]);
+    const historicalHeader = value;
     const snapshot = (candidate: Value) =>
       arrayValues(h, candidate).map(item => {
-        const stored = item as UserTypeValue;
-        const storedPoint = stored.fields[0] as UserTypeValue;
+        const storedPoint = h.structs.field(item, BOX, 0);
         return {
-          point: [...storedPoint.fields] as number[],
-          stamp: stored.fields[1],
+          point: [
+            h.structs.field(storedPoint, POINT, 0),
+            h.structs.field(storedPoint, POINT, 1),
+          ],
+          stamp: h.structs.field(item, BOX, 1),
         };
       });
 
-    for (let step = 0; step < 32; step += 1) {
-      versions.push({
-        value,
-        model: model.map(item => ({point: [...item.point], stamp: item.stamp})),
-      });
-      const index = next() % model.length;
-      const field = next() % 2;
-      const item = next() % 10_000;
-      const got = call(h, 'array.get', BOX, [value, index]);
-      const changed = rebuildUserPath(h.layouts, got, BOX, [0, field], item);
-      value = mutate(h, 'array.set', BOXES, value, [
-        index,
-        changed,
-      ]).replacement;
-      model = model.map((old, at) => ({
-        point:
-          at === index
-            ? old.point.map((part, fieldIndex) =>
-                fieldIndex === field ? item : part,
-              )
-            : [...old.point],
-        stamp: old.stamp,
-      }));
+    const update = h.heap.beginTransaction('shared field update');
+    h.structs.storeField(update, point, POINT, 0, 99);
+    commit(update, [value]);
 
-      for (const version of [...versions, {value, model}]) {
-        expect(hash(snapshot(version.value))).toBe(hash(version.model));
-      }
-    }
-
-    expect(snapshot(value)).toEqual(model);
-    expect(point.fields).toEqual([1, 2]);
-    expect(box.fields[0]).toBe(point);
+    expect(snapshot(value)).toEqual([
+      {point: [99, 2], stamp: 7},
+      {point: [99, 2], stamp: 7},
+    ]);
+    expect(snapshot(historicalHeader)).toEqual(snapshot(value));
   });
 });
 
@@ -482,9 +460,7 @@ describe('collection failure contracts', () => {
     fail(h, 'VALUE_LAYOUT_MISMATCH', transaction =>
       h.collections.mutate(transaction, 'array.push', INTS, empty, ['wrong']),
     );
-    expect(() => rebuildUserPath(h.layouts, null, BOX, [0], null)).toThrow(
-      'NA_USER_VALUE_WRITE',
-    );
+    expect(() => h.structs.requireStruct(null, BOX)).toThrow('NA_STRUCT_WRITE');
 
     expect(arrayValues(h, empty)).toEqual([]);
     expect(arrayValues(h, full)).toEqual([1]);

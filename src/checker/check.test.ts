@@ -217,8 +217,8 @@ describe('qualifier propagation', () => {
   });
 });
 
-describe('user-defined types', () => {
-  test('constructor qualifier includes omitted field defaults', () => {
+describe('structs', () => {
+  test('every constructor allocation is series-qualified', () => {
     const r = checkText(
       [
         'type Sample',
@@ -229,12 +229,12 @@ describe('user-defined types', () => {
     );
     expect(r.errors).toEqual([]);
     expect(declaredName(r, 'fromDefault').qualifier).toBe(Qualifier.Series);
-    expect(declaredName(r, 'fromExplicit').qualifier).toBe(Qualifier.Const);
+    expect(declaredName(r, 'fromExplicit').qualifier).toBe(Qualifier.Series);
     const sample = r.checked.pkg.scope.lookup('Sample');
-    expect(sample?.kind).toBe(ObjectKind.UserType);
-    if (sample?.kind === ObjectKind.UserType) {
-      // As in Go structs, the declared type and semantic declaration graph
-      // refer to the same canonical field objects.
+    expect(sample?.kind).toBe(ObjectKind.Struct);
+    if (sample?.kind === ObjectKind.Struct) {
+      // The declared nominal type and semantic declaration graph refer to the
+      // same canonical field objects.
       expect(sample.type.fields[0]).toEqual({
         name: 'value',
         type: sample.fields[0].type,

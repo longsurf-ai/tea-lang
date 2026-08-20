@@ -1144,8 +1144,8 @@ function buildFuncs(): NativeFunc[] {
   ): NativeParam => req('self', type, Qualifier.Series, {mode});
 
   // Collections are host primitives because persistent storage and atomic
-  // rooted writeback cannot be expressed in Tea source. Namespace and method
-  // spellings resolve to these same catalog entries.
+  // location replacement cannot be expressed in Tea source. Namespace and
+  // method spellings resolve to these same catalog entries.
   funcs.push(
     genericFunc('array.new', storableT, [], arrayT, Qualifier.Const),
     genericFunc(
@@ -1153,7 +1153,7 @@ function buildFuncs(): NativeFunc[] {
       storableT,
       [
         req('size', IntType, Qualifier.Series, {acceptsNa: false}),
-        req('initial', t, Qualifier.Series),
+        opt('initial', t, Qualifier.Series),
       ],
       arrayT,
       JoinResult,

@@ -1,4 +1,4 @@
-// Purpose: Type-neutral immutable storage arena with one explicit transaction, prepared commit, deterministic reachability accounting, and stale-reference guards.
+// Purpose: Type-neutral storage arena with one explicit allocation/mutation transaction, prepared commit, deterministic reachability accounting, and stale-reference guards.
 
 import {fatal} from '../base/print';
 import {ExecutionError} from './errors';
@@ -9,6 +9,14 @@ export interface StorageRef<TPayload = unknown> {
   readonly [storageRefBrand]: TPayload;
 }
 
+export function isStorageRef(value: unknown): value is StorageRef<unknown> {
+  return (
+    (typeof value === 'object' || typeof value === 'function') &&
+    value !== null &&
+    REFS.has(value as object)
+  );
+}
+
 export type DescriptorId = symbol;
 export type TransactionKey = string | number;
 
@@ -16,13 +24,40 @@ export interface StorageTracer {
   storage(ref: StorageRef<unknown>): void;
 }
 
-export interface StorageDescriptor<TPayload, TArgs> {
+export type StorageJournalKey = string | number | symbol;
+
+export interface PreparedStorageEdit<TUndo> {
+  readonly key: StorageJournalKey;
+  readonly undo: TUndo;
+}
+
+export interface StorageMutationDescriptor<TPayload, TEdit, TUndo> {
+  // This is the throwing half of a mutation. It validates the edit and
+  // captures everything restore needs before the payload changes.
+  prepare(
+    payload: Readonly<TPayload>,
+    edit: Readonly<TEdit>,
+  ): PreparedStorageEdit<TUndo>;
+  // References introduced by the edit are checked before apply so apply and
+  // restore can remain nonthrowing operations.
+  traceEdit(edit: Readonly<TEdit>, tracer: StorageTracer): void;
+  apply(payload: TPayload, edit: Readonly<TEdit>): void;
+  restore(payload: TPayload, key: StorageJournalKey, undo: TUndo): void;
+}
+
+export interface StorageDescriptor<
+  TPayload,
+  TArgs,
+  TEdit = never,
+  TUndo = never,
+> {
   readonly id: DescriptorId;
   readonly debugName: string;
   logicalBytesFor(args: Readonly<TArgs>): number;
-  seal(args: TArgs): TPayload;
+  create(args: TArgs): TPayload;
   trace(payload: Readonly<TPayload>, tracer: StorageTracer): void;
   logicalBytes(payload: Readonly<TPayload>): number;
+  readonly mutation?: StorageMutationDescriptor<TPayload, TEdit, TUndo>;
 }
 
 export interface HeapLimits {
@@ -49,9 +84,9 @@ export interface HeapStats {
 
 export interface Heap {
   beginTransaction(key: TransactionKey): HeapTransaction;
-  read<TPayload, TArgs = unknown>(
+  read<TPayload, TArgs = unknown, TEdit = never, TUndo = never>(
     ref: StorageRef<unknown>,
-    descriptor?: StorageDescriptor<TPayload, TArgs>,
+    descriptor?: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
   ): Readonly<TPayload>;
   collect(
     roots: Iterable<StorageRef<unknown>>,
@@ -62,10 +97,15 @@ export interface Heap {
 }
 
 export interface HeapTransaction {
-  allocateSealed<TPayload, TArgs>(
-    descriptor: StorageDescriptor<TPayload, TArgs>,
+  allocate<TPayload, TArgs, TEdit = never, TUndo = never>(
+    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
     args: TArgs,
   ): StorageRef<TPayload>;
+  mutate<TPayload, TArgs, TEdit, TUndo>(
+    ref: StorageRef<unknown>,
+    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
+    edit: TEdit,
+  ): void;
   prepareCommit(
     candidateRoots: Iterable<StorageRef<unknown>>,
   ): PreparedHeapCommit;
@@ -88,11 +128,18 @@ interface RefRecord {
 
 interface Cell {
   readonly version: number;
-  readonly descriptor: StorageDescriptor<unknown, unknown>;
+  readonly descriptor: StorageDescriptor<unknown, unknown, unknown, unknown>;
   readonly payload: unknown;
   readonly logicalBytes: number;
   state: CellState;
   transactionId: number | null;
+}
+
+interface UndoEntry {
+  readonly slot: number;
+  readonly key: StorageJournalKey;
+  readonly mutation: StorageMutationDescriptor<unknown, unknown, unknown>;
+  readonly undo: unknown;
 }
 
 const REFS = new WeakMap<object, RefRecord>();
@@ -102,26 +149,6 @@ function limit(value: number, name: string): number {
     return fatal(`invalid Heap limit ${name}=${value}`);
   }
   return value;
-}
-
-function immutable(
-  payload: unknown,
-  name: string,
-  seen = new WeakSet<object>(),
-): void {
-  if (payload === null || typeof payload !== 'object') {
-    return;
-  }
-  if (seen.has(payload)) {
-    return;
-  }
-  seen.add(payload);
-  if (!Object.isFrozen(payload)) {
-    fatal(`storage descriptor '${name}' returned an unsealed payload`);
-  }
-  for (const value of Object.values(payload)) {
-    immutable(value, name, seen);
-  }
 }
 
 export class HeapArena implements Heap {
@@ -171,9 +198,9 @@ export class HeapArena implements Heap {
     return transaction;
   }
 
-  read<TPayload, TArgs = unknown>(
+  read<TPayload, TArgs = unknown, TEdit = never, TUndo = never>(
     ref: StorageRef<unknown>,
-    descriptor?: StorageDescriptor<TPayload, TArgs>,
+    descriptor?: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
   ): Readonly<TPayload> {
     this.assertLive();
     const record = this.refRecord(ref);
@@ -268,9 +295,9 @@ export class HeapArena implements Heap {
     };
   }
 
-  allocate<TPayload, TArgs>(
+  allocate<TPayload, TArgs, TEdit, TUndo>(
     transaction: TransactionImpl,
-    descriptor: StorageDescriptor<TPayload, TArgs>,
+    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
     args: TArgs,
   ): StorageRef<TPayload> {
     this.assertCurrent(transaction, 'active');
@@ -290,8 +317,7 @@ export class HeapArena implements Heap {
         'transient Heap allocation limit exceeded',
       );
     }
-    const payload = descriptor.seal(args);
-    immutable(payload, descriptor.debugName);
+    const payload = descriptor.create(args);
     const bytes = descriptor.logicalBytes(payload);
     if (!Number.isSafeInteger(bytes) || bytes < 0) {
       return fatal(
@@ -300,14 +326,19 @@ export class HeapArena implements Heap {
     }
     if (bytes !== estimatedBytes) {
       return fatal(
-        `storage descriptor '${descriptor.debugName}' args estimate ${estimatedBytes} disagrees with sealed logical bytes ${bytes}`,
+        `storage descriptor '${descriptor.debugName}' args estimate ${estimatedBytes} disagrees with created logical bytes ${bytes}`,
       );
     }
 
     const slot = this.free.pop() ?? this.cells.length;
     const version = (this.versions[slot] ?? 0) + 1;
     this.versions[slot] = version;
-    const erased = descriptor as unknown as StorageDescriptor<unknown, unknown>;
+    const erased = descriptor as unknown as StorageDescriptor<
+      unknown,
+      unknown,
+      unknown,
+      unknown
+    >;
     this.cells[slot] = {
       version,
       descriptor: erased,
@@ -337,6 +368,60 @@ export class HeapArena implements Heap {
       throw error;
     }
     return ref;
+  }
+
+  mutate<TPayload, TArgs, TEdit, TUndo>(
+    transaction: TransactionImpl,
+    ref: StorageRef<unknown>,
+    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
+    edit: TEdit,
+  ): void {
+    this.assertCurrent(transaction, 'active');
+    const record = this.refRecord(ref);
+    const cell = this.cell(record);
+    if (descriptor.id !== record.descriptor) {
+      return fatal(
+        `storage descriptor mismatch: expected '${descriptor.debugName}'`,
+      );
+    }
+    if (cell.state === 'tentative' && cell.transactionId !== transaction.id) {
+      return fatal(
+        'tentative StorageRef is not owned by the current transaction',
+      );
+    }
+    const mutation = descriptor.mutation;
+    if (mutation === undefined) {
+      return fatal(
+        `storage descriptor '${descriptor.debugName}' does not admit mutation`,
+      );
+    }
+
+    // prepare and traceEdit are the only potentially throwing descriptor
+    // operations. Complete both before changing the payload.
+    const prepared = mutation.prepare(cell.payload as Readonly<TPayload>, edit);
+    mutation.traceEdit(edit, {
+      storage: child => this.assertPayloadRef(transaction, child),
+    });
+
+    if (cell.state === 'committed') {
+      transaction.recordUndo(
+        record.slot,
+        prepared.key,
+        mutation as unknown as StorageMutationDescriptor<
+          unknown,
+          unknown,
+          unknown
+        >,
+        prepared.undo,
+      );
+    }
+    mutation.apply(cell.payload as TPayload, edit);
+    const bytes = descriptor.logicalBytes(cell.payload as Readonly<TPayload>);
+    if (bytes !== cell.logicalBytes) {
+      return fatal(
+        `storage descriptor '${descriptor.debugName}' changed logical bytes during in-place mutation`,
+      );
+    }
   }
 
   prepare(
@@ -406,6 +491,7 @@ export class HeapArena implements Heap {
     }
     transaction.tentative.clear();
     transaction.transientBytes = 0;
+    transaction.clearUndo();
     transaction.state = 'committed';
     this.updateRetained(reachable, bytes);
   }
@@ -419,6 +505,7 @@ export class HeapArena implements Heap {
         'cannot abort a Heap transaction owned by another arena state',
       );
     }
+    transaction.restoreUndo(this.cells);
     for (const slot of transaction.tentative) {
       this.release(slot);
     }
@@ -438,7 +525,7 @@ export class HeapArena implements Heap {
     }
     if (cell.transactionId !== transaction.id) {
       fatal(
-        'sealed storage points to tentative storage from another transaction',
+        'storage payload points to tentative storage from another transaction',
       );
     }
   }
@@ -562,6 +649,8 @@ class TransactionImpl implements HeapTransaction {
   state: TransactionState = 'active';
   readonly tentative = new Set<number>();
   transientBytes = 0;
+  private readonly undo: UndoEntry[] = [];
+  private readonly undoKeys = new Map<number, Set<StorageJournalKey>>();
 
   constructor(
     private readonly arena: HeapArena,
@@ -573,11 +662,54 @@ class TransactionImpl implements HeapTransaction {
     return this.state === 'committed' || this.state === 'aborted';
   }
 
-  allocateSealed<TPayload, TArgs>(
-    descriptor: StorageDescriptor<TPayload, TArgs>,
+  allocate<TPayload, TArgs, TEdit = never, TUndo = never>(
+    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
     args: TArgs,
   ): StorageRef<TPayload> {
     return this.arena.allocate(this, descriptor, args);
+  }
+
+  mutate<TPayload, TArgs, TEdit, TUndo>(
+    ref: StorageRef<unknown>,
+    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
+    edit: TEdit,
+  ): void {
+    this.arena.mutate(this, ref, descriptor, edit);
+  }
+
+  recordUndo(
+    slot: number,
+    key: StorageJournalKey,
+    mutation: StorageMutationDescriptor<unknown, unknown, unknown>,
+    undo: unknown,
+  ): void {
+    let keys = this.undoKeys.get(slot);
+    if (keys === undefined) {
+      keys = new Set();
+      this.undoKeys.set(slot, keys);
+    }
+    if (keys.has(key)) {
+      return;
+    }
+    keys.add(key);
+    this.undo.push({slot, key, mutation, undo});
+  }
+
+  restoreUndo(cells: readonly (Cell | null)[]): void {
+    for (let index = this.undo.length - 1; index >= 0; index -= 1) {
+      const entry = this.undo[index];
+      const cell = cells[entry.slot];
+      if (cell === null || cell === undefined) {
+        return fatal(`journaled Heap slot ${entry.slot} disappeared`);
+      }
+      entry.mutation.restore(cell.payload, entry.key, entry.undo);
+    }
+    this.clearUndo();
+  }
+
+  clearUndo(): void {
+    this.undo.length = 0;
+    this.undoKeys.clear();
   }
 
   prepareCommit(

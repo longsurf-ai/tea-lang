@@ -95,16 +95,16 @@ describe('MemorySink', () => {
     expect(sink.emissions).toHaveLength(1);
   });
 
-  test('recursively snapshots fixed user-type effect payloads', () => {
+  test('recursively snapshots fixed struct effect payloads', () => {
     const sink = new MemorySink();
     const nestedFields: EffectValue[] = [3];
     const nested: EffectValue = {
-      kind: 'user-type',
+      kind: 'struct',
       fields: nestedFields,
     };
     const fields: EffectValue[] = ['order-1', nested];
     const payload: EffectValue = {
-      kind: 'user-type',
+      kind: 'struct',
       fields,
     };
     sink.declare({
@@ -112,7 +112,7 @@ describe('MemorySink', () => {
       effects: [
         {
           payload: {
-            kind: 'user-type',
+            kind: 'struct',
             typeId: 'test.Event',
             displayName: 'Event',
             fields: [],
@@ -131,8 +131,8 @@ describe('MemorySink', () => {
     nestedFields[0] = 99;
 
     expect(sink.effectEmissions[0].payload).toEqual({
-      kind: 'user-type',
-      fields: ['order-1', {kind: 'user-type', fields: [3]}],
+      kind: 'struct',
+      fields: ['order-1', {kind: 'struct', fields: [3]}],
     });
   });
 });

@@ -10,7 +10,6 @@ import {
   IrOp,
   PlaceKind,
   Storage,
-  type HistReadExpr,
   type WriteNameStmt,
 } from '../ir/node';
 import {MergeMode, ParamConstraintKind, ParamDefaultKind} from '../ir/program';
@@ -173,7 +172,7 @@ describe('declarations', () => {
   });
 });
 
-describe('user-defined types', () => {
+describe('structs', () => {
   test('imported semantic types, methods, and functions project into Program IR', () => {
     const program = mustBuildWithLibraries(
       [
@@ -196,7 +195,7 @@ describe('user-defined types', () => {
     const writes = program.body.filter(
       (stmt): stmt is WriteNameStmt => stmt.kind === IrKind.WriteName,
     );
-    expect(writes[0].value.kind).toBe(IrKind.NewUserValue);
+    expect(writes[0].value.kind).toBe(IrKind.NewStruct);
     expect(
       funcsOf(program)
         .map(func => func.callMode)
@@ -214,7 +213,7 @@ describe('user-defined types', () => {
       ].join('\n'),
     );
     expect(funcsOf(program)[0].body).toMatchObject({
-      kind: IrKind.NewUserValue,
+      kind: IrKind.NewStruct,
       args: [{kind: IrKind.Const, value: 1}],
     });
   });
@@ -230,13 +229,13 @@ describe('user-defined types', () => {
     expect(program.requests[0].child.body[0]).toMatchObject({
       kind: IrKind.WriteName,
       value: {
-        kind: IrKind.NewUserValue,
+        kind: IrKind.NewStruct,
         args: [{kind: IrKind.Const, value: 1}],
       },
     });
   });
 
-  test('field reads and rooted writes project canonical field indices', () => {
+  test('field reads and stores project the captured object and canonical field', () => {
     const program = mustBuild(
       [
         'type Point',
@@ -249,11 +248,14 @@ describe('user-defined types', () => {
       ].join('\n'),
     );
     expect(program.body[1]).toMatchObject({
-      kind: IrKind.UpdateValuePath,
-      path: {
-        root: {name: 'holder'},
-        fieldIndices: [0, 0],
+      kind: IrKind.StoreField,
+      object: {
+        kind: IrKind.FieldGet,
+        fieldIndex: 0,
+        x: {kind: IrKind.HistRead},
       },
+      owner: {name: 'Point'},
+      fieldIndex: 0,
       value: {kind: IrKind.Const, value: 3},
     });
     expect(program.body[2]).toMatchObject({
@@ -266,7 +268,7 @@ describe('user-defined types', () => {
     });
   });
 
-  test('collection mutators capture a rooted path and keep their result', () => {
+  test('collection mutators capture a writable location and keep their result', () => {
     const program = mustBuild(
       ['xs = array.from(1, 2)', 'xs.push(3)', 'last = xs.pop()'].join('\n'),
     );
@@ -275,8 +277,7 @@ describe('user-defined types', () => {
       x: {
         kind: IrKind.MutateCollection,
         operation: 'array.push',
-        path: {root: {name: 'xs'}, fieldIndices: []},
-        receiver: {kind: IrKind.HistRead},
+        location: {kind: 'name', name: {name: 'xs'}},
         args: [{kind: IrKind.Const, value: 3}],
       },
     });
@@ -286,13 +287,13 @@ describe('user-defined types', () => {
       value: {
         kind: IrKind.MutateCollection,
         operation: 'array.pop',
-        path: {root: {name: 'xs'}, fieldIndices: []},
+        location: {kind: 'name', name: {name: 'xs'}},
         args: [],
       },
     });
   });
 
-  test('mutable methods project a hidden receiver and copy-in/copy-out call', () => {
+  test('mutable methods project a shared hidden receiver and ordinary call result', () => {
     const program = mustBuild(
       [
         'type Foo',
@@ -310,7 +311,12 @@ describe('user-defined types', () => {
       body: {
         kind: IrKind.MutateCollection,
         operation: 'array.push',
-        path: {root: {name: 'this'}, fieldIndices: [0]},
+        location: {
+          kind: 'struct-field',
+          object: {kind: IrKind.HistRead},
+          owner: {name: 'Foo'},
+          fieldIndex: 0,
+        },
       },
     });
     if (append?.callMode === 'mutable-method') {
@@ -321,7 +327,6 @@ describe('user-defined types', () => {
       x: {
         kind: IrKind.CallMutableMethod,
         func: append,
-        path: {root: {name: 'foo'}, fieldIndices: []},
         receiver: {kind: IrKind.HistRead},
         args: [{kind: IrKind.Const, value: 2}],
       },
@@ -544,25 +549,42 @@ describe('params and outputs', () => {
 });
 
 describe('history', () => {
-  test('history on a computed expression synthesizes an unconditional slot', () => {
-    const program = mustBuild('x = (high + low)[2]\nplot(x)');
-    const write = program.body[0] as WriteNameStmt;
-    expect(write.name.name).toBe('$hist@1:5');
-    const readback = program.body[1] as WriteNameStmt;
-    const read = readback.value as HistReadExpr;
-    expect(read.kind).toBe(IrKind.HistRead);
-    expect(read.place.kind).toBe(PlaceKind.Name);
-    expect(write.name.depth).toEqual({kind: DepthKind.Const, bars: 2});
+  test('history uses a direct binding without synthesizing a hidden name', () => {
+    const program = mustBuild('source = high + low\nx = source[2]\nplot(x)');
+    const source = namesOf(program).find(name => name.name === 'source');
+    expect(source?.depth).toEqual({kind: DepthKind.Const, bars: 2});
+    expect(namesOf(program).some(name => name.name.startsWith('$hist@'))).toBe(
+      false,
+    );
   });
 
-  test('history on an expression inside a block is rejected for now', () => {
+  test('history forces otherwise-foldable and typed-na variables into Rings', () => {
+    const literal = mustBuild('source = 1\nx = source[1]\nplot(x)');
+    expect(namesOf(literal).some(name => name.name === 'source')).toBe(true);
+    expect(
+      literal.body.some(
+        stmt => stmt.kind === IrKind.WriteName && stmt.name.name === 'source',
+      ),
+    ).toBe(true);
+
+    const struct = mustBuild(
+      ['struct Point', '    int x', 'Point point = na', 'x = point[0].x'].join(
+        '\n',
+      ),
+    );
+    expect(namesOf(struct).some(name => name.name === 'point')).toBe(true);
+  });
+
+  test('history on a computed expression is rejected at every nesting depth', () => {
+    const top = buildText('x = (high + low)[1]');
+    expect(top.program).toBeNull();
+    expect(top.errors.some(e => e.msg.includes('history'))).toBe(true);
+
     const {program, errors} = buildText(
       'y = if close > 0\n\t(high + low)[1]\nelse\n\t0.0',
     );
     expect(program).toBeNull();
-    expect(errors.some(e => e.msg.includes('history on an expression'))).toBe(
-      true,
-    );
+    expect(errors.some(e => e.msg.includes('history'))).toBe(true);
   });
 
   test('a shadowed write preserves a stable-place alias', () => {
@@ -1232,7 +1254,7 @@ describe('sparse effects', () => {
     }
   });
 
-  test('an imported UDT method emits its nominal payload through ordinary noding', () => {
+  test('an imported struct method emits its nominal payload through ordinary noding', () => {
     const program = mustBuildWithLibraries(
       [
         'import events',
@@ -1253,12 +1275,12 @@ describe('sparse effects', () => {
     );
 
     expect(program.effects).toHaveLength(1);
-    expect(program.effects[0].payloadType.kind).toBe(TypeKind.UserType);
-    if (program.effects[0].payloadType.kind === TypeKind.UserType) {
+    expect(program.effects[0].payloadType.kind).toBe(TypeKind.Struct);
+    if (program.effects[0].payloadType.kind === TypeKind.Struct) {
       expect(program.effects[0].payloadType.name).toBe('Event');
     }
     expect(program.effects[0].payloadSchema).toEqual({
-      kind: 'user-type',
+      kind: 'struct',
       typeId: 'events.Event',
       displayName: 'Event',
       fields: [
@@ -1292,14 +1314,14 @@ describe('sparse effects', () => {
     );
 
     expect(program.effects[0].payloadSchema).toEqual({
-      kind: 'user-type',
+      kind: 'struct',
       typeId: '@entry.Envelope<@entry.Order>',
       displayName: 'Envelope<Order>',
       fields: [
         {
           name: 'value',
           value: {
-            kind: 'user-type',
+            kind: 'struct',
             typeId: '@entry.Order',
             displayName: 'Order',
             fields: [{name: 'value', value: {kind: 'int'}}],
@@ -1325,19 +1347,19 @@ describe('sparse effects', () => {
 
     expect(ids).toEqual([
       {
-        kind: 'user-type',
+        kind: 'struct',
         typeId: '@entry.Event',
         displayName: 'Event',
         fields: [{name: 'id', value: {kind: 'int'}}],
       },
       {
-        kind: 'user-type',
+        kind: 'struct',
         typeId: '@entry.Event',
         displayName: 'Event',
         fields: [{name: 'id', value: {kind: 'int'}}],
       },
       {
-        kind: 'user-type',
+        kind: 'struct',
         typeId: '@entry.Event',
         displayName: 'Event',
         fields: [{name: 'id', value: {kind: 'int'}}],

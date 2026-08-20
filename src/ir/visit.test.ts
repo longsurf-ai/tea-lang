@@ -6,6 +6,7 @@ import {dumpProgram} from './dumper';
 import {frameTopologyOf} from './frames';
 import {
   DepthKind,
+  CollectionLocationKind,
   IrKind,
   IrOp,
   PlaceKind,
@@ -26,7 +27,15 @@ import {
   type RequestEdge,
   type SeriesInput,
 } from './program';
-import {BoolType, FloatType, IntType, Qualifier, StringType} from './type';
+import {
+  BoolType,
+  FloatType,
+  IntType,
+  Qualifier,
+  StringType,
+  TypeKind,
+  type StructType,
+} from './type';
 import {
   builtinInputsOf,
   funcsOf,
@@ -272,10 +281,27 @@ const bindOnlyProgram: Program = {
   body: [],
 };
 
+const holder: StructType = {
+  kind: TypeKind.Struct,
+  name: 'Holder',
+  fields: [
+    {name: 'value', type: FloatType},
+    {name: 'values', type: {kind: TypeKind.Array, elem: FloatType}},
+  ],
+};
+
+const holderName: Name = {
+  name: 'holder',
+  storage: Storage.PerBar,
+  type: holder,
+  qualifier: Qualifier.Series,
+  depth: {kind: DepthKind.None},
+};
+
 const receiver: Name = {
   name: 'receiver',
   storage: Storage.PerBar,
-  type: FloatType,
+  type: holder,
   qualifier: Qualifier.Series,
   depth: {kind: DepthKind.None},
 };
@@ -288,14 +314,7 @@ const mutate: MutableMethodIrFunc = {
   locals: [],
   resultType: FloatType,
   resultQualifier: Qualifier.Series,
-  body: {
-    kind: IrKind.HistRead,
-    pos,
-    type: FloatType,
-    qualifier: Qualifier.Series,
-    place: {kind: PlaceKind.Name, name: receiver},
-    offset: null,
-  },
+  body: num(0),
 };
 
 const mutationProgram: Program = {
@@ -308,9 +327,18 @@ const mutationProgram: Program = {
   init: [],
   body: [
     {
-      kind: IrKind.UpdateValuePath,
+      kind: IrKind.StoreField,
       pos,
-      path: {root: x, fieldIndices: [0]},
+      object: {
+        kind: IrKind.HistRead,
+        pos,
+        type: holder,
+        qualifier: Qualifier.Series,
+        place: {kind: PlaceKind.Name, name: holderName},
+        offset: null,
+      },
+      owner: holder,
+      fieldIndex: 0,
       value: num(2),
     },
     {
@@ -321,14 +349,18 @@ const mutationProgram: Program = {
         pos,
         type: FloatType,
         qualifier: Qualifier.Series,
-        path: {root: x, fieldIndices: [1]},
-        receiver: {
-          kind: IrKind.HistRead,
-          pos,
-          type: FloatType,
-          qualifier: Qualifier.Series,
-          place: {kind: PlaceKind.Name, name: x},
-          offset: null,
+        location: {
+          kind: CollectionLocationKind.StructField,
+          object: {
+            kind: IrKind.HistRead,
+            pos,
+            type: holder,
+            qualifier: Qualifier.Series,
+            place: {kind: PlaceKind.Name, name: holderName},
+            offset: null,
+          },
+          owner: holder,
+          fieldIndex: 1,
         },
         operation: 'array.pop',
         args: [],
@@ -344,13 +376,12 @@ const mutationProgram: Program = {
         type: FloatType,
         qualifier: Qualifier.Series,
         func: mutate,
-        path: {root: x, fieldIndices: []},
         receiver: {
           kind: IrKind.HistRead,
           pos,
-          type: FloatType,
+          type: holder,
           qualifier: Qualifier.Series,
-          place: {kind: PlaceKind.Name, name: x},
+          place: {kind: PlaceKind.Name, name: holderName},
           offset: null,
         },
         slot: 2,
@@ -408,16 +439,16 @@ describe('derived enumerations', () => {
     expect(requestsOf(child)).toEqual([]);
   });
 
-  test('rooted update, collection mutation, and mutable method calls expose ownership', () => {
-    expect(namesOf(mutationProgram)).toEqual([x, receiver]);
+  test('field stores, collection locations, and mutable method calls expose ownership', () => {
+    expect(namesOf(mutationProgram)).toEqual([holderName, receiver]);
     expect(funcsOf(mutationProgram)).toEqual([mutate]);
     expect(slotCountOf(mutationProgram)).toBe(3);
-    expect(dumpProgram(mutationProgram)).toContain('UpdateValuePath x[0]');
+    expect(dumpProgram(mutationProgram)).toContain('StoreField Holder[0]');
     expect(dumpProgram(mutationProgram)).toContain(
-      'MutateCollection array.pop path=x[1]',
+      'MutateCollection array.pop location=Holder[1]',
     );
     expect(dumpProgram(mutationProgram)).toContain(
-      'CallMutableMethod mutate path=x slot=2',
+      'CallMutableMethod mutate slot=2',
     );
   });
 });

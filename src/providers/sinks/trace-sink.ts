@@ -48,7 +48,7 @@ export class TraceSink implements OutputSink {
     declaration.effects.forEach((effect, effectId) => {
       const payload = effect.payload;
       const name =
-        payload.kind === 'enum' || payload.kind === 'user-type'
+        payload.kind === 'enum' || payload.kind === 'struct'
           ? payload.typeId
           : payload.kind;
       this.writeLine(`# effect[${effectId}] type=${name}`);

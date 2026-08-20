@@ -137,7 +137,7 @@ export type EffectValueSchema =
       }[];
     }
   | {
-      readonly kind: 'user-type';
+      readonly kind: 'struct';
       readonly typeId: string;
       readonly displayName: string;
       readonly fields: readonly {
@@ -228,7 +228,7 @@ export interface IrFuncBase {
 }
 
 // @agent invariant: the call-mode discriminator is the Program-level proof
-// that free calls, read-only method calls, and copy-in/copy-out mutable method
+// that free calls, read-only method calls, and shared-reference mutable method
 // calls cannot be confused. Method receivers are hidden Names, distinct from
 // every explicit param and local.
 export interface FreeIrFunc extends IrFuncBase {

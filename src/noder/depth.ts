@@ -399,7 +399,7 @@ function normalize(
       return {expr, rootSafe: false};
     case IrKind.OutputRef:
     case IrKind.MutateCollection:
-    case IrKind.NewUserValue:
+    case IrKind.NewStruct:
     case IrKind.MakeTuple:
     case IrKind.TupleGet:
     case IrKind.FieldGet:

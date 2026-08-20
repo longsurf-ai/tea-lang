@@ -29,9 +29,9 @@ This page lists the implemented, source-facing type forms.
 - [`plot`](#type-plot)
 - [`polyline`](#type-polyline)
 - [`string`](#type-string)
+- [`struct`](#type-struct)
 - [`table`](#type-table)
 - [`tuple`](#type-tuple)
-- [`user-defined type`](#type-user-defined-type)
 - [`void`](#type-void)
 
 ## `array` {#type-array}
@@ -176,6 +176,14 @@ String value type.
 
 **Source form:** `string`
 
+## `struct` {#type-struct}
+
+Nominal reference type declared with struct or block-form type.
+
+**Category:** Declared nominal type
+
+**Source forms:** `struct Name`, `type Name`
+
 ## `table` {#type-table}
 
 Drawing-object table handle type.
@@ -191,14 +199,6 @@ Transport-only multi-value shape used for returns and declaration destructuring;
 **Category:** Reference-only form
 
 **Source form:** `[T1, T2, ...]`
-
-## `user-defined type` {#type-user-defined-type}
-
-Nominal value type declared with struct or block-form type.
-
-**Category:** Declared nominal type
-
-**Source forms:** `struct Name`, `type Name`
 
 ## `void` {#type-void}
 

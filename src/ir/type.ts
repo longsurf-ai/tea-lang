@@ -82,7 +82,7 @@ export const TypeKind = {
   Matrix: 'Matrix',
   Map: 'Map',
   // Named types, identified by declaration identity (object reference).
-  UserType: 'UserType',
+  Struct: 'Struct',
   Enum: 'Enum',
   // Multi-value shapes.
   Tuple: 'Tuple',
@@ -144,18 +144,18 @@ export interface MapType {
   readonly value: Type;
 }
 
-export interface UserField {
+export interface StructField {
   readonly name: string;
   readonly type: Type;
 }
 
-// One UserType instance exists per `type` declaration. Ordinary user values
-// have shallow value semantics; nominal type identity remains declaration
+// One StructType instance exists per nominal struct declaration. Struct values
+// have reference semantics; nominal type identity remains declaration
 // identity, never structural identity.
-export interface UserType {
-  readonly kind: typeof TypeKind.UserType;
+export interface StructType {
+  readonly kind: typeof TypeKind.Struct;
   readonly name: string;
-  readonly fields: readonly UserField[];
+  readonly fields: readonly StructField[];
 }
 
 // Titles are runtime-visible (str.tostring returns the title; input.enum
@@ -197,7 +197,7 @@ export type Type =
   | ArrayType
   | MatrixType
   | MapType
-  | UserType
+  | StructType
   | EnumType
   | TupleType
   | FuncType;
@@ -284,7 +284,7 @@ export function typesEqual(a: Type, b: Type): boolean {
         a.resultQualifier === other.resultQualifier
       );
     }
-    case TypeKind.UserType:
+    case TypeKind.Struct:
     case TypeKind.Enum:
       return false; // reference identity only, handled by a === b above
     default:
@@ -378,7 +378,7 @@ export function formatType(t: Type): string {
       return `matrix<${formatType(t.elem)}>`;
     case TypeKind.Map:
       return `map<${formatType(t.key)}, ${formatType(t.value)}>`;
-    case TypeKind.UserType:
+    case TypeKind.Struct:
     case TypeKind.Enum:
       return t.name;
     case TypeKind.Tuple:
@@ -423,7 +423,7 @@ export function isAggregateType(type: Type): boolean {
     type.kind === TypeKind.Array ||
     type.kind === TypeKind.Matrix ||
     type.kind === TypeKind.Map ||
-    type.kind === TypeKind.UserType
+    type.kind === TypeKind.Struct
   );
 }
 

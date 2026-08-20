@@ -10,6 +10,7 @@ import {
 } from '../module-abi';
 import {isArrayValue, isMapValue, isMatrixValue, type Value} from '../value';
 import type {Heap, HeapTransaction} from '../heap';
+import {StructStorageRuntime} from '../struct-storage';
 import {type LayoutId, ValueLayoutRegistry} from '../value-layout';
 import {arrayCall, arrayMutate, arraySnapshot} from './array';
 import type {CollectionContext} from './common';
@@ -21,6 +22,10 @@ export class CollectionRuntime {
     private readonly heap: Heap,
     private readonly layouts: ValueLayoutRegistry,
     private readonly maxElements: number,
+    private readonly structs: StructStorageRuntime = new StructStorageRuntime(
+      heap,
+      layouts,
+    ),
   ) {
     if (!Number.isSafeInteger(maxElements) || maxElements < 0) {
       fatal(`invalid collection element limit ${maxElements}`);
@@ -39,7 +44,7 @@ export class CollectionRuntime {
       : operation.startsWith('matrix.')
         ? matrixCall(ctx, operation, resultLayout, args)
         : mapCall(ctx, operation, resultLayout, args);
-    this.layouts.assertValue(resultLayout, result, `${operation} result`);
+    this.structs.assertValue(resultLayout, result, `${operation} result`);
     return result;
   }
 
@@ -56,7 +61,7 @@ export class CollectionRuntime {
       : operation.startsWith('matrix.')
         ? matrixMutate(ctx, operation, collectionLayout, receiver, args)
         : mapMutate(ctx, operation, collectionLayout, receiver, args);
-    this.layouts.assertValue(
+    this.structs.assertValue(
       collectionLayout,
       result.replacement,
       `${operation} replacement`,
@@ -65,7 +70,12 @@ export class CollectionRuntime {
   }
 
   entries(value: Value): CollectionEntries {
-    const ctx = {heap: this.heap, layouts: this.layouts};
+    const ctx = {
+      heap: this.heap,
+      layouts: this.layouts,
+      assertValue: (layout: LayoutId, item: Value, where: string) =>
+        this.structs.assertValue(layout, item, where),
+    };
     if (value === null) {
       throw new ExecutionError('NA_COLLECTION', 'collection iteration on na');
     }
@@ -86,6 +96,8 @@ export class CollectionRuntime {
       heap: this.heap,
       transaction,
       layouts: this.layouts,
+      assertValue: (layout, value, where) =>
+        this.structs.assertValue(layout, value, where),
       maxElements: this.maxElements,
     };
   }

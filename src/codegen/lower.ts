@@ -3,13 +3,14 @@
 import {fatal} from '../base/print';
 import {unimplemented} from '../base/unimplemented';
 import {
+  CollectionLocationKind,
   IrKind,
   IrOp,
   PlaceKind,
+  type CollectionLocation,
   type IrBinaryOp,
   type IrExpr,
   type IrStmt,
-  type IrValuePath,
   type Name,
 } from '../ir/node';
 import type {
@@ -115,7 +116,7 @@ export function valueClassOf(t: Type): ValueClassType {
     case TypeKind.Array:
     case TypeKind.Matrix:
     case TypeKind.Map:
-    case TypeKind.UserType:
+    case TypeKind.Struct:
     case TypeKind.Enum:
     case TypeKind.Tuple:
       return ValueClass.Nullable;
@@ -203,56 +204,62 @@ function writeNameExpr(ctx: LowerCtx, name: Name, value: string): string {
     : `rt.write(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, (${value}))`;
 }
 
-function readRoot(ctx: LowerCtx, path: IrValuePath): string {
-  return readName(ctx, path.root, '0', true);
+function structFieldType(
+  owner: Extract<Type, {kind: typeof TypeKind.Struct}>,
+  fieldIndex: number,
+): Type {
+  const field = owner.fields[fieldIndex];
+  return (
+    field?.type ??
+    fatal(`field index ${fieldIndex} is out of range for ${owner.name}`)
+  );
 }
 
-// Program paths contain canonical field indices, but codegen is also the
-// final static boundary before those indices become an untyped JS array.
-// Fail malformed hand-built Programs here instead of deferring the fault to
-// a row-time runtime rebuild.
-function valuePathType(path: IrValuePath): Type {
-  let type = path.root.type;
-  for (const index of path.fieldIndices) {
-    if (type.kind !== TypeKind.UserType) {
-      return fatal(`field path traverses non-user type ${type.kind}`);
-    }
-    const field = type.fields[index];
-    if (field === undefined) {
-      return fatal(
-        `field path index ${index} is out of range for ${type.name}`,
-      );
-    }
-    type = field.type;
-  }
-  return type;
+function collectionLocationType(location: CollectionLocation): Type {
+  return location.kind === CollectionLocationKind.Name
+    ? location.name.type
+    : structFieldType(location.owner, location.fieldIndex);
 }
 
-function requirePathType(
-  path: IrValuePath,
-  expected: Type,
-  operation: string,
-): void {
-  const actual = valuePathType(path);
-  if (!typesEqual(actual, expected)) {
-    fatal(
-      `${operation} receiver type ${expected.kind} disagrees with path type ${actual.kind}`,
-    );
-  }
+interface CapturedCollectionLocation {
+  readonly value: string;
+  store(replacement: string): string;
 }
 
-function writePath(
+// Capture a collection location and its current header before explicit
+// arguments. A struct-field receiver is certified once and reused for the
+// final replacement write even if an argument rebinds an ancestor Name.
+function captureCollectionLocation(
+  location: CollectionLocation,
+  out: string[],
   ctx: LowerCtx,
-  path: IrValuePath,
-  replacement: string,
-): string {
-  valuePathType(path);
-  if (path.fieldIndices.length === 0) {
-    return `${writeNameExpr(ctx, path.root, replacement)};`;
+): CapturedCollectionLocation {
+  if (location.kind === CollectionLocationKind.Name) {
+    const value = ctx.fresh();
+    out.push(`const ${value} = (${readName(ctx, location.name, '0', true)});`);
+    return {
+      value,
+      store: replacement =>
+        `${writeNameExpr(ctx, location.name, replacement)};`,
+    };
   }
-  const root = readRoot(ctx, path);
-  const rebuilt = `rt.rebuildUserPath((${root}), ${ctx.layoutOf(path.root.type)}, ${JSON.stringify(path.fieldIndices)}, (${replacement}))`;
-  return `${writeNameExpr(ctx, path.root, rebuilt)};`;
+  if (!typesEqual(location.object.type, location.owner)) {
+    return fatal('collection field object disagrees with its owner type');
+  }
+  structFieldType(location.owner, location.fieldIndex);
+  const object = capture(location.object, out, ctx);
+  const target = ctx.fresh();
+  const value = ctx.fresh();
+  const layout = ctx.layoutOf(location.owner);
+  out.push(
+    `const ${target} = rt.requireStruct((${object}), ${layout});`,
+    `const ${value} = rt.structField((${target}), ${layout}, ${location.fieldIndex});`,
+  );
+  return {
+    value,
+    store: replacement =>
+      `rt.storeStructField((${target}), ${layout}, ${location.fieldIndex}, (${replacement}));`,
+  };
 }
 
 // Evaluate now, not merely when a later generated expression happens to use
@@ -291,42 +298,6 @@ export function captureArguments(
     captured[index] = capture(args[index], out, ctx);
   }
   return captured;
-}
-
-function validateWritePath(
-  path: IrValuePath,
-  out: string[],
-  ctx: LowerCtx,
-): void {
-  if (path.fieldIndices.length === 0) {
-    return;
-  }
-  const root = ctx.fresh();
-  out.push(`const ${root} = (${readRoot(ctx, path)});`);
-  let value = root;
-  let type = path.root.type;
-  for (const index of path.fieldIndices) {
-    if (type.kind !== TypeKind.UserType) {
-      return fatal(`field path traverses non-user type ${type.kind}`);
-    }
-    const field = type.fields[index];
-    if (field === undefined) {
-      return fatal(
-        `field path index ${index} is out of range for ${type.name}`,
-      );
-    }
-    const next = ctx.fresh();
-    out.push(
-      `const ${next} = rt.userField((${value}), ${ctx.layoutOf(type)}, ${index});`,
-    );
-    value = next;
-    type = field.type;
-  }
-  // Reads through a na user value intentionally yield typed empty. Rebuilding
-  // the unchanged leaf is the side-effect-free writeability/layout check.
-  out.push(
-    `void (rt.rebuildUserPath((${root}), ${ctx.layoutOf(path.root.type)}, ${JSON.stringify(path.fieldIndices)}, (${value})));`,
-  );
 }
 
 const BINARY_JS: Partial<Record<IrBinaryOp, string>> = {
@@ -495,7 +466,6 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       return `${ctx.moduleRef}.funcs[${fid}](rt, rt.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')})`;
     }
     case IrKind.CallMutableMethod: {
-      requirePathType(e.path, e.receiver.type, 'mutable method');
       if (!typesEqual(e.func.receiver.type, e.receiver.type)) {
         return fatal(
           `mutable method call '${e.func.name}' receiver has the wrong type`,
@@ -511,12 +481,21 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           `mutable method call '${e.func.name}' has the wrong result type`,
         );
       }
+      if (e.receiver.type.kind !== TypeKind.Struct) {
+        return fatal(
+          `mutable method '${e.func.name}' has non-struct receiver ${e.receiver.type.kind}`,
+        );
+      }
       const fid = ctx.funcIds.get(e.func);
       if (fid === undefined) {
         return fatal(`unmapped mutable method '${e.func.name}'`);
       }
       ctx.noteCallSite(ctx.currentFid, e.slot, e.func);
-      const receiver = capture(e.receiver, out, ctx);
+      const candidate = capture(e.receiver, out, ctx);
+      const receiver = ctx.fresh();
+      out.push(
+        `const ${receiver} = rt.requireStruct((${candidate}), ${ctx.layoutOf(e.receiver.type)});`,
+      );
       const args = captureArguments(
         e.args,
         e.argumentEvaluationOrder,
@@ -524,12 +503,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `mutable method call '${e.func.name}'`,
       );
-      const result = ctx.fresh();
-      out.push(
-        `const ${result} = ${ctx.moduleRef}.funcs[${fid}](rt, rt.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')});`,
-        writePath(ctx, e.path, `${result}.receiver`),
-      );
-      return `${result}.result`;
+      return `${ctx.moduleRef}.funcs[${fid}](rt, rt.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')})`;
     }
     case IrKind.CallNative:
       return lowerNative(
@@ -541,8 +515,8 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
       );
     case IrKind.MutateCollection: {
-      requirePathType(e.path, e.receiver.type, 'collection mutation');
-      const collectionKind = e.receiver.type.kind;
+      const locationType = collectionLocationType(e.location);
+      const collectionKind = locationType.kind;
       if (
         collectionKind !== TypeKind.Array &&
         collectionKind !== TypeKind.Matrix &&
@@ -557,7 +531,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           `collection mutation '${e.operation}' disagrees with ${collectionKind} receiver`,
         );
       }
-      const receiver = capture(e.receiver, out, ctx);
+      const location = captureCollectionLocation(e.location, out, ctx);
       const args = captureArguments(
         e.args,
         e.argumentEvaluationOrder,
@@ -567,8 +541,8 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       );
       const result = ctx.fresh();
       out.push(
-        `const ${result} = rt.mutateCollection(${JSON.stringify(e.operation)}, ${ctx.layoutOf(e.receiver.type)}, ${receiver}, [${args.join(', ')}]);`,
-        writePath(ctx, e.path, `${result}.replacement`),
+        `const ${result} = rt.mutateCollection(${JSON.stringify(e.operation)}, ${ctx.layoutOf(locationType)}, ${location.value}, [${args.join(', ')}]);`,
+        location.store(`${result}.replacement`),
       );
       return `${result}.result`;
     }
@@ -580,22 +554,22 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       const tuple = capture(e.x, out, ctx);
       return `((${tuple}) === null ? ${emptyLiteral(e.type)} : (${tuple})[${e.index}])`;
     }
-    case IrKind.NewUserValue: {
-      if (!typesEqual(e.type, e.userType)) {
+    case IrKind.NewStruct: {
+      if (!typesEqual(e.type, e.structType)) {
         return fatal(
-          `constructor for '${e.userType.name}' has a different result type`,
+          `constructor for '${e.structType.name}' has a different result type`,
         );
       }
-      if (e.args.length !== e.userType.fields.length) {
+      if (e.args.length !== e.structType.fields.length) {
         return fatal(
-          `constructor for '${e.userType.name}' has the wrong argument count`,
+          `constructor for '${e.structType.name}' has the wrong argument count`,
         );
       }
       e.args.forEach((arg, index) => {
-        const field = e.userType.fields[index];
+        const field = e.structType.fields[index];
         if (!assignable(arg.type, field.type)) {
           fatal(
-            `constructor for '${e.userType.name}' has an invalid argument for field '${field.name}'`,
+            `constructor for '${e.structType.name}' has an invalid argument for field '${field.name}'`,
           );
         }
       });
@@ -604,13 +578,13 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         e.argumentEvaluationOrder,
         out,
         ctx,
-        `constructor '${e.userType.name}.new'`,
+        `constructor '${e.structType.name}.new'`,
       );
-      return `rt.newUser(${ctx.layoutOf(e.userType)}, [${args.join(', ')}])`;
+      return `rt.newStruct(${ctx.layoutOf(e.structType)}, [${args.join(', ')}])`;
     }
     case IrKind.FieldGet: {
-      if (e.x.type.kind !== TypeKind.UserType) {
-        return fatal(`field read traverses non-user type ${e.x.type.kind}`);
+      if (e.x.type.kind !== TypeKind.Struct) {
+        return fatal(`field read traverses non-struct ${e.x.type.kind}`);
       }
       const selected = e.x.type.fields[e.fieldIndex];
       if (selected === undefined) {
@@ -624,7 +598,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         );
       }
       const value = lowerExpr(e.x, out, ctx);
-      return `rt.userField((${value}), ${ctx.layoutOf(e.x.type)}, ${e.fieldIndex})`;
+      return `rt.structField((${value}), ${ctx.layoutOf(e.x.type)}, ${e.fieldIndex})`;
     }
     case IrKind.IfExpr: {
       const temp = ctx.fresh();
@@ -1009,16 +983,24 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       out.push(`${writeNameExpr(ctx, stmt.name, v)};`);
       return;
     }
-    case IrKind.UpdateValuePath: {
-      const targetType = valuePathType(stmt.path);
+    case IrKind.StoreField: {
+      if (!typesEqual(stmt.object.type, stmt.owner)) {
+        return fatal('struct field store object disagrees with its owner type');
+      }
+      const targetType = structFieldType(stmt.owner, stmt.fieldIndex);
       if (!assignable(stmt.value.type, targetType)) {
         return fatal(
-          `rooted update value type ${stmt.value.type.kind} is not assignable to ${targetType.kind}`,
+          `struct field value type ${stmt.value.type.kind} is not assignable to ${targetType.kind}`,
         );
       }
-      validateWritePath(stmt.path, out, ctx);
+      const object = capture(stmt.object, out, ctx);
+      const target = ctx.fresh();
+      const layout = ctx.layoutOf(stmt.owner);
+      out.push(`const ${target} = rt.requireStruct((${object}), ${layout});`);
       const value = lowerExpr(stmt.value, out, ctx);
-      out.push(writePath(ctx, stmt.path, value));
+      out.push(
+        `rt.storeStructField((${target}), ${layout}, ${stmt.fieldIndex}, (${value}));`,
+      );
       return;
     }
     case IrKind.Emit: {

@@ -1,4 +1,4 @@
-// Purpose: ABI value-layout registry — validates exact runtime shapes, owns typed empties, and walks aggregate values to their collection storage roots.
+// Purpose: ABI value-layout registry — validates shallow runtime carriers, owns typed empties, and walks values to their Heap storage roots.
 
 import {fatal} from '../base/print';
 import {
@@ -6,8 +6,8 @@ import {
   isMapValue,
   isMatrixValue,
   isResourceHandle,
+  isStructRef,
   isTupleValue,
-  isUserTypeValue,
   ValueClass,
   type Value,
   type ValueClass as ValueClassType,
@@ -16,7 +16,7 @@ import {ExecutionError} from './errors';
 import type {StorageRef} from './heap';
 
 export type LayoutId = number;
-export type UserTypeLayoutId = LayoutId;
+export type StructLayoutId = LayoutId;
 
 export type ValueLayout =
   | {readonly kind: 'number'; readonly numeric: 'int' | 'float'}
@@ -35,7 +35,7 @@ export type ValueLayout =
     }
   | {readonly kind: 'resource'; readonly handle: string}
   | {
-      readonly kind: 'user-type';
+      readonly kind: 'struct';
       readonly name: string;
       // See the enum case above. Ordinary internal-only layouts need no
       // nominal host identity.
@@ -81,9 +81,9 @@ function sealLayout(layout: ValueLayout): ValueLayout {
       });
     case 'resource':
       return Object.freeze({kind: 'resource', handle: layout.handle});
-    case 'user-type':
+    case 'struct':
       return Object.freeze({
-        kind: 'user-type',
+        kind: 'struct',
         name: layout.name,
         ...(layout.typeId === undefined ? {} : {typeId: layout.typeId}),
         fields: Object.freeze(
@@ -193,21 +193,13 @@ export class ValueLayoutRegistry {
           this.mismatch(where, id, `resource '${layout.handle}'`);
         }
         return;
-      case 'user-type':
-        if (
-          !isUserTypeValue(value) ||
-          value.layout !== id ||
-          value.fields.length !== layout.fields.length
-        ) {
-          this.mismatch(where, id, `user type '${layout.name}'`);
+      case 'struct':
+        // Exact nominal layout and arena ownership need Heap metadata and are
+        // checked by StructStorageRuntime. This registry validates only the
+        // fixed-width carrier shape.
+        if (!isStructRef(value)) {
+          this.mismatch(where, id, `struct '${layout.name}'`);
         }
-        layout.fields.forEach((field, index) =>
-          this.assertValue(
-            field.layout,
-            value.fields[index],
-            `${where}.${field.name}`,
-          ),
-        );
         return;
       case 'array':
         if (
@@ -264,13 +256,11 @@ export class ValueLayoutRegistry {
     }
     const layout = this.layout(id);
     switch (layout.kind) {
-      case 'user-type':
-        if (!isUserTypeValue(value)) {
-          return fatal(`validated layout ${id} lost its user-value shape`);
+      case 'struct':
+        if (!isStructRef(value)) {
+          return fatal(`validated layout ${id} lost its struct-ref shape`);
         }
-        layout.fields.forEach((field, index) =>
-          this.visitStorageRefs(field.layout, value.fields[index], visit),
-        );
+        visit(value);
         return;
       case 'array': {
         if (!isArrayValue(value)) {
@@ -334,11 +324,8 @@ export class ValueLayoutRegistry {
       case 'map':
         bytes = 24;
         break;
-      case 'user-type':
-        bytes = layout.fields.reduce(
-          (total, field) => total + this.shallowBytes(field.layout),
-          16,
-        );
+      case 'struct':
+        bytes = 8;
         break;
       case 'tuple':
         bytes = layout.elements.reduce(
@@ -366,13 +353,11 @@ export class ValueLayoutRegistry {
           layoutId(layout.key, layouts.length, `layout ${id}`);
           layoutId(layout.value, layouts.length, `layout ${id}`);
           return;
-        case 'user-type': {
+        case 'struct': {
           const names = new Set<string>();
           layout.fields.forEach(field => {
             if (names.has(field.name)) {
-              fatal(
-                `user-type layout ${id} has duplicate field '${field.name}'`,
-              );
+              fatal(`struct layout ${id} has duplicate field '${field.name}'`);
             }
             names.add(field.name);
             layoutId(
@@ -416,11 +401,9 @@ export class ValueLayoutRegistry {
       }
       active.add(id);
       const layout = layouts[id];
-      // Collection headers are finite values, so their element/key/value
-      // layouts deliberately do not form inline-containment edges.
-      if (layout.kind === 'user-type') {
-        layout.fields.forEach(field => visit(field.layout));
-      } else if (layout.kind === 'tuple') {
+      // Collection headers and struct references are finite carriers, so
+      // neither form inline-containment edges.
+      if (layout.kind === 'tuple') {
         layout.elements.forEach(visit);
       }
       active.delete(id);
@@ -446,7 +429,7 @@ export function emptyValue(layout: ValueLayout): Value {
     case 'nullable-scalar':
     case 'enum':
     case 'resource':
-    case 'user-type':
+    case 'struct':
     case 'array':
     case 'matrix':
     case 'map':
@@ -464,7 +447,7 @@ export function valueClassOfLayout(layout: ValueLayout): ValueClassType {
     case 'nullable-scalar':
     case 'enum':
     case 'resource':
-    case 'user-type':
+    case 'struct':
     case 'array':
     case 'matrix':
     case 'map':
@@ -484,8 +467,8 @@ export function visitRuntimeValueStorageRefs(
     value.forEach(item => visitRuntimeValueStorageRefs(item, visit));
     return;
   }
-  if (isUserTypeValue(value)) {
-    value.fields.forEach(item => visitRuntimeValueStorageRefs(item, visit));
+  if (isStructRef(value)) {
+    visit(value);
     return;
   }
   if (isArrayValue(value) || isMatrixValue(value) || isMapValue(value)) {

@@ -2,6 +2,7 @@
 
 import {fatal} from '../base/print';
 import {
+  CollectionLocationKind,
   DepthKind,
   IrKind,
   PlaceKind,
@@ -34,7 +35,10 @@ export function visitStmtChildren(
       return;
     case IrKind.InitName:
     case IrKind.WriteName:
-    case IrKind.UpdateValuePath:
+      visitExprChild(stmt.value);
+      return;
+    case IrKind.StoreField:
+      visitExprChild(stmt.object);
       visitExprChild(stmt.value);
       return;
     case IrKind.Emit:
@@ -81,11 +85,16 @@ export function visitExprChildren(
       return;
     case IrKind.CallConstMethod:
     case IrKind.CallMutableMethod:
-    case IrKind.MutateCollection:
       visitExprChild(expr.receiver);
       expr.args.forEach(visitExprChild);
       return;
-    case IrKind.NewUserValue:
+    case IrKind.MutateCollection:
+      if (expr.location.kind === CollectionLocationKind.StructField) {
+        visitExprChild(expr.location.object);
+      }
+      expr.args.forEach(visitExprChild);
+      return;
+    case IrKind.NewStruct:
       expr.args.forEach(visitExprChild);
       return;
     case IrKind.MakeTuple:
@@ -249,8 +258,6 @@ function visitDepth(depth: HistoryDepth, reach: Reach): void {
 function visitStmt(stmt: IrStmt, reach: Reach): void {
   if (stmt.kind === IrKind.InitName || stmt.kind === IrKind.WriteName) {
     noteName(stmt.name, reach);
-  } else if (stmt.kind === IrKind.UpdateValuePath) {
-    noteName(stmt.path.root, reach);
   }
   visitStmtChildren(stmt, child => visitExpr(child, reach));
 }
@@ -275,13 +282,12 @@ function visitExpr(expr: IrExpr, reach: Reach): void {
   ) {
     noteFunc(expr.func, reach);
     reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
-    if (expr.kind === IrKind.CallMutableMethod) {
-      noteName(expr.path.root, reach);
-    }
   } else if (expr.kind === IrKind.CallNative && expr.slot !== null) {
     reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
   } else if (expr.kind === IrKind.MutateCollection) {
-    noteName(expr.path.root, reach);
+    if (expr.location.kind === CollectionLocationKind.Name) {
+      noteName(expr.location.name, reach);
+    }
   } else if (expr.kind === IrKind.ForExpr) {
     noteName(expr.index, reach);
   } else if (expr.kind === IrKind.ForInExpr) {

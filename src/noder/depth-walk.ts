@@ -2,6 +2,7 @@
 
 import {fatal} from '../base/print';
 import {
+  CollectionLocationKind,
   IrKind,
   PlaceKind,
   Storage,
@@ -48,10 +49,6 @@ function countWritesStmt(stmt: IrStmt, writes: Map<Name, number>): void {
   if (stmt.kind === IrKind.WriteName) {
     writes.set(stmt.name, (writes.get(stmt.name) ?? 0) + 1);
   }
-  if (stmt.kind === IrKind.UpdateValuePath) {
-    const root = stmt.path.root;
-    writes.set(root, (writes.get(root) ?? 0) + 1);
-  }
   for (const child of stmtExprs(stmt)) {
     countWritesExpr(child, writes);
   }
@@ -59,11 +56,11 @@ function countWritesStmt(stmt: IrStmt, writes: Map<Name, number>): void {
 
 function countWritesExpr(expr: IrExpr, writes: Map<Name, number>): void {
   if (
-    expr.kind === IrKind.CallMutableMethod ||
-    expr.kind === IrKind.MutateCollection
+    expr.kind === IrKind.MutateCollection &&
+    expr.location.kind === CollectionLocationKind.Name
   ) {
-    const root = expr.path.root;
-    writes.set(root, (writes.get(root) ?? 0) + 1);
+    const name = expr.location.name;
+    writes.set(name, (writes.get(name) ?? 0) + 1);
   }
   if (expr.kind === IrKind.BlockExpr) {
     for (const stmt of expr.stmts) {

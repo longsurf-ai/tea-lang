@@ -52,7 +52,7 @@ function cloneEffectPayload(value: EffectValue): EffectValue {
     return value;
   }
   return Object.freeze({
-    kind: 'user-type' as const,
+    kind: 'struct' as const,
     fields: Object.freeze(value.fields.map(cloneEffectPayload)),
   });
 }
@@ -63,7 +63,7 @@ function cloneEffectSchema(
   switch (schema.kind) {
     case 'enum':
       return {...schema, members: schema.members.map(member => ({...member}))};
-    case 'user-type':
+    case 'struct':
       return {
         ...schema,
         fields: schema.fields.map(field => ({

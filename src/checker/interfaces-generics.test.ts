@@ -1,4 +1,4 @@
-// Purpose: RED contracts for method-only interfaces and concrete generic user-type specialization.
+// Purpose: RED contracts for method-only interfaces and concrete generic struct specialization.
 
 import {describe, expect, test} from 'bun:test';
 import {formatType, TypeKind, typesEqual} from '../ir/type';
@@ -235,7 +235,7 @@ describe('static method-only interfaces', () => {
   }
 });
 
-describe('constrained generic user types', () => {
+describe('constrained generic structs', () => {
   test('validates field annotations and bodies without an instantiation', () => {
     const unknownField = checkText(
       [
@@ -289,7 +289,7 @@ describe('constrained generic user types', () => {
         [
           'interface',
           'interfaceMethod',
-          'genericUserType',
+          'genericStruct',
           'typeParameter',
           NodeKind.InterfaceDecl,
           NodeKind.TypeParam,
@@ -543,12 +543,12 @@ describe('constrained generic user types', () => {
     const program = mustBuild(source);
 
     const box = namesOf(program).find(name => name.name === 'box');
-    expect(box?.type.kind).toBe(TypeKind.UserType);
-    if (box?.type.kind === TypeKind.UserType) {
+    expect(box?.type.kind).toBe(TypeKind.Struct);
+    if (box?.type.kind === TypeKind.Struct) {
       expect(box.type.name).toBe('Box<Source>');
       const sourceFieldType = box.type.fields[0]?.type;
-      expect(sourceFieldType?.kind).toBe(TypeKind.UserType);
-      if (sourceFieldType?.kind === TypeKind.UserType) {
+      expect(sourceFieldType?.kind).toBe(TypeKind.Struct);
+      if (sourceFieldType?.kind === TypeKind.Struct) {
         expect(sourceFieldType.name).toBe('Source');
       }
     }
@@ -561,7 +561,7 @@ describe('constrained generic user types', () => {
       kinds.filter(kind =>
         [
           'interface',
-          'genericUserType',
+          'genericStruct',
           'typeParameter',
           NodeKind.InterfaceDecl,
           NodeKind.TypeParam,

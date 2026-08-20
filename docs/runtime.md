@@ -39,7 +39,7 @@ generated WGSL artifact + BindInputs[] + injected GPUDevice
 
 Both branches execute artifacts lowered from the same `Program`; neither owns
 a second execution-mode model. `JSRuntime` owns exact value layouts,
-frames, rings, immutable storage, the main loop, provisional/commit, and
+frames, rings, unified Heap storage, the main loop, provisional/commit, and
 request-child scheduling. Hosts vary through the injected DataProvider and
 OutputSink. The GPU runtime owns target data validation, physical packing,
 device dispatch, and readback; Tea state transitions remain in the emitted
@@ -71,7 +71,7 @@ runtime artifact (`tea build` output, cacheable, serializable):
 
 ```js
 export default {
-  abi: 1,
+  abi: 2,
   aggregateLayouts: {layouts: [...]},     // root-wide LayoutId registry
   manifest: {
     series:  [{id, depth}, ...],          // sid -> numeric provider column
@@ -98,15 +98,15 @@ export default {
 };
 ```
 
-`RUNTIME_ABI_VERSION` is the single version source and is currently `1`.
+`RUNTIME_ABI_VERSION` is the single version source and is currently `2`.
 Before launch, this contract evolves in place; the runtime does not carry
 compatibility branches for older generated modules.
 
 An output channel's `type` is the human Tea spelling. The current ABI publishes
 an exhaustive `transport` discriminant projected directly from the checked IR
 type
-(`int`, `float`, `bool`, `string`, `color`, `enum`, resource, output reference,
-user type, or aggregate shape). Runtime transports branch only on that field;
+  (`int`, `float`, `bool`, `string`, `color`, `enum`, resource, output reference,
+  struct, or aggregate shape). Runtime transports branch only on that field;
 they never recover machine semantics by parsing the display string.
 
 `aggregateLayouts` appears once on the root `TeaModule`. Every request child
@@ -164,22 +164,22 @@ rt.bindParamActive(pid, active); // resolved input enablement
 rt.bindOutput(oid, argName, v); // an output's bind-time argument
 rt.bindRequestOptions(rid, gaps, lookahead, ignoreInvalid, calcBars);
 rt.bindRequest(rid, sym, tf); // a static request edge's context pair
-// user values and collections
-rt.newUser(layout, fields);
-rt.userField(value, ownerLayout, fieldIndex);
-rt.rebuildUserPath(root, rootLayout, fieldIndices, leaf);
+// structs and collections
+rt.newStruct(layout, fields);
+rt.requireStruct(value, ownerLayout); // pre-RHS/argument receiver check
+rt.structField(value, ownerLayout, fieldIndex);
+rt.storeStructField(value, ownerLayout, fieldIndex, replacement);
 rt.callCollection(operation, resultLayout, args);
 rt.mutateCollection(operation, collectionLayout, receiver, args);
 rt.collectionEntries(value);
 ```
 
 `mutateCollection` returns a private `{replacement, result}` ABI envelope.
-Generated code captures the receiver before evaluating arguments, calls the
-operation once, and writes `replacement` through the checked root path once.
-The envelope is not a Tea tuple and can never enter a Ring or collection.
-Likewise a mutable user method returns a private replacement-receiver
-envelope; const methods and free functions return ordinary Tea values. The
-implicit source receiver `this` is never a runtime pointer or Heap reference.
+Generated code captures the receiver/location before evaluating arguments,
+calls the operation once, and writes `replacement` to either the captured Name
+or struct field. The envelope is not a Tea tuple and can never enter a Ring or
+collection. Mutable and const methods both return only their declared Tea
+result; a mutable method changes the receiver's Heap storage in place.
 
 `rt.frame(fr, slot)` is the seam where per-call-site state materializes:
 fetch the sub-frame at compartment `slot` of `fr`, creating its physical
@@ -198,7 +198,7 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
   finite-or-na normalizer, so overflow and other non-finite results become
   NaN on both folded and dynamic paths; `Infinity` is never a Tea value.
   Every comparison with typed numeric or nullable na returns false,
-  including `!=`. Strings, colors, enums, resource handles, user values, and
+  including `!=`. Strings, colors, enums, resource handles, struct references, and
   collections use **null** as typed empty; string concatenation propagates
   null. bool is never na and
   its empty value is false — a checker guarantee the runtime may rely on.
@@ -210,9 +210,10 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
   is a provider-contract invariant violation and fails loudly at the read.
 - int semantics are codegen's job (truncating division, `math.*` int
   overloads); the runtime never re-checks types.
-- A non-null user-defined value is a nominal, immutable logical record. It has
-  one by-value representation in variables, fields, tuples, calls, returns,
-  collection elements, and history. Host object identity is unobservable.
+- A non-null struct value is a source-hidden `StorageRef` to nominal Heap
+  storage. Variables, fields, tuples, calls, returns, collection elements, and
+  history copy the reference. The body is transactionally mutable and has no
+  per-bar version chain.
 - Array, matrix, and map values are immutable headers over a source-hidden
   `StorageRef`. Mutators allocate sealed replacement backing and return a new
   header; they never edit a committed payload. Capacity is implementation
@@ -374,9 +375,10 @@ there are no incremental update paths, by construction:
 - At execution start the scratch head resets: `var` starts from its last
   committed value only when its committed initialization bit is set; otherwise
   it stays typed-empty and eligible for `InitName`. PerBar starts unwritten
-  (na until written). **varip** scratch value and initialization bit survive
-  successful provisional executions of the same row — the one storage class
-  whose writes ticks accumulate.
+  (na until written). **varip** scratch value, initialized bit, and later
+  rebindings survive successful same-row executions. An ordinary `var` retains
+  only its first successful same-row initialization candidate; later writes
+  still reset to the storage-class baseline.
 - Each execution owns one Heap allocation transaction. Collection mutations may
   allocate tentative sealed cells, readable only by that transaction. A successful
   execution first prepares one row commit: Ring candidates, buffered emission
@@ -387,13 +389,15 @@ there are no incremental update paths, by construction:
   storage, commits buffered internal state, and advances the cursor.
   Final sink delivery happens afterward; a sink failure cannot roll back
   already-committed Tea state.
-- A provisional success retains only the candidate roots selected by Ring
-  storage policy (`varip` versus ordinary rollback). Immutable backing makes
-  mixed aliases harmless: Heap carries no `var`/`varip` policy and replays no
-  object edits.
+- A provisional success commits struct storage edits, so every alias observes
+  them on the next tick. `var`/`varip` select binding candidates, not struct-
+  body persistence. The first successful ordinary-`var` initialization retains
+  an initialization-only same-row candidate; later ordinary reassignments still
+  roll back.
 - A throw or suspension invalidates scratch values, initialization bits,
-  tentative frame activation, and buffered emissions, then aborts all
-  tentative allocations. Committed state was never touched.
+  tentative frame activation, and buffered emissions, aborts tentative
+  allocations, and restores journaled struct fields. No mutation from the
+  failed transaction remains observable.
 
 Emissions carry a `provisional` flag to the sink; alert-class outputs fire
 on commit only.
@@ -434,8 +438,10 @@ Dense output writes and sparse effects are snapshotted together after a
 successful row transaction and cross the sink boundary in one `publish` call.
 Suspended or failed transactions publish nothing. A sink exception makes the
 binding terminal, so committed effects are never retried or duplicated.
-Effect payload layouts admit primitives, strings/colors, enums, and recursively
-fixed user values; collections, tuples, and resource handles are rejected.
+Effect payload layouts admit primitives, strings/colors, enums, and finite
+acyclic struct snapshots. `emitEffect` dereferences and materializes the
+snapshot immediately; collections, tuples, resource handles, and recursive
+struct payloads are rejected.
 
 The same resolution path supplies the primary context and every request
 child. Provider series remain numeric and aligned to `rows`; typed builtin
@@ -515,7 +521,7 @@ exists only to run the established `init`/`bind` protocol; it is not another
 semantic representation.
 
 That physical boundary is the versioned `CompiledWgslProgram` contract in
-`src/gpu/contract.ts`. Its `abi` is currently `2`; the same module owns every
+`src/gpu/contract.ts`. Its `abi` is currently `3`; the same module owns every
 fixed bind-group index, descriptor offset, and scalar stride used by both
 WGSL lowering and runtime validation. Codegen produces this contract and the
 GPU runtime consumes it without importing codegen implementation modules or
@@ -628,19 +634,19 @@ Adapter selection and deployment policy stay with the host that injects the
 payload construction remain ordinary emitted Tea code inside the shader; the
 GPU runtime recognizes none of them.
 
-## Immutable Heap arena
+## Unified Heap arena
 
-The Heap is a type-neutral arena for variable-sized immutable backing. Its
-only handle is the source-hidden `StorageRef`; it is not a user-object store
-and does not give user-defined values identity. Collection descriptors own
-args-byte estimation, payload sealing, tracing, and per-cell logical byte
-accounting. The Heap owns
-allocation, stale/cross-arena/descriptor validation, reachability,
+The Heap is the type-neutral arena for every source-hidden storage identity.
+Its only handle is `StorageRef`: collection headers use it for persistent
+backing, while struct values use it directly for transactionally mutable field
+storage. Storage descriptors own args-byte estimation, payload validation,
+tracing, logical-byte accounting, and any admitted opaque edit contract. Heap
+owns allocation, stale-version/cross-arena/descriptor validation,
 transactions, deterministic limits, and collection.
 
-Before a descriptor may seal, copy, or freeze its args, the Heap checks the
+Before a descriptor may allocate, copy, or validate its args, the Heap checks the
 transient cell limit and the descriptor's exact `logicalBytesFor(args)`
-against the transient byte limit. The sealed payload's `logicalBytes` must
+against the transient byte limit. The resulting payload's `logicalBytes` must
 equal that estimate; disagreement is an internal descriptor-contract failure.
 This makes the transient budget a pre-allocation guard instead of a check on
 an oversized copy that was already built.
@@ -653,6 +659,13 @@ discard cells. A committed cell may reference only committed storage, while a
 tentative cell may reference committed storage or storage from the same
 transaction. Abort/discard makes its refs stale.
 
+Collection descriptors never edit committed backing: mutation allocates a
+replacement cell. A struct descriptor admits field edits through the active
+Heap transaction. Validation and undo capture precede a nonthrowing apply; the
+first edit for one descriptor-provided journal key records one opaque undo
+value. Abort restores those values in reverse order, while commit discards the
+journal. In-place edits preserve the cell's logical byte count.
+
 Commit roots are the exact post-commit owner graph: surviving Ring
 cells and candidates, request result Rings/views/builders, and other registered
 runtime owners. Temporary pre-transaction snapshots are safety roots only and are
@@ -660,6 +673,11 @@ not retained or charged after success. Physical collection runs only at a safe
 point after the transaction is terminal and generated/scratch temporaries cannot
 be sole owners. Root and all request-child runtimes share the same arena and
 layout registry.
+
+Struct fields and collection payloads trace the same `StorageRef` graph, so a
+single visited-slot walk handles struct-to-struct, struct-to-collection,
+collection-to-struct, sharing, and cycles. Undo-old referenced values are
+transaction-safety roots only, never post-commit candidates.
 
 Limits count unique reachable cells and the logical bytes owned directly by
 each cell; child cells reached through `StorageRef` are counted separately and
@@ -688,7 +706,7 @@ A dynamic-request suspension is part of the execution protocol: `executeRow`
 closes and aborts the parent transaction before child execution can begin. The host
 awaits `resolvePending()` and re-executes the SAME row. Tentative writes,
 buffered emissions, and tentative storage from the failed transaction vanish; the
-retry restores the exact pre-transaction varip candidate, which may come from an
-earlier successful provisional tick. If a first-row varip Ring had no prior
-candidate, retry reaches and reruns its declaration-site initializer. `runAll`
-runs this loop itself.
+retry restores the exact pre-transaction same-row candidates, which may include
+varip state and the first successful ordinary-`var` initialization. If no prior
+candidate exists, retry reaches and reruns the declaration-site initializer.
+`runAll` runs this loop itself.

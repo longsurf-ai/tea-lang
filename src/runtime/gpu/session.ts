@@ -1142,10 +1142,10 @@ function decodeValue(
       }
       return member;
     }
-    case 'user-type': {
+    case 'struct': {
       if (!valid(schema.validByteOffset)) return null;
       return Object.freeze({
-        kind: 'user-type' as const,
+        kind: 'struct' as const,
         fields: Object.freeze(
           schema.fields.map(field =>
             decodeValue(
@@ -2777,7 +2777,7 @@ function logicalSchemaMatchesPhysical(
       )
     );
   }
-  if (logical.kind === 'user-type' && physical.kind === 'user-type') {
+  if (logical.kind === 'struct' && physical.kind === 'struct') {
     return (
       logical.typeId === physical.typeId &&
       logical.displayName === physical.name &&
@@ -2836,7 +2836,7 @@ function validateValueSchema(
         throw new GpuBindingError(`${owner} has duplicate enum members`);
       }
       break;
-    case 'user-type': {
+    case 'struct': {
       offsets.push(schema.validByteOffset);
       const intervals: Array<readonly [number, number]> = [];
       schema.fields.forEach(field => {

@@ -119,7 +119,7 @@ describe('WGSL effect artifact analysis', () => {
       root === undefined ||
       initializer?.kind !== IrKind.InitName ||
       assignment?.kind !== IrKind.WriteName ||
-      assignment.value.kind !== IrKind.NewUserValue
+      assignment.value.kind !== IrKind.NewStruct
     ) {
       throw new Error('malformed persistent-initializer fixture');
     }
@@ -142,7 +142,7 @@ describe('WGSL effect artifact analysis', () => {
     if (
       root === undefined ||
       assignment?.kind !== IrKind.WriteName ||
-      assignment.value.kind !== IrKind.NewUserValue
+      assignment.value.kind !== IrKind.NewStruct
     ) {
       throw new Error('malformed package-global initializer fixture');
     }

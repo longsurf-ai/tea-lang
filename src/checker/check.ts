@@ -36,7 +36,7 @@ import {
   type EnumType,
   type Type,
   type TypeAndValue,
-  type UserType,
+  type StructType,
 } from '../ir/type';
 import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
@@ -64,13 +64,14 @@ import {
   newInfo,
   type CheckedDefaultExpression,
   type CheckedExpression,
-  type CheckedWritebackTarget,
+  type CollectionLocation,
   type FunctionInstance,
   type Info,
   type NativeCall,
   type MethodReceiver,
   type NativeReceiver,
   type SemanticDependency,
+  type StructFieldStore,
 } from './info';
 import {
   ObjectKind,
@@ -81,7 +82,7 @@ import {
   type FieldObject,
   type FunctionObject,
   type GenericInstantiation,
-  type GenericUserTypeObject,
+  type GenericStructObject,
   type InterfaceMethodObject,
   type InterfaceObject,
   type MethodObject,
@@ -89,7 +90,7 @@ import {
   type PackageNameObject,
   type TypeParameterObject,
   type TypeSubstitution,
-  type UserTypeObject,
+  type StructObject,
   type VariableObject,
 } from './object';
 import type {CheckedPackage, Package} from './package';
@@ -169,13 +170,10 @@ interface PackageState {
   readonly exports: Map<string, Object>;
   readonly functionDecls: Map<syntax.FuncDecl, FunctionObject>;
   readonly interfaceDecls: Map<syntax.InterfaceDecl, InterfaceObject>;
-  readonly userTypeDecls: Map<syntax.UserTypeDecl, UserTypeObject>;
-  readonly genericUserTypeDecls: Map<
-    syntax.UserTypeDecl,
-    GenericUserTypeObject
-  >;
-  readonly finalizedUserTypes: Set<UserTypeObject>;
-  readonly finalizedGenericUserTypes: Set<GenericUserTypeObject>;
+  readonly structDecls: Map<syntax.StructDecl, StructObject>;
+  readonly genericStructDecls: Map<syntax.StructDecl, GenericStructObject>;
+  readonly finalizedStructs: Set<StructObject>;
+  readonly finalizedGenericStructs: Set<GenericStructObject>;
   readonly enumDecls: Map<syntax.EnumDecl, EnumObject>;
   readonly finalizedEnums: Set<EnumObject>;
   readonly runtimeGlobals: VariableObject[];
@@ -208,7 +206,7 @@ class Checker {
   private funcBoundary: Scope | null = null;
   private readonly packageStates = new Map<string, PackageState>();
   private readonly stateByPackage = new Map<Package, PackageState>();
-  private readonly userTypeObjectOf = new Map<UserType, UserTypeObject>();
+  private readonly structObjectOf = new Map<StructType, StructObject>();
   private readonly genericFieldConstraint = new WeakMap<
     FieldObject,
     TypeParameterObject
@@ -218,10 +216,10 @@ class Checker {
     TypeParameterObject
   >();
   private readonly symbolicTypeParameter = new WeakMap<
-    UserTypeObject,
+    StructObject,
     TypeParameterObject
   >();
-  private readonly pendingGenericMethodValidation = new Set<UserTypeObject>();
+  private readonly pendingGenericMethodValidation = new Set<StructObject>();
   private substitutions: ReadonlyMap<string, TypeSubstitution> | null = null;
   // Names bound by the implicit imports — the redeclare guard's set; the
   // checker never learns where these libraries come from.
@@ -306,10 +304,10 @@ class Checker {
       exports,
       functionDecls: new Map(),
       interfaceDecls: new Map(),
-      userTypeDecls: new Map(),
-      genericUserTypeDecls: new Map(),
-      finalizedUserTypes: new Set(),
-      finalizedGenericUserTypes: new Set(),
+      structDecls: new Map(),
+      genericStructDecls: new Map(),
+      finalizedStructs: new Set(),
+      finalizedGenericStructs: new Set(),
       enumDecls: new Map(),
       finalizedEnums: new Set(),
       runtimeGlobals: [],
@@ -386,11 +384,8 @@ class Checker {
       this.predeclareNominalTypes(file);
       this.predeclareFunctions(file);
       this.resolveInterfaceMethods(file);
-      this.resolveGenericUserTypes(file);
-      this.resolveUserTypeMembers(file);
-      this.rejectDirectUserTypeCycles([
-        ...this.currentPackage.userTypeDecls.values(),
-      ]);
+      this.resolveGenericStructs(file);
+      this.resolveStructMembers(file);
       bindFileNames(file, this.scope, this.info);
       this.info.scopes.set(file, this.scope);
       for (const stmt of file.stmtList) {
@@ -399,7 +394,7 @@ class Checker {
         }
       }
       this.validateMethodDeclarations([
-        ...this.currentPackage.userTypeDecls.values(),
+        ...this.currentPackage.structDecls.values(),
       ]);
       this.validateUnusedGenericTemplates();
     });
@@ -417,13 +412,13 @@ class Checker {
     };
   }
 
-  private nominalTypeIds(): ReadonlyMap<UserType | EnumType, string> {
-    const ids = new Map<UserType | EnumType, string>();
+  private nominalTypeIds(): ReadonlyMap<StructType | EnumType, string> {
+    const ids = new Map<StructType | EnumType, string>();
     const genericInstances = new Map<
-      UserTypeObject,
+      StructObject,
       {
-        readonly template: GenericUserTypeObject;
-        readonly typeArgs: readonly UserTypeObject[];
+        readonly template: GenericStructObject;
+        readonly typeArgs: readonly StructObject[];
       }
     >();
 
@@ -431,7 +426,7 @@ class Checker {
       for (const object of state.enumDecls.values()) {
         ids.set(object.type, `${object.pkg.path}.${object.name}`);
       }
-      for (const template of state.genericUserTypeDecls.values()) {
+      for (const template of state.genericStructDecls.values()) {
         for (const instance of template.instances) {
           genericInstances.set(instance.object, {
             template,
@@ -441,8 +436,8 @@ class Checker {
       }
     }
 
-    const active = new Set<UserTypeObject>();
-    const userTypeId = (object: UserTypeObject): string => {
+    const active = new Set<StructObject>();
+    const structId = (object: StructObject): string => {
       const existing = ids.get(object.type);
       if (existing !== undefined) {
         return existing;
@@ -456,7 +451,7 @@ class Checker {
         instance === undefined
           ? `${object.pkg.path}.${object.name}`
           : `${instance.template.pkg.path}.${instance.template.name}<${instance.typeArgs
-              .map(userTypeId)
+              .map(structId)
               .join(',')}>`;
       active.delete(object);
       ids.set(object.type, id);
@@ -464,12 +459,12 @@ class Checker {
     };
 
     for (const state of this.stateByPackage.values()) {
-      for (const object of state.userTypeDecls.values()) {
-        userTypeId(object);
+      for (const object of state.structDecls.values()) {
+        structId(object);
       }
-      for (const template of state.genericUserTypeDecls.values()) {
+      for (const template of state.genericStructDecls.values()) {
         for (const instance of template.instances) {
-          userTypeId(instance.object);
+          structId(instance.object);
         }
       }
     }
@@ -521,10 +516,9 @@ class Checker {
     this.predeclareNominalTypes(file);
     this.predeclareFunctions(file);
     this.resolveInterfaceMethods(file);
-    this.resolveGenericUserTypes(file);
-    this.resolveUserTypeMembers(file);
-    const owners = [...this.currentPackage.userTypeDecls.values()];
-    this.rejectDirectUserTypeCycles(owners);
+    this.resolveGenericStructs(file);
+    this.resolveStructMembers(file);
+    const owners = [...this.currentPackage.structDecls.values()];
     bindFileNames(file, this.scope, this.info);
     this.info.scopes.set(file, this.scope);
 
@@ -564,7 +558,7 @@ class Checker {
       if (
         stmt.kind === NodeKind.FuncDecl ||
         stmt.kind === NodeKind.InterfaceDecl ||
-        stmt.kind === NodeKind.UserTypeDecl ||
+        stmt.kind === NodeKind.StructDecl ||
         stmt.kind === NodeKind.TypeAliasDecl ||
         stmt.kind === NodeKind.EnumDecl
       ) {
@@ -847,11 +841,11 @@ class Checker {
     for (const stmt of file.stmtList) {
       if (stmt.kind === NodeKind.InterfaceDecl) {
         this.predeclareInterface(stmt);
-      } else if (stmt.kind === NodeKind.UserTypeDecl) {
+      } else if (stmt.kind === NodeKind.StructDecl) {
         if (stmt.typeParams.length === 0) {
-          this.predeclareUserType(stmt);
+          this.predeclareStruct(stmt);
         } else {
-          this.predeclareGenericUserType(stmt);
+          this.predeclareGenericStruct(stmt);
         }
       } else if (stmt.kind === NodeKind.EnumDecl) {
         this.predeclareEnum(stmt);
@@ -886,17 +880,17 @@ class Checker {
     }
   }
 
-  private predeclareUserType(decl: syntax.UserTypeDecl): void {
+  private predeclareStruct(decl: syntax.StructDecl): void {
     const fields: FieldObject[] = [];
     const layoutFields: {name: string; type: Type}[] = [];
     const methods: MethodObject[] = [];
-    const type: UserType = {
-      kind: TypeKind.UserType,
+    const type: StructType = {
+      kind: TypeKind.Struct,
       name: decl.name.value,
       fields: layoutFields,
     };
-    const object: UserTypeObject = {
-      kind: ObjectKind.UserType,
+    const object: StructObject = {
+      kind: ObjectKind.Struct,
       pkg: this.currentPackage.pkg,
       exported: decl.exported,
       name: decl.name.value,
@@ -907,18 +901,18 @@ class Checker {
     if (!this.declare(decl.name, object)) {
       return;
     }
-    this.currentPackage.userTypeDecls.set(decl, object);
-    this.userTypeObjectOf.set(type, object);
+    this.currentPackage.structDecls.set(decl, object);
+    this.structObjectOf.set(type, object);
     if (decl.exported) {
       this.currentPackage.exports.set(object.name, object);
     }
   }
 
-  private predeclareGenericUserType(decl: syntax.UserTypeDecl): void {
+  private predeclareGenericStruct(decl: syntax.StructDecl): void {
     const typeParams: TypeParameterObject[] = [];
     const instances: GenericInstantiation[] = [];
-    const object: GenericUserTypeObject = {
-      kind: ObjectKind.GenericUserType,
+    const object: GenericStructObject = {
+      kind: ObjectKind.GenericStruct,
       pkg: this.currentPackage.pkg,
       exported: decl.exported,
       name: decl.name.value,
@@ -931,7 +925,7 @@ class Checker {
     if (!this.declare(decl.name, object)) {
       return;
     }
-    this.currentPackage.genericUserTypeDecls.set(decl, object);
+    this.currentPackage.genericStructDecls.set(decl, object);
     if (decl.exported) {
       this.currentPackage.exports.set(object.name, object);
     }
@@ -973,12 +967,12 @@ class Checker {
     }
   }
 
-  private resolveUserTypeMembers(file: syntax.File): void {
+  private resolveStructMembers(file: syntax.File): void {
     for (const stmt of file.stmtList) {
-      if (stmt.kind !== NodeKind.UserTypeDecl) {
+      if (stmt.kind !== NodeKind.StructDecl) {
         continue;
       }
-      const owner = this.currentPackage.userTypeDecls.get(stmt);
+      const owner = this.currentPackage.structDecls.get(stmt);
       if (owner === undefined) {
         continue;
       }
@@ -1118,12 +1112,12 @@ class Checker {
     }
   }
 
-  private resolveGenericUserTypes(file: syntax.File): void {
+  private resolveGenericStructs(file: syntax.File): void {
     for (const stmt of file.stmtList) {
-      if (stmt.kind !== NodeKind.UserTypeDecl || stmt.typeParams.length === 0) {
+      if (stmt.kind !== NodeKind.StructDecl || stmt.typeParams.length === 0) {
         continue;
       }
-      const owner = this.currentPackage.genericUserTypeDecls.get(stmt);
+      const owner = this.currentPackage.genericStructDecls.get(stmt);
       if (owner === undefined) {
         continue;
       }
@@ -1227,7 +1221,7 @@ class Checker {
             visitExpr(stmt.body);
           }
           return;
-        case NodeKind.UserTypeDecl:
+        case NodeKind.StructDecl:
           for (const member of stmt.members) {
             if (member.kind === NodeKind.FieldDecl) {
               if (member.defaultValue !== null) {
@@ -1364,39 +1358,6 @@ class Checker {
     visitExpr(expr);
   }
 
-  private rejectDirectUserTypeCycles(owners: readonly UserTypeObject[]): void {
-    const visiting = new Set<UserTypeObject>();
-    const visited = new Set<UserTypeObject>();
-    const visit = (owner: UserTypeObject): void => {
-      if (visited.has(owner)) {
-        return;
-      }
-      visiting.add(owner);
-      for (const field of owner.fields) {
-        if (field.type.kind !== TypeKind.UserType) {
-          continue;
-        }
-        const target = this.userTypeObjectOf.get(field.type);
-        if (target === undefined) {
-          continue;
-        }
-        if (visiting.has(target)) {
-          this.error(
-            field.decl.pos,
-            `type '${owner.name}' has an infinite value layout through field '${field.name}'`,
-          );
-          continue;
-        }
-        visit(target);
-      }
-      visiting.delete(owner);
-      visited.add(owner);
-    };
-    for (const owner of owners) {
-      visit(owner);
-    }
-  }
-
   private error(pos: Pos, msg: string): void {
     if (this.activeMethod !== null) {
       this.methodErrorAttempts += 1;
@@ -1432,8 +1393,8 @@ class Checker {
       case NodeKind.InterfaceDecl:
         this.checkInterfaceDecl(stmt);
         return null;
-      case NodeKind.UserTypeDecl:
-        this.checkUserTypeDecl(stmt);
+      case NodeKind.StructDecl:
+        this.checkStructDecl(stmt);
         return null;
       case NodeKind.TypeAliasDecl:
         this.checkTypeAliasDecl(stmt);
@@ -1596,7 +1557,9 @@ class Checker {
     // Fold values travel through names only when reassignment is impossible.
     const foldable =
       d.mode === Mode.Const ||
-      (d.mode === Mode.None && !this.info.reassigned.has(name));
+      (d.mode === Mode.None &&
+        !this.info.reassigned.has(name) &&
+        !this.info.historyBindings.has(name));
     const constValue =
       foldable && initTv.qualifier === Qualifier.Const ? initTv.value : null;
     return {type, qualifier, constValue};
@@ -1793,8 +1756,8 @@ class Checker {
       this.error(a.pos, 'compound assignment to a field is not supported');
       return null;
     }
-    const writeback = this.checkedWritebackTarget(target);
-    if (writeback === null) {
+    const store = this.checkedStructFieldStore(target);
+    if (store === null) {
       return null;
     }
     if (!assignable(valueTv.type, targetTv.type)) {
@@ -1803,60 +1766,67 @@ class Checker {
         `cannot assign ${formatType(valueTv.type)} to field '${target.sel.value}' of type ${formatType(targetTv.type)}`,
       );
     }
-    writeback.root.qualifier = joinQualifiers(
-      joinQualifiers(writeback.root.qualifier, valueTv.qualifier),
-      this.flowQualifier,
-    );
-    this.info.updates.set(a, writeback);
-    return valueTv;
+    this.info.updates.set(a, store);
+    return {...valueTv, qualifier: Qualifier.Series, value: null};
   }
 
-  private checkedWritebackTarget(
-    receiver: syntax.Expr,
-  ): CheckedWritebackTarget | null {
-    const checked: CheckedExpression = {
-      expr: receiver,
-      info: this.info,
-      tv: this.tvOf(receiver),
-    };
-    if (checked.tv.type.kind === TypeKind.Invalid) {
+  private checkedStructFieldStore(
+    target: syntax.SelectorExpr,
+  ): StructFieldStore | null {
+    const selection = this.info.selections.get(target);
+    if (selection?.kind !== SelectionKind.Field) {
+      this.error(target.pos, 'assignment target is not a struct field');
       return null;
     }
-    const fields: FieldObject[] = [];
-    let current = unwrapParens(receiver);
-    while (current.kind === NodeKind.SelectorExpr) {
-      const selection = this.info.selections.get(current);
-      if (selection?.kind !== SelectionKind.Field) {
-        this.error(receiver.pos, 'mutation requires a current rooted value');
-        return null;
-      }
-      fields.push(selection.field);
-      current = unwrapParens(current.x);
-    }
-    if (current.kind !== NodeKind.Name && current.kind !== NodeKind.ThisExpr) {
-      this.error(receiver.pos, 'mutation requires a current rooted value');
-      return null;
-    }
-    const object = this.info.uses.get(current);
-    if (object?.kind !== ObjectKind.Variable) {
-      this.error(receiver.pos, 'mutation requires a variable root');
-      return null;
-    }
-    if (object.constDecl) {
+    if (this.isDirectConstThis(target.x)) {
       this.error(
-        receiver.pos,
-        current.kind === NodeKind.ThisExpr
-          ? "cannot mutate 'this' in a const method"
-          : `cannot mutate '${object.name}' declared with const`,
+        target.pos,
+        "cannot mutate a direct field of 'this' in a const method",
       );
       return null;
     }
-    if (
-      current.kind === NodeKind.Name &&
-      this.funcBoundary !== null &&
-      !this.scope.resolvesWithin(current.value, this.funcBoundary)
-    ) {
-      if (!this.canWriteOuterVariable(object)) {
+    const object: CheckedExpression = {
+      expr: target.x,
+      info: this.info,
+      tv: this.tvOf(target.x),
+    };
+    if (!typesEqual(object.tv.type, selection.field.owner.type)) {
+      return fatal(
+        `field '${selection.field.name}' selected from the wrong struct type`,
+      );
+    }
+    return {
+      object,
+      owner: selection.field.owner,
+      field: selection.field,
+    };
+  }
+
+  private checkedCollectionLocation(
+    receiver: syntax.Expr,
+  ): CollectionLocation | null {
+    const current = unwrapParens(receiver);
+    if (current.kind === NodeKind.Name) {
+      const object = this.info.uses.get(current);
+      if (object?.kind !== ObjectKind.Variable) {
+        this.error(
+          receiver.pos,
+          'collection mutation requires a writable name or struct field',
+        );
+        return null;
+      }
+      if (object.constDecl) {
+        this.error(
+          receiver.pos,
+          `cannot mutate collection '${object.name}' declared with const`,
+        );
+        return null;
+      }
+      if (
+        this.funcBoundary !== null &&
+        !this.scope.resolvesWithin(current.value, this.funcBoundary) &&
+        !this.canWriteOuterVariable(object)
+      ) {
         this.error(
           receiver.pos,
           object.packageGlobal === null
@@ -1865,8 +1835,29 @@ class Checker {
         );
         return null;
       }
+      this.info.reassigned.add(object);
+      object.constValue = null;
+      object.qualifier = joinQualifiers(object.qualifier, Qualifier.Series);
+      return {kind: 'name', name: object};
     }
-    return {receiver: checked, root: object, fields: fields.reverse()};
+    if (current.kind === NodeKind.SelectorExpr) {
+      const store = this.checkedStructFieldStore(current);
+      return store === null ? null : {kind: 'structField', ...store};
+    }
+    this.error(
+      receiver.pos,
+      'collection mutation requires a writable name or struct field',
+    );
+    return null;
+  }
+
+  private isDirectConstThis(expr: syntax.Expr): boolean {
+    const current = unwrapParens(expr);
+    if (current.kind !== NodeKind.ThisExpr) {
+      return false;
+    }
+    const object = this.info.uses.get(current);
+    return object?.kind === ObjectKind.Variable && object.constDecl;
   }
 
   private canWriteOuterVariable(object: VariableObject): boolean {
@@ -1978,24 +1969,24 @@ class Checker {
     }
   }
 
-  private checkUserTypeDecl(d: syntax.UserTypeDecl): void {
+  private checkStructDecl(d: syntax.StructDecl): void {
     if (this.blockDepth > 0) {
       this.error(d.pos, 'types must be declared at the top level');
       return;
     }
     if (d.typeParams.length !== 0) {
-      const generic = this.currentPackage.genericUserTypeDecls.get(d);
+      const generic = this.currentPackage.genericStructDecls.get(d);
       if (generic !== undefined) {
-        this.currentPackage.finalizedGenericUserTypes.add(generic);
+        this.currentPackage.finalizedGenericStructs.add(generic);
       }
       return;
     }
-    const owner = this.currentPackage.userTypeDecls.get(d);
+    const owner = this.currentPackage.structDecls.get(d);
     if (owner === undefined) {
       return;
     }
-    if (this.currentPackage.finalizedUserTypes.has(owner)) {
-      return fatal(`user type '${owner.name}' finalized more than once`);
+    if (this.currentPackage.finalizedStructs.has(owner)) {
+      return fatal(`struct '${owner.name}' finalized more than once`);
     }
     for (const field of owner.fields) {
       if (field.decl.defaultValue !== null) {
@@ -2009,19 +2000,16 @@ class Checker {
         field.defaultValue = checked;
       }
     }
-    this.currentPackage.finalizedUserTypes.add(owner);
+    this.currentPackage.finalizedStructs.add(owner);
   }
 
-  private validateMethodDeclarations(owners: readonly UserTypeObject[]): void {
+  private validateMethodDeclarations(owners: readonly StructObject[]): void {
     // These instances are checker-only: no syntax CallExpr owns them, so the
     // noder cannot project them into a Program. They establish declaration
     // correctness even when a method is never called.
     for (const owner of owners) {
       for (const method of owner.methods) {
-        const receiverQualifier =
-          method.receiver.mode === 'mutable'
-            ? Qualifier.Series
-            : Qualifier.Const;
+        const receiverQualifier = Qualifier.Series;
         const signature: FunctionInstance['signature'] =
           method.declaredParams.map(param => ({
             type: param.type,
@@ -2060,7 +2048,7 @@ class Checker {
   }
 
   private validateUnusedGenericTemplates(): void {
-    for (const template of this.currentPackage.genericUserTypeDecls.values()) {
+    for (const template of this.currentPackage.genericStructDecls.values()) {
       if (
         template.instances.length !== 0 ||
         template.typeParams.length !== template.decl.typeParams.length
@@ -2071,16 +2059,16 @@ class Checker {
     }
   }
 
-  private validateGenericTemplate(template: GenericUserTypeObject): void {
+  private validateGenericTemplate(template: GenericStructObject): void {
     const symbolicArgs = template.typeParams.map(parameter => {
       const fields: {name: string; type: Type}[] = [];
-      const type: UserType = {
-        kind: TypeKind.UserType,
+      const type: StructType = {
+        kind: TypeKind.Struct,
         name: parameter.name,
         fields,
       };
-      const object: UserTypeObject = {
-        kind: ObjectKind.UserType,
+      const object: StructObject = {
+        kind: ObjectKind.Struct,
         pkg: template.pkg,
         exported: false,
         name: parameter.name,
@@ -2088,7 +2076,7 @@ class Checker {
         fields: [],
         methods: [],
       };
-      this.userTypeObjectOf.set(type, object);
+      this.structObjectOf.set(type, object);
       this.symbolicTypeParameter.set(object, parameter);
       return object;
     });
@@ -2104,13 +2092,13 @@ class Checker {
     const methods: MethodObject[] = [];
     const layoutFields: {name: string; type: Type}[] = [];
     const name = `${template.name}<${template.typeParams.map(parameter => parameter.name).join(', ')}>`;
-    const type: UserType = {
-      kind: TypeKind.UserType,
+    const type: StructType = {
+      kind: TypeKind.Struct,
       name,
       fields: layoutFields,
     };
-    const owner: UserTypeObject = {
-      kind: ObjectKind.UserType,
+    const owner: StructObject = {
+      kind: ObjectKind.Struct,
       pkg: template.pkg,
       exported: template.exported,
       name,
@@ -2118,7 +2106,7 @@ class Checker {
       fields,
       methods,
     };
-    this.userTypeObjectOf.set(type, owner);
+    this.structObjectOf.set(type, owner);
 
     const saved = {
       package: this.currentPackage,
@@ -2223,8 +2211,7 @@ class Checker {
         this.info.defs.set(member.name, method);
       }
 
-      this.currentPackage.finalizedUserTypes.add(owner);
-      this.rejectDirectUserTypeCycles([owner]);
+      this.currentPackage.finalizedStructs.add(owner);
       for (const field of fields) {
         if (field.decl.defaultValue === null) {
           continue;
@@ -2240,7 +2227,7 @@ class Checker {
       }
       this.validateMethodDeclarations([owner]);
     } finally {
-      this.currentPackage.finalizedUserTypes.delete(owner);
+      this.currentPackage.finalizedStructs.delete(owner);
       this.currentPackage = saved.package;
       this.scope = saved.scope;
       this.info = saved.info;
@@ -2346,7 +2333,7 @@ class Checker {
         }
         const entry = this.scope.lookup(t.value);
         if (
-          entry?.kind === ObjectKind.UserType ||
+          entry?.kind === ObjectKind.Struct ||
           entry?.kind === ObjectKind.Enum
         ) {
           this.info.uses.set(t, entry);
@@ -2360,7 +2347,7 @@ class Checker {
           );
           return InvalidType;
         }
-        if (entry?.kind === ObjectKind.GenericUserType) {
+        if (entry?.kind === ObjectKind.GenericStruct) {
           this.error(
             t.pos,
             `generic type '${t.value}' requires ${entry.typeParams.length} type argument${entry.typeParams.length === 1 ? '' : 's'}`,
@@ -2376,12 +2363,12 @@ class Checker {
             ? COLLECTION_TYPE_CATALOG.get(t.name.value)
             : undefined;
         if (collection === undefined) {
-          let template: GenericUserTypeObject | null = null;
+          let template: GenericStructObject | null = null;
           let written = '';
           if (t.name.kind === NodeKind.Name) {
             const entry = this.scope.lookup(t.name.value);
             written = t.name.value;
-            if (entry?.kind === ObjectKind.GenericUserType) {
+            if (entry?.kind === ObjectKind.GenericStruct) {
               this.info.uses.set(t.name, entry);
               template = entry;
             }
@@ -2393,13 +2380,13 @@ class Checker {
             const member = this.packageMember(t.name.x, t.name.sel);
             if (
               member.matched &&
-              member.object?.kind === ObjectKind.GenericUserType
+              member.object?.kind === ObjectKind.GenericStruct
             ) {
               template = member.object;
             }
           }
           if (template !== null) {
-            return this.resolveGenericUserTypeAnnotation(template, t, written);
+            return this.resolveGenericStructAnnotation(template, t, written);
           }
           this.error(
             t.name.pos,
@@ -2455,7 +2442,7 @@ class Checker {
           const member = this.packageMember(t.x, t.sel);
           if (member.matched) {
             if (
-              member.object?.kind === ObjectKind.UserType ||
+              member.object?.kind === ObjectKind.Struct ||
               member.object?.kind === ObjectKind.Enum
             ) {
               return member.object.type;
@@ -2477,8 +2464,8 @@ class Checker {
     }
   }
 
-  private resolveGenericUserTypeAnnotation(
-    template: GenericUserTypeObject,
+  private resolveGenericStructAnnotation(
+    template: GenericStructObject,
     written: syntax.GenericType,
     displayName: string,
   ): Type {
@@ -2493,20 +2480,20 @@ class Checker {
     if (args.some(arg => arg.kind === TypeKind.Invalid)) {
       return InvalidType;
     }
-    if (args.some(arg => arg.kind !== TypeKind.UserType)) {
+    if (args.some(arg => arg.kind !== TypeKind.Struct)) {
       this.error(
         written.pos,
-        `generic type '${displayName}' accepts only concrete user types`,
+        `generic type '${displayName}' accepts only concrete structs`,
       );
       return InvalidType;
     }
-    const objects = args.map(arg => this.userTypeObjectOf.get(arg as UserType));
+    const objects = args.map(arg => this.structObjectOf.get(arg as StructType));
     if (objects.some(object => object === undefined)) {
       return fatal(`generic type '${displayName}' lost a type argument`);
     }
-    return this.instantiateGenericUserType(
+    return this.instantiateGenericStruct(
       template,
-      objects as UserTypeObject[],
+      objects as StructObject[],
       written.pos,
     ).type;
   }
@@ -2669,12 +2656,12 @@ class Checker {
         case ObjectKind.Interface:
           this.error(n.pos, `interface '${n.value}' is not a value`);
           return INVALID_TV;
-        case ObjectKind.GenericUserType:
+        case ObjectKind.GenericStruct:
           this.error(n.pos, `'${n.value}' is a generic type, not a value`);
           return INVALID_TV;
         case ObjectKind.TypeParameter:
           return fatal(`type parameter '${n.value}' reached value resolution`);
-        case ObjectKind.UserType:
+        case ObjectKind.Struct:
         case ObjectKind.Enum:
           this.error(n.pos, `'${n.value}' is a type, not a value`);
           return INVALID_TV;
@@ -2844,7 +2831,7 @@ class Checker {
         this.info.uses.set(s.x, entry);
         return this.enumMemberTv(entry, s.sel, entry.name);
       }
-      if (entry?.kind === ObjectKind.UserType) {
+      if (entry?.kind === ObjectKind.Struct) {
         this.error(s.pos, `'${s.x.value}' is a type, not a value`);
         return INVALID_TV;
       }
@@ -2852,7 +2839,7 @@ class Checker {
         this.error(s.pos, `interface '${s.x.value}' is not a value`);
         return INVALID_TV;
       }
-      if (entry?.kind === ObjectKind.GenericUserType) {
+      if (entry?.kind === ObjectKind.GenericStruct) {
         this.error(s.pos, `'${s.x.value}' is a generic type, not a value`);
         return INVALID_TV;
       }
@@ -2865,8 +2852,8 @@ class Checker {
     if (baseTv.type.kind === TypeKind.Invalid) {
       return INVALID_TV;
     }
-    if (baseTv.type.kind === TypeKind.UserType) {
-      const owner = this.userTypeObjectOf.get(baseTv.type);
+    if (baseTv.type.kind === TypeKind.Struct) {
+      const owner = this.structObjectOf.get(baseTv.type);
       const field = owner?.fields.find(object => object.name === s.sel.value);
       if (field === undefined) {
         this.error(
@@ -2878,7 +2865,9 @@ class Checker {
       this.info.selections.set(s, {kind: SelectionKind.Field, field});
       return {
         type: field.type,
-        qualifier: baseTv.qualifier,
+        // A field read observes a live mutable struct body, regardless of
+        // which alias produced the reference.
+        qualifier: Qualifier.Series,
         value: null,
       };
     }
@@ -3150,6 +3139,22 @@ class Checker {
     if (xTv.type.kind === TypeKind.Invalid) {
       return INVALID_TV;
     }
+    if (!this.isDirectHistoryBinding(e.x)) {
+      this.error(e.x.pos, 'history operand must be a direct readable binding');
+      return INVALID_TV;
+    }
+    const direct = unwrapParens(e.x);
+    if (direct.kind === NodeKind.Name) {
+      const object = this.info.uses.get(direct);
+      if (object?.kind === ObjectKind.Variable && object.constDecl) {
+        this.error(e.x.pos, 'const bindings do not have runtime history');
+        return INVALID_TV;
+      }
+    }
+    if (xTv.type.kind === TypeKind.Plot || xTv.type.kind === TypeKind.Hline) {
+      this.error(e.x.pos, 'output references do not have runtime history');
+      return INVALID_TV;
+    }
     if (xTv.type.kind === TypeKind.Tuple) {
       this.error(
         e.x.pos,
@@ -3159,6 +3164,25 @@ class Checker {
     }
     // Every history read is a read through the time machine: series, no fold.
     return {type: xTv.type, qualifier: Qualifier.Series, value: null};
+  }
+
+  private isDirectHistoryBinding(expr: syntax.Expr): boolean {
+    const direct = unwrapParens(expr);
+    if (direct.kind === NodeKind.Name) {
+      const object = this.info.uses.get(direct);
+      return (
+        object?.kind === ObjectKind.Variable ||
+        (object?.kind === ObjectKind.Builtin && object.binding !== null)
+      );
+    }
+    if (direct.kind === NodeKind.SelectorExpr) {
+      const selection = this.info.selections.get(direct);
+      return (
+        selection?.kind === SelectionKind.Builtin &&
+        selection.builtin.binding !== null
+      );
+    }
+    return false;
   }
 
   private tupleTv(e: syntax.TupleExpr): TypeAndValue {
@@ -3431,7 +3455,7 @@ class Checker {
           this.info.uses.set(fun, entry);
           return this.checkUserCall(c, entry);
         }
-        if (entry.kind === ObjectKind.UserType) {
+        if (entry.kind === ObjectKind.Struct) {
           this.info.uses.set(fun, entry);
           this.error(
             c.pos,
@@ -3440,7 +3464,7 @@ class Checker {
         } else if (entry.kind === ObjectKind.Interface) {
           this.info.uses.set(fun, entry);
           this.error(c.pos, `interface '${fun.value}' is not callable`);
-        } else if (entry.kind === ObjectKind.GenericUserType) {
+        } else if (entry.kind === ObjectKind.GenericStruct) {
           this.info.uses.set(fun, entry);
           this.error(c.pos, `generic type '${fun.value}' is not callable`);
         } else {
@@ -3453,7 +3477,7 @@ class Checker {
     if (fun.kind === NodeKind.SelectorExpr) {
       if (fun.x.kind === NodeKind.Name && fun.sel.value === 'new') {
         const entry = this.scope.lookup(fun.x.value);
-        if (entry?.kind === ObjectKind.UserType) {
+        if (entry?.kind === ObjectKind.Struct) {
           this.info.uses.set(fun.x, entry);
           if (c.typeArgs !== null) {
             this.error(c.pos, 'constructors do not accept type arguments');
@@ -3461,7 +3485,7 @@ class Checker {
           }
           return this.checkNew(c, entry);
         }
-        if (entry?.kind === ObjectKind.GenericUserType) {
+        if (entry?.kind === ObjectKind.GenericStruct) {
           this.info.uses.set(fun.x, entry);
           if (c.typeArgs !== null) {
             this.error(
@@ -3486,7 +3510,7 @@ class Checker {
         const qualified = this.packageMember(fun.x.x, fun.x.sel);
         if (qualified.matched) {
           const written = `${fun.x.x.value}.${fun.x.sel.value}.new`;
-          if (qualified.object?.kind === ObjectKind.GenericUserType) {
+          if (qualified.object?.kind === ObjectKind.GenericStruct) {
             if (c.typeArgs !== null) {
               this.error(
                 c.pos,
@@ -3496,7 +3520,7 @@ class Checker {
             }
             return this.checkGenericNew(c, qualified.object);
           }
-          if (qualified.object?.kind !== ObjectKind.UserType) {
+          if (qualified.object?.kind !== ObjectKind.Struct) {
             if (qualified.object?.kind === ObjectKind.Interface) {
               this.error(
                 c.pos,
@@ -3562,8 +3586,8 @@ class Checker {
       const selectedBase = unwrapParens(fun.x);
       const typeParameter = this.typeParameterOrigin(selectedBase);
       const owner =
-        receiverTv.type.kind === TypeKind.UserType
-          ? this.userTypeObjectOf.get(receiverTv.type)
+        receiverTv.type.kind === TypeKind.Struct
+          ? this.structObjectOf.get(receiverTv.type)
           : undefined;
       if (typeParameter !== null) {
         const required = typeParameter.constraint.methods.find(
@@ -3700,19 +3724,15 @@ class Checker {
       qualifier = joinQualifiers(qualifier, actual.qualifier);
     }
     if (method.receiverMode === 'mutable') {
-      const writeback = this.checkedWritebackTarget(receiver.expr);
-      if (writeback === null) {
+      if (this.isDirectConstThis(receiver.expr)) {
+        this.error(
+          receiver.expr.pos,
+          "cannot call a mutable method on 'this' in a const method",
+        );
         return INVALID_TV;
       }
-      this.info.reassigned.add(writeback.root);
-      writeback.root.constValue = null;
-      writeback.root.qualifier = joinQualifiers(
-        writeback.root.qualifier,
-        Qualifier.Series,
-      );
-      qualifier = Qualifier.Series;
     }
-    return {type: method.result, qualifier, value: null};
+    return {type: method.result, qualifier: Qualifier.Series, value: null};
   }
 
   // ---- user-function stenciling ---------------------------------------------
@@ -3804,7 +3824,7 @@ class Checker {
         return fatal(`method '${displayName}' lost its receiver`);
       }
       if (
-        !this.stateOf(template.receiver.owner.pkg).finalizedUserTypes.has(
+        !this.stateOf(template.receiver.owner.pkg).finalizedStructs.has(
           template.receiver.owner,
         )
       ) {
@@ -3815,20 +3835,17 @@ class Checker {
         return INVALID_TV;
       }
       if (template.receiver.mode === 'mutable') {
-        const writeback = this.checkedWritebackTarget(receiver.expr);
-        if (writeback === null) {
+        if (this.isDirectConstThis(receiver.expr)) {
+          this.error(
+            receiver.expr.pos,
+            "cannot call a mutable method on 'this' in a const method",
+          );
           return INVALID_TV;
         }
-        this.info.reassigned.add(writeback.root);
-        writeback.root.constValue = null;
-        writeback.root.qualifier = joinQualifiers(
-          writeback.root.qualifier,
-          Qualifier.Series,
-        );
         receiverQualifier = Qualifier.Series;
-        resolvedReceiver = {mode: 'mutable', value: receiver, writeback};
+        resolvedReceiver = {mode: 'mutable', value: receiver};
       } else {
-        receiverQualifier = receiver.tv.qualifier;
+        receiverQualifier = Qualifier.Series;
         resolvedReceiver = {mode: 'const', value: receiver};
       }
     }
@@ -3901,17 +3918,10 @@ class Checker {
     const result: TypeAndValue = {
       type: instance.resultType,
       qualifier:
-        resolvedReceiver?.mode === 'const'
-          ? joinQualifiers(
-              instance.resultQualifier,
-              resolvedReceiver.value.tv.qualifier,
-            )
-          : instance.resultQualifier,
+        resolvedReceiver === null ? instance.resultQualifier : Qualifier.Series,
       value: null,
     };
-    return resolvedReceiver?.mode === 'mutable'
-      ? {...result, qualifier: Qualifier.Series}
-      : result;
+    return result;
   }
 
   // Stencil the template for one concrete signature: a fresh Info and a
@@ -4227,17 +4237,11 @@ class Checker {
             tv: this.tvOf(receiverExpr),
           };
           if (candidate.params[0].mode === 'inout') {
-            const writeback = this.checkedWritebackTarget(receiverExpr);
-            if (writeback === null) {
+            const location = this.checkedCollectionLocation(receiverExpr);
+            if (location === null) {
               return INVALID_TV;
             }
-            this.info.reassigned.add(writeback.root);
-            writeback.root.constValue = null;
-            writeback.root.qualifier = joinQualifiers(
-              writeback.root.qualifier,
-              Qualifier.Series,
-            );
-            receiver = {mode: 'inout', value: checked, writeback};
+            receiver = {mode: 'inout', value: checked, location};
           } else {
             receiver = {mode: 'value', value: checked};
           }
@@ -5050,9 +5054,9 @@ class Checker {
 
   private checkGenericNew(
     c: syntax.CallExpr,
-    template: GenericUserTypeObject,
+    template: GenericStructObject,
   ): TypeAndValue {
-    if (!this.stateOf(template.pkg).finalizedGenericUserTypes.has(template)) {
+    if (!this.stateOf(template.pkg).finalizedGenericStructs.has(template)) {
       this.error(
         c.pos,
         `constructor '${template.name}.new' cannot be used before type '${template.name}' is declared`,
@@ -5071,7 +5075,7 @@ class Checker {
     if (aligned === null) {
       return INVALID_TV;
     }
-    const inferred = new Map<string, UserTypeObject>();
+    const inferred = new Map<string, StructObject>();
     for (const [index, field] of fieldDecls.entries()) {
       const argument = aligned.values[index];
       if (argument === null) {
@@ -5105,15 +5109,15 @@ class Checker {
     const typeArgs = template.typeParams.map(
       parameter => inferred.get(parameter.name)!,
     );
-    const concrete = this.instantiateGenericUserType(template, typeArgs, c.pos);
+    const concrete = this.instantiateGenericStruct(template, typeArgs, c.pos);
     return this.checkNew(c, concrete);
   }
 
   private inferGenericFieldType(
-    template: GenericUserTypeObject,
+    template: GenericStructObject,
     written: syntax.TypeName,
     actual: Type,
-    inferred: Map<string, UserTypeObject>,
+    inferred: Map<string, StructObject>,
     pos: Pos,
   ): void {
     if (written.kind === NodeKind.Name) {
@@ -5124,13 +5128,13 @@ class Checker {
         return;
       }
       const object =
-        actual.kind === TypeKind.UserType
-          ? this.userTypeObjectOf.get(actual)
+        actual.kind === TypeKind.Struct
+          ? this.structObjectOf.get(actual)
           : undefined;
       if (object === undefined) {
         this.error(
           pos,
-          `cannot infer '${parameter.name}' from ${formatType(actual)}; generic constraints require a user type`,
+          `cannot infer '${parameter.name}' from ${formatType(actual)}; generic constraints require a struct`,
         );
         return;
       }
@@ -5213,11 +5217,11 @@ class Checker {
     }
   }
 
-  private instantiateGenericUserType(
-    template: GenericUserTypeObject,
-    typeArgs: readonly UserTypeObject[],
+  private instantiateGenericStruct(
+    template: GenericStructObject,
+    typeArgs: readonly StructObject[],
     pos: Pos,
-  ): UserTypeObject {
+  ): StructObject {
     if (typeArgs.length !== template.typeParams.length) {
       this.error(
         pos,
@@ -5255,13 +5259,13 @@ class Checker {
     const methods: MethodObject[] = [];
     const layoutFields: {name: string; type: Type}[] = [];
     const displayName = `${template.name}<${typeArgs.map(arg => arg.name).join(', ')}>`;
-    const type: UserType = {
-      kind: TypeKind.UserType,
+    const type: StructType = {
+      kind: TypeKind.Struct,
       name: displayName,
       fields: layoutFields,
     };
-    const object: UserTypeObject = {
-      kind: ObjectKind.UserType,
+    const object: StructObject = {
+      kind: ObjectKind.Struct,
       pkg: template.pkg,
       exported: template.exported,
       name: displayName,
@@ -5279,7 +5283,7 @@ class Checker {
     // Publish identity before resolving members so recursive method bodies and
     // re-entrant free-function inference canonicalize to this same instance.
     cache.push(instance);
-    this.userTypeObjectOf.set(type, object);
+    this.structObjectOf.set(type, object);
 
     const saved = {
       package: this.currentPackage,
@@ -5386,8 +5390,7 @@ class Checker {
         methods.push(method);
         info.defs.set(member.name, method);
       }
-      this.currentPackage.finalizedUserTypes.add(object);
-      this.rejectDirectUserTypeCycles([object]);
+      this.currentPackage.finalizedStructs.add(object);
 
       for (const field of fields) {
         if (field.decl.defaultValue === null) {
@@ -5485,15 +5488,15 @@ class Checker {
     return {values, order};
   }
 
-  private checkNew(c: syntax.CallExpr, userType: UserTypeObject): TypeAndValue {
-    if (!this.stateOf(userType.pkg).finalizedUserTypes.has(userType)) {
+  private checkNew(c: syntax.CallExpr, struct: StructObject): TypeAndValue {
+    if (!this.stateOf(struct.pkg).finalizedStructs.has(struct)) {
       this.error(
         c.pos,
-        `constructor '${userType.name}.new' cannot be used before type '${userType.name}' is declared`,
+        `constructor '${struct.name}.new' cannot be used before type '${struct.name}' is declared`,
       );
       return INVALID_TV;
     }
-    const fields = userType.fields;
+    const fields = struct.fields;
     const aligned: (syntax.Expr | null)[] = Array(fields.length).fill(null);
     const argumentEvaluationOrder: number[] = [];
     let position = 0;
@@ -5502,7 +5505,7 @@ class Checker {
         if (position >= fields.length) {
           this.error(
             arg.pos,
-            `too many arguments in call to '${userType.name}.new'`,
+            `too many arguments in call to '${struct.name}.new'`,
           );
           return INVALID_TV;
         }
@@ -5515,7 +5518,7 @@ class Checker {
       if (index === -1) {
         this.error(
           arg.pos,
-          `'${userType.name}' has no field '${arg.name.value}'`,
+          `'${struct.name}' has no field '${arg.name.value}'`,
         );
         return INVALID_TV;
       }
@@ -5532,7 +5535,6 @@ class Checker {
       supplied: boolean;
     }[] = [];
     const defaultDependencies = new Set<SemanticDependency>();
-    let qualifier: Qualifier = Qualifier.Const;
     for (const [i, field] of fields.entries()) {
       const expr = aligned[i];
       const value =
@@ -5542,7 +5544,7 @@ class Checker {
       if (value === null) {
         this.error(
           c.pos,
-          `missing argument '${field.name}' in call to '${userType.name}.new'`,
+          `missing argument '${field.name}' in call to '${struct.name}.new'`,
         );
         continue;
       }
@@ -5561,7 +5563,6 @@ class Checker {
           `cannot use ${formatType(tv.type)} as ${formatType(field.type)} for field '${field.name}'`,
         );
       }
-      qualifier = joinQualifiers(qualifier, tv.qualifier);
       args.push({field, value, supplied: expr !== null});
     }
     for (const arg of args) {
@@ -5574,7 +5575,7 @@ class Checker {
       this.captureDepth > 0 &&
       !this.checkRequestDependencies(
         c,
-        `${userType.name}.new`,
+        `${struct.name}.new`,
         defaultDependencies,
       )
     ) {
@@ -5582,11 +5583,12 @@ class Checker {
     }
     this.info.calls.set(c, {
       kind: CallKind.Constructor,
-      type: userType,
+      type: struct,
       args,
       argumentEvaluationOrder,
     });
-    return {type: userType.type, qualifier, value: null};
+    // Construction allocates a fresh storage identity at runtime.
+    return {type: struct.type, qualifier: Qualifier.Series, value: null};
   }
 }
 
@@ -5647,7 +5649,7 @@ function isEffectPayloadType(type: Type, active = new Set<Type>()): boolean {
     case TypeKind.Color:
     case TypeKind.Enum:
       return true;
-    case TypeKind.UserType:
+    case TypeKind.Struct:
       if (active.has(type)) {
         return false;
       }
@@ -6234,7 +6236,7 @@ function walkExpression(
           walkExpression(stmt.target, visitor);
           walkExpression(stmt.value, visitor);
           break;
-        case NodeKind.UserTypeDecl:
+        case NodeKind.StructDecl:
           for (const member of stmt.members) {
             if (
               member.kind === NodeKind.FieldDecl &&

@@ -1,14 +1,9 @@
-// Purpose: Observable array, matrix, ordered-map, nesting, user-value, snapshot, and eager-copy-model conformance tests.
+// Purpose: Observable array, matrix, ordered-map, nesting, struct-reference, snapshot, and eager-copy-model conformance tests.
 
 import {describe, expect, test} from 'bun:test';
-import {
-  ExecutionError,
-  type CollectionValue,
-  type UserTypeValue,
-  type Value,
-} from '../abi';
+import {ExecutionError, type CollectionValue, type Value} from '../abi';
 import {HeapArena, type HeapTransaction, type StorageRef} from '../heap';
-import {newUserValue, rebuildUserPath} from '../user-value';
+import {StructStorageRuntime, type StructRef} from '../struct-storage';
 import {
   ValueLayoutRegistry,
   visitRuntimeValueStorageRefs,
@@ -36,7 +31,7 @@ const MANIFEST = {
     {kind: 'boolean'},
     {kind: 'nullable-scalar', scalar: 'string'},
     {
-      kind: 'user-type',
+      kind: 'struct',
       name: 'Point',
       fields: [
         {name: 'x', layout: INT},
@@ -50,7 +45,7 @@ const MANIFEST = {
     {kind: 'array', element: STRING},
     {kind: 'array', element: INTS},
     {
-      kind: 'user-type',
+      kind: 'struct',
       name: 'Holder',
       fields: [{name: 'values', layout: INTS}],
     },
@@ -61,16 +56,30 @@ interface Harness {
   readonly heap: HeapArena;
   readonly layouts: ValueLayoutRegistry;
   readonly collections: CollectionRuntime;
+  readonly structs: StructStorageRuntime;
 }
 
 function harness(maxElements = 100): Harness {
   const heap = new HeapArena();
   const layouts = new ValueLayoutRegistry(MANIFEST);
+  const structs = new StructStorageRuntime(heap, layouts);
   return {
     heap,
     layouts,
-    collections: new CollectionRuntime(heap, layouts, maxElements),
+    structs,
+    collections: new CollectionRuntime(heap, layouts, maxElements, structs),
   };
+}
+
+function constructStruct(
+  h: Harness,
+  layout: number,
+  fields: readonly Value[],
+): StructRef {
+  const transaction = h.heap.beginTransaction(`struct:${layout}`);
+  const value = h.structs.newStruct(transaction, layout, fields);
+  commit(transaction, [value]);
+  return value;
 }
 
 function roots(values: readonly Value[]): StorageRef[] {
@@ -122,6 +131,16 @@ describe('array values', () => {
     expect(() => h.collections.entries(null)).toThrow(
       expect.objectContaining({code: 'NA_COLLECTION'}),
     );
+  });
+
+  test('array.new(size) fills with the element layout typed empty', () => {
+    const h = harness();
+    const ints = construct(h, 'array.new', INTS, [2]);
+    const points = construct(h, 'array.new', POINTS, [2]);
+    const intValues = h.collections.entries(ints);
+    expect(intValues).toHaveLength(2);
+    expect(intValues.every(value => Number.isNaN(value as number))).toBe(true);
+    expect(h.collections.entries(points)).toEqual([null, null]);
   });
 
   test('assignment and retained history headers stay isolated', () => {
@@ -415,12 +434,13 @@ describe('ordered map values', () => {
   });
 });
 
-describe('user values and collection nesting', () => {
-  test('Heap bytes charge layout-aware inline values and collection headers', () => {
+describe('struct references and collection nesting', () => {
+  test('Heap bytes charge struct bodies and fixed-width references', () => {
     const pointsHarness = harness();
-    const point = newUserValue(pointsHarness.layouts, POINT, [1, 2]);
+    const point = constructStruct(pointsHarness, POINT, [1, 2]);
     construct(pointsHarness, 'array.from', POINTS, [point]);
-    expect(pointsHarness.heap.stats().retainedLogicalBytes).toBe(48);
+    // Point body: 16 + 2 ints; array backing: 16 + one StorageRef.
+    expect(pointsHarness.heap.stats().retainedLogicalBytes).toBe(56);
 
     const nestedHarness = harness();
     const inner = construct(nestedHarness, 'array.from', INTS, [1]);
@@ -429,48 +449,31 @@ describe('user values and collection nesting', () => {
     expect(nestedHarness.heap.stats().retainedLogicalBytes).toBe(72);
   });
 
-  test('collection<UserType> requires explicit get-modify-set', () => {
+  test('collections and historical headers share contained struct refs', () => {
     const h = harness();
-    const point = newUserValue(h.layouts, POINT, [1, 2]);
+    const point = constructStruct(h, POINT, [1, 2]);
     const points = construct(h, 'array.from', POINTS, [point]);
-    const got = read(h, 'array.get', POINT, [points, 0]) as UserTypeValue;
-    const changed = rebuildUserPath(h.layouts, got, POINT, [0], 9);
-    expect(
-      (read(h, 'array.get', POINT, [points, 0]) as UserTypeValue).fields,
-    ).toEqual([1, 2]);
-
+    const got = read(h, 'array.get', POINT, [points, 0]);
     const transaction = h.heap.beginTransaction('writeback');
-    const written = h.collections.mutate(
-      transaction,
-      'array.set',
-      POINTS,
-      points,
-      [0, changed],
-    );
-    commit(transaction, [points, written.replacement]);
+    h.structs.storeField(transaction, got, POINT, 0, 9);
+    commit(transaction, [points]);
+    expect(h.structs.field(point, POINT, 0)).toBe(9);
     expect(
-      (read(h, 'array.get', POINT, [written.replacement, 0]) as UserTypeValue)
-        .fields,
-    ).toEqual([9, 2]);
-    expect(point.fields).toEqual([1, 2]);
+      h.structs.field(read(h, 'array.get', POINT, [points, 0]), POINT, 0),
+    ).toBe(9);
   });
 
-  test('UserType containing a collection copies the header by value', () => {
+  test('a struct field keeps a collection header by value', () => {
     const h = harness();
     const values = construct(h, 'array.from', INTS, [1]);
-    const a = newUserValue(h.layouts, HOLDER, [values]);
+    const holder = constructStruct(h, HOLDER, [values]);
+    const before = h.structs.field(holder, HOLDER, 0);
     const push = h.heap.beginTransaction('nested push');
-    const changed = h.collections.mutate(
-      push,
-      'array.push',
-      INTS,
-      a.fields[0],
-      [2],
-    );
-    const b = rebuildUserPath(h.layouts, a, HOLDER, [0], changed.replacement);
-    commit(push, [a, b]);
-    expect(h.collections.entries(a.fields[0])).toEqual([1]);
-    expect(h.collections.entries((b as UserTypeValue).fields[0])).toEqual([
+    const changed = h.collections.mutate(push, 'array.push', INTS, before, [2]);
+    h.structs.storeField(push, holder, HOLDER, 0, changed.replacement);
+    commit(push, [holder, before]);
+    expect(h.collections.entries(before)).toEqual([1]);
+    expect(h.collections.entries(h.structs.field(holder, HOLDER, 0))).toEqual([
       1, 2,
     ]);
   });

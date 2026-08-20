@@ -7,7 +7,7 @@ import type {
   NameStorage,
   Qualifier as QualifierName,
   Type,
-  UserType,
+  StructType,
 } from '../ir/type';
 import type {
   EnumMember,
@@ -28,9 +28,9 @@ export const ObjectKind = {
   Function: 'function',
   Interface: 'interface',
   InterfaceMethod: 'interfaceMethod',
-  GenericUserType: 'genericUserType',
+  GenericStruct: 'genericStruct',
   TypeParameter: 'typeParameter',
-  UserType: 'userType',
+  Struct: 'struct',
   Field: 'field',
   Enum: 'enum',
   EnumMember: 'enumMember',
@@ -81,7 +81,7 @@ export interface FreeFunctionObject extends FunctionObjectBase {
 export interface MethodObject extends FunctionObjectBase {
   readonly decl: MethodDecl;
   readonly receiver: {
-    readonly owner: UserTypeObject;
+    readonly owner: StructObject;
     readonly mode: ReceiverMode;
   };
   readonly declaredParams: readonly {
@@ -130,7 +130,7 @@ export interface InterfaceMethodObject {
 
 export interface TypeParameterObject {
   readonly kind: typeof ObjectKind.TypeParameter;
-  readonly owner: GenericUserTypeObject;
+  readonly owner: GenericStructObject;
   readonly index: number;
   readonly name: string;
   readonly decl: import('../syntax/nodes').TypeParam;
@@ -139,22 +139,22 @@ export interface TypeParameterObject {
 
 export interface TypeSubstitution {
   readonly parameter: TypeParameterObject;
-  readonly object: UserTypeObject;
+  readonly object: StructObject;
 }
 
 export interface GenericInstantiation {
-  readonly template: GenericUserTypeObject;
-  readonly typeArgs: readonly UserTypeObject[];
-  readonly object: UserTypeObject;
+  readonly template: GenericStructObject;
+  readonly typeArgs: readonly StructObject[];
+  readonly object: StructObject;
   readonly info: Info;
 }
 
-export interface GenericUserTypeObject {
-  readonly kind: typeof ObjectKind.GenericUserType;
+export interface GenericStructObject {
+  readonly kind: typeof ObjectKind.GenericStruct;
   readonly pkg: Package;
   readonly exported: boolean;
   readonly name: string;
-  readonly decl: import('../syntax/nodes').UserTypeDecl;
+  readonly decl: import('../syntax/nodes').StructDecl;
   readonly base: Scope;
   readonly typeParams: readonly TypeParameterObject[];
   readonly instances: readonly GenericInstantiation[];
@@ -163,19 +163,19 @@ export interface GenericUserTypeObject {
   readonly validationInfo: Info;
 }
 
-export interface UserTypeObject {
-  readonly kind: typeof ObjectKind.UserType;
+export interface StructObject {
+  readonly kind: typeof ObjectKind.Struct;
   readonly pkg: Package;
   readonly exported: boolean;
   readonly name: string;
-  readonly type: UserType;
+  readonly type: StructType;
   readonly fields: readonly FieldObject[];
   readonly methods: readonly MethodObject[];
 }
 
 export interface FieldObject {
   readonly kind: typeof ObjectKind.Field;
-  readonly owner: UserTypeObject;
+  readonly owner: StructObject;
   readonly index: number;
   readonly name: string;
   readonly type: Type;
@@ -233,9 +233,9 @@ export type Object =
   | FunctionObject
   | InterfaceObject
   | InterfaceMethodObject
-  | GenericUserTypeObject
+  | GenericStructObject
   | TypeParameterObject
-  | UserTypeObject
+  | StructObject
   | FieldObject
   | EnumObject
   | EnumMemberObject
@@ -246,7 +246,7 @@ export type Object =
 // parameter names are documentation only; every callable property of the
 // signature must match, and extra concrete methods are allowed.
 export function satisfies(
-  concrete: UserTypeObject,
+  concrete: StructObject,
   required: InterfaceObject,
 ): boolean {
   return required.methods.every(want => {
@@ -266,7 +266,7 @@ export function satisfies(
 }
 
 export function satisfactionError(
-  concrete: UserTypeObject,
+  concrete: StructObject,
   required: InterfaceObject,
 ): string | null {
   for (const want of required.methods) {

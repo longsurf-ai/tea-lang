@@ -141,7 +141,7 @@ function effectTimeline(
 ): readonly (readonly [number, string])[] {
   return sink.effects.map(emission => {
     const type = program.effects[emission.effectId]?.payloadType;
-    if (type?.kind !== TypeKind.UserType) {
+    if (type?.kind !== TypeKind.Struct) {
       throw new Error(`effect ${emission.effectId} has no nominal payload`);
     }
     return [emission.row, type.name] as const;
@@ -162,11 +162,11 @@ function effectField(
   let value = emission?.payload;
   for (const name of path) {
     if (
-      type?.kind !== TypeKind.UserType ||
+      type?.kind !== TypeKind.Struct ||
       value === undefined ||
       typeof value !== 'object' ||
       value === null ||
-      value.kind !== 'user-type'
+      value.kind !== 'struct'
     ) {
       throw new Error(`effect ${emissionIndex} cannot select '${name}'`);
     }

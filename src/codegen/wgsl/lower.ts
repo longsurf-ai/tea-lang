@@ -31,7 +31,6 @@ import {
   type HistReadExpr,
   type IrExpr,
   type IrStmt,
-  type IrValuePath,
   type Name,
 } from '../../ir/node';
 import type {
@@ -45,7 +44,6 @@ import type {
   SeriesInput,
 } from '../../ir/program';
 import {
-  assignable,
   formatType,
   isNaValue,
   TypeKind,
@@ -53,7 +51,7 @@ import {
   type EnumType,
   type ConstValue,
   type Type,
-  type UserType,
+  type StructType,
 } from '../../ir/type';
 import {
   builtinInputsOf,
@@ -225,9 +223,9 @@ class WgslEmitter {
   private readonly literalStringIds = new Map<string, number>();
   private readonly literalStrings: string[] = [];
   private readonly enumNames = new Map<EnumType, string>();
-  private readonly userNames = new Map<UserType, string>();
+  private readonly structNames = new Map<StructType, string>();
   private readonly enumTypes: EnumType[] = [];
-  private readonly userTypes: UserType[] = [];
+  private readonly structTypes: StructType[] = [];
   private readonly layouts: WgslPhysicalLayout[] = [];
   private readonly physicalIds = new Map<Type, number>();
   private readonly functionNames = new Set<Name>();
@@ -235,7 +233,6 @@ class WgslEmitter {
   private readonly perBarRoots: Name[];
   private readonly funcs: readonly IrFunc[];
   private readonly funcNames = new Map<IrFunc, string>();
-  private readonly mutableResultNames = new Map<IrFunc, string>();
   private readonly effectAnalysis: WgslEffectAnalysis;
   private temp = 0;
   private jobDescriptorLayout = -1;
@@ -261,9 +258,6 @@ class WgslEmitter {
     this.funcs = funcsOf(this.program);
     this.funcs.forEach((func, index) => {
       this.funcNames.set(func, `tea_fn_${index}`);
-      if (func.callMode === 'mutable-method') {
-        this.mutableResultNames.set(func, `TeaMutableResult${index}`);
-      }
     });
     this.series = seriesInputsOf(this.program);
     if (this.series.length === 0) {
@@ -644,12 +638,12 @@ class WgslEmitter {
     ) {
       this.internLiteralString(expr.value);
     }
-    if (expr.kind === IrKind.NewUserValue) {
-      this.collectType(expr.userType);
+    if (expr.kind === IrKind.NewStruct) {
+      this.collectType(expr.structType);
     }
   }
 
-  private collectType(type: Type, visiting = new Set<Type>()): void {
+  private collectType(type: Type): void {
     switch (type.kind) {
       case TypeKind.Int:
       case TypeKind.Float:
@@ -665,24 +659,11 @@ class WgslEmitter {
           this.enumTypes.push(type);
         }
         return;
-      case TypeKind.UserType:
-        if (this.userNames.has(type)) {
-          return;
-        }
-        if (visiting.has(type)) {
-          this.unsupported(
-            'user-value-layout-unimplemented',
-            'recursive by-value user types cannot be lowered to WGSL',
-          );
-        }
-        this.userNames.set(type, `TeaU${this.userNames.size}`);
-        visiting.add(type);
-        for (const field of type.fields) {
-          this.collectType(field.type, visiting);
-        }
-        visiting.delete(type);
-        this.userTypes.push(type);
-        return;
+      case TypeKind.Struct:
+        this.unsupported(
+          'struct-reference-lowering-unimplemented',
+          `GPU struct-reference lowering is deferred for ${formatType(type)}`,
+        );
       case TypeKind.Na:
         this.unsupported(
           'nullable-value-layout-unimplemented',
@@ -813,7 +794,7 @@ class WgslEmitter {
     for (const type of this.enumTypes) {
       this.physicalLayoutOf(type);
     }
-    for (const type of this.userTypes) {
+    for (const type of this.structTypes) {
       this.physicalLayoutOf(type);
     }
     for (const name of namesOf(this.program)) this.physicalLayoutOf(name.type);
@@ -1003,8 +984,8 @@ class WgslEmitter {
           {path: 'ordinal', scalar: 'u32', byteOffset: 4},
         ];
         break;
-      case TypeKind.UserType: {
-        name = this.userNames.get(type) ?? fatal('unmapped GPU user type');
+      case TypeKind.Struct: {
+        name = this.structNames.get(type) ?? fatal('unmapped GPU struct');
         byteSize = 4;
         fields = [{path: 'valid', scalar: 'u32', byteOffset: 0}];
         type.fields.forEach((field, index) => {
@@ -1049,25 +1030,14 @@ class WgslEmitter {
       'struct TeaString { valid: u32, value: u32, }',
       'struct TeaColor { valid: u32, value: u32, }',
     ];
-    for (const type of this.userTypes) {
-      const name = this.userName(type);
+    for (const type of this.structTypes) {
+      const name = this.structName(type);
       out.push(`struct ${name} {`);
       out.push('  valid: u32,');
       type.fields.forEach((field, index) => {
         out.push(`  f${index}: ${this.wgslType(field.type)},`);
       });
       out.push('}');
-    }
-    for (const func of this.funcs) {
-      if (func.callMode !== 'mutable-method') {
-        continue;
-      }
-      out.push(
-        `struct ${this.mutableResultName(func)} {`,
-        `  receiver: ${this.wgslType(func.receiver.type)},`,
-        `  result: ${this.wgslType(func.resultType)},`,
-        '}',
-      );
     }
     out.push(
       'struct TeaJobDescriptor {',
@@ -1429,10 +1399,7 @@ class WgslEmitter {
     ]
       .filter(part => part.length > 0)
       .join(', ');
-    const resultType =
-      func.callMode === 'mutable-method'
-        ? this.mutableResultName(func)
-        : this.wgslType(func.resultType);
+    const resultType = this.wgslType(func.resultType);
     const out = [`fn ${fn}(${signature}) -> ${resultType} {`];
     const frame =
       this.mustFrames().templateByFunc.get(func) ??
@@ -1483,12 +1450,7 @@ class WgslEmitter {
     const value = this.emitExpr(func.body, ctx, body);
     out.push(...indent(body, 1));
     const result = this.coerce(value, func.body.type, func.resultType);
-    if (func.callMode === 'mutable-method') {
-      const receiver = this.emitCurrentNameRead(func.receiver, ctx);
-      out.push(`  return ${resultType}(${receiver}, ${result});`);
-    } else {
-      out.push(`  return ${result};`);
-    }
+    out.push(`  return ${result};`);
     out.push('}');
     return out;
   }
@@ -1691,11 +1653,11 @@ class WgslEmitter {
         return result;
       }
       case IrKind.CallFunc:
-        return this.emitCall(expr, null, null, ctx, out);
+        return this.emitCall(expr, null, ctx, out);
       case IrKind.CallConstMethod:
-        return this.emitCall(expr, expr.receiver, null, ctx, out);
+        return this.emitCall(expr, expr.receiver, ctx, out);
       case IrKind.CallMutableMethod:
-        return this.emitCall(expr, expr.receiver, expr.path, ctx, out);
+        return this.emitCall(expr, expr.receiver, ctx, out);
       case IrKind.CallNative:
         return this.emitNative(
           expr.native,
@@ -1712,32 +1674,12 @@ class WgslEmitter {
           'GPU collections are outside the executable subset',
           expr.pos,
         );
-      case IrKind.NewUserValue: {
-        if (
-          !typesEqual(expr.type, expr.userType) ||
-          expr.args.length !== expr.userType.fields.length
-        ) {
-          return fatal('malformed user constructor reached GPU lowering');
-        }
-        const args = this.captureArguments(
-          expr.args,
-          expr.argumentEvaluationOrder,
-          ctx,
-          out,
+      case IrKind.NewStruct:
+        return this.unsupported(
+          'struct-reference-lowering-unimplemented',
+          'GPU struct-reference construction is deferred',
+          expr.pos,
         );
-        const values = args.map((arg, index) =>
-          this.coerce(
-            arg,
-            expr.args[index].type,
-            expr.userType.fields[index].type,
-          ),
-        );
-        const result = this.fresh();
-        out.push(
-          `let ${result}: ${this.userName(expr.userType)} = ${this.userName(expr.userType)}(1u${values.map(value => `, ${value}`).join('')});`,
-        );
-        return result;
-      }
       case IrKind.MakeTuple:
       case IrKind.TupleGet:
         return this.unsupported(
@@ -1745,24 +1687,12 @@ class WgslEmitter {
           'GPU tuples are outside the executable subset',
           expr.pos,
         );
-      case IrKind.FieldGet: {
-        if (expr.x.type.kind !== TypeKind.UserType) {
-          return fatal('non-user field read reached GPU lowering');
-        }
-        const field = expr.x.type.fields[expr.fieldIndex];
-        if (field === undefined || !typesEqual(field.type, expr.type)) {
-          return fatal('malformed user field read reached GPU lowering');
-        }
-        const parent = this.capture(expr.x, ctx, out);
-        const result = this.fresh();
-        out.push(
-          `var ${result}: ${this.wgslType(expr.type)} = ${this.empty(expr.type)};`,
+      case IrKind.FieldGet:
+        return this.unsupported(
+          'struct-reference-lowering-unimplemented',
+          'GPU struct-reference field reads are deferred',
+          expr.pos,
         );
-        out.push(
-          `if (${parent}.valid != 0u) { ${result} = ${parent}.f${expr.fieldIndex}; }`,
-        );
-        return result;
-      }
       case IrKind.IfExpr: {
         const condition = this.capture(expr.cond, ctx, out);
         const result = this.fresh();
@@ -1933,53 +1863,12 @@ class WgslEmitter {
         );
         return;
       }
-      case IrKind.UpdateValuePath: {
-        if (stmt.path.fieldIndices.length > 1) {
-          this.unsupported(
-            'mutable-method-copyout-unimplemented',
-            'multi-level rooted updates require recursive pre-RHS rebuilding and are outside the current WGSL subset',
-            stmt.pos,
-          );
-        }
-        if (stmt.path.fieldIndices.length === 0) {
-          const value = this.emitExpr(stmt.value, ctx, out);
-          this.emitPathWrite(
-            stmt.path,
-            value,
-            stmt.value.type,
-            ctx,
-            out,
-            stmt.pos,
-          );
-          return;
-        }
-        if (stmt.path.root.type.kind !== TypeKind.UserType) {
-          return fatal('malformed rooted user update reached WGSL lowering');
-        }
-        const root = this.emitCurrentNameRead(stmt.path.root, ctx);
-        const fieldIndex = stmt.path.fieldIndices[0];
-        const field = stmt.path.root.type.fields[fieldIndex];
-        if (field === undefined || !assignable(stmt.value.type, field.type)) {
-          return fatal('ill-typed rooted user update reached WGSL lowering');
-        }
-        // Validate writeability before evaluating the RHS, matching the JS
-        // backend. Rebase the replacement onto the then-current root so RHS
-        // side effects on sibling fields are retained.
-        const capturedRoot = this.fresh();
-        out.push(
-          `let ${capturedRoot}: ${this.wgslType(stmt.path.root.type)} = ${root};`,
+      case IrKind.StoreField:
+        return this.unsupported(
+          'struct-reference-lowering-unimplemented',
+          'GPU struct-reference field stores are deferred',
+          stmt.pos,
         );
-        const rhs: string[] = [];
-        const value = this.emitExpr(stmt.value, ctx, rhs);
-        const rebuilt = this.fresh();
-        rhs.push(
-          `var ${rebuilt}: ${this.wgslType(stmt.path.root.type)} = ${root};`,
-          `${rebuilt}.f${fieldIndex} = ${this.coerce(value, stmt.value.type, field.type)};`,
-        );
-        this.emitCurrentNameStore(stmt.path.root, rebuilt, ctx, rhs);
-        out.push(`if (${capturedRoot}.valid != 0u) {`, ...indent(rhs, 1), '}');
-        return;
-      }
       case IrKind.Emit: {
         if (!ctx.allowDenseEmit) {
           this.unsupported(
@@ -2124,7 +2013,7 @@ class WgslEmitter {
         set(wordOffset, `${value}.valid`);
         set(wordOffset + 1, `${value}.value`);
         return wordOffset + 2;
-      case TypeKind.UserType: {
+      case TypeKind.Struct: {
         set(wordOffset, `${value}.valid`);
         let next = wordOffset + 1;
         type.fields.forEach((field, index) => {
@@ -2348,7 +2237,6 @@ class WgslEmitter {
       }
     >,
     receiverExpr: IrExpr | null,
-    path: IrValuePath | null,
     ctx: WgslContext,
     out: string[],
   ): string {
@@ -2387,22 +2275,6 @@ class WgslEmitter {
       ...explicitArgs,
     ];
     const result = this.fresh();
-    if (expr.kind === IrKind.CallMutableMethod) {
-      if (path === null) {
-        return fatal('mutable GPU call lost its writeback path');
-      }
-      const returnType = this.mutableResultName(expr.func);
-      out.push(`let ${result}: ${returnType} = ${fn}(${callArgs.join(', ')});`);
-      this.emitPathWrite(
-        path,
-        `${result}.receiver`,
-        expr.func.receiver.type,
-        ctx,
-        out,
-        expr.pos,
-      );
-      return `${result}.result`;
-    }
     out.push(
       `let ${result}: ${this.wgslType(expr.type)} = ${fn}(${callArgs.join(', ')});`,
     );
@@ -2599,50 +2471,6 @@ class WgslEmitter {
     return values;
   }
 
-  private emitPathWrite(
-    path: IrValuePath,
-    value: string,
-    valueType: Type,
-    ctx: WgslContext,
-    out: string[],
-    pos: Pos,
-  ): void {
-    let type = path.root.type;
-    if (path.fieldIndices.length === 0) {
-      if (!assignable(valueType, type)) {
-        fatal('ill-typed root write reached GPU lowering');
-      }
-      this.emitCurrentNameStore(
-        path.root,
-        this.coerce(value, valueType, type),
-        ctx,
-        out,
-      );
-      return;
-    }
-    const root = this.fresh('path_root');
-    out.push(
-      `var ${root}: ${this.wgslType(path.root.type)} = ${this.emitCurrentNameRead(path.root, ctx)};`,
-    );
-    let target = root;
-    const guards: string[] = [];
-    for (const index of path.fieldIndices) {
-      if (type.kind !== TypeKind.UserType || type.fields[index] === undefined) {
-        fatal('malformed user path reached GPU lowering');
-      }
-      guards.push(`${target}.valid != 0u`);
-      target += `.f${index}`;
-      type = type.fields[index].type;
-    }
-    if (!assignable(valueType, type)) {
-      fatal('ill-typed user path write reached GPU lowering');
-    }
-    const assignment = `${target} = ${this.coerce(value, valueType, type)};`;
-    const update = [assignment];
-    this.emitCurrentNameStore(path.root, root, ctx, update);
-    out.push(`if (${guards.join(' && ')}) {`, ...indent(update, 1), '}');
-  }
-
   private constant(type: Type, value: unknown, pos: Pos): string {
     if (isNaValue(value as never)) {
       return this.empty(type);
@@ -2725,8 +2553,8 @@ class WgslEmitter {
         return 'TeaString';
       case TypeKind.Color:
         return 'TeaColor';
-      case TypeKind.UserType:
-        return this.userName(type);
+      case TypeKind.Struct:
+        return this.structName(type);
       default:
         return this.unsupported(
           'host-value-type-unsupported',
@@ -2750,8 +2578,8 @@ class WgslEmitter {
         return 'TeaString(0u, 0u)';
       case TypeKind.Color:
         return 'TeaColor(0u, 0u)';
-      case TypeKind.UserType:
-        return `${this.userName(type)}(0u${type.fields.map(field => `, ${this.empty(field.type)}`).join('')})`;
+      case TypeKind.Struct:
+        return `${this.structName(type)}(0u${type.fields.map(field => `, ${this.empty(field.type)}`).join('')})`;
       default:
         return this.unsupported(
           'host-value-type-unsupported',
@@ -2781,7 +2609,7 @@ class WgslEmitter {
         return `TeaString(${word(0)}, ${word(1)})`;
       case TypeKind.Color:
         return `TeaColor(${word(0)}, ${word(1)})`;
-      case TypeKind.UserType: {
+      case TypeKind.Struct: {
         let nestedOffset = wordOffset + 1;
         const fields = type.fields.map(field => {
           const value = this.emitStateLoad(field.type, base, nestedOffset);
@@ -2789,7 +2617,7 @@ class WgslEmitter {
             this.layouts[this.physicalLayoutOf(field.type)].byteSize / 4;
           return value;
         });
-        return `${this.userName(type)}(${word(0)}${fields.map(value => `, ${value}`).join('')})`;
+        return `${this.structName(type)}(${word(0)}${fields.map(value => `, ${value}`).join('')})`;
       }
       default:
         return this.unsupported(
@@ -2828,7 +2656,7 @@ class WgslEmitter {
         line(`tea_state_store(${target(0)}, ${value}.valid);`);
         line(`tea_state_store(${target(1)}, ${value}.value);`);
         return;
-      case TypeKind.UserType: {
+      case TypeKind.Struct: {
         line(`tea_state_store(${target(0)}, ${value}.valid);`);
         let nestedOffset = wordOffset + 1;
         type.fields.forEach((field, index) => {
@@ -3048,12 +2876,12 @@ class WgslEmitter {
           typeId: enumLogical.typeId,
           members: type.members.map(member => member.name),
         };
-      case TypeKind.UserType: {
-        const userLogical = requireLogical('user-type');
+      case TypeKind.Struct: {
+        const userLogical = requireLogical('struct');
         const layout = this.layouts[physicalLayout];
         let byteOffset = 4;
         return {
-          kind: 'user-type',
+          kind: 'struct',
           physicalLayout,
           validByteOffset: 0,
           name: type.name,
@@ -3086,9 +2914,9 @@ class WgslEmitter {
     }
   }
 
-  private userName(type: UserType): string {
+  private structName(type: StructType): string {
     return (
-      this.userNames.get(type) ?? fatal(`unmapped user type '${type.name}'`)
+      this.structNames.get(type) ?? fatal(`unmapped struct '${type.name}'`)
     );
   }
 
@@ -3101,13 +2929,6 @@ class WgslEmitter {
     this.literalStringIds.set(value, id);
     this.literalStrings.push(value);
     return id;
-  }
-
-  private mutableResultName(func: IrFunc): string {
-    return (
-      this.mutableResultNames.get(func) ??
-      fatal(`unmapped mutable function '${func.name}'`)
-    );
   }
 
   private fresh(prefix = 't'): string {

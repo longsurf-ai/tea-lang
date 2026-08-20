@@ -239,7 +239,7 @@ function logicalEffectValue(
   ) {
     return null;
   }
-  if (schema.kind !== 'user-type') {
+  if (schema.kind !== 'struct') {
     if (
       typeof value !== 'number' &&
       typeof value !== 'string' &&
@@ -249,7 +249,7 @@ function logicalEffectValue(
     }
     return value;
   }
-  if (typeof value !== 'object' || value.kind !== 'user-type') {
+  if (typeof value !== 'object' || value.kind !== 'struct') {
     throw new Error(`effect payload does not match ${schema.typeId} schema`);
   }
   if (value.fields.length !== schema.fields.length) {
@@ -267,7 +267,7 @@ function cloneEffectSchema(schema: EffectValueSchema): EffectValueSchema {
   switch (schema.kind) {
     case 'enum':
       return {...schema, members: schema.members.map(member => ({...member}))};
-    case 'user-type':
+    case 'struct':
       return {
         ...schema,
         fields: schema.fields.map(field => ({

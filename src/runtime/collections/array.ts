@@ -35,7 +35,7 @@ export const ARRAY_STORAGE: StorageDescriptor<ArrayStorage, ArrayStorageArgs> =
     logicalBytesFor(args) {
       return args.logicalBytes;
     },
-    seal(args) {
+    create(args) {
       return Object.freeze({
         values: Object.freeze([...args.values]),
         logicalBytes: args.logicalBytes,
@@ -61,17 +61,19 @@ export function arrayCall(
     if (args.length === 0) {
       return createArray(ctx, resultLayout, []);
     }
-    if (args.length !== 2) {
+    if (args.length !== 1 && args.length !== 2) {
       return fatal(`array.new received ${args.length} arguments`);
     }
     const size = shape(args[0], 'array size');
     assertLimit(size, ctx.maxElements);
     const layout = collectionLayout(ctx.layouts, resultLayout, 'array');
-    ctx.layouts.assertValue(layout.element, args[1], 'array initial value');
+    const initial =
+      args.length === 1 ? ctx.layouts.empty(layout.element) : args[1];
+    ctx.assertValue(layout.element, initial, 'array initial value');
     return createArray(
       ctx,
       resultLayout,
-      Array.from({length: size}, () => args[1]),
+      Array.from({length: size}, () => initial),
     );
   }
   if (operation === 'array.from') {
@@ -124,19 +126,14 @@ export function arrayMutate(
   receiverValue: Value,
   args: readonly Value[],
 ): CollectionMutation {
-  const receiver = requireCollection(
-    ctx.layouts,
-    receiverValue,
-    layoutId,
-    'array',
-  );
+  const receiver = requireCollection(ctx, receiverValue, layoutId, 'array');
   const layout = collectionLayout(ctx.layouts, layoutId, 'array');
   const old = values(ctx, receiver);
   switch (operation) {
     case 'array.set': {
       requireArgs(operation, args, 2);
       const at = index(args[0], receiver.length);
-      ctx.layouts.assertValue(layout.element, args[1], 'array.set value');
+      ctx.assertValue(layout.element, args[1], 'array.set value');
       const next = [...old];
       next[at] = args[1];
       return {replacement: replace(ctx, receiver, next), result: undefined};
@@ -144,7 +141,7 @@ export function arrayMutate(
     case 'array.push': {
       requireArgs(operation, args, 1);
       assertLimit(receiver.length + 1, ctx.maxElements);
-      ctx.layouts.assertValue(layout.element, args[0], 'array.push value');
+      ctx.assertValue(layout.element, args[0], 'array.push value');
       const capacity =
         receiver.length < receiver.capacity
           ? receiver.capacity
@@ -183,20 +180,20 @@ export function createArray(
     return fatal(`invalid private array capacity ${capacity}`);
   }
   elements.forEach((value, at) =>
-    ctx.layouts.assertValue(layout.element, value, `array element ${at}`),
+    ctx.assertValue(layout.element, value, `array element ${at}`),
   );
   const storage = allocateStorage(ctx, layout.element, elements);
   return arrayValue(layoutId, storage, elements.length, capacity);
 }
 
 export function arraySnapshot(
-  ctx: Pick<CollectionContext, 'heap' | 'layouts'>,
+  ctx: Pick<CollectionContext, 'heap' | 'layouts' | 'assertValue'>,
   value: Value,
 ): readonly Value[] {
   if (!isArrayValue(value)) {
     throw new ExecutionError('NA_COLLECTION', 'array iteration on na');
   }
-  ctx.layouts.assertValue(value.layout, value, 'array iteration');
+  ctx.assertValue(value.layout, value, 'array iteration');
   return Object.freeze([...values(ctx, value)]);
 }
 
@@ -232,7 +229,7 @@ function allocateStorage(
   elementLayout: LayoutId,
   elements: readonly Value[],
 ): ArrayValue['storage'] {
-  return ctx.transaction.allocateSealed(ARRAY_STORAGE, {
+  return ctx.transaction.allocate(ARRAY_STORAGE, {
     values: elements,
     logicalBytes:
       16 + elements.length * ctx.layouts.shallowBytes(elementLayout),
@@ -254,7 +251,7 @@ function requireArrayArg(
     }
     return fatal(`${operation} received a non-array receiver`);
   }
-  ctx.layouts.assertValue(value.layout, value, `${operation} receiver`);
+  ctx.assertValue(value.layout, value, `${operation} receiver`);
   return value;
 }
 

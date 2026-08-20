@@ -8,7 +8,7 @@ import {
   ObjectKind,
   satisfies,
   type InterfaceObject,
-  type UserTypeObject,
+  type StructObject,
 } from './object';
 import {checkText, type CheckResult} from './testing';
 
@@ -63,7 +63,7 @@ describe('broker policy contracts', () => {
     );
     expect(result.errors).toEqual([]);
 
-    const emulator = exportedUserType(result, 'BrokerEmulator');
+    const emulator = exportedStruct(result, 'BrokerEmulator');
     const commands = exportedInterface(result, 'BrokerCommands');
     const nextOpen = exportedInterface(result, 'NextOpenBroker');
     const ohlc = exportedInterface(result, 'OhlcBroker');
@@ -230,10 +230,10 @@ function exportedInterface(result: CheckResult, name: string): InterfaceObject {
   return object;
 }
 
-function exportedUserType(result: CheckResult, name: string): UserTypeObject {
+function exportedStruct(result: CheckResult, name: string): StructObject {
   const object = brokerPackage(result).exports.get(name);
-  if (object?.kind !== ObjectKind.UserType) {
-    throw new Error(`broker did not export user type '${name}'`);
+  if (object?.kind !== ObjectKind.Struct) {
+    throw new Error(`broker did not export struct '${name}'`);
   }
   return object;
 }

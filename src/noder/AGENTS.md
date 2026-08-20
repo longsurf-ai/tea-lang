@@ -25,16 +25,16 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   the concrete nullable type known from its declaration, branch join, field,
   or call parameter; an uncontextualized na reaching Program construction is
   a phase-barrier violation and `fatal()`s.
-- User-value constructors consume their one `ConstructorCall` resolution. Its
+- Struct constructors consume their one `ConstructorCall` resolution. Its
   field-ordered arguments include supplied expressions and field-owned
   defaults; each `CheckedExpression` supplies the exact semantic `Info` to use
   while the value lowers into the caller's current Program and frame. A
   default expression is never prebuilt IR shared between Programs.
-- Rooted mutation facts project to one Program-owned `IrValuePath` of Name plus
-  canonical field indices. `UpdateValuePath` and mutating native calls carry
-  that path. Mutable user methods project to the same path
-  protocol, while const methods carry no writeback authority; no checker object
-  or runtime storage handle enters the Program.
+- A checked `StructFieldStore` projects to `StoreField` with its captured
+  object expression and canonical owner/field index. A checked collection
+  location projects to either a Name or one captured struct field for the
+  replacement header. Mutable methods carry the receiver expression but no
+  copy-out path; no checker object or runtime storage handle enters Program.
 - Reference bindings are compile-time only: a never-reassigned declaration
   whose initializer is an input call binds the name to its `ParamInput`
   (reads become param reads, no per-bar write), and one whose initializer
@@ -61,9 +61,9 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   their canonical parameter order.
   `indicator()`/`strategy()` are OutputDecls whose effect is the native's
   name — script metadata is an emission to the host.
-- History on a computed expression desugars to a synthetic `$hist@line:col`
-  name written unconditionally every bar before the read — which is why the
-  desugaring exists only at top level; inside a block it is a clean error.
+- History is valid only on a direct readable binding. Noding projects that
+  binding to its ordinary `Place` and never creates a synthetic history Name;
+  offset zero follows the same checked-binding rule as every other offset.
 - Depth resolution walks each UDF body in call-site context. It substitutes
   parameters and single-write bind-known locals with root-safe expressions,
   then combines every constant/bound demand on a carrier into one exact,
@@ -83,9 +83,8 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   the place, so history offsets land on the place itself. DYNAMIC request
   reads never alias and never collapse history onto the place: the
   offset-0 read IS the execution (rt.requestFor), so the declaration stays
-  a real per-row Name write and history rides that Name (or the synthetic
-  $hist name for direct `request(...)[k]`). `e[0]` normalizes to `e` for
-  every expression.
+  a real per-row Name write and history rides that Name. Direct request-call
+  history is rejected with every other computed history operand.
 - A request.\* call site nodes into a `RequestEdge`: symbol/timeframe/merge
   evaluate in the parent context; the captured expression nodes against the
   request resolution's child `Info` into a child Program with its own name and

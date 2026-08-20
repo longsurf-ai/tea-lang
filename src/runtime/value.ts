@@ -1,7 +1,7 @@
 // Purpose: Runtime value domain and source-hidden aggregate/collection headers.
 
-import type {StorageRef} from './heap';
-import type {LayoutId, UserTypeLayoutId} from './value-layout';
+import {isStorageRef, type StorageRef} from './heap';
+import type {LayoutId} from './value-layout';
 
 export interface ResourceHandle {
   readonly kind: 'resource';
@@ -9,30 +9,19 @@ export interface ResourceHandle {
   readonly id: number;
 }
 
-export interface UserTypeValue {
-  readonly kind: 'user-type';
-  readonly layout: UserTypeLayoutId;
-  readonly fields: readonly Value[];
-}
+export type StructValue = StorageRef<unknown> | null;
 
-export interface EffectUserTypeValue {
-  readonly kind: 'user-type';
+export interface EffectStructValue {
+  readonly kind: 'struct';
   readonly fields: readonly EffectValue[];
 }
 
-export type EffectValue =
-  | number
-  | string
-  | boolean
-  | null
-  | EffectUserTypeValue;
+export type EffectValue = number | string | boolean | null | EffectStructValue;
 
-export function isEffectUserTypeValue(
+export function isEffectStructValue(
   value: EffectValue,
-): value is EffectUserTypeValue {
-  return (
-    typeof value === 'object' && value !== null && value.kind === 'user-type'
-  );
+): value is EffectStructValue {
+  return typeof value === 'object' && value !== null && value.kind === 'struct';
 }
 
 export interface ArrayValue {
@@ -66,7 +55,7 @@ export type Value =
   | boolean
   | null
   | ResourceHandle
-  | UserTypeValue
+  | StorageRef<unknown>
   | CollectionValue
   | readonly Value[];
 
@@ -78,12 +67,17 @@ export function isTupleValue(value: Value): value is readonly Value[] {
 
 function isTaggedValue(
   value: Value,
-): value is ResourceHandle | UserTypeValue | CollectionValue {
-  return typeof value === 'object' && value !== null && !isTupleValue(value);
+): value is ResourceHandle | CollectionValue {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !isTupleValue(value) &&
+    !isStorageRef(value)
+  );
 }
 
-export function isUserTypeValue(value: Value): value is UserTypeValue {
-  return isTaggedValue(value) && value.kind === 'user-type';
+export function isStructRef(value: Value): value is StorageRef<unknown> {
+  return isStorageRef(value);
 }
 
 export function isArrayValue(value: Value): value is ArrayValue {

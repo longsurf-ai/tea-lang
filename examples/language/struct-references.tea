@@ -1,0 +1,45 @@
+//@version=1
+indicator("struct references demo")
+
+struct Portfolio
+    array<int> lots
+    int total
+
+    int add(int qty) =>
+        this.lots.push(qty)
+        this.total := this.total + qty
+        this.total
+
+    int size() const =>
+        this.lots.size()
+
+    int readTotal() const =>
+        this.total
+
+base = Portfolio.new(array.from(bar_index), bar_index)
+alias = base
+
+// Assignment copies the struct reference. The method mutates the shared body.
+alias.add(10)
+
+plot(base.size(), "base size")
+plot(alias.size(), "alias size")
+plot(base.total, "base total")
+plot(alias.total, "alias total")
+
+// Rebinding alias does not change the body still referenced by base.
+alias := Portfolio.new(array.new<int>(1), 100)
+plot(base.total, "base after alias rebind")
+plot(alias.total, "replacement total")
+
+// History versions the binding. With no rebind, prior cells contain the same
+// live reference and therefore observe its current body.
+var state = Portfolio.new(array.new<int>(), 0)
+state.add(1)
+historicalTotal = if bar_index > 0
+    state[1].readTotal()
+else
+    -1
+
+plot(state.total, "current live total")
+plot(historicalTotal, "historical reference live total")

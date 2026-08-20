@@ -1052,11 +1052,12 @@ describe('dynamic requests end to end', () => {
     ]);
   });
 
-  test('direct history and explicit [0] on a dynamic request', async () => {
+  test('bound history and explicit [0] on a dynamic request result', async () => {
     const lines = await runSource(
       [
-        'plot(request.security(close > 3 ? "X" : "Y", "D", close)[1])',
-        'plot(request.security(close > 3 ? "X" : "Y", "D", close)[0])',
+        'r = request.security(close > 3 ? "X" : "Y", "D", close)',
+        'plot(r[1])',
+        'plot(r[0])',
       ].join(chr10()),
       '',
       {},

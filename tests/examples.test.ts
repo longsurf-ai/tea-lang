@@ -1,5 +1,6 @@
 // Purpose: Keep the checked-in canonical strategy example executable through
-// the public CPU path and eligible for the same Program's WGSL lowering.
+// the public CPU path and explicit about the deferred reference-struct WGSL
+// boundary.
 
 import {describe, expect, test} from 'bun:test';
 import {createHash} from 'node:crypto';
@@ -99,13 +100,15 @@ describe('canonical EMA crossover example', () => {
     expect(finalScalar(sink, maxDrawdown)).toBeCloseTo(0.5660947992, 9);
   });
 
-  test('is eligible for direct WGSL lowering', () => {
+  test('fails closed while reference-struct WGSL lowering is deferred', () => {
     const result = compileProgramToWgsl(compileExample());
-    expect(result.status).toBe('compiled');
-    if (result.status === 'compiled') {
-      expect(result.artifact.module.source).not.toContain('ta.ema');
-      expect(result.artifact.module.source).not.toContain('ta.crossover');
-      expect(result.artifact.module.source).not.toContain('ta.crossunder');
+    expect(result.status).toBe('staged-unsupported');
+    if (result.status === 'staged-unsupported') {
+      expect(result.artifact).toBeNull();
+      expect(result.eligibility.issues[0]).toMatchObject({
+        code: 'struct-reference-lowering-unimplemented',
+        message: 'GPU struct-reference lowering is deferred for OrderRejected',
+      });
     }
   });
 
@@ -199,7 +202,7 @@ describe('canonical component migration regressions', () => {
 
     const fillEffectIds = new Set(
       sink.effectSchemas.flatMap((effect, effectId) =>
-        effect.payload.kind === 'user-type' &&
+        effect.payload.kind === 'struct' &&
         effect.payload.typeId === 'broker.FillExecuted'
           ? [effectId]
           : [],
@@ -263,9 +266,9 @@ function effectFields(
   if (
     typeof value !== 'object' ||
     value === null ||
-    value.kind !== 'user-type'
+    value.kind !== 'struct'
   ) {
-    throw new Error(`${label} must be a user-type effect value`);
+    throw new Error(`${label} must be a struct effect value`);
   }
   return value.fields;
 }

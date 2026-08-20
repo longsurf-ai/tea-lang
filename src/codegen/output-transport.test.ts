@@ -11,7 +11,7 @@ import {
   StringType,
   TypeKind,
   type EnumType,
-  type UserType,
+  type StructType,
 } from '../ir/type';
 import {RUNTIME_ABI_VERSION, type TeaModule} from '../runtime/abi';
 import {loadModule} from '../runtime/load';
@@ -29,8 +29,8 @@ describe('output manifest transport', () => {
     };
     // Intentionally collides with the enum's display name. The transport tag
     // must preserve the semantic distinction without reparsing `type`.
-    const userMode: UserType = {
-      kind: TypeKind.UserType,
+    const userMode: StructType = {
+      kind: TypeKind.Struct,
       name: 'Mode',
       fields: [{name: 'value', type: IntType}],
     };
@@ -83,7 +83,7 @@ describe('output manifest transport', () => {
       {
         name: 'user',
         type: 'Mode',
-        transport: {kind: 'user-type', name: 'Mode'},
+        transport: {kind: 'struct', name: 'Mode'},
       },
       {
         name: 'line',

@@ -1,5 +1,11 @@
 # tea-lang: collections, user types, and heap storage
 
+> Struct-reference supersession note (2026-08-19): this plan remains historical
+> implementation context for collection headers and the Heap transaction, but
+> its user-type value-copy, inline-record, rooted-rebuild, and future-pointer
+> direction is superseded by
+> [Tea struct references and unified Heap storage](20260819-tea-struct-references.md).
+
 > Receiver syntax note (2026-08-11): the collection/value/Heap model in this
 > plan remains authoritative for its implementation, but its top-level
 > `method` and explicit `inout self` source design is superseded by

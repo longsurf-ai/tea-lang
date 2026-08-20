@@ -269,10 +269,10 @@ describe('source library type API', () => {
     const order = model?.scope.lookup('Order');
     const side = model?.scope.lookup('Side');
     const identity = model?.exports.get('identity');
-    expect(order?.kind).toBe(ObjectKind.UserType);
+    expect(order?.kind).toBe(ObjectKind.Struct);
     expect(side?.kind).toBe(ObjectKind.Enum);
     expect(identity?.kind).toBe(ObjectKind.Function);
-    if (order?.kind === ObjectKind.UserType) {
+    if (order?.kind === ObjectKind.Struct) {
       expect(declaredName(result, 'order').type).toBe(order.type);
       expect(declaredName(result, 'copy').type).toBe(order.type);
       if (identity?.kind === ObjectKind.Function) {
@@ -346,8 +346,8 @@ describe('source library type API', () => {
     expect(first).toBe(transitive);
 
     const token = first?.scope.lookup('Token');
-    expect(token?.kind).toBe(ObjectKind.UserType);
-    if (token?.kind === ObjectKind.UserType) {
+    expect(token?.kind).toBe(ObjectKind.Struct);
+    if (token?.kind === ObjectKind.Struct) {
       expect(declaredName(result, 'a').type).toBe(token.type);
       expect(declaredName(result, 'b').type).toBe(token.type);
       expect(declaredName(result, 'c').type).toBe(token.type);
@@ -370,12 +370,9 @@ describe('source library type API', () => {
     expect(result.errors).toEqual([]);
     const left = packageBinding(result, 'left')?.scope.lookup('Item');
     const right = packageBinding(result, 'right')?.scope.lookup('Item');
-    expect(left?.kind).toBe(ObjectKind.UserType);
-    expect(right?.kind).toBe(ObjectKind.UserType);
-    if (
-      left?.kind === ObjectKind.UserType &&
-      right?.kind === ObjectKind.UserType
-    ) {
+    expect(left?.kind).toBe(ObjectKind.Struct);
+    expect(right?.kind).toBe(ObjectKind.Struct);
+    if (left?.kind === ObjectKind.Struct && right?.kind === ObjectKind.Struct) {
       expect(left).not.toBe(right);
       expect(typesEqual(left.type, right.type)).toBeFalse();
     }

@@ -8,7 +8,7 @@ import type {
   FieldObject,
   FunctionObject,
   Object,
-  UserTypeObject,
+  StructObject,
   VariableObject,
 } from './object';
 import type {Scope} from './scope';
@@ -38,7 +38,7 @@ export interface NativeCall {
   readonly args: readonly (syntax.Expr | null)[];
   readonly argTypes: readonly Type[];
   // Canonical argument indices in source evaluation order. Omitted runtime
-  // defaults are absent; noder appends any synthetic typed empties afterward.
+  // defaults are absent and therefore have no source evaluation position.
   readonly argumentEvaluationOrder: readonly number[];
   readonly resultType: Type;
   readonly receiver: NativeReceiver | null;
@@ -63,10 +63,10 @@ export interface ConstructorArgument {
 
 export interface ConstructorCall {
   readonly kind: typeof CallKind.Constructor;
-  readonly type: UserTypeObject;
+  readonly type: StructObject;
   readonly args: readonly ConstructorArgument[];
   // Supplied arguments retain source order; omitted field defaults follow in
-  // canonical field order. `args` itself remains canonical for record layout.
+  // canonical field order. `args` itself remains canonical for struct layout.
   readonly argumentEvaluationOrder: readonly number[];
 }
 
@@ -97,11 +97,20 @@ export type Selection =
       readonly builtin: BuiltinObject;
     };
 
-export interface CheckedWritebackTarget {
-  readonly receiver: CheckedExpression;
-  readonly root: VariableObject;
-  readonly fields: readonly FieldObject[];
+export interface StructFieldStore {
+  // The expression producing the StructRef whose direct field is written.
+  // Noding evaluates and captures it once before evaluating the replacement.
+  readonly object: CheckedExpression;
+  readonly owner: StructObject;
+  readonly field: FieldObject;
 }
+
+export type CollectionLocation =
+  | {
+      readonly kind: 'name';
+      readonly name: VariableObject;
+    }
+  | ({readonly kind: 'structField'} & StructFieldStore);
 
 export type NativeReceiver =
   | {
@@ -111,7 +120,7 @@ export type NativeReceiver =
   | {
       readonly mode: 'inout';
       readonly value: CheckedExpression;
-      readonly writeback: CheckedWritebackTarget;
+      readonly location: CollectionLocation;
     };
 
 export type MethodReceiver =
@@ -122,7 +131,6 @@ export type MethodReceiver =
   | {
       readonly mode: 'mutable';
       readonly value: CheckedExpression;
-      readonly writeback: CheckedWritebackTarget;
     };
 
 export interface Info {
@@ -130,8 +138,11 @@ export interface Info {
   readonly uses: Map<syntax.Name | syntax.ThisExpr, Object>;
   readonly defs: Map<syntax.Name, Object>;
   readonly reassigned: Set<VariableObject>;
+  // Variables used as direct history operands must retain their own runtime
+  // Name/Ring even when their initializer would otherwise fold or alias.
+  readonly historyBindings: Set<VariableObject>;
   readonly calls: Map<syntax.CallExpr, CallResolution>;
-  readonly updates: Map<syntax.AssignStmt, CheckedWritebackTarget>;
+  readonly updates: Map<syntax.AssignStmt, StructFieldStore>;
   readonly selections: Map<syntax.SelectorExpr, Selection>;
   readonly scopes: Map<syntax.Node, Scope>;
   // Library-root runtime global initializers, keyed by their canonical
@@ -148,6 +159,7 @@ export function newInfo(): Info {
     uses: new Map(),
     defs: new Map(),
     reassigned: new Set(),
+    historyBindings: new Set(),
     calls: new Map(),
     updates: new Map(),
     selections: new Map(),

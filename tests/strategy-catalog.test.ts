@@ -275,7 +275,7 @@ describe('clean-room strategy catalog', () => {
     });
   }
 
-  test('Turtle publishes a checked-in CPU oracle subset of its GPU grid', () => {
+  test('Turtle publishes a CPU oracle subset while its GPU grid fails closed on structs', () => {
     const directory = join(STRATEGY_ROOT, 'turtle-system');
     const gpu = loadConfig(join(directory, 'sweep.yaml'));
     const cpu = loadConfig(join(directory, 'sweep-cpu.yaml'));
@@ -310,12 +310,14 @@ describe('clean-room strategy catalog', () => {
       ),
     ).toBe(true);
     const compiled = compileProgramToWgsl(program);
-    expect(compiled.status).toBe('compiled');
-    if (compiled.status !== 'compiled') {
-      throw new Error(JSON.stringify(compiled.eligibility.issues));
+    expect(compiled.status).toBe('staged-unsupported');
+    if (compiled.status === 'staged-unsupported') {
+      expect(compiled.artifact).toBeNull();
+      expect(compiled.eligibility.issues[0]).toMatchObject({
+        code: 'struct-reference-lowering-unimplemented',
+        message: 'GPU struct-reference lowering is deferred for OrderRejected',
+      });
     }
-    expect(compiled.artifact.bindingModule.source.length).toBeGreaterThan(0);
-    expect(compiled.artifact.state.frames.length).toBeGreaterThan(1);
     const source = readFileSync(gpu.program.source, 'utf8');
     expect(source).toContain('trade.nextOpen(');
     expect(source).toContain('broker.new(');

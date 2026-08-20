@@ -1,4 +1,4 @@
-// Purpose: Checker conformance tests for collection generics, canonical user types, rooted updates, and receiver modes.
+// Purpose: Checker conformance tests for collection generics, canonical structs, reference-field stores, and receiver modes.
 
 import {describe, expect, test} from 'bun:test';
 import {Qualifier, TypeKind, typesEqual} from '../ir/type';
@@ -31,7 +31,7 @@ function nativeCall(result: CheckResult, name: string): NativeCall {
   return call;
 }
 
-describe('canonical user types', () => {
+describe('canonical structs', () => {
   test('predeclaration resolves forward fields into one owned semantic graph', () => {
     const result = checkText(
       [
@@ -48,8 +48,8 @@ describe('canonical user types', () => {
     const wrapperDecl = result.file.stmtList[0];
     const pointDecl = result.file.stmtList[1];
     if (
-      wrapperDecl.kind !== NodeKind.UserTypeDecl ||
-      pointDecl.kind !== NodeKind.UserTypeDecl
+      wrapperDecl.kind !== NodeKind.StructDecl ||
+      pointDecl.kind !== NodeKind.StructDecl
     ) {
       throw new Error('fixture lost its type declarations');
     }
@@ -59,11 +59,11 @@ describe('canonical user types', () => {
     }
     const wrapper = result.checked.pkg.scope.lookup('Wrapper');
     const point = result.checked.pkg.scope.lookup('Point');
-    expect(wrapper?.kind).toBe(ObjectKind.UserType);
-    expect(point?.kind).toBe(ObjectKind.UserType);
+    expect(wrapper?.kind).toBe(ObjectKind.Struct);
+    expect(point?.kind).toBe(ObjectKind.Struct);
     if (
-      wrapper?.kind !== ObjectKind.UserType ||
-      point?.kind !== ObjectKind.UserType
+      wrapper?.kind !== ObjectKind.Struct ||
+      point?.kind !== ObjectKind.Struct
     ) {
       throw new Error('fixture types did not resolve');
     }
@@ -123,30 +123,21 @@ describe('canonical user types', () => {
     });
   });
 
-  test('rejects direct value cycles but permits collection-mediated recursion', () => {
+  test('permits direct, mutual, and collection-mediated recursion', () => {
     const result = checkText(
       [
         'type Direct',
-        '    Direct child',
+        '    Direct child = na',
         'type A',
         '    B b',
         'type B',
         '    A a',
         'type Tree',
         '    array<Tree> children',
+        'direct = Direct.new()',
       ].join('\n'),
     );
-    const cycles = result.errors.filter(error =>
-      error.msg.includes('infinite value layout'),
-    );
-    expect(cycles).toHaveLength(2);
-    expect(
-      cycles.some(error => error.msg.includes("field 'child'")),
-    ).toBeTrue();
-    expect(cycles.some(error => error.msg.includes("field 'a'"))).toBeTrue();
-    expect(
-      cycles.some(error => error.msg.includes("field 'children'")),
-    ).toBeFalse();
+    expect(result.errors).toEqual([]);
   });
 
   test('keeps field signatures forward-visible while finalizing defaults in source order', () => {
@@ -191,10 +182,10 @@ describe('canonical user types', () => {
     const earlierEnum = earlier.checked.pkg.scope.lookup('Mode');
     const earlierFoo = earlier.checked.pkg.scope.lookup('Foo');
     expect(earlierEnum?.kind).toBe(ObjectKind.Enum);
-    expect(earlierFoo?.kind).toBe(ObjectKind.UserType);
+    expect(earlierFoo?.kind).toBe(ObjectKind.Struct);
     if (
       earlierEnum?.kind === ObjectKind.Enum &&
-      earlierFoo?.kind === ObjectKind.UserType
+      earlierFoo?.kind === ObjectKind.Struct
     ) {
       expect(earlierFoo.fields[0].type).toBe(earlierEnum.type);
     }
@@ -212,10 +203,10 @@ describe('canonical user types', () => {
     const forwardEnum = forward.checked.pkg.scope.lookup('Mode');
     const forwardFoo = forward.checked.pkg.scope.lookup('Foo');
     expect(forwardEnum?.kind).toBe(ObjectKind.Enum);
-    expect(forwardFoo?.kind).toBe(ObjectKind.UserType);
+    expect(forwardFoo?.kind).toBe(ObjectKind.Struct);
     if (
       forwardEnum?.kind === ObjectKind.Enum &&
-      forwardFoo?.kind === ObjectKind.UserType
+      forwardFoo?.kind === ObjectKind.Struct
     ) {
       expect(forwardFoo.fields[0].type).toBe(forwardEnum.type);
     }
@@ -279,8 +270,7 @@ describe('collection type checking', () => {
     expect(push.argTypes[1].kind).toBe(TypeKind.Float);
     expect(push.receiver?.mode).toBe('inout');
     if (push.receiver?.mode === 'inout') {
-      expect(push.receiver.writeback.root).toBe(xs);
-      expect(push.receiver.writeback.fields).toEqual([]);
+      expect(push.receiver.location).toEqual({kind: 'name', name: xs});
       expect(push.args[0]).toBe(push.receiver.value.expr);
     }
     expect(result.info.reassigned.has(xs)).toBeTrue();
@@ -342,6 +332,31 @@ describe('collection type checking', () => {
     }
   });
 
+  test('array.new size-only calls retain a typed-empty initial slot', () => {
+    const result = checkText(
+      [
+        'floats = array.new<float>(3)',
+        'flags = array.new<bool>(2)',
+        'type Point',
+        '    int x',
+        'points = array.new<Point>(1)',
+      ].join('\n'),
+    );
+    expect(result.errors).toEqual([]);
+    const calls = [...result.info.calls.values()].filter(
+      (call): call is NativeCall =>
+        call.kind === CallKind.Native && call.native.name === 'array.new',
+    );
+    expect(calls).toHaveLength(3);
+    for (const call of calls) {
+      expect(call.args).toHaveLength(2);
+      expect(call.args[1]).toBeNull();
+      expect(call.argumentEvaluationOrder).toEqual([0]);
+    }
+
+    expect(checkText('values = array.new(3)').errors).not.toEqual([]);
+  });
+
   test('publishes concrete contextual types for polymorphic na arguments', () => {
     const result = checkText(
       ['missing = na(na)', 'text = str.tostring(na)'].join('\n'),
@@ -380,19 +395,19 @@ describe('collection type checking', () => {
       expect.stringContaining('scalar, enum, or resource'),
     );
 
-    const user = checkText(
+    const structValue = checkText(
       ['type Point', '    int x', 'text = str.tostring(Point.new(1))'].join(
         '\n',
       ),
     );
-    expect(user.errors.map(error => error.msg)).toContainEqual(
+    expect(structValue.errors.map(error => error.msg)).toContainEqual(
       expect.stringContaining('scalar, enum, or resource'),
     );
   });
 });
 
-describe('rooted aggregate updates', () => {
-  test('records one canonical field path for direct and collection updates', () => {
+describe('struct field stores and collection locations', () => {
+  test('records the direct object and final field for each store location', () => {
     const result = checkText(
       [
         'type Leaf',
@@ -413,72 +428,56 @@ describe('rooted aggregate updates', () => {
       throw new Error('fixture lost its field assignment');
     }
     const update = result.info.updates.get(assignment);
-    expect(update?.root).toBe(holder);
-    expect(update?.fields.map(field => field.name)).toEqual(['leaf', 'value']);
-    expect(update?.receiver.tv.type.kind).toBe(TypeKind.Int);
-    expect(update?.receiver.info).toBe(result.info);
+    expect(update?.owner.name).toBe('Leaf');
+    expect(update?.field.name).toBe('value');
+    expect(update?.object.expr.kind).toBe(NodeKind.SelectorExpr);
+    expect(update?.object.tv.type.kind).toBe(TypeKind.Struct);
+    expect(update?.object.info).toBe(result.info);
 
     const push = nativeCall(result, 'array.push');
     expect(push.receiver?.mode).toBe('inout');
     if (push.receiver?.mode === 'inout') {
-      expect(push.receiver.writeback.root).toBe(holder);
-      expect(push.receiver.writeback.fields.map(field => field.name)).toEqual([
-        'values',
-      ]);
-      expect(push.receiver.writeback.receiver.tv.type.kind).toBe(
-        TypeKind.Array,
-      );
+      expect(push.receiver.location.kind).toBe('structField');
+      if (push.receiver.location.kind === 'structField') {
+        expect(push.receiver.location.owner.name).toBe('Holder');
+        expect(push.receiver.location.field.name).toBe('values');
+        expect(push.receiver.location.object.expr.kind).toBe(NodeKind.Name);
+      }
     }
+    expect(result.info.reassigned.has(holder)).toBeFalse();
   });
 
-  test('rejects historical, temporary, and nonlocal update roots', () => {
-    const cases = [
-      {
-        src: [
-          'type Point',
-          '    int x',
-          'points = array.from(Point.new(1))',
-          'points.get(0).x := 2',
-        ].join('\n'),
-        error: 'mutation requires a current rooted value',
-      },
-      {
-        src: [
-          'type Point',
-          '    int x',
-          'point = Point.new(1)',
-          'point[1].x := 2',
-        ].join('\n'),
-        error: 'mutation requires a current rooted value',
-      },
-      {
-        src: ['xs = array.from(1)', 'xs[1].push(2)'].join('\n'),
-        error: 'mutation requires a current rooted value',
-      },
-      {
-        src: 'array.from(1).push(2)',
-        error: 'mutation requires a current rooted value',
-      },
-      {
-        src: [
-          'type Point',
-          '    int x',
-          'point = Point.new(1)',
-          'change() =>',
-          '    point.x := 2',
-          'change()',
-        ].join('\n'),
-        error: "cannot modify global variable 'point' inside a function",
-      },
-    ];
-    for (const {src, error} of cases) {
+  test('allows struct stores through arbitrary refs and rejects collection rvalues', () => {
+    const valid = checkText(
+      [
+        'type Point',
+        '    int x',
+        'points = array.from(Point.new(1))',
+        'point = Point.new(1)',
+        'points.get(0).x := 2',
+        'point[1].x := 3',
+        'change() =>',
+        '    point.x := 4',
+        'change()',
+      ].join('\n'),
+    );
+    expect(valid.errors).toEqual([]);
+
+    for (const src of [
+      ['xs = array.from(1)', 'xs[1].push(2)'].join('\n'),
+      'array.from(1).push(2)',
+    ]) {
       expect(
-        checkText(src).errors.some(item => item.msg.includes(error)),
+        checkText(src).errors.some(item =>
+          item.msg.includes(
+            'collection mutation requires a writable name or struct field',
+          ),
+        ),
       ).toBeTrue();
     }
   });
 
-  test('rejects compound fields, field persistence, equality, and implicit user copies', () => {
+  test('rejects compound fields, field persistence, equality, and implicit struct copies', () => {
     const result = checkText(
       [
         'type Point',
@@ -564,8 +563,6 @@ describe('method receivers', () => {
       setCall?.kind === CallKind.Function &&
       setCall.receiver?.mode === 'mutable'
     ) {
-      expect(setCall.receiver.writeback.root).toBe(foo);
-      expect(setCall.receiver.writeback.fields).toEqual([]);
       expect(setCall.args).toHaveLength(1);
       expect(setCall.args[0]).not.toBe(setCall.receiver.value.expr);
       expect(setCall.argumentEvaluationOrder).toEqual([0]);
@@ -576,10 +573,10 @@ describe('method receivers', () => {
       });
       expect(setCall.instance.params[0].name).toBe('value');
     }
-    expect(result.info.reassigned.has(foo)).toBeTrue();
+    expect(result.info.reassigned.has(foo)).toBeFalse();
   });
 
-  test('const methods accept rvalues and history while mutable methods require a current rooted place', () => {
+  test('mutable methods accept temporary, historical, and accessor references', () => {
     const valid = checkText(
       [
         'type Foo',
@@ -593,25 +590,23 @@ describe('method receivers', () => {
     expect(valid.errors).toEqual([]);
     expect(declaredName(valid, 'historical').qualifier).toBe(Qualifier.Series);
 
-    const invalid = checkText(
+    const mutable = checkText(
       [
         'type Foo',
         '    int x',
         '    int set(int value) =>',
         '        this.x := value',
         'root = Foo.new(1)',
+        'roots = array.from(root)',
         'Foo.new(2).set(3)',
         'root[1].set(4)',
+        'roots.get(0).set(5)',
       ].join('\n'),
     );
-    expect(
-      invalid.errors.filter(error =>
-        error.msg.includes('mutation requires a current rooted value'),
-      ),
-    ).toHaveLength(2);
+    expect(mutable.errors).toEqual([]);
   });
 
-  test('rejects mutation through a const this, including nested collection and method writes', () => {
+  test('const receivers are shallow: direct fields are readonly, child refs remain mutable', () => {
     const result = checkText(
       [
         'type Child',
@@ -619,16 +614,24 @@ describe('method receivers', () => {
         '    int bump() =>',
         '        this.value := this.value + 1',
         'type Holder',
+        '    int value',
         '    Child child',
         '    array<int> values',
-        '    int badField() const =>',
+        '    int bump() =>',
+        '        this.value := this.value + 1',
+        '    int inspect() const =>',
         '        this.child.value := 9',
+        '        this.child.bump()',
         '        this.child.value',
+        '    int badField() const =>',
+        '        this.value := 9',
+        '        this.value',
         '    void badCollection() const =>',
         '        this.values.push(1)',
         '    int badMethod() const =>',
-        '        this.child.bump()',
-        'holder = Holder.new(Child.new(0), array.new<int>())',
+        '        this.bump()',
+        'holder = Holder.new(0, Child.new(0), array.new<int>())',
+        'allowed = holder.inspect()',
         'field = holder.badField()',
         'holder.badCollection()',
         'holder.badMethod()',
@@ -636,9 +639,7 @@ describe('method receivers', () => {
     );
     const messages = result.errors.map(error => error.msg);
     expect(
-      messages.filter(message =>
-        message.includes("cannot mutate 'this' in a const method"),
-      ),
+      messages.filter(message => message.includes('in a const method')),
     ).toHaveLength(3);
   });
 
@@ -752,7 +753,9 @@ describe('method receivers', () => {
     expect(messages).toContain(
       "method 'Broken.wrong' returns int, want string",
     );
-    expect(messages).toContain("cannot mutate 'this' in a const method");
+    expect(messages).toContain(
+      "cannot mutate a direct field of 'this' in a const method",
+    );
     expect(messages).toContain("undeclared name 'notDeclared'");
     expect(result.info.calls.size).toBe(0);
   });
@@ -780,7 +783,74 @@ describe('tuple transport boundary', () => {
       ),
     ).toBeTrue();
     expect(messages).toContain(
-      'tuple values are transport-only and cannot be read through history',
+      'history operand must be a direct readable binding',
+    );
+  });
+});
+
+describe('history binding boundary', () => {
+  test('accepts direct bindings and rejects computed operands at offset zero', () => {
+    const valid = checkText(
+      [
+        'type Foo',
+        '    int x',
+        'foo = Foo.new(1)',
+        'historicalField = foo[0].x',
+        'observation = foo.x',
+        'historicalObservation = observation[0]',
+        'historicalClose = close[0]',
+      ].join('\n'),
+    );
+    expect(valid.errors).toEqual([]);
+    expect(declaredName(valid, 'historicalField').qualifier).toBe(
+      Qualifier.Series,
+    );
+
+    for (const source of [
+      ['type Foo', '    int x', 'foo = Foo.new(1)', 'bad = foo.x[0]'].join(
+        '\n',
+      ),
+      ['type Foo', '    int x', 'bad = Foo.new(1)[0]'].join('\n'),
+      [
+        'type Foo',
+        '    int x',
+        'foo = Foo.new(1)',
+        'bad = array.from(foo).get(0)[0]',
+      ].join('\n'),
+      ['read() => close', 'bad = read()[0]'].join('\n'),
+      'bad = (close + open)[0]',
+    ]) {
+      expect(
+        checkText(source).errors.some(error =>
+          error.msg.includes(
+            'history operand must be a direct readable binding',
+          ),
+        ),
+      ).toBeTrue();
+    }
+  });
+
+  test('requires runtime bindings while retaining foldable and typed-na names', () => {
+    const valid = checkText(
+      [
+        'literal = 1',
+        'literalHistory = literal[1]',
+        'struct Foo',
+        '    int x',
+        'Foo foo = na',
+        'fooHistory = foo[0].x',
+      ].join('\n'),
+    );
+    expect(valid.errors).toEqual([]);
+
+    const constant = checkText('const int value = 1\nbad = value[0]');
+    expect(constant.errors.map(error => error.msg)).toContain(
+      'const bindings do not have runtime history',
+    );
+
+    const output = checkText('plotRef = plot(close)\nbad = plotRef[0]');
+    expect(output.errors.map(error => error.msg)).toContain(
+      'output references do not have runtime history',
     );
   });
 });

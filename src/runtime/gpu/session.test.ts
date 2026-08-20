@@ -1,7 +1,5 @@
 // Purpose: Verify generic GPU session preparation resolves providers, packs executions, and bounds all device resources.
 
-import {readFileSync} from 'node:fs';
-import {join} from 'node:path';
 import {describe, expect, test} from 'bun:test';
 import type {CompiledWgslProgram} from '../../gpu/contract';
 import {compileProgramToWgsl} from '../../codegen/wgsl';
@@ -22,13 +20,17 @@ import {
 } from './session';
 
 function strategyArtifact(): CompiledWgslProgram {
-  const source = readFileSync(
-    join(
-      import.meta.dir,
-      '../../../tests/fixtures/execution/compile/strategy-components/source.tea',
-    ),
-    'utf8',
-  );
+  // Session mechanics need two ordered series and a bounded sparse-effect
+  // transport. Keep this fixture struct-free now that reference structs are
+  // deliberately ineligible for WGSL lowering.
+  const source = [
+    'strategy("GPU session")',
+    'for i = 0 to 19',
+    '    effect.emit(open + i)',
+    'var float sum = 0',
+    'sum := sum + close',
+    'plot(sum)',
+  ].join('\n');
   const result = compileProgramToWgsl(mustBuild(source));
   if (result.status !== 'compiled') {
     throw new Error(JSON.stringify(result.eligibility.issues));
@@ -899,10 +901,10 @@ describe('GPU execution preparation', () => {
     const artifact = strategyArtifact();
     await expect(
       prepareGpuExecutionInputs(
-        {...artifact, abi: 3} as unknown as CompiledWgslProgram,
+        {...artifact, abi: 2} as unknown as CompiledWgslProgram,
         [],
       ),
-    ).rejects.toThrow(/unsupported GPU artifact ABI 3; expected 2/);
+    ).rejects.toThrow(/unsupported GPU artifact ABI 2; expected 3/);
     await expect(
       prepareGpuExecutionInputs(
         {
@@ -910,7 +912,7 @@ describe('GPU execution preparation', () => {
           bindingModule: {
             ...artifact.bindingModule,
             source: artifact.bindingModule.source.replace(
-              '  abi: 1,',
+              '  abi: 2,',
               '  abi: 999,',
             ),
           },
@@ -1030,21 +1032,29 @@ describe('GPU execution preparation', () => {
       ),
     ).rejects.toThrow(/invalid effect schema 0/);
     const first = artifact.effectSchemas[0]!;
-    if (first.declaration.payload.kind !== 'user-type') {
-      throw new Error('strategy effect 0 must be a user type');
+    if (
+      first.declaration.payload.kind !== 'float' &&
+      first.declaration.payload.kind !== 'int'
+    ) {
+      throw new Error('strategy effect 0 must be numeric');
     }
-    const forgedNominal = [
+    const forgedLogical = [
       {
         ...first,
         declaration: {
-          payload: {...first.declaration.payload, typeId: 'forged.Other'},
+          payload: {
+            kind:
+              first.declaration.payload.kind === 'float'
+                ? ('int' as const)
+                : ('float' as const),
+          },
         },
       },
       ...artifact.effectSchemas.slice(1),
     ];
     await expect(
       prepareGpuExecutionInputs(
-        {...artifact, effectSchemas: forgedNominal},
+        {...artifact, effectSchemas: forgedLogical},
         [],
       ),
     ).rejects.toThrow(/logical declaration disagrees/);

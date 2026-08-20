@@ -1,121 +1,137 @@
 //@version=1
-indicator("aggregate value semantics")
+indicator("aggregate reference semantics")
 
-type Point
+struct Point
     int x
-    int y
+    int y = 0
 
-type Holder
+    int bump() =>
+        this.x := this.x + 1
+        this.x
+
+    int read() const =>
+        this.x
+
+struct Holder
     array<int> values
     int marker
-    int append(int value) =>
-        this.values.push(value)
-        this.marker := this.marker + value
-        this.marker
+
     int setMarker(int value) =>
         this.marker := value
         this.marker
+
     int next() =>
         value = this.values.size()
         this.values.push(value)
         value
+
     color pushRed() =>
         this.values.push(9)
         color.red
-    int size() const =>
-        this.values.size()
 
-pack(Point point) => [point, point.x + 1]
+struct Parent
+    Point child
+
+    int bumpChild() const =>
+        this.child.bump()
+
+bump(Point point) => point.bump()
+pack(Point point) => [point, point.x]
 observeMarker(Holder first, int ignored) => first.marker
 combine(int first, int second) => first * 10 + second
 
-// A collection header is copied by value. Mutating the peer cannot change base.
+// Collection assignment and history retain value-semantic headers.
 base = array.from(bar_index)
 peer = base
 peer.push(bar_index + 10)
-plot(base.size(), "array original size")
-plot(peer.get(1), "array peer append")
-
-// History stores the complete prior value, including its collection header.
-previousArrayValue = if bar_index > 0
+previousPeer = if bar_index > 0
     peer[1].get(1)
 else
     -1
-plot(previousArrayValue, "array historical value")
+plot(base.size(), "array original size")
+plot(peer.get(1), "array peer append")
+plot(previousPeer, "array historical value")
 
-// A user value containing a collection remains value-semantic at both layers.
-holder = Holder.new(array.from(bar_index), bar_index)
-holderPeer = holder
-holderPeer.append(50)
-plot(holder.values.size(), "holder original size")
-plot(holderPeer.values.size(), "holder peer size")
+// Struct assignment aliases the body; rebinding one Name leaves other aliases.
+point = Point.new(bar_index)
+alias = point
+alias.bump()
+plot(point.x, "struct alias shared x")
+alias := Point.new(100)
+plot(point.x, "original after alias rebind")
+plot(alias.x, "rebound struct x")
 
-// An array of user values uses explicit get-modify-set.
-points = array.from(Point.new(bar_index, 7))
+// Current and historical collection headers contain the same struct refs.
+points = array.from(point)
 pointsPeer = points
-point = pointsPeer.get(0)
-point.x := point.x + 100
-pointsPeer.set(0, point)
-plot(points.get(0).x, "point original x")
-plot(pointsPeer.get(0).x, "point peer x")
+pointsPeer.get(0).x := point.x + 10
+plot(point.x, "collection element shared x")
+plot(points.get(0).x, "collection original header shared x")
 
-// User-value history is a prior value, not a reference to today's object.
-snapshot = Point.new(bar_index, bar_index + 1)
-snapshot.x := snapshot.x + 20
-previousPointX = if bar_index > 0
-    snapshot[1].x
+// A struct field captures a collection header independently of another Name.
+values = array.new<int>(1)
+holder = Holder.new(values, 0)
+holder.values.set(0, bar_index)
+values.push(7)
+values.push(8)
+plot(holder.values.size(), "struct collection field size")
+plot(values.size(), "collection name size")
+plot(holder.values.get(0), "struct collection field value")
+
+// const is shallow: the direct child field cannot be replaced, but its target
+// remains a mutable reference.
+child = Point.new(bar_index)
+parent = Parent.new(child)
+parent.bumpChild()
+plot(child.x, "shallow const child mutation")
+
+// Arguments and returns carry references; scalar results remain values.
+functionPoint = Point.new(bar_index)
+functionResult = bump(functionPoint)
+plot(functionPoint.x, "function argument shared x")
+plot(functionResult, "function result")
+
+tuplePoint = Point.new(bar_index)
+[transported, capturedScalar] = pack(tuplePoint)
+transported.bump()
+plot(tuplePoint.x, "tuple struct shared x")
+plot(capturedScalar, "tuple scalar value")
+
+// Struct history stores references. With no rebind, history sees the current
+// body of the same storage identity.
+var state = Point.new(0)
+state.bump()
+historicalState = if bar_index > 0
+    state[1].read()
 else
     -1
-plot(previousPointX, "user historical x")
+plot(state.x, "struct history current body")
+plot(historicalState, "struct history live body")
 
-// Matrix and map assignments use the same value/COW contract.
-grid = matrix.new<int>(2, 2, bar_index)
-gridPeer = grid
-gridPeer.set(0, 1, bar_index + 30)
-plot(grid.get(0, 1), "matrix original value")
-plot(gridPeer.get(0, 1), "matrix peer value")
+// Rebinding creates a distinct identity; later unchanged history aliases it.
+var switched = Point.new(0)
+if bar_index == 1
+    switched := Point.new(100)
+switched.bump()
+historicalSwitched = if bar_index > 0
+    switched[1].read()
+else
+    -1
+plot(switched.x, "rebound history current body")
+plot(historicalSwitched, "rebound history prior reference")
 
-index = map.new<int, int>()
-index.put(2, bar_index + 20)
-index.put(1, bar_index + 10)
-indexPeer = index
-indexPeer.put(3, bar_index + 30)
-keys = index.keys()
-plot(index.size(), "map original size")
-plot(indexPeer.size(), "map peer size")
-plot(keys.get(0) * 10 + keys.get(1), "map insertion order")
+// Sized construction defaults each element to its exact typed empty.
+missing = array.new<float>(2)
+plot(missing.size() + bar_index * 0, "typed empty array size")
+plot((na(missing.get(0)) ? 1 : 0) + bar_index * 0, "typed empty array value")
 
-// Iteration captures the input header once; body mutation cannot extend it.
-loopValues = array.from(1, 2)
-loopSum = 0
-for value in loopValues
-    loopValues.push(9)
-    loopSum := loopSum + value
-plot(loopValues.size(), "array loop replacement size")
-plot(loopSum, "array loop snapshot sum")
+// A historical reference is a live mutation target.
+var historicalTarget = Point.new(0)
+if bar_index > 0
+    historicalTarget[1].bump()
+plot(historicalTarget.x, "historical reference mutation")
 
-// User values retain one value representation through params, tuples, returns,
-// and local mutation.
-[transported, transportedX] = pack(Point.new(bar_index, 9))
-transported.x := transported.x + 200
-plot(transportedX, "user tuple transport")
-plot(transported.x, "transported copy update")
-
-// A mutable method performs copy-in/copy-out of one rooted receiver.
-methodHolder = Holder.new(array.from(bar_index), bar_index)
-methodResult = methodHolder.append(5)
-plot(methodHolder.values.size(), "mutable receiver nested collection")
-plot(methodResult, "mutable receiver result")
-
-// Ordinary function arguments are copied left-to-right before a later mutable
-// method call may replace the same caller root.
-orderedHolder = Holder.new(array.from(bar_index), 1)
-observedBeforeMutation = observeMarker(orderedHolder, orderedHolder.setMarker(9))
-plot(observedBeforeMutation, "ordinary argument before mutable method")
-plot(orderedHolder.marker, "mutable method writeback")
-
-// Named arguments still evaluate in source order, then assemble into the
-// constructor/function/native operation's canonical destination order.
+// Source evaluation order remains separate from canonical destination order.
 constructorCounter = Holder.new(array.new<int>(), 0)
 namedPoint = Point.new(y = constructorCounter.next(), x = constructorCounter.next())
 plot(namedPoint.x * 10 + namedPoint.y, "named constructor evaluation order")
@@ -129,25 +145,23 @@ nativeValues = array.from(-1, -1)
 nativeValues.set(value = nativeCounter.next(), index = nativeCounter.next())
 plot(nativeValues.get(0) * 10 + nativeValues.get(1), "named native evaluation order")
 
-// Every eager multi-operand construct snapshots earlier values before later
-// aggregate effects. This is the same rule as ordinary call arguments.
+// Eager operands capture earlier scalar observations before later mutations.
 binaryHolder = Holder.new(array.new<int>(), 1)
 binaryValue = binaryHolder.marker + binaryHolder.setMarker(9)
 plot(binaryValue, "binary left value before right mutation")
-plot(binaryHolder.marker, "binary right mutation writeback")
+plot(binaryHolder.marker, "binary right mutation")
 
 ternaryHolder = Holder.new(array.new<int>(), 1)
 ternaryValue = bar_index >= 0 ? ternaryHolder.marker : ternaryHolder.setMarker(9)
-plot(ternaryValue, "eager ternary selected snapshot")
-plot(ternaryHolder.marker, "eager ternary unselected effect")
+plot(ternaryValue, "eager ternary selected value")
+plot(ternaryHolder.marker, "eager ternary unselected mutation")
 
 constTernaryHolder = Holder.new(array.new<int>(), 0)
 constTernaryValue = true ? 1 : constTernaryHolder.setMarker(9)
 plot(constTernaryValue, "constant eager ternary result")
-plot(constTernaryHolder.marker, "constant eager ternary effect")
+plot(constTernaryHolder.marker, "constant eager ternary mutation")
 
-// A switch subject is evaluated once. Effectful patterns execute in order
-// only until an arm matches, and the default is final.
+// Switch, range, and output schedules preserve their source evaluation rules.
 switchCounter = Holder.new(array.new<int>(), 0)
 switchValue = switch switchCounter.next()
     1 => 10
@@ -164,22 +178,12 @@ patternValue = switch 1
 plot(patternValue, "switch effectful pattern result")
 plot(patternCounter.values.size(), "switch effectful pattern count")
 
-// Range operands are captured from/to/by in source order before iteration.
 forCounter = Holder.new(array.new<int>(), 0)
 forIterations = 0
 for loopIndex = forCounter.values.size() to forCounter.next()
     forIterations := forIterations + 1
 plot(forIterations, "for range operand evaluation order")
 
-// Output metadata remains canonical, while dynamic channels evaluate in the
-// source order of named arguments.
 outputCounter = Holder.new(array.new<int>(), 0)
 plot(color = outputCounter.pushRed(), series = outputCounter.next(), title = "output channel evaluation order")
 plot(outputCounter.values.size(), "output channel effect count")
-
-// Const methods need no writeback, so historical receivers are legal.
-historicalMethodSize = if bar_index > 0
-    methodHolder[1].size()
-else
-    -1
-plot(historicalMethodSize, "const method historical receiver")

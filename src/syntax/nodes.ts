@@ -18,7 +18,7 @@ export const NodeKind = {
   InterfaceMethodDecl: 'InterfaceMethodDecl',
   Param: 'Param',
   TypeParam: 'TypeParam',
-  UserTypeDecl: 'UserTypeDecl',
+  StructDecl: 'StructDecl',
   TypeAliasDecl: 'TypeAliasDecl',
   FieldDecl: 'FieldDecl',
   EnumDecl: 'EnumDecl',
@@ -81,7 +81,7 @@ export type Stmt =
   | AssignStmt
   | FuncDecl
   | InterfaceDecl
-  | UserTypeDecl
+  | StructDecl
   | TypeAliasDecl
   | EnumDecl
   | ImportStmt
@@ -184,8 +184,8 @@ export interface TypedParam extends Param {
   readonly paramType: TypeAnnotation;
 }
 
-// Static interfaces contain signatures only. They constrain generic user
-// types during checking and never introduce a runtime declaration body.
+// Static interfaces contain signatures only. They constrain generic structs
+// during checking and never introduce a runtime declaration body.
 export interface InterfaceDecl extends Node {
   readonly kind: typeof NodeKind.InterfaceDecl;
   readonly exported: boolean;
@@ -207,17 +207,17 @@ export interface TypeParam extends Node {
   readonly constraint: TypeName;
 }
 
-// `struct Foo` and block-form `type Foo` are identical nominal user types.
-export interface UserTypeDecl extends Node {
-  readonly kind: typeof NodeKind.UserTypeDecl;
+// `struct Foo` and block-form `type Foo` are identical nominal structs.
+export interface StructDecl extends Node {
+  readonly kind: typeof NodeKind.StructDecl;
   readonly exported: boolean;
   readonly writtenKeyword: 'struct' | 'type';
   readonly name: Name;
   readonly typeParams: readonly TypeParam[];
-  readonly members: readonly UserTypeMember[];
+  readonly members: readonly StructMember[];
 }
 
-export type UserTypeMember = FieldDecl | MethodDecl;
+export type StructMember = FieldDecl | MethodDecl;
 
 export interface FieldDecl extends Node {
   readonly kind: typeof NodeKind.FieldDecl;

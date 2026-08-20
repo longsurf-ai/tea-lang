@@ -1,4 +1,4 @@
-// Purpose: Compile-through fixture for a user value containing child-owned array storage crossing request.security into parent history.
+// Purpose: Compile-through fixture for a struct reference containing child-owned array storage crossing request.security into parent history.
 
 //@version=1
 indicator("aggregate request result")
@@ -31,5 +31,5 @@ else
 
 plot(currentValue, "current array value")
 plot(historicalValue, "historical array value")
-plot(currentChildRow, "current user field")
-plot(historicalChildRow, "historical user field")
+plot(currentChildRow, "current struct field")
+plot(historicalChildRow, "historical struct field")

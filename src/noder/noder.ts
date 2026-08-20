@@ -8,6 +8,7 @@
 import type {Pos} from '../base/pos';
 import {fatal, type Errors} from '../base/print';
 import {
+  CollectionLocationKind,
   DepthKind,
   IrKind,
   IrOp,
@@ -17,13 +18,13 @@ import {
   type EmitEffectStmt,
   type IrExpr,
   type IrStmt,
+  type CollectionLocation as IrCollectionLocation,
   type IrUnaryOp,
   type BlockExpr,
   type HistReadExpr,
   type Name as IrName,
   type OutputRefExpr,
   type Place,
-  type IrValuePath,
   type SwitchArm,
 } from '../ir/node';
 import {
@@ -70,11 +71,12 @@ import {
   CallKind,
   SelectionKind,
   type CheckedExpression,
-  type CheckedWritebackTarget,
+  type CollectionLocation as CheckedCollectionLocation,
   type FunctionInstance,
   type Info,
   type NativeCall,
   type RequestCall,
+  type StructFieldStore,
 } from '../checker/info';
 import {
   ObjectKind,
@@ -153,9 +155,8 @@ class Noder {
   // `p = plot(...)` bind the name to the param/output instead of emitting a
   // per-bar write (only when the name is never reassigned).
   private readonly paramRefs = new Map<VariableObject, ParamInput>();
-  // Per-top-statement queues: synthetic history writes go before the
-  // statement, output Emits after it.
-  private hoisted: IrStmt[] = [];
+  // Per-top-statement queue: output Emits follow the statement that evaluates
+  // their arguments.
   private emitted: IrStmt[] = [];
   private nesting = 0;
   private version = 1;
@@ -183,10 +184,9 @@ class Noder {
     this.version = Number.isFinite(versionNumber) ? versionNumber : 1;
     const body: IrStmt[] = [];
     for (const stmt of file.stmtList) {
-      this.hoisted = [];
       this.emitted = [];
       const stmts = this.nodeStmt(stmt);
-      body.push(...this.hoisted, ...stmts, ...this.emitted);
+      body.push(...stmts, ...this.emitted);
     }
     const packageGlobals: IrName[] = [];
     const program: Program = {
@@ -439,21 +439,53 @@ class Noder {
     return name;
   }
 
-  private pathOf(target: CheckedWritebackTarget): IrValuePath {
-    let type = target.root.type;
-    for (const field of target.fields) {
-      if (type.kind !== TypeKind.UserType || field.owner.type !== type) {
-        return fatal('non-canonical field path reached the noder');
-      }
-      type = field.type;
+  private structFieldStore(target: StructFieldStore): {
+    readonly object: IrExpr;
+    readonly owner: Extract<Type, {kind: typeof TypeKind.Struct}>;
+    readonly fieldIndex: number;
+  } {
+    const owner = target.owner.type;
+    const projected =
+      owner.kind === TypeKind.Struct
+        ? owner.fields[target.field.index]
+        : undefined;
+    if (
+      owner.kind !== TypeKind.Struct ||
+      target.field.owner !== target.owner ||
+      projected === undefined ||
+      projected.name !== target.field.name ||
+      !typesEqual(projected.type, target.field.type)
+    ) {
+      return fatal('non-canonical struct field store reached the noder');
     }
-    if (!typesEqual(type, target.receiver.tv.type)) {
-      return fatal('writeback path leaf type disagrees with receiver fact');
+    if (!typesEqual(target.object.tv.type, owner)) {
+      return fatal('struct field store object disagrees with its owner');
     }
     return {
-      root: this.nameOf(target.root),
-      fieldIndices: target.fields.map(field => field.index),
+      object: this.nodeChecked(target.object, owner),
+      owner,
+      fieldIndex: target.field.index,
     };
+  }
+
+  private collectionLocation(
+    location: CheckedCollectionLocation,
+    receiver: CheckedExpression,
+  ): IrCollectionLocation {
+    if (location.kind === 'name') {
+      if (!typesEqual(location.name.type, receiver.tv.type)) {
+        return fatal('collection name location disagrees with receiver fact');
+      }
+      return {
+        kind: CollectionLocationKind.Name,
+        name: this.nameOf(location.name),
+      };
+    }
+    const field = this.structFieldStore(location);
+    if (!typesEqual(location.field.type, receiver.tv.type)) {
+      return fatal('collection field location disagrees with receiver fact');
+    }
+    return {kind: CollectionLocationKind.StructField, ...field};
   }
 
   private builtinOf(
@@ -588,7 +620,7 @@ class Noder {
         return this.nodeAssign(stmt);
       case NodeKind.FuncDecl:
       case NodeKind.InterfaceDecl:
-      case NodeKind.UserTypeDecl:
+      case NodeKind.StructDecl:
       case NodeKind.TypeAliasDecl:
       case NodeKind.EnumDecl:
       case NodeKind.ImportStmt:
@@ -765,14 +797,15 @@ class Noder {
     if (a.target.kind === NodeKind.SelectorExpr) {
       const target = this.info.updates.get(a);
       if (target === undefined) {
-        return fatal('unchecked rooted field update reached the noder');
+        return fatal('unchecked struct field store reached the noder');
       }
+      const field = this.structFieldStore(target);
       return [
         {
-          kind: IrKind.UpdateValuePath,
+          kind: IrKind.StoreField,
           pos: a.pos,
-          path: this.pathOf(target),
-          value: this.nodeExpr(a.value, target.receiver.tv.type),
+          ...field,
+          value: this.nodeExpr(a.value, target.field.type),
         },
       ];
     }
@@ -951,7 +984,7 @@ class Noder {
   }
 
   // A Name or Selector read: context builtin, param/output reference binding,
-  // user-value field, or a plain name read.
+  // struct-value field, or a plain name read.
   private nodePlaceRead(
     e: syntax.Name | syntax.SelectorExpr,
     tv: TypeAndValue,
@@ -1018,7 +1051,7 @@ class Noder {
     }
     const receiverType = this.tvOf(e.x).type;
     if (
-      receiverType.kind !== TypeKind.UserType ||
+      receiverType.kind !== TypeKind.Struct ||
       selection.field.owner.type !== receiverType
     ) {
       return fatal('non-canonical field selection reached the noder');
@@ -1045,11 +1078,11 @@ class Noder {
         }
       });
       return {
-        kind: IrKind.NewUserValue,
+        kind: IrKind.NewStruct,
         pos: c.pos,
         type: tv.type,
         qualifier: tv.qualifier,
-        userType: resolved.type.type,
+        structType: resolved.type.type,
         args: resolved.args.map(arg =>
           this.nodeChecked(arg.value, arg.field.type),
         ),
@@ -1099,14 +1132,13 @@ class Noder {
         case 'mutable-method': {
           if (resolved.receiver?.mode !== 'mutable') {
             return fatal(
-              `mutable method '${func.name}' lacks a checked writeback receiver`,
+              `mutable method '${func.name}' lacks a checked receiver`,
             );
           }
           return {
             kind: IrKind.CallMutableMethod,
             ...base,
             func,
-            path: this.pathOf(resolved.receiver.writeback),
             receiver: this.nodeChecked(
               resolved.receiver.value,
               func.receiver.type,
@@ -1136,11 +1168,10 @@ class Noder {
           `inout native '${resolved.native.name}' receiver is not argument 0`,
         );
       }
-      const receiver = this.nodeChecked(resolved.receiver.value, receiverType);
       if (
-        receiver.type.kind !== TypeKind.Array &&
-        receiver.type.kind !== TypeKind.Matrix &&
-        receiver.type.kind !== TypeKind.Map
+        receiverType.kind !== TypeKind.Array &&
+        receiverType.kind !== TypeKind.Matrix &&
+        receiverType.kind !== TypeKind.Map
       ) {
         return fatal(
           `non-collection inout native '${resolved.native.name}' reached collection noding`,
@@ -1152,8 +1183,10 @@ class Noder {
         pos: c.pos,
         type: tv.type,
         qualifier: tv.qualifier,
-        path: this.pathOf(resolved.receiver.writeback),
-        receiver,
+        location: this.collectionLocation(
+          resolved.receiver.location,
+          resolved.receiver.value,
+        ),
         operation: resolved.native.name,
         args: lowered.args,
         argumentEvaluationOrder: lowered.argumentEvaluationOrder,
@@ -1243,23 +1276,18 @@ class Noder {
     };
   }
 
-  // `x[k]`: history through a readable place, or the synthetic-slot policy
-  // for history on a computed expression — the slot is written
-  // unconditionally every bar, which is what keeps its history well-defined,
-  // so the desugaring exists only at the top level.
+  // `x[k]`: the checker has already proved that x is a direct readable
+  // binding. History therefore projects to that binding's ordinary Place;
+  // the noder never invents a hidden Name for a computed expression.
   private nodeHistory(e: syntax.HistoryExpr, tv: TypeAndValue): IrExpr {
     const offset = this.nodeExpr(e.offset, IntType);
     const x = this.nodeExpr(e.x, tv.type);
-    // e[0] IS e: the current-bar value, whatever the expression.
-    if (offset.kind === IrKind.Const && offset.value === 0) {
-      return x;
-    }
     if (
       x.kind === IrKind.HistRead &&
       x.offset === null &&
       // A dynamic request read cannot collapse into an offset read — the
-      // offset-0 read is its execution; history desugars through the
-      // synthetic per-row name below.
+      // offset-0 read is its execution. A direct source Name remains a real
+      // Ring precisely so history never targets requestFor itself.
       !(x.place.kind === PlaceKind.Request && x.place.request.dynamic)
     ) {
       return {
@@ -1271,35 +1299,7 @@ class Noder {
         offset,
       };
     }
-    if (this.nesting > 0) {
-      this.errors.errorAt(
-        e.pos,
-        'history on an expression is only supported at the top level of the script',
-      );
-      return x;
-    }
-    const xTv = this.tvOf(e.x);
-    const synthetic: IrName = {
-      name: `$hist@${e.pos.line}:${e.pos.col}`,
-      storage: Storage.PerBar,
-      type: xTv.type,
-      qualifier: Qualifier.Series,
-      depth: {kind: DepthKind.None},
-    };
-    this.hoisted.push({
-      kind: IrKind.WriteName,
-      pos: e.pos,
-      name: synthetic,
-      value: x,
-    });
-    return {
-      kind: IrKind.HistRead,
-      pos: e.pos,
-      type: tv.type,
-      qualifier: tv.qualifier,
-      place: {kind: PlaceKind.Name, name: synthetic},
-      offset,
-    };
+    return fatal('non-binding history operand reached the noder');
   }
 
   private nodeIf(e: syntax.IfExpr, tv: TypeAndValue): IrExpr {
@@ -1948,9 +1948,9 @@ class Noder {
           displayName: type.name,
           members: type.members.map(member => ({...member})),
         };
-      case TypeKind.UserType:
+      case TypeKind.Struct:
         return {
-          kind: 'user-type',
+          kind: 'struct',
           typeId: this.nominalTypeId(type),
           displayName: type.name,
           fields: type.fields.map(field => ({
@@ -1966,7 +1966,7 @@ class Noder {
   }
 
   private nominalTypeId(type: Type): string {
-    if (type.kind !== TypeKind.UserType && type.kind !== TypeKind.Enum) {
+    if (type.kind !== TypeKind.Struct && type.kind !== TypeKind.Enum) {
       return fatal(`non-nominal type '${type.kind}' has no nominal identity`);
     }
     const id = this.checked.nominalTypeIds.get(type);

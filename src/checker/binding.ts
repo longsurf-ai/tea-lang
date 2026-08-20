@@ -11,6 +11,7 @@ export interface BindingTables {
   readonly defs: Map<syntax.Name, Object>;
   readonly uses: Map<syntax.Name | syntax.ThisExpr, Object>;
   readonly reassigned: Set<VariableObject>;
+  readonly historyBindings: Set<VariableObject>;
 }
 
 // @agent invariant: Text names are lookup keys only. Every declaration and
@@ -113,6 +114,7 @@ class NameBinder {
         }
         return;
       case NodeKind.HistoryExpr:
+        this.noteHistoryBinding(expr.x);
         this.bindExpr(expr.x);
         this.bindExpr(expr.offset);
         return;
@@ -207,11 +209,11 @@ class NameBinder {
         }
         return;
       case NodeKind.AssignStmt: {
-        const root = assignmentRoot(stmt.target);
-        if (root !== null) {
-          const entry = this.scope.lookup(root.value);
+        const target = unwrapParens(stmt.target);
+        if (target.kind === NodeKind.Name) {
+          const entry = this.scope.lookup(target.value);
           if (entry?.kind === ObjectKind.Variable) {
-            this.tables.uses.set(root, entry);
+            this.tables.uses.set(target, entry);
             this.tables.reassigned.add(entry);
           }
         }
@@ -226,7 +228,7 @@ class NameBinder {
         // Interfaces contain signatures only; there are no value names or
         // executable defaults for the lexical binder to visit.
         return;
-      case NodeKind.UserTypeDecl:
+      case NodeKind.StructDecl:
         for (const member of stmt.members) {
           if (
             member.kind === NodeKind.FieldDecl &&
@@ -281,20 +283,25 @@ class NameBinder {
     this.tables.defs.set(node, object);
     this.scope.declare(object);
   }
+
+  private noteHistoryBinding(expr: syntax.Expr): void {
+    const direct = unwrapParens(expr);
+    if (direct.kind !== NodeKind.Name) {
+      return;
+    }
+    const object = this.scope.lookup(direct.value);
+    if (object?.kind === ObjectKind.Variable) {
+      this.tables.historyBindings.add(object);
+    }
+  }
 }
 
-function assignmentRoot(expr: syntax.Expr): syntax.Name | null {
+function unwrapParens(expr: syntax.Expr): syntax.Expr {
   let current = expr;
   while (current.kind === NodeKind.ParenExpr) {
     current = current.x;
   }
-  while (current.kind === NodeKind.SelectorExpr) {
-    current = current.x;
-    while (current.kind === NodeKind.ParenExpr) {
-      current = current.x;
-    }
-  }
-  return current.kind === NodeKind.Name ? current : null;
+  return current;
 }
 
 function declarationStorage(mode: syntax.DeclMode): NameStorage {

@@ -18,13 +18,10 @@ example boundaries. Keep pass-local unit tests beside their owner under
   composition and rejects strategy-local accounts, fill construction,
   portfolio mutation, and lifecycle-effect emission.
 - `strategy-gpu-eligibility.test.ts` owns the exact offline boundary for all
-  fourteen strategy sources. The eligible set is
-  `atr-zigzag-breakout`, `cpu-gpu-next-open`, `ema-cross`, and
-  `turtle-system`; every other source pins its first fail-closed diagnostic.
-  It also guards eligible scalar closures against lot collections, unused
-  matcher families, and regressions in functions, frames, fixed state,
-  generated source, or effects. Do not broaden these ceilings merely to make a
-  new abstraction pass.
+  fourteen strategy sources. Reference structs are currently a deliberate
+  fail-closed GPU boundary, so no canonical strategy is eligible; each source
+  pins its first staged-unsupported diagnostic until a separate reference-
+  struct GPU plan restores eligibility.
 - New cross-cutting suites must resolve paths inside this repository and must
   not fetch test inputs from the network.
 

@@ -182,6 +182,73 @@ describe('effect row transactions', () => {
     execution.dispose();
   });
 
+  test('struct effects snapshot fields at emit time', async () => {
+    const structLayout = 1;
+    const module: TeaModule = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: {
+        layouts: [
+          {kind: 'number', numeric: 'int'},
+          {
+            kind: 'struct',
+            name: 'Payload',
+            typeId: 'test.Payload',
+            fields: [{name: 'value', layout: NUMBER}],
+          },
+        ],
+      },
+      manifest: {
+        series: [],
+        builtin: [],
+        params: [],
+        outputs: [],
+        effects: [
+          {
+            layout: structLayout,
+            declaration: {
+              payload: {
+                kind: 'struct',
+                typeId: 'test.Payload',
+                displayName: 'Payload',
+                fields: [{name: 'value', value: {kind: 'int'}}],
+              },
+            },
+          },
+        ],
+        frames: [{locals: [], subs: []}],
+        requests: [],
+      },
+      requests: [],
+      init() {},
+      bind() {},
+      funcs: {},
+      main(rt) {
+        const payload = rt.newStruct(structLayout, [1]);
+        rt.emitEffect(0, payload);
+        rt.storeStructField(payload, structLayout, 0, 2);
+      },
+    };
+    const sink = new MemorySink();
+    const execution = await bind(module, {
+      params: {},
+      provider,
+      sink,
+      timeNow: 0,
+    });
+
+    await execution.runAll();
+
+    expect(sink.effectEmissions).toEqual([
+      {
+        row: 0,
+        effectId: 0,
+        payload: {kind: 'struct', fields: [1]},
+        provisional: false,
+      },
+    ]);
+    execution.dispose();
+  });
+
   test('manifest validation rejects non-fixed effect layouts', async () => {
     const unsafe: TeaModule = {
       ...effectModule(() => {}),

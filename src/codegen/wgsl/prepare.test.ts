@@ -20,7 +20,7 @@ function componentProgram() {
 }
 
 describe('generic WGSL capability boundary', () => {
-  test('accepts the exact closed deterministic Program graph', () => {
+  test('inventories the exact graph and fails closed at its first struct reference', () => {
     const report = analyzeWgslEligibility(componentProgram());
 
     expect(report.inventory).toEqual({
@@ -35,7 +35,10 @@ describe('generic WGSL capability boundary', () => {
       outputCount: 10,
       resultChannelCount: 9,
     });
-    expect(report).toMatchObject({eligible: true, issues: []});
+    expect(report.eligible).toBe(false);
+    expect(report.issues[0]?.code).toBe(
+      'struct-reference-lowering-unimplemented',
+    );
   });
 
   test('is the same authoritative result returned by compilation', () => {
@@ -110,7 +113,7 @@ describe('generic WGSL capability boundary', () => {
     expect(stateless.status).toBe('compiled');
   });
 
-  test('captures one-level rooted updates before RHS and fails closed for deeper paths', () => {
+  test('fails closed for every reachable struct reference operation', () => {
     const oneLevel = compileProgramToWgsl(
       mustBuild(
         [
@@ -123,10 +126,10 @@ describe('generic WGSL capability boundary', () => {
         ].join('\n'),
       ),
     );
-    expect(oneLevel.status).toBe('compiled');
-    if (oneLevel.status === 'compiled') {
-      expect(oneLevel.artifact.module.source).toContain('.valid != 0u');
-    }
+    expect(oneLevel.status).toBe('staged-unsupported');
+    expect(oneLevel.eligibility.issues[0]?.code).toBe(
+      'struct-reference-lowering-unimplemented',
+    );
 
     const deeper = compileProgramToWgsl(
       mustBuild(
@@ -143,5 +146,8 @@ describe('generic WGSL capability boundary', () => {
       ),
     );
     expect(deeper.status).toBe('staged-unsupported');
+    expect(deeper.eligibility.issues[0]?.code).toBe(
+      'struct-reference-lowering-unimplemented',
+    );
   });
 });

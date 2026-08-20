@@ -14,7 +14,7 @@
 ## 0.2.0
 
 - Keep declaration scopes stable across enums, interfaces, aliases, and
-  constrained generic user types.
+  constrained generic structs.
 - Tokenize declaration headers and nested type parameters as recoverable
   TextMate regions instead of requiring one complete line-wide match.
 - Add real `vscode-textmate` scope tests and fresh-build install commands.

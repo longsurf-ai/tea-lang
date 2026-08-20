@@ -2,7 +2,7 @@ File @2:1 version="1" eof=@21:1
   stmtList[0]: ImportStmt @2:1
     path: BasicLit @2:8 litKind="path" value="seanzhang/talib/2" bad=false
     alias: Name @2:29 value="tl"
-  stmtList[1]: UserTypeDecl @3:1 exported=true writtenKeyword="struct"
+  stmtList[1]: StructDecl @3:1 exported=true writtenKeyword="struct"
     name: Name @3:15 value="Bin"
     members[0]: FieldDecl @4:5
       fieldType: TypeAnnotation @4:5
@@ -19,7 +19,7 @@ File @2:1 version="1" eof=@21:1
           name: Name @6:5 value="array"
           args[0]: Name @6:11 value="float"
       name: Name @6:18 value="samples"
-  stmtList[2]: UserTypeDecl @7:1 exported=false writtenKeyword="type"
+  stmtList[2]: StructDecl @7:1 exported=false writtenKeyword="type"
     name: Name @7:6 value="Point"
     members[0]: FieldDecl @8:5
       fieldType: TypeAnnotation @8:5

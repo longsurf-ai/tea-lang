@@ -843,7 +843,7 @@ function cloneEffectSchema(schema: EffectValueSchema): EffectValueSchema {
   switch (schema.kind) {
     case 'enum':
       return {...schema, members: schema.members.map(member => ({...member}))};
-    case 'user-type':
+    case 'struct':
       return {
         ...schema,
         fields: schema.fields.map(field => ({
@@ -859,7 +859,7 @@ function cloneEffectSchema(schema: EffectValueSchema): EffectValueSchema {
 function cloneEffectValue(value: EffectValue): EffectValue {
   if (typeof value !== 'object' || value === null) return value;
   return {
-    kind: 'user-type',
+    kind: 'struct',
     fields: value.fields.map(cloneEffectValue),
   };
 }
@@ -918,7 +918,7 @@ function estimateEffectSchemaBytes(schema: EffectValueSchema): number {
     for (const member of schema.members) {
       bytes += 48 + stringBytes(member.name) + stringBytes(member.title);
     }
-  } else if (schema.kind === 'user-type') {
+  } else if (schema.kind === 'struct') {
     bytes += stringBytes(schema.typeId) + stringBytes(schema.displayName);
     for (const field of schema.fields) {
       bytes +=

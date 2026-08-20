@@ -18,8 +18,8 @@ import {
   Qualifier,
   TypeKind,
   type Type,
-  type UserField,
-  type UserType,
+  type StructField,
+  type StructType,
 } from '../ir/type';
 import {generate} from './codegen';
 
@@ -71,15 +71,18 @@ function write(target: Name, value: IrExpr): IrStmt {
   return {kind: IrKind.WriteName, pos, name: target, value};
 }
 
-function update(
-  root: Name,
-  fieldIndices: readonly number[],
+function storeField(
+  object: IrExpr,
+  owner: StructType,
+  fieldIndex: number,
   value: IrExpr,
 ): IrStmt {
   return {
-    kind: IrKind.UpdateValuePath,
+    kind: IrKind.StoreField,
     pos,
-    path: {root, fieldIndices},
+    object,
+    owner,
+    fieldIndex,
     value,
   };
 }
@@ -101,13 +104,13 @@ function compile(ir: Program): void {
   generate(ir);
 }
 
-function userType(name: string, fields: readonly UserField[]): UserType {
-  return {kind: TypeKind.UserType, name, fields};
+function structType(name: string, fields: readonly StructField[]): StructType {
+  return {kind: TypeKind.Struct, name, fields};
 }
 
 describe('malformed Program rejection', () => {
-  test('rejects constructor and field nodes that disagree with their user type', () => {
-    const pair = userType('Pair', [
+  test('rejects constructor and field nodes that disagree with their struct', () => {
+    const pair = structType('Pair', [
       {name: 'left', type: IntType},
       {name: 'right', type: IntType},
     ]);
@@ -116,11 +119,11 @@ describe('malformed Program rejection', () => {
       compile(
         program([
           write(root, {
-            kind: IrKind.NewUserValue,
+            kind: IrKind.NewStruct,
             pos,
             type: pair,
             qualifier: Qualifier.Series,
-            userType: pair,
+            structType: pair,
             args: [constant(IntType, 1)],
             argumentEvaluationOrder: [0],
           }),
@@ -132,11 +135,11 @@ describe('malformed Program rejection', () => {
       compile(
         program([
           write(root, {
-            kind: IrKind.NewUserValue,
+            kind: IrKind.NewStruct,
             pos,
             type: pair,
             qualifier: Qualifier.Series,
-            userType: pair,
+            structType: pair,
             args: [constant(IntType, 1), constant(IntType, 2)],
             argumentEvaluationOrder: [0, 1],
           }),
@@ -149,11 +152,11 @@ describe('malformed Program rejection', () => {
       compile(
         program([
           write(root, {
-            kind: IrKind.NewUserValue,
+            kind: IrKind.NewStruct,
             pos,
             type: pair,
             qualifier: Qualifier.Series,
-            userType: pair,
+            structType: pair,
             args: [constant(IntType, 1), constant(IntType, 2)],
             argumentEvaluationOrder: [1, 1],
           }),
@@ -164,20 +167,22 @@ describe('malformed Program rejection', () => {
     );
   });
 
-  test('rejects a rooted path that traverses a non-user value', () => {
+  test('rejects a field store whose object disagrees with its owner', () => {
+    const pair = structType('Pair', [{name: 'value', type: IntType}]);
     const root = name('x', IntType);
     expect(() =>
       compile(
         program([
           write(root, constant(IntType, 1)),
-          update(root, [0], constant(IntType, 2)),
+          storeField(read(root), pair, 0, constant(IntType, 2)),
         ]),
       ),
-    ).toThrow('field path traverses non-user type Int');
+    ).toThrow('struct field store object disagrees with its owner type');
   });
 
   test('rejects a method receiver exposed as an explicit parameter', () => {
-    const receiver = name('receiver', IntType);
+    const box = structType('Box', [{name: 'value', type: IntType}]);
+    const receiver = name('receiver', box);
     const invalid: MutableMethodIrFunc = {
       callMode: 'mutable-method',
       name: 'invalid',
@@ -186,13 +191,21 @@ describe('malformed Program rejection', () => {
       locals: [],
       resultType: IntType,
       resultQualifier: Qualifier.Series,
-      body: read(receiver),
+      body: field(read(receiver), 0, IntType),
     };
-    const root = name('root', IntType);
+    const root = name('root', box);
     expect(() =>
       compile(
         program([
-          write(root, constant(IntType, 1)),
+          write(root, {
+            kind: IrKind.NewStruct,
+            pos,
+            type: box,
+            qualifier: Qualifier.Series,
+            structType: box,
+            args: [constant(IntType, 1)],
+            argumentEvaluationOrder: [0],
+          }),
           {
             kind: IrKind.ExprStmt,
             pos,
@@ -202,7 +215,6 @@ describe('malformed Program rejection', () => {
               type: IntType,
               qualifier: Qualifier.Series,
               func: invalid,
-              path: {root, fieldIndices: []},
               receiver: read(root),
               slot: 0,
               args: [constant(IntType, 2)],

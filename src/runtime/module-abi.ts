@@ -2,7 +2,7 @@
 
 import type {BuiltinSource} from '../ir/builtin';
 import type {NameStorage} from '../ir/node';
-import type {Heap} from './heap';
+import type {Heap, StorageRef} from './heap';
 import type {EffectSpec, ParamSpec} from './schema';
 import type {
   AggregateLayoutManifest,
@@ -13,11 +13,10 @@ import type {
   CollectionValue,
   ExecutionResult,
   ManifestValue,
-  UserTypeValue,
   Value,
 } from './value';
 
-export const RUNTIME_ABI_VERSION = 1 as const;
+export const RUNTIME_ABI_VERSION = 2 as const;
 
 export type DepthSpec =
   | {readonly kind: 'none'}
@@ -69,7 +68,7 @@ export type OutputChannelTransport =
         | 'linefill';
     }
   | {readonly kind: 'output-ref'; readonly output: 'plot' | 'hline'}
-  | {readonly kind: 'user-type'; readonly name: string}
+  | {readonly kind: 'struct'; readonly name: string}
   | {readonly kind: 'array'}
   | {readonly kind: 'matrix'}
   | {readonly kind: 'map'}
@@ -125,19 +124,10 @@ export interface ModuleCode {
   readonly funcs: Readonly<
     Record<
       number,
-      (
-        rt: Runtime,
-        fr: Frame,
-        ...args: Value[]
-      ) => ExecutionResult | MutableMethodCallResult
+      (rt: Runtime, fr: Frame, ...args: Value[]) => ExecutionResult
     >
   >;
   main(rt: Runtime, fr: Frame): void;
-}
-
-export interface MutableMethodCallResult {
-  readonly receiver: Value;
-  readonly result: ExecutionResult;
 }
 
 export interface TeaModule extends ModuleCode {
@@ -190,14 +180,15 @@ export interface Runtime {
     calcBarsCount: Value,
   ): void;
   bindRequest(rid: number, symbol: Value, timeframe: Value): void;
-  newUser(layout: LayoutId, fields: readonly Value[]): UserTypeValue;
-  userField(value: Value, ownerLayout: LayoutId, index: number): Value;
-  rebuildUserPath(
-    root: Value,
-    rootLayout: LayoutId,
-    fieldIndices: readonly number[],
-    leaf: Value,
-  ): Value;
+  newStruct(layout: LayoutId, fields: readonly Value[]): StorageRef<unknown>;
+  requireStruct(value: Value, layout: LayoutId): StorageRef<unknown>;
+  structField(value: Value, ownerLayout: LayoutId, index: number): Value;
+  storeStructField(
+    value: Value,
+    ownerLayout: LayoutId,
+    index: number,
+    replacement: Value,
+  ): void;
   callCollection(
     operation: CollectionOperation,
     resultLayout: LayoutId,

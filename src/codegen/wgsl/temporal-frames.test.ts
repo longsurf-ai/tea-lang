@@ -104,59 +104,48 @@ describe('WGSL temporal call-site frames', () => {
     );
   });
 
-  test('keeps history-free const-method receiver and parameter in function locals', () => {
-    const artifact = compile(
-      [
-        'indicator("const method args")',
-        'type Sample',
-        '    float value',
-        '    float add(float other) const =>',
-        '        this.value + other',
-        'sample = Sample.new(close)',
-        'plot(sample.add(1.0))',
-      ].join('\n'),
+  test('fails closed for const methods on struct references', () => {
+    const result = compileProgramToWgsl(
+      mustBuild(
+        [
+          'indicator("const method args")',
+          'type Sample',
+          '    float value',
+          '    float add(float other) const =>',
+          '        this.value + other',
+          'sample = Sample.new(close)',
+          'plot(sample.add(1.0))',
+        ].join('\n'),
+      ),
     );
-
-    const frame = artifact.state.frames.find(
-      candidate => candidate.owner === 'Sample.add',
+    expect(result.status).toBe('staged-unsupported');
+    expect(result.eligibility.issues[0]?.code).toBe(
+      'struct-reference-lowering-unimplemented',
     );
-    expect(frame?.wordCount).toBe(2);
-    expect(frame?.locals).toEqual([]);
-    const source = emittedFunction(artifact, 'Sample.add');
-    expect(source).toContain('var tea_arg_0: TeaU0 = p0;');
-    expect(source).toContain('var tea_arg_1: TeaFloat = p1;');
-    expect(source.match(/tea_state_(?:load|store)\(/g)).toHaveLength(2);
   });
 
-  test('copies a mutable receiver out of its function-local value', () => {
-    const artifact = compile(
-      [
-        'strategy("mutable receiver locals")',
-        'type Pair',
-        '    float left',
-        '    float right',
-        '    float touch(float value) =>',
-        '        this.right := this.right + 1.0',
-        '        value',
-        'var Pair pair = Pair.new(0.0, 0.0)',
-        'pair.left := pair.touch(close)',
-        'plot(pair.left)',
-        'plot(pair.right)',
-      ].join('\n'),
+  test('fails closed for mutable methods on struct references', () => {
+    const result = compileProgramToWgsl(
+      mustBuild(
+        [
+          'strategy("mutable receiver locals")',
+          'type Pair',
+          '    float left',
+          '    float right',
+          '    float touch(float value) =>',
+          '        this.right := this.right + 1.0',
+          '        value',
+          'var Pair pair = Pair.new(0.0, 0.0)',
+          'pair.left := pair.touch(close)',
+          'plot(pair.left)',
+          'plot(pair.right)',
+        ].join('\n'),
+      ),
     );
-
-    const frame = artifact.state.frames.find(
-      candidate => candidate.owner === 'Pair.touch',
+    expect(result.status).toBe('staged-unsupported');
+    expect(result.eligibility.issues[0]?.code).toBe(
+      'struct-reference-lowering-unimplemented',
     );
-    expect(artifact.state.fixedWordCount * 4).toBe(
-      artifact.executionStateFixedByteSize,
-    );
-    expect(frame?.wordCount).toBe(2);
-    expect(frame?.locals).toEqual([]);
-    const source = emittedFunction(artifact, 'Pair.touch');
-    expect(source).toContain('tea_arg_0 =');
-    expect(source).toContain('return TeaMutableResult0(tea_arg_0, tea_arg_1);');
-    expect(source.match(/tea_state_(?:load|store)\(/g)).toHaveLength(2);
   });
 
   test('supports first-late activation and skipped active frames', () => {
@@ -213,36 +202,28 @@ describe('WGSL temporal call-site frames', () => {
     }
   });
 
-  test('loads wide nested state once before reset and commit stores', () => {
-    const artifact = compile(
-      [
-        'indicator("wide state copy")',
-        'type Quad',
-        '    float a',
-        '    float b',
-        '    float c',
-        '    float d',
-        'type Wide',
-        '    Quad left',
-        '    Quad right',
-        'var Wide state = Wide.new(Quad.new(close, open, high, low), Quad.new(open, high, low, close))',
-        'plot(state.left.a)',
-      ].join('\n'),
+  test('fails closed for wide nested struct state', () => {
+    const result = compileProgramToWgsl(
+      mustBuild(
+        [
+          'indicator("wide state copy")',
+          'type Quad',
+          '    float a',
+          '    float b',
+          '    float c',
+          '    float d',
+          'type Wide',
+          '    Quad left',
+          '    Quad right',
+          'var Wide state = Wide.new(Quad.new(close, open, high, low), Quad.new(open, high, low, close))',
+          'plot(state.left.a)',
+        ].join('\n'),
+      ),
     );
-    const local = artifact.state.frames
-      .flatMap(frame => frame.locals)
-      .find(candidate => candidate.name === 'state');
-    expect(local).toBeDefined();
-
-    const captures = artifact.module.source
-      .split('\n')
-      .filter(line => /let state_copy\d+:/.test(line));
-    expect(captures).toHaveLength(2);
-    for (const capture of captures) {
-      expect(capture.match(/tea_state_load\(/g)).toHaveLength(
-        local?.valueWordCount ?? 0,
-      );
-    }
+    expect(result.status).toBe('staged-unsupported');
+    expect(result.eligibility.issues[0]?.code).toBe(
+      'struct-reference-lowering-unimplemented',
+    );
   });
 
   test('returns typed empty for invalid and unreachable constant offsets', () => {

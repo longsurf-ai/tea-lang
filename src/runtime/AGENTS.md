@@ -5,7 +5,7 @@ Runtime ABI (`abi.ts` is the stable facade; `value.ts`, `schema.ts`,
 `module-abi.ts`, `provider.ts`, `output.ts`, `binding.ts`, and `errors.ts` own
 the internal contracts; `docs/runtime.md` is the authority)
 and owns the main loop — binding, exact value layouts, frame trees, rings,
-immutable collection storage, provisional/commit, and emission flushing.
+unified Heap storage, provisional/commit, and emission flushing.
 Generic batch execution and GPU binding/execution also live here because bindings,
 datasets, buffers, devices, dispatch, and readback are runtime facts.
 The backend-neutral `executeProgram()` host harness lives one level above in
@@ -17,7 +17,7 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   sees ring indices, scratch heads, or storage layout. Hosts differ only in
   the injected DataProvider and OutputSink.
 - `RUNTIME_ABI_VERSION` is the only JavaScript Runtime ABI version source and
-  remains `1` before launch; do not add migration branches or legacy readers.
+  is currently `2`; do not add migration branches or legacy readers.
 - Runtime implementation files import the narrow internal contract they use,
   never their own `abi.ts` facade. The versioned physical GPU artifact lives
   in `gpu/contract.ts`; runtime/gpu must not import codegen implementation
@@ -63,8 +63,9 @@ The backend-neutral `executeProgram()` host harness lives one level above in
 - execute always runs the full row from its storage-class baseline — no
   incremental update paths exist. perBar scratch resets to na; var/varip seed
   from the last committed value only after committed initialization;
-  declaration-site `InitName` remains eligible otherwise. varip alone keeps
-  its value and initialization candidate across completed same-row executions.
+  declaration-site `InitName` remains eligible otherwise. varip keeps its
+  value/rebinding candidate across completed same-row executions; an ordinary
+  var retains only its first successful same-row initialization candidate.
   Commit pushes scratch into history; rollback is discarding scratch.
 - One Ring class serves all slots. Every local and request result carries an
   exact `LayoutId`; the shared registry validates values, derives typed empty,
@@ -75,14 +76,15 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   shallow size. Scratch-only bind Rings release before final allocation;
   completed children release frame Rings when builder ownership transfers,
   while the result-column lease remains with the merged view until disposal.
-- Ordinary user-defined values are nominal immutable records with value
-  semantics. Collection values are immutable headers over source-hidden
-  `StorageRef`s. Committed Heap payloads never mutate, Heap owns no semantic
-  object identity or `var`/`varip` policy, and generated code cannot control
-  transactions or commits.
-- Storage descriptors provide an exact args-byte estimate. Heap enforces
-  transient cell/byte limits before descriptor sealing may allocate or copy,
-  and the sealed payload's logical byte count must equal the estimate.
+- Struct values are nominal references represented by source-hidden
+  `StorageRef`s; assignment and history copy the reference while the Heap-owned
+  body is transactionally mutable. Collection values remain immutable headers
+  whose descriptors allocate replacement backing. Both use the same Heap,
+  transaction, version guards, limits, tracing, and collection.
+- Storage descriptors provide an exact args-byte estimate and own payload
+  validation/tracing. Descriptors that admit mutation prepare opaque edits and
+  undo values before nonthrowing apply/restore; in-place edits preserve logical
+  bytes. Heap journals the first `(slot, descriptor key)` edit per transaction.
 - Exactly one nonterminal Heap transaction may exist. The row transaction prepares all
   fallible Ring, Heap-reachability, and buffered-emission work before a
   non-throwing internal commit; final sink delivery is post-commit. Abort and

@@ -13,7 +13,7 @@ export type WgslEligibilityPhase =
 export type WgslEligibilityIssueCode =
   | 'numeric-contract-unresolved'
   | 'nullable-value-layout-unimplemented'
-  | 'user-value-layout-unimplemented'
+  | 'struct-reference-lowering-unimplemented'
   | 'enum-layout-unimplemented'
   | 'tuple-layout-unimplemented'
   | 'collection-layout-unimplemented'
@@ -27,7 +27,6 @@ export type WgslEligibilityIssueCode =
   | 'persistent-state-initialization-unimplemented'
   | 'function-frame-lowering-unimplemented'
   | 'method-frame-lowering-unimplemented'
-  | 'mutable-method-copyout-unimplemented'
   | 'native-call-lowering-unimplemented'
   | 'aggregate-operation-lowering-unimplemented'
   | 'tuple-operation-lowering-unimplemented'

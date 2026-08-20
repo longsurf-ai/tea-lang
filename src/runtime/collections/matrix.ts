@@ -38,7 +38,7 @@ export const MATRIX_STORAGE: StorageDescriptor<
   logicalBytesFor(args) {
     return args.logicalBytes;
   },
-  seal(args) {
+  create(args) {
     return Object.freeze({
       values: Object.freeze([...args.values]),
       logicalBytes: args.logicalBytes,
@@ -71,7 +71,7 @@ export function matrixCall(
     const columns = shape(args[1], 'matrix columns');
     const size = matrixSize(rows, columns, ctx.maxElements);
     const layout = collectionLayout(ctx.layouts, resultLayout, 'matrix');
-    ctx.layouts.assertValue(layout.element, args[2], 'matrix initial value');
+    ctx.assertValue(layout.element, args[2], 'matrix initial value');
     return createMatrix(
       ctx,
       resultLayout,
@@ -155,12 +155,7 @@ export function matrixMutate(
   receiverValue: Value,
   args: readonly Value[],
 ): CollectionMutation {
-  const receiver = requireCollection(
-    ctx.layouts,
-    receiverValue,
-    layoutId,
-    'matrix',
-  );
+  const receiver = requireCollection(ctx, receiverValue, layoutId, 'matrix');
   const layout = collectionLayout(ctx.layouts, layoutId, 'matrix');
   const old = values(ctx, receiver);
   switch (operation) {
@@ -168,14 +163,14 @@ export function matrixMutate(
       requireArgs(operation, args, 3);
       const row = index(args[0], receiver.rows, 'row');
       const column = index(args[1], receiver.columns, 'column');
-      ctx.layouts.assertValue(layout.element, args[2], 'matrix.set value');
+      ctx.assertValue(layout.element, args[2], 'matrix.set value');
       const next = [...old];
       next[row * receiver.columns + column] = args[2];
       return {replacement: replace(ctx, receiver, next), result: undefined};
     }
     case 'matrix.fill': {
       requireArgs(operation, args, 1);
-      ctx.layouts.assertValue(layout.element, args[0], 'matrix.fill value');
+      ctx.assertValue(layout.element, args[0], 'matrix.fill value');
       return {
         replacement: replace(
           ctx,
@@ -205,7 +200,7 @@ function createMatrix(
     );
   }
   elements.forEach((value, at) =>
-    ctx.layouts.assertValue(layout.element, value, `matrix element ${at}`),
+    ctx.assertValue(layout.element, value, `matrix element ${at}`),
   );
   const storage = allocateStorage(ctx, layout.element, elements);
   return matrixValue(layoutId, storage, rows, columns);
@@ -243,7 +238,7 @@ function allocateStorage(
   elementLayout: LayoutId,
   elements: readonly Value[],
 ): MatrixValue['storage'] {
-  return ctx.transaction.allocateSealed(MATRIX_STORAGE, {
+  return ctx.transaction.allocate(MATRIX_STORAGE, {
     values: elements,
     logicalBytes:
       16 + elements.length * ctx.layouts.shallowBytes(elementLayout),
@@ -268,7 +263,7 @@ function requireMatrixArg(
     return fatal(`${operation} is missing its receiver`);
   }
   const value = args[0];
-  return requireCollection(ctx.layouts, value, valueLayout(value), 'matrix');
+  return requireCollection(ctx, value, valueLayout(value), 'matrix');
 }
 
 function valueLayout(value: Value): LayoutId {

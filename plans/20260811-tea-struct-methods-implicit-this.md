@@ -1,5 +1,10 @@
 # Tea struct methods and implicit `this`
 
+> Reference-semantics supersession note (2026-08-19): the nested-method syntax
+> and implicit receiver remain authoritative, while receiver copy-in/copy-out
+> and transitive `const` behavior are superseded by
+> [Tea struct references and unified Heap storage](20260819-tea-struct-references.md).
+
 ## 1. System map
 
 ```text

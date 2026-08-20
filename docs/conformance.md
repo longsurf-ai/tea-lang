@@ -26,10 +26,10 @@ and parameter-dependent enablement part of the compile-through contract rather
 than incidental source that merely has to typecheck.
 
 The `aggregate-values` compile-through case is also the executable lock for
-user-value and collection copying, mutable-method receiver writeback, and
-`const` method reads through history. Its expected rows are Tea-owned contract
-values derived from [memory-model.md](memory-model.md), not copied runtime
-output.
+struct-reference aliasing and rebinding, collection-header copying, historical
+references, in-place mutable methods, shallow `const`, and transaction rollback.
+Its expected rows are Tea-owned contract values derived from
+[memory-model.md](memory-model.md), not copied runtime output.
 
 The `typed-execution-range` compile-through case locks the fixed-history
 contract for `time`, `time_close`, `bar_index`, `last_bar_index`, `timenow`,

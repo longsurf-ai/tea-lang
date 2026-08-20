@@ -30,7 +30,7 @@ WGSL module + BindInputs[]   ─▶ physical GPU plan  ─▶ dispatch / readbac
 `Package → Scope → Object → Type` is the checker source of truth. A package
 owns its files, package scope, and imports; persistent scopes map source names
 to canonical semantic objects; those objects represent variables, function
-templates, user types and fields, enums and members, package names, and
+templates, structs and fields, enums and members, package names, and
 builtins. The shared type domain describes their value types. This graph
 answers _what a declaration is_ without embedding Program objects or runtime
 layout.
@@ -43,17 +43,18 @@ capture's facts are semantic context, not physical Program identity; the noder
 may project the same semantic objects into multiple Programs.
 
 Every call occurrence has one discriminated `CallResolution`: native,
-function, constructor, or request. A `UserTypeObject` owns its nominal
-`UserType` and ordered `FieldObject`s; each field owns its checked default
+function, constructor, or request. A `StructObject` owns its nominal
+`StructType` and ordered `FieldObject`s; each field owns its checked default
 expression together with the `Info`, `TypeAndValue`, and semantic dependency
 set that interpret it.
 Constructor resolution aligns every supplied or defaulted argument to a field,
 joins their qualifiers, and applies capture policy only to defaults actually
 used by that call. Request resolution owns its capture facts and result type.
-There are no parallel call maps or root-global user-type-default/capture
-tables. Direct updates have one checked writeback target: a current root
-`VariableObject` plus canonical `FieldObject`s. Mutating call receivers carry
-that target inside their existing `CallResolution`.
+There are no parallel call maps or root-global struct-default/capture tables.
+A struct-field update records the checked receiver expression plus its
+canonical owning StructObject and FieldObject. A collection mutator records a
+replacement location: a Name or one collection field reached through a struct
+reference. Rebinding and storage mutation are different facts.
 
 The boundary is strict: checker results contain no `IrName`, `SeriesInput`,
 `BuiltinInput`, `ParamInput`, `RequestEdge`, `HistoryDepth`, slot, or frame.
@@ -79,8 +80,8 @@ historical types2/types split). A Tea type is a point on two axes:
 
 - **Value types**: primitives (int, float, bool, string, color), drawing
   handles (line, label, box, table, polyline, linefill), collections
-  (`array<T>`, `matrix<T>`, `map<K, V>`), user-defined value types and enums
-  (identity by declaration), tuples, concrete function signatures, plus
+  (`array<T>`, `matrix<T>`, `map<K, V>`), nominal struct-reference types and
+  enums (identity by declaration), tuples, concrete function signatures, plus
   `void` (effect calls) and `na` (the polymorphic empty value; assignable to
   every nullable type).
 - **Qualifiers**: `const < input < simple < series` — an ordering answering
@@ -255,15 +256,18 @@ later pass, not a representation constraint. There are no Bad nodes — the IR
 exists only for error-free compilations, enforced by `compile()`'s phase
 barriers.
 
-Aggregate operations keep value semantics explicit without exposing physical
-storage. `NewUserValue` constructs the canonical field vector. `FieldGet`
-names a canonical field index. `UpdateValuePath` owns one projected root Name
-plus field indices and performs one atomic writeback. A mutating collection
-call and a `CallMutableMethod` carry that same path; codegen evaluates their
-receiver once and copies the replacement back only after success. A
-`CallConstMethod` carries a receiver value but no path or writeback authority.
-There are no Program nodes for heap allocation, COW, prepare, publish, or
-rollback.
+Struct operations expose reference semantics without exposing physical
+storage. `NewStruct` describes construction in canonical field order;
+`FieldGet` names a canonical field index; and `StoreField` captures one struct
+receiver and stores one field after evaluating the replacement. A mutable
+method carries the receiver expression but no copy-out path and returns only
+its declared result.
+
+A mutating collection call carries a `CollectionLocation`: either a Name whose
+Ring receives the replacement header or a captured struct field whose storage
+receives it. A collection accessor result alone is not a location. There are no
+Program nodes for Heap slots, StorageRefs, COW, prepare, commit, rollback, or
+garbage collection.
 
 Canonical argument slots and evaluation order are distinct Program facts.
 Constructors and calls retain an `argumentEvaluationOrder`: lowering captures
@@ -343,18 +347,17 @@ unreachable never enter `requests` — dead-request elimination by construction.
 
 ## Noding policies
 
-- History on a non-place expression (`f(x)[k]`) desugars to a synthetic
-  perBar slot written **unconditionally every bar** before the read — the
-  unconditional write is what keeps its history well-defined. That is why
-  the desugaring exists only at top level; inside a block it is a clean
-  error for now.
+- History requires a direct readable source binding. Noder projects that
+  binding to its ordinary Place and emits `HistRead`; calls, field selections,
+  arithmetic, and other computed expressions never gain synthetic history
+  Names. Offset zero obeys the same admission rule.
 - A value-position loop yields the last completed iteration's block value,
   `na` if no iteration completed; `break` skips the current iteration's
   value. A numeric range captures its start, end, and step once, uses inclusive
   endpoints in either direction, and has no language-level trip-count ceiling.
   A compile-time zero step is an error; a dynamic zero, non-finite, wrapping,
   or numerically non-progressing update terminates without wedging execution.
-- User-value construction consumes the constructor call's single resolution. Its
+- Struct construction consumes the constructor call's single resolution. Its
   field-ordered arguments include both supplied expressions and field-owned
   defaults; the noder temporarily reads each checked expression's `Info` while
   lowering it into the caller's current Program and frame. Defaults are

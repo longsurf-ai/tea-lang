@@ -2,7 +2,7 @@
 
 import type {EffectSpec, ParamSpec} from '../runtime/schema';
 
-export const GPU_ARTIFACT_ABI_VERSION = 2 as const;
+export const GPU_ARTIFACT_ABI_VERSION = 3 as const;
 
 export const GPU_BUFFER_GROUP = 0;
 export const GPU_EXTERNAL_BUFFER_BINDINGS = Object.freeze({
@@ -136,8 +136,11 @@ export type WgslValueSchema =
       readonly typeId: string;
       readonly members: readonly string[];
     }
+  // Reserved for the later reference-struct GPU plan. The current WGSL
+  // producer fails closed on every reachable StructType and does not emit
+  // this schema variant.
   | {
-      readonly kind: 'user-type';
+      readonly kind: 'struct';
       readonly physicalLayout: number;
       readonly validByteOffset: number;
       readonly name: string;

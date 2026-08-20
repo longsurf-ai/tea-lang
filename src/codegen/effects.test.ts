@@ -9,7 +9,7 @@ import {
   Qualifier,
   StringType,
   TypeKind,
-  type UserType,
+  type StructType,
 } from '../ir/type';
 import {MemorySink} from '../providers/sinks/memory-sink';
 import type {DataProvider, ProviderContext} from '../runtime/abi';
@@ -21,8 +21,8 @@ import {compileProgramToWgsl} from './wgsl/lower';
 
 const pos = {base: {filename: 'effects.test.tea'}, line: 1, col: 1};
 
-const EVENT: UserType = {
-  kind: TypeKind.UserType,
+const EVENT: StructType = {
+  kind: TypeKind.Struct,
   name: 'OrderSubmitted',
   fields: [
     {name: 'commandId', type: StringType},
@@ -31,7 +31,7 @@ const EVENT: UserType = {
 };
 
 const eventSchema = {
-  kind: 'user-type' as const,
+  kind: 'struct' as const,
   typeId: 'effects.test.OrderSubmitted',
   displayName: 'OrderSubmitted',
   fields: [
@@ -45,11 +45,11 @@ const effect = {
   sourcePosition: pos,
 };
 const payload = {
-  kind: IrKind.NewUserValue,
+  kind: IrKind.NewStruct,
   pos,
   type: EVENT,
   qualifier: Qualifier.Const,
-  userType: EVENT,
+  structType: EVENT,
   args: [
     {
       kind: IrKind.Const,
@@ -95,7 +95,7 @@ const provider: DataProvider = {
 };
 
 describe('generic sparse effect lowering', () => {
-  test('publishes manifest-typed fixed UDT payloads in source order', async () => {
+  test('publishes manifest-typed fixed struct payloads in source order', async () => {
     const module = loadModule(generate(program));
     const sink = new MemorySink();
     const execution = await bind(module, {
@@ -112,7 +112,7 @@ describe('generic sparse effect lowering', () => {
     ]);
     expect(sink.effectSchemas).toEqual([{payload: eventSchema}]);
     expect(module.aggregateLayouts.layouts[0]).toEqual({
-      kind: 'user-type',
+      kind: 'struct',
       name: 'OrderSubmitted',
       typeId: 'effects.test.OrderSubmitted',
       fields: [
@@ -127,7 +127,7 @@ describe('generic sparse effect lowering', () => {
         row: 0,
         effectId: 0,
         payload: {
-          kind: 'user-type',
+          kind: 'struct',
           fields: ['entry-1', 7],
         },
         provisional: false,
@@ -136,7 +136,7 @@ describe('generic sparse effect lowering', () => {
         row: 0,
         effectId: 0,
         payload: {
-          kind: 'user-type',
+          kind: 'struct',
           fields: ['entry-1', 7],
         },
         provisional: false,
@@ -171,11 +171,11 @@ describe('generic sparse effect lowering', () => {
         timeNow: 0,
       }),
     ).rejects.toThrow(
-      'effect payload layout 0 disagrees with logical user-type schema',
+      'effect payload layout 0 disagrees with logical struct schema',
     );
   });
 
-  test('WGSL publishes a fixed append contract for the same generic effects', () => {
+  test('WGSL fails closed for struct effect payloads', () => {
     const gpuProgram = mustBuild(
       [
         'strategy("GPU effects")',
@@ -191,50 +191,9 @@ describe('generic sparse effect lowering', () => {
       ].join('\n'),
     );
     const result = compileProgramToWgsl(gpuProgram);
-    expect(result.status).toBe('compiled');
-    if (result.status !== 'compiled') return;
-
-    expect(result.artifact.maxEffectsPerRow).toBe(2);
-    expect(result.artifact.literalStrings).toEqual(['entry-1']);
-    expect(result.artifact.effectSchemas).toHaveLength(1);
-    expect(result.artifact.effectSchemas[0]).toMatchObject({
-      effectId: 0,
-      payloadWordCount: 5,
-      declaration: {
-        payload: {
-          kind: 'user-type',
-          typeId: '@entry.OrderSubmitted',
-          fields: [
-            {name: 'commandId', value: {kind: 'string'}},
-            {name: 'barIndex', value: {kind: 'int'}},
-          ],
-        },
-      },
-      payload: {
-        kind: 'user-type',
-        validByteOffset: 0,
-        name: 'OrderSubmitted',
-        fields: [
-          {
-            name: 'commandId',
-            byteOffset: 4,
-            value: {
-              kind: 'string',
-              validByteOffset: 0,
-              valueByteOffset: 4,
-            },
-          },
-          {
-            name: 'barIndex',
-            byteOffset: 12,
-            value: {
-              kind: 'int',
-              validByteOffset: 0,
-              valueByteOffset: 4,
-            },
-          },
-        ],
-      },
-    });
+    expect(result.status).toBe('staged-unsupported');
+    expect(result.eligibility.issues[0]?.code).toBe(
+      'struct-reference-lowering-unimplemented',
+    );
   });
 });

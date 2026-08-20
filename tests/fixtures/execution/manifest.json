@@ -8,9 +8,9 @@
       "data": "compile/aggregate-values/data.csv",
       "reference": "compile/aggregate-values/reference.json",
       "sha256": {
-        "source": "70c597a1a1d40fd52bc19fbf9db1f41b2a20505f375284227aa1ea7054849d28",
+        "source": "d11638a549be5e828ab7dc67a53f04875138876c5a86bc440640f09049ba533b",
         "data": "cff07aff370ed4b45ff408cc12757ef70c0617a547db33fd01207e76b49aa382",
-        "reference": "d44a851e097a41b6067e00a04f0bc6a5777331b0ae157c9abe17b3d34be3ad81"
+        "reference": "1bc3cee7d1cd8e447ca6baf2574cc9c304d04e4781f58550e6af29561c5216f7"
       }
     },
     {

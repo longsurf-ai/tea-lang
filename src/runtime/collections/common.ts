@@ -23,6 +23,7 @@ export interface CollectionContext {
   readonly heap: Heap;
   readonly transaction: HeapTransaction;
   readonly layouts: ValueLayoutRegistry;
+  readonly assertValue: (layout: LayoutId, value: Value, where: string) => void;
   readonly maxElements: number;
 }
 
@@ -117,7 +118,7 @@ export function collectionLayout(
 }
 
 export function requireCollection<C extends CollectionValue['kind']>(
-  layouts: ValueLayoutRegistry,
+  ctx: Pick<CollectionContext, 'layouts' | 'assertValue'>,
   value: Value,
   id: LayoutId,
   kind: C,
@@ -125,7 +126,7 @@ export function requireCollection<C extends CollectionValue['kind']>(
   if (value === null) {
     throw new ExecutionError('NA_COLLECTION', `${kind} operation on na`);
   }
-  layouts.assertValue(id, value, `${kind} receiver`);
+  ctx.assertValue(id, value, `${kind} receiver`);
   const matches =
     (kind === 'array' && isArrayValue(value)) ||
     (kind === 'matrix' && isMatrixValue(value)) ||

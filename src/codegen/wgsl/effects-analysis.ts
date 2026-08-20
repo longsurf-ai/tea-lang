@@ -4,6 +4,7 @@
 import type {Pos} from '../../base/pos';
 import {fatal} from '../../base/print';
 import {
+  CollectionLocationKind,
   IrKind,
   PlaceKind,
   type IrExpr,
@@ -99,10 +100,12 @@ export function collectLiteralStrings(program: Program): readonly string[] {
       visitArgs(expr.args, expr.argumentEvaluationOrder);
       return;
     } else if (expr.kind === IrKind.MutateCollection) {
-      visitExpr(expr.receiver);
+      if (expr.location.kind === CollectionLocationKind.StructField) {
+        visitExpr(expr.location.object);
+      }
       visitArgs(expr.args, expr.argumentEvaluationOrder);
       return;
-    } else if (expr.kind === IrKind.NewUserValue) {
+    } else if (expr.kind === IrKind.NewStruct) {
       visitArgs(expr.args, expr.argumentEvaluationOrder);
       return;
     }
@@ -158,8 +161,13 @@ class EffectBound {
         return 0;
       }
       case IrKind.WriteName:
-      case IrKind.UpdateValuePath:
         return this.expr(stmt.value);
+      case IrKind.StoreField:
+        return checkedAdd(
+          this.expr(stmt.object),
+          this.expr(stmt.value),
+          stmt.pos,
+        );
       case IrKind.Emit:
         return this.args(stmt.args, stmt.argumentEvaluationOrder);
       case IrKind.EmitEffect:
@@ -212,11 +220,13 @@ class EffectBound {
         return this.args(expr.args, expr.argumentEvaluationOrder);
       case IrKind.MutateCollection:
         return checkedAdd(
-          this.expr(expr.receiver),
+          expr.location.kind === CollectionLocationKind.StructField
+            ? this.expr(expr.location.object)
+            : 0,
           this.args(expr.args, expr.argumentEvaluationOrder),
           expr.pos,
         );
-      case IrKind.NewUserValue:
+      case IrKind.NewStruct:
         return this.args(expr.args, expr.argumentEvaluationOrder);
       case IrKind.MakeTuple:
         return sum(expr.elems, elem => this.expr(elem));

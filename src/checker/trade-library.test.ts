@@ -120,15 +120,15 @@ describe('trade library', () => {
     const ohlc = tradePackage(result).exports.get('OhlcTrade');
     const path = tradePackage(result).exports.get('PathTrade');
     const lots = tradePackage(result).exports.get('LotTrade');
-    expect(nextOpen?.kind).toBe(ObjectKind.GenericUserType);
-    expect(ohlc?.kind).toBe(ObjectKind.GenericUserType);
-    expect(path?.kind).toBe(ObjectKind.GenericUserType);
-    expect(lots?.kind).toBe(ObjectKind.GenericUserType);
+    expect(nextOpen?.kind).toBe(ObjectKind.GenericStruct);
+    expect(ohlc?.kind).toBe(ObjectKind.GenericStruct);
+    expect(path?.kind).toBe(ObjectKind.GenericStruct);
+    expect(lots?.kind).toBe(ObjectKind.GenericStruct);
     if (
-      nextOpen?.kind !== ObjectKind.GenericUserType ||
-      ohlc?.kind !== ObjectKind.GenericUserType ||
-      path?.kind !== ObjectKind.GenericUserType ||
-      lots?.kind !== ObjectKind.GenericUserType
+      nextOpen?.kind !== ObjectKind.GenericStruct ||
+      ohlc?.kind !== ObjectKind.GenericStruct ||
+      path?.kind !== ObjectKind.GenericStruct ||
+      lots?.kind !== ObjectKind.GenericStruct
     ) {
       throw new Error('trade package lost its generic coordinator types');
     }

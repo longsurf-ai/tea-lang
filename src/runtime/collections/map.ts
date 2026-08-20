@@ -42,7 +42,7 @@ export const MAP_STORAGE: StorageDescriptor<MapStorage, MapStorageArgs> = {
   logicalBytesFor(args) {
     return args.logicalBytes;
   },
-  seal(args) {
+  create(args) {
     return Object.freeze({
       entries: Object.freeze(
         args.entries.map(entry =>
@@ -142,19 +142,14 @@ export function mapMutate(
   receiverValue: Value,
   args: readonly Value[],
 ): CollectionMutation {
-  const receiver = requireCollection(
-    ctx.layouts,
-    receiverValue,
-    layoutId,
-    'map',
-  );
+  const receiver = requireCollection(ctx, receiverValue, layoutId, 'map');
   const layout = collectionLayout(ctx.layouts, layoutId, 'map');
   const old = entries(ctx, receiver);
   switch (operation) {
     case 'map.put': {
       requireArgs(operation, args, 2);
       const key = canonicalKey(ctx, layout.key, args[0]);
-      ctx.layouts.assertValue(layout.value, args[1], 'map.put value');
+      ctx.assertValue(layout.value, args[1], 'map.put value');
       const at = find(old, key);
       if (at < 0) {
         assertLimit(receiver.size + 1, ctx.maxElements);
@@ -198,13 +193,13 @@ export function mapMutate(
 }
 
 export function mapSnapshot(
-  ctx: Pick<CollectionContext, 'heap' | 'layouts'>,
+  ctx: Pick<CollectionContext, 'heap' | 'layouts' | 'assertValue'>,
   value: Value,
 ): readonly (readonly [Value, Value])[] {
   if (!isMapValue(value)) {
     throw new ExecutionError('NA_COLLECTION', 'map iteration on na');
   }
-  ctx.layouts.assertValue(value.layout, value, 'map iteration');
+  ctx.assertValue(value.layout, value, 'map iteration');
   return Object.freeze(
     entries(ctx, value).map(entry =>
       Object.freeze([entry.key, entry.value] as const),
@@ -222,7 +217,7 @@ function createMap(
   assertLimit(items.length, ctx.maxElements);
   items.forEach((entry, at) => {
     canonicalKey(ctx, layout.key, entry.key);
-    ctx.layouts.assertValue(layout.value, entry.value, `map value ${at}`);
+    ctx.assertValue(layout.value, entry.value, `map value ${at}`);
   });
   const storage = allocateStorage(ctx, layout.key, layout.value, items);
   return mapValue(layoutId, storage, items.length);
@@ -262,7 +257,7 @@ function allocateStorage(
 ): MapValue['storage'] {
   const entryBytes =
     ctx.layouts.shallowBytes(keyLayout) + ctx.layouts.shallowBytes(valueLayout);
-  return ctx.transaction.allocateSealed(MAP_STORAGE, {
+  return ctx.transaction.allocate(MAP_STORAGE, {
     entries,
     logicalBytes: 16 + entries.length * entryBytes,
   });
@@ -281,7 +276,7 @@ function canonicalKey(
   ) {
     throw new ExecutionError('INVALID_MAP_KEY', 'map key cannot be na');
   }
-  ctx.layouts.assertValue(layoutId, value, 'map key');
+  ctx.assertValue(layoutId, value, 'map key');
   if (
     layout.kind === 'number' &&
     layout.numeric === 'int' &&
@@ -329,7 +324,7 @@ function requireMapArg(
     }
     return fatal(`${operation} received a non-map receiver`);
   }
-  ctx.layouts.assertValue(value.layout, value, `${operation} receiver`);
+  ctx.assertValue(value.layout, value, `${operation} receiver`);
   return value;
 }
 

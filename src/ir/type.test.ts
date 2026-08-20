@@ -23,7 +23,7 @@ import {
   typesEqual,
   unifyTypes,
   type Type,
-  type UserType,
+  type StructType,
 } from './type';
 
 const QUALIFIERS = [
@@ -71,8 +71,8 @@ describe('qualifier ordering', () => {
 });
 
 const arrayOf = (elem: Type): Type => ({kind: TypeKind.Array, elem});
-const userType = (name: string): UserType => ({
-  kind: TypeKind.UserType,
+const structType = (name: string): StructType => ({
+  kind: TypeKind.Struct,
   name,
   fields: [{name: 'x', type: IntType}],
 });
@@ -96,9 +96,9 @@ describe('assignability', () => {
     expect(assignable(arrayOf(IntType), arrayOf(IntType))).toBeTrue();
   });
 
-  test('user-type identity is by declaration, not structure', () => {
-    const a = userType('Point');
-    const b = userType('Point');
+  test('struct identity is by declaration, not structure', () => {
+    const a = structType('Point');
+    const b = structType('Point');
     expect(typesEqual(a, a)).toBeTrue();
     expect(typesEqual(a, b)).toBeFalse();
     expect(assignable(a, b)).toBeFalse();
@@ -107,7 +107,7 @@ describe('assignability', () => {
 
 describe('collection domains', () => {
   test('storable values, map keys, and aggregates have distinct predicates', () => {
-    const point = userType('Point');
+    const point = structType('Point');
     const array = arrayOf(point);
     const tuple: Type = {kind: TypeKind.Tuple, elems: [IntType, FloatType]};
 
@@ -154,7 +154,7 @@ describe('formatting', () => {
     expect(formatType({kind: TypeKind.Tuple, elems: [IntType, BoolType]})).toBe(
       '[int, bool]',
     );
-    expect(formatType(userType('Band'))).toBe('Band');
+    expect(formatType(structType('Band'))).toBe('Band');
   });
 
   test('two-axis display form', () => {

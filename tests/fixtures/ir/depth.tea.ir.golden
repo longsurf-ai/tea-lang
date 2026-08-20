@@ -16,7 +16,7 @@ output[1] plot static{title="Sum"} channels{series: float}
 name a: perBar series float depth=none
 name b: perBar series float depth=none
 name c: perBar series float depth=none
-name $hist@9:5: perBar series float depth=const(2)
+name hl: perBar series float depth=const(2)
 name d: perBar series float depth=none
 body:
   WriteName a
@@ -30,12 +30,12 @@ body:
       offset: Binary Mod: series int
         HistRead builtin:bar.bar_index: series int
         Const 5: const int
-  WriteName $hist@9:5
+  WriteName hl
     Binary Add: series float
       HistRead series:high: series float
       HistRead series:low: series float
   WriteName d
-    HistRead name:$hist@9:5: series float
+    HistRead name:hl: series float
       offset: Const 2: const int
   Emit output[1] eval=[0]
     Binary Add: series float

@@ -238,7 +238,7 @@ export function sweepReportSections(
 function effectLabel(effect: EffectSpec, effectId: number): string {
   const payload = effect.payload;
   const type =
-    payload.kind === 'enum' || payload.kind === 'user-type'
+    payload.kind === 'enum' || payload.kind === 'struct'
       ? payload.typeId
       : payload.kind;
   return `effect[${effectId}] ${type}`;
@@ -268,7 +268,7 @@ function logicalEffectValue(
   if (value === null || (typeof value === 'number' && Number.isNaN(value))) {
     return 'na';
   }
-  if (schema.kind !== 'user-type') {
+  if (schema.kind !== 'struct') {
     return value;
   }
   if (typeof value !== 'object') {
@@ -310,7 +310,7 @@ function cloneEffectValueSchema(schema: EffectValueSchema): EffectValueSchema {
   switch (schema.kind) {
     case 'enum':
       return {...schema, members: schema.members.map(member => ({...member}))};
-    case 'user-type':
+    case 'struct':
       return {
         ...schema,
         fields: schema.fields.map(field => ({
@@ -328,7 +328,7 @@ function cloneEffectPayload(value: EffectValue): EffectValue {
     return value;
   }
   return Object.freeze({
-    kind: 'user-type' as const,
+    kind: 'struct' as const,
     fields: Object.freeze(value.fields.map(cloneEffectPayload)),
   });
 }

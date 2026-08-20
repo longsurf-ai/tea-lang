@@ -26,7 +26,7 @@ import type {
   TimeAxis,
   Value,
 } from '../abi';
-import {isEffectUserTypeValue, isUserTypeValue} from '../abi';
+import {isEffectStructValue, isStructRef} from '../abi';
 import {runCpuBatch} from '../batch';
 import {loadModule} from '../load';
 import {createGpuExecution} from './session';
@@ -56,74 +56,18 @@ class FinalDenseWithoutEffectsSink extends FinalDenseSink {
   } as const;
 }
 
-test('Dawn resumes independent executions and publishes dense values and effects', async () => {
-  const compiled = compileFixture(
-    join(
-      process.cwd(),
-      'tests/fixtures/execution/compile/strategy-components/source.tea',
+test('strategy-component structs fail closed before Dawn execution', () => {
+  assertStructReferenceUnsupported(
+    fixtureProgram(
+      join(
+        process.cwd(),
+        'tests/fixtures/execution/compile/strategy-components/source.tea',
+      ),
     ),
   );
-  const providers = [
-    provider({open: [10, 10, 20], close: [10, 11, 18]}),
-    provider({open: [5, 6], close: [5, 7]}),
-  ];
-  const cpuSinks = [new MemorySink(), new MemorySink()];
-  const gpuSinks = [new MemorySink(), new MemorySink()];
-  await runCpuBatch(
-    loadModule(generate(compiled.program)),
-    providers.map((source, index) => binding(source, cpuSinks[index])),
-  );
-
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter({
-    powerPreference: 'high-performance',
-  });
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const execution = await createGpuExecution(
-    device,
-    compiled.artifact,
-    providers.map((source, index) => binding(source, gpuSinks[index])),
-    {maxRowsPerChunk: 1},
-  );
-  try {
-    assert.deepEqual(await execution.runChunk(), {
-      bindings: [
-        {bindingIndex: 0, rowStart: 0, rowCount: 1, done: false},
-        {bindingIndex: 1, rowStart: 0, rowCount: 1, done: false},
-      ],
-      done: false,
-    });
-    assert.deepEqual(await execution.runChunk(), {
-      bindings: [
-        {bindingIndex: 0, rowStart: 1, rowCount: 1, done: false},
-        {bindingIndex: 1, rowStart: 1, rowCount: 1, done: true},
-      ],
-      done: false,
-    });
-    assert.deepEqual(await execution.runChunk(), {
-      bindings: [{bindingIndex: 0, rowStart: 2, rowCount: 1, done: true}],
-      done: true,
-    });
-    const summary = await execution.runAll();
-    assert.deepEqual(summary.bindings, [
-      {bindingIndex: 0, rows: 3, inputs: []},
-      {bindingIndex: 1, rows: 2, inputs: []},
-    ]);
-    assert.equal(summary.chunks, 3);
-    assert.equal(summary.dispatches, 3);
-    assert.ok(summary.cache.workgroupSize > 0);
-    cpuSinks.forEach((expected, index) =>
-      assertSinkParity(expected, gpuSinks[index], compiled.artifact),
-    );
-  } finally {
-    execution.dispose();
-    device.destroy();
-  }
 });
 
-test('Dawn matches canonical explicit-quantity close fills and pyramiding', async () => {
+test('canonical explicit-quantity structs fail closed before Dawn', async () => {
   const program = mustBuild(
     [
       'strategy("canonical component policies")',
@@ -154,7 +98,7 @@ test('Dawn matches canonical explicit-quantity close fills and pyramiding', asyn
     ].join('\n'),
   );
   const result = compileProgramToWgsl(program);
-  assert.equal(result.status, 'compiled');
+  assertStructReferenceUnsupported(program);
   if (result.status !== 'compiled') return;
 
   const source = provider({open: [10, 20, 30], close: [10, 20, 30]});
@@ -182,7 +126,7 @@ test('Dawn matches canonical explicit-quantity close fills and pyramiding', asyn
   }
 });
 
-test('Dawn matches canonical percent-equity entries and attached stops', async () => {
+test('canonical percent-equity structs fail closed before Dawn', async () => {
   const program = mustBuild(
     [
       'strategy("canonical scalar attached stop")',
@@ -215,13 +159,7 @@ test('Dawn matches canonical percent-equity entries and attached stops', async (
     ].join('\n'),
   );
   const result = compileProgramToWgsl(program);
-  assert.equal(
-    result.status,
-    'compiled',
-    result.status === 'staged-unsupported'
-      ? JSON.stringify(result.eligibility.issues)
-      : undefined,
-  );
+  assertStructReferenceUnsupported(program);
   if (result.status !== 'compiled') return;
 
   const source = provider({
@@ -236,8 +174,8 @@ test('Dawn matches canonical percent-equity entries and attached stops', async (
   const cpuEffectTimeline = cpuSink.publications.flatMap(publication =>
     publication.effects.map(effect => {
       const type = program.effects[effect.effectId]?.payloadType;
-      assert.equal(type?.kind, TypeKind.UserType);
-      if (type?.kind !== TypeKind.UserType) {
+      assert.equal(type?.kind, TypeKind.Struct);
+      if (type?.kind !== TypeKind.Struct) {
         throw new Error(`effect ${effect.effectId} has no nominal payload`);
       }
       return [publication.row, type.name] as const;
@@ -277,7 +215,7 @@ test('Dawn matches canonical percent-equity entries and attached stops', async (
   }
 });
 
-test('Dawn matches resting cash-budget entries and atomic brackets', async () => {
+test('resting cash-budget structs fail closed before Dawn', async () => {
   const program = mustBuild(
     [
       'strategy("canonical resting bracket")',
@@ -306,13 +244,7 @@ test('Dawn matches resting cash-budget entries and atomic brackets', async () =>
     ].join('\n'),
   );
   const result = compileProgramToWgsl(program);
-  assert.equal(
-    result.status,
-    'compiled',
-    result.status === 'staged-unsupported'
-      ? JSON.stringify(result.eligibility.issues)
-      : undefined,
-  );
+  assertStructReferenceUnsupported(program);
   if (result.status !== 'compiled') return;
 
   const source = provider({
@@ -335,9 +267,9 @@ test('Dawn matches resting cash-budget entries and atomic brackets', async () =>
         : program.effects[emission.effectId]?.payloadType;
     let value = emission?.payload;
     for (const name of path) {
-      assert.equal(type?.kind, TypeKind.UserType);
-      assert.ok(value !== undefined && isEffectUserTypeValue(value));
-      if (type?.kind !== TypeKind.UserType || !isEffectUserTypeValue(value)) {
+      assert.equal(type?.kind, TypeKind.Struct);
+      assert.ok(value !== undefined && isEffectStructValue(value));
+      if (type?.kind !== TypeKind.Struct || !isEffectStructValue(value)) {
         throw new Error(`effect ${emissionIndex} cannot select '${name}'`);
       }
       const fieldIndex = type.fields.findIndex(field => field.name === name);
@@ -351,8 +283,8 @@ test('Dawn matches resting cash-budget entries and atomic brackets', async () =>
   assert.deepEqual(
     cpuSink.effectEmissions.map((emission, index) => {
       const type = program.effects[emission.effectId]?.payloadType;
-      assert.equal(type?.kind, TypeKind.UserType);
-      if (type?.kind !== TypeKind.UserType) {
+      assert.equal(type?.kind, TypeKind.Struct);
+      if (type?.kind !== TypeKind.Struct) {
         throw new Error(`effect ${emission.effectId} has no nominal payload`);
       }
       const payload = type.name === 'OrderSubmitted' ? 'order' : 'fill';
@@ -411,7 +343,7 @@ test('Dawn matches resting cash-budget entries and atomic brackets', async () =>
   }
 });
 
-test('Dawn matches target rebalances, signed reversals, and short brackets', async () => {
+test('target-rebalance structs fail closed before Dawn', async () => {
   const program = mustBuild(
     [
       'strategy("canonical signed scalar lifecycle")',
@@ -445,13 +377,7 @@ test('Dawn matches target rebalances, signed reversals, and short brackets', asy
     ].join('\n'),
   );
   const result = compileProgramToWgsl(program);
-  assert.equal(
-    result.status,
-    'compiled',
-    result.status === 'staged-unsupported'
-      ? JSON.stringify(result.eligibility.issues)
-      : undefined,
-  );
+  assertStructReferenceUnsupported(program);
   if (result.status !== 'compiled') return;
 
   const source = provider({
@@ -466,8 +392,8 @@ test('Dawn matches target rebalances, signed reversals, and short brackets', asy
   assert.deepEqual(
     cpuSink.effectEmissions.map(emission => {
       const type = program.effects[emission.effectId]?.payloadType;
-      assert.equal(type?.kind, TypeKind.UserType);
-      return [emission.row, type?.kind === TypeKind.UserType ? type.name : ''];
+      assert.equal(type?.kind, TypeKind.Struct);
+      return [emission.row, type?.kind === TypeKind.Struct ? type.name : ''];
     }),
     [
       [0, 'OrderSubmitted'],
@@ -602,7 +528,7 @@ test('Dawn validates every chunk timestamp before publishing its first row', asy
   }
 });
 
-test('Dawn packs fixed-width parameter sweep executions and matches CPU', async () => {
+test('parameter-sweep struct effects fail closed before Dawn', async () => {
   const program = mustBuild(
     [
       'strategy("parameter sweep")',
@@ -621,7 +547,7 @@ test('Dawn packs fixed-width parameter sweep executions and matches CPU', async 
     ].join('\n'),
   );
   const result = compileProgramToWgsl(program);
-  assert.equal(result.status, 'compiled');
+  assertStructReferenceUnsupported(program);
   if (result.status !== 'compiled') return;
 
   const values = [
@@ -753,35 +679,18 @@ test('Dawn matches CPU for unrestricted numeric ranges and core math', async () 
   }
 });
 
-test('Dawn executes one-chunk transient and mutable-path programs', async () => {
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  try {
-    for (const [fixture, expected] of [
-      ['tests/fixtures/gpu/transient/source.tea', [7]],
-      ['tests/fixtures/gpu/path-rebase/source.tea', [7, 1]],
-    ] as const) {
-      const compiled = compileFixture(join(process.cwd(), fixture));
-      const sink = new MemorySink();
-      const execution = await createGpuExecution(device, compiled.artifact, [
-        binding(provider({close: [7]}), sink),
-      ]);
-      try {
-        await execution.runAll();
-        assert.deepEqual(
-          sink.emissions.flatMap(emission => emission.channels),
-          expected,
-        );
-      } finally {
-        execution.dispose();
-      }
-    }
-  } finally {
-    device.destroy();
-  }
+test('transient struct fixture fails closed before Dawn execution', () => {
+  assertStructReferenceUnsupported(
+    fixtureProgram(join(process.cwd(), 'tests/fixtures/gpu/transient/source.tea')),
+  );
+});
+
+test('mutable struct-path fixture fails closed before Dawn execution', () => {
+  assertStructReferenceUnsupported(
+    fixtureProgram(
+      join(process.cwd(), 'tests/fixtures/gpu/path-rebase/source.tea'),
+    ),
+  );
 });
 
 test('Dawn preserves temporal frames and history across one-row chunks', async () => {
@@ -891,7 +800,7 @@ test('Dawn advances skipped active parameter history at row cadence', async () =
   }
 });
 
-test('Dawn publishes every sparse effect but only final dense output when requested', async () => {
+test('final-dense struct effects fail closed before Dawn', async () => {
   const program = mustBuild(
     [
       'indicator("final dense")',
@@ -903,7 +812,7 @@ test('Dawn publishes every sparse effect but only final dense output when reques
     ].join('\n'),
   );
   const result = compileProgramToWgsl(program);
-  assert.equal(result.status, 'compiled');
+  assertStructReferenceUnsupported(program);
   if (result.status !== 'compiled') return;
 
   const source = provider(
@@ -1074,10 +983,7 @@ function providerContext(
   };
 }
 
-function compileFixture(filename: string): {
-  readonly program: Program;
-  readonly artifact: CompiledWgslProgram;
-} {
+function fixtureProgram(filename: string): Program {
   const errors = new Errors();
   const program = compileToProgram([filename], errors);
   if (program === null) {
@@ -1088,11 +994,17 @@ function compileFixture(filename: string): {
         .join('\n'),
     );
   }
+  return program;
+}
+
+function assertStructReferenceUnsupported(program: Program): void {
   const result = compileProgramToWgsl(program);
-  if (result.status !== 'compiled') {
-    throw new Error(JSON.stringify(result.eligibility.issues));
-  }
-  return {program, artifact: result.artifact};
+  assert.equal(result.status, 'staged-unsupported');
+  if (result.status !== 'staged-unsupported') return;
+  assert.equal(
+    result.eligibility.issues[0]?.code,
+    'struct-reference-lowering-unimplemented',
+  );
 }
 
 function assertSinkParity(
@@ -1148,11 +1060,10 @@ function assertValueParity(
     return;
   }
   if (
-    (isUserTypeValue(expected as Value) ||
-      isEffectUserTypeValue(expected as EffectValue)) &&
+    (isStructRef(expected as Value) ||
+      isEffectStructValue(expected as EffectValue)) &&
     actual !== undefined &&
-    (isUserTypeValue(actual as Value) ||
-      isEffectUserTypeValue(actual as EffectValue))
+    (isStructRef(actual as Value) || isEffectStructValue(actual as EffectValue))
   ) {
     const expectedUser = expected as {
       readonly fields: readonly (Value | EffectValue)[];

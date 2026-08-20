@@ -143,6 +143,6 @@ tea run examples/indicator/requests-tour.tea \
 tea run examples/indicator/dynamic-rotation.tea \
   -i examples/data/demo/primary.csv
 
-tea run examples/language/value-semantics.tea \
+tea run examples/language/struct-references.tea \
   -i examples/data/demo/primary.csv
 ```

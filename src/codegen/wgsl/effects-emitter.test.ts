@@ -88,7 +88,7 @@ describe('chunked sparse-effect WGSL emitter', () => {
     expect(source).toContain('tea_job.result_offset +');
   });
 
-  test('threads execution state through a UDF and appends two ordered effects', () => {
+  test('fails closed for struct effects reached through a UDF', () => {
     const result = compileProgramToWgsl(
       mustBuild(
         [
@@ -106,31 +106,10 @@ describe('chunked sparse-effect WGSL emitter', () => {
         ].join('\n'),
       ),
     );
-    if (result.status !== 'compiled') {
-      throw new Error(JSON.stringify(result.eligibility.issues));
-    }
-    const {source} = result.artifact.module;
-
-    expect(source).toContain('tea_root_base: u32');
-    expect(source).toContain('tea_frame_base: u32');
-    expect(source).toContain('tea_effect_status[tea_execution_index].count');
-    const first = source.indexOf('TeaEffectRecord(tea_row, 0u');
-    const second = source.indexOf('TeaEffectRecord(tea_row, 1u');
-    expect(first).toBeGreaterThan(-1);
-    expect(second).toBeGreaterThan(first);
-    expect(source).toContain('TeaString(1u, 0u)');
-    expect(source).toContain('TeaString(1u, 1u)');
-    expect(result.artifact.literalStrings).toEqual(['first', 'second']);
-    expect(result.artifact.maxEffectsPerRow).toBe(2);
-    expect(
-      result.artifact.effectSchemas.map(schema => schema.effectId),
-    ).toEqual([0, 1]);
-    expect(result.artifact.externalBuffers).toMatchObject({
-      executionStatesBinding: 2,
-      resultsBinding: 3,
-      effectStatusBinding: 4,
-      effectRecordsBinding: 5,
-    });
+    expect(result.status).toBe('staged-unsupported');
+    expect(result.eligibility.issues[0]?.code).toBe(
+      'struct-reference-lowering-unimplemented',
+    );
   });
 
   test('uses literal ids for string equality and fails closed for concatenation', () => {
@@ -164,8 +143,8 @@ describe('chunked sparse-effect WGSL emitter', () => {
       ),
     );
     expect(dynamic.status).toBe('staged-unsupported');
-    expect(dynamic.eligibility.issues[0]?.message).toContain(
-      'dynamic GPU strings are unsupported',
+    expect(dynamic.eligibility.issues[0]?.code).toBe(
+      'struct-reference-lowering-unimplemented',
     );
   });
 

@@ -1,7 +1,13 @@
 // Purpose: Tea IR nodes — the noder's typed, resolved body vocabulary; every expression carries its type and qualifier, and every use references its declaration object directly.
 
 import type {Pos} from '../base/pos';
-import type {ConstValue, NameStorage, Qualifier, Type, UserType} from './type';
+import type {
+  ConstValue,
+  NameStorage,
+  Qualifier,
+  StructType,
+  Type,
+} from './type';
 import type {
   ConstMethodIrFunc,
   EffectDecl,
@@ -68,7 +74,7 @@ export const IrKind = {
   CallMutableMethod: 'CallMutableMethod',
   CallNative: 'CallNative',
   MutateCollection: 'MutateCollection',
-  NewUserValue: 'NewUserValue',
+  NewStruct: 'NewStruct',
   MakeTuple: 'MakeTuple',
   TupleGet: 'TupleGet',
   FieldGet: 'FieldGet',
@@ -81,7 +87,7 @@ export const IrKind = {
   ExprStmt: 'ExprStmt',
   InitName: 'InitName',
   WriteName: 'WriteName',
-  UpdateValuePath: 'UpdateValuePath',
+  StoreField: 'StoreField',
   Emit: 'Emit',
   EmitEffect: 'EmitEffect',
   Break: 'Break',
@@ -154,12 +160,27 @@ export type Place =
     }
   | {readonly kind: typeof PlaceKind.Request; readonly request: RequestEdge};
 
-// A current writable root plus canonical user-type field indices. It carries
-// no checker objects and grants no mutation rights to history or temporaries.
-export interface IrValuePath {
-  readonly root: Name;
-  readonly fieldIndices: readonly number[];
-}
+// A mutating collection produces a replacement header, so the Program keeps
+// the exact writable location that receives it. Struct-field locations carry
+// the receiver expression itself: lowering captures that reference before it
+// evaluates any explicit argument and writes the replacement through the same
+// captured reference afterward.
+export const CollectionLocationKind = {
+  Name: 'name',
+  StructField: 'struct-field',
+} as const;
+
+export type CollectionLocation =
+  | {
+      readonly kind: typeof CollectionLocationKind.Name;
+      readonly name: Name;
+    }
+  | {
+      readonly kind: typeof CollectionLocationKind.StructField;
+      readonly object: IrExpr;
+      readonly owner: StructType;
+      readonly fieldIndex: number;
+    };
 
 // @agent invariant: the IR is built only from checked, error-free syntax —
 // there are no Bad nodes here; recovery ends at the checker's phase barrier.
@@ -186,7 +207,7 @@ export type IrExpr =
   | CallMutableMethodExpr
   | CallNativeExpr
   | MutateCollectionExpr
-  | NewUserValueExpr
+  | NewStructExpr
   | MakeTupleExpr
   | TupleGetExpr
   | FieldGetExpr
@@ -259,14 +280,12 @@ export interface CallConstMethodExpr extends IrExprBase {
   readonly argumentEvaluationOrder: readonly number[];
 }
 
-// Copy-in/copy-out mutable method call. `receiver` is evaluated once before
-// `args`; `args` contains only source-visible explicit parameters. On normal
-// return lowering writes the returned replacement through `path` once and
-// yields the Tea result. A throw or suspension performs no copy-out.
+// A mutable method receives the same struct reference as its caller. The
+// receiver is evaluated and validated once before source-visible arguments;
+// field writes in the body mutate the referenced Heap storage directly.
 export interface CallMutableMethodExpr extends IrExprBase {
   readonly kind: typeof IrKind.CallMutableMethod;
   readonly func: MutableMethodIrFunc;
-  readonly path: IrValuePath;
   readonly receiver: IrExpr;
   readonly slot: SlotId;
   readonly args: readonly IrExpr[];
@@ -283,21 +302,21 @@ export interface CallNativeExpr extends IrExprBase {
   readonly argumentEvaluationOrder: readonly number[];
 }
 
-// A mutating collection primitive. The receiver is captured before the
-// remaining arguments. The operation computes `{replacement, result}` and
-// lowering performs one path writeback before yielding `result`.
+// A mutating collection primitive. Lowering reads and captures `location`
+// before the remaining arguments. The operation computes
+// `{replacement, result}` and lowering writes the replacement header through
+// that same location before yielding `result`.
 export interface MutateCollectionExpr extends IrExprBase {
   readonly kind: typeof IrKind.MutateCollection;
-  readonly path: IrValuePath;
-  readonly receiver: IrExpr;
+  readonly location: CollectionLocation;
   readonly operation: string;
   readonly args: readonly IrExpr[];
   readonly argumentEvaluationOrder: readonly number[];
 }
 
-export interface NewUserValueExpr extends IrExprBase {
-  readonly kind: typeof IrKind.NewUserValue;
-  readonly userType: UserType;
+export interface NewStructExpr extends IrExprBase {
+  readonly kind: typeof IrKind.NewStruct;
+  readonly structType: StructType;
   readonly args: readonly IrExpr[];
   readonly argumentEvaluationOrder: readonly number[];
 }
@@ -376,7 +395,7 @@ export type IrStmt =
   | ExprStmt
   | InitNameStmt
   | WriteNameStmt
-  | UpdateValuePathStmt
+  | StoreFieldStmt
   | EmitStmt
   | EmitEffectStmt
   | BreakStmt
@@ -404,12 +423,14 @@ export interface WriteNameStmt extends IrNode {
   readonly value: IrExpr;
 }
 
-// Atomic rooted replacement. Lowering captures and validates the path before
-// evaluating `value`, then rebuilds it against the then-current root so
-// sibling writes from the RHS survive while this leaf replacement wins.
-export interface UpdateValuePathStmt extends IrNode {
-  readonly kind: typeof IrKind.UpdateValuePath;
-  readonly path: IrValuePath;
+// Atomic reference-property write. Lowering captures and validates `object`
+// before evaluating `value`, then stores through that same reference. A RHS
+// rebind of any Name therefore cannot redirect the write.
+export interface StoreFieldStmt extends IrNode {
+  readonly kind: typeof IrKind.StoreField;
+  readonly object: IrExpr;
+  readonly owner: StructType;
+  readonly fieldIndex: number;
   readonly value: IrExpr;
 }
 

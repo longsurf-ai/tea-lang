@@ -1,7 +1,8 @@
-// Purpose: Aggregate codegen contract tests — layouts and rooted value updates must preserve exact types, evaluation order, and copy-out semantics.
+// Purpose: Aggregate codegen contract tests — layouts, reference field stores, and collection locations preserve exact types and evaluation order.
 
 import {describe, expect, test} from 'bun:test';
 import {
+  CollectionLocationKind,
   DepthKind,
   IrKind,
   IrOp,
@@ -29,8 +30,8 @@ import {
   type ArrayType,
   type Type,
   type TupleType,
-  type UserField,
-  type UserType,
+  type StructField,
+  type StructType,
 } from '../ir/type';
 import type {ModuleCode} from '../runtime/abi';
 import {generate} from './codegen';
@@ -101,15 +102,18 @@ function write(target: Name, value: IrExpr): IrStmt {
   return {kind: IrKind.WriteName, pos, name: target, value};
 }
 
-function update(
-  root: Name,
-  fieldIndices: readonly number[],
+function storeField(
+  object: IrExpr,
+  owner: StructType,
+  fieldIndex: number,
   value: IrExpr,
 ): IrStmt {
   return {
-    kind: IrKind.UpdateValuePath,
+    kind: IrKind.StoreField,
     pos,
-    path: {root, fieldIndices},
+    object,
+    owner,
+    fieldIndex,
     value,
   };
 }
@@ -136,14 +140,14 @@ function compile(ir: Program): ModuleCode & {
   };
 }
 
-function userType(name: string, fields: readonly UserField[]): UserType {
-  return {kind: TypeKind.UserType, name, fields};
+function structType(name: string, fields: readonly StructField[]): StructType {
+  return {kind: TypeKind.Struct, name, fields};
 }
 
-interface TestUserValue {
-  readonly kind: 'user-type';
+interface TestStructValue {
+  readonly kind: 'storage-ref';
   readonly layout: number;
-  readonly fields: readonly unknown[];
+  readonly fields: unknown[];
 }
 
 interface TestCollectionValue {
@@ -161,23 +165,16 @@ function executionRuntime(
   root: TestFrame,
   events: string[],
 ): Record<string, unknown> {
-  const isUser = (value: unknown): value is TestUserValue =>
-    typeof value === 'object' && value !== null && 'fields' in value;
-  const rebuild = (
-    value: unknown,
-    path: readonly number[],
-    leaf: unknown,
-  ): unknown => {
-    if (path.length === 0) {
-      return leaf;
+  const isStruct = (value: unknown): value is TestStructValue =>
+    typeof value === 'object' &&
+    value !== null &&
+    (value as {kind?: unknown}).kind === 'storage-ref';
+  const requireStruct = (value: unknown, layout: number): TestStructValue => {
+    events.push(`require:${layout}`);
+    if (!isStruct(value) || value.layout !== layout) {
+      throw new Error('invalid struct reference');
     }
-    if (!isUser(value)) {
-      throw new Error('invalid user path');
-    }
-    const [head, ...tail] = path;
-    const fields = [...value.fields];
-    fields[head] = rebuild(fields[head], tail, leaf);
-    return {...value, fields};
+    return value;
   };
   return {
     root: () => root,
@@ -197,24 +194,28 @@ function executionRuntime(
       }
       return child;
     },
-    newUser: (layout: number, fields: readonly unknown[]): TestUserValue => ({
-      kind: 'user-type',
+    newStruct: (
+      layout: number,
+      fields: readonly unknown[],
+    ): TestStructValue => ({
+      kind: 'storage-ref',
       layout,
       fields: [...fields],
     }),
-    userField: (value: unknown, layout: number, index: number) => {
+    requireStruct,
+    structField: (value: unknown, layout: number, index: number) => {
       events.push(`field:${layout}:${index}`);
-      if (!isUser(value) || value.layout !== layout) {
-        throw new Error('invalid user field read');
-      }
-      return value.fields[index];
+      return requireStruct(value, layout).fields[index];
     },
-    rebuildUserPath: (
+    storeStructField: (
       value: unknown,
-      _layout: number,
-      path: readonly number[],
-      leaf: unknown,
-    ) => rebuild(value, path, leaf),
+      layout: number,
+      fieldIndex: number,
+      replacement: unknown,
+    ) => {
+      events.push(`store:${layout}:${fieldIndex}`);
+      requireStruct(value, layout).fields[fieldIndex] = replacement;
+    },
     callCollection: (
       operation: string,
       resultLayout: number,
@@ -251,7 +252,7 @@ function executionRuntime(
   };
 }
 
-describe('aggregate expression and rooted-write lowering', () => {
+describe('aggregate expression and reference-store lowering', () => {
   test('projects typed empties when a transport tuple is na', () => {
     const tuple: TupleType = {kind: TypeKind.Tuple, elems: [IntType, IntType]};
     const tupleName = name('tuple', tuple);
@@ -276,8 +277,8 @@ describe('aggregate expression and rooted-write lowering', () => {
     expect(Number.isNaN(frame.values[1] as number)).toBeTrue();
   });
 
-  test('constructs, reads, and rebases a direct field update after RHS writes', () => {
-    const pair = userType('Pair', [
+  test('constructs, reads, and stores through a captured reference after RHS writes', () => {
+    const pair = structType('Pair', [
       {name: 'left', type: IntType},
       {name: 'right', type: IntType},
     ]);
@@ -286,19 +287,20 @@ describe('aggregate expression and rooted-write lowering', () => {
     const module = compile(
       program([
         write(rootName, {
-          kind: IrKind.NewUserValue,
+          kind: IrKind.NewStruct,
           pos,
           type: pair,
           qualifier: Qualifier.Series,
-          userType: pair,
+          structType: pair,
           args: [constant(IntType, 1), constant(IntType, 2)],
           argumentEvaluationOrder: [0, 1],
         }),
-        update(
-          rootName,
-          [0],
+        storeField(
+          read(rootName),
+          pair,
+          0,
           block(
-            [update(rootName, [1], constant(IntType, 9))],
+            [storeField(read(rootName), pair, 1, constant(IntType, 9))],
             constant(IntType, 5),
           ),
         ),
@@ -308,13 +310,13 @@ describe('aggregate expression and rooted-write lowering', () => {
     const frame: TestFrame = {values: [], subs: new Map()};
     module.main(executionRuntime(frame, []) as never, frame as never);
 
-    expect((frame.values[0] as TestUserValue).fields).toEqual([5, 9]);
+    expect((frame.values[0] as TestStructValue).fields).toEqual([5, 9]);
     expect(frame.values[1]).toBe(9);
   });
 
-  test('uses collection result layouts and rebases mutation after argument writes', () => {
+  test('uses collection result layouts and a captured field location after argument writes', () => {
     const arrayType: ArrayType = {kind: TypeKind.Array, elem: IntType};
-    const holder = userType('Holder', [
+    const holder = structType('Holder', [
       {name: 'values', type: arrayType},
       {name: 'marker', type: IntType},
     ]);
@@ -333,11 +335,11 @@ describe('aggregate expression and rooted-write lowering', () => {
     const module = compile(
       program([
         write(holderName, {
-          kind: IrKind.NewUserValue,
+          kind: IrKind.NewStruct,
           pos,
           type: holder,
           qualifier: Qualifier.Series,
-          userType: holder,
+          structType: holder,
           args: [arrayFrom, constant(IntType, 0)],
           argumentEvaluationOrder: [0, 1],
         }),
@@ -349,12 +351,16 @@ describe('aggregate expression and rooted-write lowering', () => {
             pos,
             type: VoidType,
             qualifier: Qualifier.Series,
-            path: {root: holderName, fieldIndices: [0]},
-            receiver: field(read(holderName), 0, arrayType),
+            location: {
+              kind: CollectionLocationKind.StructField,
+              object: read(holderName),
+              owner: holder,
+              fieldIndex: 0,
+            },
             operation: 'array.push',
             args: [
               block(
-                [update(holderName, [1], constant(IntType, 9))],
+                [storeField(read(holderName), holder, 1, constant(IntType, 9))],
                 constant(IntType, 2),
               ),
             ],
@@ -377,21 +383,21 @@ describe('aggregate expression and rooted-write lowering', () => {
     const events: string[] = [];
     module.main(executionRuntime(frame, events) as never, frame as never);
 
-    const result = frame.values[0] as TestUserValue;
+    const result = frame.values[0] as TestStructValue;
     expect((result.fields[0] as TestCollectionValue).values).toEqual([1, 2]);
     expect(result.fields[1]).toBe(9);
     expect(frame.values[1]).toBe(2);
     expect(events).toContain('call:array.from:0');
     expect(events).toContain('call:array.size:1');
     const receiverRead = events.indexOf('field:2:0');
-    const argumentWrite = events.indexOf('write-root:0', receiverRead + 1);
+    const argumentWrite = events.indexOf('store:2:1', receiverRead + 1);
     expect(receiverRead).toBeLessThan(argumentWrite);
     expect(argumentWrite).toBeLessThan(events.indexOf('mutate:array.push'));
   });
 
   test('evaluates a const-method receiver before explicit arguments without writeback', () => {
-    const point = userType('Point', [{name: 'x', type: IntType}]);
-    const holder = userType('Holder', [
+    const point = structType('Point', [{name: 'x', type: IntType}]);
+    const holder = structType('Holder', [
       {name: 'point', type: point},
       {name: 'marker', type: IntType},
     ]);
@@ -419,18 +425,18 @@ describe('aggregate expression and rooted-write lowering', () => {
     const resultName = name('result', IntType);
     const ir = program([
       write(holderName, {
-        kind: IrKind.NewUserValue,
+        kind: IrKind.NewStruct,
         pos,
         type: holder,
         qualifier: Qualifier.Series,
-        userType: holder,
+        structType: holder,
         args: [
           {
-            kind: IrKind.NewUserValue,
+            kind: IrKind.NewStruct,
             pos,
             type: point,
             qualifier: Qualifier.Series,
-            userType: point,
+            structType: point,
             args: [constant(IntType, 1)],
             argumentEvaluationOrder: [0],
           },
@@ -448,7 +454,7 @@ describe('aggregate expression and rooted-write lowering', () => {
         slot: 0,
         args: [
           block(
-            [update(holderName, [1], constant(IntType, 9))],
+            [storeField(read(holderName), holder, 1, constant(IntType, 9))],
             constant(IntType, 5),
           ),
         ],
@@ -462,21 +468,21 @@ describe('aggregate expression and rooted-write lowering', () => {
     module.main(executionRuntime(frame, events) as never, frame as never);
 
     expect(frame.values[1]).toBe(6);
-    const result = frame.values[0] as TestUserValue;
-    expect((result.fields[0] as TestUserValue).fields).toEqual([1]);
+    const result = frame.values[0] as TestStructValue;
+    expect((result.fields[0] as TestStructValue).fields).toEqual([1]);
     expect(result.fields[1]).toBe(9);
     const receiverRead = events.indexOf('field:2:0');
-    const argumentWrite = events.indexOf('write-root:0', receiverRead + 1);
+    const argumentWrite = events.indexOf('store:2:1', receiverRead + 1);
     expect(receiverRead).toBeGreaterThanOrEqual(0);
     expect(receiverRead).toBeLessThan(argumentWrite);
     expect(events).not.toContain('write-func:0');
-    expect(events.filter(event => event === 'write-root:0')).toHaveLength(2);
+    expect(events.filter(event => event === 'write-root:0')).toHaveLength(1);
     expect(js).not.toMatch(/rt\.write\(fr, \d+, p\d+\)/);
   });
 
-  test('copies a mutable receiver before args and rebases copy-out afterward', () => {
-    const point = userType('Point', [{name: 'x', type: IntType}]);
-    const holder = userType('Holder', [
+  test('captures a mutable receiver before args and shares in-place field writes', () => {
+    const point = structType('Point', [{name: 'x', type: IntType}]);
+    const holder = structType('Holder', [
       {name: 'point', type: point},
       {name: 'sibling', type: IntType},
     ]);
@@ -491,7 +497,7 @@ describe('aggregate expression and rooted-write lowering', () => {
       resultType: IntType,
       resultQualifier: Qualifier.Series,
       body: block(
-        [update(receiver, [0], read(amount))],
+        [storeField(read(receiver), point, 0, read(amount))],
         field(read(receiver), 0, IntType),
       ),
     };
@@ -499,18 +505,18 @@ describe('aggregate expression and rooted-write lowering', () => {
     const resultName = name('result', IntType);
     const ir = program([
       write(holderName, {
-        kind: IrKind.NewUserValue,
+        kind: IrKind.NewStruct,
         pos,
         type: holder,
         qualifier: Qualifier.Series,
-        userType: holder,
+        structType: holder,
         args: [
           {
-            kind: IrKind.NewUserValue,
+            kind: IrKind.NewStruct,
             pos,
             type: point,
             qualifier: Qualifier.Series,
-            userType: point,
+            structType: point,
             args: [constant(IntType, 1)],
             argumentEvaluationOrder: [0],
           },
@@ -524,12 +530,11 @@ describe('aggregate expression and rooted-write lowering', () => {
         type: IntType,
         qualifier: Qualifier.Series,
         func: mutate,
-        path: {root: holderName, fieldIndices: [0]},
         receiver: field(read(holderName), 0, point),
         slot: 0,
         args: [
           block(
-            [update(holderName, [1], constant(IntType, 9))],
+            [storeField(read(holderName), holder, 1, constant(IntType, 9))],
             constant(IntType, 5),
           ),
         ],
@@ -542,22 +547,22 @@ describe('aggregate expression and rooted-write lowering', () => {
     const events: string[] = [];
     module.main(executionRuntime(frame, events) as never, frame as never);
 
-    const result = frame.values[0] as TestUserValue;
-    expect((result.fields[0] as TestUserValue).fields[0]).toBe(5);
+    const result = frame.values[0] as TestStructValue;
+    expect((result.fields[0] as TestStructValue).fields[0]).toBe(5);
     expect(result.fields[1]).toBe(9);
     expect(frame.values[1]).toBe(5);
     const receiverRead = events.indexOf('field:2:0');
-    const argumentWrite = events.indexOf('write-root:0', 1);
-    const copyoutWrite = events.indexOf('write-root:0', argumentWrite + 1);
+    const argumentWrite = events.indexOf('store:2:1');
+    const receiverWrite = events.indexOf('store:0:0', argumentWrite + 1);
     expect(receiverRead).toBeGreaterThanOrEqual(0);
     expect(receiverRead).toBeLessThan(argumentWrite);
-    expect(argumentWrite).toBeLessThan(copyoutWrite);
+    expect(argumentWrite).toBeLessThan(receiverWrite);
     expect(events).not.toContain('write-func:0');
     expect(js).not.toMatch(/rt\.write\(fr, \d+, p\d+\)/);
   });
 
   test('keeps history-free formal zero reads, reassignment, and receiver updates in JS locals', () => {
-    const point = userType('Point', [{name: 'x', type: IntType}]);
+    const point = structType('Point', [{name: 'x', type: IntType}]);
     const receiver = name('self', point);
     const amount = name('amount', IntType);
     const bump: MutableMethodIrFunc = {
@@ -579,7 +584,7 @@ describe('aggregate expression and rooted-write lowering', () => {
             x: readAt(amount, 0),
             y: constant(IntType, 1),
           }),
-          update(receiver, [0], read(amount)),
+          storeField(read(receiver), point, 0, read(amount)),
         ],
         field(read(receiver), 0, IntType),
       ),
@@ -588,11 +593,11 @@ describe('aggregate expression and rooted-write lowering', () => {
     const resultName = name('result', IntType);
     const ir = program([
       write(pointName, {
-        kind: IrKind.NewUserValue,
+        kind: IrKind.NewStruct,
         pos,
         type: point,
         qualifier: Qualifier.Series,
-        userType: point,
+        structType: point,
         args: [constant(IntType, 1)],
         argumentEvaluationOrder: [0],
       }),
@@ -602,7 +607,6 @@ describe('aggregate expression and rooted-write lowering', () => {
         type: IntType,
         qualifier: Qualifier.Series,
         func: bump,
-        path: {root: pointName, fieldIndices: []},
         receiver: read(pointName),
         slot: 0,
         args: [constant(IntType, 4)],
@@ -614,12 +618,13 @@ describe('aggregate expression and rooted-write lowering', () => {
     const frame: TestFrame = {values: [], subs: new Map()};
     module.main(executionRuntime(frame, []) as never, frame as never);
 
-    expect((frame.values[0] as TestUserValue).fields).toEqual([5]);
+    expect((frame.values[0] as TestStructValue).fields).toEqual([5]);
     expect(frame.values[1]).toBe(5);
     expect(js).not.toMatch(/rt\.write\(fr, \d+, p\d+\)/);
     expect(js).toContain('p1 = (');
-    expect(js).toContain('p0 = (rt.rebuildUserPath');
-    expect(js).toContain('return {receiver: p0, result:');
+    expect(js).toMatch(/rt\.requireStruct\(\(t\d+\), 0\)/);
+    expect(js).toContain('rt.storeStructField((');
+    expect(js).not.toContain('return {receiver:');
   });
 
   test('keeps a history-bearing function formal in its checked Ring', () => {
@@ -654,9 +659,9 @@ describe('aggregate expression and rooted-write lowering', () => {
     expect(js).toContain('rt.read(fr, 0, t0)');
   });
 
-  test('rebases a nested mutable method through the outer hidden receiver', () => {
-    const point = userType('Point', [{name: 'x', type: IntType}]);
-    const holder = userType('Holder', [{name: 'point', type: point}]);
+  test('shares a nested mutable method receiver through the outer receiver', () => {
+    const point = structType('Point', [{name: 'x', type: IntType}]);
+    const holder = structType('Holder', [{name: 'point', type: point}]);
     const pointReceiver = name('pointThis', point);
     const pointAmount = name('pointAmount', IntType);
     const replaceX: MutableMethodIrFunc = {
@@ -668,7 +673,7 @@ describe('aggregate expression and rooted-write lowering', () => {
       resultType: IntType,
       resultQualifier: Qualifier.Series,
       body: block(
-        [update(pointReceiver, [0], read(pointAmount))],
+        [storeField(read(pointReceiver), point, 0, read(pointAmount))],
         field(read(pointReceiver), 0, IntType),
       ),
     };
@@ -688,7 +693,6 @@ describe('aggregate expression and rooted-write lowering', () => {
         type: IntType,
         qualifier: Qualifier.Series,
         func: replaceX,
-        path: {root: holderReceiver, fieldIndices: [0]},
         receiver: field(read(holderReceiver), 0, point),
         slot: 0,
         args: [read(holderAmount)],
@@ -699,18 +703,18 @@ describe('aggregate expression and rooted-write lowering', () => {
     const resultName = name('result', IntType);
     const ir = program([
       write(rootName, {
-        kind: IrKind.NewUserValue,
+        kind: IrKind.NewStruct,
         pos,
         type: holder,
         qualifier: Qualifier.Series,
-        userType: holder,
+        structType: holder,
         args: [
           {
-            kind: IrKind.NewUserValue,
+            kind: IrKind.NewStruct,
             pos,
             type: point,
             qualifier: Qualifier.Series,
-            userType: point,
+            structType: point,
             args: [constant(IntType, 1)],
             argumentEvaluationOrder: [0],
           },
@@ -723,7 +727,6 @@ describe('aggregate expression and rooted-write lowering', () => {
         type: IntType,
         qualifier: Qualifier.Series,
         func: replacePointX,
-        path: {root: rootName, fieldIndices: []},
         receiver: read(rootName),
         slot: 0,
         args: [constant(IntType, 5)],
@@ -735,20 +738,16 @@ describe('aggregate expression and rooted-write lowering', () => {
     const frame: TestFrame = {values: [], subs: new Map()};
     module.main(executionRuntime(frame, []) as never, frame as never);
 
-    expect(js).not.toMatch(
-      /rt\.rebuildUserPath\([^;\n]*, \[\], \([^;\n]*\.receiver\)\)/,
-    );
-    expect(js).toMatch(
-      /rt\.rebuildUserPath\([^;\n]*, \[0\], \([^;\n]*\.receiver\)\)/,
-    );
-    const result = frame.values[0] as TestUserValue;
-    expect((result.fields[0] as TestUserValue).fields).toEqual([5]);
+    expect(js).not.toContain('rebuild');
+    expect(js).toContain('rt.storeStructField((');
+    const result = frame.values[0] as TestStructValue;
+    expect((result.fields[0] as TestStructValue).fields).toEqual([5]);
     expect(frame.values[1]).toBe(5);
   });
 
-  test('does not copy out a mutable receiver when the callee throws', () => {
+  test('leaves rollback of in-place method writes to the runtime transaction', () => {
     const arrayType: ArrayType = {kind: TypeKind.Array, elem: IntType};
-    const holder = userType('Holder', [
+    const holder = structType('Holder', [
       {name: 'values', type: arrayType},
       {name: 'marker', type: IntType},
     ]);
@@ -763,7 +762,7 @@ describe('aggregate expression and rooted-write lowering', () => {
       resultQualifier: Qualifier.Series,
       body: block(
         [
-          update(receiver, [1], constant(IntType, 9)),
+          storeField(read(receiver), holder, 1, constant(IntType, 9)),
           {
             kind: IrKind.ExprStmt,
             pos,
@@ -772,8 +771,12 @@ describe('aggregate expression and rooted-write lowering', () => {
               pos,
               type: VoidType,
               qualifier: Qualifier.Series,
-              path: {root: receiver, fieldIndices: [0]},
-              receiver: field(read(receiver), 0, arrayType),
+              location: {
+                kind: CollectionLocationKind.StructField,
+                object: read(receiver),
+                owner: holder,
+                fieldIndex: 0,
+              },
               operation: 'array.set',
               args: [constant(IntType, 0), constant(IntType, 2)],
               argumentEvaluationOrder: [0, 1],
@@ -797,11 +800,11 @@ describe('aggregate expression and rooted-write lowering', () => {
     const module = compile(
       program([
         write(rootName, {
-          kind: IrKind.NewUserValue,
+          kind: IrKind.NewStruct,
           pos,
           type: holder,
           qualifier: Qualifier.Series,
-          userType: holder,
+          structType: holder,
           args: [arrayFrom, constant(IntType, 1)],
           argumentEvaluationOrder: [0, 1],
         }),
@@ -814,7 +817,6 @@ describe('aggregate expression and rooted-write lowering', () => {
             type: IntType,
             qualifier: Qualifier.Series,
             func: failing,
-            path: {root: rootName, fieldIndices: []},
             receiver: read(rootName),
             slot: 0,
             args: [],
@@ -827,6 +829,9 @@ describe('aggregate expression and rooted-write lowering', () => {
     expect(() =>
       module.main(executionRuntime(frame, []) as never, frame as never),
     ).toThrow('unexpected mutation array.set');
-    expect((frame.values[0] as TestUserValue).fields[1]).toBe(1);
+    // This minimal ABI mock has no HeapTransaction. Generated code performs
+    // the in-place store before the later throw; JSRuntime is responsible for
+    // journaling and restoring it in real execution.
+    expect((frame.values[0] as TestStructValue).fields[1]).toBe(9);
   });
 });

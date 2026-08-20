@@ -11,7 +11,7 @@ import {
   ObjectKind,
   satisfies,
   type InterfaceObject,
-  type UserTypeObject,
+  type StructObject,
 } from './object';
 import {checkText, type CheckResult} from './testing';
 
@@ -24,11 +24,11 @@ function interfaceNamed(result: CheckResult, name: string): InterfaceObject {
   return object;
 }
 
-function userTypeNamed(result: CheckResult, name: string): UserTypeObject {
+function structNamed(result: CheckResult, name: string): StructObject {
   const object = result.checked.pkg.scope.lookup(name);
-  expect(object?.kind).toBe(ObjectKind.UserType);
-  if (object?.kind !== ObjectKind.UserType) {
-    throw new Error(`fixture declares no user type '${name}'`);
+  expect(object?.kind).toBe(ObjectKind.Struct);
+  if (object?.kind !== ObjectKind.Struct) {
+    throw new Error(`fixture declares no struct '${name}'`);
   }
   return object;
 }
@@ -69,7 +69,7 @@ describe('static interfaces', () => {
 
     expect(result.errors).toEqual([]);
     const codec = interfaceNamed(result, 'Codec');
-    const payload = userTypeNamed(result, 'Payload');
+    const payload = structNamed(result, 'Payload');
     expect(codec.methods.map(method => method.name)).toEqual([
       'roundtrip',
       'size',
@@ -172,7 +172,7 @@ describe('implicit interface satisfaction', () => {
 
     expect(result.errors).toEqual([]);
     const broker = interfaceNamed(result, 'Broker');
-    expect(satisfies(userTypeNamed(result, 'Exact'), broker)).toBeTrue();
+    expect(satisfies(structNamed(result, 'Exact'), broker)).toBeTrue();
     for (const name of [
       'Missing',
       'Arity',
@@ -181,7 +181,7 @@ describe('implicit interface satisfaction', () => {
       'Result',
       'Receiver',
     ]) {
-      expect(satisfies(userTypeNamed(result, name), broker)).toBeFalse();
+      expect(satisfies(structNamed(result, name), broker)).toBeFalse();
     }
   });
 });
