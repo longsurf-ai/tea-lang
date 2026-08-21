@@ -21,7 +21,7 @@
       "src/checker/catalog.ts",
       "src/syntax/tokens.ts",
       "src/syntax/nodes.ts",
-      "src/lib/ta.tea"
+      "src/tea-lib/ta.tea"
     ]
   },
   "desiredFeatures": [],
@@ -63,7 +63,7 @@
     "src/checker/type-catalog.ts",
     "src/ir/type.ts",
     "src/syntax/",
-    "src/lib/ta.tea",
+    "src/tea-lib/ta.tea",
     "src/docs/",
     "tests/"
   ],
@@ -164,7 +164,7 @@
       "title": "Technical analysis library",
       "objective": "Inventory and document every supported exported ta function from the checked Tea library. Include signatures, state and history behavior, warmup and na behavior, examples, remarks, and related entries. Do not include any trading library.",
       "validate": [
-        "npm test -- src/lib/ta.test.ts scripts/docs/generate-reference.test.ts",
+        "npm test -- src/tea-lib/ta.test.ts scripts/docs/generate-reference.test.ts",
         "npm run docs:check:generated"
       ]
     },

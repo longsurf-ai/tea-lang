@@ -50,7 +50,7 @@ const DEFAULT_IMPLICIT: readonly string[] = ['ta'];
 const LOADER_DIR = dirname(fileURLToPath(import.meta.url));
 
 function builtinFilename(filename: string): string {
-  return join(LOADER_DIR, '../lib', filename);
+  return join(LOADER_DIR, '../tea-lib', filename);
 }
 
 export function defaultRegistry(
@@ -64,7 +64,7 @@ export function defaultRegistry(
     return null;
   }
   return {
-    filename: `lib/${filename}`,
+    filename: `tea-lib/${filename}`,
     source: readFileSync(builtinFilename(filename), 'utf8'),
   };
 }

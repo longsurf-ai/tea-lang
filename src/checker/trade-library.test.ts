@@ -148,7 +148,9 @@ describe('trade library', () => {
       'ImmediateBroker',
       'LotLedger',
     ]);
-    expect(defaultRegistry('trade')).toMatchObject({filename: 'lib/trade.tea'});
+    expect(defaultRegistry('trade')).toMatchObject({
+      filename: 'tea-lib/trade.tea',
+    });
   });
 
   test('checks and nodes each direct policy surface', () => {

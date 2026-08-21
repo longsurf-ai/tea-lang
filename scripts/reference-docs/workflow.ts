@@ -407,7 +407,10 @@ export async function collectInventory(
     }),
   );
 
-  const taSource = await readFile(path.join(root, 'src/lib/ta.tea'), 'utf8');
+  const taSource = await readFile(
+    path.join(root, 'src/tea-lib/ta.tea'),
+    'utf8',
+  );
   const taExports = [
     ...taSource.matchAll(/^export\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm),
   ]

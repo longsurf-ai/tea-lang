@@ -27,7 +27,7 @@ function compileWithCounter(source: string): string {
   const importer = resolveImports([file], path => {
     if (path === 'counter') {
       return {
-        filename: 'lib/counter.tea',
+        filename: 'tea-lib/counter.tea',
         source: [
           'library("counter")',
           'var int total = 0',

@@ -15,7 +15,7 @@ compile.ts                              compile.ts (driver owns the loop)
       hardcodes WHERE libs               barrier
       come from                          checkPackage(files, importer)
   checker/library.ts                     checker/check.ts
-    loads src/lib/*.tea                    checkImport(): importer.import(path)
+    loads src/tea-lib/*.tea                checkImport(): importer.import(path)
                                            universe scope <- importer.implicit()
                                          checker/importer.ts
                                            Importer + ResolvedLibrary (contract)
@@ -65,7 +65,7 @@ testable. Codegen/runtime are out of scope.
      the `library("...")` name and export/local surfaces, recurses into the
      library's own ImportStmts with a path stack (cycle → error naming the
      chain), memoizes per path.
-   - Default registry serves `src/lib/*.tea`; tests inject fakes.
+   - Default registry serves `src/tea-lib/*.tea`; tests inject fakes.
 3. **Checker consumes the seam** — `src/checker/check.ts`, `scope.ts`
    - `check`/`checkPackage` take the `Importer`; universe scope seeds from
      `implicit()`; the redeclare guard derives its name set the same way.

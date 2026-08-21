@@ -2,8 +2,8 @@
 
 Status: implemented and verified.
 
-Implementation note (2026-08-16): `src/lib/strategy.tea` has been replaced by
-`src/lib/trade.tea`; the universal `trade.net` and broad broker/portfolio
+Implementation note (2026-08-16): `src/tea-lib/strategy.tea` has been replaced by
+`src/tea-lib/trade.tea`; the universal `trade.net` and broad broker/portfolio
 supersets are gone. The shipped direct families are `trade.nextOpen`,
 `trade.ohlc`, `trade.path`, and `trade.lots`, each storing its compatible
 concrete broker and portfolio values directly. All fourteen examples use those
@@ -112,7 +112,7 @@ price, call `portfolio.apply`, mutate open-trade accounting records, construct
    and remove immediate reference-price and mutable-open-trade escape hatches.
 7. Delete universal broker/portfolio supersets, capability probes, stubs, and
    obsolete lifecycle methods.
-8. Rename `src/lib/strategy.tea` and `library("strategy")` to `trade` in one
+8. Rename `src/tea-lib/strategy.tea` and `library("strategy")` to `trade` in one
    isolated breaking commit after the API shape is stable. Update all source
    closure hashes deliberately.
 

@@ -26,26 +26,31 @@ import {parse} from '../syntax/syntax';
 
 const LIBRARIES: Readonly<Record<string, string>> = {
   ta: readFileSync(
-    join(fileURLToPath(new URL('.', import.meta.url)), '../lib/ta.tea'),
+    join(fileURLToPath(new URL('.', import.meta.url)), '../tea-lib/ta.tea'),
     'utf8',
   ),
   broker: readFileSync(
-    join(fileURLToPath(new URL('.', import.meta.url)), '../lib/broker.tea'),
+    join(fileURLToPath(new URL('.', import.meta.url)), '../tea-lib/broker.tea'),
     'utf8',
   ),
   portfolio: readFileSync(
-    join(fileURLToPath(new URL('.', import.meta.url)), '../lib/portfolio.tea'),
+    join(
+      fileURLToPath(new URL('.', import.meta.url)),
+      '../tea-lib/portfolio.tea',
+    ),
     'utf8',
   ),
   trade: readFileSync(
-    join(fileURLToPath(new URL('.', import.meta.url)), '../lib/trade.tea'),
+    join(fileURLToPath(new URL('.', import.meta.url)), '../tea-lib/trade.tea'),
     'utf8',
   ),
 };
 
 const REGISTRY: Registry = (path: string): PackageSource | null => {
   const source = LIBRARIES[path];
-  return source === undefined ? null : {filename: `lib/${path}.tea`, source};
+  return source === undefined
+    ? null
+    : {filename: `tea-lib/${path}.tea`, source};
 };
 
 interface Emission {

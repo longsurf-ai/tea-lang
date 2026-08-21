@@ -1,4 +1,4 @@
-# lib
+# tea-lib
 
 Compiler-shipped Tea-authored libraries — real Tea libraries
 (`library("...")` + `export`) compiled by the ordinary loader/checker/noder

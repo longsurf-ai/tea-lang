@@ -303,7 +303,7 @@ A builtin is native **only if it is inexpressible in Tea**: data sources
 (`request.*`), collection primitives (`array.*`, `matrix.*`, `map.*`), math
 intrinsics. Everything else — all of `ta.*` — is library code: a builtin Tea
 library
-(`src/lib/ta.tea`, a real `library("ta")` with `export` functions, loaded by
+(`src/tea-lib/ta.tea`, a real `library("ta")` with `export` functions, loaded by
 the loader/importer seam and implicitly imported into every script), compiled
 by the ordinary pipeline, with per-call-site state falling out of ordinary
 function semantics. Semantic stencils are per type + qualifier signature, not
