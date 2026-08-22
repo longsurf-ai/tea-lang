@@ -16,14 +16,18 @@ import {parse} from '../syntax/syntax';
 
 // Frontend orchestrator: one parse per file.
 export function loadPackage(
-  filenames: readonly string[],
+  inputs: readonly SourceInput[],
   errors: Errors,
 ): File[] {
-  return filenames.map(filename =>
-    parse(newFileBase(filename), readFileSync(filename, 'utf8'), (pos, msg) =>
+  return inputs.map(input => {
+    const {filename, source} =
+      typeof input === 'string'
+        ? {filename: input, source: readFileSync(input, 'utf8')}
+        : input;
+    return parse(newFileBase(filename), source, (pos, msg) =>
       errors.errorAt(pos, msg),
-    ),
-  );
+    );
+  });
 }
 
 // What a registry says about an import path: a loadable source, a path that
@@ -32,6 +36,11 @@ export interface PackageSource {
   readonly filename: string;
   readonly source: string;
 }
+
+// Entry packages normally arrive as filenames. Embedding hosts may provide
+// source text with a virtual filename so positions remain stable without a
+// temporary file; both forms enter the same loader/checker/noder pipeline.
+export type SourceInput = string | PackageSource;
 
 export type Registry = (path: string) => PackageSource | 'external' | null;
 

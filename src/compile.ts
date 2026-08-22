@@ -5,7 +5,7 @@ import {Errors, type ErrorMsg} from './base/print';
 import {generate} from './codegen/codegen';
 import type {Program} from './ir/program';
 import {checkPackage} from './checker/check';
-import {loadPackage, resolveImports} from './loader/loader';
+import {loadPackage, resolveImports, type SourceInput} from './loader/loader';
 import {buildProgram} from './noder/noder';
 import type {File} from './syntax/nodes';
 
@@ -28,11 +28,11 @@ const perf = log.child('compile');
 // The sole parse -> check -> node implementation. Target lowerers consume its
 // Program directly; no execution mode owns a parallel frontend.
 export function compileToProgram(
-  filenames: readonly string[],
+  inputs: readonly SourceInput[],
   errors: Errors,
 ): Program | null {
   const parseDone = perf.startTimer('parse');
-  const files = loadPackage(filenames, errors);
+  const files = loadPackage(inputs, errors);
   parseDone({files: files.length});
   if (errors.count > 0) {
     return null;
