@@ -1,19 +1,25 @@
+import {Observable} from 'rxjs';
 import * as z from 'zod';
 import {IrKind, type IrExpr} from '../ir/node';
 import type {Program, RequestEdge} from '../ir/program';
 import {TypeKind, type Type} from '../ir/type';
 import {seriesInputsOf} from '../ir/visit';
-import type {Pair} from './util';
 
 export interface Binding {
+  readonly kind: 'series' | 'parameter';
   readonly name: string;
   readonly type: z.ZodType;
   readonly children?: readonly Binding[];
+  target?: Observable<unknown> | unknown;
 }
+
+type Pair<A, B> = [A, B];
 
 /**
  * Extract input and output bindings from a Program.
  *
+ * Inputs contain the Program's declared parameters, context series, and
+ * recursive request contexts. Output channels are series bindings.
  */
 export function extract(program: Program): Pair<Binding[], Binding[]> {
   const schemas = new Map<Type, z.ZodType>();
@@ -27,16 +33,26 @@ function inputBindingsOf(
   program: Program,
   schemas: Map<Type, z.ZodType>,
 ): Binding[] {
-  const bindings: Binding[] = seriesInputsOf(program).map(series => {
-    const type = schemaOf(series.type, schemas);
-    return binding(series.id, type);
-  });
+  const bindings: Binding[] = [
+    ...program.params.map<Binding>(parameter => ({
+      kind: 'parameter',
+      name: parameter.name,
+      type: schemaOf(parameter.type, schemas),
+    })),
+    ...seriesInputsOf(program).map<Binding>(series => ({
+      kind: 'series',
+      name: series.id,
+      type: schemaOf(series.type, schemas),
+    })),
+  ];
 
   for (const request of program.requests) {
     const type = schemaOf(request.resultType, schemas);
     const children = inputBindingsOf(request.child, schemas);
     bindings.push({
-      ...binding(requestName(request), type),
+      kind: 'series',
+      name: requestName(request),
+      type,
       ...(children.length === 0 ? {} : {children}),
     });
   }
@@ -51,17 +67,12 @@ function outputBindingsOf(
   return program.outputs.flatMap((output, outputId) => {
     const prefix = `${output.effect}[${outputId}]`;
     const qualifyChannel = output.channels.length > 1;
-    return output.channels.map(channel =>
-      binding(
-        qualifyChannel ? `${prefix}.${channel.name}` : prefix,
-        schemaOf(channel.type, schemas),
-      ),
-    );
+    return output.channels.map<Binding>(channel => ({
+      kind: 'series',
+      name: qualifyChannel ? `${prefix}.${channel.name}` : prefix,
+      type: schemaOf(channel.type, schemas),
+    }));
   });
-}
-
-function binding(name: string, type: z.ZodType): Binding {
-  return {name, type};
 }
 
 function requestName(request: RequestEdge): string {

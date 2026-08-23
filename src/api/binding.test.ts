@@ -10,11 +10,37 @@ describe('extract bindings', () => {
     const [inputs, outputs] = extract(mustBuild('plot(close + open)'));
 
     expect(inputs.map(binding => binding.name)).toEqual(['close', 'open']);
+    expect(inputs.map(binding => binding.kind)).toEqual(['series', 'series']);
     expect(outputs.map(binding => binding.name)).toEqual(['plot[0]']);
+    expect(outputs[0].kind).toBe('series');
     expect(inputs.every(binding => binding.type.safeParse(1.5).success)).toBe(
       true,
     );
     expect(outputs[0].type.safeParse(Number.NaN).success).toBe(true);
+  });
+
+  test('includes declared parameters as distinct binding targets', () => {
+    const [inputs] = extract(
+      mustBuild(
+        [
+          'length = input.int(14)',
+          'enabled = input.bool(true)',
+          'source = input.source(close)',
+          'plot(enabled ? ta.sma(source, length) : source)',
+        ].join('\n'),
+      ),
+    );
+
+    expect(inputs.map(({kind, name}) => ({kind, name}))).toEqual([
+      {kind: 'parameter', name: 'length'},
+      {kind: 'parameter', name: 'enabled'},
+      {kind: 'parameter', name: 'source'},
+      {kind: 'series', name: 'close'},
+    ]);
+    expect(inputs[0].type.safeParse(20).success).toBe(true);
+    expect(inputs[0].type.safeParse(20.5).success).toBe(false);
+    expect(inputs[1].type.safeParse(true).success).toBe(true);
+    expect(inputs[1].type.safeParse(1).success).toBe(false);
   });
 
   test('nests requested-context inputs without assigning clocks', () => {
@@ -29,10 +55,11 @@ describe('extract bindings', () => {
 
     expect(inputs).toHaveLength(1);
     expect(inputs[0]).not.toHaveProperty('clock');
+    expect(inputs[0].kind).toBe('series');
     expect(inputs[0].name).toBe('STOCK:NVDA');
-    expect(inputs[0].children?.map(binding => binding.name)).toEqual([
-      'close',
-      'open',
+    expect(inputs[0].children?.map(({kind, name}) => ({kind, name}))).toEqual([
+      {kind: 'series', name: 'close'},
+      {kind: 'series', name: 'open'},
     ]);
     expect(inputs[0].children?.every(binding => !('clock' in binding))).toBe(
       true,
@@ -52,8 +79,12 @@ describe('extract bindings', () => {
       ),
     );
 
-    expect(inputs[0].name).toMatch(/^request@\d+:\d+$/);
-    expect(inputs[0].children?.map(binding => binding.name)).toEqual(['close']);
+    expect(inputs.map(({kind, name}) => ({kind, name}))).toEqual([
+      {kind: 'parameter', name: 'symbol'},
+      {kind: 'parameter', name: 'period'},
+      {kind: 'series', name: expect.stringMatching(/^request@\d+:\d+$/)},
+    ]);
+    expect(inputs[2].children?.map(binding => binding.name)).toEqual(['close']);
   });
 
   test('omits declaration-only outputs and exposes emitted channels', () => {
