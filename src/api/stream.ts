@@ -26,35 +26,3 @@ export class DataStream<T> implements Subscribable<T> {
     }
 
 }
-
-export class CSVStream<T> extends DataStream<T> {
-    readonly path: string;
-
-    constructor(path: string, schema: z.ZodType) {
-
-    }
-
-}
-
-
-
-
-/**
- * Create a data stream from a CSV file. No reading is done until the stream is subscribed to.
- * @param path - The path to the CSV file.
- * @param schema - Optional schema to validate the data against.
- */
-export function fromCSV(path: string, schema?: z.ZodType): DataStream<z.output<typeof schema>> {
-    // infer the schema from the CSV file, probably through 
-    // a helper method and create a new DataStream instance.
-}
-
-
-/**
- * Create a data stream from a WebSocket connection. No connection is established until the stream is subscribed to.
- * @param url - The URL of the WebSocket server.
- * @param schema - Optional schema to validate the data against.
- */
-export function fromWebSocket(url: string, schema?: z.ZodType): DataStream<z.output<typeof schema>> {
-    // create a new DataStream instance.
-}
