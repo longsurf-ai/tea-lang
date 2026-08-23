@@ -20,4 +20,4 @@ capturesRoot() =>
 
 bad2 = request.security("A", "D", capturesRoot()) // ERROR reads script variable 'x'
 
-bad3 = request.security("A", "D", plot(close)) // ERROR 'plot' can only be called at the top level
+bad3 = request.security("A", "D", plot(close)) // ERROR 'plot' declares an output and can only be called at the top level

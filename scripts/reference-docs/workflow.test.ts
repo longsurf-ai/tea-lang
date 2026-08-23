@@ -123,6 +123,7 @@ describe('reference documentation Codex workflow', () => {
     expect(inventory.taExports.some(name => name.startsWith('broker'))).toBe(
       false,
     );
+    expect(inventory.preludeExports).toContain('plot');
     expect(inventory.keywords).toContain('struct');
     expect(inventory.operators).toContain('[] history');
   });

@@ -762,6 +762,24 @@ export class Parser {
         this.want(Tok.Rbrack);
         return {kind: NodeKind.TupleExpr, pos, elems};
       }
+      case Tok.Lbrace: {
+        this.next();
+        const fields: import('./nodes').ArgumentObjectField[] = [];
+        if (this.tok() !== Tok.Rbrace) {
+          do {
+            const name = this.name();
+            this.want(Tok.Colon);
+            fields.push({
+              kind: NodeKind.ArgumentObjectField,
+              pos: name.pos,
+              name,
+              value: this.expr(),
+            });
+          } while (this.got(Tok.Comma));
+        }
+        this.want(Tok.Rbrace);
+        return {kind: NodeKind.ArgumentObjectExpr, pos, fields};
+      }
       default:
         this.error(`expected expression, found '${this.tok()}'`);
         return this.badExpr(pos);
@@ -956,10 +974,11 @@ export class Parser {
   private param(): Param {
     const pos = this.pos();
     const qualified = this.tryParse(() => {
-      if (!this.atName()) {
+      if (!this.atName() && this.tok() !== Tok.Const) {
         return null;
       }
-      const qualifier = this.name();
+      const qualifier =
+        this.tok() === Tok.Const ? this.reservedName(Tok.Const) : this.name();
       const typeName = this.typeName();
       if (typeName === null || !this.atName()) {
         return null;
@@ -998,6 +1017,12 @@ export class Parser {
       );
     }
     return this.finishParam(pos, null, this.name());
+  }
+
+  private reservedName(tok: TokenKind): Name {
+    const name: Name = {kind: NodeKind.Name, pos: this.pos(), value: tok};
+    this.want(tok);
+    return name;
   }
 
   private finishParam(

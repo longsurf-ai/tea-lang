@@ -26,6 +26,8 @@ export const Tok = {
   Rparen: 'rparen',
   Lbrack: 'lbrack',
   Rbrack: 'rbrack',
+  Lbrace: 'lbrace',
+  Rbrace: 'rbrace',
   Comma: 'comma',
   Dot: 'dot',
   // Keywords each get their own token kind; `and`/`or`/`not` are scanned as

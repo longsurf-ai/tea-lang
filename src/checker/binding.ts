@@ -123,6 +123,11 @@ class NameBinder {
           this.bindExpr(elem);
         }
         return;
+      case NodeKind.ArgumentObjectExpr:
+        for (const field of expr.fields) {
+          this.bindExpr(field.value);
+        }
+        return;
       case NodeKind.IfExpr:
         this.bindExpr(expr.cond);
         this.bindBlock(expr.then);

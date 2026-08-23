@@ -524,24 +524,26 @@ describe('context builtins', () => {
   });
 });
 
-describe('native calls', () => {
-  test('named arguments align to catalog params', () => {
+describe('calls', () => {
+  test('named arguments align to Tea prelude parameters', () => {
     const r = checkText('plot(close, color=color.blue, title="x")');
     expect(r.errors).toEqual([]);
     const call = (r.file.stmtList[0] as ExprStmt).x as CallExpr;
     expect(call.kind).toBe(NodeKind.CallExpr);
     const resolved = r.info.calls.get(call);
-    expect(resolved?.kind).toBe(CallKind.Native);
-    if (resolved?.kind !== CallKind.Native) {
+    expect(resolved?.kind).toBe(CallKind.Function);
+    if (resolved?.kind !== CallKind.Function) {
       return;
     }
-    expect(resolved.native.name).toBe('plot');
+    expect(resolved.instance.name).toBe('plot');
     // plot(series, title, color, ...): slot 0 = series, 1 = title, 2 = color.
     expect(resolved.args[0]).not.toBeNull();
     expect(resolved.args[1]).not.toBeNull();
     expect(resolved.args[2]).not.toBeNull();
     expect(resolved.args[3]).toBeNull();
-    expect(resolved.argumentEvaluationOrder).toEqual([0, 2, 1]);
+    expect(resolved.argumentEvaluationOrder).toEqual([
+      0, 2, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    ]);
   });
 
   test('overload selection: int stays int, mixing widens to float', () => {

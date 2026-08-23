@@ -301,6 +301,31 @@ describe('expressions', () => {
     expect(out).toContain('args[2]: Arg @1:22');
   });
 
+  test('contextual argument object expression', () => {
+    const out = dump(
+      [
+        'output(',
+        '    close,',
+        '    kind = "plot",',
+        '    args = {title: "Close", color: lineColor})',
+        '',
+      ].join('\n'),
+    );
+    expect(out).toContain('ArgumentObjectExpr @4:12');
+    expect(out).toContain('fields[0]: ArgumentObjectField @4:13');
+    expect(out).toContain('name: Name @4:13 value="title"');
+    expect(out).toContain('fields[1]: ArgumentObjectField @4:29');
+  });
+
+  test('full qualifier caps in function parameters', () => {
+    const out = dump(
+      'show(const string title, input int width, simple string label, series color tone) => title\n',
+    );
+    for (const qualifier of ['const', 'input', 'simple', 'series']) {
+      expect(out).toContain(`value=${JSON.stringify(qualifier)}`);
+    }
+  });
+
   test('generic call vs comparison', () => {
     const call = dump('xs = array.new<float>(0)\n');
     expect(call).toContain('CallExpr @1:6');

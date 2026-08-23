@@ -697,6 +697,8 @@ export function generateGrammar() {
           {match: '\\)', name: 'punctuation.section.parens.end.tea'},
           {match: '\\[', name: 'punctuation.section.brackets.begin.tea'},
           {match: '\\]', name: 'punctuation.section.brackets.end.tea'},
+          {match: '\\{', name: 'punctuation.section.braces.begin.tea'},
+          {match: '\\}', name: 'punctuation.section.braces.end.tea'},
           {match: ',', name: 'punctuation.separator.comma.tea'},
           {match: '\\.', name: 'punctuation.accessor.tea'},
         ],

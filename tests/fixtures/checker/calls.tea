@@ -19,7 +19,7 @@ av = math.avg(close, open)
 
 plot() // ERROR missing argument 'series' in call to 'plot'
 
-plot(close, title=str.tostring(1)) // ERROR argument 'title' to 'plot' must be a constant literal
+plot(close, title=syminfo.ticker) // ERROR argument 'title' to 'plot' accepts at most const
 
 plot(close, foo=1) // ERROR unknown argument 'foo' in call to 'plot'
 
@@ -30,4 +30,4 @@ na(close, 2) // ERROR too many arguments in call to 'na'
 lw = input.int(bar_index) // ERROR argument 'defval' to 'input\.int' accepts at most const, got series
 
 if close > 0
-	plot(open) // ERROR 'plot' can only be called at the top level of the script
+	plot(open) // ERROR 'plot' declares an output and can only be called at the top level of the script

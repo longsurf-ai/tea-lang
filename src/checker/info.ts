@@ -18,6 +18,7 @@ export const CallKind = {
   Function: 'function',
   Constructor: 'constructor',
   Request: 'request',
+  Output: 'output',
 } as const;
 
 export interface CheckedExpression {
@@ -79,11 +80,30 @@ export interface RequestCall {
   readonly resultType: Type;
 }
 
+export interface OutputArgument {
+  readonly name: string;
+  readonly value: CheckedExpression;
+}
+
+// One checked output declaration intrinsic. The contextual argument object is
+// exploded here so noder consumes exact per-field facts without re-checking or
+// treating it as a runtime record value. Canonical operand 0 is the primary
+// value; fields occupy 1..n in object order.
+export interface OutputCall {
+  readonly kind: typeof CallKind.Output;
+  readonly outputKind: string;
+  readonly value: CheckedExpression;
+  readonly args: readonly OutputArgument[];
+  readonly argumentEvaluationOrder: readonly number[];
+  readonly resultType: Type;
+}
+
 export type CallResolution =
   | NativeCall
   | FunctionCall
   | ConstructorCall
-  | RequestCall;
+  | RequestCall
+  | OutputCall;
 
 export const SelectionKind = {
   Field: 'field',
@@ -184,6 +204,13 @@ export interface FunctionInstance {
   // Exact non-local semantic dependencies. Builtins reproject into each
   // Program; outer variables are checked against request capture policy.
   readonly dependencies: Set<SemanticDependency>;
+  // A direct-tail output declaration body is elaborated at each caller so
+  // caller sites own distinct OutputDecls. Null means an ordinary runtime
+  // function instance.
+  output: {
+    readonly call: syntax.CallExpr;
+    readonly resolution: OutputCall;
+  } | null;
   resultType: Type;
   resultQualifier: Qualifier;
 }

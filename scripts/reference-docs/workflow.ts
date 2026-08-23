@@ -93,6 +93,7 @@ export interface Inventory {
   readonly operators: readonly string[];
   readonly annotations: readonly string[];
   readonly taExports: readonly string[];
+  readonly preludeExports: readonly string[];
 }
 
 export interface WorkflowTask {
@@ -416,6 +417,15 @@ export async function collectInventory(
   ]
     .map(match => match[1]!)
     .sort();
+  const visualSource = await readFile(
+    path.join(root, 'src/tea-lib/visual.tea'),
+    'utf8',
+  );
+  const preludeExports = [
+    ...visualSource.matchAll(/^export\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm),
+  ]
+    .map(match => match[1]!)
+    .sort();
 
   return {
     languageVersion,
@@ -436,6 +446,7 @@ export async function collectInventory(
     ],
     annotations: ['//@version'],
     taExports,
+    preludeExports,
   };
 }
 

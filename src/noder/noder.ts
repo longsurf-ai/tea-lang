@@ -73,8 +73,10 @@ import {
   type CheckedExpression,
   type CollectionLocation as CheckedCollectionLocation,
   type FunctionInstance,
+  type FunctionCall,
   type Info,
   type NativeCall,
+  type OutputCall,
   type RequestCall,
   type StructFieldStore,
 } from '../checker/info';
@@ -163,6 +165,10 @@ class Noder {
   private info: Info;
   private program: ProgramLoweringContext;
   private frame: FrameLoweringContext;
+  private outputSubstitutions: ReadonlyMap<
+    VariableObject,
+    CheckedExpression
+  > | null = null;
 
   constructor(
     private readonly checked: CheckedPackage,
@@ -657,6 +663,17 @@ class Noder {
           return [this.nodeEffectCall(call, resolved)];
         }
       }
+      if (resolved?.kind === CallKind.Output) {
+        this.nodeOutput(call, resolved);
+        return [];
+      }
+      if (
+        resolved?.kind === CallKind.Function &&
+        resolved.instance.output !== null
+      ) {
+        this.nodeOutputTemplate(call, resolved);
+        return [];
+      }
     }
     const tv = this.tvOf(stmt.x);
     if (tv.type.kind === TypeKind.Na && tv.value !== null) {
@@ -903,6 +920,8 @@ class Noder {
             ),
           ),
         };
+      case NodeKind.ArgumentObjectExpr:
+        return fatal('contextual argument object reached ordinary noding');
       case NodeKind.ParenExpr:
         return this.nodeExpr(e.x, tv.type);
       case NodeKind.IfExpr:
@@ -1011,6 +1030,10 @@ class Noder {
     }
     if (e.kind === NodeKind.Name) {
       const object = this.variableUse(e);
+      const substitution = this.outputSubstitutions?.get(object);
+      if (substitution !== undefined) {
+        return this.nodeChecked(substitution, tv.type);
+      }
       const param = this.paramRefs.get(object);
       if (param !== undefined) {
         return {
@@ -1090,6 +1113,9 @@ class Noder {
       };
     }
     if (resolved.kind === CallKind.Function) {
+      if (resolved.instance.output !== null) {
+        return this.nodeOutputTemplate(c, resolved);
+      }
       const func = this.funcOf(resolved.instance);
       const args = resolved.instance.params.map((param, i) => {
         const provided = resolved.args[i];
@@ -1149,6 +1175,9 @@ class Noder {
     }
     if (resolved.kind === CallKind.Request) {
       return this.nodeRequest(c, resolved, tv);
+    }
+    if (resolved.kind === CallKind.Output) {
+      return this.nodeOutput(c, resolved);
     }
     if (!typesEqual(resolved.resultType, tv.type)) {
       return fatal(
@@ -1893,6 +1922,199 @@ class Noder {
       qualifier: Qualifier.Const,
       output,
     };
+  }
+
+  private nodeOutput(c: syntax.CallExpr, resolved: OutputCall): OutputRefExpr {
+    const primary = this.outputOperand(resolved.value);
+    const staticArgs: {name: string; value: ConstValue}[] = [];
+    const bindArgs: {name: string; expr: IrExpr}[] = [];
+    const channels: {name: string; type: Type}[] = [];
+    const emitArgs: IrExpr[] = [];
+    const bindIndexByOperand = new Map<number, number>();
+    const channelIndexByOperand = new Map<number, number>();
+    const primaryName = resolved.outputKind === 'plot' ? 'series' : 'value';
+
+    if (primary.tv.value !== null) {
+      staticArgs.push({name: primaryName, value: primary.tv.value});
+    } else {
+      const expr = this.nodeChecked(primary, resolved.value.tv.type);
+      if (
+        expr.kind === IrKind.OutputRef ||
+        qualifierLE(primary.tv.qualifier, Qualifier.Input)
+      ) {
+        bindIndexByOperand.set(0, bindArgs.length);
+        bindArgs.push({name: primaryName, expr});
+      } else {
+        channelIndexByOperand.set(0, emitArgs.length);
+        channels.push({name: primaryName, type: resolved.value.tv.type});
+        emitArgs.push(expr);
+      }
+    }
+
+    resolved.args.forEach((arg, index) => {
+      const operand = index + 1;
+      const value = this.outputOperand(arg.value);
+      const tv = value.tv;
+      if (tv.value !== null) {
+        staticArgs.push({name: arg.name, value: tv.value});
+        return;
+      }
+      const expr = this.nodeChecked(value, arg.value.tv.type);
+      if (
+        expr.kind === IrKind.OutputRef ||
+        qualifierLE(tv.qualifier, Qualifier.Input)
+      ) {
+        bindIndexByOperand.set(operand, bindArgs.length);
+        bindArgs.push({name: arg.name, expr});
+        return;
+      }
+      channelIndexByOperand.set(operand, emitArgs.length);
+      channels.push({name: arg.name, type: arg.value.tv.type});
+      emitArgs.push(expr);
+    });
+
+    const bindArgumentEvaluationOrder = resolved.argumentEvaluationOrder
+      .map(index => bindIndexByOperand.get(index))
+      .filter((index): index is number => index !== undefined);
+    const emitArgumentEvaluationOrder = resolved.argumentEvaluationOrder
+      .map(index => channelIndexByOperand.get(index))
+      .filter((index): index is number => index !== undefined);
+    if (bindArgumentEvaluationOrder.length !== bindArgs.length) {
+      return fatal(
+        `output '${resolved.outputKind}' lost a bind-argument evaluation-order entry`,
+      );
+    }
+    if (emitArgumentEvaluationOrder.length !== emitArgs.length) {
+      return fatal(
+        `output '${resolved.outputKind}' lost a channel evaluation-order entry`,
+      );
+    }
+
+    const output: OutputDecl = {
+      effect: resolved.outputKind,
+      staticArgs,
+      bindArgs,
+      bindArgumentEvaluationOrder,
+      channels,
+    };
+    this.outputs.push(output);
+    if (emitArgs.length > 0) {
+      this.emitted.push({
+        kind: IrKind.Emit,
+        pos: c.pos,
+        output,
+        args: emitArgs,
+        argumentEvaluationOrder: emitArgumentEvaluationOrder,
+      });
+    }
+    return {
+      kind: IrKind.OutputRef,
+      pos: c.pos,
+      type: resolved.resultType,
+      qualifier: Qualifier.Const,
+      output,
+    };
+  }
+
+  private outputOperand(checked: CheckedExpression): CheckedExpression {
+    if (this.outputSubstitutions === null) {
+      return checked;
+    }
+    const expr = unwrapExpr(checked.expr);
+    if (expr.kind !== NodeKind.Name) {
+      return checked;
+    }
+    const object = checked.info.uses.get(expr);
+    return object?.kind === ObjectKind.Variable
+      ? (this.outputSubstitutions.get(object) ?? checked)
+      : checked;
+  }
+
+  private nodeOutputTemplate(
+    c: syntax.CallExpr,
+    resolved: FunctionCall,
+  ): OutputRefExpr {
+    const template = resolved.instance.output;
+    if (template === null) {
+      return fatal(
+        `function '${resolved.instance.name}' has no output template`,
+      );
+    }
+    const substitutions = new Map<VariableObject, CheckedExpression>();
+    resolved.instance.params.forEach((parameter, index) => {
+      const provided = resolved.args[index];
+      if (provided !== null) {
+        substitutions.set(parameter, {
+          expr: provided,
+          info: this.info,
+          tv: this.tvOf(provided),
+        });
+        return;
+      }
+      const dflt = resolved.instance.defaults.get(index);
+      if (dflt === undefined) {
+        return fatal(
+          `output wrapper '${resolved.instance.name}' lacks default ${index}`,
+        );
+      }
+      substitutions.set(parameter, dflt);
+    });
+
+    const parameterIndex = new Map(
+      resolved.instance.params.map((parameter, index) => [parameter, index]),
+    );
+    const includedArgs = template.resolution.args.filter(arg => {
+      if (arg.value.tv.value !== null) {
+        return true;
+      }
+      const expr = unwrapExpr(arg.value.expr);
+      if (expr.kind !== NodeKind.Name) {
+        return fatal('non-parameter output template operand reached noder');
+      }
+      const object = arg.value.info.uses.get(expr);
+      if (object?.kind !== ObjectKind.Variable) {
+        return fatal('non-parameter output template binding reached noder');
+      }
+      const index = parameterIndex.get(object);
+      return index === undefined
+        ? fatal('output template parameter lacks a caller index')
+        : resolved.args[index] !== null;
+    });
+    const operandByParameter = new Map<VariableObject, number>();
+    const operands = [
+      template.resolution.value,
+      ...includedArgs.map(arg => arg.value),
+    ];
+    operands.forEach((operand, index) => {
+      if (operand.tv.value !== null) {
+        return;
+      }
+      const expr = unwrapExpr(operand.expr);
+      if (expr.kind !== NodeKind.Name) {
+        return fatal('non-parameter output template operand reached noder');
+      }
+      const object = operand.info.uses.get(expr);
+      if (
+        object?.kind !== ObjectKind.Variable ||
+        !resolved.instance.params.includes(object)
+      ) {
+        return fatal('non-parameter output template binding reached noder');
+      }
+      operandByParameter.set(object, index);
+    });
+    const argumentEvaluationOrder = resolved.argumentEvaluationOrder
+      .map(index => operandByParameter.get(resolved.instance.params[index]))
+      .filter((index): index is number => index !== undefined);
+
+    const saved = this.outputSubstitutions;
+    this.outputSubstitutions = substitutions;
+    const output = this.nodeOutput(c, {
+      ...template.resolution,
+      args: includedArgs,
+      argumentEvaluationOrder,
+    });
+    this.outputSubstitutions = saved;
+    return output;
   }
 
   private nodeEffectCall(

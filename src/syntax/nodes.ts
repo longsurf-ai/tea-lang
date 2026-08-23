@@ -41,6 +41,8 @@ export const NodeKind = {
   SelectorExpr: 'SelectorExpr',
   HistoryExpr: 'HistoryExpr',
   TupleExpr: 'TupleExpr',
+  ArgumentObjectExpr: 'ArgumentObjectExpr',
+  ArgumentObjectField: 'ArgumentObjectField',
   ParenExpr: 'ParenExpr',
   TuplePattern: 'TuplePattern',
   Block: 'Block',
@@ -337,6 +339,7 @@ export type Expr =
   | SelectorExpr
   | HistoryExpr
   | TupleExpr
+  | ArgumentObjectExpr
   | ParenExpr
   | IfExpr
   | ForExpr
@@ -416,6 +419,20 @@ export interface HistoryExpr extends Node {
 export interface TupleExpr extends Node {
   readonly kind: typeof NodeKind.TupleExpr;
   readonly elems: readonly Expr[];
+}
+
+// Contextual named arguments for compiler-declared metadata consumers such as
+// output(..., args={title: title, color: color}). The checker decides where
+// this syntax is admissible; syntax does not make it a runtime record value.
+export interface ArgumentObjectExpr extends Node {
+  readonly kind: typeof NodeKind.ArgumentObjectExpr;
+  readonly fields: readonly ArgumentObjectField[];
+}
+
+export interface ArgumentObjectField extends Node {
+  readonly kind: typeof NodeKind.ArgumentObjectField;
+  readonly name: Name;
+  readonly value: Expr;
 }
 
 export interface ParenExpr extends Node {

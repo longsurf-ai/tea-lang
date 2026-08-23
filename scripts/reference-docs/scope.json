@@ -21,7 +21,8 @@
       "src/checker/catalog.ts",
       "src/syntax/tokens.ts",
       "src/syntax/nodes.ts",
-      "src/tea-lib/ta.tea"
+      "src/tea-lib/ta.tea",
+      "src/tea-lib/visual.tea"
     ]
   },
   "desiredFeatures": [],
@@ -64,6 +65,7 @@
     "src/ir/type.ts",
     "src/syntax/",
     "src/tea-lib/ta.tea",
+    "src/tea-lib/visual.tea",
     "src/docs/",
     "tests/"
   ],

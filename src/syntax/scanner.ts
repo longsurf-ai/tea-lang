@@ -689,6 +689,16 @@ export class Scanner {
         this.groupDepth = Math.max(0, this.groupDepth - 1);
         this.punct(Tok.Rbrack, pos);
         return true;
+      case '{':
+        this.source.nextch();
+        this.groupDepth += 1;
+        this.punct(Tok.Lbrace, pos);
+        return true;
+      case '}':
+        this.source.nextch();
+        this.groupDepth = Math.max(0, this.groupDepth - 1);
+        this.punct(Tok.Rbrace, pos);
+        return true;
       case ',':
         this.source.nextch();
         this.punct(Tok.Comma, pos);

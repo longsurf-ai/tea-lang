@@ -488,6 +488,66 @@ describe('params and outputs', () => {
     expect(emits.length).toBe(2);
   });
 
+  test('generic output preserves declaration refs and partitions object fields', () => {
+    const program = mustBuild(
+      [
+        'width = input.int(2)',
+        'tone = close > open ? color.green : color.red',
+        'p = output(',
+        '    close,',
+        '    kind="plot",',
+        '    args={title: "Close", color: tone, linewidth: width})',
+        'fill(p, p)',
+      ].join('\n'),
+    );
+
+    expect(program.outputs).toHaveLength(2);
+    const [plot, fill] = program.outputs;
+    expect(plot.effect).toBe('plot');
+    expect(plot.staticArgs).toEqual([{name: 'title', value: 'Close'}]);
+    expect(plot.bindArgs.map(arg => arg.name)).toEqual(['linewidth']);
+    expect(plot.channels).toEqual([
+      {name: 'series', type: {kind: TypeKind.Float}},
+      {name: 'color', type: {kind: TypeKind.Color}},
+    ]);
+    expect(fill.bindArgs.map(arg => arg.expr.kind)).toEqual([
+      IrKind.OutputRef,
+      IrKind.OutputRef,
+    ]);
+    expect(program.body.filter(stmt => stmt.kind === IrKind.Emit)).toHaveLength(
+      1,
+    );
+  });
+
+  test('Tea output wrappers elaborate one caller-owned declaration per call site', () => {
+    const program = mustBuild(
+      [
+        'draw(series float value, const string title) =>',
+        '    output(value, kind="plot", args={title: title})',
+        'first = draw(close, "Close")',
+        'second = draw(open, "Open")',
+        'fill(first, second)',
+      ].join('\n'),
+    );
+
+    expect(program.outputs.map(output => output.effect)).toEqual([
+      'plot',
+      'plot',
+      'fill',
+    ]);
+    expect(
+      program.outputs.slice(0, 2).map(output => output.staticArgs),
+    ).toEqual([
+      [{name: 'title', value: 'Close'}],
+      [{name: 'title', value: 'Open'}],
+    ]);
+    expect(program.outputs[2].bindArgs.map(arg => arg.expr.kind)).toEqual([
+      IrKind.OutputRef,
+      IrKind.OutputRef,
+    ]);
+    expect(funcsOf(program).some(func => func.name === 'draw')).toBe(false);
+  });
+
   test('output channels retain named-argument source evaluation order', () => {
     const program = mustBuild(
       [

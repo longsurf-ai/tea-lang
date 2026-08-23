@@ -16,10 +16,14 @@ export const Qualifier = {
 
 export type Qualifier = (typeof Qualifier)[keyof typeof Qualifier];
 
-// Qualifiers users may write before a parameter type. Const and input remain
-// inferred semantic states; `const` at declaration start is a persistence
-// mode, not a written type qualifier.
-export const SOURCE_QUALIFIERS = [Qualifier.Simple, Qualifier.Series] as const;
+// Qualifiers users may write before a parameter type. `const` at declaration
+// start remains a persistence mode; in a parameter annotation it is a cap.
+export const SOURCE_QUALIFIERS = [
+  Qualifier.Const,
+  Qualifier.Input,
+  Qualifier.Simple,
+  Qualifier.Series,
+] as const;
 
 export type SourceQualifier = (typeof SOURCE_QUALIFIERS)[number];
 

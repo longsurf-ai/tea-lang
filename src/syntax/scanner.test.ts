@@ -69,6 +69,8 @@ const SAMPLES: readonly Sample[] = [
   {src: ')', tok: 'rparen'},
   {src: '[', tok: 'lbrack'},
   {src: ']', tok: 'rbrack'},
+  {src: '{', tok: 'lbrace'},
+  {src: '}', tok: 'rbrace'},
   {src: ',', tok: 'comma'},
   {src: '.', tok: 'dot'},
 ];

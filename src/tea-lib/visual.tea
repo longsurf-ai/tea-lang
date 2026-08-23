@@ -1,0 +1,38 @@
+//@version=1
+// visual: compiler-shipped declarative visual wrappers. Every exported
+// function is ordinary Tea source over the generic output intrinsic.
+library("visual")
+
+export plot(
+    series,
+    const string title = "",
+    series color color = na,
+    input int linewidth = 1,
+    const string style = "line",
+    input bool trackprice = false,
+    const float histbase = 0.0,
+    input int offset = 0,
+    const bool editable = true,
+    input int show_last = 0,
+    const string display = "all",
+    const string format = "inherit",
+    const int precision = 0
+) =>
+    output(
+        series,
+        kind="plot",
+        args={
+            title: title,
+            color: color,
+            linewidth: linewidth,
+            style: style,
+            trackprice: trackprice,
+            histbase: histbase,
+            offset: offset,
+            editable: editable,
+            show_last: show_last,
+            display: display,
+            format: format,
+            precision: precision
+        }
+    )

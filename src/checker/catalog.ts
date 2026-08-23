@@ -717,6 +717,23 @@ function mathNum(
 function buildFuncs(): NativeFunc[] {
   const funcs: NativeFunc[] = [];
 
+  // The sole dense-output declaration intrinsic. Its contextual args object
+  // and kind-dependent result are checked by checkOutput rather than ordinary
+  // overload matching; this catalog entry owns only its intrinsic identity.
+  funcs.push(
+    func(
+      'output',
+      [
+        req('value', TypeRef.Any, Qualifier.Series),
+        req('kind', StringType, Qualifier.Const),
+        req('args', TypeRef.Any, Qualifier.Series),
+      ],
+      VoidType,
+      Qualifier.Const,
+      Effect.Output,
+    ),
+  );
+
   // Generic sparse side effects. This is a checker-owned intrinsic namespace,
   // not a source library; codegen lowers each semantic call site to one typed
   // Program effect declaration.
@@ -809,27 +826,6 @@ function buildFuncs(): NativeFunc[] {
 
   // Declarative outputs.
   funcs.push(
-    func(
-      'plot',
-      [
-        req('series', TypeRef.Num, Qualifier.Series),
-        opt('title', StringType, Qualifier.Const, {literal: true}),
-        opt('color', ColorType, Qualifier.Series),
-        opt('linewidth', IntType, Qualifier.Input),
-        opt('style', StringType, Qualifier.Const),
-        opt('trackprice', BoolType, Qualifier.Input),
-        opt('histbase', FloatType, Qualifier.Const),
-        opt('offset', IntType, Qualifier.Input),
-        opt('editable', BoolType, Qualifier.Const),
-        opt('show_last', IntType, Qualifier.Input),
-        opt('display', StringType, Qualifier.Const),
-        opt('format', StringType, Qualifier.Const),
-        opt('precision', IntType, Qualifier.Const),
-      ],
-      PlotType,
-      Qualifier.Const,
-      Effect.Output,
-    ),
     func(
       'hline',
       [

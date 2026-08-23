@@ -181,9 +181,12 @@ places to its depth pass for annotation.
   the noder's depth pass. Series inputs, builtins, params, and request
   results carry the same depth field, so every history demand is resolved
   before execution.
-- **outputs**: statically-declared effect channels (plot/hline/
-  alertcondition), hoisted so the host knows every channel before the first
-  bar. Three argument buckets: `staticArgs` (compile-time constants),
+- **outputs**: statically-declared dense channels, hoisted so the host knows
+  every output before the first bar. The sole declaration intrinsic is
+  `output(value, kind, args={...})`; compiler-shipped Tea wrappers such as
+  unqualified `plot(...)` elaborate it at each caller, preserving distinct
+  `PlotType`/`OutputRefExpr` identities for `fill`. Three argument buckets:
+  `staticArgs` (compile-time constants),
   `bindArgs` (input-qualified exprs — hline price, plot linewidth,
   plotshape offset — plus `fill`'s plot/hline references, evaluated once in
   module.bind and delivered before the first bar), and per-bar `channels` written
@@ -299,11 +302,11 @@ result directly and never write back the receiver.
 ## Primitives vs prelude
 
 A builtin is native **only if it is inexpressible in Tea**: data sources
-(`close`, `bar_index`), host effects (`plot`, `line.new`), context capture
+(`close`, `bar_index`), host effects (`output`, `line.new`), context capture
 (`request.*`), collection primitives (`array.*`, `matrix.*`, `map.*`), math
-intrinsics. Everything else — all of `ta.*` — is library code: a builtin Tea
-library
-(`src/tea-lib/ta.tea`, a real `library("ta")` with `export` functions, loaded by
+intrinsics. Everything else — all of `ta.*` and visual wrappers such as
+`plot` — is library code in real Tea libraries
+(`src/tea-lib/{ta,visual}.tea`, each with a `library(...)` declaration and `export` functions, loaded by
 the loader/importer seam and implicitly imported into every script), compiled
 by the ordinary pipeline, with per-call-site state falling out of ordinary
 function semantics. Semantic stencils are per type + qualifier signature, not
@@ -315,16 +318,16 @@ caps, const-required and
 subgraph), and an **effect class** — the tag that selects the compilation and
 runtime protocol:
 
-| Effect class         | Examples                           | Protocol                                                                                                         |
-| -------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| none                 | `math.*`                           | pure call                                                                                                        |
-| param                | `input.*`                          | extracts one global `ParamInput` per call site; local blocks, non-exported UDFs, scalar request captures allowed |
-| declaration          | `indicator`, `strategy`            | script metadata; top-level placement; `strategy` is first, unique, and excludes other script declarations        |
-| output (declarative) | `plot*`, `hline`, `alertcondition` | hoisted to `Program.outputs`; per-bar `Emit`; top-level/unconditional placement                                  |
-| handle-object        | `line.*`, `label.*`, `box.*`       | per-bar host object ops; handle values; rollback participation                                                   |
-| host-service         | reserved; no strategy order API    | future host services with feedback                                                                               |
-| async-host-call      | `llm()` (Tea)                      | awaited/batched host call                                                                                        |
-| request              | `request.*`                        | expression capture; compiles a child Program (`RequestEdge`)                                                     |
+| Effect class         | Examples                        | Protocol                                                                                                                          |
+| -------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| none                 | `math.*`                        | pure call                                                                                                                         |
+| param                | `input.*`                       | extracts one global `ParamInput` per call site; local blocks, non-exported UDFs, scalar request captures allowed                  |
+| declaration          | `indicator`, `strategy`         | script metadata; top-level placement; `strategy` is first, unique, and excludes other script declarations                         |
+| output (declarative) | `output(value, kind, args)`     | hoisted to `Program.outputs`; per-bar `Emit`; top-level/unconditional placement; Tea wrappers such as `plot` elaborate per caller |
+| handle-object        | `line.*`, `label.*`, `box.*`    | per-bar host object ops; handle values; rollback participation                                                                    |
+| host-service         | reserved; no strategy order API | future host services with feedback                                                                                                |
+| async-host-call      | `llm()` (Tea)                   | awaited/batched host call                                                                                                         |
+| request              | `request.*`                     | expression capture; compiles a child Program (`RequestEdge`)                                                                      |
 
 New builtin families are catalog entries plus at most a new noding policy —
 never new checker or IR architecture. Future cross-sectional analysis

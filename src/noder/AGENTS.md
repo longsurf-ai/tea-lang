@@ -57,8 +57,11 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
 - Output args partition by when they are known: folded constants →
   `staticArgs`; output refs and at-most-input exprs → `bindArgs` (module.bind);
   simple/series exprs → `channels` + one per-bar `Emit` after the statement.
-  Both runtime-evaluated buckets retain source evaluation order separately from
-  their canonical parameter order.
+  The native `output` intrinsic arrives as `OutputCall`; a direct-tail
+  Tea-authored wrapper such as `visual.plot` elaborates at its caller and never
+  becomes an `IrFunc`, so two calls own two `OutputDecl`s while retaining
+  `PlotType`/`HlineType` `OutputRefExpr` behavior. Both runtime-evaluated
+  buckets retain source evaluation order separately from canonical order.
   `indicator()`/`strategy()` are OutputDecls whose effect is the native's
   name — script metadata is an emission to the host.
 - History is valid only on a direct readable binding. Noding projects that

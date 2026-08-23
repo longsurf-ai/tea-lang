@@ -50,9 +50,12 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   root Name reassigned. The checker owns these semantic locations but no Heap
   slot, transaction, or persistence policy.
 - The catalog lists a builtin only if it is inexpressible in Tea. All of
-  `ta.*` is prelude source compiled by the ordinary pipeline; a new builtin
-  family is a catalog entry plus at most a noding policy, never new checker
-  architecture.
+  `ta.*` and the flattened visual `plot` wrapper are Tea source compiled by
+  the ordinary pipeline; only generic `output(value, kind, args={...})` owns
+  dense-output declaration semantics. `OutputCall` preserves per-field facts,
+  and direct-tail output wrappers elaborate at their callers so written calls
+  own distinct declarations. A new builtin family is a catalog entry plus at
+  most a noding policy, never new checker architecture.
 - `strategy(title, shorttitle?, overlay?)` is a script header: when present it
   is the first source statement, appears exactly once, and excludes
   `indicator()` and `library()`. Its arguments stay ordinary declaration

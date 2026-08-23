@@ -356,7 +356,7 @@
       "patterns": [
         {
           "name": "meta.declaration.method.tea",
-          "begin": "^(\\s+)(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "begin": "^(\\s+)(?:(\\b(?:const|input|simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
           "beginCaptures": {
             "2": {
               "name": "storage.modifier.qualifier.tea"
@@ -454,7 +454,7 @@
     "parameter-declarations": {
       "patterns": [
         {
-          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(\\.)([A-Za-z_][A-Za-z0-9_]*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:const|input|simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(\\.)([A-Za-z_][A-Za-z0-9_]*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
           "captures": {
             "2": {
               "name": "storage.modifier.qualifier.tea"
@@ -474,7 +474,7 @@
           }
         },
         {
-          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:simple|series)\\b)(\\s+))?(\\b(?:array|bool|box|color|float|int|label|line|linefill|map|matrix|polyline|string|table)\\b)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:const|input|simple|series)\\b)(\\s+))?(\\b(?:array|bool|box|color|float|int|label|line|linefill|map|matrix|polyline|string|table)\\b)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
           "captures": {
             "2": {
               "name": "storage.modifier.qualifier.tea"
@@ -488,7 +488,7 @@
           }
         },
         {
-          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:const|input|simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
           "captures": {
             "2": {
               "name": "storage.modifier.qualifier.tea"
@@ -502,7 +502,7 @@
           }
         },
         {
-          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "match": "(?:(?<=\\()|(?<=,))(\\s*)(?:(\\b(?:const|input|simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(\\s+)([A-Za-z_][A-Za-z0-9_]*)\\b",
           "captures": {
             "2": {
               "name": "storage.modifier.qualifier.tea"
@@ -635,7 +635,7 @@
     "type-annotations": {
       "patterns": [
         {
-          "match": "^(\\s*)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:simple|series)\\b)(\\s+))?(\\b(?:array|bool|box|color|float|int|label|line|linefill|map|matrix|polyline|string|table)\\b)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
+          "match": "^(\\s*)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:const|input|simple|series)\\b)(\\s+))?(\\b(?:array|bool|box|color|float|int|label|line|linefill|map|matrix|polyline|string|table)\\b)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
           "captures": {
             "2": {
               "name": "storage.modifier.declaration.tea"
@@ -649,7 +649,7 @@
           }
         },
         {
-          "match": "^(\\s*)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(\\.)([A-Za-z_][A-Za-z0-9_]*)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
+          "match": "^(\\s*)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:const|input|simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(\\.)([A-Za-z_][A-Za-z0-9_]*)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
           "captures": {
             "2": {
               "name": "storage.modifier.declaration.tea"
@@ -669,7 +669,7 @@
           }
         },
         {
-          "match": "^(\\s*)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
+          "match": "^(\\s*)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:const|input|simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
           "captures": {
             "2": {
               "name": "storage.modifier.declaration.tea"
@@ -683,7 +683,7 @@
           }
         },
         {
-          "match": "^(\\s*)(?!(?:export|type|struct|interface|enum|import)\\b)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
+          "match": "^(\\s*)(?!(?:export|type|struct|interface|enum|import)\\b)(?:(\\b(?:var|varip|const)\\b)(\\s+))?(?:(\\b(?:const|input|simple|series)\\b)(\\s+))?([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?(?:\\s*<[^>\\r\\n]+>)?(?:\\s*\\[\\])*)(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\b)",
           "captures": {
             "2": {
               "name": "storage.modifier.declaration.tea"
@@ -775,6 +775,14 @@
         {
           "match": "\\]",
           "name": "punctuation.section.brackets.end.tea"
+        },
+        {
+          "match": "\\{",
+          "name": "punctuation.section.braces.begin.tea"
+        },
+        {
+          "match": "\\}",
+          "name": "punctuation.section.braces.end.tea"
         },
         {
           "match": ",",

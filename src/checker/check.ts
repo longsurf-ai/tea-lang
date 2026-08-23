@@ -13,6 +13,7 @@ import {
   ColorType,
   FloatType,
   formatType,
+  HlineType,
   isAggregateType,
   isMapKeyType,
   isStorableType,
@@ -24,6 +25,7 @@ import {
   NaType,
   qualifierLE,
   NA_VALUE,
+  PlotType,
   Qualifier,
   StringType,
   Storage,
@@ -279,6 +281,25 @@ class Checker {
       }
       this.addPackageImport(this.rootState, pkg);
       this.implicitNames.add(pkg.name);
+    }
+    for (const source of importer.prelude()) {
+      const before = errors.count;
+      const pkg = this.libraryPackage(source);
+      if (errors.count !== before) {
+        return fatal(
+          `builtin prelude '${source.path}' failed semantic checking`,
+        );
+      }
+      for (const [name, object] of pkg.exports) {
+        if (
+          nativeFuncs(name) !== null ||
+          nativeVar(name) !== null ||
+          !this.universe.declare(object)
+        ) {
+          return fatal(`duplicate prelude export '${name}'`);
+        }
+        this.implicitNames.add(name);
+      }
     }
   }
 
@@ -679,6 +700,13 @@ class Checker {
       this.error(
         global.packageGlobal!.decl.init.pos,
         `package global '${global.name}' initializer cannot make requests`,
+      );
+      return;
+    }
+    if (call.kind === CallKind.Output) {
+      this.error(
+        global.packageGlobal!.decl.init.pos,
+        `package global '${global.name}' initializer cannot declare outputs`,
       );
       return;
     }
@@ -1311,6 +1339,11 @@ class Checker {
             visitExpr(elem);
           }
           return;
+        case NodeKind.ArgumentObjectExpr:
+          for (const field of current.fields) {
+            visitExpr(field.value);
+          }
+          return;
         case NodeKind.IfExpr:
           visitExpr(current.cond);
           visitBlock(current.then);
@@ -1612,8 +1645,17 @@ class Checker {
   }
 
   private declare(nameNode: syntax.Name, object: Object): boolean {
+    // A library function may share a spelling with a native namespace root
+    // (visual.plot alongside plot.style_*). Exact native values/functions
+    // still cannot be replaced, and entry-source declarations remain barred
+    // from shadowing any native root.
+    const mergesNativeNamespace =
+      this.currentPackage !== this.rootState &&
+      (object.kind === ObjectKind.Function || this.funcBoundary !== null) &&
+      nativeFuncs(nameNode.value) === null &&
+      nativeVar(nameNode.value) === null;
     if (
-      isNativeRoot(nameNode.value) ||
+      (isNativeRoot(nameNode.value) && !mergesNativeNamespace) ||
       (this.currentPackage === this.rootState &&
         this.implicitNames.has(nameNode.value))
     ) {
@@ -2552,6 +2594,15 @@ class Checker {
         return this.historyTv(e);
       case NodeKind.TupleExpr:
         return this.tupleTv(e);
+      case NodeKind.ArgumentObjectExpr:
+        for (const field of e.fields) {
+          this.checkExpr(field.value);
+        }
+        this.error(
+          e.pos,
+          'argument objects are valid only as the args argument to output()',
+        );
+        return INVALID_TV;
       case NodeKind.ParenExpr:
         return this.checkExpr(e.x);
       case NodeKind.IfExpr:
@@ -2801,7 +2852,11 @@ class Checker {
 
   private resolveSelector(s: syntax.SelectorExpr): TypeAndValue {
     const path = dottedPath(s);
-    if (path !== null && this.scope.lookup(path.root) === null) {
+    const pathRoot = path === null ? null : this.scope.lookup(path.root);
+    if (
+      path !== null &&
+      (pathRoot === null || pathRoot.kind === ObjectKind.Function)
+    ) {
       const nv = nativeVar(path.path);
       if (nv !== null) {
         return this.nativeVarTv(nv, s);
@@ -3434,13 +3489,19 @@ class Checker {
     // Argument values are checked exactly once, up front; overload matching
     // reads their recorded TypeAndValue.
     let seenNamed = false;
+    const contextualOutput =
+      c.fun.kind === NodeKind.Name &&
+      c.fun.value === 'output' &&
+      this.scope.lookup(c.fun.value) === null;
     for (const arg of c.args) {
       if (arg.name !== null) {
         seenNamed = true;
       } else if (seenNamed) {
         this.error(arg.pos, 'positional argument after named argument');
       }
-      this.checkExpr(arg.value);
+      if (!contextualOutput || arg.value.kind !== NodeKind.ArgumentObjectExpr) {
+        this.checkExpr(arg.value);
+      }
     }
     const fun = c.fun;
     if (fun.kind === NodeKind.Name) {
@@ -3907,6 +3968,62 @@ class Checker {
     ) {
       return INVALID_TV;
     }
+    if (
+      instance.output !== null &&
+      (this.blockDepth > 0 ||
+        this.funcBoundary !== null ||
+        this.captureDepth > 0)
+    ) {
+      this.error(
+        c.pos,
+        `'${displayName}' declares an output and can only be called at the top level of the script`,
+      );
+    }
+    if (instance.output !== null) {
+      const primary = instance.output.resolution.value;
+      if (
+        instance.output.resolution.outputKind === 'plot' &&
+        primary.tv.type.kind !== TypeKind.Int &&
+        primary.tv.type.kind !== TypeKind.Float &&
+        primary.tv.type.kind !== TypeKind.Invalid
+      ) {
+        const parameter = directOutputParameter(primary, instance.params);
+        const index =
+          parameter === null ? -1 : instance.params.indexOf(parameter);
+        const actual = index === -1 ? null : aligned[index];
+        this.error(
+          actual?.pos ?? c.pos,
+          `argument '${parameter?.name ?? 'value'}' to '${displayName}': cannot use ${formatType(primary.tv.type)} as a numeric value`,
+        );
+      }
+      const operands = [
+        instance.output.resolution.value,
+        ...instance.output.resolution.args.map(arg => arg.value),
+      ];
+      for (const operand of operands) {
+        if (
+          operand.tv.value !== null ||
+          !qualifierLE(operand.tv.qualifier, Qualifier.Input)
+        ) {
+          continue;
+        }
+        const parameter = directOutputParameter(operand, instance.params);
+        if (parameter === null) {
+          continue;
+        }
+        const index = instance.params.indexOf(parameter);
+        const actual = aligned[index];
+        if (
+          actual !== null &&
+          this.expressionCallsEffect(actual, this.info, Effect.Emit)
+        ) {
+          this.error(
+            actual.pos,
+            `'effect.emit' cannot execute from bind-time argument '${parameter.name}'`,
+          );
+        }
+      }
+    }
     this.info.calls.set(c, {
       kind: CallKind.Function,
       instance,
@@ -4085,6 +4202,7 @@ class Checker {
       defaults,
       info,
       dependencies: new Set(),
+      output: null,
       resultType: InvalidType,
       resultQualifier: Qualifier.Const,
     };
@@ -4116,6 +4234,77 @@ class Checker {
       instance.resultType = template.declaredResult;
     }
     instance.resultQualifier = bodyTv.qualifier;
+
+    const directOutput = directOutputCall(decl.body);
+    const outputCalls = [...instance.info.calls.entries()].filter(
+      (entry): entry is [syntax.CallExpr, import('./info').OutputCall] =>
+        entry[1].kind === CallKind.Output,
+    );
+    if (outputCalls.length > 0) {
+      const directResolution =
+        directOutput === null
+          ? undefined
+          : instance.info.calls.get(directOutput);
+      if (
+        outputCalls.length !== 1 ||
+        directOutput === null ||
+        directResolution?.kind !== CallKind.Output
+      ) {
+        for (const [call] of outputCalls) {
+          this.error(
+            call.pos,
+            'output-declaring functions must consist of one direct tail output() call',
+          );
+        }
+      } else {
+        const operands = [
+          directResolution.value,
+          ...directResolution.args.map(arg => arg.value),
+        ];
+        const uses = new Map<VariableObject, number>();
+        let valid = true;
+        for (const operand of operands) {
+          if (operand.tv.value !== null) {
+            continue;
+          }
+          const parameter = directOutputParameter(operand, instance.params);
+          if (parameter === null) {
+            valid = false;
+            this.error(
+              operand.expr.pos,
+              'output wrapper operands must be constants or direct parameters',
+            );
+            continue;
+          }
+          uses.set(parameter, (uses.get(parameter) ?? 0) + 1);
+        }
+        for (const parameter of instance.params) {
+          const count = uses.get(parameter) ?? 0;
+          if (count !== 1) {
+            valid = false;
+            this.error(
+              directOutput.pos,
+              `output wrapper parameter '${parameter.name}' must be used exactly once, got ${count}`,
+            );
+          }
+        }
+        for (const dflt of instance.defaults.values()) {
+          if (dflt.tv.value === null) {
+            valid = false;
+            this.error(
+              dflt.expr.pos,
+              'output wrapper defaults must be compile-time constants',
+            );
+          }
+        }
+        if (valid) {
+          instance.output = {
+            call: directOutput,
+            resolution: directResolution,
+          };
+        }
+      }
+    }
 
     if (this.methodErrorAttempts > errorAttemptsBefore) {
       this.invalidInstances.add(instance);
@@ -4159,6 +4348,13 @@ class Checker {
       )
     ) {
       return INVALID_TV;
+    }
+    if (
+      name === 'output' &&
+      candidates.length === 1 &&
+      candidates[0].effect === Effect.Output
+    ) {
+      return this.checkOutput(c, candidates[0]);
     }
     if (
       (methodReceiver !== null &&
@@ -4279,6 +4475,176 @@ class Checker {
       this.error(pos, `no matching overload for '${name}'`);
     }
     return INVALID_TV;
+  }
+
+  private checkOutput(c: syntax.CallExpr, _native: NativeFunc): TypeAndValue {
+    if (c.typeArgs !== null) {
+      this.error(c.pos, "'output' does not accept type arguments");
+      return INVALID_TV;
+    }
+
+    const names = ['value', 'kind', 'args'] as const;
+    const aligned: Array<syntax.Expr | null> = [null, null, null];
+    let position = 0;
+    for (const arg of c.args) {
+      let index: number;
+      if (arg.name === null) {
+        index = position;
+        position += 1;
+        if (index >= aligned.length) {
+          this.error(arg.pos, "too many arguments in call to 'output'");
+          return INVALID_TV;
+        }
+      } else {
+        index = names.indexOf(arg.name.value as (typeof names)[number]);
+        if (index === -1) {
+          this.error(
+            arg.pos,
+            `unknown argument '${arg.name.value}' in call to 'output'`,
+          );
+          return INVALID_TV;
+        }
+      }
+      if (aligned[index] !== null) {
+        this.error(arg.pos, `duplicate argument '${names[index]}'`);
+        return INVALID_TV;
+      }
+      aligned[index] = arg.value;
+    }
+
+    for (const [index, name] of names.entries()) {
+      if (aligned[index] === null) {
+        this.error(c.pos, `missing argument '${name}' in call to 'output'`);
+        return INVALID_TV;
+      }
+    }
+
+    const valueExpr = aligned[0]!;
+    const kindExpr = aligned[1]!;
+    const argsExpr = aligned[2]!;
+    if (valueExpr.kind === NodeKind.ArgumentObjectExpr) {
+      this.checkExpr(valueExpr);
+      return INVALID_TV;
+    }
+    if (kindExpr.kind === NodeKind.ArgumentObjectExpr) {
+      this.checkExpr(kindExpr);
+      return INVALID_TV;
+    }
+    const valueTv = this.tvOf(valueExpr);
+    const kindTv = this.tvOf(kindExpr);
+    if (valueTv.type.kind === TypeKind.Void) {
+      this.error(valueExpr.pos, 'output value has no value');
+    }
+    if (valueTv.type.kind === TypeKind.Na) {
+      this.error(valueExpr.pos, 'output value needs a concrete type');
+    }
+    if (kindTv.value === null || typeof kindTv.value !== 'string') {
+      this.error(kindExpr.pos, 'output kind must be a constant string');
+      return INVALID_TV;
+    }
+    if (kindTv.value.length === 0) {
+      this.error(kindExpr.pos, 'output kind cannot be empty');
+      return INVALID_TV;
+    }
+    if (
+      kindTv.value === 'plot' &&
+      valueTv.type.kind !== TypeKind.Int &&
+      valueTv.type.kind !== TypeKind.Float &&
+      valueTv.type.kind !== TypeKind.Invalid &&
+      this.funcBoundary === null
+    ) {
+      this.error(
+        valueExpr.pos,
+        `output kind 'plot' requires a numeric value, got ${formatType(valueTv.type)}`,
+      );
+      return INVALID_TV;
+    }
+    if (argsExpr.kind !== NodeKind.ArgumentObjectExpr) {
+      this.error(argsExpr.pos, 'output args must be an argument object');
+      return INVALID_TV;
+    }
+
+    const args: import('./info').OutputArgument[] = [];
+    const seen = new Set<string>();
+    for (const field of argsExpr.fields) {
+      if (seen.has(field.name.value)) {
+        this.error(
+          field.name.pos,
+          `duplicate output argument '${field.name.value}'`,
+        );
+        continue;
+      }
+      seen.add(field.name.value);
+      const tv = this.checkExpr(field.value);
+      if (tv.type.kind === TypeKind.Void) {
+        this.error(
+          field.value.pos,
+          `output argument '${field.name.value}' has no value`,
+        );
+      } else if (tv.type.kind === TypeKind.Na) {
+        this.error(
+          field.value.pos,
+          `output argument '${field.name.value}' needs a concrete type`,
+        );
+      }
+      args.push({
+        name: field.name.value,
+        value: {expr: field.value, info: this.info, tv},
+      });
+    }
+    this.info.types.set(argsExpr, VOID_TV);
+
+    if (this.captureDepth > 0) {
+      this.error(
+        c.pos,
+        "'output' cannot be called inside a request expression",
+      );
+    } else if (this.funcBoundary === null && this.blockDepth > 0) {
+      this.error(
+        c.pos,
+        "'output' can only be called at the top level of the script",
+      );
+    }
+
+    const fieldIndex = new Map(
+      argsExpr.fields.map((field, index) => [field, index + 1]),
+    );
+    const argumentEvaluationOrder: number[] = [];
+    for (const arg of c.args) {
+      const name = arg.name?.value;
+      const index =
+        name === null || name === undefined
+          ? c.args.indexOf(arg)
+          : names.indexOf(name as (typeof names)[number]);
+      if (index === 0) {
+        argumentEvaluationOrder.push(0);
+      } else if (
+        index === 2 &&
+        arg.value.kind === NodeKind.ArgumentObjectExpr
+      ) {
+        for (const field of arg.value.fields) {
+          const canonical = fieldIndex.get(field);
+          if (canonical !== undefined) argumentEvaluationOrder.push(canonical);
+        }
+      }
+    }
+
+    const resultType =
+      kindTv.value === 'plot'
+        ? PlotType
+        : kindTv.value === 'hline'
+          ? HlineType
+          : VoidType;
+    const resolution: import('./info').OutputCall = {
+      kind: CallKind.Output,
+      outputKind: kindTv.value,
+      value: {expr: valueExpr, info: this.info, tv: valueTv},
+      args,
+      argumentEvaluationOrder,
+      resultType,
+    };
+    this.info.calls.set(c, resolution);
+    return {type: resultType, qualifier: Qualifier.Const, value: null};
   }
 
   private matchOverload(
@@ -4689,6 +5055,9 @@ class Checker {
     if (resolution.kind === CallKind.Request) {
       return this.infoCallsEffect(resolution.capture, effect, seen);
     }
+    if (resolution.kind === CallKind.Output) {
+      return effect === Effect.Output;
+    }
     if (resolution.kind === CallKind.Constructor) {
       return resolution.args.some(
         arg =>
@@ -5017,6 +5386,10 @@ class Checker {
       case NodeKind.TupleExpr:
         return expr.elems.some(elem =>
           this.bindExpressionNeedsUnavailableFrame(elem),
+        );
+      case NodeKind.ArgumentObjectExpr:
+        return expr.fields.some(field =>
+          this.bindExpressionNeedsUnavailableFrame(field.value),
         );
       case NodeKind.IfExpr:
       case NodeKind.ForExpr:
@@ -5991,6 +6364,37 @@ function unquoteString(lit: string): string {
   return out;
 }
 
+function directOutputCall(
+  body: syntax.Expr | syntax.Block,
+): syntax.CallExpr | null {
+  const expr =
+    body.kind === NodeKind.Block
+      ? body.stmtList.length === 1 &&
+        body.stmtList[0].kind === NodeKind.ExprStmt
+        ? body.stmtList[0].x
+        : null
+      : body;
+  if (expr === null) {
+    return null;
+  }
+  const current = unwrapParens(expr);
+  return current.kind === NodeKind.CallExpr ? current : null;
+}
+
+function directOutputParameter(
+  operand: CheckedExpression,
+  parameters: readonly VariableObject[],
+): VariableObject | null {
+  const expr = unwrapParens(operand.expr);
+  if (expr.kind !== NodeKind.Name) {
+    return null;
+  }
+  const object = operand.info.uses.get(expr);
+  return object?.kind === ObjectKind.Variable && parameters.includes(object)
+    ? object
+    : null;
+}
+
 function foldBinary(
   op: Op,
   x: TypeAndValue,
@@ -6300,6 +6704,11 @@ function walkExpression(
     case NodeKind.TupleExpr:
       for (const elem of expr.elems) {
         walkExpression(elem, visitor);
+      }
+      return;
+    case NodeKind.ArgumentObjectExpr:
+      for (const field of expr.fields) {
+        walkExpression(field.value, visitor);
       }
       return;
     case NodeKind.IfExpr:

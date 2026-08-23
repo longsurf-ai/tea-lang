@@ -22,6 +22,10 @@ export function isImportError(outcome: ImportOutcome): outcome is ImportError {
 // The checker calls import() at each import declaration and seeds ambient
 // packages from implicit(); it never learns where package sources come from.
 export interface Importer {
+  // Namespace imports visible without source import statements (ta.*).
   implicit(): readonly SourcePackage[];
+  // Compiler prelude packages whose exports enter the script universe
+  // unqualified (plot(...)).
+  prelude(): readonly SourcePackage[];
   import(path: string): ImportOutcome;
 }
