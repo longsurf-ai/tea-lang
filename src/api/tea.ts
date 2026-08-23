@@ -6,6 +6,11 @@ import {formatPos} from '../base/pos';
 import {Errors, type ErrorMsg} from '../base/print';
 import {compileToProgram} from '../compile';
 import type {Program} from '../ir/program';
+import { Observable } from "rxjs";
+import type { DataStream } from "./stream";
+import type { OperatorFunction } from "rxjs";
+import * as z from "zod";
+import type { Pair } from "./util";
 
 const TEMPLATE_FILENAME = '<tea-template>';
 
@@ -61,4 +66,25 @@ function dedent(source: string): string {
     }
   }
   return lines.map(line => line.slice(prefix.length)).join('\n');
+}
+
+export type Output<O, E> = Pair<O, E[]>;
+
+export interface TeaOperator<
+    I extends z.ZodType,
+    O extends z.ZodType,
+    E extends z.ZodType,
+> extends OperatorFunction<
+    z.input<I>, Output<z.output<O>, z.output<E>>> {
+    readonly input: I;
+    readonly output: O;
+    readonly effect: E;
+}
+
+
+export 
+
+export function makeTea<T>(program: Program): {
+    return (observable: Observable<T>) => 
+        new Observable<T>(subscriber => {
 }
