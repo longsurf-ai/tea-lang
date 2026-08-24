@@ -49,6 +49,7 @@
   "dependencies": {
     "commander": "14.0.2",
     "csv-parse": "7.0.2",
+    "effect": "3.22.1",
     "open": "10.0.0",
     "plotly.js-gl3d-dist-min": "3.7.0",
     "rxjs": "^7.8.2",
