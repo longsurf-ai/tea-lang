@@ -2,15 +2,7 @@
 // immutable binding steps attach parameter values and concrete Observables.
 
 import {Effect} from 'effect';
-import {
-  concatMap,
-  finalize,
-  from,
-  map,
-  of,
-  share,
-  type Observable,
-} from 'rxjs';
+import {concatMap, finalize, from, map, of, share, type Observable} from 'rxjs';
 import {OperationalError} from '../base/operational-error';
 import {formatPos} from '../base/pos';
 import {Errors, type ErrorMsg} from '../base/print';
@@ -18,7 +10,6 @@ import {compileToProgram} from '../compile';
 import type {Program} from '../ir/program';
 import {
   bindModule,
-  extract,
   type Binding,
   type BindingAssignment,
   type BoundModule,
@@ -27,10 +18,7 @@ import {boundModuleFacts} from './bound-module-internal';
 import type {Sink} from './sink';
 import {DataStream} from './stream';
 import {sync} from './sync';
-import {
-  JSRuntime,
-  type StepResult,
-} from '../runtime/js-runtime';
+import {JSRuntime, type StepResult} from '../runtime/js-runtime';
 import {ValueLayoutRegistry} from '../runtime/value-layout';
 
 const TEMPLATE_FILENAME = '<tea-template>';
@@ -50,24 +38,29 @@ export type TeaBindingInput =
   | Readonly<Record<string, DataStream<unknown>>>;
 
 /**
- * Public Tea program node. It owns the canonical Program and the concrete
- * Observables attached by successive immutable binding steps.
+ * Public Tea program node. Its BoundModule owns the canonical Program while
+ * the node owns the concrete Observables attached by immutable binding steps.
  */
 export class TeaNode {
   private readonly requestChildren: readonly TeaNode[];
 
   constructor(
-    readonly program: Program,
-    private readonly bound: BoundModule | null = null,
-    private readonly rows: Observable<Readonly<Record<string, unknown>>> | null =
-      null,
+    readonly module: BoundModule,
+    private readonly rows: Observable<
+      Readonly<Record<string, unknown>>
+    > | null = null,
     requestChildren?: readonly TeaNode[],
   ) {
+    const program = module.program;
     const children =
       requestChildren ??
-      program.requests.map(request => new TeaNode(request.child));
+      program.requests.map(
+        request => new TeaNode(initialModule(request.child)),
+      );
     if (children.length !== program.requests.length) {
-      throw new Error('TeaNode request children disagree with Program requests');
+      throw new Error(
+        'TeaNode request children disagree with Program requests',
+      );
     }
     this.requestChildren = Object.freeze([...children]);
   }
@@ -76,13 +69,9 @@ export class TeaNode {
     if (isKeyedStreams(input)) {
       return this.bindKeyedStreams(input);
     }
-    const requirements = this.bound?.remaining() ?? extract(this.program)[0];
-    const prepared = prepareBinding(input, requirements);
-    const next = Effect.runSync(
-      bindModule(this.bound ?? this.program, prepared.assignments),
-    );
+    const prepared = prepareBinding(input, this.module.remaining());
+    const next = Effect.runSync(bindModule(this.module, prepared.assignments));
     return new TeaNode(
-      this.program,
       next,
       combineRows(this.rows, prepared.rows),
       this.requestChildren,
@@ -91,23 +80,20 @@ export class TeaNode {
 
   ready(): boolean {
     return (
-      (this.bound?.ready() ?? false) &&
-      this.requestChildren.every(child => child.ready())
+      this.module.ready() && this.requestChildren.every(child => child.ready())
     );
-  }
-
-  /** Internal handoff used when execution wiring is installed by `to()`. */
-  boundModule(): BoundModule | null {
-    return this.bound;
   }
 
   to(sink: Sink<StepResult>): void {
     if (!this.ready()) {
       throw new Error(
-        `TeaNode is missing bindings: ${this.bound?.remaining().map(binding => binding.name).join(', ') ?? 'all inputs'}`,
+        `TeaNode is missing bindings: ${this.module
+          .remaining()
+          .map(binding => binding.name)
+          .join(', ')}`,
       );
     }
-    const facts = boundModuleFacts(this.bound!);
+    const facts = boundModuleFacts(this.module);
     if (facts === null) {
       throw new Error('ready BoundModule has no runtime facts');
     }
@@ -128,15 +114,14 @@ export class TeaNode {
       facts.params.map(param => param.value),
       new ValueLayoutRegistry(facts.code.aggregateLayouts),
     );
-    const seriesNames = this.bound!.bindings
+    const seriesNames = this.module.bindings
       .filter(
         (binding): binding is Extract<Binding, {kind: 'series'}> =>
           binding.kind === 'series',
       )
       .map(binding => binding.name);
     const inputRows: Observable<Readonly<Record<string, unknown>>> =
-      this.rows ??
-      of(Object.freeze({}) as Readonly<Record<string, unknown>>);
+      this.rows ?? of(Object.freeze({}) as Readonly<Record<string, unknown>>);
 
     inputRows
       .pipe(
@@ -164,10 +149,10 @@ export class TeaNode {
   private bindKeyedStreams(
     input: Readonly<Record<string, DataStream<unknown>>>,
   ): TeaNode {
-    let node = this.ensureBoundModule();
+    let node: TeaNode = this;
     const entries = Object.entries(input);
     const rootSeries = new Set(
-      node.bound!.bindings
+      node.module.bindings
         .filter(
           (binding): binding is Extract<Binding, {kind: 'series'}> =>
             binding.kind === 'series',
@@ -179,13 +164,12 @@ export class TeaNode {
     if (rootEntries.length !== 0) {
       const prepared = prepareBinding(
         Object.fromEntries(rootEntries),
-        node.bound!.bindings,
+        node.module.bindings,
       );
       const next = Effect.runSync(
-        bindModule(node.bound!, prepared.assignments),
+        bindModule(node.module, prepared.assignments),
       );
       node = new TeaNode(
-        node.program,
         next,
         combineRows(node.rows, prepared.rows),
         node.requestChildren,
@@ -199,9 +183,7 @@ export class TeaNode {
       }
     }
 
-    const pending = new Map(
-      entries.filter(([name]) => !rootSeries.has(name)),
-    );
+    const pending = new Map(entries.filter(([name]) => !rootSeries.has(name)));
     let progressed = true;
     while (pending.size !== 0 && progressed) {
       progressed = false;
@@ -209,9 +191,7 @@ export class TeaNode {
         const paths = node.requestPaths(name);
         if (paths.length === 0) continue;
         if (paths.length > 1) {
-          throw new Error(
-            `static request binding key '${name}' is ambiguous`,
-          );
+          throw new Error(`static request binding key '${name}' is ambiguous`);
         }
         node = node.bindRequestPath(paths[0]!, stream);
         pending.delete(name);
@@ -228,23 +208,10 @@ export class TeaNode {
     return node;
   }
 
-  private ensureBoundModule(): TeaNode {
-    if (this.bound !== null) return this;
-    return new TeaNode(
-      this.program,
-      Effect.runSync(bindModule(this.program, [])),
-      this.rows,
-      this.requestChildren,
-    );
-  }
-
   private requestPaths(name: string): readonly (readonly number[])[] {
-    const direct =
-      this.bound === null
-        ? []
-        : (boundModuleFacts(this.bound)?.requests ?? [])
-            .filter(request => request.symbol === name)
-            .map(request => [request.requestId] as const);
+    const direct = (boundModuleFacts(this.module)?.requests ?? [])
+      .filter(request => request.symbol === name)
+      .map(request => [request.requestId] as const);
     const nested = this.requestChildren.flatMap((child, requestId) =>
       child
         .requestPaths(name)
@@ -269,7 +236,7 @@ export class TeaNode {
         : child.bindRequestPath(rest, stream);
     const children = [...this.requestChildren];
     children[requestId] = nextChild;
-    return new TeaNode(this.program, this.bound, this.rows, children);
+    return new TeaNode(this.module, this.rows, children);
   }
 }
 
@@ -293,7 +260,11 @@ export function tea(
   if (program === null) {
     throw new TeaCompileError(errors.flushErrors());
   }
-  return new TeaNode(program);
+  return new TeaNode(initialModule(program));
+}
+
+function initialModule(program: Program): BoundModule {
+  return Effect.runSync(bindModule(program, []));
 }
 
 interface PreparedBinding {
@@ -310,7 +281,10 @@ function prepareBinding(
       (binding): binding is Extract<Binding, {kind: 'series'}> =>
         binding.kind === 'series',
     );
-    const rows = sourceRows(input.asObservable(), series.map(item => item.name));
+    const rows = sourceRows(
+      input.asObservable(),
+      series.map(item => item.name),
+    );
     return {
       assignments: series.map(binding => ({
         kind: 'series' as const,
@@ -322,9 +296,12 @@ function prepareBinding(
   }
 
   const entries = Object.entries(input);
-  if (entries.every((entry): entry is [string, DataStream<unknown>] =>
-    entry[1] instanceof DataStream,
-  )) {
+  if (
+    entries.every(
+      (entry): entry is [string, DataStream<unknown>] =>
+        entry[1] instanceof DataStream,
+    )
+  ) {
     const sources = entries.map(([name, stream]) => {
       const rows = sourceRows(stream.asObservable(), [name]);
       return {
@@ -338,10 +315,9 @@ function prepareBinding(
     });
     return {
       assignments: sources.map(source => source.assignment),
-      rows: sources.reduce<Observable<Readonly<Record<string, unknown>>> | null>(
-        (combined, source) => combineRows(combined, source.rows),
-        null,
-      ),
+      rows: sources.reduce<Observable<
+        Readonly<Record<string, unknown>>
+      > | null>((combined, source) => combineRows(combined, source.rows), null),
     };
   }
 
@@ -375,7 +351,9 @@ function sourceRows(
           Object.fromEntries(
             names.map(name => {
               if (!Object.hasOwn(value, name)) {
-                throw new Error(`source value does not provide series '${name}'`);
+                throw new Error(
+                  `source value does not provide series '${name}'`,
+                );
               }
               return [name, value[name]];
             }),

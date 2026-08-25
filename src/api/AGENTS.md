@@ -28,8 +28,11 @@ remain in their existing packages.
   transferred into the returned BoundModule.
 - `TeaNode` owns DataStream/Observable wiring. Successive `.bind()` calls use
   `bindModule()` synchronously and return new nodes while retaining the row
-  Observables attached by earlier steps. `BoundModule` stores individual
-  targets only; it never owns row synchronization.
+  Observables attached by earlier steps. Every TeaNode owns exactly one
+  always-present `BoundModule`; `tea()` performs the initial empty binding for
+  the root and each static request child, and the Program is available only as
+  `node.module.program`. `BoundModule` stores individual targets only; it never
+  owns row synchronization.
 - `.to(sink)` is the currently implemented execution boundary. It creates one
   `JSRuntime`, serializes synchronized rows through `step()`, sends
   `StepResult` values to the sink, and disposes the runtime when the Observable

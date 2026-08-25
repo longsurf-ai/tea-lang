@@ -101,6 +101,12 @@ module binding may use a local abort-only Heap transaction for bind-time
 struct/collection expressions; it retains and transfers no Heap or execution
 state.
 
+`tea()` performs that initial empty binding immediately for the root Program
+and every static request child. Consequently, each `TeaNode` owns exactly one
+always-present `BoundModule`; it never stores a separate Program or nullable
+binding state. The canonical Program remains available through
+`node.module.program`.
+
 Observable composition belongs to `TeaNode`, not `BoundModule`. Successive
 `TeaNode.bind()` calls retain attached row streams while applying the binding
 transition synchronously. `.to(sink)` is the current subscription boundary: it

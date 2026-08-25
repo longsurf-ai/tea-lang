@@ -27,12 +27,12 @@ describe('tea', () => {
       plotshape(crossed, "Crossover")
     `;
 
-    expect(node.program.version).toBe(1);
-    expect(node.program.params.map(param => param.name)).toEqual([
+    expect(node.module.program.version).toBe(1);
+    expect(node.module.program.params.map(param => param.name)).toEqual([
       'fast_window',
       'slow_window',
     ]);
-    expect(node.program.outputs.map(output => output.effect)).toEqual([
+    expect(node.module.program.outputs.map(output => output.effect)).toEqual([
       'indicator',
       'plot',
       'plot',
@@ -64,30 +64,41 @@ describe('tea', () => {
     );
   });
 
-  test('creates BoundModule on first bind and keeps binding steps immutable', () => {
-    const program = tea`
+  test('owns a BoundModule from creation and keeps binding steps immutable', () => {
+    const node = tea`
       length = input.int(14)
       plot(close + length)
     `;
-    const source = new DataStream(
-      z.object({close: z.number()}),
-      subscriber => of({close: 1}).subscribe(subscriber),
+    const source = new DataStream(z.object({close: z.number()}), subscriber =>
+      of({close: 1}).subscribe(subscriber),
     );
 
-    const withSource = program.bind(source);
+    const withSource = node.bind(source);
     const ready = withSource.bind({length: 20});
 
-    expect(program.boundModule()).toBeNull();
-    expect(program.ready()).toBe(false);
+    expect(node.module.remaining().map(binding => binding.name)).toEqual([
+      'length',
+      'close',
+    ]);
+    expect(node.ready()).toBe(false);
     expect(withSource.ready()).toBe(false);
     expect(ready.ready()).toBe(true);
-    expect(ready.boundModule()?.remaining()).toEqual([]);
+    expect(withSource.module).not.toBe(node.module);
+    expect(ready.module).not.toBe(withSource.module);
+    expect(ready.module.remaining()).toEqual([]);
+  });
+
+  test('is ready at creation when the Program has no binding requirements', () => {
+    const node = tea`plot(1)`;
+
+    expect(node.module.ready()).toBe(true);
+    expect(node.module.remaining()).toEqual([]);
+    expect(node.ready()).toBe(true);
   });
 
   test('drives one state-owning runtime from the bound source Observable', async () => {
-    const source = new DataStream(
-      z.object({close: z.number()}),
-      subscriber => of({close: 1}, {close: 2}).subscribe(subscriber),
+    const source = new DataStream(z.object({close: z.number()}), subscriber =>
+      of({close: 1}, {close: 2}).subscribe(subscriber),
     );
     const node = tea`
       length = input.int(14)
@@ -100,9 +111,9 @@ describe('tea', () => {
     node.to(sink);
     await sink.completion;
 
-    expect(
-      sink.values.map(result => result.output[0]?.channels[0]),
-    ).toEqual([21, 22]);
+    expect(sink.values.map(result => result.output[0]?.channels[0])).toEqual([
+      21, 22,
+    ]);
   });
 
   test('owns static request children and routes a bind-known context source', () => {
@@ -158,10 +169,8 @@ describe('tea', () => {
 function numericSource(...values: readonly number[]): DataStream<{
   close: number;
 }> {
-  return new DataStream(
-    z.object({close: z.number()}),
-    subscriber =>
-      of(...values.map(close => ({close}))).subscribe(subscriber),
+  return new DataStream(z.object({close: z.number()}), subscriber =>
+    of(...values.map(close => ({close}))).subscribe(subscriber),
   );
 }
 
