@@ -7,7 +7,7 @@ import {StructStorageRuntime, type StructRef} from '../struct-storage';
 import {
   ValueLayoutRegistry,
   visitRuntimeValueRefs,
-  type AggregateLayoutManifest,
+  type ValueLayout,
 } from '../value-layout';
 import {CollectionRuntime} from './index';
 
@@ -24,33 +24,31 @@ const STRINGS = 9;
 const ARRAYS = 10;
 const HOLDER = 11;
 
-const MANIFEST = {
-  layouts: [
-    {kind: 'number', numeric: 'int'},
-    {kind: 'number', numeric: 'float'},
-    {kind: 'boolean'},
-    {kind: 'nullable-scalar', scalar: 'string'},
-    {
-      kind: 'struct',
-      name: 'Point',
-      fields: [
-        {name: 'x', layout: INT},
-        {name: 'y', layout: INT},
-      ],
-    },
-    {kind: 'array', element: INT},
-    {kind: 'array', element: POINT},
-    {kind: 'matrix', element: INT},
-    {kind: 'map', key: STRING, value: INT},
-    {kind: 'array', element: STRING},
-    {kind: 'array', element: INTS},
-    {
-      kind: 'struct',
-      name: 'Holder',
-      fields: [{name: 'values', layout: INTS}],
-    },
-  ],
-} as const satisfies AggregateLayoutManifest;
+const MANIFEST = [
+  {kind: 'number', numeric: 'int'},
+  {kind: 'number', numeric: 'float'},
+  {kind: 'boolean'},
+  {kind: 'nullable-scalar', scalar: 'string'},
+  {
+    kind: 'struct',
+    name: 'Point',
+    fields: [
+      {name: 'x', layout: INT},
+      {name: 'y', layout: INT},
+    ],
+  },
+  {kind: 'array', element: INT},
+  {kind: 'array', element: POINT},
+  {kind: 'matrix', element: INT},
+  {kind: 'map', key: STRING, value: INT},
+  {kind: 'array', element: STRING},
+  {kind: 'array', element: INTS},
+  {
+    kind: 'struct',
+    name: 'Holder',
+    fields: [{name: 'values', layout: INTS}],
+  },
+] as const satisfies readonly ValueLayout[];
 
 interface Harness {
   readonly heap: ArenaHeap;

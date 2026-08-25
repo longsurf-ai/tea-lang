@@ -5,10 +5,10 @@ import type {NameStorage} from '../ir/node';
 import type {Ref} from './heap';
 import type {OutputSpec} from './output';
 import type {EffectSpec, ParamSpec} from './schema';
-import type {AggregateLayoutManifest, LayoutId} from './value-layout';
+import type {LayoutId, ValueLayout} from './value-layout';
 import type {CollectionValue, ExecutionResult, Value} from './value';
 
-export const RUNTIME_ABI_VERSION = 3 as const;
+export const RUNTIME_ABI_VERSION = 4 as const;
 
 export type DepthSpec =
   | {readonly kind: 'none'}
@@ -68,8 +68,8 @@ export interface Frame {
 /** One self-describing generated JavaScript module in the request tree. */
 export interface JSModule {
   readonly abi: typeof RUNTIME_ABI_VERSION;
-  /** Shared by every module in one generated request tree. */
-  readonly aggregateLayouts: AggregateLayoutManifest;
+  /** Shared value-layout table for every module in one generated request tree. */
+  readonly layout: readonly ValueLayout[];
   readonly manifest: ModuleManifest;
   readonly requests: readonly JSModule[];
   /** Evaluate this module's bind-time values without acquiring runtime state. */

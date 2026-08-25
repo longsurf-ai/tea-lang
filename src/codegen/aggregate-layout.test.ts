@@ -115,7 +115,7 @@ describe('aggregate layout projection', () => {
     const source = generate(ir);
     const module = loadModule(source) as {
       readonly abi: number;
-      readonly aggregateLayouts: {readonly layouts: readonly unknown[]};
+      readonly layout: readonly unknown[];
       readonly manifest: {
         readonly frames: readonly {
           readonly locals: readonly unknown[];
@@ -127,7 +127,7 @@ describe('aggregate layout projection', () => {
     expect(module.manifest.frames[0].locals).toEqual([
       {storage: Storage.PerBar, depth: {kind: 'none'}, layout: 0},
     ]);
-    expect(module.aggregateLayouts.layouts).toEqual([
+    expect(module.layout).toEqual([
       {
         kind: 'struct',
         name: 'Envelope',

@@ -3,23 +3,18 @@
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {MemorySink} from '../providers/sinks/memory-sink';
-import {
-  type AggregateLayoutManifest,
-  type DataProvider,
-  type ProviderContext,
-} from './abi';
+import {type DataProvider, type ProviderContext} from './abi';
 import {bindFixedHistory} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {staticModuleBinding} from './testing';
+import type {ValueLayout} from './value-layout';
 
 const NUMBER = 0;
 const ARRAY = 1;
-const LAYOUTS = {
-  layouts: [
-    {kind: 'number', numeric: 'int'},
-    {kind: 'array', element: NUMBER},
-  ],
-} as const satisfies AggregateLayoutManifest;
+const LAYOUTS = [
+  {kind: 'number', numeric: 'int'},
+  {kind: 'array', element: NUMBER},
+] as const satisfies readonly ValueLayout[];
 
 class Series {
   constructor(readonly values: number[]) {}
@@ -50,7 +45,7 @@ function axis(span: number) {
 
 const MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'const', bars: 1}}],
     builtin: [
@@ -104,7 +99,7 @@ const MODULE: JSModule = {
 
 const REQUEST_CHILD: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -133,7 +128,7 @@ const REQUEST_CHILD: JSModule = {
 
 const NESTED_REQUEST_CHILD: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [],
     builtin: [],
@@ -249,7 +244,7 @@ function requestModule(dynamic = false): JSModule {
 
 const ARRAY_WORKSPACE_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [],
     builtin: [],

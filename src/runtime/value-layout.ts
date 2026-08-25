@@ -54,10 +54,6 @@ export type ValueLayout =
     }
   | {readonly kind: 'tuple'; readonly elements: readonly LayoutId[]};
 
-export interface AggregateLayoutManifest {
-  readonly layouts: readonly ValueLayout[];
-}
-
 function layoutId(id: number, length: number, where: string): void {
   if (!Number.isSafeInteger(id) || id < 0 || id >= length) {
     fatal(`${where} refers to invalid layout ${id}`);
@@ -111,31 +107,25 @@ function sealLayout(layout: ValueLayout): ValueLayout {
 }
 
 export class ValueLayoutRegistry {
-  readonly manifest: AggregateLayoutManifest;
+  private readonly layouts: readonly ValueLayout[];
   private readonly shallowByteCache = new Map<LayoutId, number>();
 
-  constructor(manifest: AggregateLayoutManifest) {
-    if (
-      typeof manifest !== 'object' ||
-      manifest === null ||
-      !Array.isArray(manifest.layouts)
-    ) {
-      fatal('invalid aggregate layout manifest');
+  constructor(layouts: readonly ValueLayout[]) {
+    if (!Array.isArray(layouts)) {
+      fatal('invalid value layout table');
     }
-    this.manifest = Object.freeze({
-      // Generated module objects remain caller-owned. Clone and freeze the
-      // registry so later mutation cannot change runtime type semantics.
-      layouts: Object.freeze(manifest.layouts.map(sealLayout)),
-    });
-    this.validateManifest();
+    // Generated module objects remain caller-owned. Clone and freeze the
+    // registry so later mutation cannot change runtime type semantics.
+    this.layouts = Object.freeze(layouts.map(sealLayout));
+    this.validateLayouts();
   }
 
   get length(): number {
-    return this.manifest.layouts.length;
+    return this.layouts.length;
   }
 
   layout(id: LayoutId): ValueLayout {
-    const layout = this.manifest.layouts[id];
+    const layout = this.layouts[id];
     if (layout === undefined || !Number.isSafeInteger(id) || id < 0) {
       return fatal(`unknown runtime value layout ${id}`);
     }
@@ -341,8 +331,8 @@ export class ValueLayoutRegistry {
     return bytes;
   }
 
-  private validateManifest(): void {
-    const layouts = this.manifest.layouts;
+  private validateLayouts(): void {
+    const layouts = this.layouts;
     layouts.forEach((layout, id) => {
       switch (layout.kind) {
         case 'array':
@@ -389,7 +379,7 @@ export class ValueLayoutRegistry {
   }
 
   private rejectInlineLayoutCycles(): void {
-    const layouts = this.manifest.layouts;
+    const layouts = this.layouts;
     const complete = new Set<LayoutId>();
     const active = new Set<LayoutId>();
     const visit = (id: LayoutId): void => {

@@ -74,7 +74,7 @@ both binding boundaries.
   `manifest.requests[rid]`, the child Program recursively generated as a
   full sibling `JSModule` (`M1`, `M2`… in dependency order — code cannot live
   in the JSON manifest) referenced from `requests: [...]`. Every child carries
-  the same ABI and shared layout-registry reference as the root. The pure
+  the same ABI and shared `layout` table reference as the root. The pure
   binding function returns the static pair and four options in
   `JSModuleBinding`; execution reads the prepared result via
   `rt.request(rid, offset)`. The noder rejects every dynamic edge before a valid

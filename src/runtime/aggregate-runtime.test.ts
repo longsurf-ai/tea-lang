@@ -5,7 +5,6 @@ import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {
   BindError,
-  type AggregateLayoutManifest,
   type BindInputs,
   type DataProvider,
   ExecutionError,
@@ -17,6 +16,7 @@ import {
 import {bindFixedHistory as bindRuntime} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {staticModuleBinding} from './testing';
+import type {ValueLayout} from './value-layout';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
 
@@ -35,23 +35,21 @@ const ARRAY = 1;
 const HOLDER = 2;
 const COUNTER = 3;
 const INT_PAIR = 4;
-const LAYOUTS = {
-  layouts: [
-    {kind: 'number', numeric: 'int'},
-    {kind: 'array', element: INT},
-    {
-      kind: 'struct',
-      name: 'Holder',
-      fields: [{name: 'values', layout: ARRAY}],
-    },
-    {
-      kind: 'struct',
-      name: 'Counter',
-      fields: [{name: 'value', layout: INT}],
-    },
-    {kind: 'tuple', elements: [INT, INT]},
-  ],
-} as const satisfies AggregateLayoutManifest;
+const LAYOUTS = [
+  {kind: 'number', numeric: 'int'},
+  {kind: 'array', element: INT},
+  {
+    kind: 'struct',
+    name: 'Holder',
+    fields: [{name: 'values', layout: ARRAY}],
+  },
+  {
+    kind: 'struct',
+    name: 'Counter',
+    fields: [{name: 'value', layout: INT}],
+  },
+  {kind: 'tuple', elements: [INT, INT]},
+] as const satisfies readonly ValueLayout[];
 
 class Sink implements OutputSink {
   readonly values: {
@@ -99,7 +97,7 @@ const OUTPUT = {
 function arrayStateModule(): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
-    aggregateLayouts: LAYOUTS,
+    layout: LAYOUTS,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
       builtin: [],
@@ -161,7 +159,7 @@ describe('aggregate state and commit integration', () => {
     let fail = false;
     const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -329,7 +327,7 @@ describe('aggregate state and commit integration', () => {
     }[] = [];
     const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [
@@ -439,7 +437,7 @@ describe('aggregate state and commit integration', () => {
     const sink = new Sink();
     const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [
@@ -544,7 +542,7 @@ describe('request Heap isolation', () => {
     };
     const leaf: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -572,7 +570,7 @@ describe('request Heap isolation', () => {
     };
     const middle: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -621,7 +619,7 @@ describe('request Heap isolation', () => {
     };
     const root: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -687,7 +685,7 @@ describe('request Heap isolation', () => {
     let frozen = false;
     const child: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -721,7 +719,7 @@ describe('request Heap isolation', () => {
     };
     const root: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -808,7 +806,7 @@ describe('request Heap isolation', () => {
     };
     const child: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
         builtin: [],
@@ -836,7 +834,7 @@ describe('request Heap isolation', () => {
     };
     const root: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -931,7 +929,7 @@ describe('request Heap isolation', () => {
     };
     const child: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
         builtin: [],
@@ -970,7 +968,7 @@ describe('request Heap isolation', () => {
     };
     const root: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -1088,7 +1086,7 @@ describe('runtime boundaries', () => {
     let requestLargeFrame = true;
     const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -1159,7 +1157,7 @@ describe('runtime boundaries', () => {
     } as unknown as JSModule;
     await expect(
       bind(old, {params: {}, provider: provider(), sink: new Sink()}),
-    ).rejects.toThrow('unsupported module ABI 2; expected 3');
+    ).rejects.toThrow('unsupported module ABI 2; expected 4');
     expect(bound).toBe(false);
   });
 

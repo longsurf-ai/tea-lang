@@ -5,7 +5,6 @@ import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {
-  type AggregateLayoutManifest,
   type DataProvider,
   type OutputSink,
   type ProviderContext,
@@ -16,30 +15,28 @@ import {bindFixedHistory as bind} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {stateMachine} from './state-update';
 import {staticModuleBinding} from './testing';
-import {ValueLayoutRegistry} from './value-layout';
+import {ValueLayoutRegistry, type ValueLayout} from './value-layout';
 
 const NUMBER = 0;
 const ARRAY = 1;
 const MATRIX = 2;
 const MAP = 3;
 const COUNTER = 4;
-const LAYOUTS = {
-  layouts: [
-    {kind: 'number', numeric: 'int'},
-    {kind: 'array', element: NUMBER},
-    {kind: 'matrix', element: NUMBER},
-    {kind: 'map', key: NUMBER, value: NUMBER},
-    {
-      kind: 'struct',
-      name: 'Counter',
-      fields: [{name: 'value', layout: NUMBER}],
-    },
-  ],
-} as const satisfies AggregateLayoutManifest;
+const LAYOUTS = [
+  {kind: 'number', numeric: 'int'},
+  {kind: 'array', element: NUMBER},
+  {kind: 'matrix', element: NUMBER},
+  {kind: 'map', key: NUMBER, value: NUMBER},
+  {
+    kind: 'struct',
+    name: 'Counter',
+    fields: [{name: 'value', layout: NUMBER}],
+  },
+] as const satisfies readonly ValueLayout[];
 
 const MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'const', bars: 1}}],
     builtin: [],
@@ -96,7 +93,7 @@ const MODULE: JSModule = {
 
 const PROVISIONAL_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -152,7 +149,7 @@ const PROVISIONAL_MODULE: JSModule = {
 function structModule(shouldFail: () => boolean): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
-    aggregateLayouts: LAYOUTS,
+    layout: LAYOUTS,
     manifest: {
       series: [],
       builtin: [],
@@ -195,7 +192,7 @@ function structModule(shouldFail: () => boolean): JSModule {
 
 const COLLECTION_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -343,6 +340,7 @@ describe('StateUpdate', () => {
           series: [value],
           builtins: [],
           requests: [],
+          provisional: false,
         }),
       );
       state = result.state;
@@ -405,6 +403,7 @@ describe('StateUpdate', () => {
           series: [value],
           builtins: [],
           requests: [],
+          provisional: !commit,
         }),
       );
       intermediate = result.intermediate;
@@ -482,6 +481,7 @@ describe('StateUpdate', () => {
           series: [],
           builtins: [],
           requests: [],
+          provisional: !commit,
         }),
       );
       intermediate = result.intermediate;
@@ -536,6 +536,7 @@ describe('StateUpdate', () => {
           series: [value],
           builtins: [],
           requests: [],
+          provisional: !commit,
         }),
       );
       intermediate = result.intermediate;

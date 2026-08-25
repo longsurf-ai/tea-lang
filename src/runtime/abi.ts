@@ -11,4 +11,4 @@ export type {BuiltinSource} from '../ir/builtin';
 export type {HistoryDepth} from '../ir/node';
 export type {EffectValueSchema} from '../ir/program';
 export type {HeapLimits} from './heap';
-export type {AggregateLayoutManifest, LayoutId} from './value-layout';
+export type {LayoutId} from './value-layout';

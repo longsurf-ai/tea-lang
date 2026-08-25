@@ -11,29 +11,24 @@ import {loadModule} from './load';
 import {evaluateModuleBinding} from './module-binding';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {StructStorageRuntime} from './struct-storage';
-import {
-  type AggregateLayoutManifest,
-  ValueLayoutRegistry,
-} from './value-layout';
+import {type ValueLayout, ValueLayoutRegistry} from './value-layout';
 import type {ArrayValue} from './value';
 
 const NUMBER = 0;
 const ARRAY = 1;
 const HOLDER = 2;
-const LAYOUTS = {
-  layouts: [
-    {kind: 'number', numeric: 'int'},
-    {kind: 'array', element: NUMBER},
-    {
-      kind: 'struct',
-      name: 'Holder',
-      fields: [
-        {name: 'values', layout: ARRAY},
-        {name: 'marker', layout: NUMBER},
-      ],
-    },
-  ],
-} as const satisfies AggregateLayoutManifest;
+const LAYOUTS = [
+  {kind: 'number', numeric: 'int'},
+  {kind: 'array', element: NUMBER},
+  {
+    kind: 'struct',
+    name: 'Holder',
+    fields: [
+      {name: 'values', layout: ARRAY},
+      {name: 'marker', layout: NUMBER},
+    ],
+  },
+] as const satisfies readonly ValueLayout[];
 
 describe('module binding aggregates', () => {
   test('evaluates collection and struct operations into scalar bind facts', () => {
@@ -176,7 +171,7 @@ function bindingModule(body: string): JSModule {
     "use strict";
     const M = {
       abi: ${RUNTIME_ABI_VERSION},
-      aggregateLayouts: ${JSON.stringify(LAYOUTS)},
+      layout: ${JSON.stringify(LAYOUTS)},
       manifest: ${JSON.stringify(manifest)},
       requests: [],
       bind(values) {

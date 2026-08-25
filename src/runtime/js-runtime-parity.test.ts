@@ -5,8 +5,8 @@
 import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
-import {type AggregateLayoutManifest, type Value} from './abi';
-import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
+import {type Value} from './abi';
+import {JSRuntime, type RuntimeContext, type StepResult} from './js-runtime';
 import {
   RUNTIME_ABI_VERSION,
   type Frame,
@@ -14,26 +14,24 @@ import {
   type Runtime,
 } from './module-abi';
 import {staticModuleBinding} from './testing';
-import {ValueLayoutRegistry} from './value-layout';
+import {ValueLayoutRegistry, type ValueLayout} from './value-layout';
 
 const NUMBER = 0;
 const BOOLEAN = 1;
 const STRING = 2;
 const ARRAY = 3;
 const HOLDER = 4;
-const LAYOUTS = {
-  layouts: [
-    {kind: 'number', numeric: 'int'},
-    {kind: 'boolean'},
-    {kind: 'nullable-scalar', scalar: 'string'},
-    {kind: 'array', element: NUMBER},
-    {
-      kind: 'struct',
-      name: 'Holder',
-      fields: [{name: 'values', layout: ARRAY}],
-    },
-  ],
-} as const satisfies AggregateLayoutManifest;
+const LAYOUTS = [
+  {kind: 'number', numeric: 'int'},
+  {kind: 'boolean'},
+  {kind: 'nullable-scalar', scalar: 'string'},
+  {kind: 'array', element: NUMBER},
+  {
+    kind: 'struct',
+    name: 'Holder',
+    fields: [{name: 'values', layout: ARRAY}],
+  },
+] as const satisfies readonly ValueLayout[];
 
 function runtime(module: JSModule): JSRuntime {
   return new JSRuntime(module, [], new ValueLayoutRegistry(LAYOUTS));
@@ -47,12 +45,12 @@ function input({
   readonly series?: readonly Value[];
   readonly builtins?: readonly Value[];
   readonly provisional?: boolean;
-} = {}): StepInput {
+} = {}): RuntimeContext {
   return {series, builtins, requests: [], provisional};
 }
 
-function run(target: JSRuntime, next: StepInput): StepResult {
-  return Effect.runSync(target.step(next));
+function run(target: JSRuntime, ctx: RuntimeContext): StepResult {
+  return Effect.runSync(target.step(ctx));
 }
 
 function channels(result: StepResult): readonly Value[] {
@@ -67,7 +65,7 @@ function counter(rt: Runtime, frame: Frame): Value {
 
 const COUNTER_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [],
     builtin: [],
@@ -105,7 +103,7 @@ const COUNTER_MODULE: JSModule = {
 
 const TYPED_HISTORY_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [],
     builtin: [],
@@ -163,7 +161,7 @@ const TYPED_HISTORY_MODULE: JSModule = {
 
 const TICK_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -213,7 +211,7 @@ const TICK_MODULE: JSModule = {
 function arrayStateModule(): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
-    aggregateLayouts: LAYOUTS,
+    layout: LAYOUTS,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
       builtin: [],
@@ -367,7 +365,7 @@ describe('JSRuntime core parity', () => {
     let invoke = true;
     const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
         builtin: [],
@@ -431,7 +429,7 @@ describe('JSRuntime core parity', () => {
   test('struct history keeps a live reference rather than a body snapshot', () => {
     const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
+      layout: LAYOUTS,
       manifest: {
         series: [],
         builtin: [

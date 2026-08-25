@@ -4,42 +4,39 @@
 import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
-import {type AggregateLayoutManifest} from './abi';
-import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
+import {JSRuntime, type RuntimeContext, type StepResult} from './js-runtime';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {staticModuleBinding} from './testing';
-import {ValueLayoutRegistry} from './value-layout';
+import {ValueLayoutRegistry, type ValueLayout} from './value-layout';
 
 const NUMBER = 0;
 const ARRAY = 1;
 const COUNTER = 2;
 const ENVELOPE = 3;
-const LAYOUTS = {
-  layouts: [
-    {kind: 'number', numeric: 'int'},
-    {kind: 'array', element: NUMBER},
-    {
-      kind: 'struct',
-      name: 'Counter',
-      typeId: 'test.Counter',
-      fields: [{name: 'value', layout: NUMBER}],
-    },
-    {
-      kind: 'struct',
-      name: 'Envelope',
-      typeId: 'test.Envelope',
-      fields: [{name: 'counter', layout: COUNTER}],
-    },
-  ],
-} as const satisfies AggregateLayoutManifest;
+const LAYOUTS = [
+  {kind: 'number', numeric: 'int'},
+  {kind: 'array', element: NUMBER},
+  {
+    kind: 'struct',
+    name: 'Counter',
+    typeId: 'test.Counter',
+    fields: [{name: 'value', layout: NUMBER}],
+  },
+  {
+    kind: 'struct',
+    name: 'Envelope',
+    typeId: 'test.Envelope',
+    fields: [{name: 'counter', layout: COUNTER}],
+  },
+] as const satisfies readonly ValueLayout[];
 
-function input(value: number, provisional: boolean): StepInput {
+function input(value: number, provisional: boolean): RuntimeContext {
   return {series: [value], builtins: [], requests: [], provisional};
 }
 
 const PROVISIONAL_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -84,7 +81,7 @@ const PROVISIONAL_MODULE: JSModule = {
 function structModule(shouldFail: () => boolean): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
-    aggregateLayouts: LAYOUTS,
+    layout: LAYOUTS,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
       builtin: [],
@@ -128,7 +125,7 @@ function structModule(shouldFail: () => boolean): JSModule {
 function structEffectModule(shouldFail: () => boolean): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
-    aggregateLayouts: LAYOUTS,
+    layout: LAYOUTS,
     manifest: {
       series: [],
       builtin: [],
@@ -189,7 +186,7 @@ function structEffectModule(shouldFail: () => boolean): JSModule {
 
 const WRONG_NOMINAL_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [],
     builtin: [],
@@ -220,7 +217,7 @@ const WRONG_NOMINAL_MODULE: JSModule = {
 
 const GC_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: LAYOUTS,
+  layout: LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],

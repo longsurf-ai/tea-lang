@@ -48,11 +48,7 @@ import type {
 } from '../runtime/module-abi';
 import type {OutputChannelTransport, OutputSpec} from '../runtime/output';
 import type {ManifestValue} from '../runtime/value';
-import type {
-  AggregateLayoutManifest,
-  LayoutId,
-  ValueLayout,
-} from '../runtime/value-layout';
+import type {LayoutId, ValueLayout} from '../runtime/value-layout';
 import {
   HELPERS,
   captureArguments,
@@ -74,7 +70,7 @@ export function generate(program: Program): string {
   // child's const precedes its parent's), referenced from the requests
   // arrays — code cannot live inside the JSON manifest.
   out.push(
-    `const L = ${json({layouts: emitter.layouts} satisfies AggregateLayoutManifest)};`,
+    `const L = ${json(emitter.layouts satisfies readonly ValueLayout[])};`,
   );
   out.push(...emitter.childDecls);
   out.push('const M = {');
@@ -399,7 +395,7 @@ class Generator {
 
     const out: string[] = [];
     out.push(`abi: ${RUNTIME_ABI_VERSION},`);
-    out.push('aggregateLayouts: L,');
+    out.push('layout: L,');
     // U+2028/2029 are line terminators in ES2015 string literals; escape
     // them so the embedded manifest stays parseable everywhere.
     out.push(`manifest: ${json(manifest)},`);

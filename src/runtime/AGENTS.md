@@ -39,7 +39,7 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   `JSRuntime`. Do not merge binding-only operations or a dynamic-request
   protocol into the execution-only `Runtime`.
 - `RUNTIME_ABI_VERSION` is the only JavaScript Runtime ABI version source and
-  is currently `3`; do not add compatibility branches for earlier versions.
+  is currently `4`; do not add compatibility branches for earlier versions.
 - Runtime implementation files import the narrow internal contract they use,
   never their own `abi.ts` facade. The versioned physical GPU artifact lives
   in `gpu/contract.ts`; runtime/gpu must not import codegen implementation

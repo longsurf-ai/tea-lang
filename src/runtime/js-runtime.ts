@@ -7,7 +7,7 @@ import type {JSModule} from './module-abi';
 import type {EffectEmission, DenseEmission} from './output';
 import {ArenaHeap, type HeapLimits} from './heap';
 import type {ExecutionError} from './errors';
-import type {Input, Intermediate, State} from './state-machine';
+import type {Intermediate, RuntimeContext, State} from './state-machine';
 import {stateMachine, type TeaStateMachine} from './state-update';
 import type {Value} from './value';
 import type {LayoutId, ValueLayoutRegistry} from './value-layout';
@@ -17,15 +17,7 @@ export interface JSRuntimeOptions {
   readonly maxCollectionElements?: number;
 }
 
-/**
- * One synchronized input update and its finality.
- *
- * Provisional steps replace only the runtime's Intermediate value. Final
- * steps replace both State and Intermediate.
- */
-export interface StepInput extends Input {
-  readonly provisional: boolean;
-}
+export type {RuntimeContext} from './state-machine';
 
 /** The externally observable product of one completed runtime step. */
 export interface StepResult {
@@ -65,21 +57,21 @@ export class JSRuntime {
     this.intermediate = this.machine.initialIntermediate;
   }
 
-  step(input: StepInput): Effect.Effect<StepResult, ExecutionError> {
+  step(ctx: RuntimeContext): Effect.Effect<StepResult, ExecutionError> {
     return Effect.suspend(() => {
       this.assertLive();
       return Effect.map(
-        this.machine.update(this.state, this.intermediate, input),
+        this.machine.update(this.state, this.intermediate, ctx),
         result => {
           this.rootValues = result.rootValues;
           this.intermediate = result.intermediate;
-          if (!input.provisional) {
+          if (!ctx.provisional) {
             this.state = result.state;
           }
           return {
             output: result.output,
             effects: result.effects,
-            provisional: input.provisional,
+            provisional: ctx.provisional,
           };
         },
       );

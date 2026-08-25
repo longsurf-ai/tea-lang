@@ -4,7 +4,6 @@ import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {
   BindError,
-  type AggregateLayoutManifest,
   type BindInputs,
   type DataProvider,
   type ManifestValue,
@@ -16,6 +15,7 @@ import {
 import {bindFixedHistory as bindRuntime} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {staticModuleBinding} from './testing';
+import type {ValueLayout} from './value-layout';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
 
@@ -32,13 +32,11 @@ function bind(
 const NUMBER_LAYOUT = 0;
 const NULLABLE_LAYOUT = 1;
 const BOOLEAN_LAYOUT = 2;
-const TEST_LAYOUTS = {
-  layouts: [
-    {kind: 'number', numeric: 'float'},
-    {kind: 'nullable-scalar', scalar: 'string'},
-    {kind: 'boolean'},
-  ],
-} as const satisfies AggregateLayoutManifest;
+const TEST_LAYOUTS = [
+  {kind: 'number', numeric: 'float'},
+  {kind: 'nullable-scalar', scalar: 'string'},
+  {kind: 'boolean'},
+] as const satisfies readonly ValueLayout[];
 
 class Sink implements OutputSink {
   readonly values: Value[][] = [];
@@ -89,7 +87,7 @@ function param(
 
 const EMPTY_VALUES_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
+  layout: TEST_LAYOUTS,
   manifest: {
     series: [],
     builtin: [],
@@ -145,7 +143,7 @@ const EMPTY_VALUES_MODULE: JSModule = {
 function paramModule(spec: ParamSpec): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
-    aggregateLayouts: TEST_LAYOUTS,
+    layout: TEST_LAYOUTS,
     manifest: {
       series: [],
       builtin: [],

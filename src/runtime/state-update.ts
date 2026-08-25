@@ -1,5 +1,6 @@
 // Purpose: Execute one generated JSModule invocation as an Effect state
-// transition over explicit committed State, Intermediate, and Input values.
+// transition over explicit committed State, Intermediate, and RuntimeContext
+// values.
 
 import {Effect} from 'effect';
 import {Storage} from '../ir/node';
@@ -23,13 +24,13 @@ import {CollectionRuntime} from './collections';
 import {StructStorageRuntime} from './struct-storage';
 import type {
   FrameState,
-  Input,
   Intermediate,
   IntermediateFrame,
   IntermediateLocal,
   LocalState,
   HistoryState,
   RootState,
+  RuntimeContext,
   State,
   StateMachine,
   StateUpdate,
@@ -50,7 +51,7 @@ const DEFAULT_MAX_COLLECTION_ELEMENTS = 100_000;
 export type TeaStateUpdate = StateUpdate<
   State,
   Intermediate,
-  Input,
+  RuntimeContext,
   readonly DenseEmission[],
   EffectEmission,
   ExecutionError
@@ -59,7 +60,7 @@ export type TeaStateUpdate = StateUpdate<
 export type TeaStateMachine = StateMachine<
   State,
   Intermediate,
-  Input,
+  RuntimeContext,
   readonly DenseEmission[],
   EffectEmission,
   ExecutionError
@@ -99,7 +100,7 @@ function stateUpdate(
   structs: StructStorageRuntime,
   collections: CollectionRuntime,
 ): TeaStateUpdate {
-  return (state, intermediate, input) =>
+  return (state, intermediate, ctx) =>
     Effect.suspend(() => {
       try {
         // Collection is legal only at the transition boundary, before a new
@@ -111,14 +112,14 @@ function stateUpdate(
         );
         heap.collect();
         return Effect.succeed(
-          new StateUpdateContext(
+          new RuntimeOperations(
             module,
             params,
             layouts,
             heap,
             state,
             intermediate,
-            input,
+            ctx,
             structs,
             collections,
           ).run(),
@@ -150,7 +151,7 @@ interface WorkspaceFrame extends Frame {
   active: boolean;
 }
 
-class StateUpdateContext implements Runtime {
+class RuntimeOperations implements Runtime {
   private readonly rootFrame: WorkspaceFrame;
   private readonly outputs = new Map<number, Value[]>();
   private readonly effects: EffectEmission[] = [];
@@ -163,11 +164,11 @@ class StateUpdateContext implements Runtime {
     private readonly heap: Heap,
     private readonly state: Readonly<State>,
     private readonly intermediate: Readonly<Intermediate>,
-    private readonly input: Input,
+    private readonly ctx: RuntimeContext,
     private readonly structs: StructStorageRuntime,
     private readonly collections: CollectionRuntime,
   ) {
-    this.validateInput();
+    this.validateContext();
     this.rootFrame = this.openFrame(0, state.root, intermediate.root, true);
   }
 
@@ -493,26 +494,26 @@ class StateUpdateContext implements Runtime {
     return this.transaction ?? fatal('aggregate operation outside StateUpdate');
   }
 
-  private validateInput(): void {
-    if (this.input.series.length !== this.module.manifest.series.length) {
+  private validateContext(): void {
+    if (this.ctx.series.length !== this.module.manifest.series.length) {
       throw new ExecutionError(
         'VALUE_LAYOUT_MISMATCH',
-        `input has ${this.input.series.length} series values, expected ${this.module.manifest.series.length}`,
+        `runtime context has ${this.ctx.series.length} series values, expected ${this.module.manifest.series.length}`,
       );
     }
-    if (this.input.builtins.length !== this.module.manifest.builtin.length) {
+    if (this.ctx.builtins.length !== this.module.manifest.builtin.length) {
       throw new ExecutionError(
         'VALUE_LAYOUT_MISMATCH',
-        `input has ${this.input.builtins.length} builtin values, expected ${this.module.manifest.builtin.length}`,
+        `runtime context has ${this.ctx.builtins.length} builtin values, expected ${this.module.manifest.builtin.length}`,
       );
     }
-    if (this.input.requests.length !== this.module.manifest.requests.length) {
+    if (this.ctx.requests.length !== this.module.manifest.requests.length) {
       throw new ExecutionError(
         'VALUE_LAYOUT_MISMATCH',
-        `input has ${this.input.requests.length} request values, expected ${this.module.manifest.requests.length}`,
+        `runtime context has ${this.ctx.requests.length} request values, expected ${this.module.manifest.requests.length}`,
       );
     }
-    this.input.series.forEach((value, sid) => {
+    this.ctx.series.forEach((value, sid) => {
       if (typeof value !== 'number') {
         throw new ExecutionError(
           'VALUE_LAYOUT_MISMATCH',
@@ -520,14 +521,14 @@ class StateUpdateContext implements Runtime {
         );
       }
     });
-    this.input.builtins.forEach((value, bid) => {
+    this.ctx.builtins.forEach((value, bid) => {
       this.structs.assertValue(
         this.module.manifest.builtin[bid]!.layout,
         value,
         `builtin ${bid}`,
       );
     });
-    this.input.requests.forEach((value, rid) => {
+    this.ctx.requests.forEach((value, rid) => {
       this.structs.assertValue(
         this.module.manifest.requests[rid]!.layout,
         value,
@@ -537,7 +538,7 @@ class StateUpdateContext implements Runtime {
   }
 
   private inputValue(
-    field: keyof Input,
+    field: 'series' | 'builtins' | 'requests',
     id: number,
     offset: number,
     empty: Value,
@@ -547,7 +548,7 @@ class StateUpdateContext implements Runtime {
       return fatal(`unknown ${field} input ${id}`);
     }
     if (!isHistoryOffset(offset)) return empty;
-    if (offset === 0) return this.input[field][id] ?? empty;
+    if (offset === 0) return this.ctx[field][id] ?? empty;
     return this.state.root[field][id]?.values[offset - 1] ?? empty;
   }
 
@@ -656,7 +657,7 @@ class StateUpdateContext implements Runtime {
   }
 
   private finishInputHistory(
-    field: keyof Input,
+    field: 'series' | 'builtins' | 'requests',
     histories: readonly HistoryState[],
     specs: readonly {readonly depth: Parameters<typeof depthRetention>[0]}[],
   ): readonly HistoryState[] {
@@ -666,7 +667,7 @@ class StateUpdateContext implements Runtime {
     return histories.map((history, id) =>
       commitHistory(
         history,
-        this.input[field][id]!,
+        this.ctx[field][id]!,
         depthRetention(specs[id]!.depth),
       ),
     );

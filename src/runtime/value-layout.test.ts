@@ -2,10 +2,7 @@
 
 import {describe, expect, test} from 'vitest';
 import {ValueClass} from './abi';
-import {
-  type AggregateLayoutManifest,
-  ValueLayoutRegistry,
-} from './value-layout';
+import {type ValueLayout, ValueLayoutRegistry} from './value-layout';
 
 describe('ValueLayoutRegistry', () => {
   test('owns a deeply frozen copy of the generated manifest', () => {
@@ -19,9 +16,11 @@ describe('ValueLayoutRegistry', () => {
       name: 'Order',
       fields: [{name: 'side', layout: 1}],
     };
-    const source = {
-      layouts: [{kind: 'number', numeric: 'int'}, enumLayout, structLayout],
-    } as unknown as AggregateLayoutManifest;
+    const source = [
+      {kind: 'number', numeric: 'int'},
+      enumLayout,
+      structLayout,
+    ] as unknown as readonly ValueLayout[];
     const layouts = new ValueLayoutRegistry(source);
 
     enumLayout.name = 'Changed';
@@ -47,14 +46,12 @@ describe('ValueLayoutRegistry', () => {
   });
 
   test('derives exact typed empties and nominal value classes', () => {
-    const layouts = new ValueLayoutRegistry({
-      layouts: [
-        {kind: 'number', numeric: 'float'},
-        {kind: 'boolean'},
-        {kind: 'nullable-scalar', scalar: 'string'},
-        {kind: 'resource', handle: 'label'},
-      ],
-    });
+    const layouts = new ValueLayoutRegistry([
+      {kind: 'number', numeric: 'float'},
+      {kind: 'boolean'},
+      {kind: 'nullable-scalar', scalar: 'string'},
+      {kind: 'resource', handle: 'label'},
+    ]);
 
     expect(Number.isNaN(layouts.empty(0) as number)).toBe(true);
     expect(layouts.empty(1)).toBe(false);
@@ -66,45 +63,41 @@ describe('ValueLayoutRegistry', () => {
   });
 
   test('accepts direct and collection-mediated struct recursion', () => {
-    const layouts = new ValueLayoutRegistry({
-      layouts: [
-        {
-          kind: 'struct',
-          name: 'Node',
-          fields: [
-            {name: 'next', layout: 0},
-            {name: 'children', layout: 1},
-          ],
-        },
-        {kind: 'array', element: 0},
-      ],
-    });
+    const layouts = new ValueLayoutRegistry([
+      {
+        kind: 'struct',
+        name: 'Node',
+        fields: [
+          {name: 'next', layout: 0},
+          {name: 'children', layout: 1},
+        ],
+      },
+      {kind: 'array', element: 0},
+    ]);
     expect(layouts.length).toBe(2);
   });
 
   test('struct shallow size is one fixed-width reference', () => {
-    const layouts = new ValueLayoutRegistry({
-      layouts: [
-        {kind: 'number', numeric: 'int'},
-        {
-          kind: 'struct',
-          name: 'Inner',
-          fields: [
-            {name: 'x', layout: 0},
-            {name: 'y', layout: 0},
-          ],
-        },
-        {kind: 'array', element: 1},
-        {
-          kind: 'struct',
-          name: 'Outer',
-          fields: [
-            {name: 'inner', layout: 1},
-            {name: 'items', layout: 2},
-          ],
-        },
-      ],
-    });
+    const layouts = new ValueLayoutRegistry([
+      {kind: 'number', numeric: 'int'},
+      {
+        kind: 'struct',
+        name: 'Inner',
+        fields: [
+          {name: 'x', layout: 0},
+          {name: 'y', layout: 0},
+        ],
+      },
+      {kind: 'array', element: 1},
+      {
+        kind: 'struct',
+        name: 'Outer',
+        fields: [
+          {name: 'inner', layout: 1},
+          {name: 'items', layout: 2},
+        ],
+      },
+    ]);
 
     expect(layouts.shallowBytes(1)).toBe(8);
     expect(layouts.shallowBytes(2)).toBe(32);
@@ -112,12 +105,10 @@ describe('ValueLayoutRegistry', () => {
   });
 
   test('guards enum membership and concrete resource kind', () => {
-    const layouts = new ValueLayoutRegistry({
-      layouts: [
-        {kind: 'enum', name: 'Side', members: ['buy', 'sell']},
-        {kind: 'resource', handle: 'label'},
-      ],
-    });
+    const layouts = new ValueLayoutRegistry([
+      {kind: 'enum', name: 'Side', members: ['buy', 'sell']},
+      {kind: 'resource', handle: 'label'},
+    ]);
     expect(() => layouts.assertValue(0, 'other')).toThrow(
       'VALUE_LAYOUT_MISMATCH',
     );

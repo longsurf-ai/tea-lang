@@ -5,7 +5,6 @@ import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {
   BindError,
-  type AggregateLayoutManifest,
   type BindInputs,
   type DataProvider,
   type OutputSink,
@@ -23,6 +22,7 @@ import {
   type JSModuleBinding,
 } from './module-abi';
 import {staticModuleBinding} from './testing';
+import type {ValueLayout} from './value-layout';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
 
@@ -37,9 +37,9 @@ function bind(
 }
 
 const NUMBER_LAYOUT = 0;
-const TEST_LAYOUTS = {
-  layouts: [{kind: 'number', numeric: 'float'}],
-} as const satisfies AggregateLayoutManifest;
+const TEST_LAYOUTS = [
+  {kind: 'number', numeric: 'float'},
+] as const satisfies readonly ValueLayout[];
 
 // ---- test doubles -----------------------------------------------------------
 
@@ -113,7 +113,7 @@ function num(v: Value): number {
 
 const EMA_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
+  layout: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -153,7 +153,7 @@ const EMA_MODULE: JSModule = {
 
 const COUNTER_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
+  layout: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -208,7 +208,7 @@ const COUNTER_MODULE: JSModule = {
 
 const HISTORY_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
+  layout: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -247,7 +247,7 @@ const HISTORY_MODULE: JSModule = {
 
 const TICK_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
+  layout: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -311,7 +311,7 @@ const TICK_MODULE: JSModule = {
 
 const BIND_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
+  layout: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -432,13 +432,11 @@ describe('typed builtins', () => {
   const INT_LAYOUT = 0;
   const BOOL_LAYOUT = 1;
   const STRING_LAYOUT = 2;
-  const layouts = {
-    layouts: [
-      {kind: 'number', numeric: 'int'},
-      {kind: 'boolean'},
-      {kind: 'nullable-scalar', scalar: 'string'},
-    ],
-  } as const satisfies AggregateLayoutManifest;
+  const layouts = [
+    {kind: 'number', numeric: 'int'},
+    {kind: 'boolean'},
+    {kind: 'nullable-scalar', scalar: 'string'},
+  ] as const satisfies readonly ValueLayout[];
   const builtins = [
     {
       source: {domain: 'time', field: 'time'},
@@ -526,7 +524,7 @@ describe('typed builtins', () => {
   function builtinModule(): JSModule {
     const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: layouts,
+      layout: layouts,
       manifest: {
         series: [],
         builtin: builtins,
@@ -758,7 +756,7 @@ function contexts(byId: Record<string, ProviderContext>): DataProvider {
 
 const CHILD_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
+  layout: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -810,7 +808,7 @@ function requestModule(
   };
   const module: JSModule = {
     abi: RUNTIME_ABI_VERSION,
-    aggregateLayouts: TEST_LAYOUTS,
+    layout: TEST_LAYOUTS,
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
       builtin: [],
@@ -1034,7 +1032,7 @@ describe('requests', () => {
   test('a bounded child restarts bar_index at zero inside the retained tail', async () => {
     const barIndexChild: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: TEST_LAYOUTS,
+      layout: TEST_LAYOUTS,
       manifest: {
         series: [],
         builtin: [
@@ -1160,7 +1158,7 @@ describe('requests', () => {
   test('nested empty request args inherit the child provider-normalized identity', async () => {
     const innerChild: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: TEST_LAYOUTS,
+      layout: TEST_LAYOUTS,
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
         builtin: [],
@@ -1195,7 +1193,7 @@ describe('requests', () => {
     };
     const outerChild = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: TEST_LAYOUTS,
+      layout: TEST_LAYOUTS,
       manifest: {
         series: [],
         builtin: [],

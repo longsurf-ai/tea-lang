@@ -112,7 +112,7 @@ export class TeaNode {
     const runtime = new JSRuntime(
       facts.code,
       facts.params.map(param => param.value),
-      new ValueLayoutRegistry(facts.code.aggregateLayouts),
+      new ValueLayoutRegistry(facts.code.layout),
     );
     const seriesNames = this.module.bindings
       .filter(

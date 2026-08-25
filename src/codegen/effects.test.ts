@@ -111,7 +111,7 @@ describe('generic sparse effect lowering', () => {
       {layout: 0, declaration: {payload: eventSchema}},
     ]);
     expect(sink.effectSchemas).toEqual([{payload: eventSchema}]);
-    expect(module.aggregateLayouts.layouts[0]).toEqual({
+    expect(module.layout[0]).toEqual({
       kind: 'struct',
       name: 'OrderSubmitted',
       typeId: 'effects.test.OrderSubmitted',

@@ -118,7 +118,7 @@ export function resolveGeneratedBindingLayout(
   }
   validateContextIdentity(context);
   const params = resolveParamValues(code.manifest.params, inputs.params);
-  const layouts = new ValueLayoutRegistry(code.aggregateLayouts);
+  const layouts = new ValueLayoutRegistry(code.layout);
   const builtinValues = validateProviderBuiltins(code, context, layouts);
   const series = providerSeries(code, params, context);
   const facts = evaluateBinding(code, params, true, builtinValues);
@@ -304,7 +304,7 @@ export function bindGeneratedModule(
   const heap = new ArenaHeap();
   const transaction = heap.begin('module-binding');
   try {
-    const layouts = new ValueLayoutRegistry(code.aggregateLayouts);
+    const layouts = new ValueLayoutRegistry(code.layout);
     const structs = new StructStorageRuntime(heap, layouts);
     const collections = new CollectionRuntime(
       heap,

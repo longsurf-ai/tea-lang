@@ -10,7 +10,7 @@ import type {
 } from '../module-abi';
 import {StructStorageRuntime} from '../struct-storage';
 import {
-  type AggregateLayoutManifest,
+  type ValueLayout,
   ValueLayoutRegistry,
   visitRuntimeValueRefs,
 } from '../value-layout';
@@ -30,37 +30,35 @@ const FLOATS = 10;
 const STRINGS = 11;
 const BOOL = 12;
 
-const MANIFEST = {
-  layouts: [
-    {kind: 'number', numeric: 'int'},
-    {kind: 'number', numeric: 'float'},
-    {kind: 'nullable-scalar', scalar: 'string'},
-    {
-      kind: 'struct',
-      name: 'Point',
-      fields: [
-        {name: 'x', layout: INT},
-        {name: 'y', layout: INT},
-      ],
-    },
-    {
-      kind: 'struct',
-      name: 'Box',
-      fields: [
-        {name: 'point', layout: POINT},
-        {name: 'stamp', layout: INT},
-      ],
-    },
-    {kind: 'array', element: INT},
-    {kind: 'array', element: BOX},
-    {kind: 'matrix', element: INT},
-    {kind: 'map', key: FLOAT, value: INT},
-    {kind: 'map', key: STRING, value: STRING},
-    {kind: 'array', element: FLOAT},
-    {kind: 'array', element: STRING},
-    {kind: 'boolean'},
-  ],
-} as const satisfies AggregateLayoutManifest;
+const MANIFEST = [
+  {kind: 'number', numeric: 'int'},
+  {kind: 'number', numeric: 'float'},
+  {kind: 'nullable-scalar', scalar: 'string'},
+  {
+    kind: 'struct',
+    name: 'Point',
+    fields: [
+      {name: 'x', layout: INT},
+      {name: 'y', layout: INT},
+    ],
+  },
+  {
+    kind: 'struct',
+    name: 'Box',
+    fields: [
+      {name: 'point', layout: POINT},
+      {name: 'stamp', layout: INT},
+    ],
+  },
+  {kind: 'array', element: INT},
+  {kind: 'array', element: BOX},
+  {kind: 'matrix', element: INT},
+  {kind: 'map', key: FLOAT, value: INT},
+  {kind: 'map', key: STRING, value: STRING},
+  {kind: 'array', element: FLOAT},
+  {kind: 'array', element: STRING},
+  {kind: 'boolean'},
+] as const satisfies readonly ValueLayout[];
 
 interface Harness {
   readonly heap: ArenaHeap;

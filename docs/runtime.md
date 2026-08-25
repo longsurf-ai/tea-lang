@@ -32,7 +32,7 @@ generated JS module + BindInputs
               │
               ▼
 fixed-historical host adapter ──▶ DataProvider / OutputSink
-              │ synchronized StepInput
+              │ synchronized RuntimeContext
               ▼
          JSRuntime.step()
 
@@ -143,10 +143,10 @@ Program, is the runtime artifact (`tea build` output, cacheable, serializable).
 Conceptually every root and request child has exactly the same shape:
 
 ```js
-const L = {layouts: [...]};
+const L = [...];
 const M1 = {
-  abi: 3,
-  aggregateLayouts: L,
+  abi: 4,
+  layout: L,
   manifest: {...},
   requests: [],
   bind(values) { return {/* JSModuleBinding */}; },
@@ -155,8 +155,8 @@ const M1 = {
 };
 
 return {
-  abi: 3,
-  aggregateLayouts: L,                    // same object reference as every child
+  abi: 4,
+  layout: L,                              // same array reference as every child
   manifest: {
     series:  [{id, depth}, ...],          // sid -> numeric provider column
     builtin: [{source, layout, depth}, ...], // bid -> typed builtin
@@ -180,7 +180,7 @@ return {
 };
 ```
 
-`RUNTIME_ABI_VERSION` is the single version source and is currently `3`.
+`RUNTIME_ABI_VERSION` is the single version source and is currently `4`.
 Before launch, this contract evolves in place; the runtime does not carry
 compatibility branches for older generated modules.
 
@@ -190,11 +190,11 @@ type (`int`, `float`, `bool`, `string`, `color`, `enum`, resource, output
 reference, struct, or aggregate shape). Runtime transports branch only on that field;
 they never recover machine semantics by parsing the display string.
 
-Every request child is a complete `JSModule`, including `abi`,
-`aggregateLayouts`, `manifest`, `requests`, `bind`, `funcs`, and `main`.
-Codegen emits the layout manifest once and every module stores the same object
-reference, so children cannot define a second layout-id namespace. The runtime
-clones and seals that manifest at its trust boundary.
+Every request child is a complete `JSModule`, including `abi`, `layout`,
+`manifest`, `requests`, `bind`, `funcs`, and `main`. Codegen emits the raw
+`ValueLayout[]` table once and every module stores the same array reference, so
+children cannot define a second layout-id namespace. The runtime clones and
+seals that table at its trust boundary.
 Each child uses the shared host-owned request/fixed-value budgets but owns an
 independent Heap. Request results cross into the parent only as copied scalars
 or scalar-only tuples; a `Ref` never crosses arenas.
@@ -382,7 +382,8 @@ rejects misaligned series at bind.
 
 Providers expose absolute-indexed committed rows through `SeriesData`. The
 fixed-historical adapter turns each absolute row into one synchronized
-`StepInput`; `JSRuntime` keeps only the bounded history required by the module.
+`RuntimeContext`; `JSRuntime` keeps only the bounded history required by the
+module.
 Depth is a retention requirement for runtime state and a provider contract for
 historical availability.
 

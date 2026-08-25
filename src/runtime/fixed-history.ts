@@ -5,11 +5,7 @@ import {Effect} from 'effect';
 import {fatal} from '../base/print';
 import type {BuiltinSource} from '../ir/builtin';
 import {Storage} from '../ir/node';
-import type {
-  BindInputs,
-  BoundInput,
-  FixedHistoryExecution,
-} from './binding';
+import type {BindInputs, BoundInput, FixedHistoryExecution} from './binding';
 import {BindError, ExecutionError, RequestError} from './errors';
 import {assertMergeAxis, sampleMergeMap} from './merge';
 import {
@@ -32,16 +28,9 @@ import {
   type RangeDemand,
   type SeriesData,
 } from './provider';
-import {
-  JSRuntime,
-  type JSRuntimeOptions,
-  type StepResult,
-} from './js-runtime';
+import {JSRuntime, type JSRuntimeOptions, type StepResult} from './js-runtime';
 import {isTupleValue, type Value} from './value';
-import {
-  type LayoutId,
-  ValueLayoutRegistry,
-} from './value-layout';
+import {type LayoutId, ValueLayoutRegistry} from './value-layout';
 
 const FULL_RANGE = {kind: 'full'} as const;
 const DEFAULT_MAX_COLLECTION_ELEMENTS = 100_000;
@@ -127,7 +116,7 @@ export async function bindFixedHistory(
     inputs.timeframe ?? '',
   );
 
-  const layouts = new ValueLayoutRegistry(facts.code.aggregateLayouts);
+  const layouts = new ValueLayoutRegistry(facts.code.layout);
   const heapLimits = {
     maxStorageCells: optionalLimit(
       inputs.maxHeapStorageCells,

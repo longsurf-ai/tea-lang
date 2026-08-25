@@ -3,10 +3,7 @@
 import {describe, expect, test} from 'vitest';
 import {ArenaHeap} from './heap';
 import {StructStorageRuntime} from './struct-storage';
-import {
-  type AggregateLayoutManifest,
-  ValueLayoutRegistry,
-} from './value-layout';
+import {type ValueLayout, ValueLayoutRegistry} from './value-layout';
 
 const INT = 0;
 const BOOL = 1;
@@ -15,32 +12,30 @@ const CHILD = 3;
 const PARENT = 4;
 const NODE = 5;
 
-const MANIFEST = {
-  layouts: [
-    {kind: 'number', numeric: 'int'},
-    {kind: 'boolean'},
-    {kind: 'nullable-scalar', scalar: 'string'},
-    {
-      kind: 'struct',
-      name: 'Child',
-      fields: [{name: 'value', layout: INT}],
-    },
-    {
-      kind: 'struct',
-      name: 'Parent',
-      fields: [
-        {name: 'child', layout: CHILD},
-        {name: 'enabled', layout: BOOL},
-        {name: 'label', layout: STRING},
-      ],
-    },
-    {
-      kind: 'struct',
-      name: 'Node',
-      fields: [{name: 'next', layout: NODE}],
-    },
-  ],
-} as const satisfies AggregateLayoutManifest;
+const MANIFEST = [
+  {kind: 'number', numeric: 'int'},
+  {kind: 'boolean'},
+  {kind: 'nullable-scalar', scalar: 'string'},
+  {
+    kind: 'struct',
+    name: 'Child',
+    fields: [{name: 'value', layout: INT}],
+  },
+  {
+    kind: 'struct',
+    name: 'Parent',
+    fields: [
+      {name: 'child', layout: CHILD},
+      {name: 'enabled', layout: BOOL},
+      {name: 'label', layout: STRING},
+    ],
+  },
+  {
+    kind: 'struct',
+    name: 'Node',
+    fields: [{name: 'next', layout: NODE}],
+  },
+] as const satisfies readonly ValueLayout[];
 
 function harness() {
   const heap = new ArenaHeap();

@@ -125,7 +125,7 @@ describe('typed builtin lowering', () => {
 
     expect(module.manifest.builtin).toEqual([]);
     expect(module.requests[0].abi).toBe(RUNTIME_ABI_VERSION);
-    expect(module.requests[0].aggregateLayouts).toBe(module.aggregateLayouts);
+    expect(module.requests[0].layout).toBe(module.layout);
     expect(module.requests[0].manifest.series).toEqual([]);
     expect(module.requests[0].manifest.builtin).toMatchObject([
       {source: {domain: 'bar', field: 'bar_index'}},

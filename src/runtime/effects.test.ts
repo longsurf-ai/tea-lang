@@ -4,7 +4,6 @@
 import {describe, expect, test} from 'vitest';
 import {MemorySink} from '../providers/sinks/memory-sink';
 import {
-  type AggregateLayoutManifest,
   type DataProvider,
   type OutputSink,
   type ProviderContext,
@@ -13,11 +12,12 @@ import {
 import {bindFixedHistory as bind} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {staticModuleBinding} from './testing';
+import type {ValueLayout} from './value-layout';
 
 const NUMBER = 0;
-const LAYOUTS = {
-  layouts: [{kind: 'number', numeric: 'int'}],
-} as const satisfies AggregateLayoutManifest;
+const LAYOUTS = [
+  {kind: 'number', numeric: 'int'},
+] as const satisfies readonly ValueLayout[];
 
 function context(rows = 1, axis: TimeAxis | null = null): ProviderContext {
   return {
@@ -40,7 +40,7 @@ const INT_EFFECT = {
 function effectModule(main: JSModule['main']): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
-    aggregateLayouts: LAYOUTS,
+    layout: LAYOUTS,
     manifest: {
       series: [],
       builtin: [],
@@ -116,17 +116,15 @@ describe('effect row transactions', () => {
     const structLayout = 1;
     const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: {
-        layouts: [
-          {kind: 'number', numeric: 'int'},
-          {
-            kind: 'struct',
-            name: 'Payload',
-            typeId: 'test.Payload',
-            fields: [{name: 'value', layout: NUMBER}],
-          },
-        ],
-      },
+      layout: [
+        {kind: 'number', numeric: 'int'},
+        {
+          kind: 'struct',
+          name: 'Payload',
+          typeId: 'test.Payload',
+          fields: [{name: 'value', layout: NUMBER}],
+        },
+      ],
       manifest: {
         series: [],
         builtin: [],
@@ -183,12 +181,10 @@ describe('effect row transactions', () => {
   test('manifest validation rejects non-fixed effect layouts', async () => {
     const unsafe: JSModule = {
       ...effectModule(() => {}),
-      aggregateLayouts: {
-        layouts: [
-          {kind: 'number', numeric: 'int'},
-          {kind: 'array', element: NUMBER},
-        ],
-      },
+      layout: [
+        {kind: 'number', numeric: 'int'},
+        {kind: 'array', element: NUMBER},
+      ],
       manifest: {
         ...effectModule(() => {}).manifest,
         effects: [{...INT_EFFECT, layout: 1}],
