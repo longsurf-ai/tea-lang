@@ -2,7 +2,7 @@
 
 import type {BindInputs, BoundInput} from '../binding';
 import type {TeaModule} from '../module-abi';
-import {bind} from '../js-runtime';
+import {bindStateMachine} from '../state-machine-binding';
 
 export interface CpuBatchResult {
   readonly rows: number;
@@ -18,9 +18,9 @@ export async function runCpuBatch(
   const results: CpuBatchResult[] = [];
 
   for (const inputs of bindings) {
-    let execution: Awaited<ReturnType<typeof bind>> | null = null;
+    let execution: Awaited<ReturnType<typeof bindStateMachine>> | null = null;
     try {
-      execution = await bind(module, inputs);
+      execution = await bindStateMachine(module, inputs);
       const rows = execution.rows;
       const boundInputs = execution.inputs.map(input => ({...input}));
       await execution.runAll();
