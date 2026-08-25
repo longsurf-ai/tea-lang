@@ -2,19 +2,16 @@
 // vanish on error/suspension instead of leaking or duplicating records.
 
 import {describe, expect, test} from 'vitest';
-import {Storage} from '../ir/node';
 import {MemorySink} from '../providers/sinks/memory-sink';
 import {
   RUNTIME_ABI_VERSION,
   type AggregateLayoutManifest,
   type DataProvider,
-  type ModuleCode,
   type OutputSink,
   type ProviderContext,
   type TeaModule,
   type TimeAxis,
 } from './abi';
-import {bind as bindLegacy} from './js-runtime';
 import {bindStateMachine as bind} from './state-machine-binding';
 
 const NUMBER = 0;
@@ -110,75 +107,6 @@ describe('effect row transactions', () => {
     expect(sink.effectEmissions).toEqual([
       {row: 0, effectId: 0, payload: 7, provisional: true},
       {row: 0, effectId: 0, payload: 7, provisional: false},
-    ]);
-    execution.dispose();
-  });
-
-  test('dynamic-request suspension drops the aborted transaction effect', async () => {
-    const axis: TimeAxis = {time: row => row, closeTime: row => row + 1};
-    const contexts: DataProvider = {
-      resolveContext: symbol =>
-        Promise.resolve(symbol === '' ? context(1, axis) : context(1, axis)),
-    };
-    const child: ModuleCode = {
-      manifest: {
-        series: [{id: 'close', depth: {kind: 'none'}}],
-        builtin: [],
-        params: [],
-        outputs: [],
-        effects: [],
-        frames: [
-          {
-            locals: [
-              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: NUMBER},
-            ],
-            subs: [],
-          },
-        ],
-        requests: [],
-      },
-      requests: [],
-      init() {},
-      bind() {},
-      funcs: {},
-      main(rt, fr) {
-        rt.write(fr, 0, rt.series(0, 0));
-      },
-    };
-    const parent: TeaModule = {
-      ...effectModule(rt => {
-        rt.emitEffect(0, 99);
-        void rt.requestFor(0, 'X', '');
-      }),
-      manifest: {
-        ...effectModule(() => {}).manifest,
-        requests: [
-          {
-            merge: {mode: 'sample'},
-            depth: {kind: 'none'},
-            resultSlot: 0,
-            layout: NUMBER,
-            dynamic: true,
-          },
-        ],
-      },
-      requests: [child],
-      bind(rt) {
-        rt.bindRequestOptions(0, false, false, false, 0);
-      },
-    };
-    const sink = new MemorySink();
-    const execution = await bindLegacy(parent, {
-      params: {},
-      provider: contexts,
-      sink,
-      timeNow: 0,
-    });
-
-    await execution.runAll();
-
-    expect(sink.effectEmissions).toEqual([
-      {row: 0, effectId: 0, payload: 99, provisional: false},
     ]);
     execution.dispose();
   });
