@@ -6,13 +6,15 @@ import {formatPos} from '../base/pos';
 import {Errors, type ErrorMsg} from '../base/print';
 import {compileToProgram} from '../compile';
 import type {Program} from '../ir/program';
-import { Observable } from "rxjs";
+import { Observable, Subject } from "rxjs";
 import type { DataStream } from "./stream";
-import type { OperatorFunction } from "rxjs";
 import * as z from "zod";
-import type { Pair } from "./util";
+import { extract, type Binding } from "./binding";
+import type { Sink } from "./sink";
+
 
 const TEMPLATE_FILENAME = '<tea-template>';
+type Key = string;
 
 export class TeaCompileError extends OperationalError {
   constructor(readonly errors: readonly ErrorMsg[]) {
@@ -21,6 +23,42 @@ export class TeaCompileError extends OperationalError {
     );
     this.name = 'TeaCompileError';
   }
+}
+
+export class TeaNode {
+    private readonly input_bindings: Binding[];
+    private readonly output_bindings: Binding[];
+    private input: Observable<unknown>;
+    private output: Observable<unknown>;
+
+    constructor(private readonly ir: Program) {
+        [this.input_bindings, this.output_bindings] = extract(ir);
+    }
+
+    /**
+     * Bind inputs to the program
+     */
+    bind(inputs: DataStream<T> | Record<string, unknown> | Record<Key, DataStream<T>>): TeaNode {
+        if (inputs instanceof DataStream) {
+            // go through the inputs data stream, and try to match it to the input bindings
+
+            // for each data stream input, we need to somehow join it and update the input observable, as well as update the output Observable. The idea is that the output subscribes to the input observable, but runs the program on the input observable for every input received.
+        } else {
+            // try to match the inputs to the input bindings
+        }
+    }
+
+    /**
+     * Return true if the program is ready to be executed.
+     */
+    ready(): boolean {
+
+    }
+
+
+    to(sink: Sink<z.output<T>>): void {
+
+    }
 }
 
 /**
@@ -66,25 +104,4 @@ function dedent(source: string): string {
     }
   }
   return lines.map(line => line.slice(prefix.length)).join('\n');
-}
-
-export type Output<O, E> = Pair<O, E[]>;
-
-export interface TeaOperator<
-    I extends z.ZodType,
-    O extends z.ZodType,
-    E extends z.ZodType,
-> extends OperatorFunction<
-    z.input<I>, Output<z.output<O>, z.output<E>>> {
-    readonly input: I;
-    readonly output: O;
-    readonly effect: E;
-}
-
-
-export 
-
-export function makeTea<T>(program: Program): {
-    return (observable: Observable<T>) => 
-        new Observable<T>(subscriber => {
 }

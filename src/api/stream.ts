@@ -1,16 +1,16 @@
 import { Observable, Observer, Subject, Subscriber, Subscribable, Subscription, TeardownLogic } from "rxjs";
 import * as z from "zod";
-import type { Program } from "../ir/program";
+import type { Sink } from "./sink";
 
 /**
- * An abstract interface for a stream of data elements of type T.
+ * A data stream is a typed observable.
  */
 export class DataStream<T> implements Subscribable<T> {
-    readonly schema: z.ZodType;
+    readonly schema: z.input<T>;
     private readonly observable: Observable<T>;
 
     constructor(
-        schema: z.ZodType,
+        schema: z.input<T>,
         subscribe?: (this: Observable<T>, subscriber: Subscriber<T>) => TeardownLogic
     ) {
         this.schema = schema;
@@ -19,10 +19,6 @@ export class DataStream<T> implements Subscribable<T> {
 
     subscribe(observer: Partial<Observer<T>>): Subscription {
         return this.observable.subscribe(observer);
-    }
-
-    asObservable(): Observable<T> {
-        return this.observable;
     }
 
 }

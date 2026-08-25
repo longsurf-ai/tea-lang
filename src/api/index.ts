@@ -4,4 +4,5 @@ export * from './bind';
 export * from './binding';
 export * from './clock';
 export * from './source';
+export * from './sink';
 export * from './sync';

@@ -1,17 +1,23 @@
-import {Observable} from 'rxjs';
+import type {Observable} from 'rxjs';
 import * as z from 'zod';
 import {IrKind, type IrExpr} from '../ir/node';
 import type {Program, RequestEdge} from '../ir/program';
 import {TypeKind, type Type} from '../ir/type';
 import {seriesInputsOf} from '../ir/visit';
 
-export interface Binding {
-  readonly kind: 'series' | 'parameter';
-  readonly name: string;
-  readonly type: z.ZodType;
-  readonly children?: readonly Binding[];
-  target?: Observable<unknown> | unknown;
-}
+export type Binding =
+  | {
+      readonly kind: 'series';
+      readonly name: string;
+      readonly type: z.ZodType;
+      target?: Observable<unknown>;
+    }
+  | {
+      readonly kind: 'parameter';
+      readonly name: string;
+      readonly type: z.ZodType;
+      target?: unknown;
+    };
 
 type Pair<A, B> = [A, B];
 
