@@ -5,6 +5,7 @@
 import {Effect} from 'effect';
 import {fatal} from '../base/print';
 import type {BuiltinSource} from '../ir/builtin';
+import {Storage} from '../ir/node';
 import type {BindInputs, BoundInput, BoundProgram} from './binding';
 import {BindError, ExecutionError, RequestError} from './errors';
 import {assertMergeAxis, sampleMergeMap} from './merge';
@@ -44,9 +45,21 @@ import {
 const FULL_RANGE = {kind: 'full'} as const;
 const DEFAULT_MAX_COLLECTION_ELEMENTS = 100_000;
 const DEFAULT_MAX_REQUEST_CONTEXTS = 40;
+const DEFAULT_MAX_FIXED_VALUE_LOGICAL_BYTES = 64 * 1024 * 1024;
 
 interface RequestView {
   at(row: number): Value;
+  release(): void;
+}
+
+interface ContextIdentity {
+  readonly symbol: string;
+  readonly timeframe: string;
+}
+
+interface StateStorageLease {
+  readonly logicalBytes: number;
+  release(): void;
 }
 
 interface RequestEnvironment {
@@ -58,6 +71,10 @@ interface RequestEnvironment {
   readonly maxCollectionElements: number;
   readonly heapLimits: StateMachineRuntimeOptions['heapLimits'];
   readonly contextBudget: {used: number; readonly max: number};
+  readonly stateStorage: {
+    usedLogicalBytes: number;
+    readonly maxLogicalBytes: number;
+  };
 }
 
 /** Bind the migration runtime to one finite provider context. */
@@ -77,11 +94,11 @@ export async function bindStateMachine(
   const maxRequestContexts =
     optionalLimit(inputs.maxRequestContexts, 'maxRequestContexts') ??
     DEFAULT_MAX_REQUEST_CONTEXTS;
-  if (inputs.maxFixedValueLogicalBytes !== undefined) {
-    throw new BindError(
-      'state-machine compatibility binding does not support maxFixedValueLogicalBytes',
-    );
-  }
+  const maxFixedValueLogicalBytes =
+    optionalLimit(
+      inputs.maxFixedValueLogicalBytes,
+      'maxFixedValueLogicalBytes',
+    ) ?? DEFAULT_MAX_FIXED_VALUE_LOGICAL_BYTES;
 
   const params = resolveParamValues(module.manifest.params, inputs.params);
   let facts: BoundModuleFacts;
@@ -104,6 +121,11 @@ export async function bindStateMachine(
     );
   }
   validateRows(context);
+  const contextIdentity = effectiveContextIdentity(
+    context,
+    inputs.symbol ?? '',
+    inputs.timeframe ?? '',
+  );
 
   const layouts = new ValueLayoutRegistry(facts.code.aggregateLayouts);
   const heapLimits = {
@@ -133,21 +155,32 @@ export async function bindStateMachine(
     maxCollectionElements,
     heapLimits,
     contextBudget: {used: 0, max: maxRequestContexts},
+    stateStorage: {
+      usedLogicalBytes: 0,
+      maxLogicalBytes: maxFixedValueLogicalBytes,
+    },
   };
   const series = bindSeries(facts, params, context);
   const builtins = bindBuiltins(facts, context, layouts, timeNow);
-  const requests = await bindStaticRequests(facts, context, environment);
-  const runtime = new StateMachineRuntime(
-    facts.code,
-    facts.params.map(param => param.value),
-    layouts,
-    {
-      maxCollectionElements,
-      heapLimits,
-    },
-  );
-
+  const workspace = reserveWorkspace(facts, environment, 'root state');
+  let requests: readonly RequestView[] = [];
+  let runtime: StateMachineRuntime | null = null;
   try {
+    requests = await bindStaticRequests(
+      facts,
+      context,
+      contextIdentity,
+      environment,
+    );
+    runtime = new StateMachineRuntime(
+      facts.code,
+      facts.params.map(param => param.value),
+      layouts,
+      {
+        maxCollectionElements,
+        heapLimits,
+      },
+    );
     inputs.sink.declare(facts.declaration);
     return new FixedHistoricalStateMachineBinding(
       runtime,
@@ -157,9 +190,12 @@ export async function bindStateMachine(
       builtins,
       requests,
       inputs.sink,
+      workspace,
     );
   } catch (error) {
-    runtime.dispose();
+    runtime?.dispose();
+    requests.forEach(view => view.release());
+    workspace.release();
     throw error;
   }
 }
@@ -181,6 +217,7 @@ class FixedHistoricalStateMachineBinding implements BoundProgram {
     private readonly builtins: readonly ((row: number) => Value)[],
     private readonly requests: readonly RequestView[],
     private readonly sink: BindInputs['sink'],
+    private readonly workspace: StateStorageLease,
   ) {
     this.rows = context.rows;
     this.inputs = inputs;
@@ -251,6 +288,8 @@ class FixedHistoricalStateMachineBinding implements BoundProgram {
     this.disposed = true;
     this.pending = null;
     this.runtime.dispose();
+    this.requests.forEach(view => view.release());
+    this.workspace.release();
   }
 
   private publish(row: number, result: StepResult): void {
@@ -288,6 +327,7 @@ class FixedHistoricalStateMachineBinding implements BoundProgram {
 async function bindStaticRequests(
   facts: BoundModuleFacts,
   parent: ProviderContext,
+  parentIdentity: ContextIdentity,
   environment: RequestEnvironment,
 ): Promise<readonly RequestView[]> {
   if (facts.requests.length === 0) return [];
@@ -298,21 +338,28 @@ async function bindStaticRequests(
   }
   assertMergeAxis(parent.axis, parent.rows, 'primary context');
   const views: RequestView[] = new Array(facts.code.manifest.requests.length);
-  for (const binding of facts.requests) {
-    views[binding.requestId] = await bindStaticRequest(
-      binding,
-      facts,
-      parent,
-      environment,
-    );
+  try {
+    for (const binding of facts.requests) {
+      views[binding.requestId] = await bindStaticRequest(
+        binding,
+        facts,
+        parent,
+        parentIdentity,
+        environment,
+      );
+    }
+    return views;
+  } catch (error) {
+    views.forEach(view => view?.release());
+    throw error;
   }
-  return views;
 }
 
 async function bindStaticRequest(
   binding: StaticRequestBinding,
   parentFacts: BoundModuleFacts,
   parent: ProviderContext,
+  parentIdentity: ContextIdentity,
   environment: RequestEnvironment,
 ): Promise<RequestView> {
   const spec = parentFacts.code.manifest.requests[binding.requestId];
@@ -322,7 +369,10 @@ async function bindStaticRequest(
     );
   }
   assertRequestTransportLayout(environment.layouts, spec.layout);
-  const what = `request '${binding.symbol}','${binding.timeframe}'`;
+  const symbol = binding.symbol === '' ? parentIdentity.symbol : binding.symbol;
+  const timeframe =
+    binding.timeframe === '' ? parentIdentity.timeframe : binding.timeframe;
+  const what = `request '${symbol}','${timeframe}'`;
   environment.contextBudget.used += 1;
   if (environment.contextBudget.used > environment.contextBudget.max) {
     environment.contextBudget.used -= 1;
@@ -336,8 +386,8 @@ async function bindStaticRequest(
       ? FULL_RANGE
       : {kind: 'trailing-bars', bars: binding.options.calcBarsCount};
   const resolved = await environment.provider.resolveContext(
-    binding.symbol,
-    binding.timeframe,
+    symbol,
+    timeframe,
     range,
   );
   if (isContextError(resolved)) {
@@ -345,7 +395,7 @@ async function bindStaticRequest(
       resolved.error === 'unknownSymbol' || resolved.error === 'unknownSource';
     if (binding.options.ignoreInvalidSymbol && ignorable) {
       const empty = environment.layouts.empty(spec.layout);
-      return {at: () => empty};
+      return {at: () => empty, release() {}};
     }
     environment.contextBudget.used -= 1;
     throw new BindError(`${what}: ${resolved.error} (${resolved.detail})`);
@@ -363,6 +413,11 @@ async function bindStaticRequest(
       childContext.rows,
       `${what} child context`,
     );
+    const childIdentity = effectiveContextIdentity(
+      childContext,
+      symbol,
+      timeframe,
+    );
     const code = childModule(binding.child, environment.aggregateLayouts);
     let childFacts: BoundModuleFacts;
     try {
@@ -373,29 +428,36 @@ async function bindStaticRequest(
       }
       throw error;
     }
-    const values = await runRequestChild(
+    const result = await runRequestChild(
       childFacts,
       childContext,
+      childIdentity,
       spec.resultSlot,
       spec.layout,
       environment,
     );
-    const map = sampleMergeMap(
-      parent.axis,
-      parent.rows,
-      childContext.axis,
-      childContext.rows,
-      binding.options,
-    );
-    const empty = environment.layouts.empty(spec.layout);
-    return {
-      at(row) {
-        const childRow = map[row];
-        return childRow === undefined || childRow < 0
-          ? empty
-          : (values[childRow] ?? empty);
-      },
-    };
+    try {
+      const map = sampleMergeMap(
+        parent.axis,
+        parent.rows,
+        childContext.axis,
+        childContext.rows,
+        binding.options,
+      );
+      const empty = environment.layouts.empty(spec.layout);
+      return {
+        at(row) {
+          const childRow = map[row];
+          return childRow === undefined || childRow < 0
+            ? empty
+            : (result.values[childRow] ?? empty);
+        },
+        release: result.lease.release,
+      };
+    } catch (error) {
+      result.lease.release();
+      throw error;
+    }
   } catch (error) {
     environment.contextBudget.used -= 1;
     throw error;
@@ -405,10 +467,14 @@ async function bindStaticRequest(
 async function runRequestChild(
   facts: BoundModuleFacts,
   context: ProviderContext,
+  contextIdentity: ContextIdentity,
   resultSlot: number,
   resultLayout: LayoutId,
   environment: RequestEnvironment,
-): Promise<readonly Value[]> {
+): Promise<{
+  readonly values: readonly Value[];
+  readonly lease: StateStorageLease;
+}> {
   validateRows(context);
   const series = bindSeries(facts, environment.params, context);
   const builtins = bindBuiltins(
@@ -417,17 +483,33 @@ async function runRequestChild(
     environment.layouts,
     environment.timeNow,
   );
-  const requests = await bindStaticRequests(facts, context, environment);
-  const runtime = new StateMachineRuntime(
-    facts.code,
-    environment.params,
-    environment.layouts,
-    {
-      maxCollectionElements: environment.maxCollectionElements,
-      heapLimits: environment.heapLimits,
-    },
-  );
+  const workspace = reserveWorkspace(facts, environment, 'request child state');
+  let requests: readonly RequestView[] = [];
+  let resultLease: StateStorageLease | null = null;
+  let runtime: StateMachineRuntime | null = null;
+  let completed = false;
   try {
+    requests = await bindStaticRequests(
+      facts,
+      context,
+      contextIdentity,
+      environment,
+    );
+    resultLease = reserveStateStorage(
+      environment,
+      resultLayout,
+      context.rows,
+      'request result column',
+    );
+    runtime = new StateMachineRuntime(
+      facts.code,
+      environment.params,
+      environment.layouts,
+      {
+        maxCollectionElements: environment.maxCollectionElements,
+        heapLimits: environment.heapLimits,
+      },
+    );
     const values: Value[] = [];
     for (let row = 0; row < context.rows; row += 1) {
       Effect.runSync(
@@ -446,9 +528,13 @@ async function runRequestChild(
         ),
       );
     }
-    return values;
+    completed = true;
+    return {values, lease: resultLease};
   } finally {
-    runtime.dispose();
+    runtime?.dispose();
+    requests.forEach(view => view.release());
+    workspace.release();
+    if (!completed) resultLease?.release();
   }
 }
 
@@ -677,12 +763,174 @@ function builtinSourceName(source: BuiltinSource): string {
   }
 }
 
+function effectiveContextIdentity(
+  context: ProviderContext,
+  fallbackSymbol: string,
+  fallbackTimeframe: string,
+): ContextIdentity {
+  const symbol = context.builtinValue({domain: 'syminfo', field: 'tickerid'});
+  const timeframe = context.builtinValue({
+    domain: 'timeframe',
+    field: 'period',
+  });
+  if (symbol !== undefined && symbol !== null && typeof symbol !== 'string') {
+    throw new BindError(
+      "provider builtin 'syminfo.tickerid' must be a string or typed empty",
+    );
+  }
+  if (
+    timeframe !== undefined &&
+    timeframe !== null &&
+    typeof timeframe !== 'string'
+  ) {
+    throw new BindError(
+      "provider builtin 'timeframe.period' must be a string or typed empty",
+    );
+  }
+  return {
+    symbol: typeof symbol === 'string' ? symbol : fallbackSymbol,
+    timeframe: typeof timeframe === 'string' ? timeframe : fallbackTimeframe,
+  };
+}
+
 function validateRows(context: ProviderContext): void {
   if (!Number.isSafeInteger(context.rows) || context.rows < 0) {
     throw new BindError(
       `provider context row count must be a non-negative safe integer, got ${context.rows}`,
     );
   }
+}
+
+function reserveWorkspace(
+  facts: BoundModuleFacts,
+  environment: RequestEnvironment,
+  what: string,
+): StateStorageLease {
+  let logicalBytes = 0;
+  const add = (layout: LayoutId, cells: number, label: string) => {
+    const bytes = fixedLogicalBytes(environment.layouts, layout, cells, label);
+    logicalBytes = addLogicalBytes(logicalBytes, bytes, what);
+  };
+
+  const active = new Set<number>();
+  const frame = (fid: number): void => {
+    if (active.has(fid)) {
+      throw new ExecutionError(
+        'FIXED_VALUE_STORAGE_LIMIT_EXCEEDED',
+        `${what} has recursively sized frame ${fid}`,
+      );
+    }
+    const spec = facts.code.manifest.frames[fid];
+    const retention = facts.retention.frames[fid];
+    if (spec === undefined || retention === undefined) {
+      return fatal(`${what} references unknown frame ${fid}`);
+    }
+    active.add(fid);
+    spec.locals.forEach((local, slot) => {
+      const retained =
+        local.storage === Storage.Var || local.storage === Storage.Varip
+          ? Math.max(1, retention[slot]!)
+          : retention[slot]!;
+      add(local.layout, retained + 1, `${what} frame ${fid} slot ${slot}`);
+    });
+    spec.subs.forEach(sub => frame(sub.fid));
+    active.delete(fid);
+  };
+  frame(0);
+
+  facts.code.manifest.series.forEach((_spec, sid) => {
+    const label = `${what} series ${sid}`;
+    logicalBytes = addLogicalBytes(
+      logicalBytes,
+      fixedRawBytes(8, facts.retention.series[sid]!, label),
+      what,
+    );
+  });
+  facts.code.manifest.builtin.forEach((spec, bid) =>
+    add(spec.layout, facts.retention.builtins[bid]!, `${what} builtin ${bid}`),
+  );
+  facts.code.manifest.requests.forEach((spec, rid) =>
+    add(spec.layout, facts.retention.requests[rid]!, `${what} request ${rid}`),
+  );
+  return reserveLogicalBytes(environment, logicalBytes, what);
+}
+
+function reserveStateStorage(
+  environment: RequestEnvironment,
+  layout: LayoutId,
+  cells: number,
+  what: string,
+): StateStorageLease {
+  return reserveLogicalBytes(
+    environment,
+    fixedLogicalBytes(environment.layouts, layout, cells, what),
+    what,
+  );
+}
+
+function fixedRawBytes(bytesPerCell: number, cells: number, what: string) {
+  if (!Number.isSafeInteger(cells) || cells < 0) {
+    return fatal(`${what} requested invalid state cell count ${cells}`);
+  }
+  const bytes = bytesPerCell * cells;
+  if (!Number.isSafeInteger(bytes)) {
+    throw new ExecutionError(
+      'FIXED_VALUE_STORAGE_LIMIT_EXCEEDED',
+      `${what} state storage size overflowed`,
+    );
+  }
+  return bytes;
+}
+
+function fixedLogicalBytes(
+  layouts: ValueLayoutRegistry,
+  layout: LayoutId,
+  cells: number,
+  what: string,
+): number {
+  return fixedRawBytes(layouts.shallowBytes(layout), cells, what);
+}
+
+function addLogicalBytes(current: number, added: number, what: string): number {
+  const next = current + added;
+  if (!Number.isSafeInteger(next)) {
+    throw new ExecutionError(
+      'FIXED_VALUE_STORAGE_LIMIT_EXCEEDED',
+      `${what} state storage size overflowed`,
+    );
+  }
+  return next;
+}
+
+function reserveLogicalBytes(
+  environment: RequestEnvironment,
+  logicalBytes: number,
+  what: string,
+): StateStorageLease {
+  const next = addLogicalBytes(
+    environment.stateStorage.usedLogicalBytes,
+    logicalBytes,
+    what,
+  );
+  if (next > environment.stateStorage.maxLogicalBytes) {
+    throw new ExecutionError(
+      'FIXED_VALUE_STORAGE_LIMIT_EXCEEDED',
+      `${what} requires ${logicalBytes} bytes; shared state storage would exceed ${environment.stateStorage.maxLogicalBytes} bytes`,
+    );
+  }
+  environment.stateStorage.usedLogicalBytes = next;
+  let released = false;
+  return Object.freeze({
+    logicalBytes,
+    release() {
+      if (released) return;
+      released = true;
+      const remaining =
+        environment.stateStorage.usedLogicalBytes - logicalBytes;
+      if (remaining < 0) return fatal('state storage accounting underflow');
+      environment.stateStorage.usedLogicalBytes = remaining;
+    },
+  });
 }
 
 function bindTimeNow(value: number): number {

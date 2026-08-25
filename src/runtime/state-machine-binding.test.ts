@@ -14,8 +14,12 @@ import {
 import {bindStateMachine} from './state-machine-binding';
 
 const NUMBER = 0;
+const ARRAY = 1;
 const LAYOUTS = {
-  layouts: [{kind: 'number', numeric: 'int'}],
+  layouts: [
+    {kind: 'number', numeric: 'int'},
+    {kind: 'array', element: NUMBER},
+  ],
 } as const satisfies AggregateLayoutManifest;
 
 class Series {
@@ -202,6 +206,33 @@ function requestModule(dynamic = false): TeaModule {
   };
 }
 
+const ARRAY_WORKSPACE_MODULE: TeaModule = {
+  abi: RUNTIME_ABI_VERSION,
+  aggregateLayouts: LAYOUTS,
+  manifest: {
+    series: [],
+    builtin: [],
+    params: [],
+    outputs: [],
+    effects: [],
+    requests: [],
+    frames: [
+      {
+        locals: [
+          {storage: Storage.Var, depth: {kind: 'none'}, layout: ARRAY},
+          {storage: Storage.Varip, depth: {kind: 'none'}, layout: ARRAY},
+        ],
+        subs: [],
+      },
+    ],
+  },
+  requests: [],
+  init() {},
+  bind() {},
+  funcs: {},
+  main() {},
+};
+
 describe('bindStateMachine', () => {
   test('binds provider rows, declares the sink, and runs fixed history', async () => {
     const sink = new MemorySink();
@@ -308,6 +339,30 @@ describe('bindStateMachine', () => {
     expect(calls).toEqual([]);
   });
 
+  test('rejects malformed provider-normalized context identity', async () => {
+    await expect(
+      bindStateMachine(MODULE, {
+        params: {},
+        provider: {
+          resolveContext: () =>
+            Promise.resolve({
+              rows: 1,
+              axis: null,
+              series: id => (id === 'close' ? {length: 1, at: () => 1} : null),
+              builtinValue: source =>
+                source.domain === 'syminfo' && source.field === 'tickerid'
+                  ? 42
+                  : undefined,
+            }),
+        },
+        sink: new MemorySink(),
+        timeNow: 0,
+      }),
+    ).rejects.toThrow(
+      "provider builtin 'syminfo.tickerid' must be a string or typed empty",
+    );
+  });
+
   test('recursively executes nested static children before the parent', async () => {
     const module = {...requestModule(), requests: [NESTED_REQUEST_CHILD]};
     const parent: ProviderContext = {
@@ -351,5 +406,98 @@ describe('bindStateMachine', () => {
       300,
     ]);
     execution.dispose();
+  });
+
+  test('accounts exact shallow bytes for explicit State/history workspace', async () => {
+    const exact = await bindStateMachine(ARRAY_WORKSPACE_MODULE, {
+      params: {},
+      provider: provider(new Series([1])),
+      sink: new MemorySink(),
+      timeNow: 0,
+      // Two persistent array locals each own one retained and one workspace
+      // carrier: 2 * 2 * shallowBytes(array=32) = 128.
+      maxFixedValueLogicalBytes: 128,
+    });
+    exact.dispose();
+
+    await expect(
+      bindStateMachine(ARRAY_WORKSPACE_MODULE, {
+        params: {},
+        provider: provider(new Series([1])),
+        sink: new MemorySink(),
+        timeNow: 0,
+        maxFixedValueLogicalBytes: 127,
+      }),
+    ).rejects.toThrow('FIXED_VALUE_STORAGE_LIMIT_EXCEEDED');
+  });
+
+  test('shares request-column budget while releasing completed child workspace', async () => {
+    const base = requestModule();
+    const module: TeaModule = {
+      ...base,
+      manifest: {
+        ...base.manifest,
+        requests: [base.manifest.requests[0]!, base.manifest.requests[0]!],
+        outputs: [
+          {
+            effect: 'probe',
+            staticArgs: [],
+            channels: [
+              {name: 'first', type: 'int', transport: {kind: 'int'}},
+              {name: 'second', type: 'int', transport: {kind: 'int'}},
+            ],
+          },
+        ],
+      },
+      requests: [REQUEST_CHILD, REQUEST_CHILD],
+      bind(rt) {
+        for (let rid = 0; rid < 2; rid += 1) {
+          rt.bindRequestOptions(rid, false, false, false, 0);
+          rt.bindRequest(rid, 'X', '2m');
+        }
+      },
+      main(rt) {
+        rt.emit(0, 0, rt.request(0, 0));
+        rt.emit(0, 1, rt.request(1, 0));
+      },
+    };
+    const parent: ProviderContext = {
+      rows: 6,
+      axis: axis(1),
+      series: () => null,
+      builtinValue: () => undefined,
+    };
+    const values = new Series([10, 20, 30]);
+    const child: ProviderContext = {
+      rows: 3,
+      axis: axis(2),
+      series: id => (id === 'close' ? values : null),
+      builtinValue: () => undefined,
+    };
+    const inputs = {
+      params: {},
+      provider: {
+        resolveContext: (symbol: string) =>
+          Promise.resolve(symbol === '' ? parent : child),
+      },
+      sink: new MemorySink(),
+      timeNow: 0,
+    };
+
+    // Peak: root request history 16 + retained first column 24 + second child
+    // local workspace 8 + second result column 24 = 72. The first child's
+    // 8-byte workspace must already have been released.
+    const exact = await bindStateMachine(module, {
+      ...inputs,
+      maxFixedValueLogicalBytes: 72,
+    });
+    exact.dispose();
+    await expect(
+      bindStateMachine(module, {
+        ...inputs,
+        sink: new MemorySink(),
+        maxFixedValueLogicalBytes: 71,
+      }),
+    ).rejects.toThrow('FIXED_VALUE_STORAGE_LIMIT_EXCEEDED');
   });
 });
