@@ -2,7 +2,7 @@
 // implicit Tea libraries, diagnostics, and the canonical Program projection.
 
 import {describe, expect, test} from 'vitest';
-import {of} from 'rxjs';
+import {of, Subject} from 'rxjs';
 import * as z from 'zod';
 import type {StepResult} from '../runtime/js-runtime';
 import type {Sink} from './sink';
@@ -63,7 +63,7 @@ describe('tea', () => {
     );
   });
 
-  test('owns a JSModule from creation and keeps binding steps immutable', () => {
+  test('keeps one TeaNode identity while installing immutable module snapshots', () => {
     const node = tea`
       length = input.int(14)
       plot(close + length)
@@ -72,19 +72,24 @@ describe('tea', () => {
       of({close: 1}).subscribe(subscriber),
     );
 
-    const withSource = node.bind(source);
-    const ready = withSource.bind({length: 20});
+    const initial = node.module;
+    expect(node.bind(source)).toBe(node);
+    const withSource = node.module;
+    expect(node.bind({length: 20})).toBe(node);
+    const ready = node.module;
 
-    expect(node.module.remaining().map(binding => binding.name)).toEqual([
+    expect(initial.remaining().map(binding => binding.name)).toEqual([
       'length',
       'close',
     ]);
-    expect(node.ready()).toBe(false);
-    expect(withSource.ready()).toBe(false);
+    expect(withSource.remaining().map(binding => binding.name)).toEqual([
+      'length',
+    ]);
     expect(ready.ready()).toBe(true);
-    expect(withSource.module).not.toBe(node.module);
-    expect(ready.module).not.toBe(withSource.module);
-    expect(ready.module.remaining()).toEqual([]);
+    expect(node.ready()).toBe(true);
+    expect(withSource).not.toBe(initial);
+    expect(ready).not.toBe(withSource);
+    expect(ready.remaining()).toEqual([]);
   });
 
   test('is ready at creation when the Program has no binding requirements', () => {
@@ -122,11 +127,10 @@ describe('tea', () => {
       plot(requested)
     `;
 
-    const ready = node.bind({X: source});
-
     expect(node.ready()).toBe(false);
-    expect(ready.ready()).toBe(true);
-    expect(() => ready.to(new StepSink())).toThrow(
+    expect(node.bind({X: source})).toBe(node);
+    expect(node.ready()).toBe(true);
+    expect(() => node.to(new StepSink())).toThrow(
       'TeaNode request execution requires time and finality semantics that DataStream does not provide',
     );
   });
@@ -140,10 +144,14 @@ describe('tea', () => {
     `.bind({symbol: 'Y'});
 
     expect(node.ready()).toBe(false);
+    const beforeFailure = node.module;
     expect(() => node.bind({X: source})).toThrow(
       "no bind-known root series or static request child matches 'X'",
     );
-    expect(node.bind({Y: source}).ready()).toBe(true);
+    expect(node.module).toBe(beforeFailure);
+    expect(node.ready()).toBe(false);
+    expect(node.bind({Y: source})).toBe(node);
+    expect(node.ready()).toBe(true);
   });
 
   test('propagates compilation-global parameters into request child binding', () => {
@@ -171,13 +179,125 @@ describe('tea', () => {
       plot(requested)
     `;
 
-    const withOuter = node.bind({X: source});
-    const ready = withOuter.bind({Y: source});
+    expect(node.bind({X: source})).toBe(node);
+    expect(node.ready()).toBe(false);
+    expect(node.bind({Y: source})).toBe(node);
+    expect(node.ready()).toBe(true);
+  });
 
-    expect(withOuter.ready()).toBe(false);
-    expect(ready.ready()).toBe(true);
+  test('keeps a keyed root/request collision atomic', () => {
+    const node = tea`
+      requested = request.security("close", "D", close)
+      plot(close + requested)
+    `;
+    const initial = node.module;
+
+    expect(() => node.bind({close: numericSource(1)})).toThrow(
+      "binding key 'close' is both a root series and a static request context",
+    );
+    expect(node.module).toBe(initial);
+    expect(
+      node.module.bindings.find(binding => binding.name === 'close'),
+    ).toMatchObject({kind: 'series', supplied: false});
+  });
+
+  test('keeps request-child binding atomic when a later key fails', () => {
+    const node = tea`
+      x = request.security("X", "D", close)
+      y = request.security("Y", "D", close)
+      plot(x + y)
+    `;
+    const initial = node.module;
+    const source = numericSource(1);
+
+    expect(() => node.bind({X: source, missing: source})).toThrow(
+      "no bind-known root series or static request child matches 'missing'",
+    );
+    expect(node.module).toBe(initial);
+    expect(node.ready()).toBe(false);
+    expect(node.bind({X: source, Y: source})).toBe(node);
+    expect(node.ready()).toBe(true);
+  });
+
+  test('fans out one execution and gives late sinks only future results', async () => {
+    const rows = new Subject<{close: number}>();
+    let sourceSubscriptions = 0;
+    const source = new DataStream(z.object({close: z.number()}), subscriber => {
+      sourceSubscriptions += 1;
+      return rows.subscribe(subscriber);
+    });
+    const node = tea`plot(close)`.bind(source);
+    const first = new StepSink();
+    const second = new StepSink();
+
+    expect(sourceSubscriptions).toBe(0);
+    const firstSubscription = node.to(first);
+    const secondSubscription = node.to(second);
+    expect(sourceSubscriptions).toBe(1);
+
+    rows.next({close: 1});
+    await Promise.all([first.waitFor(1), second.waitFor(1)]);
+
+    const late = new StepSink();
+    const lateSubscription = node.to(late);
+    rows.next({close: 2});
+    await Promise.all([first.waitFor(2), second.waitFor(2), late.waitFor(1)]);
+    rows.complete();
+    await Promise.all([first.completion, second.completion, late.completion]);
+
+    expect(values(first)).toEqual([1, 2]);
+    expect(values(second)).toEqual([1, 2]);
+    expect(values(late)).toEqual([2]);
+    expect(sourceSubscriptions).toBe(1);
+    expect(firstSubscription.closed).toBe(true);
+    expect(secondSubscription.closed).toBe(true);
+    expect(lateSubscription.closed).toBe(true);
+  });
+
+  test('rejects binding after execution starts', async () => {
+    const rows = new Subject<{close: number}>();
+    const source = new DataStream(z.object({close: z.number()}), subscriber =>
+      rows.subscribe(subscriber),
+    );
+    const node = tea`plot(close)`.bind(source);
+    const sink = new StepSink();
+
+    node.to(sink);
+    expect(() => node.bind({})).toThrow(
+      'TeaNode cannot bind after execution has started',
+    );
+    rows.complete();
+    await sink.completion;
+  });
+
+  test('owns source cancellation and disposes idempotently', async () => {
+    const rows = new Subject<{close: number}>();
+    let teardowns = 0;
+    const source = new DataStream(z.object({close: z.number()}), subscriber => {
+      const subscription = rows.subscribe(subscriber);
+      return () => {
+        teardowns += 1;
+        subscription.unsubscribe();
+      };
+    });
+    const node = tea`plot(close)`.bind(source);
+    const sink = new StepSink();
+    const sinkSubscription = node.to(sink);
+
+    node.dispose();
+    node.dispose();
+    await sink.completion;
+
+    expect(teardowns).toBe(1);
+    expect(sinkSubscription.closed).toBe(true);
+    expect(() => node.bind({})).toThrow('TeaNode is disposed');
+    expect(() => node.to(new StepSink())).toThrow('TeaNode is disposed');
   });
 });
+
+function values(sink: StepSink): readonly unknown[] {
+  return sink.values.map(result => result.output[0]?.channels[0]);
+}
 
 function numericSource(...values: readonly number[]): DataStream<{
   close: number;
@@ -192,6 +312,11 @@ class StepSink implements Sink<StepResult> {
   readonly completion: Promise<void>;
   private readonly resolve: () => void;
   private readonly reject: (error: unknown) => void;
+  private readonly waiters: {
+    readonly count: number;
+    readonly resolve: () => void;
+    readonly reject: (error: unknown) => void;
+  }[] = [];
 
   constructor() {
     let resolve!: () => void;
@@ -210,13 +335,27 @@ class StepSink implements Sink<StepResult> {
 
   write(value: StepResult): void {
     this.values.push(value);
+    for (let index = this.waiters.length - 1; index >= 0; index -= 1) {
+      const waiter = this.waiters[index]!;
+      if (this.values.length < waiter.count) continue;
+      this.waiters.splice(index, 1);
+      waiter.resolve();
+    }
   }
 
   error(error: unknown): void {
+    for (const waiter of this.waiters.splice(0)) waiter.reject(error);
     this.reject(error);
   }
 
   complete(): void {
     this.resolve();
+  }
+
+  waitFor(count: number): Promise<void> {
+    if (this.values.length >= count) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      this.waiters.push({count, resolve, reject});
+    });
   }
 }

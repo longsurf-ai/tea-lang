@@ -264,7 +264,10 @@ through the sole `JSRuntime`. Each bound `JSModule` directly stores its static
 pair, options, child module, and retention, but `TeaNode.to()` currently
 rejects a ready module with requests because its
 child Observable/runtime wiring has not been implemented. Binding readiness is
-therefore not a claim that TeaNode can execute requests yet.
+therefore not a claim that TeaNode can execute requests yet. Request-source
+bindings still participate in TeaNode's atomic mutable binding step: a failed
+keyed bind leaves both the recursive module state and the already-built
+Observable graph unchanged.
 
 Each edge also owns four bind-time options in canonical order: `gaps`,
 `lookahead`, `ignore_invalid_symbol`, and `calc_bars_count`. They remain

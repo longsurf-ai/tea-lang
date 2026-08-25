@@ -84,8 +84,8 @@ Program ── JavaScript lowering ──▶ unbound JSModule
                                       │ bindModule(...): Effect
                                       ▼
                                 bound JSModule
-                                      │ TeaNode owns row wiring
-                                      │ .to(sink) subscribes
+                                      │ TeaNode owns row wiring + Subject
+                                      │ first .to(sink) starts execution
                                       ▼
                                 JSRuntime.step(ctx)
 ```
@@ -108,15 +108,26 @@ state.
 children. Each `TeaNode` then owns exactly one module tree. The Program is a
 compiler value and is not retained in either the JSModule or TeaNode.
 
-Observable composition belongs to `TeaNode`, not JSModule. Successive
-`TeaNode.bind()` calls retain attached row streams while applying the binding
-transition synchronously. `.to(sink)` is the current subscription boundary: it
-creates one `JSRuntime`, serializes synchronized rows through
-`step()`, forwards `StepResult`, and disposes the runtime when the Observable
-terminates. This slice currently constructs numeric series rows and uses final
-steps only. Builtin input wiring and static-request child execution still fail
-explicitly in `.to()`; binding static request settings is implemented, executing
-them through TeaNode is not.
+Observable composition belongs to `TeaNode`, not JSModule. A `TeaNode` keeps one
+stable identity: successive `bind()` calls synchronously extend its row graph,
+replace its immutable module/state-tree snapshot atomically, and return the same
+node for chaining. A failed keyed or request-child binding installs nothing.
+Binding is rejected after execution starts or after disposal.
+
+Each node creates one plain `Subject<StepResult>` at construction. The first
+`.to(sink)` validates readiness and the currently supported input kinds,
+subscribes the sink to that Subject, creates and retains one `JSRuntime`, then
+connects the already-built input graph through sequential `step()` calls into
+the Subject. Later `.to()` calls only subscribe another sink to the same
+Subject; they neither create a runtime nor reconnect the source. Consequently a
+late sink observes future results only. The returned subscription controls only
+that sink, while the source connection and runtime remain owned by the node.
+`dispose()` idempotently cancels the connection, disposes the runtime, and
+completes the Subject; ordinary source termination also disposes the runtime.
+This slice currently constructs numeric series rows and uses final steps only.
+Builtin input wiring and static-request child execution still fail explicitly
+in `.to()`; binding static request settings is implemented, executing them
+through TeaNode is not.
 
 `JSRuntime` owns one committed `State`, one same-row `Intermediate`,
 and one context-local Heap. A successful provisional step replaces only its

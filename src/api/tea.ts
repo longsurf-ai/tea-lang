@@ -1,14 +1,23 @@
-// Purpose: JavaScript embedding API — compile Tea source into a TeaNode whose
-// immutable binding steps attach parameter values and concrete Observables.
+// Purpose: JavaScript embedding API — compile Tea source into a stable TeaNode
+// that owns binding-time Observable composition and one execution lifecycle.
 
 import {Effect} from 'effect';
-import {concatMap, finalize, from, map, of, share, type Observable} from 'rxjs';
+import {
+  concatMap,
+  finalize,
+  from,
+  map,
+  of,
+  share,
+  Subject,
+  Subscription,
+  type Observable,
+} from 'rxjs';
 import {OperationalError} from '../base/operational-error';
 import {formatPos} from '../base/pos';
 import {Errors, type ErrorMsg} from '../base/print';
 import {compileToProgram} from '../compile';
 import {generate} from '../codegen/codegen';
-import type {Program} from '../ir/program';
 import {bindModule, type BindingAssignment} from './binding';
 import type {Sink} from './sink';
 import {DataStream} from './stream';
@@ -42,54 +51,35 @@ export type TeaBindingInput =
  * while the node owns concrete Observables and their composition.
  */
 export class TeaNode {
-  readonly module: JSModule;
-  private readonly requestChildren: readonly TeaNode[];
+  private state: TeaNodeState;
+  private readonly results = new Subject<StepResult>();
+  private runtime: JSRuntime | null = null;
+  private connection: Subscription | null = null;
+  private started = false;
+  private disposed = false;
 
-  constructor(
-    module: JSModule,
-    private readonly rows: Observable<
-      Readonly<Record<string, unknown>>
-    > | null = null,
-    requestChildren?: readonly TeaNode[],
-  ) {
-    const children =
-      requestChildren ??
-      module.requests.map(request => new TeaNode(bindEmpty(request)));
-    if (children.length !== module.requests.length) {
-      throw new Error(
-        'TeaNode request children disagree with JSModule requests',
-      );
-    }
-    this.requestChildren = Object.freeze([...children]);
-    this.module = children.reduce(
-      (parent, child, requestId) =>
-        parent.requests[requestId] === child.module
-          ? parent
-          : withRequestModule(parent, requestId, child.module),
-      module,
-    );
+  constructor(module: JSModule) {
+    this.state = initialNodeState(module);
+  }
+
+  get module(): JSModule {
+    return this.state.module;
   }
 
   bind(input: TeaBindingInput): TeaNode {
-    if (isKeyedStreams(input)) {
-      return this.bindStreams(input);
-    }
-    const prepared = prepareBinding(input, this.module.remaining());
-    const next = Effect.runSync(bindModule(this.module, prepared.assignments));
-    return new TeaNode(
-      next,
-      combineRows(this.rows, prepared.rows),
-      this.childrenFor(next),
-    );
+    this.assertBindable();
+    this.state = bindNodeState(this.state, input);
+    return this;
   }
 
   ready(): boolean {
-    return (
-      this.module.ready() && this.requestChildren.every(child => child.ready())
-    );
+    return stateReady(this.state);
   }
 
-  to(sink: Sink<StepResult>): void {
+  to(sink: Sink<StepResult>): Subscription {
+    this.assertLive();
+    if (this.started) return this.results.subscribe(sink);
+
     if (!this.ready()) {
       throw new Error(
         `TeaNode is missing bindings: ${this.module
@@ -111,7 +101,17 @@ export class TeaNode {
       );
     }
 
-    const runtime = new JSRuntime(this.module);
+    const sinkSubscription = this.results.subscribe(sink);
+    let runtime: JSRuntime;
+    try {
+      runtime = new JSRuntime(this.module);
+    } catch (error) {
+      sinkSubscription.unsubscribe();
+      throw error;
+    }
+    this.runtime = runtime;
+    this.started = true;
+
     const seriesNames = this.module.bindings
       .filter(
         (binding): binding is Extract<ModuleInputBinding, {kind: 'series'}> =>
@@ -119,142 +119,224 @@ export class TeaNode {
       )
       .map(binding => binding.name);
     const inputRows: Observable<Readonly<Record<string, unknown>>> =
-      this.rows ?? of(Object.freeze({}) as Readonly<Record<string, unknown>>);
+      this.state.rows ??
+      of(Object.freeze({}) as Readonly<Record<string, unknown>>);
 
-    inputRows
-      .pipe(
-        concatMap(row =>
-          from(
-            Effect.runPromise(
-              runtime.step({
-                series: seriesNames.map(name => numericSeries(row[name])),
-                builtins: [],
-                requests: [],
-                provisional: false,
-              }),
+    const connection = new Subscription();
+    this.connection = connection;
+    connection.add(
+      inputRows
+        .pipe(
+          concatMap(row =>
+            from(
+              Effect.runPromise(
+                runtime.step({
+                  series: seriesNames.map(name => numericSeries(row[name])),
+                  builtins: [],
+                  requests: [],
+                  provisional: false,
+                }),
+              ),
             ),
           ),
-        ),
-        finalize(() => runtime.dispose()),
-      )
-      .subscribe({
-        next: result => sink.next(result),
-        error: error => sink.error(error),
-        complete: () => sink.complete(),
-      });
-  }
-
-  private bindStreams(
-    input: Readonly<Record<string, DataStream<unknown>>>,
-  ): TeaNode {
-    let node: TeaNode = this;
-    const entries = Object.entries(input);
-    const rootSeries = new Set(
-      node.module.bindings
-        .filter(
-          (binding): binding is Extract<ModuleInputBinding, {kind: 'series'}> =>
-            binding.kind === 'series',
+          finalize(() => runtime.dispose()),
         )
-        .map(binding => binding.name),
+        .subscribe({
+          next: result => this.results.next(result),
+          error: error => this.results.error(error),
+          complete: () => this.results.complete(),
+        }),
     );
-    const rootEntries = entries.filter(([name]) => rootSeries.has(name));
+    return sinkSubscription;
+  }
 
-    if (rootEntries.length !== 0) {
-      const prepared = prepareBinding(
-        Object.fromEntries(rootEntries),
-        node.module.bindings,
-      );
-      const next = Effect.runSync(
-        bindModule(node.module, prepared.assignments),
-      );
-      node = new TeaNode(
-        next,
-        combineRows(node.rows, prepared.rows),
-        node.childrenFor(next),
-      );
-      for (const [name] of rootEntries) {
-        if (node.requestPaths(name).length !== 0) {
-          throw new Error(
-            `binding key '${name}' is both a root series and a static request context`,
-          );
-        }
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.connection?.unsubscribe();
+    this.runtime?.dispose();
+    this.results.complete();
+  }
+
+  private assertBindable(): void {
+    this.assertLive();
+    if (this.started) {
+      throw new Error('TeaNode cannot bind after execution has started');
+    }
+  }
+
+  private assertLive(): void {
+    if (this.disposed) throw new Error('TeaNode is disposed');
+  }
+}
+
+type Row = Readonly<Record<string, unknown>>;
+
+interface TeaNodeState {
+  readonly module: JSModule;
+  readonly rows: Observable<Row> | null;
+  readonly requests: readonly TeaNodeState[];
+}
+
+function stateReady(state: TeaNodeState): boolean {
+  return (
+    state.module.ready() && state.requests.every(request => stateReady(request))
+  );
+}
+
+function initialNodeState(module: JSModule): TeaNodeState {
+  const requests = module.requests.map(request =>
+    initialNodeState(bindEmpty(request)),
+  );
+  return nodeState(module, null, requests);
+}
+
+function bindNodeState(
+  state: TeaNodeState,
+  input: TeaBindingInput,
+): TeaNodeState {
+  if (isKeyedStreams(input)) return bindStreams(state, input);
+  const prepared = prepareBinding(input, state.module.remaining());
+  const module = Effect.runSync(bindModule(state.module, prepared.assignments));
+  return stateWithModule(state, module, combineRows(state.rows, prepared.rows));
+}
+
+function bindStreams(
+  state: TeaNodeState,
+  input: Readonly<Record<string, DataStream<unknown>>>,
+): TeaNodeState {
+  let draft = state;
+  const entries = Object.entries(input);
+  const rootSeries = new Set(
+    draft.module.bindings
+      .filter(
+        (binding): binding is Extract<ModuleInputBinding, {kind: 'series'}> =>
+          binding.kind === 'series',
+      )
+      .map(binding => binding.name),
+  );
+  const rootEntries = entries.filter(([name]) => rootSeries.has(name));
+
+  if (rootEntries.length !== 0) {
+    const prepared = prepareBinding(
+      Object.fromEntries(rootEntries),
+      draft.module.bindings,
+    );
+    const module = Effect.runSync(
+      bindModule(draft.module, prepared.assignments),
+    );
+    draft = stateWithModule(
+      draft,
+      module,
+      combineRows(draft.rows, prepared.rows),
+    );
+    for (const [name] of rootEntries) {
+      if (requestPaths(draft, name).length !== 0) {
+        throw new Error(
+          `binding key '${name}' is both a root series and a static request context`,
+        );
       }
     }
+  }
 
-    const pending = new Map(entries.filter(([name]) => !rootSeries.has(name)));
-    let progressed = true;
-    while (pending.size !== 0 && progressed) {
-      progressed = false;
-      for (const [name, stream] of pending) {
-        const paths = node.requestPaths(name);
-        if (paths.length === 0) continue;
-        if (paths.length > 1) {
-          throw new Error(`static request binding key '${name}' is ambiguous`);
-        }
-        node = node.bindRequestPath(paths[0]!, stream);
-        pending.delete(name);
-        progressed = true;
+  const pending = new Map(entries.filter(([name]) => !rootSeries.has(name)));
+  let progressed = true;
+  while (pending.size !== 0 && progressed) {
+    progressed = false;
+    for (const [name, stream] of pending) {
+      const paths = requestPaths(draft, name);
+      if (paths.length === 0) continue;
+      if (paths.length > 1) {
+        throw new Error(`static request binding key '${name}' is ambiguous`);
       }
+      draft = bindRequestPath(draft, paths[0]!, stream);
+      pending.delete(name);
+      progressed = true;
     }
-
-    if (pending.size !== 0) {
-      const name = pending.keys().next().value as string;
-      throw new Error(
-        `no bind-known root series or static request child matches '${name}'`,
-      );
-    }
-    return node;
   }
 
-  private requestPaths(name: string): readonly (readonly number[])[] {
-    const direct = (this.module.binding?.requests ?? []).flatMap(
-      (request, requestId) =>
-        request.symbol === name ? [[requestId] as const] : [],
-    );
-    const nested = this.requestChildren.flatMap((child, requestId) =>
-      child
-        .requestPaths(name)
-        .map(path => [requestId, ...path] as readonly number[]),
-    );
-    return [...direct, ...nested];
-  }
-
-  private bindRequestPath(
-    path: readonly number[],
-    stream: DataStream<unknown>,
-  ): TeaNode {
-    const [requestId, ...rest] = path;
-    const child =
-      requestId === undefined ? undefined : this.requestChildren[requestId];
-    if (child === undefined) {
-      throw new Error('invalid TeaNode request path');
-    }
-    const nextChild =
-      rest.length === 0
-        ? child.bind(stream)
-        : child.bindRequestPath(rest, stream);
-    const children = [...this.requestChildren];
-    children[requestId] = nextChild;
-    return new TeaNode(
-      withRequestModule(this.module, requestId, nextChild.module),
-      this.rows,
-      children,
+  if (pending.size !== 0) {
+    const name = pending.keys().next().value as string;
+    throw new Error(
+      `no bind-known root series or static request child matches '${name}'`,
     );
   }
+  return draft;
+}
 
-  private childrenFor(module: JSModule): readonly TeaNode[] {
-    return module.requests.map((request, requestId) => {
-      const child = this.requestChildren[requestId];
-      return child === undefined
-        ? new TeaNode(request)
-        : child.withModule(request);
-    });
-  }
+function requestPaths(
+  state: TeaNodeState,
+  name: string,
+): readonly (readonly number[])[] {
+  const direct = (state.module.binding?.requests ?? []).flatMap(
+    (request, requestId) =>
+      request.symbol === name ? [[requestId] as const] : [],
+  );
+  const nested = state.requests.flatMap((child, requestId) =>
+    requestPaths(child, name).map(
+      path => [requestId, ...path] as readonly number[],
+    ),
+  );
+  return [...direct, ...nested];
+}
 
-  private withModule(module: JSModule): TeaNode {
-    const next = bindEmpty(module);
-    return new TeaNode(next, this.rows, this.childrenFor(next));
+function bindRequestPath(
+  state: TeaNodeState,
+  path: readonly number[],
+  stream: DataStream<unknown>,
+): TeaNodeState {
+  const [requestId, ...rest] = path;
+  const child = requestId === undefined ? undefined : state.requests[requestId];
+  if (child === undefined) throw new Error('invalid TeaNode request path');
+
+  const nextChild =
+    rest.length === 0
+      ? bindNodeState(child, stream)
+      : bindRequestPath(child, rest, stream);
+  const requests = [...state.requests];
+  requests[requestId] = nextChild;
+  return nodeState(
+    withRequestModule(state.module, requestId, nextChild.module),
+    state.rows,
+    requests,
+  );
+}
+
+function stateWithModule(
+  state: TeaNodeState,
+  module: JSModule,
+  rows: Observable<Row> | null,
+): TeaNodeState {
+  const next = bindEmpty(module);
+  const requests = next.requests.map((request, requestId) => {
+    const child = state.requests[requestId];
+    return child === undefined
+      ? initialNodeState(request)
+      : stateWithModule(child, request, child.rows);
+  });
+  return nodeState(next, rows, requests);
+}
+
+function nodeState(
+  module: JSModule,
+  rows: Observable<Row> | null,
+  requests: readonly TeaNodeState[],
+): TeaNodeState {
+  if (requests.length !== module.requests.length) {
+    throw new Error('TeaNode request state disagrees with JSModule requests');
   }
+  const attached = requests.reduce(
+    (parent, child, requestId) =>
+      parent.requests[requestId] === child.module
+        ? parent
+        : withRequestModule(parent, requestId, child.module),
+    module,
+  );
+  return Object.freeze({
+    module: attached,
+    rows,
+    requests: Object.freeze([...requests]),
+  });
 }
 
 /** Compile Tea source from a tagged template into its API-level TeaNode. */
