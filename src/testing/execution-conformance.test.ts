@@ -10,7 +10,7 @@ import {csvProvider} from '../providers/data/csv';
 import {TraceSink} from '../providers/sinks/trace-sink';
 import type {BoundInput, EffectValue, OutputSink, Value} from '../runtime/abi';
 import {isEffectStructValue} from '../runtime/abi';
-import {bind} from '../runtime/js-runtime';
+import {bindStateMachine as bind} from '../runtime/state-machine-binding';
 import {loadModule} from '../runtime/load';
 import {
   type CorpusCase,

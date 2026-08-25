@@ -656,9 +656,22 @@ class StateUpdateContext implements Runtime {
             local.initialized,
         };
       }),
-      subs: frame.subs.map((sub, slot) =>
-        sub === null ? (frame.state.subs[slot] ?? null) : this.finishFrame(sub),
-      ),
+      subs: frame.subs.map((sub, slot) => {
+        if (sub !== null) return this.finishFrame(sub);
+        const state = frame.state.subs[slot] ?? null;
+        const intermediate = frame.intermediate.subs[slot] ?? null;
+        if (!state?.active && !intermediate?.active) return state;
+        const spec = layout.subs[slot]!;
+        const skipped = this.openFrame(
+          spec.fid,
+          state ?? initialFrame(this.module, spec.fid, false),
+          intermediate ??
+            initialIntermediateFrame(this.module, spec.fid, false),
+          false,
+        );
+        frame.subs[slot] = skipped;
+        return this.finishFrame(skipped);
+      }),
     };
   }
 

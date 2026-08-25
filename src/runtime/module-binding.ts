@@ -2,6 +2,10 @@
 // immutable, context-free fact set for the step-based JavaScript runtime.
 
 import type {
+  CollectionEntries,
+  CollectionMutation,
+  CollectionMutationOperation,
+  CollectionOperation,
   DepthSpec,
   Frame,
   ModuleCode,
@@ -9,9 +13,15 @@ import type {
   TeaModule,
 } from './module-abi';
 import type {BoundInput} from './binding';
+import {CollectionRuntime} from './collections';
+import {HeapArena, type HeapTransaction, type Ref} from './heap';
 import type {ExecutionDeclaration} from './output';
 import {isHistoryOffset} from './ring';
+import {StructStorageRuntime} from './struct-storage';
 import type {Value} from './value';
+import {type LayoutId, ValueLayoutRegistry} from './value-layout';
+
+const DEFAULT_MAX_COLLECTION_ELEMENTS = 100_000;
 
 export interface BindingRetention {
   readonly frames: readonly (readonly number[])[];
@@ -71,11 +81,36 @@ function evaluateBinding(
   paramValues: readonly Value[],
   exactParams: boolean,
 ): BoundModuleFacts {
-  const evaluation = new ModuleBindEvaluation(code, paramValues, exactParams);
-  const operations = evaluation.operations();
-  code.init(operations);
-  code.bind(operations, evaluation.root());
-  return evaluation.finish();
+  const heap = new HeapArena();
+  const transaction = heap.begin('module-binding');
+  try {
+    const layouts = new ValueLayoutRegistry(code.aggregateLayouts);
+    const structs = new StructStorageRuntime(heap, layouts);
+    const collections = new CollectionRuntime(
+      heap,
+      layouts,
+      DEFAULT_MAX_COLLECTION_ELEMENTS,
+      structs,
+    );
+    const evaluation = new ModuleBindEvaluation(
+      code,
+      paramValues,
+      exactParams,
+      transaction,
+      structs,
+      collections,
+    );
+    const operations = evaluation.operations();
+    code.init(operations);
+    code.bind(operations, evaluation.root());
+    return evaluation.finish();
+  } finally {
+    try {
+      transaction.abort();
+    } finally {
+      heap.dispose();
+    }
+  }
 }
 
 /** Freeze generated code before it becomes part of a BoundModule snapshot. */
@@ -128,6 +163,9 @@ class ModuleBindEvaluation {
     private readonly code: TeaModule,
     private readonly paramValues: readonly Value[],
     exactParams: boolean,
+    private readonly transaction: HeapTransaction,
+    private readonly structs: StructStorageRuntime,
+    private readonly collections: CollectionRuntime,
   ) {
     if (
       (exactParams && paramValues.length !== code.manifest.params.length) ||
@@ -377,6 +415,65 @@ class ModuleBindEvaluation {
       );
     }
     this.requestPairs[rid] = deepFreeze({symbol, timeframe});
+  }
+
+  newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown> {
+    return this.structs.newStruct(this.transaction, layout, fields);
+  }
+
+  requireStruct(value: Value, layout: LayoutId): Ref<unknown> {
+    return this.structs.requireStruct(value, layout, this.transaction);
+  }
+
+  structField(value: Value, layout: LayoutId, index: number): Value {
+    return this.structs.field(value, layout, index, this.transaction);
+  }
+
+  storeStructField(
+    value: Value,
+    layout: LayoutId,
+    index: number,
+    replacement: Value,
+  ): void {
+    this.structs.storeField(
+      this.transaction,
+      value,
+      layout,
+      index,
+      replacement,
+    );
+  }
+
+  callCollection(
+    operation: CollectionOperation,
+    resultLayout: LayoutId,
+    args: readonly Value[],
+  ): Value {
+    return this.collections.call(
+      this.transaction,
+      operation,
+      resultLayout,
+      args,
+    );
+  }
+
+  mutateCollection(
+    operation: CollectionMutationOperation,
+    collectionLayout: LayoutId,
+    receiver: Value,
+    args: readonly Value[],
+  ): CollectionMutation {
+    return this.collections.mutate(
+      this.transaction,
+      operation,
+      collectionLayout,
+      receiver,
+      args,
+    );
+  }
+
+  collectionEntries(value: Value): CollectionEntries {
+    return this.collections.entries(value, this.transaction);
   }
 
   private newFrame(fid: number): BindFrame {

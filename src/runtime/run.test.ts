@@ -9,7 +9,7 @@ import {buildText, mustBuild} from '../noder/testing';
 import {csvContext, csvProvider} from '../providers/data/csv';
 import {TraceSink} from '../providers/sinks/trace-sink';
 import {BindError, type DataProvider, type Value} from './abi';
-import {bind} from './js-runtime';
+import {bindStateMachine as bind} from './state-machine-binding';
 import {loadModule} from './load';
 
 const TESTDATA = join(

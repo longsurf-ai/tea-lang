@@ -363,6 +363,70 @@ describe('StateMachineRuntime core parity', () => {
     target.dispose();
   });
 
+  test('an active skipped subframe advances local history with typed empty', () => {
+    let invoke = true;
+    const module: TeaModule = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: LAYOUTS,
+      manifest: {
+        series: [{id: 'close', depth: {kind: 'none'}}],
+        builtin: [],
+        params: [],
+        outputs: [
+          {
+            effect: 'probe',
+            staticArgs: [],
+            channels: [
+              {name: 'previous', type: 'int', transport: {kind: 'int'}},
+            ],
+          },
+        ],
+        effects: [],
+        requests: [],
+        frames: [
+          {locals: [], subs: [{fid: 1}]},
+          {
+            locals: [
+              {
+                storage: Storage.PerBar,
+                depth: {kind: 'const', bars: 1},
+                layout: NUMBER,
+              },
+            ],
+            subs: [],
+          },
+        ],
+      },
+      requests: [],
+      init() {},
+      bind() {},
+      funcs: {},
+      main(rt, root) {
+        if (!invoke) {
+          rt.emit(0, 0, NaN);
+          return;
+        }
+        const child = rt.frame(root, 0);
+        rt.write(child, 0, rt.series(0, 0));
+        rt.emit(0, 0, rt.read(child, 0, 1));
+      },
+    };
+    const target = runtime(module);
+    expect(
+      Number.isNaN(channels(run(target, input({series: [10]})))[0] as number),
+    ).toBe(true);
+    invoke = false;
+    expect(
+      Number.isNaN(channels(run(target, input({series: [20]})))[0] as number),
+    ).toBe(true);
+    invoke = true;
+    expect(
+      Number.isNaN(channels(run(target, input({series: [30]})))[0] as number),
+    ).toBe(true);
+    expect(channels(run(target, input({series: [40]})))[0]).toBe(30);
+    target.dispose();
+  });
+
   test('struct history keeps a live reference rather than a body snapshot', () => {
     const module: TeaModule = {
       abi: RUNTIME_ABI_VERSION,
