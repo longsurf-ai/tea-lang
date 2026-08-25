@@ -13,7 +13,7 @@ import {
   type ValueClass as ValueClassType,
 } from './value';
 import {ExecutionError} from './errors';
-import type {StorageRef} from './heap';
+import type {Ref} from './heap';
 
 export type LayoutId = number;
 export type StructLayoutId = LayoutId;
@@ -245,10 +245,10 @@ export class ValueLayoutRegistry {
     }
   }
 
-  visitStorageRefs(
+  visitRefs(
     id: LayoutId,
     value: Value,
-    visit: (ref: StorageRef<unknown>) => void,
+    visit: (ref: Ref<unknown>) => void,
   ): void {
     this.assertValue(id, value);
     if (value === null) {
@@ -288,7 +288,7 @@ export class ValueLayoutRegistry {
           return fatal(`validated layout ${id} lost its tuple shape`);
         }
         layout.elements.forEach((element, index) =>
-          this.visitStorageRefs(element, value[index], visit),
+          this.visitRefs(element, value[index], visit),
         );
         return;
       case 'number':
@@ -456,15 +456,15 @@ export function valueClassOfLayout(layout: ValueLayout): ValueClassType {
   }
 }
 
-export function visitRuntimeValueStorageRefs(
+export function visitRuntimeValueRefs(
   value: Value,
-  visit: (ref: StorageRef<unknown>) => void,
+  visit: (ref: Ref<unknown>) => void,
 ): void {
   if (value === null || typeof value !== 'object') {
     return;
   }
   if (isTupleValue(value)) {
-    value.forEach(item => visitRuntimeValueStorageRefs(item, visit));
+    value.forEach(item => visitRuntimeValueRefs(item, visit));
     return;
   }
   if (isStructRef(value)) {

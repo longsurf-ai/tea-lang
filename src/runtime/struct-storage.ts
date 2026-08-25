@@ -1,13 +1,8 @@
-// Purpose: Nominal struct storage over the unified Heap: fresh reference allocation, typed-empty reads, exact-layout validation, and journaled field mutation.
+// Purpose: Nominal struct storage over the typed Heap: fresh reference allocation, typed-empty reads, exact-layout validation, and whole-payload transactional writes.
 
 import {fatal} from '../base/print';
 import {ExecutionError} from './errors';
-import type {
-  Heap,
-  HeapTransaction,
-  StorageDescriptor,
-  StorageRef,
-} from './heap';
+import type {Heap, HeapTransaction, Ref, TypeInfo} from './heap';
 import {isStructRef, isTupleValue, type Value} from './value';
 import {
   type LayoutId,
@@ -17,7 +12,7 @@ import {
 
 export interface StructStorage {
   readonly layout: StructLayoutId;
-  readonly fields: Value[];
+  readonly fields: readonly Value[];
   readonly logicalBytes: number;
 }
 
@@ -27,76 +22,36 @@ interface StructStorageArgs {
   readonly logicalBytes: number;
 }
 
-interface StructFieldEdit {
-  readonly index: number;
-  readonly fieldLayout: LayoutId;
-  readonly value: Value;
+interface HeapReader {
+  read<V>(ref: Ref<V>): Readonly<V>;
 }
 
-export type StructRef = StorageRef<StructStorage>;
+export type StructRef = Ref<StructStorage>;
 
 export class StructStorageRuntime {
-  readonly descriptor: StorageDescriptor<
-    StructStorage,
-    StructStorageArgs,
-    StructFieldEdit,
-    Value
-  >;
+  readonly typeInfo: TypeInfo<StructStorageArgs, StructStorage>;
 
   constructor(
     private readonly heap: Heap,
     private readonly layouts: ValueLayoutRegistry,
   ) {
-    this.descriptor = {
+    this.typeInfo = {
       id: Symbol('tea.struct.storage'),
-      debugName: 'struct storage',
-      logicalBytesFor: args => args.logicalBytes,
-      create: args => ({
-        layout: args.layout,
-        fields: [...args.fields],
-        logicalBytes: args.logicalBytes,
-      }),
-      trace: (payload, tracer) => {
+      name: 'struct storage',
+      bytesFor: args => args.logicalBytes,
+      create: args =>
+        Object.freeze({
+          layout: args.layout,
+          fields: Object.freeze([...args.fields]),
+          logicalBytes: args.logicalBytes,
+        }),
+      trace: (payload, visit) => {
         const layout = this.requireLayout(payload.layout, 'stored struct');
         layout.fields.forEach((field, index) =>
-          this.layouts.visitStorageRefs(
-            field.layout,
-            payload.fields[index],
-            ref => tracer.storage(ref),
-          ),
+          this.layouts.visitRefs(field.layout, payload.fields[index], visit),
         );
       },
-      logicalBytes: payload => payload.logicalBytes,
-      mutation: {
-        prepare: (payload, edit) => {
-          const layout = this.requireLayout(payload.layout, 'stored struct');
-          const field = this.requireField(layout, edit.index);
-          if (field.layout !== edit.fieldLayout) {
-            return fatal(
-              `struct field edit layout ${edit.fieldLayout} disagrees with '${layout.name}.${field.name}' layout ${field.layout}`,
-            );
-          }
-          this.assertValue(
-            field.layout,
-            edit.value,
-            `field store '${layout.name}.${field.name}'`,
-          );
-          return {key: edit.index, undo: payload.fields[edit.index]};
-        },
-        traceEdit: (edit, tracer) => {
-          // prepare already proved the edit's field layout. The value walk is
-          // type-neutral and checks every introduced StorageRef before apply.
-          this.layouts.visitStorageRefs(edit.fieldLayout, edit.value, ref =>
-            tracer.storage(ref),
-          );
-        },
-        apply(payload, edit) {
-          payload.fields[edit.index] = edit.value;
-        },
-        restore(payload, key, undo) {
-          payload.fields[key as number] = undo;
-        },
-      },
+      bytesOf: payload => payload.logicalBytes,
     };
   }
 
@@ -117,9 +72,10 @@ export class StructStorageRuntime {
         field.layout,
         fields[index],
         `constructor '${layout.name}.${field.name}'`,
+        transaction,
       ),
     );
-    return transaction.allocate(this.descriptor, {
+    return transaction.allocate(this.typeInfo, {
       layout: layoutId,
       fields,
       logicalBytes:
@@ -131,7 +87,11 @@ export class StructStorageRuntime {
     });
   }
 
-  requireStruct(value: Value, ownerLayout: LayoutId): StructRef {
+  requireStruct(
+    value: Value,
+    ownerLayout: LayoutId,
+    reader: HeapReader = this.heap,
+  ): StructRef {
     const layout = this.requireLayout(ownerLayout, 'struct receiver');
     if (value === null) {
       throw new ExecutionError(
@@ -139,11 +99,21 @@ export class StructStorageRuntime {
         `cannot mutate na struct '${layout.name}'`,
       );
     }
-    this.assertRef(value, ownerLayout, `struct receiver '${layout.name}'`);
+    this.assertRef(
+      value,
+      ownerLayout,
+      `struct receiver '${layout.name}'`,
+      reader,
+    );
     return value as StructRef;
   }
 
-  field(value: Value, ownerLayout: LayoutId, index: number): Value {
+  field(
+    value: Value,
+    ownerLayout: LayoutId,
+    index: number,
+    reader: HeapReader = this.heap,
+  ): Value {
     const layout = this.requireLayout(ownerLayout, 'field read owner');
     const field = this.requireField(layout, index);
     if (value === null) {
@@ -153,8 +123,9 @@ export class StructStorageRuntime {
       value,
       ownerLayout,
       `field read '${layout.name}'`,
+      reader,
     );
-    return this.heap.read(ref, this.descriptor).fields[index];
+    return reader.read(ref).fields[index];
   }
 
   storeField(
@@ -164,24 +135,41 @@ export class StructStorageRuntime {
     index: number,
     replacement: Value,
   ): void {
-    const ref = this.requireStruct(value, ownerLayout);
+    const ref = this.requireStruct(value, ownerLayout, transaction);
     const layout = this.requireLayout(ownerLayout, 'field store owner');
-    this.requireField(layout, index);
-    transaction.mutate(ref, this.descriptor, {
-      index,
-      fieldLayout: layout.fields[index].layout,
-      value: replacement,
-    });
+    const field = this.requireField(layout, index);
+    this.assertValue(
+      field.layout,
+      replacement,
+      `field store '${layout.name}.${field.name}'`,
+      transaction,
+    );
+    const payload = transaction.read(ref);
+    const fields = [...payload.fields];
+    fields[index] = replacement;
+    transaction.write(
+      ref,
+      Object.freeze({
+        layout: payload.layout,
+        fields: Object.freeze(fields),
+        logicalBytes: payload.logicalBytes,
+      }),
+    );
   }
 
-  assertValue(id: LayoutId, value: Value, where = 'runtime value'): void {
+  assertValue(
+    id: LayoutId,
+    value: Value,
+    where = 'runtime value',
+    reader: HeapReader = this.heap,
+  ): void {
     this.layouts.assertValue(id, value, where);
     if (value === null) {
       return;
     }
     const layout = this.layouts.layout(id);
     if (layout.kind === 'struct') {
-      this.assertRef(value, id, where);
+      this.assertRef(value, id, where, reader);
       return;
     }
     if (layout.kind === 'tuple') {
@@ -189,7 +177,7 @@ export class StructStorageRuntime {
         return fatal(`validated tuple layout ${id} lost its tuple shape`);
       }
       layout.elements.forEach((element, index) =>
-        this.assertValue(element, value[index], `${where}[${index}]`),
+        this.assertValue(element, value[index], `${where}[${index}]`, reader),
       );
     }
   }
@@ -198,6 +186,7 @@ export class StructStorageRuntime {
     value: Value,
     layoutId: LayoutId,
     where: string,
+    reader: HeapReader,
   ): StructRef {
     if (!isStructRef(value)) {
       throw new ExecutionError(
@@ -205,7 +194,7 @@ export class StructStorageRuntime {
         `${where} does not carry a struct reference`,
       );
     }
-    const payload = this.heap.read(value, this.descriptor);
+    const payload = reader.read(value as StructRef);
     if (payload.layout !== layoutId) {
       const expected = this.requireLayout(layoutId, where);
       throw new ExecutionError(

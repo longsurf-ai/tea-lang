@@ -2,13 +2,9 @@
 
 import type {BuiltinSource} from '../ir/builtin';
 import type {NameStorage} from '../ir/node';
-import type {Heap, StorageRef} from './heap';
+import type {Ref} from './heap';
 import type {EffectSpec, ParamSpec} from './schema';
-import type {
-  AggregateLayoutManifest,
-  LayoutId,
-  ValueLayoutRegistry,
-} from './value-layout';
+import type {AggregateLayoutManifest, LayoutId} from './value-layout';
 import type {
   CollectionValue,
   ExecutionResult,
@@ -145,13 +141,6 @@ export interface FixedValueStorageBudget {
   readonly maxLogicalBytes: number;
 }
 
-export interface SharedExecutionState {
-  readonly aggregateLayouts: ValueLayoutRegistry;
-  readonly heap: Heap;
-  readonly contextBudget: ContextBudget;
-  readonly fixedValueStorage: FixedValueStorageBudget;
-}
-
 export interface Runtime {
   series(sid: number, offset: number): number;
   builtin(bid: number, offset: number): Value;
@@ -180,8 +169,8 @@ export interface Runtime {
     calcBarsCount: Value,
   ): void;
   bindRequest(rid: number, symbol: Value, timeframe: Value): void;
-  newStruct(layout: LayoutId, fields: readonly Value[]): StorageRef<unknown>;
-  requireStruct(value: Value, layout: LayoutId): StorageRef<unknown>;
+  newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown>;
+  requireStruct(value: Value, layout: LayoutId): Ref<unknown>;
   structField(value: Value, ownerLayout: LayoutId, index: number): Value;
   storeStructField(
     value: Value,

@@ -4932,6 +4932,13 @@ class Checker {
       );
       return INVALID_TV;
     }
+    if (!isRequestTransportType(captureTv.type)) {
+      this.error(
+        expr.pos,
+        `request expression cannot return ${formatType(captureTv.type)}; request results must be scalars or scalar-only tuples`,
+      );
+      return INVALID_TV;
+    }
     parentInfo.calls.set(c, {
       kind: CallKind.Request,
       native,
@@ -6057,6 +6064,25 @@ function isEffectPayloadType(type: Type, active = new Set<Type>()): boolean {
 interface InferredNativeType {
   readonly type: Type;
   readonly locked: boolean;
+}
+
+// Request contexts own independent Heaps and host-resource lifecycles. Only
+// scalar values and recursively scalar tuples cross that boundary by value.
+function isRequestTransportType(type: Type): boolean {
+  switch (type.kind) {
+    case TypeKind.Invalid:
+    case TypeKind.Int:
+    case TypeKind.Float:
+    case TypeKind.Bool:
+    case TypeKind.String:
+    case TypeKind.Color:
+    case TypeKind.Enum:
+      return true;
+    case TypeKind.Tuple:
+      return type.elems.every(isRequestTransportType);
+    default:
+      return false;
+  }
 }
 
 function isGenericTypeRef(ref: NativeTypeRef): ref is GenericTypeRef {

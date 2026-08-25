@@ -182,24 +182,31 @@ the resolved ProviderContext, with two differences:
   ring in the child's program frame; merge reads that ring's **committed**
   values.
 
-The root binding constructs one `SharedExecutionState`: the exact value-layout
-registry, shared Heap arena, unique-context budget, and fixed-value logical byte
-budget. Every static and dynamic child receives that same state. A request
-result therefore keeps its root module's `LayoutId`, and a collection-valued
-result may safely carry a `StorageRef` into the parent; independently owned
-layout namespaces or arenas are forbidden.
+The root binding constructs one shared execution state containing the exact
+value-layout registry, unique-context budget, fixed-value logical-byte budget,
+and the Heap-limit configuration. Every static and dynamic child receives those
+shared facts but constructs an independent Heap, `StructStorageRuntime`, and
+`CollectionRuntime`. The configured Heap limits therefore apply separately to
+each execution context.
 
-The child result builder registers as a Heap-root owner and reserves its exact
-`rows * shallowBytes(layout)` fixed-value lease before it retains its first
-value, including when the result Ring itself has zero history. Ownership and
-the lease then transfer to the merged view before the builder unregisters; the
-completed child releases unrelated frame/Ring reservations. Suspension closes
-and aborts the parent transaction before any child transaction starts, so one
-shared arena never has interleaved nonterminal transactions.
+The request boundary admits only scalars and recursively scalar-only tuples;
+the checker rejects structs, collections, resources, and tuples containing any
+of them, and binding validates the physical result layout again. Each successful
+child-row result is recursively copied into a parent-owned column. That column
+reserves exactly `rows * shallowBytes(layout)` from the shared fixed-value
+budget, including when the child's result Ring retains zero committed cells.
+After the merged view takes the column and its lease, the completed child
+releases its frame/Ring reservations and its entire Heap. A `Ref` never crosses
+the request boundary. Aggregate request results remain unsupported until they
+have an explicit deep graph-copy contract.
 
-Child instances are keyed `(edge, symbol, timeframe)` in a per-binding
-instance table. Identical pairs on one edge share an instance; cross-edge
-dedup is a later optimization, not a semantic requirement.
+Suspension still closes and aborts the parent transaction before resolving a
+dynamic child, so retry observes exactly the pre-suspension parent state. Heap
+isolation means parent and child transactions never contend for one arena.
+
+Completed result views are keyed `(edge, symbol, timeframe)` in a per-binding
+table. Reusing an identical pair on one edge reuses that copied column and merge
+mapping; cross-edge dedup is a later optimization, not a semantic requirement.
 
 ## Merge
 
@@ -209,17 +216,14 @@ edge**, which `rt.request(rid, offset)` reads — so `result[1]` is "whatever
 the request returned on the previous parent bar", regardless of which pair
 served that bar (dynamic requests included).
 
-The view contract deliberately does not say the merged column is
-materialized. **Merge is alignment, not data movement**: the view is
-defined by the child's committed storage plus a parent→child row mapping
-(per row under dynamic requests, an (instance, childRow) pair — still
-indices, never values). A sample-merge mapping is monotonic, so it
-compresses to O(child bars) breakpoints; a low-resolution child under a
-dense parent axis — or a wide multi-column child later — must never be
-duplicated across parent rows. Materializing the merged column is a legal
-first implementation, not the contract; the zero-copy mapping
-implementation must remain reachable without touching the ABI or this
-section's semantics.
+**Merge is alignment, not repeated data movement**. The child first produces one
+parent-owned, by-value transport column; the merged view then combines that
+column with a parent→child row mapping (per row under dynamic requests, a
+`(view, childRow)` pair — still indices, never copied values). A sample-merge
+mapping is monotonic, so it compresses to O(child bars) breakpoints; a
+low-resolution child under a dense parent axis must never duplicate its value
+for every parent row. The view may avoid materializing the aligned parent-sized
+column, but it never retains the disposed child's Rings or Heap.
 
 Sample mode (`security`):
 
@@ -239,8 +243,9 @@ barSpan(p)` — i.e. the most recent child bar that has _closed_ by the
   **gaps_off** carries the last merged value forward.
 
 Collect mode (`security_lower_tf`) will return the array of child results whose
-bars fall inside the parent bar. Collection storage now supports that value,
-but the collect merge policy itself remains a separate staged request feature.
+bars fall inside the parent bar. It requires both the collect merge policy and
+an explicit child-to-parent aggregate graph-copy contract, so it remains a
+separate staged request feature.
 
 ## Static and dynamic requests
 

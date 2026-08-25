@@ -74,21 +74,28 @@ The backend-neutral `executeProgram()` host harness lives one level above in
 - Fixed-width Ring cells and materialized request-result columns reserve from
   the shared `maxFixedValueLogicalBytes` budget using the layout's exact
   shallow size. Scratch-only bind Rings release before final allocation;
-  completed children release frame Rings when builder ownership transfers,
-  while the result-column lease remains with the merged view until disposal.
+  completed children release their frame Rings and context-local Heap after
+  their scalar result column has been copied, while the result-column lease
+  remains with the merged view until disposal.
 - Struct values are nominal references represented by source-hidden
-  `StorageRef`s; assignment and history copy the reference while the Heap-owned
+  `Ref`s; assignment and history copy the reference while the Heap-owned
   body is transactionally mutable. Collection values remain immutable headers
-  whose descriptors allocate replacement backing. Both use the same Heap,
-  transaction, version guards, limits, tracing, and collection.
-- Storage descriptors provide an exact args-byte estimate and own payload
-  validation/tracing. Descriptors that admit mutation prepare opaque edits and
-  undo values before nonthrowing apply/restore; in-place edits preserve logical
-  bytes. Heap journals the first `(slot, descriptor key)` edit per transaction.
-- Exactly one nonterminal Heap transaction may exist. The row transaction prepares all
-  fallible Ring, Heap-reachability, and buffered-emission work before a
-  non-throwing internal commit; final sink delivery is post-commit. Abort and
-  suspension invalidate scratch/emissions and all tentative storage.
+  whose operations allocate replacement backing. Both use the same
+  context-local Heap, transaction, version guards, limits, tracing, and
+  collection.
+- `TypeInfo<A, V>` owns a stored payload type's stable identity,
+  `bytesFor(args)`, `create(args)`, `bytesOf(value)`, and direct-child
+  `trace(value, visit)` policy. A transaction stages complete replacement
+  payloads for committed identities; its reads see that overlay first. Commit
+  installs replacements and tentative allocations, while abort discards both,
+  so no edit/undo protocol or in-place journal is exposed.
+- Exactly one active Heap transaction may exist. After it becomes terminal, the
+  runtime replaces the Heap's complete precise root snapshot and may run
+  stop-the-world, non-generational, non-moving Mark-Sweep collection. Root
+  discovery scans Heap-external persistent values; `TypeInfo.trace` walks the
+  Heap-internal transitive graph. Physical deallocation is private to the Heap.
+  Final sink delivery remains post-commit. Abort and suspension invalidate
+  scratch/emissions and all tentative storage.
 - A history offset names a cell only when it is a non-negative safe integer.
   Every other offset (including na, infinity, fractions, and negatives) returns
   the place's typed empty value and retains zero cells when reported at bind;
@@ -124,12 +131,15 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   provisional execution may retain its same-row candidate, and final commit
   promotes it. The per-row hot path itself never awaits. Request children
   recurse through the same JSRuntime class with a null sink, the parent's
-  resolved params (compilation-global), and the shared unique-context budget
-  (maxRequestContexts, default 40), exact layout registry, and Heap arena.
-- Request result builders register as Heap-root owners before retaining
-  aggregate values and transfer ownership to result Rings/views before
-  unregistering. A `StorageRef` never crosses into an independently owned
-  arena.
+  resolved scalar params (compilation-global), the shared unique-context budget
+  (maxRequestContexts, default 40), the exact layout registry, and an independent
+  Heap/struct/collection runtime. Heap limits apply independently to each
+  context.
+- Request results are limited by the checker and defended again at binding to
+  scalars or recursively scalar-only tuples. Each child row is copied into a
+  parent-owned fixed-width result column; no `Ref` or host-resource handle may
+  cross the child Heap boundary. The completed child then releases its Rings
+  and Heap, while the merged view retains only the copied column and its lease.
 - Every cached `(edge, symbol, timeframe)` pair consumes the shared request
   context budget, including ignored-invalid pairs cached as na; an uncached
   hard resolution failure releases its reservation.

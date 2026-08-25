@@ -1,4 +1,4 @@
-// Purpose: JSRuntime aggregate integration tests for Ring history, var/varip provisional policy, sink boundaries, request rooting, ABI gating, and disposal.
+// Purpose: JSRuntime aggregate integration tests for Ring history, var/varip provisional policy, sink boundaries, request-Heap isolation, ABI gating, and disposal.
 
 import {describe, expect, test} from 'vitest';
 import {InternalError} from '../base/print';
@@ -35,6 +35,7 @@ const INT = 0;
 const ARRAY = 1;
 const HOLDER = 2;
 const COUNTER = 3;
+const INT_PAIR = 4;
 const LAYOUTS = {
   layouts: [
     {kind: 'number', numeric: 'int'},
@@ -49,6 +50,7 @@ const LAYOUTS = {
       name: 'Counter',
       fields: [{name: 'value', layout: INT}],
     },
+    {kind: 'tuple', elements: [INT, INT]},
   ],
 } as const satisfies AggregateLayoutManifest;
 
@@ -514,8 +516,8 @@ describe('aggregate Ring and commit integration', () => {
   });
 });
 
-describe('aggregate request ownership', () => {
-  test('one aggregate survives a recursive request tree in the shared arena', async () => {
+describe('request Heap isolation', () => {
+  test('runtime rejects a Heap-backed result from a hand-authored module', async () => {
     const axis: TimeAxis = {
       time: () => 0,
       closeTime: () => 60,
@@ -637,27 +639,115 @@ describe('aggregate request ownership', () => {
         );
       },
     };
+    await expect(
+      bind(root, {
+        params: {},
+        provider: contexts,
+        sink: new Sink(),
+      }),
+    ).rejects.toThrow('cannot cross a runtime Heap boundary');
+  });
+
+  test('scalar tuples cross the child boundary as frozen copies', async () => {
+    const axis: TimeAxis = {time: () => 0, closeTime: () => 60};
+    const context: ProviderContext = {
+      rows: 1,
+      axis,
+      series: () => null,
+      builtinValue: () => undefined,
+    };
+    let childTuple: Value = null;
+    let copied = false;
+    let frozen = false;
+    const child: ModuleCode = {
+      manifest: {
+        series: [],
+        builtin: [],
+        params: [],
+        outputs: [],
+        effects: [],
+        requests: [],
+        frames: [
+          {
+            locals: [
+              {
+                storage: Storage.PerBar,
+                depth: {kind: 'none'},
+                layout: INT_PAIR,
+              },
+            ],
+            subs: [],
+          },
+        ],
+      },
+      requests: [],
+      init() {},
+      bind() {},
+      funcs: {},
+      main(rt, fr) {
+        const value = [41, 42] as const;
+        childTuple = value;
+        rt.write(fr, 0, value);
+      },
+    };
+    const root: TeaModule = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: LAYOUTS,
+      manifest: {
+        series: [],
+        builtin: [],
+        params: [],
+        outputs: [
+          {
+            ...OUTPUT,
+            channels: [
+              {name: 'left', type: 'int', transport: {kind: 'int'}},
+              {name: 'right', type: 'int', transport: {kind: 'int'}},
+            ],
+          },
+        ],
+        effects: [],
+        requests: [
+          {
+            merge: {mode: 'sample'},
+            depth: {kind: 'none'},
+            resultSlot: 0,
+            layout: INT_PAIR,
+            dynamic: false,
+          },
+        ],
+        frames: [{locals: [], subs: []}],
+      },
+      requests: [child],
+      init() {},
+      bind(rt) {
+        rt.bindRequestOptions(0, false, false, false, 0);
+        rt.bindRequest(0, 'X', '');
+      },
+      funcs: {},
+      main(rt) {
+        const result = rt.request(0, 0);
+        if (!Array.isArray(result)) throw new Error('expected tuple result');
+        copied = result !== childTuple;
+        frozen = Object.isFrozen(result);
+        rt.emit(0, 0, result[0]);
+        rt.emit(0, 1, result[1]);
+      },
+    };
     const sink = new Sink();
     const bound = await bind(root, {
       params: {},
-      provider: contexts,
+      provider: {resolveContext: () => Promise.resolve(context)},
       sink,
-      // The leaf allocates the only Heap cell. At the fixed-value peak, the
-      // leaf result view, middle result Ring, and middle builder each own one
-      // shallow array slot (3 * 32 bytes).
-      maxHeapStorageCells: 1,
-      maxHeapLogicalBytes: 24,
-      maxHeapTransientStorageCells: 1,
-      maxHeapTransientLogicalBytes: 24,
-      maxFixedValueLogicalBytes: 96,
     });
-
     await bound.runAll();
-    expect(sink.values.map(entry => entry.values)).toEqual([[41]]);
+    expect(sink.values[0].values).toEqual([41, 42]);
+    expect(copied).toBe(true);
+    expect(frozen).toBe(true);
     bound.dispose();
   });
 
-  test('dynamic aggregate pair views retain cached roots with a keep-zero result Ring', async () => {
+  test('dynamic scalar pair views retain copied results', async () => {
     const parentAxis: TimeAxis = {
       time: row => row * 60,
       closeTime: row => (row + 1) * 60,
@@ -706,7 +796,7 @@ describe('aggregate request ownership', () => {
         frames: [
           {
             locals: [
-              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: ARRAY},
+              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: INT},
             ],
             subs: [],
           },
@@ -717,11 +807,7 @@ describe('aggregate request ownership', () => {
       bind() {},
       funcs: {},
       main(rt, fr) {
-        rt.write(
-          fr,
-          0,
-          rt.callCollection('array.from', ARRAY, [rt.series(0, 0)]),
-        );
+        rt.write(fr, 0, rt.series(0, 0));
       },
     };
     const root: TeaModule = {
@@ -746,7 +832,7 @@ describe('aggregate request ownership', () => {
             },
             depth: {kind: 'none'},
             resultSlot: 0,
-            layout: ARRAY,
+            layout: INT,
             dynamic: true,
           },
         ],
@@ -760,8 +846,7 @@ describe('aggregate request ownership', () => {
       funcs: {},
       main(rt) {
         const symbol = rt.builtin(0, 0) === 1 ? 'Y' : 'X';
-        const result = rt.requestFor(0, symbol, '');
-        rt.emit(0, 0, rt.callCollection('array.first', INT, [result]));
+        rt.emit(0, 0, rt.requestFor(0, symbol, ''));
       },
     };
     const sink = new Sink();
@@ -769,13 +854,6 @@ describe('aggregate request ownership', () => {
       params: {},
       provider: contexts,
       sink,
-      // X and Y own exactly one 24-byte backing cell each. Resolving Y peaks
-      // at four shallow array slots: root result Ring, cached X view, child
-      // Ring, and Y's registered result builder.
-      maxHeapStorageCells: 2,
-      maxHeapLogicalBytes: 48,
-      maxHeapTransientStorageCells: 1,
-      maxHeapTransientLogicalBytes: 24,
       maxFixedValueLogicalBytes: 128,
     });
 
@@ -938,7 +1016,7 @@ describe('aggregate request ownership', () => {
     bound.dispose();
   });
 
-  test('keep-zero result leases transfer to views and child Rings release', async () => {
+  test('keep-zero scalar result leases transfer to views and child Rings release', async () => {
     const axis: TimeAxis = {
       time: row => row * 60,
       closeTime: row => (row + 1) * 60,
@@ -970,7 +1048,7 @@ describe('aggregate request ownership', () => {
         frames: [
           {
             locals: [
-              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: ARRAY},
+              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: INT},
             ],
             subs: [],
           },
@@ -981,11 +1059,7 @@ describe('aggregate request ownership', () => {
       bind() {},
       funcs: {},
       main(rt, fr) {
-        rt.write(
-          fr,
-          0,
-          rt.callCollection('array.from', ARRAY, [rt.series(0, 0)]),
-        );
+        rt.write(fr, 0, rt.series(0, 0));
       },
     };
     const root: TeaModule = {
@@ -1013,7 +1087,7 @@ describe('aggregate request ownership', () => {
             },
             depth: {kind: 'none'},
             resultSlot: 0,
-            layout: ARRAY,
+            layout: INT,
             dynamic: false,
           },
           {
@@ -1022,7 +1096,7 @@ describe('aggregate request ownership', () => {
             },
             depth: {kind: 'none'},
             resultSlot: 0,
-            layout: ARRAY,
+            layout: INT,
             dynamic: false,
           },
         ],
@@ -1037,8 +1111,8 @@ describe('aggregate request ownership', () => {
       },
       funcs: {},
       main(rt) {
-        rt.emit(0, 0, rt.callCollection('array.size', INT, [rt.request(0, 0)]));
-        rt.emit(0, 1, rt.callCollection('array.size', INT, [rt.request(1, 0)]));
+        rt.emit(0, 0, rt.request(0, 0));
+        rt.emit(0, 1, rt.request(1, 0));
       },
     };
     const sink = new Sink();
@@ -1051,8 +1125,8 @@ describe('aggregate request ownership', () => {
     });
     await bound.runAll();
     expect(sink.values.map(entry => entry.values)).toEqual([
-      [1, 1],
-      [1, 1],
+      [10, 10],
+      [11, 11],
     ]);
     bound.dispose();
   });
@@ -1108,7 +1182,7 @@ describe('aggregate request ownership', () => {
         frames: [
           {
             locals: [
-              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: ARRAY},
+              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: INT},
             ],
             subs: [],
           },
@@ -1119,7 +1193,7 @@ describe('aggregate request ownership', () => {
       bind() {},
       funcs: {},
       main(rt, fr) {
-        rt.write(fr, 0, rt.callCollection('array.from', ARRAY, [7]));
+        rt.write(fr, 0, 7);
       },
     };
     const root: TeaModule = {
@@ -1138,7 +1212,7 @@ describe('aggregate request ownership', () => {
             },
             depth: {kind: 'none'},
             resultSlot: 0,
-            layout: ARRAY,
+            layout: INT,
             dynamic: true,
           },
         ],
@@ -1151,11 +1225,7 @@ describe('aggregate request ownership', () => {
       },
       funcs: {},
       main(rt) {
-        rt.emit(
-          0,
-          0,
-          rt.callCollection('array.size', INT, [rt.requestFor(0, 'X', '')]),
-        );
+        rt.emit(0, 0, rt.requestFor(0, 'X', ''));
       },
     };
     const sink = new Sink();
@@ -1175,11 +1245,11 @@ describe('aggregate request ownership', () => {
     await bound.resolvePending();
     bound.executeRow(0, false);
     bound.commitRow(0);
-    expect(sink.values[0].values).toEqual([1]);
+    expect(sink.values[0].values).toEqual([7]);
     bound.dispose();
   });
 
-  test('completed children stop retaining unrelated frame storage', async () => {
+  test('parent and child enforce one-cell Heap limits independently', async () => {
     const axis: TimeAxis = {
       time: () => 0,
       closeTime: () => 60,
@@ -1211,7 +1281,7 @@ describe('aggregate request ownership', () => {
         frames: [
           {
             locals: [
-              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: ARRAY},
+              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: INT},
               {storage: Storage.Var, depth: {kind: 'none'}, layout: ARRAY},
             ],
             subs: [],
@@ -1226,11 +1296,7 @@ describe('aggregate request ownership', () => {
         if (rt.needsInit(fr, 1)) {
           rt.initialize(fr, 1, rt.callCollection('array.from', ARRAY, [99]));
         }
-        rt.write(
-          fr,
-          0,
-          rt.callCollection('array.from', ARRAY, [rt.series(0, 0)]),
-        );
+        rt.write(fr, 0, rt.series(0, 0));
         const mutation = rt.mutateCollection(
           'array.push',
           ARRAY,
@@ -1256,7 +1322,7 @@ describe('aggregate request ownership', () => {
             },
             depth: {kind: 'none'},
             resultSlot: 0,
-            layout: ARRAY,
+            layout: INT,
             dynamic: false,
           },
         ],
@@ -1282,7 +1348,7 @@ describe('aggregate request ownership', () => {
       funcs: {},
       main(rt, fr) {
         rt.write(fr, 0, rt.callCollection('array.from', ARRAY, [7]));
-        rt.emit(0, 0, rt.callCollection('array.size', INT, [rt.request(0, 0)]));
+        rt.emit(0, 0, rt.request(0, 0));
       },
     };
     const sink = new Sink();
@@ -1290,11 +1356,12 @@ describe('aggregate request ownership', () => {
       params: {},
       provider: contexts,
       sink,
-      maxHeapStorageCells: 2,
+      // Parent and child each own an independent one-cell Heap budget.
+      maxHeapStorageCells: 1,
     });
 
     await bound.runAll();
-    expect(sink.values[0].values).toEqual([1]);
+    expect(sink.values[0].values).toEqual([10]);
     bound.dispose();
   });
 });
@@ -1361,7 +1428,7 @@ describe('runtime boundaries', () => {
     });
 
     await bound.runAll();
-    expect(rejection).toContain('stale StorageRef');
+    expect(rejection).toContain('stale Ref');
     expect(sink.values.map(entry => entry.values)).toEqual([[8]]);
     bound.dispose();
   });
@@ -1481,7 +1548,7 @@ describe('runtime boundaries', () => {
     expect(initialized).toBe(false);
   });
 
-  test('dispose aborts a prepared row and is idempotent', async () => {
+  test('dispose aborts a pending final row and is idempotent', async () => {
     const bound = await bind(arrayStateModule(), {
       params: {},
       provider: provider(),

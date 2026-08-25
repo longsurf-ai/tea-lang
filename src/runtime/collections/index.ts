@@ -13,7 +13,7 @@ import type {Heap, HeapTransaction} from '../heap';
 import {StructStorageRuntime} from '../struct-storage';
 import {type LayoutId, ValueLayoutRegistry} from '../value-layout';
 import {arrayCall, arrayMutate, arraySnapshot} from './array';
-import type {CollectionContext} from './common';
+import type {CollectionContext, CollectionReader} from './common';
 import {mapCall, mapMutate, mapSnapshot} from './map';
 import {matrixCall, matrixMutate} from './matrix';
 
@@ -44,7 +44,12 @@ export class CollectionRuntime {
       : operation.startsWith('matrix.')
         ? matrixCall(ctx, operation, resultLayout, args)
         : mapCall(ctx, operation, resultLayout, args);
-    this.structs.assertValue(resultLayout, result, `${operation} result`);
+    this.structs.assertValue(
+      resultLayout,
+      result,
+      `${operation} result`,
+      transaction,
+    );
     return result;
   }
 
@@ -65,16 +70,20 @@ export class CollectionRuntime {
       collectionLayout,
       result.replacement,
       `${operation} replacement`,
+      transaction,
     );
     return result;
   }
 
-  entries(value: Value): CollectionEntries {
+  entries(
+    value: Value,
+    reader: CollectionReader = this.heap,
+  ): CollectionEntries {
     const ctx = {
-      heap: this.heap,
+      transaction: reader,
       layouts: this.layouts,
       assertValue: (layout: LayoutId, item: Value, where: string) =>
-        this.structs.assertValue(layout, item, where),
+        this.structs.assertValue(layout, item, where, reader),
     };
     if (value === null) {
       throw new ExecutionError('NA_COLLECTION', 'collection iteration on na');
@@ -93,11 +102,10 @@ export class CollectionRuntime {
 
   private context(transaction: HeapTransaction): CollectionContext {
     return {
-      heap: this.heap,
       transaction,
       layouts: this.layouts,
       assertValue: (layout, value, where) =>
-        this.structs.assertValue(layout, value, where),
+        this.structs.assertValue(layout, value, where, transaction),
       maxElements: this.maxElements,
     };
   }

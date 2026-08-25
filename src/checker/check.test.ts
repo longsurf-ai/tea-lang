@@ -366,8 +366,8 @@ describe('semantic ownership', () => {
         'source = close * 2',
         'type Sample',
         '    float value = source',
-        'explicit = request.security("X", "D", Sample.new(close))',
-        'omitted = request.security("Y", "D", Sample.new())',
+        'explicit = request.security("X", "D", Sample.new(close).value)',
+        'omitted = request.security("Y", "D", Sample.new().value)',
       ].join('\n'),
     );
     expect(constructorDefault.errors.map(error => error.msg)).toContainEqual(
@@ -378,6 +378,64 @@ describe('semantic ownership', () => {
         error => error.pos.line === 4 && error.msg.includes('source'),
       ),
     ).toBe(false);
+  });
+
+  test('request results reject Heap-backed types and recursively containing tuples', () => {
+    const cases = [
+      {
+        source: [
+          'type Sample',
+          '    int value',
+          'request.security("X", "D", Sample.new(1))',
+        ].join('\n'),
+        type: 'Sample',
+      },
+      {
+        source: 'request.security("X", "D", array.new<int>())',
+        type: 'array<int>',
+      },
+      {
+        source: 'request.security("X", "D", matrix.new<int>(1, 1, 0))',
+        type: 'matrix<int>',
+      },
+      {
+        source: 'request.security("X", "D", map.new<string, int>())',
+        type: 'map<string, int>',
+      },
+      {
+        source: 'request.security("X", "D", [close, [true, array.new<int>()]])',
+        type: '[float, [bool, array<int>]]',
+      },
+    ] as const;
+
+    for (const {source, type} of cases) {
+      const result = checkText(source);
+      expect(result.errors.map(error => error.msg)).toEqual([
+        `request expression cannot return ${type}; request results must be scalars or scalar-only tuples`,
+      ]);
+      expect(
+        [...result.info.calls.values()].some(
+          resolution => resolution.kind === CallKind.Request,
+        ),
+      ).toBe(false);
+    }
+  });
+
+  test('request results allow scalars and scalar-only tuples', () => {
+    const result = checkText(
+      [
+        'scalar = request.security("X", "D", close)',
+        '[left, right] = request.security("Y", "D", [open, true])',
+        'request.security("Z", "D", [close, [true, "ready"]])',
+      ].join('\n'),
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(
+      [...result.info.calls.values()].filter(
+        resolution => resolution.kind === CallKind.Request,
+      ),
+    ).toHaveLength(3);
   });
 });
 

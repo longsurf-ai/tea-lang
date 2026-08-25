@@ -1,4 +1,4 @@
-// Purpose: Compile-to-runtime coverage for aggregate request results sharing Heap storage across child completion, parent merge, and history.
+// Purpose: Request-boundary coverage for isolated child Heaps, scalar transport, argument order, and suspension rollback.
 
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -6,13 +6,7 @@ import {describe, expect, test} from 'vitest';
 import {formatPos} from '../base/pos';
 import {compile} from '../compile';
 import {csvContext} from '../providers/data/csv';
-import {
-  RUNTIME_ABI_VERSION,
-  type DataProvider,
-  type OutputSink,
-  type ProviderContext,
-  type Value,
-} from '../runtime/abi';
+import {type DataProvider, type OutputSink, type Value} from '../runtime/abi';
 import {bind} from '../runtime/js-runtime';
 import {loadModule} from '../runtime/load';
 
@@ -68,81 +62,14 @@ class Sink implements OutputSink {
   }
 }
 
-function contexts(
-  values: Readonly<Record<string, ProviderContext>>,
-): DataProvider {
-  return {
-    resolveContext: symbol =>
-      Promise.resolve(
-        values[symbol] ?? {
-          error: 'unknownSymbol' as const,
-          detail: `no context '${symbol}'`,
-        },
-      ),
-  };
-}
-
-describe('aggregate requests end to end', () => {
-  test('a keep-zero child result remains live in parent current and history views', async () => {
+describe('requests end to end', () => {
+  test('a Heap-backed child result is rejected before lowering', () => {
     const result = compile([SOURCE]);
-    if (!result.ok) {
-      throw new Error(
-        result.errors
-          .map(error => `${formatPos(error.pos)}: ${error.msg}`)
-          .join('\n'),
-      );
-    }
-
-    const module = loadModule(result.js);
-    expect(module.abi).toBe(RUNTIME_ABI_VERSION);
-    const request = module.manifest.requests[0];
-    const child = module.requests[0];
-    if (request === undefined || child === undefined) {
-      throw new Error('fixture did not lower one request edge');
-    }
-    expect(request.depth).toEqual({kind: 'const', bars: 1});
-    const childResult = child.manifest.frames[0]?.locals[request.resultSlot];
-    expect(childResult).toMatchObject({
-      depth: {kind: 'none'},
-      layout: request.layout,
-    });
-    expect(module.aggregateLayouts.layouts[request.layout]).toMatchObject({
-      kind: 'struct',
-      name: 'ChildSnapshot',
-    });
-
-    const sink = new Sink();
-    const bound = await bind(module, {
-      params: {},
-      provider: contexts({
-        '': csvContext(PRIMARY),
-        X: csvContext(CHILD),
-      }),
-      sink,
-      timeNow: 0,
-      // The child allocates three struct bodies and their three array backings.
-      // The parent can read all of them only if the merged view owns the six
-      // refs in the shared Heap.
-      maxHeapStorageCells: 6,
-    });
-    await bound.runAll();
-
-    const rows = Array.from({length: bound.rows}, (_, row) =>
-      sink.emissions
-        .filter(emission => emission.row === row)
-        .sort((a, b) => a.oid - b.oid)
-        .map(emission => emission.channels[0]),
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('aggregate request unexpectedly compiled');
+    expect(result.errors.map(error => error.msg)).toContain(
+      'request expression cannot return ChildSnapshot; request results must be scalars or scalar-only tuples',
     );
-    expect(rows).toEqual([
-      [-1, -1, -1, -1],
-      [100, -1, 0, -1],
-      [100, 100, 0, 0],
-      [101, 100, 1, 0],
-      [101, 101, 1, 1],
-      [102, 101, 2, 1],
-    ]);
-    expect(sink.emissions.every(emission => !emission.provisional)).toBe(true);
-    bound.dispose();
   });
 
   test('named dynamic context arguments execute in source order', async () => {
@@ -236,7 +163,7 @@ describe('aggregate requests end to end', () => {
       ['Y', 'D'],
       ['X', 'D'],
     ]);
-    // Y and X each suspend on first discovery. The shared receiver body keeps
+    // Y and X each suspend on first discovery. The parent receiver body keeps
     // completed mutations, but neither aborted attempt may reach the caller.
     const valuesFor = (oid: number): readonly Value[] =>
       sink.emissions

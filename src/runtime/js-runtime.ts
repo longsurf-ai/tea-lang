@@ -55,9 +55,9 @@ import {
 import {CollectionRuntime} from './collections';
 import {
   HeapArena,
+  type HeapLimits,
   type HeapTransaction,
-  type PreparedHeapCommit,
-  type StorageRef,
+  type Ref,
 } from './heap';
 import {assertMergeAxis, sampleMergeMap} from './merge';
 import {resolveParamValues} from './params';
@@ -163,11 +163,9 @@ export async function bind(
   const contextIdentity = effectiveContextIdentity(context, symbol, timeframe);
   const params = resolveParamValues(module.manifest.params, inputs.params);
   const layouts = new ValueLayoutRegistry(module.aggregateLayouts);
-  const heap = new HeapArena(heapLimits);
   const shared: SharedRuntimeState = {
     aggregateLayouts: layouts,
-    heap,
-    structs: new StructStorageRuntime(heap, layouts),
+    heapLimits,
     contextBudget: {used: 0, max: maxRequestContexts},
     fixedValueStorage: {
       usedLogicalBytes: 0,
@@ -197,7 +195,6 @@ export async function bind(
     return rt;
   } catch (error) {
     if (rt === null) {
-      shared.heap.dispose();
       shared.disposed = true;
     } else {
       rt.dispose();
@@ -236,7 +233,7 @@ export function resolveGeneratedBindingLayout(
   const identity = effectiveContextIdentity(context, symbol, timeframe);
   const params = resolveParamValues(module.manifest.params, inputs.params);
   const layouts = new ValueLayoutRegistry(module.aggregateLayouts);
-  const heap = new HeapArena({
+  const heapLimits = {
     maxStorageCells: optionalBindLimit(
       inputs.maxHeapStorageCells,
       'maxHeapStorageCells',
@@ -253,11 +250,10 @@ export function resolveGeneratedBindingLayout(
       inputs.maxHeapTransientLogicalBytes,
       'maxHeapTransientLogicalBytes',
     ),
-  });
+  };
   const shared: SharedRuntimeState = {
     aggregateLayouts: layouts,
-    heap,
-    structs: new StructStorageRuntime(heap, layouts),
+    heapLimits,
     contextBudget: {used: 0, max: maxRequestContexts},
     fixedValueStorage: {
       usedLogicalBytes: 0,
@@ -286,7 +282,6 @@ export function resolveGeneratedBindingLayout(
     return rt.generatedBindingLayout();
   } finally {
     if (rt === null) {
-      shared.heap.dispose();
       shared.disposed = true;
     } else {
       rt.dispose();
@@ -351,8 +346,6 @@ async function runChildRows(
   }
   const builder: ResultBuilder = {
     layout,
-    runtime: child,
-    resultSlot,
     values: [],
     storageLease,
   };
@@ -372,7 +365,13 @@ async function runChildRows(
           throw error;
         }
       }
-      builder.values.push(child.read(childRoot, resultSlot, 0));
+      builder.values.push(
+        copyRequestResult(
+          shared.aggregateLayouts,
+          layout,
+          child.read(childRoot, resultSlot, 0),
+        ),
+      );
       child.commitRow(row);
     }
     return builder;
@@ -382,6 +381,56 @@ async function runChildRows(
     child.retireCompletedChild();
     throw error;
   }
+}
+
+function assertRequestTransportLayout(
+  layouts: ValueLayoutRegistry,
+  id: LayoutId,
+): void {
+  const layout = layouts.layout(id);
+  switch (layout.kind) {
+    case 'number':
+    case 'boolean':
+    case 'nullable-scalar':
+    case 'enum':
+      return;
+    case 'tuple':
+      layout.elements.forEach(element =>
+        assertRequestTransportLayout(layouts, element),
+      );
+      return;
+    case 'resource':
+    case 'struct':
+    case 'array':
+    case 'matrix':
+    case 'map':
+      throw new BindError(
+        `request result layout ${id} (${layout.kind}) cannot cross a runtime Heap boundary`,
+      );
+  }
+}
+
+function copyRequestResult(
+  layouts: ValueLayoutRegistry,
+  id: LayoutId,
+  value: Value,
+): Value {
+  layouts.assertValue(id, value, 'request result transport');
+  if (value === null) {
+    return null;
+  }
+  const layout = layouts.layout(id);
+  if (layout.kind !== 'tuple') {
+    return value;
+  }
+  if (!isTupleValue(value)) {
+    return fatal(`validated request tuple layout ${id} lost its tuple shape`);
+  }
+  return Object.freeze(
+    layout.elements.map((element, index) =>
+      copyRequestResult(layouts, element, value[index]),
+    ),
+  );
 }
 
 function formatContextError(what: string, error: ContextError): string {
@@ -417,16 +466,13 @@ interface VaripSnapshot {
 
 interface ResultBuilder {
   readonly layout: LayoutId;
-  readonly runtime: JSRuntime;
-  readonly resultSlot: number;
   readonly values: Value[];
   readonly storageLease: FixedValueStorageLease;
 }
 
 interface SharedRuntimeState {
   readonly aggregateLayouts: ValueLayoutRegistry;
-  readonly heap: HeapArena;
-  readonly structs: StructStorageRuntime;
+  readonly heapLimits: Readonly<Partial<HeapLimits>>;
   readonly contextBudget: ContextBudget;
   readonly fixedValueStorage: FixedValueStorageBudget;
   readonly runtimes: Set<JSRuntime>;
@@ -561,7 +607,6 @@ function reserveFixedValueStorage(
 }
 
 interface PendingFinalCommit {
-  readonly heap: PreparedHeapCommit;
   readonly publication: RowEmissionSnapshot;
 }
 
@@ -616,6 +661,8 @@ class JSRuntime implements Runtime, BoundProgram {
   // capacities are known. Its frames therefore use scratch-only rings and are
   // discarded; the final tree is rebuilt immediately after all depth reports.
   private provisionalBindFrames = false;
+  private readonly heap: HeapArena;
+  private readonly structs: StructStorageRuntime;
   private readonly collections: CollectionRuntime;
   private readonly ringStorageLeases: FixedValueStorageLease[] = [];
   private heapTransaction: HeapTransaction | null = null;
@@ -665,17 +712,20 @@ class JSRuntime implements Runtime, BoundProgram {
     this.paramActive = module.manifest.params.map(() => true);
     this.boundOutputArgs = module.manifest.outputs.map(() => []);
     this.validateEffectSchemas();
+    this.module.manifest.requests.forEach(spec =>
+      assertRequestTransportLayout(shared.aggregateLayouts, spec.layout),
+    );
+    this.heap = new HeapArena(shared.heapLimits);
+    this.structs = new StructStorageRuntime(this.heap, shared.aggregateLayouts);
     this.collections = new CollectionRuntime(
-      shared.heap,
+      this.heap,
       shared.aggregateLayouts,
       maxCollectionElements,
-      shared.structs,
+      this.structs,
     );
 
     try {
-      const transaction = shared.heap.beginTransaction(
-        `bind:${shared.runtimes.size}`,
-      );
+      const transaction = this.heap.begin(`bind:${shared.runtimes.size}`);
       this.heapTransaction = transaction;
       try {
         this.bindBuiltin();
@@ -721,6 +771,7 @@ class JSRuntime implements Runtime, BoundProgram {
       shared.runtimes.add(this);
     } catch (error) {
       this.releaseOwnedFixedValueStorage();
+      this.heap.dispose();
       throw error;
     }
   }
@@ -1080,10 +1131,11 @@ class JSRuntime implements Runtime, BoundProgram {
             `builtin '${builtinSourceName(source)}' is not provided by this context`,
           );
         }
-        this.shared.structs.assertValue(
+        this.structs.assertValue(
           spec.layout,
           value,
           `provider builtin '${builtinSourceName(source)}'`,
+          this.mustHeapTransaction(),
         );
         this.builtinContextValues.set(bid, value);
         return;
@@ -1401,7 +1453,7 @@ class JSRuntime implements Runtime, BoundProgram {
     this.suspendedRow = -1;
     this.cursor = row;
     this.executedRow = row;
-    const transaction = this.shared.heap.beginTransaction(`row:${row}`);
+    const transaction = this.heap.begin(`row:${row}`);
     this.heapTransaction = transaction;
     this.activationSnapshot = this.captureActivation(
       this.mustRoot(),
@@ -1437,23 +1489,17 @@ class JSRuntime implements Runtime, BoundProgram {
           stagedInitializations,
         );
       }
-      const heapCommit = transaction.prepareCommit(
-        this.heapCommitRoots(
-          provisional ? 'provisional-candidate' : 'final-candidate',
-        ),
-      );
       const rowPublication = this.snapshotPublication(
         this.wantsDenseOutputs(row),
       );
       if (provisional) {
-        heapCommit.commit();
+        transaction.commit();
         this.heapTransaction = null;
         this.varipSnapshot = null;
         this.activationSnapshot = null;
         provisionalPublication = rowPublication;
       } else {
         this.pendingFinalCommit = {
-          heap: heapCommit,
           publication: rowPublication,
         };
       }
@@ -1600,9 +1646,9 @@ class JSRuntime implements Runtime, BoundProgram {
     }
     const pending = this.pendingFinalCommit;
     if (pending === null || this.heapTransaction === null) {
-      return fatal(`commitRow(${row}) has no prepared final transition`);
+      return fatal(`commitRow(${row}) has no pending final transition`);
     }
-    pending.heap.commit();
+    this.heapTransaction.commit();
     this.commitFrame(this.mustRoot());
     for (const ring of this.requestRings) {
       ring?.commit();
@@ -1647,7 +1693,10 @@ class JSRuntime implements Runtime, BoundProgram {
     this.disposed = true;
     this.shared.runtimes.delete(this);
     if (!this.ownsShared) {
+      this.heapTransaction = null;
+      this.pendingFinalCommit = null;
       this.releaseOwnedFixedValueStorage();
+      this.heap.dispose();
       return;
     }
     this.shared.disposed = true;
@@ -1658,7 +1707,10 @@ class JSRuntime implements Runtime, BoundProgram {
     this.pendingFinalCommit = null;
     for (const runtime of this.shared.runtimes) {
       runtime.disposed = true;
+      runtime.heapTransaction = null;
+      runtime.pendingFinalCommit = null;
       runtime.releaseOwnedFixedValueStorage();
+      runtime.heap.dispose();
     }
     this.releaseOwnedFixedValueStorage();
     for (const builder of this.shared.resultBuilders) {
@@ -1666,7 +1718,7 @@ class JSRuntime implements Runtime, BoundProgram {
     }
     this.shared.resultBuilders.clear();
     this.shared.runtimes.clear();
-    this.shared.heap.dispose();
+    this.heap.dispose();
     if (this.shared.fixedValueStorage.usedLogicalBytes !== 0) {
       return fatal(
         `fixed-value storage leaked ${this.shared.fixedValueStorage.usedLogicalBytes} bytes at disposal`,
@@ -1683,7 +1735,10 @@ class JSRuntime implements Runtime, BoundProgram {
     }
     this.disposed = true;
     this.shared.runtimes.delete(this);
+    this.heapTransaction = null;
+    this.pendingFinalCommit = null;
     this.releaseOwnedFixedValueStorage();
+    this.heap.dispose();
   }
 
   private releaseRingStorage(): void {
@@ -1776,10 +1831,7 @@ class JSRuntime implements Runtime, BoundProgram {
     }
   }
 
-  visitHeapCommitRoots(
-    mode: RingCommitMode,
-    visit: (ref: StorageRef<unknown>) => void,
-  ): void {
+  visitRoots(mode: RingCommitMode, visit: (ref: Ref<unknown>) => void): void {
     this.visitFrameCommit(this.mustRoot(), mode, visit);
     for (const ring of this.requestRings) {
       ring?.visitCommitValues(
@@ -1801,9 +1853,7 @@ class JSRuntime implements Runtime, BoundProgram {
     }
   }
 
-  visitHeapTransactionSafetyRoots(
-    visit: (ref: StorageRef<unknown>) => void,
-  ): void {
+  visitSafetyRoots(visit: (ref: Ref<unknown>) => void): void {
     this.visitFrameTransactionSafety(this.mustRoot(), visit);
     for (const ring of this.requestRings) {
       ring?.visitTransactionSafetyValues(value =>
@@ -1815,54 +1865,24 @@ class JSRuntime implements Runtime, BoundProgram {
     }
   }
 
-  private heapCommitRoots(mode: RingCommitMode): StorageRef<unknown>[] {
-    const roots: StorageRef<unknown>[] = [];
-    for (const runtime of this.shared.runtimes) {
-      runtime.visitHeapCommitRoots(
-        runtime === this ? mode : 'committed-only',
-        ref => roots.push(ref),
-      );
-    }
-    for (const builder of this.shared.resultBuilders) {
-      builder.runtime.visitResultBuilderCandidate(builder, ref =>
-        roots.push(ref),
-      );
-      builder.values.forEach(value =>
-        this.visitValueStorage(builder.layout, value, ref => roots.push(ref)),
-      );
-    }
+  private discoverRoots(mode: RingCommitMode): Ref<unknown>[] {
+    const roots: Ref<unknown>[] = [];
+    this.visitRoots(mode, ref => roots.push(ref));
     return roots;
   }
 
-  private visitResultBuilderCandidate(
-    builder: ResultBuilder,
-    visit: (ref: StorageRef<unknown>) => void,
-  ): void {
-    if (builder.runtime !== this || this.executedRow !== this.committedRows) {
-      return;
-    }
-    const ring = this.mustRoot().rings[builder.resultSlot];
-    if (ring === undefined) {
-      return fatal(
-        `result builder refers to unknown slot ${builder.resultSlot}`,
-      );
-    }
-    this.visitValueStorage(builder.layout, ring.peek(), visit);
-  }
-
   private collectShared(mode: RingCommitMode): void {
-    const committedRoots = this.heapCommitRoots(mode);
+    const committedRoots = this.discoverRoots(mode);
     const roots = [...committedRoots];
-    for (const runtime of this.shared.runtimes) {
-      runtime.visitHeapTransactionSafetyRoots(ref => roots.push(ref));
-    }
-    this.shared.heap.collect(roots, committedRoots);
+    this.visitSafetyRoots(ref => roots.push(ref));
+    this.heap.replaceRoots(roots);
+    this.heap.collect();
   }
 
   private visitFrameCommit(
     frame: FrameImpl,
     mode: RingCommitMode,
-    visit: (ref: StorageRef<unknown>) => void,
+    visit: (ref: Ref<unknown>) => void,
   ): void {
     frame.rings.forEach((ring, slot) => {
       const local = frame.layout.locals[slot];
@@ -1889,7 +1909,7 @@ class JSRuntime implements Runtime, BoundProgram {
 
   private visitFrameTransactionSafety(
     frame: FrameImpl,
-    visit: (ref: StorageRef<unknown>) => void,
+    visit: (ref: Ref<unknown>) => void,
   ): void {
     for (const ring of frame.rings) {
       ring.visitTransactionSafetyValues(value =>
@@ -1906,9 +1926,9 @@ class JSRuntime implements Runtime, BoundProgram {
   private visitValueStorage(
     layout: LayoutId,
     value: Value,
-    visit: (ref: StorageRef<unknown>) => void,
+    visit: (ref: Ref<unknown>) => void,
   ): void {
-    this.shared.aggregateLayouts.visitStorageRefs(layout, value, visit);
+    this.shared.aggregateLayouts.visitRefs(layout, value, visit);
   }
 
   private discardTransactionScratch(frame: FrameImpl): void {
@@ -2033,10 +2053,11 @@ class JSRuntime implements Runtime, BoundProgram {
         value = this.mustBuiltinContextValue(bid);
         break;
     }
-    this.shared.structs.assertValue(
+    this.structs.assertValue(
       spec.layout,
       value,
       `builtin '${builtinSourceName(source)}'`,
+      this.mustHeapTransaction(),
     );
     return value;
   }
@@ -2054,7 +2075,12 @@ class JSRuntime implements Runtime, BoundProgram {
     if (ring === undefined) {
       return fatal(`write to unknown frame slot ${slot}`);
     }
-    this.shared.structs.assertValue(ring.layout, v, 'Ring write');
+    this.structs.assertValue(
+      ring.layout,
+      v,
+      'Ring write',
+      this.mustHeapTransaction(),
+    );
     ring.setScratch(v);
   }
 
@@ -2088,10 +2114,11 @@ class JSRuntime implements Runtime, BoundProgram {
     if (frame.scratchInitialization[slot]) {
       return fatal(`frame ${frame.fid} slot ${slot} is already initialized`);
     }
-    this.shared.structs.assertValue(
+    this.structs.assertValue(
       ring.layout,
       v,
       'Persistent initialization',
+      this.mustHeapTransaction(),
     );
     ring.setScratch(v);
     frame.scratchInitialization[slot] = true;
@@ -2104,23 +2131,28 @@ class JSRuntime implements Runtime, BoundProgram {
     }
   }
 
-  newStruct(layout: LayoutId, fields: readonly Value[]): StorageRef<unknown> {
+  newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown> {
     if (this.phase !== 'executing') {
       return fatal('newStruct outside the module execution phase');
     }
-    return this.shared.structs.newStruct(
-      this.mustHeapTransaction(),
+    return this.structs.newStruct(this.mustHeapTransaction(), layout, fields);
+  }
+
+  requireStruct(value: Value, layout: LayoutId): Ref<unknown> {
+    return this.structs.requireStruct(
+      value,
       layout,
-      fields,
+      this.mustHeapTransaction(),
     );
   }
 
-  requireStruct(value: Value, layout: LayoutId): StorageRef<unknown> {
-    return this.shared.structs.requireStruct(value, layout);
-  }
-
   structField(value: Value, ownerLayout: LayoutId, index: number): Value {
-    return this.shared.structs.field(value, ownerLayout, index);
+    return this.structs.field(
+      value,
+      ownerLayout,
+      index,
+      this.mustHeapTransaction(),
+    );
   }
 
   storeStructField(
@@ -2129,7 +2161,7 @@ class JSRuntime implements Runtime, BoundProgram {
     index: number,
     replacement: Value,
   ): void {
-    this.shared.structs.storeField(
+    this.structs.storeField(
       this.mustHeapTransaction(),
       value,
       ownerLayout,
@@ -2167,7 +2199,7 @@ class JSRuntime implements Runtime, BoundProgram {
   }
 
   collectionEntries(value: Value): CollectionEntries {
-    return this.collections.entries(value);
+    return this.collections.entries(value, this.mustHeapTransaction());
   }
 
   request(rid: number, offset: number): Value {
@@ -2278,10 +2310,11 @@ class JSRuntime implements Runtime, BoundProgram {
     if (spec === undefined) {
       return fatal(`effect emission references unknown effect ${effectId}`);
     }
-    this.shared.structs.assertValue(
+    this.structs.assertValue(
       spec.layout,
       payload,
       `effect ${effectId} payload`,
+      this.mustHeapTransaction(),
     );
     if (!this.wantsEffects()) {
       return;
@@ -2323,7 +2356,12 @@ class JSRuntime implements Runtime, BoundProgram {
           this.logicalEffectValue(
             layout.fields[index].layout,
             field.value,
-            this.shared.structs.field(value, layoutId, index),
+            this.structs.field(
+              value,
+              layoutId,
+              index,
+              this.mustHeapTransaction(),
+            ),
           ),
         ),
       ),

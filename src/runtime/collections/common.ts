@@ -12,18 +12,25 @@ import {
   type MatrixValue,
   type Value,
 } from '../value';
-import type {Heap, HeapTransaction} from '../heap';
+import type {HeapTransaction, Ref} from '../heap';
 import {
   type LayoutId,
   type ValueLayout,
   ValueLayoutRegistry,
 } from '../value-layout';
 
-export interface CollectionContext {
-  readonly heap: Heap;
-  readonly transaction: HeapTransaction;
+export interface CollectionReader {
+  read<V>(ref: Ref<V>): Readonly<V>;
+}
+
+export interface CollectionReadContext {
+  readonly transaction: CollectionReader;
   readonly layouts: ValueLayoutRegistry;
   readonly assertValue: (layout: LayoutId, value: Value, where: string) => void;
+}
+
+export interface CollectionContext extends CollectionReadContext {
+  readonly transaction: HeapTransaction;
   readonly maxElements: number;
 }
 

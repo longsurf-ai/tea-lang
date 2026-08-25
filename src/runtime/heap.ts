@@ -1,15 +1,18 @@
-// Purpose: Type-neutral storage arena with one explicit allocation/mutation transaction, prepared commit, deterministic reachability accounting, and stale-reference guards.
+// Purpose: Typed transactional storage arena with precise roots, stop-the-world Mark-Sweep collection, deterministic limits, and stale-reference guards.
 
 import {fatal} from '../base/print';
 import {ExecutionError} from './errors';
 
-declare const storageRefBrand: unique symbol;
+declare const refBrand: unique symbol;
 
-export interface StorageRef<TPayload = unknown> {
-  readonly [storageRefBrand]: TPayload;
+/** An opaque handle whose type parameter is the payload stored in one cell. */
+export interface Ref<V = unknown> {
+  readonly [refBrand]: V;
 }
 
-export function isStorageRef(value: unknown): value is StorageRef<unknown> {
+export type AnyRef = Ref<unknown>;
+
+export function isRef(value: unknown): value is AnyRef {
   return (
     (typeof value === 'object' || typeof value === 'function') &&
     value !== null &&
@@ -17,47 +20,32 @@ export function isStorageRef(value: unknown): value is StorageRef<unknown> {
   );
 }
 
-export type DescriptorId = symbol;
+export type TypeId = symbol;
 export type TransactionKey = string | number;
 
-export interface StorageTracer {
-  storage(ref: StorageRef<unknown>): void;
-}
-
-export type StorageJournalKey = string | number | symbol;
-
-export interface PreparedStorageEdit<TUndo> {
-  readonly key: StorageJournalKey;
-  readonly undo: TUndo;
-}
-
-export interface StorageMutationDescriptor<TPayload, TEdit, TUndo> {
-  // This is the throwing half of a mutation. It validates the edit and
-  // captures everything restore needs before the payload changes.
-  prepare(
-    payload: Readonly<TPayload>,
-    edit: Readonly<TEdit>,
-  ): PreparedStorageEdit<TUndo>;
-  // References introduced by the edit are checked before apply so apply and
-  // restore can remain nonthrowing operations.
-  traceEdit(edit: Readonly<TEdit>, tracer: StorageTracer): void;
-  apply(payload: TPayload, edit: Readonly<TEdit>): void;
-  restore(payload: TPayload, key: StorageJournalKey, undo: TUndo): void;
-}
-
-export interface StorageDescriptor<
-  TPayload,
-  TArgs,
-  TEdit = never,
-  TUndo = never,
-> {
-  readonly id: DescriptorId;
-  readonly debugName: string;
-  logicalBytesFor(args: Readonly<TArgs>): number;
-  create(args: TArgs): TPayload;
-  trace(payload: Readonly<TPayload>, tracer: StorageTracer): void;
-  logicalBytes(payload: Readonly<TPayload>): number;
-  readonly mutation?: StorageMutationDescriptor<TPayload, TEdit, TUndo>;
+/** Runtime policy for constructing, accounting, and tracing one payload type. */
+export interface TypeInfo<A, V> {
+  /** Stable runtime identity used by cell and reference invariant checks. */
+  readonly id: TypeId;
+  /** Human-readable name used only in diagnostics. */
+  readonly name: string;
+  /**
+   * Return the exact bytes directly owned by the payload that `create(args)`
+   * will produce. Referenced child cells are counted separately.
+   */
+  bytesFor(args: Readonly<A>): number;
+  /** Construct the payload stored in one Heap cell. */
+  create(args: A): V;
+  /**
+   * Return the exact bytes directly owned by an existing payload. Referenced
+   * child cells are counted separately.
+   */
+  bytesOf(value: Readonly<V>): number;
+  /**
+   * Visit every direct outgoing Ref in `value`. Heap owns recursive traversal,
+   * sharing, and cycle detection.
+   */
+  trace(value: Readonly<V>, visit: (ref: AnyRef) => void): void;
 }
 
 export interface HeapLimits {
@@ -75,71 +63,69 @@ export const DEFAULT_HEAP_LIMITS: HeapLimits = {
 };
 
 export interface HeapStats {
+  /** All committed cells, including garbage not yet swept. */
   readonly committedCells: number;
+  /** Cells reachable during the most recent collection. */
   readonly retainedCells: number;
+  /** Direct bytes reachable during the most recent collection. */
   readonly retainedLogicalBytes: number;
+  /** Cells allocated by the active transaction. */
   readonly tentativeCells: number;
+  /** Direct bytes owned by active allocations and replacement payloads. */
   readonly tentativeLogicalBytes: number;
 }
 
 export interface Heap {
-  beginTransaction(key: TransactionKey): HeapTransaction;
-  read<TPayload, TArgs = unknown, TEdit = never, TUndo = never>(
-    ref: StorageRef<unknown>,
-    descriptor?: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
-  ): Readonly<TPayload>;
-  collect(
-    roots: Iterable<StorageRef<unknown>>,
-    retainedRoots?: Iterable<StorageRef<unknown>>,
-  ): void;
+  begin(key?: TransactionKey): HeapTransaction;
+  /** Read committed state. Transactional replacements are intentionally hidden. */
+  read<V>(ref: Ref<V>): Readonly<V>;
+  /** Replace the complete precise root snapshot at a collection safe point. */
+  replaceRoots(roots: Iterable<AnyRef>): void;
+  /** Mark from the stored roots and privately reclaim every unmarked cell. */
+  collect(): void;
   dispose(): void;
   stats(): HeapStats;
 }
 
 export interface HeapTransaction {
-  allocate<TPayload, TArgs, TEdit = never, TUndo = never>(
-    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
-    args: TArgs,
-  ): StorageRef<TPayload>;
-  mutate<TPayload, TArgs, TEdit, TUndo>(
-    ref: StorageRef<unknown>,
-    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
-    edit: TEdit,
-  ): void;
-  prepareCommit(
-    candidateRoots: Iterable<StorageRef<unknown>>,
-  ): PreparedHeapCommit;
+  allocate<A, V>(info: TypeInfo<A, V>, args: A): Ref<V>;
+  /** Read this transaction's replacement first, then committed state. */
+  read<V>(ref: Ref<V>): Readonly<V>;
+  /** Stage a complete replacement payload for the referenced identity. */
+  write<V>(ref: Ref<V>, value: V): void;
+  commit(): void;
   abort(): void;
 }
 
-export interface PreparedHeapCommit {
-  commit(): void;
-}
-
 type CellState = 'tentative' | 'committed';
-type TransactionState = 'active' | 'prepared' | 'committed' | 'aborted';
+type TransactionState = 'active' | 'committed' | 'aborted';
 
 interface RefRecord {
   readonly arena: HeapArena;
   readonly slot: number;
   readonly version: number;
-  readonly descriptor: DescriptorId;
+  readonly type: TypeId;
 }
 
 interface Cell {
   readonly version: number;
-  readonly descriptor: StorageDescriptor<unknown, unknown, unknown, unknown>;
-  readonly payload: unknown;
-  readonly logicalBytes: number;
+  readonly info: ErasedTypeInfo;
+  payload: unknown;
+  bytes: number;
   state: CellState;
   transactionId: number | null;
 }
 
-interface UndoEntry {
-  readonly slot: number;
-  readonly key: StorageJournalKey;
-  readonly mutation: StorageMutationDescriptor<unknown, unknown, unknown>;
-  readonly undo: unknown;
+interface PendingWrite {
+  readonly payload: unknown;
+  readonly bytes: number;
+}
+
+interface ErasedTypeInfo {
+  readonly id: TypeId;
+  readonly name: string;
+  bytesOf(value: unknown): number;
+  trace(value: unknown, visit: (ref: AnyRef) => void): void;
 }
 
 const REFS = new WeakMap<object, RefRecord>();
@@ -151,11 +137,22 @@ function limit(value: number, name: string): number {
   return value;
 }
 
+function bytes(value: number, info: ErasedTypeInfo, source: string) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    return fatal(
+      `type info '${info.name}' returned invalid ${source} bytes ${value}`,
+    );
+  }
+  return value;
+}
+
 export class HeapArena implements Heap {
   private readonly limits: HeapLimits;
   private readonly cells: (Cell | null)[] = [];
   private readonly versions: number[] = [];
   private readonly free: number[] = [];
+  private roots: readonly AnyRef[] = [];
+  private rootsFresh = true;
   private transaction: TransactionImpl | null = null;
   private nextTransactionId = 1;
   private disposed = false;
@@ -185,7 +182,7 @@ export class HeapArena implements Heap {
     };
   }
 
-  beginTransaction(key: TransactionKey): HeapTransaction {
+  begin(key: TransactionKey = 'transaction'): HeapTransaction {
     this.assertLive();
     if (this.transaction !== null && !this.transaction.terminal) {
       return fatal(
@@ -198,63 +195,61 @@ export class HeapArena implements Heap {
     return transaction;
   }
 
-  read<TPayload, TArgs = unknown, TEdit = never, TUndo = never>(
-    ref: StorageRef<unknown>,
-    descriptor?: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
-  ): Readonly<TPayload> {
+  read<V>(ref: Ref<V>): Readonly<V> {
     this.assertLive();
-    const record = this.refRecord(ref);
-    const cell = this.cell(record);
-    if (descriptor !== undefined && descriptor.id !== record.descriptor) {
-      return fatal(
-        `storage descriptor mismatch: expected '${descriptor.debugName}'`,
-      );
+    const cell = this.cell(this.refRecord(ref));
+    if (cell.state !== 'committed') {
+      return fatal('tentative Ref is readable only through its transaction');
     }
-    if (cell.state === 'tentative') {
-      const transaction = this.transaction;
-      if (
-        transaction === null ||
-        transaction.terminal ||
-        cell.transactionId !== transaction.id
-      ) {
-        return fatal(
-          'tentative StorageRef is not owned by the current transaction',
-        );
-      }
-    }
-    return cell.payload as Readonly<TPayload>;
+    return cell.payload as Readonly<V>;
   }
 
-  collect(
-    roots: Iterable<StorageRef<unknown>>,
-    retainedRoots?: Iterable<StorageRef<unknown>>,
-  ): void {
+  replaceRoots(roots: Iterable<AnyRef>): void {
     this.assertLive();
-    if (this.transaction !== null && !this.transaction.terminal) {
-      return fatal(
-        `cannot collect while Heap transaction is ${this.transaction.state}`,
-      );
-    }
-    // Snapshot once: an Iterable may be a single-use generator. When the
-    // caller supplies one root view, physical and retained accounting must
-    // see the identical sequence.
-    const physicalRootList = [...roots];
-    const retainedRootList =
-      retainedRoots === undefined ? physicalRootList : [...retainedRoots];
-    const reachable = this.traceClosure(physicalRootList, null, false);
-    const retained = this.traceClosure(retainedRootList, null, false);
-    for (const slot of retained) {
-      if (!reachable.has(slot)) {
-        return fatal('retained Heap roots are absent from physical roots');
+    this.assertNoActiveTransaction('replace roots');
+    const snapshot = [...new Set(roots)];
+    for (const ref of snapshot) {
+      const cell = this.cell(this.refRecord(ref));
+      if (cell.state !== 'committed') {
+        return fatal('Heap root refers to tentative storage');
       }
+    }
+    this.roots = snapshot;
+    this.rootsFresh = true;
+  }
+
+  collect(): void {
+    this.assertLive();
+    this.assertNoActiveTransaction('collect');
+    if (!this.rootsFresh) {
+      return fatal('cannot collect before refreshing Heap roots');
+    }
+    const reachable = this.traceClosure(this.roots);
+    let retainedBytes = 0;
+    for (const slot of reachable) {
+      const cell = this.cells[slot];
+      if (cell === null || cell === undefined) {
+        return fatal(`marked Heap slot ${slot} disappeared`);
+      }
+      retainedBytes += cell.bytes;
+    }
+    if (
+      reachable.size > this.limits.maxStorageCells ||
+      retainedBytes > this.limits.maxLogicalBytes
+    ) {
+      throw new ExecutionError(
+        'HEAP_LIMIT_EXCEEDED',
+        'live Heap storage limit exceeded',
+      );
     }
     for (let slot = 0; slot < this.cells.length; slot += 1) {
       const cell = this.cells[slot];
       if (cell?.state === 'committed' && !reachable.has(slot)) {
-        this.release(slot);
+        this.deallocate(slot);
       }
     }
-    this.updateRetained(retained);
+    this.retainedCells = reachable.size;
+    this.retainedLogicalBytes = retainedBytes;
   }
 
   dispose(): void {
@@ -266,9 +261,10 @@ export class HeapArena implements Heap {
     }
     for (let slot = 0; slot < this.cells.length; slot += 1) {
       if (this.cells[slot] !== null) {
-        this.release(slot);
+        this.deallocate(slot);
       }
     }
+    this.roots = [];
     this.retainedCells = 0;
     this.retainedLogicalBytes = 0;
     this.disposed = true;
@@ -276,37 +272,32 @@ export class HeapArena implements Heap {
 
   stats(): HeapStats {
     let committedCells = 0;
-    let tentativeCells = 0;
-    let tentativeLogicalBytes = 0;
     for (const cell of this.cells) {
       if (cell?.state === 'committed') {
         committedCells += 1;
-      } else if (cell?.state === 'tentative') {
-        tentativeCells += 1;
-        tentativeLogicalBytes += cell.logicalBytes;
       }
     }
+    const transaction =
+      this.transaction !== null && !this.transaction.terminal
+        ? this.transaction
+        : null;
     return {
       committedCells,
       retainedCells: this.retainedCells,
       retainedLogicalBytes: this.retainedLogicalBytes,
-      tentativeCells,
-      tentativeLogicalBytes,
+      tentativeCells: transaction?.tentative.size ?? 0,
+      tentativeLogicalBytes: transaction?.transientBytes ?? 0,
     };
   }
 
-  allocate<TPayload, TArgs, TEdit, TUndo>(
+  allocate<A, V>(
     transaction: TransactionImpl,
-    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
-    args: TArgs,
-  ): StorageRef<TPayload> {
-    this.assertCurrent(transaction, 'active');
-    const estimatedBytes = descriptor.logicalBytesFor(args);
-    if (!Number.isSafeInteger(estimatedBytes) || estimatedBytes < 0) {
-      return fatal(
-        `storage descriptor '${descriptor.debugName}' returned invalid args logical bytes ${estimatedBytes}`,
-      );
-    }
+    info: TypeInfo<A, V>,
+    args: A,
+  ): Ref<V> {
+    this.assertCurrent(transaction);
+    const erased = info as unknown as ErasedTypeInfo;
+    const estimatedBytes = bytes(info.bytesFor(args), erased, 'argument');
     if (
       transaction.tentative.size + 1 > this.limits.maxTransientStorageCells ||
       transaction.transientBytes + estimatedBytes >
@@ -317,183 +308,120 @@ export class HeapArena implements Heap {
         'transient Heap allocation limit exceeded',
       );
     }
-    const payload = descriptor.create(args);
-    const bytes = descriptor.logicalBytes(payload);
-    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+
+    const payload = info.create(args);
+    const actualBytes = bytes(info.bytesOf(payload), erased, 'payload');
+    if (actualBytes !== estimatedBytes) {
       return fatal(
-        `storage descriptor '${descriptor.debugName}' returned invalid logical bytes ${bytes}`,
-      );
-    }
-    if (bytes !== estimatedBytes) {
-      return fatal(
-        `storage descriptor '${descriptor.debugName}' args estimate ${estimatedBytes} disagrees with created logical bytes ${bytes}`,
+        `type info '${info.name}' argument estimate ${estimatedBytes} disagrees with created bytes ${actualBytes}`,
       );
     }
 
     const slot = this.free.pop() ?? this.cells.length;
     const version = (this.versions[slot] ?? 0) + 1;
     this.versions[slot] = version;
-    const erased = descriptor as unknown as StorageDescriptor<
-      unknown,
-      unknown,
-      unknown,
-      unknown
-    >;
     this.cells[slot] = {
       version,
-      descriptor: erased,
+      info: erased,
       payload,
-      logicalBytes: bytes,
+      bytes: actualBytes,
       state: 'tentative',
       transactionId: transaction.id,
     };
-    const ref = Object.freeze({}) as StorageRef<TPayload>;
+    const ref = Object.freeze({}) as Ref<V>;
     REFS.set(ref as object, {
       arena: this,
       slot,
       version,
-      descriptor: descriptor.id,
+      type: info.id,
     });
     transaction.tentative.add(slot);
-    transaction.transientBytes += bytes;
+    transaction.transientBytes += actualBytes;
 
     try {
-      descriptor.trace(payload, {
-        storage: child => this.assertPayloadRef(transaction, child),
-      });
+      this.tracePayload(transaction, erased, payload);
     } catch (error) {
       transaction.tentative.delete(slot);
-      transaction.transientBytes -= bytes;
-      this.release(slot);
+      transaction.transientBytes -= actualBytes;
+      this.deallocate(slot);
       throw error;
     }
     return ref;
   }
 
-  mutate<TPayload, TArgs, TEdit, TUndo>(
-    transaction: TransactionImpl,
-    ref: StorageRef<unknown>,
-    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
-    edit: TEdit,
-  ): void {
-    this.assertCurrent(transaction, 'active');
+  readTransaction<V>(transaction: TransactionImpl, ref: Ref<V>): Readonly<V> {
+    this.assertCurrent(transaction);
     const record = this.refRecord(ref);
     const cell = this.cell(record);
-    if (descriptor.id !== record.descriptor) {
-      return fatal(
-        `storage descriptor mismatch: expected '${descriptor.debugName}'`,
-      );
-    }
     if (cell.state === 'tentative' && cell.transactionId !== transaction.id) {
-      return fatal(
-        'tentative StorageRef is not owned by the current transaction',
-      );
+      return fatal('tentative Ref belongs to another transaction');
     }
-    const mutation = descriptor.mutation;
-    if (mutation === undefined) {
-      return fatal(
-        `storage descriptor '${descriptor.debugName}' does not admit mutation`,
-      );
-    }
-
-    // prepare and traceEdit are the only potentially throwing descriptor
-    // operations. Complete both before changing the payload.
-    const prepared = mutation.prepare(cell.payload as Readonly<TPayload>, edit);
-    mutation.traceEdit(edit, {
-      storage: child => this.assertPayloadRef(transaction, child),
-    });
-
-    if (cell.state === 'committed') {
-      transaction.recordUndo(
-        record.slot,
-        prepared.key,
-        mutation as unknown as StorageMutationDescriptor<
-          unknown,
-          unknown,
-          unknown
-        >,
-        prepared.undo,
-      );
-    }
-    mutation.apply(cell.payload as TPayload, edit);
-    const bytes = descriptor.logicalBytes(cell.payload as Readonly<TPayload>);
-    if (bytes !== cell.logicalBytes) {
-      return fatal(
-        `storage descriptor '${descriptor.debugName}' changed logical bytes during in-place mutation`,
-      );
-    }
+    const pending = transaction.writes.get(record.slot);
+    return (pending?.payload ?? cell.payload) as Readonly<V>;
   }
 
-  prepare(
-    transaction: TransactionImpl,
-    candidateRoots: Iterable<StorageRef<unknown>>,
-  ): PreparedHeapCommit {
-    this.assertCurrent(transaction, 'active');
-    const roots = [...candidateRoots];
-    const reachable = this.traceClosure(roots, transaction, true);
-    let bytes = 0;
-    for (const slot of reachable) {
-      const cell = this.cells[slot];
-      if (cell === null || cell === undefined) {
-        return fatal(`reachable Heap slot ${slot} disappeared during prepare`);
-      }
-      bytes += cell.logicalBytes;
+  write<V>(transaction: TransactionImpl, ref: Ref<V>, payload: V): void {
+    this.assertCurrent(transaction);
+    const record = this.refRecord(ref);
+    const cell = this.cell(record);
+    if (cell.state === 'tentative' && cell.transactionId !== transaction.id) {
+      return fatal('tentative Ref belongs to another transaction');
     }
-    if (
-      reachable.size > this.limits.maxStorageCells ||
-      bytes > this.limits.maxLogicalBytes
-    ) {
+    const nextBytes = bytes(
+      cell.info.bytesOf(payload),
+      cell.info,
+      'replacement payload',
+    );
+    this.tracePayload(transaction, cell.info, payload);
+
+    if (cell.state === 'tentative') {
+      const nextTransient = transaction.transientBytes - cell.bytes + nextBytes;
+      if (nextTransient > this.limits.maxTransientLogicalBytes) {
+        throw new ExecutionError(
+          'HEAP_LIMIT_EXCEEDED',
+          'transient Heap write limit exceeded',
+        );
+      }
+      cell.payload = payload;
+      cell.bytes = nextBytes;
+      transaction.transientBytes = nextTransient;
+      return;
+    }
+
+    const previous = transaction.writes.get(record.slot);
+    const nextTransient =
+      transaction.transientBytes - (previous?.bytes ?? 0) + nextBytes;
+    if (nextTransient > this.limits.maxTransientLogicalBytes) {
       throw new ExecutionError(
         'HEAP_LIMIT_EXCEEDED',
-        'retained Heap storage limit exceeded',
+        'transient Heap write limit exceeded',
       );
     }
-    const promote = [...transaction.tentative].filter(slot =>
-      reachable.has(slot),
-    );
-    const discard = [...transaction.tentative].filter(
-      slot => !reachable.has(slot),
-    );
-    transaction.state = 'prepared';
-    return new PreparedCommit(
-      this,
-      transaction,
-      reachable,
-      bytes,
-      promote,
-      discard,
-    );
+    transaction.writes.set(record.slot, {payload, bytes: nextBytes});
+    transaction.transientBytes = nextTransient;
   }
 
-  commit(
-    commit: PreparedCommit,
-    transaction: TransactionImpl,
-    reachable: ReadonlySet<number>,
-    bytes: number,
-    promote: readonly number[],
-    discard: readonly number[],
-  ): void {
-    this.assertCurrent(transaction, 'prepared');
-    if (commit.consumed) {
-      return fatal('Heap commit was already consumed');
+  commit(transaction: TransactionImpl): void {
+    this.assertCurrent(transaction);
+    for (const [slot, pending] of transaction.writes) {
+      const cell = this.cells[slot];
+      if (cell === null || cell === undefined || cell.state !== 'committed') {
+        return fatal(`written Heap slot ${slot} disappeared before commit`);
+      }
+      cell.payload = pending.payload;
+      cell.bytes = pending.bytes;
     }
-    commit.consumed = true;
-    for (const slot of promote) {
+    for (const slot of transaction.tentative) {
       const cell = this.cells[slot];
       if (cell === null || cell === undefined) {
-        return fatal(`prepared Heap slot ${slot} disappeared before commit`);
+        return fatal(`tentative Heap slot ${slot} disappeared before commit`);
       }
       cell.state = 'committed';
       cell.transactionId = null;
     }
-    for (const slot of discard) {
-      this.release(slot);
-    }
-    transaction.tentative.clear();
-    transaction.transientBytes = 0;
-    transaction.clearUndo();
+    transaction.clear();
     transaction.state = 'committed';
-    this.updateRetained(reachable, bytes);
+    this.rootsFresh = false;
   }
 
   abort(transaction: TransactionImpl): void {
@@ -501,102 +429,68 @@ export class HeapArena implements Heap {
       return fatal(`cannot abort Heap transaction after ${transaction.state}`);
     }
     if (this.transaction !== transaction) {
-      return fatal(
-        'cannot abort a Heap transaction owned by another arena state',
-      );
+      return fatal('cannot abort a Heap transaction owned by another arena');
     }
-    transaction.restoreUndo(this.cells);
     for (const slot of transaction.tentative) {
-      this.release(slot);
+      this.deallocate(slot);
     }
-    transaction.tentative.clear();
-    transaction.transientBytes = 0;
+    transaction.clear();
     transaction.state = 'aborted';
   }
 
-  private assertPayloadRef(
+  private tracePayload(
     transaction: TransactionImpl,
-    ref: StorageRef<unknown>,
+    info: ErasedTypeInfo,
+    payload: unknown,
   ): void {
-    const record = this.refRecord(ref);
-    const cell = this.cell(record);
+    info.trace(payload, child => this.assertPayloadRef(transaction, child));
+  }
+
+  private assertPayloadRef(transaction: TransactionImpl, ref: AnyRef): void {
+    const cell = this.cell(this.refRecord(ref));
     if (cell.state === 'committed') {
       return;
     }
     if (cell.transactionId !== transaction.id) {
-      fatal(
-        'storage payload points to tentative storage from another transaction',
-      );
+      fatal('payload points to tentative storage from another transaction');
     }
   }
 
-  private traceClosure(
-    roots: Iterable<StorageRef<unknown>>,
-    transaction: TransactionImpl | null,
-    allowTentative: boolean,
-  ): Set<number> {
-    const reachable = new Set<number>();
-    const pending = [...roots];
-    while (pending.length > 0) {
-      const ref = pending.pop();
+  private traceClosure(roots: Iterable<AnyRef>): Set<number> {
+    const marked = new Set<number>();
+    const worklist = [...roots];
+    while (worklist.length > 0) {
+      const ref = worklist.pop();
       if (ref === undefined) {
         continue;
       }
       const record = this.refRecord(ref);
       const cell = this.cell(record);
-      if (cell.state === 'tentative') {
-        if (
-          !allowTentative ||
-          transaction === null ||
-          cell.transactionId !== transaction.id
-        ) {
-          fatal(
-            'commit root reaches tentative storage outside its transaction',
-          );
-        }
+      if (cell.state !== 'committed') {
+        return fatal('Mark-Sweep reached tentative storage');
       }
-      if (reachable.has(record.slot)) {
+      if (marked.has(record.slot)) {
         continue;
       }
-      reachable.add(record.slot);
-      cell.descriptor.trace(cell.payload as Readonly<unknown>, {
-        storage: child => pending.push(child),
-      });
+      marked.add(record.slot);
+      cell.info.trace(cell.payload, child => worklist.push(child));
     }
-    return reachable;
+    return marked;
   }
 
-  private updateRetained(
-    reachable: ReadonlySet<number>,
-    knownBytes?: number,
-  ): void {
-    let bytes = knownBytes ?? 0;
-    if (knownBytes === undefined) {
-      for (const slot of reachable) {
-        const cell = this.cells[slot];
-        if (cell === null || cell === undefined) {
-          return fatal(`retained Heap slot ${slot} is absent`);
-        }
-        bytes += cell.logicalBytes;
-      }
-    }
-    this.retainedCells = reachable.size;
-    this.retainedLogicalBytes = bytes;
-  }
-
-  private refRecord(ref: StorageRef<unknown>): RefRecord {
+  private refRecord(ref: AnyRef): RefRecord {
     if (
       (typeof ref !== 'object' && typeof ref !== 'function') ||
       ref === null
     ) {
-      return fatal('invalid StorageRef');
+      return fatal('invalid Ref');
     }
     const record = REFS.get(ref as object);
     if (record === undefined) {
-      return fatal('forged or unknown StorageRef');
+      return fatal('forged or unknown Ref');
     }
     if (record.arena !== this) {
-      return fatal('StorageRef belongs to another Heap arena');
+      return fatal('Ref belongs to another Heap arena');
     }
     return record;
   }
@@ -604,18 +498,18 @@ export class HeapArena implements Heap {
   private cell(record: RefRecord): Cell {
     const cell = this.cells[record.slot];
     if (cell === null || cell === undefined) {
-      return fatal('stale StorageRef');
+      return fatal('stale Ref');
     }
     if (cell.version !== record.version) {
-      return fatal('stale StorageRef version');
+      return fatal('stale Ref version');
     }
-    if (cell.descriptor.id !== record.descriptor) {
-      return fatal('StorageRef descriptor does not match its cell');
+    if (cell.info.id !== record.type) {
+      return fatal('Ref type does not match its cell');
     }
     return cell;
   }
 
-  private release(slot: number): void {
+  private deallocate(slot: number): void {
     if (this.cells[slot] === null || this.cells[slot] === undefined) {
       return;
     }
@@ -623,17 +517,22 @@ export class HeapArena implements Heap {
     this.free.push(slot);
   }
 
-  private assertCurrent(
-    transaction: TransactionImpl,
-    state: 'active' | 'prepared',
-  ): void {
+  private assertCurrent(transaction: TransactionImpl): void {
     this.assertLive();
     if (this.transaction !== transaction) {
       return fatal('Heap transaction is not current');
     }
-    if (transaction.state !== state) {
+    if (transaction.state !== 'active') {
       return fatal(
-        `Heap transaction '${String(transaction.key)}' is ${transaction.state}, expected ${state}`,
+        `Heap transaction '${String(transaction.key)}' is ${transaction.state}, expected active`,
+      );
+    }
+  }
+
+  private assertNoActiveTransaction(operation: string): void {
+    if (this.transaction !== null && !this.transaction.terminal) {
+      fatal(
+        `cannot ${operation} while Heap transaction is ${this.transaction.state}`,
       );
     }
   }
@@ -648,9 +547,8 @@ export class HeapArena implements Heap {
 class TransactionImpl implements HeapTransaction {
   state: TransactionState = 'active';
   readonly tentative = new Set<number>();
+  readonly writes = new Map<number, PendingWrite>();
   transientBytes = 0;
-  private readonly undo: UndoEntry[] = [];
-  private readonly undoKeys = new Map<number, Set<StorageJournalKey>>();
 
   constructor(
     private readonly arena: HeapArena,
@@ -662,87 +560,29 @@ class TransactionImpl implements HeapTransaction {
     return this.state === 'committed' || this.state === 'aborted';
   }
 
-  allocate<TPayload, TArgs, TEdit = never, TUndo = never>(
-    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
-    args: TArgs,
-  ): StorageRef<TPayload> {
-    return this.arena.allocate(this, descriptor, args);
+  allocate<A, V>(info: TypeInfo<A, V>, args: A): Ref<V> {
+    return this.arena.allocate(this, info, args);
   }
 
-  mutate<TPayload, TArgs, TEdit, TUndo>(
-    ref: StorageRef<unknown>,
-    descriptor: StorageDescriptor<TPayload, TArgs, TEdit, TUndo>,
-    edit: TEdit,
-  ): void {
-    this.arena.mutate(this, ref, descriptor, edit);
+  read<V>(ref: Ref<V>): Readonly<V> {
+    return this.arena.readTransaction(this, ref);
   }
 
-  recordUndo(
-    slot: number,
-    key: StorageJournalKey,
-    mutation: StorageMutationDescriptor<unknown, unknown, unknown>,
-    undo: unknown,
-  ): void {
-    let keys = this.undoKeys.get(slot);
-    if (keys === undefined) {
-      keys = new Set();
-      this.undoKeys.set(slot, keys);
-    }
-    if (keys.has(key)) {
-      return;
-    }
-    keys.add(key);
-    this.undo.push({slot, key, mutation, undo});
+  write<V>(ref: Ref<V>, value: V): void {
+    this.arena.write(this, ref, value);
   }
 
-  restoreUndo(cells: readonly (Cell | null)[]): void {
-    for (let index = this.undo.length - 1; index >= 0; index -= 1) {
-      const entry = this.undo[index];
-      const cell = cells[entry.slot];
-      if (cell === null || cell === undefined) {
-        return fatal(`journaled Heap slot ${entry.slot} disappeared`);
-      }
-      entry.mutation.restore(cell.payload, entry.key, entry.undo);
-    }
-    this.clearUndo();
-  }
-
-  clearUndo(): void {
-    this.undo.length = 0;
-    this.undoKeys.clear();
-  }
-
-  prepareCommit(
-    candidateRoots: Iterable<StorageRef<unknown>>,
-  ): PreparedHeapCommit {
-    return this.arena.prepare(this, candidateRoots);
+  commit(): void {
+    this.arena.commit(this);
   }
 
   abort(): void {
     this.arena.abort(this);
   }
-}
 
-class PreparedCommit implements PreparedHeapCommit {
-  consumed = false;
-
-  constructor(
-    private readonly arena: HeapArena,
-    private readonly transaction: TransactionImpl,
-    private readonly reachable: ReadonlySet<number>,
-    private readonly bytes: number,
-    private readonly promote: readonly number[],
-    private readonly discard: readonly number[],
-  ) {}
-
-  commit(): void {
-    this.arena.commit(
-      this,
-      this.transaction,
-      this.reachable,
-      this.bytes,
-      this.promote,
-      this.discard,
-    );
+  clear(): void {
+    this.tentative.clear();
+    this.writes.clear();
+    this.transientBytes = 0;
   }
 }

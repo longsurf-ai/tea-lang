@@ -830,8 +830,8 @@ describe('aggregate expression and reference-store lowering', () => {
       module.main(executionRuntime(frame, []) as never, frame as never),
     ).toThrow('unexpected mutation array.set');
     // This minimal ABI mock has no HeapTransaction. Generated code performs
-    // the in-place store before the later throw; JSRuntime is responsible for
-    // journaling and restoring it in real execution.
+    // the in-place store before the later throw; the real StructStorageRuntime
+    // stages a whole replacement payload that abort can discard.
     expect((frame.values[0] as TestStructValue).fields[1]).toBe(9);
   });
 });

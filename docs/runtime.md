@@ -42,7 +42,7 @@ generated WGSL artifact + BindInputs[] + injected GPUDevice
 
 Both branches execute artifacts lowered from the same `Program`; neither owns
 a second execution-mode model. `JSRuntime` owns exact value layouts,
-frames, rings, unified Heap storage, the main loop, provisional/commit, and
+frames, rings, context-local Heap storage, the main loop, provisional/commit, and
 request-child scheduling. Hosts vary through the injected DataProvider and
 OutputSink. The GPU runtime owns target data validation, physical packing,
 device dispatch, and readback; Tea state transitions remain in the emitted
@@ -107,15 +107,16 @@ compatibility branches for older generated modules.
 
 An output channel's `type` is the human Tea spelling. The current ABI publishes
 an exhaustive `transport` discriminant projected directly from the checked IR
-type
-  (`int`, `float`, `bool`, `string`, `color`, `enum`, resource, output reference,
-  struct, or aggregate shape). Runtime transports branch only on that field;
+type (`int`, `float`, `bool`, `string`, `color`, `enum`, resource, output
+reference, struct, or aggregate shape). Runtime transports branch only on that field;
 they never recover machine semantics by parsing the display string.
 
-`aggregateLayouts` appears once on the root `TeaModule`. Every request child
-is a `ModuleCode` that inherits the same registry, Heap, and request-context
-budget from `SharedExecutionState`; a child cannot define a second layout-id
-namespace or move storage references across arenas.
+`aggregateLayouts` appears once on the root `TeaModule`. Every request child is
+a `ModuleCode` that inherits the same immutable registry and execution-wide
+request/fixed-value budgets from the shared execution state, but owns an
+independent Heap. Children cannot define a second layout-id namespace, and
+request results cross into the parent only as copied scalars or scalar-only
+tuples; a `Ref` never crosses arenas.
 
 Dense ids (`sid`, `bid`, `pid`, `oid`, `fid`, local slots) are assigned by the
 lowering walk; the manifest is their single source of truth — the runtime
@@ -213,12 +214,12 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
   is a provider-contract invariant violation and fails loudly at the read.
 - int semantics are codegen's job (truncating division, `math.*` int
   overloads); the runtime never re-checks types.
-- A non-null struct value is a source-hidden `StorageRef` to nominal Heap
+- A non-null struct value is a source-hidden typed `Ref` to nominal Heap
   storage. Variables, fields, tuples, calls, returns, collection elements, and
   history copy the reference. The body is transactionally mutable and has no
   per-bar version chain.
 - Array, matrix, and map values are immutable headers over a source-hidden
-  `StorageRef`. Mutators allocate sealed replacement backing and return a new
+  `Ref`. Mutators allocate sealed replacement backing and return a new
   header; they never edit a committed payload. Capacity is implementation
   state and is not exposed to Tea.
 - Storage is runtime-owned and invisible to source code: rings may use compact
@@ -228,7 +229,7 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
 - V1 output/effect channels accept only scalar or resource values. Aggregate
   host ownership is rejected until the ABI defines deep serialization or an
   explicit root lease; a sink cannot silently retain an unregistered
-  `StorageRef`.
+  `Ref`.
 
 ## Typed builtins
 
@@ -328,11 +329,11 @@ Fixed-width value storage has its own shared deterministic budget,
 `BindInputs.maxFixedValueLogicalBytes` (default 64 MiB), separate from
 variable-sized Heap backing. Before allocation, each Ring reserves
 `(scratch + committed capacity) * shallowBytes(layout)`. Materialized request
-result columns reserve the same exact per-layout size: the registered builder
-owns that lease while capturing child rows, transfers it to the merged view,
-and the owning runtime releases it at disposal. Scratch-only bind Rings release
-before final frame allocation, and completed request children release their
-frame/request-Ring leases after result ownership transfers.
+result columns reserve the same exact per-layout size. Child results are copied
+as scalars or scalar-only tuples into that parent-owned column; the merged view
+owns its lease until disposal. Scratch-only bind Rings release before final
+frame allocation, and completed request children release their frame/request-
+Ring leases and independent Heaps after the copy completes.
 
 Module `init` and `bind` run inside a dedicated abort-only Heap transaction. The
 provisional bind frame and every collection backing allocated while computing
@@ -382,24 +383,24 @@ there are no incremental update paths, by construction:
   rebindings survive successful same-row executions. An ordinary `var` retains
   only its first successful same-row initialization candidate; later writes
   still reset to the storage-class baseline.
-- Each execution owns one Heap allocation transaction. Collection mutations may
-  allocate tentative sealed cells, readable only by that transaction. A successful
-  execution first prepares one row commit: Ring candidates, buffered emission
-  state, and the exact reachable tentative Heap closure are all validated
-  and frozen before any internal owner changes.
-- Committing the prepared internal transition is non-throwing: it pushes the Ring
-  heads, promotes reachable tentative storage, discards unreachable tentative
-  storage, commits buffered internal state, and advances the cursor.
-  Final sink delivery happens afterward; a sink failure cannot roll back
-  already-committed Tea state.
-- A provisional success commits struct storage edits, so every alias observes
+- Each execution owns one Heap transaction. Allocation creates tentative cells;
+  a write to an existing identity stages a complete replacement payload, and
+  transactional reads observe that overlay before committed state. Commit
+  installs all replacements and tentative allocations; abort discards them.
+  Ring heads and buffered internal state follow the corresponding successful
+  row transition.
+- After the transaction is terminal, the runtime discovers the complete roots
+  held by its own persistent values, replaces the Heap's stored root snapshot,
+  and may run Mark-Sweep collection. Final sink delivery is post-commit; a sink
+  failure cannot roll back already-committed Tea state.
+- A provisional success commits struct-body replacements, so every alias observes
   them on the next tick. `var`/`varip` select binding candidates, not struct-
   body persistence. The first successful ordinary-`var` initialization retains
   an initialization-only same-row candidate; later ordinary reassignments still
   roll back.
 - A throw or suspension invalidates scratch values, initialization bits,
   tentative frame activation, and buffered emissions, aborts tentative
-  allocations, and restores journaled struct fields. No mutation from the
+  allocations, and discards staged struct replacements. No mutation from the
   failed transaction remains observable.
 
 Emissions carry a `provisional` flag to the sink; alert-class outputs fire
@@ -637,55 +638,58 @@ Adapter selection and deployment policy stay with the host that injects the
 payload construction remain ordinary emitted Tea code inside the shader; the
 GPU runtime recognizes none of them.
 
-## Unified Heap arena
+## Context-local Heap
 
-The Heap is the type-neutral arena for every source-hidden storage identity.
-Its only handle is `StorageRef`: collection headers use it for persistent
-backing, while struct values use it directly for transactionally mutable field
-storage. Storage descriptors own args-byte estimation, payload validation,
-tracing, logical-byte accounting, and any admitted opaque edit contract. Heap
-owns allocation, stale-version/cross-arena/descriptor validation,
-transactions, deterministic limits, and collection.
+The Heap is the type-neutral arena for every source-hidden storage identity in
+one `JSRuntime` context. Its opaque handle is `Ref<V>`: the type parameter ties
+the reference to its payload, collection headers use one for persistent
+backing, and struct values use one directly for their mutable source identity.
+Slot versions reject stale references, arena identity rejects cross-context
+references, and the stored runtime type id rejects mismatched cells.
 
-Before a descriptor may allocate, copy, or validate its args, the Heap checks the
-transient cell limit and the descriptor's exact `logicalBytesFor(args)`
-against the transient byte limit. The resulting payload's `logicalBytes` must
-equal that estimate; disagreement is an internal descriptor-contract failure.
-This makes the transient budget a pre-allocation guard instead of a check on
-an oversized copy that was already built.
+Each payload kind supplies one `TypeInfo<A, V>` policy:
 
-A transaction has exactly one path through
-`active -> prepared -> committed` or `active/prepared -> aborted`. At most one
-nonterminal transaction exists in an arena. `prepareCommit` changes only the
-transaction state and freezes a checked promotion plan; it does not commit or
-discard cells. A committed cell may reference only committed storage, while a
-tentative cell may reference committed storage or storage from the same
-transaction. Abort/discard makes its refs stale.
+- `bytesFor(args)` reports the exact direct bytes before construction;
+- `create(args)` constructs one cell payload;
+- `bytesOf(value)` reports the exact direct bytes of an existing payload; and
+- `trace(value, visit)` visits only its direct outgoing `Ref`s.
 
-Collection descriptors never edit committed backing: mutation allocates a
-replacement cell. A struct descriptor admits field edits through the active
-Heap transaction. Validation and undo capture precede a nonthrowing apply; the
-first edit for one descriptor-provided journal key records one opaque undo
-value. Abort restores those values in reverse order, while commit discards the
-journal. In-place edits preserve the cell's logical byte count.
+Before `create`, the Heap checks the transient cell and byte limits against
+`bytesFor(args)`. The created payload's `bytesOf(value)` must equal that
+estimate; disagreement is an internal type-info contract failure. Referenced
+children are separate cells and are counted separately.
 
-Commit roots are the exact post-commit owner graph: surviving Ring
-cells and candidates, request result Rings/views/builders, and other registered
-runtime owners. Temporary pre-transaction snapshots are safety roots only and are
-not retained or charged after success. Physical collection runs only at a safe
-point after the transaction is terminal and generated/scratch temporaries cannot
-be sole owners. Root and all request-child runtimes share the same arena and
-layout registry.
+At most one active transaction exists in an arena. Allocation creates tentative
+cells readable only through that transaction. A write to a committed identity
+stages a complete replacement payload in a transaction-owned overlay;
+transactional reads consult the overlay first, while `Heap.read` exposes only
+committed state. Commit installs all replacements and makes tentative cells
+committed. Abort deallocates tentative cells and discards the overlay. No
+prepared-commit token, descriptor edit type, undo value, or mutation journal is
+part of the Heap contract.
 
-Struct fields and collection payloads trace the same `StorageRef` graph, so a
-single visited-slot walk handles struct-to-struct, struct-to-collection,
-collection-to-struct, sharing, and cycles. Undo-old referenced values are
-transaction-safety roots only, never post-commit candidates.
+The Heap owns a precise committed root snapshot, but the runtime discovers it:
+at a collection safe point, it scans all Heap-external persistent values in that
+context and calls `replaceRoots`. `collect` then performs stop-the-world,
+non-generational, non-moving Mark-Sweep, with no compaction. Mark starts from
+the stored roots and recursively follows `TypeInfo.trace`; sweep privately
+deallocates every unmarked committed cell and returns its slot to the free list.
+A successful transaction marks the prior root snapshot stale, so collection is
+forbidden until the runtime refreshes it.
 
-Limits count unique reachable cells and the logical bytes owned directly by
-each cell; child cells reached through `StorageRef` are counted separately and
-only once. Transient transaction limits are distinct from retained commit
-limits, so behavior never depends on host-GC timing.
+Struct fields and collection payloads participate in the same `Ref` graph. One
+visited-slot worklist therefore handles struct-to-struct,
+struct-to-collection, collection-to-struct, sharing, and cycles. The runtime
+scans only external owners; `TypeInfo.trace` alone discovers the Heap-internal
+transitive closure.
+
+Transient limits bound active allocations and staged replacement payloads.
+Live limits are checked from the unique marked cells and their direct bytes
+before sweep, so already-committed garbage does not count as retained state.
+Each request child owns an independent Heap and receives the same per-context
+Heap-limit configuration; the request-context count and fixed-width value
+storage budgets remain execution-wide. Request result copying ensures no `Ref`
+crosses between those arenas.
 
 ## Determinism
 

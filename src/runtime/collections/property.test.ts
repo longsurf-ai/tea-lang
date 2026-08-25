@@ -8,12 +8,12 @@ import {
   type CollectionValue,
   type Value,
 } from '../abi';
-import {HeapArena, type HeapTransaction, type StorageRef} from '../heap';
+import {HeapArena, type HeapTransaction, type Ref} from '../heap';
 import {StructStorageRuntime} from '../struct-storage';
 import {
   type AggregateLayoutManifest,
   ValueLayoutRegistry,
-  visitRuntimeValueStorageRefs,
+  visitRuntimeValueRefs,
 } from '../value-layout';
 import {CollectionRuntime} from './index';
 
@@ -84,16 +84,17 @@ function harness(maxElements = 10_000): Harness {
   };
 }
 
-function roots(values: readonly Value[]): StorageRef[] {
-  const result: StorageRef[] = [];
+function roots(values: readonly Value[]): Ref[] {
+  const result: Ref[] = [];
   values.forEach(value =>
-    visitRuntimeValueStorageRefs(value, ref => result.push(ref)),
+    visitRuntimeValueRefs(value, ref => result.push(ref)),
   );
   return result;
 }
 
 function commit(transaction: HeapTransaction, values: readonly Value[]): void {
-  transaction.prepareCommit(roots(values)).commit();
+  void values;
+  transaction.commit();
 }
 
 function call(
@@ -102,9 +103,7 @@ function call(
   layout: number,
   args: readonly Value[],
 ): Value {
-  const transaction = h.heap.beginTransaction(
-    `call-${h.transaction++}-${operation}`,
-  );
+  const transaction = h.heap.begin(`call-${h.transaction++}-${operation}`);
   const result = h.collections.call(transaction, operation, layout, args);
   commit(transaction, [result]);
   return result;
@@ -117,9 +116,7 @@ function mutate(
   receiver: Value,
   args: readonly Value[],
 ): CollectionMutation {
-  const transaction = h.heap.beginTransaction(
-    `mutate-${h.transaction++}-${operation}`,
-  );
+  const transaction = h.heap.begin(`mutate-${h.transaction++}-${operation}`);
   const result = h.collections.mutate(
     transaction,
     operation,
@@ -136,9 +133,7 @@ function fail(
   code: string,
   run: (transaction: HeapTransaction) => unknown,
 ): void {
-  const transaction = h.heap.beginTransaction(
-    `failure-${h.transaction++}-${code}`,
-  );
+  const transaction = h.heap.begin(`failure-${h.transaction++}-${code}`);
   expect(() => run(transaction)).toThrow(code);
   transaction.abort();
 }
@@ -173,7 +168,7 @@ interface MatrixModel {
 }
 
 function matrixValues(h: Harness, value: Value): MatrixModel {
-  const transaction = h.heap.beginTransaction(`matrix-read-${h.transaction++}`);
+  const transaction = h.heap.begin(`matrix-read-${h.transaction++}`);
   const rows = h.collections.call(transaction, 'matrix.rows', INT, [
     value,
   ]) as number;
@@ -392,7 +387,7 @@ describe('collection property traces', () => {
 
   test('nested struct refs stay aliased across repeated and historical collection headers', () => {
     const h = harness();
-    const allocation = h.heap.beginTransaction('nested structs');
+    const allocation = h.heap.begin('nested structs');
     const point = h.structs.newStruct(allocation, POINT, [1, 2]);
     const box = h.structs.newStruct(allocation, BOX, [point, 7]);
     commit(allocation, [box]);
@@ -410,7 +405,7 @@ describe('collection property traces', () => {
         };
       });
 
-    const update = h.heap.beginTransaction('shared field update');
+    const update = h.heap.begin('shared field update');
     h.structs.storeField(update, point, POINT, 0, 99);
     commit(update, [value]);
 

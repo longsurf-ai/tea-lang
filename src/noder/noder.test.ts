@@ -223,14 +223,18 @@ describe('structs', () => {
       [
         'type Point',
         '    int x = 1',
-        'point = request.security("A", "D", Point.new())',
+        'point = request.security("A", "D", Point.new().x)',
       ].join('\n'),
     );
     expect(program.requests[0].child.body[0]).toMatchObject({
       kind: IrKind.WriteName,
       value: {
-        kind: IrKind.NewStruct,
-        args: [{kind: IrKind.Const, value: 1}],
+        kind: IrKind.FieldGet,
+        fieldIndex: 0,
+        x: {
+          kind: IrKind.NewStruct,
+          args: [{kind: IrKind.Const, value: 1}],
+        },
       },
     });
   });

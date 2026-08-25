@@ -272,8 +272,8 @@ its declared result.
 A mutating collection call carries a `CollectionLocation`: either a Name whose
 Ring receives the replacement header or a captured struct field whose storage
 receives it. A collection accessor result alone is not a location. There are no
-Program nodes for Heap slots, StorageRefs, COW, prepare, commit, rollback, or
-garbage collection.
+Program nodes for Heap slots, `Ref` handles, transaction overlays, commit,
+abort, or garbage collection.
 
 Canonical argument slots and evaluation order are distinct Program facts.
 Constructors and calls retain an `argumentEvaluationOrder`: lowering captures

@@ -4,8 +4,8 @@ import {fatal} from '../../base/print';
 import {ExecutionError} from '../errors';
 import type {CollectionMutation} from '../module-abi';
 import {isArrayValue, type ArrayValue, type Value} from '../value';
-import type {StorageDescriptor} from '../heap';
-import {visitRuntimeValueStorageRefs, type LayoutId} from '../value-layout';
+import type {TypeInfo} from '../heap';
+import {visitRuntimeValueRefs, type LayoutId} from '../value-layout';
 import {
   arrayValue,
   assertExactLayout,
@@ -16,6 +16,7 @@ import {
   requireCollection,
   shape,
   type CollectionContext,
+  type CollectionReadContext,
 } from './common';
 
 export interface ArrayStorage {
@@ -28,28 +29,25 @@ interface ArrayStorageArgs {
   readonly logicalBytes: number;
 }
 
-export const ARRAY_STORAGE: StorageDescriptor<ArrayStorage, ArrayStorageArgs> =
-  {
-    id: Symbol('tea.array.storage'),
-    debugName: 'array storage',
-    logicalBytesFor(args) {
-      return args.logicalBytes;
-    },
-    create(args) {
-      return Object.freeze({
-        values: Object.freeze([...args.values]),
-        logicalBytes: args.logicalBytes,
-      });
-    },
-    trace(payload, tracer) {
-      payload.values.forEach(value =>
-        visitRuntimeValueStorageRefs(value, ref => tracer.storage(ref)),
-      );
-    },
-    logicalBytes(payload) {
-      return payload.logicalBytes;
-    },
-  };
+export const ARRAY_STORAGE: TypeInfo<ArrayStorageArgs, ArrayStorage> = {
+  id: Symbol('tea.array.storage'),
+  name: 'array storage',
+  bytesFor(args) {
+    return args.logicalBytes;
+  },
+  create(args) {
+    return Object.freeze({
+      values: Object.freeze([...args.values]),
+      logicalBytes: args.logicalBytes,
+    });
+  },
+  trace(payload, visit) {
+    payload.values.forEach(value => visitRuntimeValueRefs(value, visit));
+  },
+  bytesOf(payload) {
+    return payload.logicalBytes;
+  },
+};
 
 export function arrayCall(
   ctx: CollectionContext,
@@ -187,7 +185,7 @@ export function createArray(
 }
 
 export function arraySnapshot(
-  ctx: Pick<CollectionContext, 'heap' | 'layouts' | 'assertValue'>,
+  ctx: CollectionReadContext,
   value: Value,
 ): readonly Value[] {
   if (!isArrayValue(value)) {
@@ -209,13 +207,10 @@ function replace(
 }
 
 function values(
-  ctx: Pick<CollectionContext, 'heap'>,
+  ctx: Pick<CollectionReadContext, 'transaction'>,
   receiver: ArrayValue,
 ): readonly Value[] {
-  const payload = ctx.heap.read<ArrayStorage, ArrayStorageArgs>(
-    receiver.storage,
-    ARRAY_STORAGE,
-  );
+  const payload = ctx.transaction.read(receiver.storage);
   if (payload.values.length !== receiver.length) {
     return fatal(
       `array header length ${receiver.length} disagrees with storage ${payload.values.length}`,

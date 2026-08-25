@@ -2,11 +2,11 @@
 
 import {describe, expect, test} from 'vitest';
 import {ExecutionError, type CollectionValue, type Value} from '../abi';
-import {HeapArena, type HeapTransaction, type StorageRef} from '../heap';
+import {HeapArena, type HeapTransaction, type Ref} from '../heap';
 import {StructStorageRuntime, type StructRef} from '../struct-storage';
 import {
   ValueLayoutRegistry,
-  visitRuntimeValueStorageRefs,
+  visitRuntimeValueRefs,
   type AggregateLayoutManifest,
 } from '../value-layout';
 import {CollectionRuntime} from './index';
@@ -76,22 +76,23 @@ function constructStruct(
   layout: number,
   fields: readonly Value[],
 ): StructRef {
-  const transaction = h.heap.beginTransaction(`struct:${layout}`);
+  const transaction = h.heap.begin(`struct:${layout}`);
   const value = h.structs.newStruct(transaction, layout, fields);
   commit(transaction, [value]);
   return value;
 }
 
-function roots(values: readonly Value[]): StorageRef[] {
-  const result: StorageRef[] = [];
+function roots(values: readonly Value[]): Ref[] {
+  const result: Ref[] = [];
   values.forEach(value =>
-    visitRuntimeValueStorageRefs(value, ref => result.push(ref)),
+    visitRuntimeValueRefs(value, ref => result.push(ref)),
   );
   return result;
 }
 
 function commit(transaction: HeapTransaction, values: readonly Value[]): void {
-  transaction.prepareCommit(roots(values)).commit();
+  void values;
+  transaction.commit();
 }
 
 function construct(
@@ -100,7 +101,7 @@ function construct(
   layout: number,
   args: readonly Value[],
 ): CollectionValue {
-  const transaction = h.heap.beginTransaction(operation);
+  const transaction = h.heap.begin(operation);
   const value = h.collections.call(transaction, operation, layout, args);
   commit(transaction, [value]);
   return value as CollectionValue;
@@ -119,7 +120,7 @@ function read(
   layout: number,
   args: readonly Value[],
 ): Value {
-  const transaction = h.heap.beginTransaction(operation);
+  const transaction = h.heap.begin(operation);
   const value = h.collections.call(transaction, operation, layout, args);
   transaction.abort();
   return value;
@@ -146,7 +147,7 @@ describe('array values', () => {
   test('assignment and retained history headers stay isolated', () => {
     const h = harness();
     const a = construct(h, 'array.from', INTS, [1, 2]);
-    const transaction = h.heap.beginTransaction('push');
+    const transaction = h.heap.begin('push');
     const pushed = h.collections.mutate(
       transaction,
       'array.push',
@@ -166,7 +167,7 @@ describe('array values', () => {
   test('element access guards the exact generated result layout', () => {
     const h = harness();
     const array = construct(h, 'array.from', INTS, [1]);
-    const transaction = h.heap.beginTransaction('wrong result layout');
+    const transaction = h.heap.begin('wrong result layout');
     expect(() =>
       h.collections.call(transaction, 'array.get', FLOAT, [array, 0]),
     ).toThrow('expected 0');
@@ -176,7 +177,7 @@ describe('array values', () => {
   test('pop and clear remove logical high-water slots', () => {
     const h = harness();
     const original = construct(h, 'array.from', INTS, [1, 2, 99]);
-    const popTransaction = h.heap.beginTransaction('pop');
+    const popTransaction = h.heap.begin('pop');
     const popped = h.collections.mutate(
       popTransaction,
       'array.pop',
@@ -188,7 +189,7 @@ describe('array values', () => {
     expect(popped.result).toBe(99);
     expect(h.collections.entries(popped.replacement)).toEqual([1, 2]);
 
-    const pushTransaction = h.heap.beginTransaction('push');
+    const pushTransaction = h.heap.begin('push');
     const pushed = h.collections.mutate(
       pushTransaction,
       'array.push',
@@ -199,7 +200,7 @@ describe('array values', () => {
     commit(pushTransaction, [original, pushed.replacement]);
     expect(h.collections.entries(pushed.replacement)).toEqual([1, 2, 3]);
 
-    const clearTransaction = h.heap.beginTransaction('clear');
+    const clearTransaction = h.heap.begin('clear');
     const cleared = h.collections.mutate(
       clearTransaction,
       'array.clear',
@@ -216,7 +217,7 @@ describe('array values', () => {
     const h = harness();
     const value = construct(h, 'array.from', INTS, [1, 2]);
     const snapshot = h.collections.entries(value);
-    const transaction = h.heap.beginTransaction('push');
+    const transaction = h.heap.begin('push');
     const mutation = h.collections.mutate(
       transaction,
       'array.push',
@@ -238,7 +239,7 @@ describe('array values', () => {
     for (let step = 0; step < 80; step += 1) {
       versions.push({value: current, model: [...model]});
       seed = (seed * 48_271) % 2_147_483_647;
-      const transaction = h.heap.beginTransaction(step);
+      const transaction = h.heap.begin(step);
       if (model.length === 0 || seed % 3 === 0) {
         const value = seed % 97;
         const mutation = h.collections.mutate(
@@ -286,7 +287,7 @@ describe('matrix values', () => {
   test('shape is fixed and row projections are independent arrays', () => {
     const h = harness();
     const matrix = construct(h, 'matrix.new', MATRIX, [2, 2, 1]);
-    const transaction = h.heap.beginTransaction('matrix.set');
+    const transaction = h.heap.begin('matrix.set');
     const changed = h.collections.mutate(
       transaction,
       'matrix.set',
@@ -298,7 +299,7 @@ describe('matrix values', () => {
     expect(read(h, 'matrix.get', INT, [matrix, 0, 1])).toBe(1);
     expect(read(h, 'matrix.get', INT, [changed.replacement, 0, 1])).toBe(9);
 
-    const rowTransaction = h.heap.beginTransaction('matrix.row');
+    const rowTransaction = h.heap.begin('matrix.row');
     const row = h.collections.call(rowTransaction, 'matrix.row', INTS, [
       changed.replacement,
       0,
@@ -309,7 +310,7 @@ describe('matrix values', () => {
 
   test('invalid shapes and bounds use stable codes', () => {
     const h = harness();
-    const transaction = h.heap.beginTransaction('bad shape');
+    const transaction = h.heap.begin('bad shape');
     expect(() =>
       h.collections.call(transaction, 'matrix.new', MATRIX, [-1, 2, 0]),
     ).toThrow('INVALID_SHAPE');
@@ -323,7 +324,7 @@ describe('matrix values', () => {
   test('empty projections still guard their array element layout', () => {
     const h = harness();
     const matrix = construct(h, 'matrix.new', MATRIX, [1, 0, 0]);
-    const transaction = h.heap.beginTransaction('wrong projection layout');
+    const transaction = h.heap.begin('wrong projection layout');
     expect(() =>
       h.collections.call(transaction, 'matrix.row', STRINGS, [matrix, 0]),
     ).toThrow('expected 0');
@@ -335,7 +336,7 @@ describe('ordered map values', () => {
   test('empty key/value projections guard their exact element layout', () => {
     const h = harness();
     const map = construct(h, 'map.new', MAP, []);
-    const transaction = h.heap.beginTransaction('wrong map projection layout');
+    const transaction = h.heap.begin('wrong map projection layout');
     expect(() =>
       h.collections.call(transaction, 'map.keys', INTS, [map]),
     ).toThrow(`expected ${STRING}`);
@@ -350,7 +351,7 @@ describe('ordered map values', () => {
       ['b', 2],
       ['c', 3],
     ] as const) {
-      const transaction = h.heap.beginTransaction(`put ${key}`);
+      const transaction = h.heap.begin(`put ${key}`);
       const mutation = h.collections.mutate(
         transaction,
         'map.put',
@@ -361,7 +362,7 @@ describe('ordered map values', () => {
       value = mutation.replacement;
       commit(transaction, [value]);
     }
-    const replace = h.heap.beginTransaction('replace');
+    const replace = h.heap.begin('replace');
     value = h.collections.mutate(replace, 'map.put', MAP, value, [
       'b',
       20,
@@ -373,14 +374,14 @@ describe('ordered map values', () => {
       ['c', 3],
     ]);
 
-    const remove = h.heap.beginTransaction('remove');
+    const remove = h.heap.begin('remove');
     const removed = h.collections.mutate(remove, 'map.remove', MAP, value, [
       'b',
     ]);
     value = removed.replacement;
     commit(remove, [value]);
     expect(removed.result).toBe(20);
-    const reinsert = h.heap.beginTransaction('reinsert');
+    const reinsert = h.heap.begin('reinsert');
     value = h.collections.mutate(reinsert, 'map.put', MAP, value, [
       'b',
       21,
@@ -399,14 +400,14 @@ describe('ordered map values', () => {
     expect(
       Number.isNaN(read(h, 'map.get', INT, [map, 'missing']) as number),
     ).toBe(true);
-    const put = h.heap.beginTransaction('put');
+    const put = h.heap.begin('put');
     const filled = h.collections.mutate(put, 'map.put', MAP, map, [
       'a',
       1,
     ]).replacement;
     commit(put, [map, filled]);
 
-    const keysTransaction = h.heap.beginTransaction('keys');
+    const keysTransaction = h.heap.begin('keys');
     const keys = h.collections.call(keysTransaction, 'map.keys', STRINGS, [
       filled,
     ]);
@@ -421,12 +422,12 @@ describe('ordered map values', () => {
   test('na keys and na collections fail with stable codes', () => {
     const h = harness();
     const map = construct(h, 'map.new', MAP, []);
-    const transaction = h.heap.beginTransaction('bad key');
+    const transaction = h.heap.begin('bad key');
     expect(() =>
       h.collections.mutate(transaction, 'map.put', MAP, map, [null, 1]),
     ).toThrow('INVALID_MAP_KEY');
     transaction.abort();
-    const readTransaction = h.heap.beginTransaction('na collection');
+    const readTransaction = h.heap.begin('na collection');
     expect(() =>
       h.collections.call(readTransaction, 'array.size', INT, [null]),
     ).toThrow('NA_COLLECTION');
@@ -438,13 +439,17 @@ describe('struct references and collection nesting', () => {
   test('Heap bytes charge struct bodies and fixed-width references', () => {
     const pointsHarness = harness();
     const point = constructStruct(pointsHarness, POINT, [1, 2]);
-    construct(pointsHarness, 'array.from', POINTS, [point]);
-    // Point body: 16 + 2 ints; array backing: 16 + one StorageRef.
+    const points = construct(pointsHarness, 'array.from', POINTS, [point]);
+    pointsHarness.heap.replaceRoots(roots([points]));
+    pointsHarness.heap.collect();
+    // Point body: 16 + 2 ints; array backing: 16 + one Ref.
     expect(pointsHarness.heap.stats().retainedLogicalBytes).toBe(56);
 
     const nestedHarness = harness();
     const inner = construct(nestedHarness, 'array.from', INTS, [1]);
-    construct(nestedHarness, 'array.from', ARRAYS, [inner]);
+    const nested = construct(nestedHarness, 'array.from', ARRAYS, [inner]);
+    nestedHarness.heap.replaceRoots(roots([nested]));
+    nestedHarness.heap.collect();
     // inner: 16 + int(8); outer: 16 + array header(32).
     expect(nestedHarness.heap.stats().retainedLogicalBytes).toBe(72);
   });
@@ -454,7 +459,7 @@ describe('struct references and collection nesting', () => {
     const point = constructStruct(h, POINT, [1, 2]);
     const points = construct(h, 'array.from', POINTS, [point]);
     const got = read(h, 'array.get', POINT, [points, 0]);
-    const transaction = h.heap.beginTransaction('writeback');
+    const transaction = h.heap.begin('writeback');
     h.structs.storeField(transaction, got, POINT, 0, 9);
     commit(transaction, [points]);
     expect(h.structs.field(point, POINT, 0)).toBe(9);
@@ -468,7 +473,7 @@ describe('struct references and collection nesting', () => {
     const values = construct(h, 'array.from', INTS, [1]);
     const holder = constructStruct(h, HOLDER, [values]);
     const before = h.structs.field(holder, HOLDER, 0);
-    const push = h.heap.beginTransaction('nested push');
+    const push = h.heap.begin('nested push');
     const changed = h.collections.mutate(push, 'array.push', INTS, before, [2]);
     h.structs.storeField(push, holder, HOLDER, 0, changed.replacement);
     commit(push, [holder, before]);
@@ -483,7 +488,7 @@ describe('struct references and collection nesting', () => {
     const inner = construct(h, 'array.from', INTS, [1]);
     const outer = construct(h, 'array.from', ARRAYS, [inner]);
     const nested = read(h, 'array.get', INTS, [outer, 0]);
-    const push = h.heap.beginTransaction('nested');
+    const push = h.heap.begin('nested');
     const changed = h.collections.mutate(push, 'array.push', INTS, nested, [2]);
     commit(push, [outer, changed.replacement]);
     expect(
@@ -497,7 +502,7 @@ describe('struct references and collection nesting', () => {
     const oldChild = construct(h, 'array.from', INTS, [1]);
     const oldOuter = construct(h, 'array.from', ARRAYS, [oldChild]);
 
-    const replace = h.heap.beginTransaction('replace nested child');
+    const replace = h.heap.begin('replace nested child');
     const currentChild = h.collections.call(replace, 'array.from', INTS, [2]);
     const currentOuter = h.collections.mutate(
       replace,
@@ -507,15 +512,16 @@ describe('struct references and collection nesting', () => {
       [0, currentChild],
     ).replacement;
     commit(replace, [currentOuter]);
-    h.heap.collect(roots([currentOuter]));
+    h.heap.replaceRoots(roots([currentOuter]));
+    h.heap.collect();
 
     // The outer storage traces its nested collection header. The replacement
     // stays live while both removed backing stores are now unreachable.
     expect(h.collections.entries(currentChild)).toEqual([2]);
-    expect(() => h.collections.entries(oldChild)).toThrow('stale StorageRef');
-    expect(() => h.collections.entries(oldOuter)).toThrow('stale StorageRef');
+    expect(() => h.collections.entries(oldChild)).toThrow('stale Ref');
+    expect(() => h.collections.entries(oldOuter)).toThrow('stale Ref');
 
-    const failed = h.heap.beginTransaction('aborted high-water append');
+    const failed = h.heap.begin('aborted high-water append');
     const highWater = h.collections.mutate(
       failed,
       'array.push',
@@ -524,9 +530,9 @@ describe('struct references and collection nesting', () => {
       [99],
     ).replacement;
     failed.abort();
-    expect(() => h.collections.entries(highWater)).toThrow('stale StorageRef');
+    expect(() => h.collections.entries(highWater)).toThrow('stale Ref');
 
-    const retry = h.heap.beginTransaction('retry append');
+    const retry = h.heap.begin('retry append');
     const retriedChild = h.collections.mutate(
       retry,
       'array.push',
@@ -542,7 +548,8 @@ describe('struct references and collection nesting', () => {
       [0, retriedChild],
     ).replacement;
     commit(retry, [retriedOuter]);
-    h.heap.collect(roots([retriedOuter]));
+    h.heap.replaceRoots(roots([retriedOuter]));
+    h.heap.collect();
 
     const nested = read(h, 'array.get', INTS, [retriedOuter, 0]);
     expect(h.collections.entries(nested)).toEqual([2, 3]);
@@ -555,7 +562,7 @@ describe('struct references and collection nesting', () => {
   test('collection element limits fail before a replacement is published', () => {
     const h = harness(1);
     const array = construct(h, 'array.from', INTS, [1]);
-    const transaction = h.heap.beginTransaction('overflow');
+    const transaction = h.heap.begin('overflow');
     expect(() =>
       h.collections.mutate(transaction, 'array.push', INTS, array, [2]),
     ).toThrow(ExecutionError);

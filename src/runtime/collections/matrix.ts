@@ -4,8 +4,8 @@ import {fatal} from '../../base/print';
 import {ExecutionError} from '../errors';
 import type {CollectionMutation} from '../module-abi';
 import {isMatrixValue, type MatrixValue, type Value} from '../value';
-import type {StorageDescriptor} from '../heap';
-import {visitRuntimeValueStorageRefs, type LayoutId} from '../value-layout';
+import type {TypeInfo} from '../heap';
+import {visitRuntimeValueRefs, type LayoutId} from '../value-layout';
 import {createArray} from './array';
 import {
   assertLimit,
@@ -17,6 +17,7 @@ import {
   requireCollection,
   shape,
   type CollectionContext,
+  type CollectionReadContext,
 } from './common';
 
 export interface MatrixStorage {
@@ -29,13 +30,10 @@ interface MatrixStorageArgs {
   readonly logicalBytes: number;
 }
 
-export const MATRIX_STORAGE: StorageDescriptor<
-  MatrixStorage,
-  MatrixStorageArgs
-> = {
+export const MATRIX_STORAGE: TypeInfo<MatrixStorageArgs, MatrixStorage> = {
   id: Symbol('tea.matrix.storage'),
-  debugName: 'matrix storage',
-  logicalBytesFor(args) {
+  name: 'matrix storage',
+  bytesFor(args) {
     return args.logicalBytes;
   },
   create(args) {
@@ -44,12 +42,10 @@ export const MATRIX_STORAGE: StorageDescriptor<
       logicalBytes: args.logicalBytes,
     });
   },
-  trace(payload, tracer) {
-    payload.values.forEach(value =>
-      visitRuntimeValueStorageRefs(value, ref => tracer.storage(ref)),
-    );
+  trace(payload, visit) {
+    payload.values.forEach(value => visitRuntimeValueRefs(value, visit));
   },
-  logicalBytes(payload) {
+  bytesOf(payload) {
     return payload.logicalBytes;
   },
 };
@@ -217,13 +213,10 @@ function replace(
 }
 
 function values(
-  ctx: Pick<CollectionContext, 'heap'>,
+  ctx: Pick<CollectionReadContext, 'transaction'>,
   receiver: MatrixValue,
 ): readonly Value[] {
-  const payload = ctx.heap.read<MatrixStorage, MatrixStorageArgs>(
-    receiver.storage,
-    MATRIX_STORAGE,
-  );
+  const payload = ctx.transaction.read(receiver.storage);
   const size = receiver.rows * receiver.columns;
   if (payload.values.length !== size) {
     return fatal(

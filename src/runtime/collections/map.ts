@@ -4,9 +4,9 @@ import {fatal} from '../../base/print';
 import {ExecutionError} from '../errors';
 import type {CollectionMutation} from '../module-abi';
 import {isMapValue, type MapValue, type Value} from '../value';
-import type {StorageDescriptor} from '../heap';
+import type {TypeInfo} from '../heap';
 import {
-  visitRuntimeValueStorageRefs,
+  visitRuntimeValueRefs,
   type LayoutId,
   type ValueLayout,
 } from '../value-layout';
@@ -19,6 +19,7 @@ import {
   mapValue,
   requireCollection,
   type CollectionContext,
+  type CollectionReadContext,
 } from './common';
 
 export interface MapEntry {
@@ -36,10 +37,10 @@ interface MapStorageArgs {
   readonly logicalBytes: number;
 }
 
-export const MAP_STORAGE: StorageDescriptor<MapStorage, MapStorageArgs> = {
+export const MAP_STORAGE: TypeInfo<MapStorageArgs, MapStorage> = {
   id: Symbol('tea.map.storage'),
-  debugName: 'map storage',
-  logicalBytesFor(args) {
+  name: 'map storage',
+  bytesFor(args) {
     return args.logicalBytes;
   },
   create(args) {
@@ -52,13 +53,13 @@ export const MAP_STORAGE: StorageDescriptor<MapStorage, MapStorageArgs> = {
       logicalBytes: args.logicalBytes,
     });
   },
-  trace(payload, tracer) {
+  trace(payload, visit) {
     payload.entries.forEach(entry => {
-      visitRuntimeValueStorageRefs(entry.key, ref => tracer.storage(ref));
-      visitRuntimeValueStorageRefs(entry.value, ref => tracer.storage(ref));
+      visitRuntimeValueRefs(entry.key, visit);
+      visitRuntimeValueRefs(entry.value, visit);
     });
   },
-  logicalBytes(payload) {
+  bytesOf(payload) {
     return payload.logicalBytes;
   },
 };
@@ -193,7 +194,7 @@ export function mapMutate(
 }
 
 export function mapSnapshot(
-  ctx: Pick<CollectionContext, 'heap' | 'layouts' | 'assertValue'>,
+  ctx: CollectionReadContext,
   value: Value,
 ): readonly (readonly [Value, Value])[] {
   if (!isMapValue(value)) {
@@ -234,13 +235,10 @@ function replace(
 }
 
 function entries(
-  ctx: Pick<CollectionContext, 'heap'>,
+  ctx: Pick<CollectionReadContext, 'transaction'>,
   receiver: MapValue,
 ): readonly MapEntry[] {
-  const payload = ctx.heap.read<MapStorage, MapStorageArgs>(
-    receiver.storage,
-    MAP_STORAGE,
-  );
+  const payload = ctx.transaction.read(receiver.storage);
   if (payload.entries.length !== receiver.size) {
     return fatal(
       `map header size ${receiver.size} disagrees with storage ${payload.entries.length}`,

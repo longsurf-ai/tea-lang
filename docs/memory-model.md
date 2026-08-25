@@ -258,23 +258,27 @@ initializer commit retains neither its value nor its initialized state.
 
 ## Runtime storage boundary
 
-All source-hidden memory identities use the runtime's single `StorageRef` and
-Heap framework. Collection backing and struct field storage are different
-descriptor policies over the same reference, transaction, version guard,
-limits, reachability graph, and garbage collector.
+Within one runtime context, all source-hidden memory identities use the same
+typed `Ref<V>` and Heap framework. Collection backing and struct field storage
+have different `TypeInfo<A, V>` policies over the same reference, transaction,
+version guard, limits, reachability graph, and garbage collector.
 
-Collection descriptors use persistent replacement storage. Struct descriptors
-admit checked transactional edits whose prior values can be restored on abort.
-This physical distinction does not introduce two source reference kinds.
+Collection operations allocate persistent replacement backing. A struct field
+write stages a complete replacement body for the existing `Ref`; transactional
+reads see that overlay, commit installs it, and abort discards it. This physical
+distinction does not introduce two source reference kinds or require an
+edit/undo journal.
 
-Effect emission snapshots permitted struct fields at the call. It never hands
-a live struct reference to a sink. Request children share the root execution's
-Heap, so struct references returned through requests retain the same identity
-and body.
+Effect emission snapshots permitted struct fields at call time. It never hands
+a live struct reference to a sink. Each request child owns an independent Heap,
+and request results are restricted to scalars or scalar-only tuples copied by
+value into parent-owned storage. A `Ref` never crosses that boundary; aggregate
+request results remain unsupported until an explicit graph-copy contract is
+implemented.
 
 ## Empty values and errors
 
 Tea keeps typed-empty semantics rather than Go zero initialization. `na`
 collections and struct references are distinct from valid empty collections or
-allocated structs. Bounds, shape, key, descriptor, layout, stale-reference,
+allocated structs. Bounds, shape, key, type-info, layout, stale-reference,
 and configured storage-limit failures use stable runtime error codes.

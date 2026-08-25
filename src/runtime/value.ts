@@ -1,6 +1,10 @@
 // Purpose: Runtime value domain and source-hidden aggregate/collection headers.
 
-import {isStorageRef, type StorageRef} from './heap';
+import {isRef, type Ref} from './heap';
+import type {ArrayStorage} from './collections/array';
+import type {MapStorage} from './collections/map';
+import type {MatrixStorage} from './collections/matrix';
+import type {StructStorage} from './struct-storage';
 import type {LayoutId} from './value-layout';
 
 export interface ResourceHandle {
@@ -9,7 +13,7 @@ export interface ResourceHandle {
   readonly id: number;
 }
 
-export type StructValue = StorageRef<unknown> | null;
+export type StructValue = Ref<StructStorage> | null;
 
 export interface EffectStructValue {
   readonly kind: 'struct';
@@ -27,7 +31,7 @@ export function isEffectStructValue(
 export interface ArrayValue {
   readonly kind: 'array';
   readonly layout: LayoutId;
-  readonly storage: StorageRef;
+  readonly storage: Ref<ArrayStorage>;
   readonly length: number;
   readonly capacity: number;
 }
@@ -35,7 +39,7 @@ export interface ArrayValue {
 export interface MatrixValue {
   readonly kind: 'matrix';
   readonly layout: LayoutId;
-  readonly storage: StorageRef;
+  readonly storage: Ref<MatrixStorage>;
   readonly rows: number;
   readonly columns: number;
 }
@@ -43,7 +47,7 @@ export interface MatrixValue {
 export interface MapValue {
   readonly kind: 'map';
   readonly layout: LayoutId;
-  readonly storage: StorageRef;
+  readonly storage: Ref<MapStorage>;
   readonly size: number;
 }
 
@@ -55,7 +59,7 @@ export type Value =
   | boolean
   | null
   | ResourceHandle
-  | StorageRef<unknown>
+  | Ref<unknown>
   | CollectionValue
   | readonly Value[];
 
@@ -72,12 +76,12 @@ function isTaggedValue(
     typeof value === 'object' &&
     value !== null &&
     !isTupleValue(value) &&
-    !isStorageRef(value)
+    !isRef(value)
   );
 }
 
-export function isStructRef(value: Value): value is StorageRef<unknown> {
-  return isStorageRef(value);
+export function isStructRef(value: Value): value is Ref<StructStorage> {
+  return isRef(value);
 }
 
 export function isArrayValue(value: Value): value is ArrayValue {

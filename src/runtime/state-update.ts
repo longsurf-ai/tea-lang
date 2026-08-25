@@ -16,7 +16,7 @@ import type {
 } from './module-abi';
 import type {EffectEmission, DenseEmission} from './output';
 import {ExecutionError} from './errors';
-import type {Heap, HeapTransaction, StorageRef} from './heap';
+import type {Heap, HeapTransaction, Ref} from './heap';
 import {isHistoryOffset} from './ring';
 import {CollectionRuntime} from './collections';
 import {StructStorageRuntime} from './struct-storage';
@@ -160,7 +160,7 @@ class SSMRuntime implements Runtime {
   }
 
   run() {
-    const transaction = this.intermediate.heap.beginTransaction('state-update');
+    const transaction = this.intermediate.heap.begin('state-update');
     this.transaction = transaction;
     let committed = false;
     try {
@@ -177,11 +177,12 @@ class SSMRuntime implements Runtime {
         })),
         effects: this.effects,
       };
-      const roots = this.heapRoots(result.state, result.intermediate);
-      transaction.prepareCommit(roots).commit();
+      const roots = this.discoverRoots(result.state, result.intermediate);
+      transaction.commit();
       committed = true;
       this.transaction = null;
-      this.intermediate.heap.collect(roots);
+      this.intermediate.heap.replaceRoots(roots);
+      this.intermediate.heap.collect();
       return result;
     } catch (error) {
       if (!committed) transaction.abort();
@@ -400,16 +401,21 @@ class SSMRuntime implements Runtime {
     unimplemented('state update: bind request');
   }
 
-  newStruct(layout: LayoutId, fields: readonly Value[]): StorageRef<unknown> {
+  newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown> {
     return this.structs.newStruct(this.mustTransaction(), layout, fields);
   }
 
-  requireStruct(value: Value, layout: LayoutId): StorageRef<unknown> {
-    return this.structs.requireStruct(value, layout);
+  requireStruct(value: Value, layout: LayoutId): Ref<unknown> {
+    return this.structs.requireStruct(value, layout, this.mustTransaction());
   }
 
   structField(value: Value, ownerLayout: LayoutId, index: number): Value {
-    return this.structs.field(value, ownerLayout, index);
+    return this.structs.field(
+      value,
+      ownerLayout,
+      index,
+      this.mustTransaction(),
+    );
   }
 
   storeStructField(
@@ -456,20 +462,20 @@ class SSMRuntime implements Runtime {
   }
 
   collectionEntries(value: Value): CollectionEntries {
-    return this.collections.entries(value);
+    return this.collections.entries(value, this.mustTransaction());
   }
 
   private mustTransaction(): HeapTransaction {
     return this.transaction ?? fatal('aggregate operation outside StateUpdate');
   }
 
-  private heapRoots(
+  private discoverRoots(
     state: State,
     intermediate: Intermediate,
-  ): StorageRef<unknown>[] {
-    const roots: StorageRef<unknown>[] = [];
+  ): Ref<unknown>[] {
+    const roots: Ref<unknown>[] = [];
     const visit = (layout: LayoutId, value: Value) =>
-      this.layouts.visitStorageRefs(layout, value, ref => roots.push(ref));
+      this.layouts.visitRefs(layout, value, ref => roots.push(ref));
 
     state.root.builtins.forEach((ring, bid) => {
       const spec = this.module.manifest.builtin[bid]!;
