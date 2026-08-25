@@ -1,4 +1,5 @@
-// Purpose: Expression and statement lowering — the JS emitter rules: Time-Machine ops call rt, everything else expands inline; backend-specific choices live in the tables here, never in the driver walk.
+// Purpose: Expression and statement lowering — Time-Machine operations call
+// the generated RuntimeContext variable `ctx`; everything else expands inline.
 
 import {fatal} from '../base/print';
 import {unimplemented} from '../base/unimplemented';
@@ -152,7 +153,7 @@ function naLiteral(t: Type): string {
 
 // The frame handle expression for a name: the current frame, or the program
 // frame — the one legal cross-frame access (functions read globals through
-// rt.root(), never other frames).
+// ctx.root(), never other frames).
 function frameRef(ctx: LowerCtx, name: Name): string {
   const entry = ctx.nameSlots.get(name);
   if (entry === undefined) {
@@ -162,7 +163,7 @@ function frameRef(ctx: LowerCtx, name: Name): string {
     return 'fr';
   }
   if (entry.fid === 0) {
-    return 'rt.root()';
+    return 'ctx.root()';
   }
   return fatal(
     `name '${name.name}' of frame ${entry.fid} referenced from frame ${ctx.currentFid}`,
@@ -191,14 +192,14 @@ function readName(
   if (direct !== undefined && current) {
     return direct;
   }
-  return `rt.read(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, ${offset})`;
+  return `ctx.read(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, ${offset})`;
 }
 
 function writeNameExpr(ctx: LowerCtx, name: Name, value: string): string {
   const direct = directName(ctx, name);
   return direct !== undefined
     ? `${direct} = (${value})`
-    : `rt.write(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, (${value}))`;
+    : `ctx.write(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, (${value}))`;
 }
 
 function structFieldType(
@@ -249,13 +250,13 @@ function captureCollectionLocation(
   const value = ctx.fresh();
   const layout = ctx.layoutOf(location.owner);
   out.push(
-    `const ${target} = rt.requireStruct((${object}), ${layout});`,
-    `const ${value} = rt.structField((${target}), ${layout}, ${location.fieldIndex});`,
+    `const ${target} = ctx.requireStruct((${object}), ${layout});`,
+    `const ${value} = ctx.structField((${target}), ${layout}, ${location.fieldIndex});`,
   );
   return {
     value,
     store: replacement =>
-      `rt.storeStructField((${target}), ${layout}, ${location.fieldIndex}, (${replacement}));`,
+      `ctx.storeStructField((${target}), ${layout}, ${location.fieldIndex}, (${replacement}));`,
   };
 }
 
@@ -354,7 +355,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           if (sid === undefined) {
             return fatal(`unmapped series '${e.place.series.id}'`);
           }
-          return `rt.series(${sid}, ${off})`;
+          return `ctx.series(${sid}, ${off})`;
         }
         case PlaceKind.Builtin: {
           const bid = ctx.builtinIds.get(e.place.builtin);
@@ -363,19 +364,19 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
               `unmapped builtin '${e.place.builtin.source.domain}.${e.place.builtin.source.field}'`,
             );
           }
-          return `rt.builtin(${bid}, ${off})`;
+          return `ctx.builtin(${bid}, ${off})`;
         }
         case PlaceKind.Param: {
           const sid = ctx.paramSeriesIds.get(e.place.param);
           if (sid !== undefined) {
-            return `rt.series(${sid}, ${off})`;
+            return `ctx.series(${sid}, ${off})`;
           }
           const pid = ctx.paramIds.get(e.place.param);
           if (pid === undefined) {
             return fatal(`unmapped param '${e.place.param.name}'`);
           }
           // Scalar params are constant over rows; history is the value.
-          return `rt.param(${pid})`;
+          return `ctx.param(${pid})`;
         }
         case PlaceKind.Request: {
           const edge = e.place.request;
@@ -383,7 +384,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           if (rid === undefined) {
             return fatal('lowering reached an unmapped request edge');
           }
-          return `rt.request(${rid}, ${off})`;
+          return `ctx.request(${rid}, ${off})`;
         }
         default:
           return fatal('unhandled place kind');
@@ -419,7 +420,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `function call '${e.func.name}'`,
       );
-      return `${ctx.moduleRef}.funcs[${fid}](rt, rt.frame(fr, ${e.slot})${args.map(arg => `, ${arg}`).join('')})`;
+      return `${ctx.moduleRef}.funcs[${fid}](ctx, ctx.frame(fr, ${e.slot})${args.map(arg => `, ${arg}`).join('')})`;
     }
     case IrKind.CallConstMethod: {
       if (!typesEqual(e.func.receiver.type, e.receiver.type)) {
@@ -450,7 +451,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `const method call '${e.func.name}'`,
       );
-      return `${ctx.moduleRef}.funcs[${fid}](rt, rt.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')})`;
+      return `${ctx.moduleRef}.funcs[${fid}](ctx, ctx.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')})`;
     }
     case IrKind.CallMutableMethod: {
       if (!typesEqual(e.func.receiver.type, e.receiver.type)) {
@@ -481,7 +482,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       const candidate = capture(e.receiver, out, ctx);
       const receiver = ctx.fresh();
       out.push(
-        `const ${receiver} = rt.requireStruct((${candidate}), ${ctx.layoutOf(e.receiver.type)});`,
+        `const ${receiver} = ctx.requireStruct((${candidate}), ${ctx.layoutOf(e.receiver.type)});`,
       );
       const args = captureArguments(
         e.args,
@@ -490,7 +491,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `mutable method call '${e.func.name}'`,
       );
-      return `${ctx.moduleRef}.funcs[${fid}](rt, rt.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')})`;
+      return `${ctx.moduleRef}.funcs[${fid}](ctx, ctx.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')})`;
     }
     case IrKind.CallNative:
       return lowerNative(
@@ -528,7 +529,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       );
       const result = ctx.fresh();
       out.push(
-        `const ${result} = rt.mutateCollection(${JSON.stringify(e.operation)}, ${ctx.layoutOf(locationType)}, ${location.value}, [${args.join(', ')}]);`,
+        `const ${result} = ctx.mutateCollection(${JSON.stringify(e.operation)}, ${ctx.layoutOf(locationType)}, ${location.value}, [${args.join(', ')}]);`,
         location.store(`${result}.replacement`),
       );
       return `${result}.result`;
@@ -567,7 +568,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `constructor '${e.structType.name}.new'`,
       );
-      return `rt.newStruct(${ctx.layoutOf(e.structType)}, [${args.join(', ')}])`;
+      return `ctx.newStruct(${ctx.layoutOf(e.structType)}, [${args.join(', ')}])`;
     }
     case IrKind.FieldGet: {
       if (e.x.type.kind !== TypeKind.Struct) {
@@ -585,7 +586,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         );
       }
       const value = lowerExpr(e.x, out, ctx);
-      return `rt.structField((${value}), ${ctx.layoutOf(e.x.type)}, ${e.fieldIndex})`;
+      return `ctx.structField((${value}), ${ctx.layoutOf(e.x.type)}, ${e.fieldIndex})`;
     }
     case IrKind.IfExpr: {
       const temp = ctx.fresh();
@@ -657,7 +658,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       const stepT = e.step !== null ? capture(e.step, out, ctx) : '1';
       const frRef = frameRef(ctx, e.index);
       const slot = slotOf(ctx, e.index);
-      const idx = `rt.read(${frRef}, ${slot}, 0)`;
+      const idx = `ctx.read(${frRef}, ${slot}, 0)`;
       const bodyLines: string[] = [];
       const val = lowerBlockInto(e.body, bodyLines, ctx);
       if (val !== null) {
@@ -665,7 +666,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       }
       ctx.useHelper('$rangeNext');
       out.push(
-        `for (rt.write(${frRef}, ${slot}, ${fromT}); (${stepT}) > 0 ? (${idx}) <= (${toT}) : (${stepT}) < 0 ? (${idx}) >= (${toT}) : false; rt.write(${frRef}, ${slot}, $rangeNext((${idx}), (${stepT})))) {`,
+        `for (ctx.write(${frRef}, ${slot}, ${fromT}); (${stepT}) > 0 ? (${idx}) <= (${toT}) : (${stepT}) < 0 ? (${idx}) >= (${toT}) : false; ctx.write(${frRef}, ${slot}, $rangeNext((${idx}), (${stepT})))) {`,
         ...indent(bodyLines),
         '}',
       );
@@ -694,18 +695,18 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       const index = ctx.fresh();
       out.push(
         `let ${result} = ${emptyLiteral(e.type)};`,
-        `const ${entries} = rt.collectionEntries(${collection});`,
+        `const ${entries} = ctx.collectionEntries(${collection});`,
       );
       const body: string[] = [];
       if (e.x.type.kind === TypeKind.Array) {
         if (e.targets.length === 1) {
           body.push(
-            `rt.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${entries}[${index}]);`,
+            `ctx.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${entries}[${index}]);`,
           );
         } else if (e.targets.length === 2) {
           body.push(
-            `rt.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${index});`,
-            `rt.write(${frameRef(ctx, e.targets[1])}, ${slotOf(ctx, e.targets[1])}, ${entries}[${index}]);`,
+            `ctx.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${index});`,
+            `ctx.write(${frameRef(ctx, e.targets[1])}, ${slotOf(ctx, e.targets[1])}, ${entries}[${index}]);`,
           );
         } else {
           return fatal('array iteration requires one or two targets');
@@ -715,8 +716,8 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           return fatal('map iteration requires key and value targets');
         }
         body.push(
-          `rt.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${entries}[${index}][0]);`,
-          `rt.write(${frameRef(ctx, e.targets[1])}, ${slotOf(ctx, e.targets[1])}, ${entries}[${index}][1]);`,
+          `ctx.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${entries}[${index}][0]);`,
+          `ctx.write(${frameRef(ctx, e.targets[1])}, ${slotOf(ctx, e.targets[1])}, ${entries}[${index}][1]);`,
         );
       } else {
         return fatal(`unsupported collection iteration over ${e.x.type.kind}`);
@@ -853,14 +854,14 @@ function lowerNative(
   // Internal depth-pass primitive: each component is normalized before a
   // synthesized maximum so one invalid offset cannot erase valid demands.
   if (native === '$historyDepth') {
-    return `rt.historyDepth((${args[0]}))`;
+    return `ctx.historyDepth((${args[0]}))`;
   }
   if (
     native.startsWith('array.') ||
     native.startsWith('matrix.') ||
     native.startsWith('map.')
   ) {
-    return `rt.callCollection(${JSON.stringify(native)}, ${ctx.layoutOf(resultType)}, [${args.join(', ')}])`;
+    return `ctx.callCollection(${JSON.stringify(native)}, ${ctx.layoutOf(resultType)}, [${args.join(', ')}])`;
   }
   // na/nz inspect their argument's type for the na representation.
   if (native === 'na') {
@@ -959,9 +960,9 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       const slot = slotOf(ctx, stmt.name);
       const body: string[] = [];
       const value = lowerExpr(stmt.value, body, ctx);
-      out.push(`if (rt.needsInit(${frame}, ${slot})) {`);
+      out.push(`if (ctx.needsInit(${frame}, ${slot})) {`);
       out.push(...indent(body));
-      out.push(`  rt.initialize(${frame}, ${slot}, (${value}));`);
+      out.push(`  ctx.initialize(${frame}, ${slot}, (${value}));`);
       out.push('}');
       return;
     }
@@ -983,10 +984,10 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       const object = capture(stmt.object, out, ctx);
       const target = ctx.fresh();
       const layout = ctx.layoutOf(stmt.owner);
-      out.push(`const ${target} = rt.requireStruct((${object}), ${layout});`);
+      out.push(`const ${target} = ctx.requireStruct((${object}), ${layout});`);
       const value = lowerExpr(stmt.value, out, ctx);
       out.push(
-        `rt.storeStructField((${target}), ${layout}, ${stmt.fieldIndex}, (${value}));`,
+        `ctx.storeStructField((${target}), ${layout}, ${stmt.fieldIndex}, (${value}));`,
       );
       return;
     }
@@ -1003,7 +1004,7 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
         `output '${stmt.output.effect}'`,
       );
       args.forEach((arg, channel) => {
-        out.push(`rt.emit(${oid}, ${channel}, (${arg}));`);
+        out.push(`ctx.emit(${oid}, ${channel}, (${arg}));`);
       });
       return;
     }
@@ -1013,7 +1014,7 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
         return fatal('lowering reached an unmapped effect');
       }
       const payload = lowerExpr(stmt.payload, out, ctx);
-      out.push(`rt.emitEffect(${effectId}, (${payload}));`);
+      out.push(`ctx.emitEffect(${effectId}, (${payload}));`);
       return;
     }
     case IrKind.Break:

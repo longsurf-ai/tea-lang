@@ -4,7 +4,7 @@
 import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
-import {JSRuntime, type RuntimeContext, type StepResult} from './js-runtime';
+import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
 import {configureModule} from './module-binding';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {staticModuleBinding, testModule} from './testing';
@@ -31,7 +31,7 @@ const LAYOUTS = [
   },
 ] as const satisfies readonly ValueLayout[];
 
-function input(value: number, provisional: boolean): RuntimeContext {
+function input(value: number, provisional: boolean): StepInput {
   return {series: [value], builtins: [], requests: [], provisional};
 }
 
@@ -69,13 +69,13 @@ const PROVISIONAL_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, root) {
-    if (rt.needsInit(root, 0)) rt.initialize(root, 0, 0);
-    if (rt.needsInit(root, 1)) rt.initialize(root, 1, 0);
-    rt.write(root, 0, Number(rt.read(root, 0, 0)) + rt.series(0, 0));
-    rt.write(root, 1, Number(rt.read(root, 1, 0)) + 1);
-    rt.emit(0, 0, rt.read(root, 0, 0));
-    rt.emit(0, 1, rt.read(root, 1, 0));
+  main(ctx, root) {
+    if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
+    if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, 0);
+    ctx.write(root, 0, Number(ctx.read(root, 0, 0)) + ctx.series(0, 0));
+    ctx.write(root, 1, Number(ctx.read(root, 1, 0)) + 1);
+    ctx.emit(0, 0, ctx.read(root, 0, 0));
+    ctx.emit(0, 1, ctx.read(root, 1, 0));
   },
 });
 
@@ -110,15 +110,15 @@ function structModule(shouldFail: () => boolean): JSModule {
       return staticModuleBinding(this);
     },
     funcs: {},
-    main(rt, root) {
-      if (rt.needsInit(root, 0)) {
-        rt.initialize(root, 0, rt.newStruct(COUNTER, [0]));
+    main(ctx, root) {
+      if (ctx.needsInit(root, 0)) {
+        ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
       }
-      const counter = rt.requireStruct(rt.read(root, 0, 0), COUNTER);
-      const value = Number(rt.structField(counter, COUNTER, 0)) + 1;
-      rt.storeStructField(counter, COUNTER, 0, value);
+      const counter = ctx.requireStruct(ctx.read(root, 0, 0), COUNTER);
+      const value = Number(ctx.structField(counter, COUNTER, 0)) + 1;
+      ctx.storeStructField(counter, COUNTER, 0, value);
       if (shouldFail()) throw new Error('step failed');
-      rt.emit(0, 0, value);
+      ctx.emit(0, 0, value);
     },
   });
 }
@@ -170,16 +170,16 @@ function structEffectModule(shouldFail: () => boolean): JSModule {
       return staticModuleBinding(this);
     },
     funcs: {},
-    main(rt, root) {
-      if (rt.needsInit(root, 0)) {
-        rt.initialize(root, 0, rt.newStruct(COUNTER, [0]));
+    main(ctx, root) {
+      if (ctx.needsInit(root, 0)) {
+        ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
       }
-      const counter = rt.requireStruct(rt.read(root, 0, 0), COUNTER);
-      const next = Number(rt.structField(counter, COUNTER, 0)) + 1;
-      rt.storeStructField(counter, COUNTER, 0, next);
-      const envelope = rt.newStruct(ENVELOPE, [counter]);
-      rt.emitEffect(0, envelope);
-      rt.storeStructField(counter, COUNTER, 0, next + 100);
+      const counter = ctx.requireStruct(ctx.read(root, 0, 0), COUNTER);
+      const next = Number(ctx.structField(counter, COUNTER, 0)) + 1;
+      ctx.storeStructField(counter, COUNTER, 0, next);
+      const envelope = ctx.newStruct(ENVELOPE, [counter]);
+      ctx.emitEffect(0, envelope);
+      ctx.storeStructField(counter, COUNTER, 0, next + 100);
       if (shouldFail()) throw new Error('effect step failed');
     },
   });
@@ -209,9 +209,9 @@ const WRONG_NOMINAL_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, root) {
-    if (rt.needsInit(root, 0)) {
-      rt.initialize(root, 0, rt.newStruct(COUNTER, [0]));
+  main(ctx, root) {
+    if (ctx.needsInit(root, 0)) {
+      ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
     }
   },
 });
@@ -250,15 +250,15 @@ const GC_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, root) {
-    const close = rt.series(0, 0);
-    rt.write(root, 0, rt.callCollection('array.from', ARRAY, [close]));
-    rt.emit(
+  main(ctx, root) {
+    const close = ctx.series(0, 0);
+    ctx.write(root, 0, ctx.callCollection('array.from', ARRAY, [close]));
+    ctx.emit(
       0,
       0,
       close < 3
         ? 0
-        : rt.callCollection('array.size', NUMBER, [rt.read(root, 0, 2)]),
+        : ctx.callCollection('array.size', NUMBER, [ctx.read(root, 0, 2)]),
     );
   },
 });

@@ -1,4 +1,6 @@
-// Purpose: Code generator — lowers a Tea Program to a self-describing JS module (code + manifest) against the rt ABI; docs/runtime.md owns the module contract. Dense ids are assigned here and published in the manifest — the runtime never re-derives them.
+// Purpose: Code generator — lowers a Tea Program to a self-describing JS
+// module against the generated-code RuntimeContext ABI; docs/runtime.md owns
+// the module contract and dense ids published in its manifest.
 
 import {fatal} from '../base/print';
 import {paramSpecsOf} from './params';
@@ -402,7 +404,7 @@ class Generator {
     out.push(`requests: [${children.map(c => c.ref).join(', ')}],`);
     out.push('evaluateBinding(values) {');
     out.push(
-      `  return $evaluate(${this.moduleRef}, values, (rt, fr) => {`,
+      `  return $evaluate(${this.moduleRef}, values, (ctx, fr) => {`,
       ...indent(indent(bindLines)),
       '  });',
       '},',
@@ -413,7 +415,7 @@ class Generator {
       out.push(...indent(lines.slice(1)));
     }
     out.push('},');
-    out.push('main(rt, fr) {', ...indent(mainLines), '},');
+    out.push('main(ctx, fr) {', ...indent(mainLines), '},');
     return out;
   }
 
@@ -435,19 +437,19 @@ class Generator {
     this.series.forEach((s, sid) => {
       if (s.depth.kind === DepthKind.Bound) {
         const expr = lowerExpr(s.depth.expr, lines, ctx);
-        lines.push(`rt.bindSeriesDepth(${sid}, (${expr}));`);
+        lines.push(`ctx.bindSeriesDepth(${sid}, (${expr}));`);
       }
     });
     this.builtins.forEach((builtin, bid) => {
       if (builtin.depth.kind === DepthKind.Bound) {
         const expr = lowerExpr(builtin.depth.expr, lines, ctx);
-        lines.push(`rt.bindBuiltinDepth(${bid}, (${expr}));`);
+        lines.push(`ctx.bindBuiltinDepth(${bid}, (${expr}));`);
       }
     });
     for (const [param, sid] of this.paramSeriesIds) {
       if (param.depth.kind === DepthKind.Bound) {
         const expr = lowerExpr(param.depth.expr, lines, ctx);
-        lines.push(`rt.bindSeriesDepth(${sid}, (${expr}));`);
+        lines.push(`ctx.bindSeriesDepth(${sid}, (${expr}));`);
       }
     }
     for (const [name, where] of this.nameSlots) {
@@ -455,7 +457,7 @@ class Generator {
         const expr = lowerExpr(name.depth.expr, lines, ctx);
         // The depth pass normalizes function-frame bind dependencies back to
         // root expressions, including root-owned UDF call slots.
-        lines.push(`rt.bindDepth(${where.fid}, ${where.slot}, (${expr}));`);
+        lines.push(`ctx.bindDepth(${where.fid}, ${where.slot}, (${expr}));`);
       }
     }
     this.program.params.forEach(param => {
@@ -464,7 +466,7 @@ class Generator {
         return fatal(`unmapped param '${param.name}'`);
       }
       const active = lowerExpr(param.active, lines, ctx);
-      lines.push(`rt.bindParamActive(${pid}, (${active}));`);
+      lines.push(`ctx.bindParamActive(${pid}, (${active}));`);
     });
     this.program.outputs.forEach((output, oid) => {
       const args = captureArguments(
@@ -476,7 +478,7 @@ class Generator {
       );
       output.bindArgs.forEach((arg, index) => {
         lines.push(
-          `rt.bindOutput(${oid}, ${JSON.stringify(arg.name)}, (${args[index]}));`,
+          `ctx.bindOutput(${oid}, ${JSON.stringify(arg.name)}, (${args[index]}));`,
         );
       });
     });
@@ -496,7 +498,7 @@ class Generator {
           'request options',
         );
       lines.push(
-        `rt.bindRequestOptions(${rid}, (${gaps}), (${lookahead}), (${ignoreInvalidSymbol}), (${calcBarsCount}));`,
+        `ctx.bindRequestOptions(${rid}, (${gaps}), (${lookahead}), (${ignoreInvalidSymbol}), (${calcBarsCount}));`,
       );
       const [symbol, timeframe] = captureArguments(
         [edge.symbol, edge.timeframe],
@@ -505,7 +507,7 @@ class Generator {
         ctx,
         'request context',
       );
-      lines.push(`rt.bindRequest(${rid}, (${symbol}), (${timeframe}));`);
+      lines.push(`ctx.bindRequest(${rid}, (${symbol}), (${timeframe}));`);
     });
     return lines;
   }
@@ -533,7 +535,7 @@ class Generator {
       });
       const ctx = this.ctxFor(fid, directNames);
       const lines: string[] = [
-        `(rt, fr${params.map(p => `, ${p}`).join('')}) => {`,
+        `(ctx, fr${params.map(p => `, ${p}`).join('')}) => {`,
       ];
       // Arguments land in the frame so param history works like any name.
       parameters.forEach((param, i) => {
@@ -544,7 +546,7 @@ class Generator {
         if (where === undefined) {
           return fatal(`unmapped param '${param.name}'`);
         }
-        lines.push(`  rt.write(fr, ${where.slot}, p${i});`);
+        lines.push(`  ctx.write(fr, ${where.slot}, p${i});`);
       });
       const bodyLines: string[] = [];
       const value = lowerExpr(func.body, bodyLines, ctx);

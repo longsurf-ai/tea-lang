@@ -52,7 +52,7 @@ function read(builtin: BuiltinInput, offset: IrExpr | null): HistReadExpr {
 }
 
 describe('typed builtin lowering', () => {
-  test('publishes dense current-ABI specs and lowers history through rt.builtin', () => {
+  test('publishes dense current-ABI specs and lowers history through ctx.builtin', () => {
     const time = input(
       {domain: 'time', field: 'time'},
       IntType,
@@ -112,9 +112,9 @@ describe('typed builtin lowering', () => {
         builtins: new Map([[2, 'NASDAQ:AAPL']]),
       }).retention.builtins,
     ).toEqual([3, 0, 0]);
-    expect(source).toMatch(/rt\.builtin\(0, t\d+\)/);
-    expect(source).toContain('rt.builtin(1, 0)');
-    expect(source).toContain('rt.builtin(2, 0)');
+    expect(source).toMatch(/ctx\.builtin\(0, t\d+\)/);
+    expect(source).toContain('ctx.builtin(1, 0)');
+    expect(source).toContain('ctx.builtin(2, 0)');
   });
 
   test('restarts builtin ids in a request child module', () => {
@@ -130,6 +130,6 @@ describe('typed builtin lowering', () => {
     expect(module.requests[0].manifest.builtin).toMatchObject([
       {source: {domain: 'bar', field: 'bar_index'}},
     ]);
-    expect(source).toContain('rt.builtin(0, 0)');
+    expect(source).toContain('ctx.builtin(0, 0)');
   });
 });

@@ -128,25 +128,25 @@ function arrayStateModule(): JSModule {
       return staticModuleBinding(this);
     },
     funcs: {},
-    main(rt, fr) {
-      if (rt.needsInit(fr, 0)) {
-        rt.initialize(fr, 0, rt.callCollection('array.from', ARRAY, [0]));
+    main(ctx, fr) {
+      if (ctx.needsInit(fr, 0)) {
+        ctx.initialize(fr, 0, ctx.callCollection('array.from', ARRAY, [0]));
       }
-      if (rt.needsInit(fr, 1)) {
-        rt.initialize(fr, 1, rt.callCollection('array.from', ARRAY, [0]));
+      if (ctx.needsInit(fr, 1)) {
+        ctx.initialize(fr, 1, ctx.callCollection('array.from', ARRAY, [0]));
       }
       for (let slot = 0; slot < 2; slot += 1) {
-        const mutation = rt.mutateCollection(
+        const mutation = ctx.mutateCollection(
           'array.push',
           ARRAY,
-          rt.read(fr, slot, 0),
-          [rt.series(0, 0)],
+          ctx.read(fr, slot, 0),
+          [ctx.series(0, 0)],
         );
-        rt.write(fr, slot, mutation.replacement);
-        rt.emit(
+        ctx.write(fr, slot, mutation.replacement);
+        ctx.emit(
           0,
           slot,
-          rt.callCollection('array.size', INT, [mutation.replacement]),
+          ctx.callCollection('array.size', INT, [mutation.replacement]),
         );
       }
     },
@@ -181,15 +181,15 @@ describe('aggregate state and commit integration', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt, fr) {
-        if (rt.needsInit(fr, 0)) {
-          rt.initialize(fr, 0, rt.newStruct(COUNTER, [0]));
+      main(ctx, fr) {
+        if (ctx.needsInit(fr, 0)) {
+          ctx.initialize(fr, 0, ctx.newStruct(COUNTER, [0]));
         }
-        const counter = rt.requireStruct(rt.read(fr, 0, 0), COUNTER);
-        const next = (rt.structField(counter, COUNTER, 0) as number) + 1;
-        rt.storeStructField(counter, COUNTER, 0, next);
+        const counter = ctx.requireStruct(ctx.read(fr, 0, 0), COUNTER);
+        const next = (ctx.structField(counter, COUNTER, 0) as number) + 1;
+        ctx.storeStructField(counter, COUNTER, 0, next);
         if (fail) throw new Error('tick failed');
-        rt.emit(0, 0, next);
+        ctx.emit(0, 0, next);
       },
     });
     const bound = await bind(module, {
@@ -265,8 +265,8 @@ describe('aggregate state and commit integration', () => {
     const base = arrayStateModule();
     const module = testModule({
       ...base,
-      main(rt, fr) {
-        base.main(rt, fr);
+      main(ctx, fr) {
+        base.main(ctx, fr);
         if (fail) {
           throw new Error('transaction failed');
         }
@@ -297,8 +297,8 @@ describe('aggregate state and commit integration', () => {
     const base = arrayStateModule();
     const module = testModule({
       ...base,
-      main(rt, fr) {
-        base.main(rt, fr);
+      main(ctx, fr) {
+        base.main(ctx, fr);
         if (fail) {
           throw new Error('first transaction failed');
         }
@@ -363,15 +363,15 @@ describe('aggregate state and commit integration', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt, fr) {
-        if (rt.needsInit(fr, 0)) {
-          rt.initialize(fr, 0, rt.callCollection('array.from', ARRAY, [7]));
+      main(ctx, fr) {
+        if (ctx.needsInit(fr, 0)) {
+          ctx.initialize(fr, 0, ctx.callCollection('array.from', ARRAY, [7]));
         }
-        if (rt.builtin(0, 0) === 1) {
-          const before = rt.read(fr, 0, 0);
+        if (ctx.builtin(0, 0) === 1) {
+          const before = ctx.read(fr, 0, 0);
           let failedCode: string | null = null;
           try {
-            rt.mutateCollection('array.push', ARRAY, before, [8]);
+            ctx.mutateCollection('array.push', ARRAY, before, [8]);
           } catch (error) {
             if (!(error instanceof ExecutionError)) {
               throw error;
@@ -381,13 +381,13 @@ describe('aggregate state and commit integration', () => {
           if (failedCode !== null) {
             failures.push({
               code: failedCode,
-              rootIdentityPreserved: rt.read(fr, 0, 0) === before,
+              rootIdentityPreserved: ctx.read(fr, 0, 0) === before,
             });
           }
         }
-        const current = rt.read(fr, 0, 0);
-        rt.emit(0, 0, rt.callCollection('array.size', INT, [current]));
-        rt.emit(0, 1, rt.callCollection('array.get', INT, [current, 0]));
+        const current = ctx.read(fr, 0, 0);
+        ctx.emit(0, 0, ctx.callCollection('array.size', INT, [current]));
+        ctx.emit(0, 1, ctx.callCollection('array.get', INT, [current, 0]));
       },
     });
     const bound = await bind(module, {
@@ -477,30 +477,32 @@ describe('aggregate state and commit integration', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt, fr) {
-        if (rt.needsInit(fr, 0)) {
-          rt.initialize(
+      main(ctx, fr) {
+        if (ctx.needsInit(fr, 0)) {
+          ctx.initialize(
             fr,
             0,
-            rt.newStruct(HOLDER, [rt.callCollection('array.from', ARRAY, [0])]),
+            ctx.newStruct(HOLDER, [
+              ctx.callCollection('array.from', ARRAY, [0]),
+            ]),
           );
         }
-        const current = rt.read(fr, 0, 0);
-        const values = rt.structField(current, HOLDER, 0);
-        const mutation = rt.mutateCollection('array.push', ARRAY, values, [
-          (rt.builtin(0, 0) as number) + 1,
+        const current = ctx.read(fr, 0, 0);
+        const values = ctx.structField(current, HOLDER, 0);
+        const mutation = ctx.mutateCollection('array.push', ARRAY, values, [
+          (ctx.builtin(0, 0) as number) + 1,
         ]);
-        rt.storeStructField(current, HOLDER, 0, mutation.replacement);
-        rt.emit(
+        ctx.storeStructField(current, HOLDER, 0, mutation.replacement);
+        ctx.emit(
           0,
           0,
-          rt.callCollection('array.size', INT, [mutation.replacement]),
+          ctx.callCollection('array.size', INT, [mutation.replacement]),
         );
-        if ((rt.builtin(0, 0) as number) > 0) {
-          const prior = rt.structField(rt.read(fr, 0, 1), HOLDER, 0);
-          rt.emit(0, 1, rt.callCollection('array.size', INT, [prior]));
+        if ((ctx.builtin(0, 0) as number) > 0) {
+          const prior = ctx.structField(ctx.read(fr, 0, 1), HOLDER, 0);
+          ctx.emit(0, 1, ctx.callCollection('array.size', INT, [prior]));
         } else {
-          rt.emit(0, 1, NaN);
+          ctx.emit(0, 1, NaN);
         }
       },
     });
@@ -564,8 +566,8 @@ describe('request Heap isolation', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt, fr) {
-        rt.write(fr, 0, rt.callCollection('array.from', ARRAY, [41]));
+      main(ctx, fr) {
+        ctx.write(fr, 0, ctx.callCollection('array.from', ARRAY, [41]));
       },
     });
     const middle = testModule({
@@ -613,8 +615,8 @@ describe('request Heap isolation', () => {
         });
       },
       funcs: {},
-      main(rt, fr) {
-        rt.write(fr, 0, rt.request(0, 0));
+      main(ctx, fr) {
+        ctx.write(fr, 0, ctx.request(0, 0));
       },
     });
     const root = testModule({
@@ -655,11 +657,11 @@ describe('request Heap isolation', () => {
         });
       },
       funcs: {},
-      main(rt) {
-        rt.emit(
+      main(ctx) {
+        ctx.emit(
           0,
           0,
-          rt.callCollection('array.first', INT, [rt.request(0, 0)]),
+          ctx.callCollection('array.first', INT, [ctx.request(0, 0)]),
         );
       },
     });
@@ -711,10 +713,10 @@ describe('request Heap isolation', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt, fr) {
+      main(ctx, fr) {
         const value = [41, 42] as const;
         childTuple = value;
-        rt.write(fr, 0, value);
+        ctx.write(fr, 0, value);
       },
     });
     const root = testModule({
@@ -761,13 +763,13 @@ describe('request Heap isolation', () => {
         });
       },
       funcs: {},
-      main(rt) {
-        const result = rt.request(0, 0);
+      main(ctx) {
+        const result = ctx.request(0, 0);
         if (!Array.isArray(result)) throw new Error('expected tuple result');
         copied = result !== childTuple;
         frozen = Object.isFrozen(result);
-        rt.emit(0, 0, result[0]);
-        rt.emit(0, 1, result[1]);
+        ctx.emit(0, 0, result[0]);
+        ctx.emit(0, 1, result[1]);
       },
     });
     const sink = new Sink();
@@ -828,8 +830,8 @@ describe('request Heap isolation', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt, fr) {
-        rt.write(fr, 0, rt.series(0, 0));
+      main(ctx, fr) {
+        ctx.write(fr, 0, ctx.series(0, 0));
       },
     });
     const root = testModule({
@@ -884,9 +886,9 @@ describe('request Heap isolation', () => {
         return staticModuleBinding(this, {requests: [request, request]});
       },
       funcs: {},
-      main(rt) {
-        rt.emit(0, 0, rt.request(0, 0));
-        rt.emit(0, 1, rt.request(1, 0));
+      main(ctx) {
+        ctx.emit(0, 0, ctx.request(0, 0));
+        ctx.emit(0, 1, ctx.request(1, 0));
       },
     });
     const sink = new Sink();
@@ -952,18 +954,18 @@ describe('request Heap isolation', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt, fr) {
-        if (rt.needsInit(fr, 1)) {
-          rt.initialize(fr, 1, rt.callCollection('array.from', ARRAY, [99]));
+      main(ctx, fr) {
+        if (ctx.needsInit(fr, 1)) {
+          ctx.initialize(fr, 1, ctx.callCollection('array.from', ARRAY, [99]));
         }
-        rt.write(fr, 0, rt.series(0, 0));
-        const mutation = rt.mutateCollection(
+        ctx.write(fr, 0, ctx.series(0, 0));
+        const mutation = ctx.mutateCollection(
           'array.push',
           ARRAY,
-          rt.read(fr, 1, 0),
-          [rt.series(0, 0)],
+          ctx.read(fr, 1, 0),
+          [ctx.series(0, 0)],
         );
-        rt.write(fr, 1, mutation.replacement);
+        ctx.write(fr, 1, mutation.replacement);
       },
     });
     const root = testModule({
@@ -1015,9 +1017,9 @@ describe('request Heap isolation', () => {
         });
       },
       funcs: {},
-      main(rt, fr) {
-        rt.write(fr, 0, rt.callCollection('array.from', ARRAY, [7]));
-        rt.emit(0, 0, rt.request(0, 0));
+      main(ctx, fr) {
+        ctx.write(fr, 0, ctx.callCollection('array.from', ARRAY, [7]));
+        ctx.emit(0, 0, ctx.request(0, 0));
       },
     });
     const sink = new Sink();
@@ -1116,8 +1118,8 @@ describe('runtime boundaries', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt, fr) {
-        rt.frame(fr, requestLargeFrame ? 0 : 1);
+      main(ctx, fr) {
+        ctx.frame(fr, requestLargeFrame ? 0 : 1);
       },
     });
     const bound = await bind(module, {

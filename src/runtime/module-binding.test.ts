@@ -33,22 +33,22 @@ const LAYOUTS = [
 describe('module binding aggregates', () => {
   test('evaluates collection and struct operations into scalar binding data', () => {
     const module = bindingModule(`
-      const values = rt.callCollection('array.from', ${ARRAY}, [7]);
-      const holder = rt.newStruct(${HOLDER}, [values, 1]);
-      const ref = rt.requireStruct(holder, ${HOLDER});
-      const mutation = rt.mutateCollection(
+      const values = ctx.callCollection('array.from', ${ARRAY}, [7]);
+      const holder = ctx.newStruct(${HOLDER}, [values, 1]);
+      const ref = ctx.requireStruct(holder, ${HOLDER});
+      const mutation = ctx.mutateCollection(
         'array.push',
         ${ARRAY},
-        rt.structField(ref, ${HOLDER}, 0),
+        ctx.structField(ref, ${HOLDER}, 0),
         [9]
       );
-      rt.storeStructField(ref, ${HOLDER}, 0, mutation.replacement);
-      rt.storeStructField(ref, ${HOLDER}, 1, 5);
-      const entries = rt.collectionEntries(rt.structField(ref, ${HOLDER}, 0));
-      rt.bindOutput(
+      ctx.storeStructField(ref, ${HOLDER}, 0, mutation.replacement);
+      ctx.storeStructField(ref, ${HOLDER}, 1, 5);
+      const entries = ctx.collectionEntries(ctx.structField(ref, ${HOLDER}, 0));
+      ctx.bindOutput(
         0,
         'price',
-        Number(entries[1]) + Number(rt.structField(ref, ${HOLDER}, 1))
+        Number(entries[1]) + Number(ctx.structField(ref, ${HOLDER}, 1))
       );
     `);
 
@@ -62,8 +62,8 @@ describe('module binding aggregates', () => {
 
   test('preserves an ordinary fallible collection error from eager bind code', () => {
     const module = bindingModule(`
-      const empty = rt.callCollection('array.new', ${ARRAY}, []);
-      rt.callCollection('array.first', ${NUMBER}, [empty]);
+      const empty = ctx.callCollection('array.new', ${ARRAY}, []);
+      ctx.callCollection('array.first', ${NUMBER}, [empty]);
     `);
 
     let thrown: unknown;
@@ -79,10 +79,10 @@ describe('module binding aggregates', () => {
 
   test('invalidates an aggregate that a generated closure tries to retain', () => {
     const module = bindingModule(`
-      rt.bindOutput(
+      ctx.bindOutput(
         0,
         'price',
-        rt.callCollection('array.from', ${ARRAY}, [7])
+        ctx.callCollection('array.from', ${ARRAY}, [7])
       );
     `);
     const escaped = module.evaluateBinding({params: []}).outputs[0]![0]!
@@ -176,7 +176,7 @@ function bindingModule(body: string): JSModule {
       manifest: ${JSON.stringify(manifest)},
       requests: [],
       evaluateBinding(values) {
-        return $evaluate(M, values, (rt, fr) => {
+        return $evaluate(M, values, (ctx, fr) => {
           ${body}
         });
       },

@@ -81,13 +81,13 @@ const MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, root) {
-    const current = rt.series(0, 0);
-    rt.write(root, 0, current);
-    rt.emit(0, 0, current);
-    rt.emit(0, 1, rt.series(0, 1));
-    rt.emit(0, 2, rt.read(root, 0, 2));
-    rt.emitEffect(0, current);
+  main(ctx, root) {
+    const current = ctx.series(0, 0);
+    ctx.write(root, 0, current);
+    ctx.emit(0, 0, current);
+    ctx.emit(0, 1, ctx.series(0, 1));
+    ctx.emit(0, 2, ctx.read(root, 0, 2));
+    ctx.emitEffect(0, current);
   },
 });
 
@@ -132,17 +132,17 @@ const PROVISIONAL_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, root) {
-    if (rt.needsInit(root, 0)) rt.initialize(root, 0, 0);
-    if (rt.needsInit(root, 1)) rt.initialize(root, 1, 0);
-    const close = rt.series(0, 0);
-    rt.write(root, 0, Number(rt.read(root, 0, 0)) + close);
-    rt.write(root, 1, Number(rt.read(root, 1, 0)) + 1);
-    rt.write(root, 2, close);
-    rt.emit(0, 0, rt.read(root, 0, 0));
-    rt.emit(0, 1, rt.read(root, 1, 0));
-    rt.emit(0, 2, rt.read(root, 2, 0));
-    rt.emitEffect(0, close);
+  main(ctx, root) {
+    if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
+    if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, 0);
+    const close = ctx.series(0, 0);
+    ctx.write(root, 0, Number(ctx.read(root, 0, 0)) + close);
+    ctx.write(root, 1, Number(ctx.read(root, 1, 0)) + 1);
+    ctx.write(root, 2, close);
+    ctx.emit(0, 0, ctx.read(root, 0, 0));
+    ctx.emit(0, 1, ctx.read(root, 1, 0));
+    ctx.emit(0, 2, ctx.read(root, 2, 0));
+    ctx.emitEffect(0, close);
   },
 });
 
@@ -177,15 +177,15 @@ function structModule(shouldFail: () => boolean): JSModule {
       return staticModuleBinding(this);
     },
     funcs: {},
-    main(rt, root) {
-      if (rt.needsInit(root, 0)) {
-        rt.initialize(root, 0, rt.newStruct(COUNTER, [0]));
+    main(ctx, root) {
+      if (ctx.needsInit(root, 0)) {
+        ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
       }
-      const counter = rt.requireStruct(rt.read(root, 0, 0), COUNTER);
-      const value = Number(rt.structField(counter, COUNTER, 0)) + 1;
-      rt.storeStructField(counter, COUNTER, 0, value);
+      const counter = ctx.requireStruct(ctx.read(root, 0, 0), COUNTER);
+      const value = Number(ctx.structField(counter, COUNTER, 0)) + 1;
+      ctx.storeStructField(counter, COUNTER, 0, value);
       if (shouldFail()) throw new Error('struct update failed');
-      rt.emit(0, 0, value);
+      ctx.emit(0, 0, value);
     },
   });
 }
@@ -227,46 +227,46 @@ const COLLECTION_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, root) {
-    if (rt.needsInit(root, 0)) {
-      rt.initialize(root, 0, rt.callCollection('array.from', ARRAY, [0]));
+  main(ctx, root) {
+    if (ctx.needsInit(root, 0)) {
+      ctx.initialize(root, 0, ctx.callCollection('array.from', ARRAY, [0]));
     }
-    if (rt.needsInit(root, 1)) {
-      rt.initialize(
+    if (ctx.needsInit(root, 1)) {
+      ctx.initialize(
         root,
         1,
-        rt.callCollection('matrix.new', MATRIX, [1, 1, 0]),
+        ctx.callCollection('matrix.new', MATRIX, [1, 1, 0]),
       );
     }
-    if (rt.needsInit(root, 2)) {
-      rt.initialize(root, 2, rt.callCollection('map.new', MAP, []));
+    if (ctx.needsInit(root, 2)) {
+      ctx.initialize(root, 2, ctx.callCollection('map.new', MAP, []));
     }
 
-    const close = rt.series(0, 0);
-    const array = rt.mutateCollection(
+    const close = ctx.series(0, 0);
+    const array = ctx.mutateCollection(
       'array.push',
       ARRAY,
-      rt.read(root, 0, 0),
+      ctx.read(root, 0, 0),
       [close],
     ).replacement;
-    const matrix = rt.mutateCollection(
+    const matrix = ctx.mutateCollection(
       'matrix.set',
       MATRIX,
-      rt.read(root, 1, 0),
+      ctx.read(root, 1, 0),
       [0, 0, close],
     ).replacement;
-    const map = rt.mutateCollection('map.put', MAP, rt.read(root, 2, 0), [
+    const map = ctx.mutateCollection('map.put', MAP, ctx.read(root, 2, 0), [
       close,
       close + 10,
     ]).replacement;
-    rt.write(root, 0, array);
-    rt.write(root, 1, matrix);
-    rt.write(root, 2, map);
+    ctx.write(root, 0, array);
+    ctx.write(root, 1, matrix);
+    ctx.write(root, 2, map);
 
-    rt.emit(0, 0, rt.callCollection('array.size', NUMBER, [array]));
-    rt.emit(0, 1, rt.callCollection('matrix.get', NUMBER, [matrix, 0, 0]));
-    rt.emit(0, 2, rt.callCollection('map.size', NUMBER, [map]));
-    rt.emit(0, 3, rt.collectionEntries(array).length);
+    ctx.emit(0, 0, ctx.callCollection('array.size', NUMBER, [array]));
+    ctx.emit(0, 1, ctx.callCollection('matrix.get', NUMBER, [matrix, 0, 0]));
+    ctx.emit(0, 2, ctx.callCollection('map.size', NUMBER, [map]));
+    ctx.emit(0, 3, ctx.collectionEntries(array).length);
   },
 });
 

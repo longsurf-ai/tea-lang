@@ -3,8 +3,8 @@
 import type {Effect} from 'effect';
 import type {Value} from './value';
 
-/** One synchronized set of external values and its execution finality. */
-export interface RuntimeContext {
+/** One synchronized external update passed to JSRuntime.step(). */
+export interface StepInput {
   readonly series: readonly Value[];
   readonly builtins: readonly Value[];
   readonly requests: readonly Value[];
@@ -63,14 +63,14 @@ export interface Result<S, I, Y, E> {
   readonly effects: readonly E[];
 }
 
-export type StateUpdate<S, I, C, Y, E, Err = never, R = never> = (
+export type StateUpdate<S, I, X, Y, E, Err = never, R = never> = (
   state: Readonly<S>,
   intermediate: Readonly<I>,
-  ctx: C,
+  input: X,
 ) => Effect.Effect<Result<S, I, Y, E>, Err, R>;
 
-export interface StateMachine<S, I, C, Y, E, Err = never, R = never> {
+export interface StateMachine<S, I, X, Y, E, Err = never, R = never> {
   readonly initialState: S;
   readonly initialIntermediate: I;
-  readonly update: StateUpdate<S, I, C, Y, E, Err, R>;
+  readonly update: StateUpdate<S, I, X, Y, E, Err, R>;
 }

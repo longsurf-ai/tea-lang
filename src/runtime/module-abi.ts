@@ -1,4 +1,5 @@
-// Purpose: Versioned recursive JSModule, pure binding data, and execution-only Runtime contracts.
+// Purpose: Versioned recursive JSModule, pure binding data, and the generated
+// execution RuntimeContext contract.
 
 import type {BuiltinSource} from '../ir/builtin';
 import type {NameStorage} from '../ir/node';
@@ -105,10 +106,10 @@ export interface JSModule {
   readonly funcs: Readonly<
     Record<
       number,
-      (rt: Runtime, fr: Frame, ...args: Value[]) => ExecutionResult
+      (ctx: RuntimeContext, fr: Frame, ...args: Value[]) => ExecutionResult
     >
   >;
-  main(rt: Runtime, fr: Frame): void;
+  main(ctx: RuntimeContext, fr: Frame): void;
 }
 
 /** Immutable data produced by one generated module's pure binding function. */
@@ -134,8 +135,8 @@ export interface JSModuleBinding {
   }[];
 }
 
-/** Generated per-row execution operations. Runtime always means execution. */
-export interface Runtime {
+/** Operations available to generated code during one runtime step. */
+export interface RuntimeContext {
   series(sid: number, offset: number): number;
   builtin(bid: number, offset: number): Value;
   param(pid: number): Value;

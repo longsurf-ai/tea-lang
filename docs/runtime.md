@@ -1,5 +1,5 @@
 ---
-title: 'The Tea runtime ABI (`rt`)'
+title: 'The Tea runtime ABI (`ctx`)'
 sidebarTitle: Runtime
 ---
 
@@ -32,7 +32,7 @@ generated JS module + BindInputs
               │
               ▼
 fixed-historical host adapter ──▶ DataProvider / OutputSink
-              │ synchronized RuntimeContext
+              │ synchronized StepInput
               ▼
          JSRuntime.step()
 
@@ -230,11 +230,11 @@ crosses an explicit generated-function parameter. Any ES2015 engine loads it
 with `new Function('$evaluate', '$module', src)(privateEvaluator, moduleFactory)`
 (Node, browsers, and V8 isolates alike); an ES2015 parse gate plus a deny-list
 test enforce the ceiling so it cannot drift. Both injected functions are
-loader-private and are not Runtime operations.
+loader-private and are not `RuntimeContext` operations.
 
 ## Generated operation surfaces
 
-`main` and `funcs` receive the single execution-only `Runtime` interface, which
+`main` and `funcs` receive the single execution-only `RuntimeContext` interface, which
 contains only Time-Machine-relevant operations.
 Everything else —
 arithmetic, comparisons, `math.*`, `na()`/`nz()`/`fixnan` — expands inline
@@ -243,34 +243,34 @@ seam: JS renders these natively; another backend supplies another table).
 
 ```ts
 // reads and writes (offset 0 = current row)
-rt.series(sid, offset); // numeric provider series and input.source params
-rt.builtin(bid, offset); // typed time/bar/barstate/syminfo/timeframe value
-rt.param(pid); // bind-time scalar
-rt.read(fr, slot, offset); // a name's history
-rt.write(fr, slot, v);
-rt.needsInit(fr, slot); // persistent declaration has not initialized yet
-rt.initialize(fr, slot, v); // tentatively initialize at this lexical site
-rt.request(rid, offset); // a static edge's merged parent-row view
+ctx.series(sid, offset); // numeric provider series and input.source params
+ctx.builtin(bid, offset); // typed time/bar/barstate/syminfo/timeframe value
+ctx.param(pid); // bind-time scalar
+ctx.read(fr, slot, offset); // a name's history
+ctx.write(fr, slot, v);
+ctx.needsInit(fr, slot); // persistent declaration has not initialized yet
+ctx.initialize(fr, slot, v); // tentatively initialize at this lexical site
+ctx.request(rid, offset); // a static edge's merged parent-row view
 // frames
-rt.frame(fr, slot); // open the sub-frame at this call site
-rt.root(); // the program frame (globals read from funcs)
+ctx.frame(fr, slot); // open the sub-frame at this call site
+ctx.root(); // the program frame (globals read from funcs)
 // emissions
-rt.emit(oid, channel, v);
-rt.emitEffect(effectId, payload); // ordered sparse append for this row transaction
+ctx.emit(oid, channel, v);
+ctx.emitEffect(effectId, payload); // ordered sparse append for this row transaction
 // structs and collections
-rt.newStruct(layout, fields);
-rt.requireStruct(value, ownerLayout); // pre-RHS/argument receiver check
-rt.structField(value, ownerLayout, fieldIndex);
-rt.storeStructField(value, ownerLayout, fieldIndex, replacement);
-rt.callCollection(operation, resultLayout, args);
-rt.mutateCollection(operation, collectionLayout, receiver, args);
-rt.collectionEntries(value);
+ctx.newStruct(layout, fields);
+ctx.requireStruct(value, ownerLayout); // pre-RHS/argument receiver check
+ctx.structField(value, ownerLayout, fieldIndex);
+ctx.storeStructField(value, ownerLayout, fieldIndex, replacement);
+ctx.callCollection(operation, resultLayout, args);
+ctx.mutateCollection(operation, collectionLayout, receiver, args);
+ctx.collectionEntries(value);
 ```
 
-`bind` does not receive `Runtime`. Its public contract is only:
+`evaluateBinding` does not receive `RuntimeContext`. Its public contract is only:
 
 ```ts
-bind(values: {
+evaluateBinding(values: {
   params: readonly Value[];
   builtins?: ReadonlyMap<number, Value>;
 }): JSModuleBinding;
@@ -280,7 +280,7 @@ bind(values: {
 arguments, and static request pairs/options. The emitted implementation uses a
 loader-private helper to evaluate lowered expressions, but neither that helper
 nor its temporary frame/Heap evaluator has a public interface. The execution
-path supplies only `Runtime` to `main` and `funcs`; hand-authored modules can
+path supplies only `RuntimeContext` to `main` and `funcs`; hand-authored modules can
 return the binding data directly.
 
 `mutateCollection` returns a private `{replacement, result}` ABI envelope.
@@ -290,14 +290,14 @@ or struct field. The envelope is not a Tea tuple and can never enter persistent
 state or a collection. Mutable and const methods both return only their declared
 Tea result; a mutable method changes the receiver's Heap storage in place.
 
-`rt.frame(fr, slot)` is the seam where per-call-site logical state opens:
+`ctx.frame(fr, slot)` is the seam where per-call-site logical state opens:
 fetch the sub-frame at compartment `slot` of `fr` and tentatively activate it
 for this row transition.
 Persistent initialization remains inside the callee's lexical `InitName`
 statements. A call site lowers to:
 
 ```js
-const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
+const v = f_3(ctx, ctx.frame(fr, 0), ctx.series(0, 0), 9);
 ```
 
 ## Values
@@ -399,7 +399,7 @@ rejects misaligned series at bind.
 
 Providers expose absolute-indexed committed rows through `SeriesData`. The
 fixed-historical adapter turns each absolute row into one synchronized
-`RuntimeContext`; `JSRuntime` keeps only the bounded history required by the
+`StepInput`; `JSRuntime` keeps only the bounded history required by the
 module.
 Depth is a retention requirement for runtime state and a provider contract for
 historical availability.
@@ -408,7 +408,7 @@ historical availability.
 
 A frame is a call site's logical persistent state: one bounded history value
 sequence per local and one optional child-frame state per call-site slot.
-Calling `rt.frame` tentatively activates that child for the current transition;
+Calling `ctx.frame` tentatively activates that child for the current transition;
 abort restores the prior activation tree, while a final success promotes it. A
 successful provisional step may retain a same-row activation candidate so
 `varip` survives even when the final step does not revisit that call site.
@@ -459,9 +459,9 @@ there are no incremental update paths, by construction:
   same-row `Intermediate`. Reads at offset 0 see this step's writes (or the
   storage class's start value); offsets ≥ 1 see committed history.
 - A persistent declaration is an ordinary `InitName` statement at its lexical
-  execution site. Generated code first asks `rt.needsInit(frame, slot)` and
+  execution site. Generated code first asks `ctx.needsInit(frame, slot)` and
   evaluates the initializer only when that answer is true, then publishes the
-  tentative value through `rt.initialize`. The runtime tracks committed and
+  tentative value through `ctx.initialize`. The runtime tracks committed and
   same-row initialization bits separately; an untaken declaration therefore
   does not initialize, and an initializer may read current call arguments or
   perform any other ordinary Tea evaluation in source order.

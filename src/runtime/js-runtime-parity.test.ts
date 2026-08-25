@@ -6,13 +6,13 @@ import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {type Value} from './abi';
-import {JSRuntime, type RuntimeContext, type StepResult} from './js-runtime';
+import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
 import {configureModule} from './module-binding';
 import {
   RUNTIME_ABI_VERSION,
   type Frame,
   type JSModule,
-  type Runtime,
+  type RuntimeContext,
 } from './module-abi';
 import {staticModuleBinding, testModule} from './testing';
 import type {ValueLayout} from './value-layout';
@@ -46,22 +46,22 @@ function input({
   readonly series?: readonly Value[];
   readonly builtins?: readonly Value[];
   readonly provisional?: boolean;
-} = {}): RuntimeContext {
+} = {}): StepInput {
   return {series, builtins, requests: [], provisional};
 }
 
-function run(target: JSRuntime, ctx: RuntimeContext): StepResult {
-  return Effect.runSync(target.step(ctx));
+function run(target: JSRuntime, input: StepInput): StepResult {
+  return Effect.runSync(target.step(input));
 }
 
 function channels(result: StepResult): readonly Value[] {
   return result.output[0]?.channels ?? [];
 }
 
-function counter(rt: Runtime, frame: Frame): Value {
-  if (rt.needsInit(frame, 0)) rt.initialize(frame, 0, 0);
-  rt.write(frame, 0, Number(rt.read(frame, 0, 0)) + 1);
-  return rt.read(frame, 0, 0);
+function counter(ctx: RuntimeContext, frame: Frame): Value {
+  if (ctx.needsInit(frame, 0)) ctx.initialize(frame, 0, 0);
+  ctx.write(frame, 0, Number(ctx.read(frame, 0, 0)) + 1);
+  return ctx.read(frame, 0, 0);
 }
 
 const COUNTER_MODULE: JSModule = testModule({
@@ -96,9 +96,9 @@ const COUNTER_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {1: counter},
-  main(rt, root) {
-    rt.emit(0, 0, counter(rt, rt.frame(root, 0)));
-    rt.emit(0, 1, counter(rt, rt.frame(root, 1)));
+  main(ctx, root) {
+    ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
+    ctx.emit(0, 1, counter(ctx, ctx.frame(root, 1)));
   },
 });
 
@@ -150,13 +150,13 @@ const TYPED_HISTORY_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, root) {
-    rt.write(root, 0, 7);
-    rt.write(root, 1, true);
-    rt.write(root, 2, 'present');
-    rt.emit(0, 0, rt.read(root, 0, 2));
-    rt.emit(0, 1, rt.read(root, 1, 2));
-    rt.emit(0, 2, rt.read(root, 2, 2));
+  main(ctx, root) {
+    ctx.write(root, 0, 7);
+    ctx.write(root, 1, true);
+    ctx.write(root, 2, 'present');
+    ctx.emit(0, 0, ctx.read(root, 0, 2));
+    ctx.emit(0, 1, ctx.read(root, 1, 2));
+    ctx.emit(0, 2, ctx.read(root, 2, 2));
   },
 });
 
@@ -196,16 +196,16 @@ const TICK_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, root) {
-    if (rt.needsInit(root, 0)) rt.initialize(root, 0, 0);
-    if (rt.needsInit(root, 1)) rt.initialize(root, 1, 0);
-    const close = rt.series(0, 0);
-    rt.write(root, 0, Number(rt.read(root, 0, 0)) + close);
-    rt.write(root, 1, Number(rt.read(root, 1, 0)) + 1);
-    rt.write(root, 2, close);
-    rt.emit(0, 0, rt.read(root, 0, 0));
-    rt.emit(0, 1, rt.read(root, 1, 0));
-    rt.emit(0, 2, rt.read(root, 2, 0));
+  main(ctx, root) {
+    if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
+    if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, 0);
+    const close = ctx.series(0, 0);
+    ctx.write(root, 0, Number(ctx.read(root, 0, 0)) + close);
+    ctx.write(root, 1, Number(ctx.read(root, 1, 0)) + 1);
+    ctx.write(root, 2, close);
+    ctx.emit(0, 0, ctx.read(root, 0, 0));
+    ctx.emit(0, 1, ctx.read(root, 1, 0));
+    ctx.emit(0, 2, ctx.read(root, 2, 0));
   },
 });
 
@@ -244,25 +244,25 @@ function arrayStateModule(): JSModule {
       return staticModuleBinding(this);
     },
     funcs: {},
-    main(rt, root) {
-      if (rt.needsInit(root, 0)) {
-        rt.initialize(root, 0, rt.callCollection('array.from', ARRAY, [0]));
+    main(ctx, root) {
+      if (ctx.needsInit(root, 0)) {
+        ctx.initialize(root, 0, ctx.callCollection('array.from', ARRAY, [0]));
       }
-      if (rt.needsInit(root, 1)) {
-        rt.initialize(root, 1, rt.callCollection('array.from', ARRAY, [0]));
+      if (ctx.needsInit(root, 1)) {
+        ctx.initialize(root, 1, ctx.callCollection('array.from', ARRAY, [0]));
       }
       for (let slot = 0; slot < 2; slot += 1) {
-        const mutation = rt.mutateCollection(
+        const mutation = ctx.mutateCollection(
           'array.push',
           ARRAY,
-          rt.read(root, slot, 0),
-          [rt.series(0, 0)],
+          ctx.read(root, slot, 0),
+          [ctx.series(0, 0)],
         );
-        rt.write(root, slot, mutation.replacement);
-        rt.emit(
+        ctx.write(root, slot, mutation.replacement);
+        ctx.emit(
           0,
           slot,
-          rt.callCollection('array.size', NUMBER, [mutation.replacement]),
+          ctx.callCollection('array.size', NUMBER, [mutation.replacement]),
         );
       }
     },
@@ -282,12 +282,12 @@ describe('JSRuntime core parity', () => {
     let fail = true;
     const module: JSModule = testModule({
       ...COUNTER_MODULE,
-      main(rt, root) {
+      main(ctx, root) {
         if (fail) {
-          counter(rt, rt.frame(root, 0));
+          counter(ctx, ctx.frame(root, 0));
           throw new Error('after first call');
         }
-        rt.emit(0, 0, counter(rt, rt.frame(root, 0)));
+        ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
       },
     });
     const target = runtime(module);
@@ -349,8 +349,8 @@ describe('JSRuntime core parity', () => {
           },
         ],
       },
-      main(rt, root) {
-        if (invoke) rt.emit(0, 0, counter(rt, rt.frame(root, 0)));
+      main(ctx, root) {
+        if (invoke) ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
       },
     });
     const target = runtime(module);
@@ -401,14 +401,14 @@ describe('JSRuntime core parity', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt, root) {
+      main(ctx, root) {
         if (!invoke) {
-          rt.emit(0, 0, NaN);
+          ctx.emit(0, 0, NaN);
           return;
         }
-        const child = rt.frame(root, 0);
-        rt.write(child, 0, rt.series(0, 0));
-        rt.emit(0, 0, rt.read(child, 0, 1));
+        const child = ctx.frame(root, 0);
+        ctx.write(child, 0, ctx.series(0, 0));
+        ctx.emit(0, 0, ctx.read(child, 0, 1));
       },
     });
     const target = runtime(module);
@@ -471,28 +471,30 @@ describe('JSRuntime core parity', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt, root) {
-        if (rt.needsInit(root, 0)) {
-          rt.initialize(
+      main(ctx, root) {
+        if (ctx.needsInit(root, 0)) {
+          ctx.initialize(
             root,
             0,
-            rt.newStruct(HOLDER, [rt.callCollection('array.from', ARRAY, [0])]),
+            ctx.newStruct(HOLDER, [
+              ctx.callCollection('array.from', ARRAY, [0]),
+            ]),
           );
         }
-        const holder = rt.read(root, 0, 0);
-        const current = rt.mutateCollection(
+        const holder = ctx.read(root, 0, 0);
+        const current = ctx.mutateCollection(
           'array.push',
           ARRAY,
-          rt.structField(holder, HOLDER, 0),
-          [Number(rt.builtin(0, 0)) + 1],
+          ctx.structField(holder, HOLDER, 0),
+          [Number(ctx.builtin(0, 0)) + 1],
         ).replacement;
-        rt.storeStructField(holder, HOLDER, 0, current);
-        rt.emit(0, 0, rt.callCollection('array.size', NUMBER, [current]));
-        if (Number(rt.builtin(0, 0)) === 0) {
-          rt.emit(0, 1, NaN);
+        ctx.storeStructField(holder, HOLDER, 0, current);
+        ctx.emit(0, 0, ctx.callCollection('array.size', NUMBER, [current]));
+        if (Number(ctx.builtin(0, 0)) === 0) {
+          ctx.emit(0, 1, NaN);
         } else {
-          const prior = rt.structField(rt.read(root, 0, 1), HOLDER, 0);
-          rt.emit(0, 1, rt.callCollection('array.size', NUMBER, [prior]));
+          const prior = ctx.structField(ctx.read(root, 0, 1), HOLDER, 0);
+          ctx.emit(0, 1, ctx.callCollection('array.size', NUMBER, [prior]));
         }
       },
     });

@@ -133,10 +133,10 @@ const EMPTY_VALUES_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, fr) {
-    rt.emit(0, 0, rt.read(fr, 0, 0));
-    rt.emit(0, 1, rt.read(fr, 1, 0));
-    rt.emit(0, 2, rt.read(fr, 2, 0));
+  main(ctx, fr) {
+    ctx.emit(0, 0, ctx.read(fr, 0, 0));
+    ctx.emit(0, 1, ctx.read(fr, 1, 0));
+    ctx.emit(0, 2, ctx.read(fr, 2, 0));
   },
 });
 
@@ -180,10 +180,10 @@ describe('runtime value contract', () => {
   test('invalid history offsets return each slot class empty value', async () => {
     const module: JSModule = testModule({
       ...EMPTY_VALUES_MODULE,
-      main(rt, fr) {
-        rt.emit(0, 0, rt.read(fr, 0, -1));
-        rt.emit(0, 1, rt.read(fr, 1, NaN));
-        rt.emit(0, 2, rt.read(fr, 2, 0.5));
+      main(ctx, fr) {
+        ctx.emit(0, 0, ctx.read(fr, 0, -1));
+        ctx.emit(0, 1, ctx.read(fr, 1, NaN));
+        ctx.emit(0, 2, ctx.read(fr, 2, 0.5));
       },
     });
     const sink = new Sink();
@@ -248,8 +248,8 @@ describe('runtime value contract', () => {
         series: [{id: 'close', depth: {kind: 'none'}}],
         frames: [{locals: [], subs: []}],
       },
-      main(rt) {
-        rt.emit(0, 0, rt.series(0, 0));
+      main(ctx) {
+        ctx.emit(0, 0, ctx.series(0, 0));
       },
     });
 

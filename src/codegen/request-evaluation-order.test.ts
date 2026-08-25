@@ -34,7 +34,7 @@ describe('request context evaluation order', () => {
     expect(timeframeTemp).toBeDefined();
     expect(symbolTemp).toBeDefined();
     expect(bindSource).toContain(
-      `rt.bindRequest(0, (${symbolTemp}), (${timeframeTemp}));`,
+      `ctx.bindRequest(0, (${symbolTemp}), (${timeframeTemp}));`,
     );
   });
 
@@ -63,7 +63,7 @@ describe('request context evaluation order', () => {
     const js = generate(program);
     const bind = js.slice(js.lastIndexOf('evaluateBinding(values)'));
     const optionCall = bind.match(
-      /rt\.bindRequestOptions\(0, \((t\d+)\), \((t\d+)\), \((t\d+)\), \((t\d+)\)\);/,
+      /ctx\.bindRequestOptions\(0, \((t\d+)\), \((t\d+)\), \((t\d+)\), \((t\d+)\)\);/,
     );
     expect(optionCall).not.toBeNull();
     if (optionCall === null) {
@@ -76,8 +76,8 @@ describe('request context evaluation order', () => {
     expect(captures.every(index => index >= 0)).toBe(true);
     expect(captures).toEqual([...captures].sort((a, b) => a - b));
 
-    const optionCallIndex = bind.indexOf('rt.bindRequestOptions(0');
-    const contextCallIndex = bind.indexOf('rt.bindRequest(0');
+    const optionCallIndex = bind.indexOf('ctx.bindRequestOptions(0');
+    const contextCallIndex = bind.indexOf('ctx.bindRequest(0');
     expect(optionCallIndex).toBeGreaterThanOrEqual(0);
     expect(contextCallIndex).toBeGreaterThan(optionCallIndex);
 
@@ -97,8 +97,8 @@ describe('request context evaluation order', () => {
     const js = generate(program);
     const rootBind = js.lastIndexOf('evaluateBinding(values)');
     const bind = js.slice(rootBind, js.indexOf('funcs:', rootBind));
-    const executionRead = bind.indexOf('rt.builtin(0, 0)');
-    const optionCall = bind.indexOf('rt.bindRequestOptions(0,');
+    const executionRead = bind.indexOf('ctx.builtin(0, 0)');
+    const optionCall = bind.indexOf('ctx.bindRequestOptions(0,');
     expect(executionRead).toBeGreaterThanOrEqual(0);
     expect(optionCall).toBeGreaterThan(executionRead);
 

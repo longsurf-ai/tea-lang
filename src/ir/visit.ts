@@ -325,7 +325,7 @@ export function bindEvaluable(e: IrExpr): boolean {
       return true;
     case IrKind.HistRead:
       // Source params are excluded: their reads are series (a bound host
-      // series), not bind-time scalars, and would lower to rt.series. A typed
+      // series), not bind-time scalars, and would lower to ctx.series. A typed
       // A builtin is bind-visible only when its Tea qualifier is no later
       // than simple; row-varying builtins remain per-row reads.
       return (

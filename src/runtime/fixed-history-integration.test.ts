@@ -139,12 +139,12 @@ const EMA_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, fr) {
-    if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, NaN);
-    const e = num(rt.read(fr, 0, 0));
-    const close = rt.series(0, 0);
-    rt.write(fr, 0, Number.isNaN(e) ? close : 0.5 * close + 0.5 * e);
-    rt.emit(0, 0, rt.read(fr, 0, 0));
+  main(ctx, fr) {
+    if (ctx.needsInit(fr, 0)) ctx.initialize(fr, 0, NaN);
+    const e = num(ctx.read(fr, 0, 0));
+    const close = ctx.series(0, 0);
+    ctx.write(fr, 0, Number.isNaN(e) ? close : 0.5 * close + 0.5 * e);
+    ctx.emit(0, 0, ctx.read(fr, 0, 0));
   },
 });
 
@@ -189,17 +189,17 @@ const COUNTER_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {
-    1(rt, fr) {
-      if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, 0);
-      rt.write(fr, 0, num(rt.read(fr, 0, 0)) + 1);
-      return rt.read(fr, 0, 0);
+    1(ctx, fr) {
+      if (ctx.needsInit(fr, 0)) ctx.initialize(fr, 0, 0);
+      ctx.write(fr, 0, num(ctx.read(fr, 0, 0)) + 1);
+      return ctx.read(fr, 0, 0);
     },
   },
-  main(rt, fr) {
-    const a = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0)) as Value;
-    const b = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 1)) as Value;
-    rt.emit(0, 0, a);
-    rt.emit(0, 1, b);
+  main(ctx, fr) {
+    const a = COUNTER_MODULE.funcs[1](ctx, ctx.frame(fr, 0)) as Value;
+    const b = COUNTER_MODULE.funcs[1](ctx, ctx.frame(fr, 1)) as Value;
+    ctx.emit(0, 0, a);
+    ctx.emit(0, 1, b);
   },
 });
 
@@ -234,9 +234,9 @@ const HISTORY_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, fr) {
-    rt.write(fr, 0, rt.series(0, 0));
-    rt.emit(0, 0, rt.read(fr, 0, 2));
+  main(ctx, fr) {
+    ctx.write(fr, 0, ctx.series(0, 0));
+    ctx.emit(0, 0, ctx.read(fr, 0, 2));
   },
 });
 
@@ -293,15 +293,15 @@ const TICK_MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, fr) {
-    if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, 0);
-    if (rt.needsInit(fr, 1)) rt.initialize(fr, 1, 0);
-    rt.write(fr, 0, num(rt.read(fr, 0, 0)) + rt.series(0, 0));
-    rt.write(fr, 1, num(rt.read(fr, 1, 0)) + 1);
-    rt.write(fr, 2, rt.series(0, 0));
-    rt.emit(0, 0, rt.read(fr, 0, 0));
-    rt.emit(0, 1, rt.read(fr, 1, 0));
-    rt.emit(0, 2, rt.read(fr, 2, 0));
+  main(ctx, fr) {
+    if (ctx.needsInit(fr, 0)) ctx.initialize(fr, 0, 0);
+    if (ctx.needsInit(fr, 1)) ctx.initialize(fr, 1, 0);
+    ctx.write(fr, 0, num(ctx.read(fr, 0, 0)) + ctx.series(0, 0));
+    ctx.write(fr, 1, num(ctx.read(fr, 1, 0)) + 1);
+    ctx.write(fr, 2, ctx.series(0, 0));
+    ctx.emit(0, 0, ctx.read(fr, 0, 0));
+    ctx.emit(0, 1, ctx.read(fr, 1, 0));
+    ctx.emit(0, 2, ctx.read(fr, 2, 0));
   },
 });
 
@@ -383,9 +383,9 @@ const BIND_MODULE: JSModule = testModule({
     };
   },
   funcs: {},
-  main(rt, fr) {
-    rt.write(fr, 0, rt.series(0, 0));
-    rt.emit(1, 0, rt.read(fr, 0, num(rt.param(1))));
+  main(ctx, fr) {
+    ctx.write(fr, 0, ctx.series(0, 0));
+    ctx.emit(1, 0, ctx.read(fr, 0, num(ctx.param(1))));
   },
 });
 
@@ -564,12 +564,12 @@ describe('typed builtins', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt) {
-        builtins.forEach((_, bid) => rt.emit(0, bid, rt.builtin(bid, 0)));
-        rt.emit(1, 0, rt.builtin(0, 1));
-        rt.emit(1, 1, rt.builtin(7, 1));
-        rt.emit(1, 2, rt.builtin(11, 1));
-        rt.emit(1, 3, rt.builtin(2, 1));
+      main(ctx) {
+        builtins.forEach((_, bid) => ctx.emit(0, bid, ctx.builtin(bid, 0)));
+        ctx.emit(1, 0, ctx.builtin(0, 1));
+        ctx.emit(1, 1, ctx.builtin(7, 1));
+        ctx.emit(1, 2, ctx.builtin(11, 1));
+        ctx.emit(1, 3, ctx.builtin(2, 1));
       },
     });
     return module;
@@ -677,8 +677,8 @@ describe('typed builtins', () => {
       evaluateBinding() {
         return staticModuleBinding(this);
       },
-      main(rt) {
-        rt.emit(0, 0, rt.builtin(0, 0));
+      main(ctx) {
+        ctx.emit(0, 0, ctx.builtin(0, 0));
       },
     });
     const sink = new RecordingSink();
@@ -783,11 +783,11 @@ const CHILD_MODULE: JSModule = testModule({
   },
   funcs: {},
   main(
-    rt: Parameters<JSModule['main']>[0],
+    ctx: Parameters<JSModule['main']>[0],
     fr: Parameters<JSModule['main']>[1],
   ) {
     // Bind-time params are compilation-global: pid 0 is the PARENT's param.
-    rt.write(fr, 0, rt.series(0, 0) * num(rt.param(0)));
+    ctx.write(fr, 0, ctx.series(0, 0) * num(ctx.param(0)));
   },
 });
 
@@ -872,9 +872,9 @@ function requestModule(
       };
     },
     funcs: {},
-    main(rt) {
-      rt.emit(0, 0, rt.request(0, 0));
-      rt.emit(0, 1, rt.request(0, 1));
+    main(ctx) {
+      ctx.emit(0, 0, ctx.request(0, 0));
+      ctx.emit(0, 1, ctx.request(0, 1));
     },
   });
   return module;
@@ -1065,10 +1065,10 @@ describe('requests', () => {
       },
       funcs: {},
       main(
-        rt: Parameters<JSModule['main']>[0],
+        ctx: Parameters<JSModule['main']>[0],
         fr: Parameters<JSModule['main']>[1],
       ) {
-        rt.write(fr, 0, rt.builtin(0, 0));
+        ctx.write(fr, 0, ctx.builtin(0, 0));
       },
     });
     const base = requestModule({calcBarsCount: 2});
@@ -1128,9 +1128,9 @@ describe('requests', () => {
     const module = requestModule({});
     const probing: JSModule = testModule({
       ...module,
-      main(rt) {
-        rt.emit(0, 0, rt.request(0, -1));
-        rt.emit(0, 1, rt.request(0, 100));
+      main(ctx) {
+        ctx.emit(0, 0, ctx.request(0, -1));
+        ctx.emit(0, 1, ctx.request(0, 100));
       },
     });
     const sink = new RecordingSink();
@@ -1185,10 +1185,10 @@ describe('requests', () => {
       },
       funcs: {},
       main(
-        rt: Parameters<JSModule['main']>[0],
+        ctx: Parameters<JSModule['main']>[0],
         fr: Parameters<JSModule['main']>[1],
       ) {
-        rt.write(fr, 0, rt.series(0, 0));
+        ctx.write(fr, 0, ctx.series(0, 0));
       },
     });
     const outerChild = testModule({
@@ -1247,10 +1247,10 @@ describe('requests', () => {
       },
       funcs: {},
       main(
-        rt: Parameters<JSModule['main']>[0],
+        ctx: Parameters<JSModule['main']>[0],
         fr: Parameters<JSModule['main']>[1],
       ) {
-        rt.write(fr, 0, rt.request(0, 0));
+        ctx.write(fr, 0, ctx.request(0, 0));
       },
     });
     const base = requestModule({});

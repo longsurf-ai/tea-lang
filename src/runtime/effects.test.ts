@@ -62,8 +62,8 @@ function effectModule(main: JSModule['main']): JSModule {
 describe('effect row transactions', () => {
   test('a failed transaction discards effects before a successful retry', async () => {
     let fail = true;
-    const module = effectModule(rt => {
-      rt.emitEffect(0, 41);
+    const module = effectModule(ctx => {
+      ctx.emitEffect(0, 41);
       if (fail) {
         throw new Error('transaction failed');
       }
@@ -88,7 +88,7 @@ describe('effect row transactions', () => {
   });
 
   test('completed provisional and final transactions each publish one row unit', async () => {
-    const module = effectModule(rt => rt.emitEffect(0, 7));
+    const module = effectModule(ctx => ctx.emitEffect(0, 7));
     const sink = new MemorySink();
     const execution = await bind(module, {
       params: {},
@@ -151,10 +151,10 @@ describe('effect row transactions', () => {
         return staticModuleBinding(this);
       },
       funcs: {},
-      main(rt) {
-        const payload = rt.newStruct(structLayout, [1]);
-        rt.emitEffect(0, payload);
-        rt.storeStructField(payload, structLayout, 0, 2);
+      main(ctx) {
+        const payload = ctx.newStruct(structLayout, [1]);
+        ctx.emitEffect(0, payload);
+        ctx.storeStructField(payload, structLayout, 0, 2);
       },
     });
     const sink = new MemorySink();
@@ -226,9 +226,9 @@ describe('effect row transactions', () => {
   });
 
   test('dense output and effects publish once, then sink failure is terminal', async () => {
-    const base = effectModule(rt => {
-      rt.emit(0, 0, 5);
-      rt.emitEffect(0, 6);
+    const base = effectModule(ctx => {
+      ctx.emit(0, 0, 5);
+      ctx.emitEffect(0, 6);
     });
     const module = testModule({
       ...base,
@@ -275,11 +275,11 @@ describe('effect row transactions', () => {
 
   test('final-dense sinks receive effect rows and only the final dense row', async () => {
     let row = 0;
-    const base = effectModule(rt => {
+    const base = effectModule(ctx => {
       const current = row;
       row += 1;
-      rt.emit(0, 0, current);
-      if (current === 1) rt.emitEffect(0, 101);
+      ctx.emit(0, 0, current);
+      if (current === 1) ctx.emitEffect(0, 101);
     });
     const module = testModule({
       ...base,
@@ -329,9 +329,9 @@ describe('effect row transactions', () => {
   });
 
   test('effect-disabled sinks receive dense output without effect publications', async () => {
-    const base = effectModule(rt => {
-      rt.emit(0, 0, 17);
-      rt.emitEffect(0, 101);
+    const base = effectModule(ctx => {
+      ctx.emit(0, 0, 17);
+      ctx.emitEffect(0, 101);
     });
     const module = testModule({
       ...base,

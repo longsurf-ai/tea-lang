@@ -2,7 +2,7 @@
 
 Bind-independent target lowering from the one canonical `Program`.
 `codegen.ts` + `lower.ts` emit a recursive self-describing `JSModule`; only its
-`main` and `funcs` target the execution `Runtime`, while
+`main` and `funcs` target the execution `RuntimeContext`, while
 `evaluateBinding(values)` returns pure `JSModuleBinding` data. `wgsl/` audits the supported generic Program subset
 and emits a complete WGSL module with target layouts. `docs/runtime.md` owns
 both binding boundaries.
@@ -36,7 +36,7 @@ both binding boundaries.
   `evaluateBinding(values) -> JSModuleBinding` function to resolve per-binding history
   capacities; neither codegen nor runtime may introduce a second
   bound-expression language or public binding ABI.
-- Only Time-Machine ops lower to rt calls; arithmetic, comparisons, math
+- Only Time-Machine ops lower to ctx calls; arithmetic, comparisons, math
   intrinsics, and na()/nz() expand inline via the rules tables in lower.ts.
   Backend-specific rendering decisions live only in those tables.
 - Numeric ranges have no arbitrary target trip-count cap. JS and WGSL capture
@@ -46,8 +46,8 @@ both binding boundaries.
   require a provable emission bound; that transport constraint is not loop
   eligibility.
 - Persistent declarations are lexical `InitName` statements. JS lowering must
-  place initializer evaluation inside a `rt.needsInit` guard and publish it
-  with `rt.initialize`; modules have no detached initializer-thunk table.
+  place initializer evaluation inside a `ctx.needsInit` guard and publish it
+  with `ctx.initialize`; modules have no detached initializer-thunk table.
 - Division and modulo by zero are na (the $div/$mod helpers), int division
   truncates, And/Or stay lazy (statement-lowered when the right side needs
   statements), ternaries evaluate all operands (Pine semantics).
@@ -77,15 +77,15 @@ both binding boundaries.
   the same ABI and shared `layout` table reference as the root. The pure
   binding function returns the static pair and four options in
   `JSModuleBinding`; execution reads the prepared result via
-  `rt.request(rid, offset)`. The noder rejects every dynamic edge before a valid
+  `ctx.request(rid, offset)`. The noder rejects every dynamic edge before a valid
   Program reaches codegen, so generated request manifests are static. Every
   edge evaluates options and pair once in Program-owned source order; bound
   values never duplicate into JSON metadata. Every module's code names its own
   funcs table via its const (`ctx.moduleRef`), never `M`.
 - Typed builtins are a distinct runtime carrier: dense bids and exact
   `{source, layout, depth}` specs publish in `manifest.builtin`, reads lower
-  to `rt.builtin`, and bound history becomes `JSModuleBinding.retention`.
-  Numeric provider series remain `rt.series` only.
+  to `ctx.builtin`, and bound history becomes `JSModuleBinding.retention`.
+  Numeric provider series remain `ctx.series` only.
 - Struct construction and field access lower through `newStruct`,
   `structField`, and `storeStructField` using exact manifest layouts. A field
   store validates and captures its reference before the RHS. Collection

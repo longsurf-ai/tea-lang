@@ -1,6 +1,5 @@
 // Purpose: Execute one generated JSModule invocation as an Effect state
-// transition over explicit committed State, Intermediate, and RuntimeContext
-// values.
+// transition over explicit committed State, Intermediate, and StepInput values.
 
 import {Effect} from 'effect';
 import {Storage} from '../ir/node';
@@ -14,7 +13,7 @@ import type {
   CollectionOperation,
   Frame,
   JSModule,
-  Runtime,
+  RuntimeContext,
 } from './module-abi';
 import type {EffectEmission, DenseEmission} from './output';
 import {ExecutionError} from './errors';
@@ -30,10 +29,10 @@ import type {
   LocalState,
   HistoryState,
   RootState,
-  RuntimeContext,
   State,
   StateMachine,
   StateUpdate,
+  StepInput,
 } from './state-machine';
 import type {ValueLayoutRegistry, LayoutId} from './value-layout';
 import {
@@ -51,7 +50,7 @@ const DEFAULT_MAX_COLLECTION_ELEMENTS = 100_000;
 export type TeaStateUpdate = StateUpdate<
   State,
   Intermediate,
-  RuntimeContext,
+  StepInput,
   readonly DenseEmission[],
   EffectEmission,
   ExecutionError
@@ -60,7 +59,7 @@ export type TeaStateUpdate = StateUpdate<
 export type TeaStateMachine = StateMachine<
   State,
   Intermediate,
-  RuntimeContext,
+  StepInput,
   readonly DenseEmission[],
   EffectEmission,
   ExecutionError
@@ -100,7 +99,7 @@ function stateUpdate(
   structs: StructStorageRuntime,
   collections: CollectionRuntime,
 ): TeaStateUpdate {
-  return (state, intermediate, ctx) =>
+  return (state, intermediate, input) =>
     Effect.suspend(() => {
       try {
         // Collection is legal only at the transition boundary, before a new
@@ -119,7 +118,7 @@ function stateUpdate(
             heap,
             state,
             intermediate,
-            ctx,
+            input,
             structs,
             collections,
           ).run(),
@@ -151,7 +150,7 @@ interface WorkspaceFrame extends Frame {
   active: boolean;
 }
 
-class RuntimeOperations implements Runtime {
+class RuntimeOperations implements RuntimeContext {
   private readonly rootFrame: WorkspaceFrame;
   private readonly outputs = new Map<number, Value[]>();
   private readonly effects: EffectEmission[] = [];
@@ -164,11 +163,11 @@ class RuntimeOperations implements Runtime {
     private readonly heap: Heap,
     private readonly state: Readonly<State>,
     private readonly intermediate: Readonly<Intermediate>,
-    private readonly ctx: RuntimeContext,
+    private readonly input: StepInput,
     private readonly structs: StructStorageRuntime,
     private readonly collections: CollectionRuntime,
   ) {
-    this.validateContext();
+    this.validateInput();
     this.rootFrame = this.openFrame(0, state.root, intermediate.root, true);
   }
 
@@ -494,26 +493,26 @@ class RuntimeOperations implements Runtime {
     return this.transaction ?? fatal('aggregate operation outside StateUpdate');
   }
 
-  private validateContext(): void {
-    if (this.ctx.series.length !== this.module.manifest.series.length) {
+  private validateInput(): void {
+    if (this.input.series.length !== this.module.manifest.series.length) {
       throw new ExecutionError(
         'VALUE_LAYOUT_MISMATCH',
-        `runtime context has ${this.ctx.series.length} series values, expected ${this.module.manifest.series.length}`,
+        `step input has ${this.input.series.length} series values, expected ${this.module.manifest.series.length}`,
       );
     }
-    if (this.ctx.builtins.length !== this.module.manifest.builtin.length) {
+    if (this.input.builtins.length !== this.module.manifest.builtin.length) {
       throw new ExecutionError(
         'VALUE_LAYOUT_MISMATCH',
-        `runtime context has ${this.ctx.builtins.length} builtin values, expected ${this.module.manifest.builtin.length}`,
+        `step input has ${this.input.builtins.length} builtin values, expected ${this.module.manifest.builtin.length}`,
       );
     }
-    if (this.ctx.requests.length !== this.module.manifest.requests.length) {
+    if (this.input.requests.length !== this.module.manifest.requests.length) {
       throw new ExecutionError(
         'VALUE_LAYOUT_MISMATCH',
-        `runtime context has ${this.ctx.requests.length} request values, expected ${this.module.manifest.requests.length}`,
+        `step input has ${this.input.requests.length} request values, expected ${this.module.manifest.requests.length}`,
       );
     }
-    this.ctx.series.forEach((value, sid) => {
+    this.input.series.forEach((value, sid) => {
       if (typeof value !== 'number') {
         throw new ExecutionError(
           'VALUE_LAYOUT_MISMATCH',
@@ -521,14 +520,14 @@ class RuntimeOperations implements Runtime {
         );
       }
     });
-    this.ctx.builtins.forEach((value, bid) => {
+    this.input.builtins.forEach((value, bid) => {
       this.structs.assertValue(
         this.module.manifest.builtin[bid]!.layout,
         value,
         `builtin ${bid}`,
       );
     });
-    this.ctx.requests.forEach((value, rid) => {
+    this.input.requests.forEach((value, rid) => {
       this.structs.assertValue(
         this.module.manifest.requests[rid]!.layout,
         value,
@@ -548,7 +547,7 @@ class RuntimeOperations implements Runtime {
       return fatal(`unknown ${field} input ${id}`);
     }
     if (!isHistoryOffset(offset)) return empty;
-    if (offset === 0) return this.ctx[field][id] ?? empty;
+    if (offset === 0) return this.input[field][id] ?? empty;
     return this.state.root[field][id]?.values[offset - 1] ?? empty;
   }
 
@@ -667,7 +666,7 @@ class RuntimeOperations implements Runtime {
     return histories.map((history, id) =>
       commitHistory(
         history,
-        this.ctx[field][id]!,
+        this.input[field][id]!,
         depthRetention(specs[id]!.depth),
       ),
     );

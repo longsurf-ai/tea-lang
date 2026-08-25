@@ -2261,7 +2261,7 @@ class Noder {
 }
 
 // A static request nested in a UDF may read compilation-global bind-known
-// aliases through rt.root(), but it cannot read the UDF's own params/locals
+// aliases through ctx.root(), but it cannot read the UDF's own params/locals
 // without a concrete call-site frame. Keep this deliberately structural: UDF
 // calls and control-flow blocks remain dynamic when the request itself is
 // inside a UDF.

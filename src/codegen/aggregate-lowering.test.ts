@@ -478,7 +478,7 @@ describe('aggregate expression and reference-store lowering', () => {
     expect(receiverRead).toBeLessThan(argumentWrite);
     expect(events).not.toContain('write-func:0');
     expect(events.filter(event => event === 'write-root:0')).toHaveLength(1);
-    expect(js).not.toMatch(/rt\.write\(fr, \d+, p\d+\)/);
+    expect(js).not.toMatch(/ctx\.write\(fr, \d+, p\d+\)/);
   });
 
   test('captures a mutable receiver before args and shares in-place field writes', () => {
@@ -559,7 +559,7 @@ describe('aggregate expression and reference-store lowering', () => {
     expect(receiverRead).toBeLessThan(argumentWrite);
     expect(argumentWrite).toBeLessThan(receiverWrite);
     expect(events).not.toContain('write-func:0');
-    expect(js).not.toMatch(/rt\.write\(fr, \d+, p\d+\)/);
+    expect(js).not.toMatch(/ctx\.write\(fr, \d+, p\d+\)/);
   });
 
   test('keeps history-free formal zero reads, reassignment, and receiver updates in JS locals', () => {
@@ -621,10 +621,10 @@ describe('aggregate expression and reference-store lowering', () => {
 
     expect((frame.values[0] as TestStructValue).fields).toEqual([5]);
     expect(frame.values[1]).toBe(5);
-    expect(js).not.toMatch(/rt\.write\(fr, \d+, p\d+\)/);
+    expect(js).not.toMatch(/ctx\.write\(fr, \d+, p\d+\)/);
     expect(js).toContain('p1 = (');
-    expect(js).toMatch(/rt\.requireStruct\(\(t\d+\), 0\)/);
-    expect(js).toContain('rt.storeStructField((');
+    expect(js).toMatch(/ctx\.requireStruct\(\(t\d+\), 0\)/);
+    expect(js).toContain('ctx.storeStructField((');
     expect(js).not.toContain('return {receiver:');
   });
 
@@ -656,8 +656,8 @@ describe('aggregate expression and reference-store lowering', () => {
       ]),
     );
 
-    expect(js).toContain('rt.write(fr, 0, p0);');
-    expect(js).toContain('rt.read(fr, 0, t0)');
+    expect(js).toContain('ctx.write(fr, 0, p0);');
+    expect(js).toContain('ctx.read(fr, 0, t0)');
   });
 
   test('shares a nested mutable method receiver through the outer receiver', () => {
@@ -740,7 +740,7 @@ describe('aggregate expression and reference-store lowering', () => {
     module.main(executionRuntime(frame, []) as never, frame as never);
 
     expect(js).not.toContain('rebuild');
-    expect(js).toContain('rt.storeStructField((');
+    expect(js).toContain('ctx.storeStructField((');
     const result = frame.values[0] as TestStructValue;
     expect((result.fields[0] as TestStructValue).fields).toEqual([5]);
     expect(frame.values[1]).toBe(5);

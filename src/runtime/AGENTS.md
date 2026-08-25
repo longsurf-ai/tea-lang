@@ -5,7 +5,7 @@ JavaScript semantic runtime and owns step-based State, Intermediate, and Heap
 execution. Fixed-historical provider/sink orchestration is a host adapter in
 `fixed-history.ts`; GPU binding projection lives in
 `module-binding.ts`. `abi.ts` is the stable host-facing facade; the physical
-`JSModule`, `JSModuleBinding`, and execution-only `Runtime` stay internal to
+`JSModule`, `JSModuleBinding`, and execution-only `RuntimeContext` stay internal to
 `module-abi.ts`. `value.ts`, `schema.ts`, `provider.ts`, `output.ts`,
 `binding.ts`, and `errors.ts` own the remaining contracts, and
 `docs/runtime.md` is the authority.
@@ -37,7 +37,7 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   evaluation to the loader-injected private helper in `module-binding.ts`, but
   that evaluator is not an ABI interface and is never implemented by
   `JSRuntime`. Do not merge binding-only operations or a dynamic-request
-  protocol into the execution-only `Runtime`.
+  protocol into the execution-only `RuntimeContext`.
 - `RUNTIME_ABI_VERSION` is the only JavaScript Runtime ABI version source and
   is currently `5`; do not add compatibility branches for earlier versions.
 - Runtime implementation files import the narrow internal contract they use,
@@ -174,5 +174,5 @@ The backend-neutral `executeProgram()` host harness lives one level above in
 - Bind failures (bad param, missing series) throw `BindError` — user-facing
   and host-actionable; protocol misuse (out-of-order rows, unknown slots)
   is `fatal()`.
-- `rt` imports only `base/` and `ir/`; runtime tests drive hand-lowered
+- `ctx` imports only `base/` and `ir/`; runtime tests drive hand-lowered
   modules in exactly the shape codegen emits.

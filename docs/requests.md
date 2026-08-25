@@ -209,7 +209,7 @@ Heap isolation means parent and child transactions never contend for one arena.
 
 Merge is a pure function of (parent axis, child axis, child committed
 result, MergePolicy). Its product is **a parent-row-indexed SeriesView per
-edge**, which `rt.request(rid, offset)` reads — so `result[1]` is "whatever
+edge**, which `ctx.request(rid, offset)` reads — so `result[1]` is "whatever
 the request returned on the previous parent bar" for that edge's static child.
 
 **Merge is alignment, not repeated data movement**. The child first produces one
@@ -306,7 +306,7 @@ Execution:
   `resolveContext` with the bound range demand, runs the child over its exposed
   extent, and prepares the merged view. No supported row execution discovers a
   context or suspends.
-- The parent reads the prepared view through `rt.request(rid, offset)`. History
+- The parent reads the prepared view through `ctx.request(rid, offset)`. History
   is parent-row-indexed and follows the same direct-readable-binding rule as
   other values.
 - Empty symbol/timeframe values inherit the current Program context's effective

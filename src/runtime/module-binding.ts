@@ -686,7 +686,7 @@ class BindFrame implements Frame {
 }
 
 // Private evaluator captured by the loader-injected `$evaluate` function. It is
-// neither the generated JSModule interface nor the per-row Runtime ABI.
+// neither the generated JSModule interface nor the per-step RuntimeContext ABI.
 class ModuleBindEvaluation {
   private readonly rootFrame: BindFrame;
   private readonly localDepths: (number | null)[][];

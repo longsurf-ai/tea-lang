@@ -87,13 +87,13 @@ const MODULE: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, root) {
-    const close = rt.series(0, 0);
-    rt.write(root, 0, close);
-    rt.emit(0, 0, close);
-    rt.emit(0, 1, rt.series(0, 1));
-    rt.emit(0, 2, rt.builtin(0, 0));
-    rt.emitEffect(0, close);
+  main(ctx, root) {
+    const close = ctx.series(0, 0);
+    ctx.write(root, 0, close);
+    ctx.emit(0, 0, close);
+    ctx.emit(0, 1, ctx.series(0, 1));
+    ctx.emit(0, 2, ctx.builtin(0, 0));
+    ctx.emitEffect(0, close);
   },
 });
 
@@ -121,8 +121,8 @@ const REQUEST_CHILD: JSModule = testModule({
     return staticModuleBinding(this);
   },
   funcs: {},
-  main(rt, root) {
-    rt.write(root, 0, rt.series(0, 0));
+  main(ctx, root) {
+    ctx.write(root, 0, ctx.series(0, 0));
   },
 });
 
@@ -177,8 +177,8 @@ const NESTED_REQUEST_CHILD: JSModule = testModule({
     };
   },
   funcs: {},
-  main(rt, root) {
-    rt.write(root, 0, rt.request(0, 0));
+  main(ctx, root) {
+    ctx.write(root, 0, ctx.request(0, 0));
   },
 });
 
@@ -234,9 +234,9 @@ function requestModule(dynamic = false): JSModule {
         ],
       };
     },
-    main(rt) {
-      rt.emit(0, 0, rt.request(0, 0));
-      rt.emit(0, 1, rt.request(0, 1));
+    main(ctx) {
+      ctx.emit(0, 0, ctx.request(0, 0));
+      ctx.emit(0, 1, ctx.request(0, 1));
     },
   });
   return module;
@@ -510,9 +510,9 @@ describe('bindFixedHistory', () => {
           })),
         };
       },
-      main(rt) {
-        rt.emit(0, 0, rt.request(0, 0));
-        rt.emit(0, 1, rt.request(1, 0));
+      main(ctx) {
+        ctx.emit(0, 0, ctx.request(0, 0));
+        ctx.emit(0, 1, ctx.request(1, 0));
       },
     });
     const parent: ProviderContext = {
