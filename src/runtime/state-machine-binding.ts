@@ -6,16 +6,19 @@ import {Effect} from 'effect';
 import {fatal} from '../base/print';
 import type {BuiltinSource} from '../ir/builtin';
 import type {BindInputs, BoundInput, BoundProgram} from './binding';
-import {BindError, ExecutionError} from './errors';
-import {assertMergeAxis} from './merge';
+import {BindError, ExecutionError, RequestError} from './errors';
+import {assertMergeAxis, sampleMergeMap} from './merge';
 import {
   ModuleBindingEvaluationError,
+  evaluateChildModuleBinding,
   evaluateModuleBinding,
   type BoundModuleFacts,
+  type StaticRequestBinding,
 } from './module-binding';
 import {
   RUNTIME_ABI_VERSION,
   type BuiltinSpec,
+  type ModuleCode,
   type TeaModule,
 } from './module-abi';
 import type {RowPublication} from './output';
@@ -23,14 +26,39 @@ import {resolveParamValues} from './params';
 import {
   isContextError,
   type ProviderContext,
+  type RangeDemand,
   type SeriesData,
 } from './provider';
-import {StateMachineRuntime, type StepResult} from './state-machine-runtime';
-import type {Value} from './value';
-import {ValueLayoutRegistry} from './value-layout';
+import {
+  StateMachineRuntime,
+  type StateMachineRuntimeOptions,
+  type StepResult,
+} from './state-machine-runtime';
+import {isTupleValue, type Value} from './value';
+import {
+  type AggregateLayoutManifest,
+  type LayoutId,
+  ValueLayoutRegistry,
+} from './value-layout';
 
 const FULL_RANGE = {kind: 'full'} as const;
 const DEFAULT_MAX_COLLECTION_ELEMENTS = 100_000;
+const DEFAULT_MAX_REQUEST_CONTEXTS = 40;
+
+interface RequestView {
+  at(row: number): Value;
+}
+
+interface RequestEnvironment {
+  readonly provider: BindInputs['provider'];
+  readonly params: readonly Value[];
+  readonly layouts: ValueLayoutRegistry;
+  readonly aggregateLayouts: AggregateLayoutManifest;
+  readonly timeNow: number;
+  readonly maxCollectionElements: number;
+  readonly heapLimits: StateMachineRuntimeOptions['heapLimits'];
+  readonly contextBudget: {used: number; readonly max: number};
+}
 
 /** Bind the migration runtime to one finite provider context. */
 export async function bindStateMachine(
@@ -42,16 +70,13 @@ export async function bindStateMachine(
       `unsupported module ABI ${String(module.abi)}; expected ${RUNTIME_ABI_VERSION}`,
     );
   }
-  if (module.manifest.requests.length !== 0 || module.requests.length !== 0) {
-    throw new BindError(
-      'state-machine compatibility binding does not support requests',
-    );
-  }
   const timeNow = bindTimeNow(inputs.timeNow);
   const maxCollectionElements =
     optionalLimit(inputs.maxCollectionElements, 'maxCollectionElements') ??
     DEFAULT_MAX_COLLECTION_ELEMENTS;
-  optionalLimit(inputs.maxRequestContexts, 'maxRequestContexts');
+  const maxRequestContexts =
+    optionalLimit(inputs.maxRequestContexts, 'maxRequestContexts') ??
+    DEFAULT_MAX_REQUEST_CONTEXTS;
   if (inputs.maxFixedValueLogicalBytes !== undefined) {
     throw new BindError(
       'state-machine compatibility binding does not support maxFixedValueLogicalBytes',
@@ -68,12 +93,6 @@ export async function bindStateMachine(
     }
     throw error;
   }
-  if (facts.requests.length !== 0) {
-    throw new BindError(
-      'state-machine compatibility binding does not support requests',
-    );
-  }
-
   const context = await inputs.provider.resolveContext(
     inputs.symbol ?? '',
     inputs.timeframe ?? '',
@@ -87,32 +106,44 @@ export async function bindStateMachine(
   validateRows(context);
 
   const layouts = new ValueLayoutRegistry(facts.code.aggregateLayouts);
+  const heapLimits = {
+    maxStorageCells: optionalLimit(
+      inputs.maxHeapStorageCells,
+      'maxHeapStorageCells',
+    ),
+    maxLogicalBytes: optionalLimit(
+      inputs.maxHeapLogicalBytes,
+      'maxHeapLogicalBytes',
+    ),
+    maxTransientStorageCells: optionalLimit(
+      inputs.maxHeapTransientStorageCells,
+      'maxHeapTransientStorageCells',
+    ),
+    maxTransientLogicalBytes: optionalLimit(
+      inputs.maxHeapTransientLogicalBytes,
+      'maxHeapTransientLogicalBytes',
+    ),
+  };
+  const environment: RequestEnvironment = {
+    provider: inputs.provider,
+    params,
+    layouts,
+    aggregateLayouts: facts.code.aggregateLayouts,
+    timeNow,
+    maxCollectionElements,
+    heapLimits,
+    contextBudget: {used: 0, max: maxRequestContexts},
+  };
   const series = bindSeries(facts, params, context);
   const builtins = bindBuiltins(facts, context, layouts, timeNow);
+  const requests = await bindStaticRequests(facts, context, environment);
   const runtime = new StateMachineRuntime(
     facts.code,
     facts.params.map(param => param.value),
     layouts,
     {
       maxCollectionElements,
-      heapLimits: {
-        maxStorageCells: optionalLimit(
-          inputs.maxHeapStorageCells,
-          'maxHeapStorageCells',
-        ),
-        maxLogicalBytes: optionalLimit(
-          inputs.maxHeapLogicalBytes,
-          'maxHeapLogicalBytes',
-        ),
-        maxTransientStorageCells: optionalLimit(
-          inputs.maxHeapTransientStorageCells,
-          'maxHeapTransientStorageCells',
-        ),
-        maxTransientLogicalBytes: optionalLimit(
-          inputs.maxHeapTransientLogicalBytes,
-          'maxHeapTransientLogicalBytes',
-        ),
-      },
+      heapLimits,
     },
   );
 
@@ -124,6 +155,7 @@ export async function bindStateMachine(
       context,
       series,
       builtins,
+      requests,
       inputs.sink,
     );
   } catch (error) {
@@ -147,6 +179,7 @@ class FixedHistoricalStateMachineBinding implements BoundProgram {
     private readonly context: ProviderContext,
     private readonly series: readonly SeriesData[],
     private readonly builtins: readonly ((row: number) => Value)[],
+    private readonly requests: readonly RequestView[],
     private readonly sink: BindInputs['sink'],
   ) {
     this.rows = context.rows;
@@ -175,7 +208,7 @@ class FixedHistoricalStateMachineBinding implements BoundProgram {
           return current;
         }),
         builtins: this.builtins.map(value => value(row)),
-        requests: [],
+        requests: this.requests.map(value => value.at(row)),
         provisional,
       }),
     );
@@ -250,6 +283,262 @@ class FixedHistoricalStateMachineBinding implements BoundProgram {
     if (this.disposed) fatal('runtime is disposed');
     if (this.terminalSinkFailure !== null) throw this.terminalSinkFailure;
   }
+}
+
+async function bindStaticRequests(
+  facts: BoundModuleFacts,
+  parent: ProviderContext,
+  environment: RequestEnvironment,
+): Promise<readonly RequestView[]> {
+  if (facts.requests.length === 0) return [];
+  if (parent.axis === null) {
+    throw new BindError(
+      "requests require a time axis on the primary context (a csv context needs a 'time' column)",
+    );
+  }
+  assertMergeAxis(parent.axis, parent.rows, 'primary context');
+  const views: RequestView[] = new Array(facts.code.manifest.requests.length);
+  for (const binding of facts.requests) {
+    views[binding.requestId] = await bindStaticRequest(
+      binding,
+      facts,
+      parent,
+      environment,
+    );
+  }
+  return views;
+}
+
+async function bindStaticRequest(
+  binding: StaticRequestBinding,
+  parentFacts: BoundModuleFacts,
+  parent: ProviderContext,
+  environment: RequestEnvironment,
+): Promise<RequestView> {
+  const spec = parentFacts.code.manifest.requests[binding.requestId];
+  if (spec === undefined || spec.dynamic) {
+    throw new BindError(
+      `dynamic request ${binding.requestId} is unsupported by fixed historical binding`,
+    );
+  }
+  assertRequestTransportLayout(environment.layouts, spec.layout);
+  const what = `request '${binding.symbol}','${binding.timeframe}'`;
+  environment.contextBudget.used += 1;
+  if (environment.contextBudget.used > environment.contextBudget.max) {
+    environment.contextBudget.used -= 1;
+    throw new RequestError(
+      `${what}: unique request contexts exceed the cap of ${environment.contextBudget.max}`,
+    );
+  }
+
+  const range: RangeDemand =
+    binding.options.calcBarsCount === 0
+      ? FULL_RANGE
+      : {kind: 'trailing-bars', bars: binding.options.calcBarsCount};
+  const resolved = await environment.provider.resolveContext(
+    binding.symbol,
+    binding.timeframe,
+    range,
+  );
+  if (isContextError(resolved)) {
+    const ignorable =
+      resolved.error === 'unknownSymbol' || resolved.error === 'unknownSource';
+    if (binding.options.ignoreInvalidSymbol && ignorable) {
+      const empty = environment.layouts.empty(spec.layout);
+      return {at: () => empty};
+    }
+    environment.contextBudget.used -= 1;
+    throw new BindError(`${what}: ${resolved.error} (${resolved.detail})`);
+  }
+
+  try {
+    const childContext = clampContext(resolved, range, what);
+    if (parent.axis === null || childContext.axis === null) {
+      throw new BindError(
+        `${what}: merge requires a time axis on both contexts (a csv context needs a 'time' column)`,
+      );
+    }
+    assertMergeAxis(
+      childContext.axis,
+      childContext.rows,
+      `${what} child context`,
+    );
+    const code = childModule(binding.child, environment.aggregateLayouts);
+    let childFacts: BoundModuleFacts;
+    try {
+      childFacts = evaluateChildModuleBinding(code, environment.params);
+    } catch (error) {
+      if (error instanceof ModuleBindingEvaluationError) {
+        throw new BindError(error.message);
+      }
+      throw error;
+    }
+    const values = await runRequestChild(
+      childFacts,
+      childContext,
+      spec.resultSlot,
+      spec.layout,
+      environment,
+    );
+    const map = sampleMergeMap(
+      parent.axis,
+      parent.rows,
+      childContext.axis,
+      childContext.rows,
+      binding.options,
+    );
+    const empty = environment.layouts.empty(spec.layout);
+    return {
+      at(row) {
+        const childRow = map[row];
+        return childRow === undefined || childRow < 0
+          ? empty
+          : (values[childRow] ?? empty);
+      },
+    };
+  } catch (error) {
+    environment.contextBudget.used -= 1;
+    throw error;
+  }
+}
+
+async function runRequestChild(
+  facts: BoundModuleFacts,
+  context: ProviderContext,
+  resultSlot: number,
+  resultLayout: LayoutId,
+  environment: RequestEnvironment,
+): Promise<readonly Value[]> {
+  validateRows(context);
+  const series = bindSeries(facts, environment.params, context);
+  const builtins = bindBuiltins(
+    facts,
+    context,
+    environment.layouts,
+    environment.timeNow,
+  );
+  const requests = await bindStaticRequests(facts, context, environment);
+  const runtime = new StateMachineRuntime(
+    facts.code,
+    environment.params,
+    environment.layouts,
+    {
+      maxCollectionElements: environment.maxCollectionElements,
+      heapLimits: environment.heapLimits,
+    },
+  );
+  try {
+    const values: Value[] = [];
+    for (let row = 0; row < context.rows; row += 1) {
+      Effect.runSync(
+        runtime.step({
+          series: series.map(value => value.at(row)),
+          builtins: builtins.map(value => value(row)),
+          requests: requests.map(value => value.at(row)),
+          provisional: false,
+        }),
+      );
+      values.push(
+        copyRequestResult(
+          environment.layouts,
+          resultLayout,
+          runtime.readResult(resultSlot, resultLayout),
+        ),
+      );
+    }
+    return values;
+  } finally {
+    runtime.dispose();
+  }
+}
+
+function childModule(
+  code: ModuleCode,
+  aggregateLayouts: AggregateLayoutManifest,
+): TeaModule {
+  return {
+    ...code,
+    abi: RUNTIME_ABI_VERSION,
+    aggregateLayouts,
+  };
+}
+
+function assertRequestTransportLayout(
+  layouts: ValueLayoutRegistry,
+  id: LayoutId,
+): void {
+  const layout = layouts.layout(id);
+  switch (layout.kind) {
+    case 'number':
+    case 'boolean':
+    case 'nullable-scalar':
+    case 'enum':
+      return;
+    case 'tuple':
+      layout.elements.forEach(element =>
+        assertRequestTransportLayout(layouts, element),
+      );
+      return;
+    case 'resource':
+    case 'struct':
+    case 'array':
+    case 'matrix':
+    case 'map':
+      throw new BindError(
+        `request result layout ${id} (${layout.kind}) cannot cross a runtime Heap boundary`,
+      );
+  }
+}
+
+function copyRequestResult(
+  layouts: ValueLayoutRegistry,
+  id: LayoutId,
+  value: Value,
+): Value {
+  layouts.assertValue(id, value, 'request result transport');
+  if (value === null) return null;
+  const layout = layouts.layout(id);
+  if (layout.kind !== 'tuple') return value;
+  if (!isTupleValue(value)) {
+    return fatal(`validated request tuple layout ${id} lost its tuple shape`);
+  }
+  return Object.freeze(
+    layout.elements.map((element, index) =>
+      copyRequestResult(layouts, element, value[index]),
+    ),
+  );
+}
+
+function clampContext(
+  context: ProviderContext,
+  range: RangeDemand,
+  what: string,
+): ProviderContext {
+  validateRows(context);
+  if (range.kind === 'full' || range.bars >= context.rows) return context;
+  const start = context.rows - range.bars;
+  const rows = range.bars;
+  return {
+    rows,
+    axis:
+      context.axis === null
+        ? null
+        : {
+            time: row => context.axis!.time(start + row),
+            closeTime: row => context.axis!.closeTime(start + row),
+          },
+    series(id) {
+      const value = context.series(id);
+      if (value === null) return null;
+      if (value.length !== context.rows) {
+        throw new BindError(
+          `${what}: series '${id}' has ${value.length} rows, context has ${context.rows}`,
+        );
+      }
+      return {length: rows, at: row => value.at(start + row)};
+    },
+    builtinValue: source => context.builtinValue(source),
+  };
 }
 
 function bindSeries(

@@ -11,7 +11,7 @@ import type {ExecutionError} from './errors';
 import type {Input, Intermediate, State} from './state-machine';
 import {stateMachine, type TeaStateMachine} from './state-update';
 import type {Value} from './value';
-import type {ValueLayoutRegistry} from './value-layout';
+import type {LayoutId, ValueLayoutRegistry} from './value-layout';
 
 export interface StateMachineRuntimeOptions {
   readonly heapLimits?: Partial<HeapLimits>;
@@ -45,12 +45,13 @@ export class StateMachineRuntime {
   private readonly machine: TeaStateMachine;
   private state: State;
   private intermediate: Intermediate;
+  private rootValues: readonly Value[] | null = null;
   private disposed = false;
 
   constructor(
-    module: ModuleCode,
+    private readonly module: ModuleCode,
     params: readonly Value[],
-    layouts: ValueLayoutRegistry,
+    private readonly layouts: ValueLayoutRegistry,
     options: StateMachineRuntimeOptions = {},
   ) {
     this.heap = new HeapArena(options.heapLimits);
@@ -71,6 +72,7 @@ export class StateMachineRuntime {
       return Effect.map(
         this.machine.update(this.state, this.intermediate, input),
         result => {
+          this.rootValues = result.rootValues;
           this.intermediate = result.intermediate;
           if (!input.provisional) {
             this.state = result.state;
@@ -83,6 +85,27 @@ export class StateMachineRuntime {
         },
       );
     });
+  }
+
+  /**
+   * Read one current root result immediately after a successful step.
+   * The returned value is valid only until the next step or disposal.
+   */
+  readResult(slot: number, layout: LayoutId): Value {
+    this.assertLive();
+    const spec = this.module.manifest.frames[0]?.locals[slot];
+    if (spec === undefined) return fatal(`unknown root result slot ${slot}`);
+    if (spec.layout !== layout) {
+      return fatal(
+        `root result slot ${slot} has layout ${spec.layout}, expected ${layout}`,
+      );
+    }
+    const value = this.rootValues?.[slot];
+    if (value === undefined) {
+      return fatal(`root result slot ${slot} is unavailable before step`);
+    }
+    this.layouts.assertValue(layout, value, `root result slot ${slot}`);
+    return value;
   }
 
   dispose(): void {

@@ -182,6 +182,7 @@ class StateUpdateContext implements Runtime {
         intermediate: {
           root: this.finishIntermediateFrame(this.rootFrame),
         },
+        rootValues: this.rootFrame.locals.map(local => local.value),
         output: [...this.outputs.entries()].map(([outputId, channels]) => ({
           outputId,
           channels,

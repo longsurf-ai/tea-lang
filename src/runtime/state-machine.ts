@@ -56,6 +56,8 @@ export interface IntermediateLocal {
 export interface Result<S, I, Y, E> {
   readonly state: S;
   readonly intermediate: I;
+  /** Ephemeral current root-slot values, valid until the owner's next step. */
+  readonly rootValues: readonly Value[];
   readonly output: Y;
   readonly effects: readonly E[];
 }

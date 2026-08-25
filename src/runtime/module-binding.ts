@@ -55,7 +55,23 @@ export function evaluateModuleBinding(
   code: TeaModule,
   paramValues: readonly Value[],
 ): BoundModuleFacts {
-  const evaluation = new ModuleBindEvaluation(code, paramValues);
+  return evaluateBinding(code, paramValues, true);
+}
+
+/** Evaluate a request child against compilation-global parent parameters. */
+export function evaluateChildModuleBinding(
+  code: TeaModule,
+  paramValues: readonly Value[],
+): BoundModuleFacts {
+  return evaluateBinding(code, paramValues, false);
+}
+
+function evaluateBinding(
+  code: TeaModule,
+  paramValues: readonly Value[],
+  exactParams: boolean,
+): BoundModuleFacts {
+  const evaluation = new ModuleBindEvaluation(code, paramValues, exactParams);
   const operations = evaluation.operations();
   code.init(operations);
   code.bind(operations, evaluation.root());
@@ -111,8 +127,12 @@ class ModuleBindEvaluation {
   constructor(
     private readonly code: TeaModule,
     private readonly paramValues: readonly Value[],
+    exactParams: boolean,
   ) {
-    if (paramValues.length !== code.manifest.params.length) {
+    if (
+      (exactParams && paramValues.length !== code.manifest.params.length) ||
+      (!exactParams && paramValues.length < code.manifest.params.length)
+    ) {
       throw new ModuleBindingEvaluationError(
         `expected ${code.manifest.params.length} parameter values, got ${paramValues.length}`,
       );

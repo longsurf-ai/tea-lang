@@ -19,6 +19,7 @@ import {
   type Value,
 } from './abi';
 import {bind as bindRuntime} from './js-runtime';
+import {bindStateMachine} from './state-machine-binding';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
 
@@ -27,6 +28,16 @@ function bind(
   inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
 ) {
   return bindRuntime(module, {
+    ...inputs,
+    timeNow: inputs.timeNow ?? TEST_TIME_NOW,
+  });
+}
+
+function bindStep(
+  module: TeaModule,
+  inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
+) {
+  return bindStateMachine(module, {
     ...inputs,
     timeNow: inputs.timeNow ?? TEST_TIME_NOW,
   });
@@ -1055,7 +1066,7 @@ describe('requests', () => {
 
   test('a child runs on its own context and merges committed results', async () => {
     const sink = new RecordingSink();
-    const bound = await bind(requestModule({}), {
+    const bound = await bindStep(requestModule({}), {
       params: {},
       provider: contexts({'': parent(), X: child()}),
       sink,
@@ -1103,7 +1114,7 @@ describe('requests', () => {
         },
       };
       const sink = new RecordingSink();
-      const bound = await bind(requestModule({calcBarsCount}), {
+      const bound = await bindStep(requestModule({calcBarsCount}), {
         params: {},
         provider,
         sink,
@@ -1231,7 +1242,7 @@ describe('requests', () => {
     const base = requestModule({calcBarsCount: 2});
     const module: TeaModule = {...base, requests: [barIndexChild]};
     const sink = new RecordingSink();
-    const bound = await bind(module, {
+    const bound = await bindStep(module, {
       params: {},
       provider: contexts({'': parent(), X: child()}),
       sink,
@@ -1249,7 +1260,7 @@ describe('requests', () => {
 
   test('gaps_on merges na except where a new child bar arrived', async () => {
     const sink = new RecordingSink();
-    const bound = await bind(
+    const bound = await bindStep(
       requestModule({gaps: true, lookahead: false, ignoreInvalidSymbol: false}),
       {params: {}, provider: contexts({'': parent(), X: child()}), sink},
     );
