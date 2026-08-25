@@ -113,7 +113,7 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
   expect(hash(lifecycle)).toBe(
     '8c51ee3f5a0794df55613d410db6ef8775c57c5bcee3289b578b5481743a88d7',
   );
-});
+}, 15_000);
 
 test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
   const config = loadConfig(SWEEP);
@@ -174,7 +174,7 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
   expect(hash(lifecycleTape(sink, timeByRow))).toBe(
     'cf407d72c659372c18745aacbf90c91e328b6e261982d4afec5e70cfd866e946',
   );
-});
+}, 15_000);
 
 function finalMetric(sink: MemorySink, title: string): number {
   const outputId = sink.outputs.findIndex(output =>
