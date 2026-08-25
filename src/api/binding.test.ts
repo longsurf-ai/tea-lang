@@ -43,7 +43,7 @@ describe('extract bindings', () => {
     expect(inputs[1].type.safeParse(1).success).toBe(false);
   });
 
-  test('nests requested-context inputs without assigning clocks', () => {
+  test('leaves request-child requirements to TeaNode request wiring', () => {
     const [inputs, outputs] = extract(
       mustBuild(
         [
@@ -53,17 +53,7 @@ describe('extract bindings', () => {
       ),
     );
 
-    expect(inputs).toHaveLength(1);
-    expect(inputs[0]).not.toHaveProperty('clock');
-    expect(inputs[0].kind).toBe('series');
-    expect(inputs[0].name).toBe('STOCK:NVDA');
-    expect(inputs[0].children?.map(({kind, name}) => ({kind, name}))).toEqual([
-      {kind: 'series', name: 'close'},
-      {kind: 'series', name: 'open'},
-    ]);
-    expect(inputs[0].children?.every(binding => !('clock' in binding))).toBe(
-      true,
-    );
+    expect(inputs).toEqual([]);
     expect(outputs.map(binding => binding.name)).toEqual(['plot[0]']);
   });
 
@@ -82,9 +72,7 @@ describe('extract bindings', () => {
     expect(inputs.map(({kind, name}) => ({kind, name}))).toEqual([
       {kind: 'parameter', name: 'symbol'},
       {kind: 'parameter', name: 'period'},
-      {kind: 'series', name: expect.stringMatching(/^request@\d+:\d+$/)},
     ]);
-    expect(inputs[2].children?.map(binding => binding.name)).toEqual(['close']);
   });
 
   test('omits declaration-only outputs and exposes emitted channels', () => {

@@ -1,7 +1,8 @@
-import type {Observable} from 'rxjs';
+import {Effect} from 'effect';
+import {isObservable, type Observable} from 'rxjs';
 import * as z from 'zod';
-import {IrKind, type IrExpr} from '../ir/node';
-import type {Program, RequestEdge} from '../ir/program';
+import {OperationalError} from '../base/operational-error';
+import type {Program} from '../ir/program';
 import {TypeKind, type Type} from '../ir/type';
 import {seriesInputsOf} from '../ir/visit';
 
@@ -10,14 +11,193 @@ export type Binding =
       readonly kind: 'series';
       readonly name: string;
       readonly type: z.ZodType;
-      target?: Observable<unknown>;
+      readonly target?: Observable<unknown>;
     }
   | {
       readonly kind: 'parameter';
       readonly name: string;
       readonly type: z.ZodType;
-      target?: unknown;
+      readonly target?: unknown;
     };
+
+/** One semantic value supplied to a Program binding requirement. */
+export type BindingAssignment =
+  | {
+      readonly kind: 'series';
+      readonly name: string;
+      readonly target: Observable<unknown>;
+    }
+  | {
+      readonly kind: 'parameter';
+      readonly name: string;
+      readonly target: unknown;
+    };
+
+export type BindingErrorCode =
+  | 'UNKNOWN_BINDING'
+  | 'BINDING_KIND_MISMATCH'
+  | 'DUPLICATE_BINDING'
+  | 'INVALID_BINDING';
+
+/** An expected failure while applying host values to Program requirements. */
+export class BindingError extends OperationalError {
+  constructor(
+    readonly code: BindingErrorCode,
+    message: string,
+  ) {
+    super(`${code}: ${message}`);
+    this.name = 'BindingError';
+  }
+}
+
+/**
+ * The immutable binding-time view of one Program.
+ *
+ * A BoundModule may still have missing bindings. `ready()` means only that
+ * every semantic input requirement has a target; it does not mean that any
+ * Observable has been subscribed.
+ */
+export interface BoundModule {
+  readonly program: Program;
+  readonly bindings: readonly Binding[];
+
+  ready(): boolean;
+  remaining(): readonly Binding[];
+}
+
+/**
+ * Apply parameter values and series targets without mutating either input.
+ *
+ * Passing a Program creates its first BoundModule. Passing a BoundModule
+ * applies another immutable binding step. Observable wiring and subscription
+ * ownership stay with the API layer that constructs the assignments.
+ */
+export function bindModule(
+  target: Program | BoundModule,
+  supplied: readonly BindingAssignment[],
+): Effect.Effect<BoundModule, BindingError> {
+  return Effect.gen(function* () {
+    const module = isBoundModule(target)
+      ? target
+      : makeBoundModule(target, extract(target)[0]);
+    let bindings = module.bindings;
+
+    for (const assignment of supplied) {
+      const sameName = bindings.filter(
+        binding => binding.name === assignment.name,
+      );
+      const matches = sameName.filter(
+        binding => binding.kind === assignment.kind,
+      );
+
+      if (matches.length === 0) {
+        if (sameName.length !== 0) {
+          yield* Effect.fail(
+            new BindingError(
+              'BINDING_KIND_MISMATCH',
+              `binding '${assignment.name}' is ${sameName[0].kind}, not ${assignment.kind}`,
+            ),
+          );
+        }
+        yield* Effect.fail(
+          new BindingError(
+            'UNKNOWN_BINDING',
+            `unknown ${assignment.kind} binding '${assignment.name}'`,
+          ),
+        );
+      }
+
+      if (matches.some(hasTarget)) {
+        yield* Effect.fail(
+          new BindingError(
+            'DUPLICATE_BINDING',
+            `${assignment.kind} binding '${assignment.name}' is already bound`,
+          ),
+        );
+      }
+
+      let boundTarget: unknown = assignment.target;
+      if (assignment.kind === 'series') {
+        if (!isObservable(assignment.target)) {
+          yield* Effect.fail(
+            new BindingError(
+              'INVALID_BINDING',
+              `series binding '${assignment.name}' expects an Observable`,
+            ),
+          );
+        }
+      } else {
+        const parsed = matches[0].type.safeParse(assignment.target);
+        if (!parsed.success) {
+          yield* Effect.fail(
+            new BindingError(
+              'INVALID_BINDING',
+              `parameter binding '${assignment.name}' does not match its Tea type`,
+            ),
+          );
+        }
+        boundTarget = parsed.data;
+      }
+
+      bindings = Object.freeze(
+        bindings.map(binding => {
+          if (
+            binding.name !== assignment.name ||
+            binding.kind !== assignment.kind
+          ) {
+            return binding;
+          }
+          if (assignment.kind === 'series') {
+            if (binding.kind !== 'series') return binding;
+            return freezeBinding({...binding, target: assignment.target});
+          }
+          if (binding.kind !== 'parameter') return binding;
+          return freezeBinding({...binding, target: boundTarget});
+        }),
+      );
+    }
+
+    return makeBoundModule(module.program, bindings);
+  });
+}
+
+class ImmutableBoundModule implements BoundModule {
+  readonly program: Program;
+  readonly bindings: readonly Binding[];
+
+  constructor(program: Program, bindings: readonly Binding[]) {
+    this.program = program;
+    this.bindings = Object.freeze(bindings.map(freezeBinding));
+    Object.freeze(this);
+  }
+
+  ready(): boolean {
+    return this.bindings.every(hasTarget);
+  }
+
+  remaining(): readonly Binding[] {
+    return Object.freeze(this.bindings.filter(binding => !hasTarget(binding)));
+  }
+}
+
+function isBoundModule(value: Program | BoundModule): value is BoundModule {
+  return value instanceof ImmutableBoundModule;
+}
+
+function makeBoundModule(
+  program: Program,
+  bindings: readonly Binding[],
+): BoundModule {
+  return new ImmutableBoundModule(program, bindings);
+}
+
+function hasTarget(binding: Binding): boolean {
+  return Object.hasOwn(binding, 'target');
+}
+
+function freezeBinding(binding: Binding): Binding {
+  return Object.freeze({...binding});
+}
 
 type Pair<A, B> = [A, B];
 
@@ -52,17 +232,6 @@ function inputBindingsOf(
     })),
   ];
 
-  for (const request of program.requests) {
-    const type = schemaOf(request.resultType, schemas);
-    const children = inputBindingsOf(request.child, schemas);
-    bindings.push({
-      kind: 'series',
-      name: requestName(request),
-      type,
-      ...(children.length === 0 ? {} : {children}),
-    });
-  }
-
   return bindings;
 }
 
@@ -79,19 +248,6 @@ function outputBindingsOf(
       type: schemaOf(channel.type, schemas),
     }));
   });
-}
-
-function requestName(request: RequestEdge): string {
-  const symbol = constantString(request.symbol);
-  return symbol === null || symbol === ''
-    ? `request@${request.pos.line}:${request.pos.col}`
-    : symbol;
-}
-
-function constantString(expr: IrExpr): string | null {
-  return expr.kind === IrKind.Const && typeof expr.value === 'string'
-    ? expr.value
-    : null;
 }
 
 function schemaOf(type: Type, schemas: Map<Type, z.ZodType>): z.ZodType {
