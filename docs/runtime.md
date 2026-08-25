@@ -66,6 +66,50 @@ and physical resource policy to create a resumable execution session. Baking
 bound constants into specialized artifacts is a permitted later optimization,
 not the model.
 
+## Implemented step-based migration slice
+
+The legacy `JSRuntime` remains the execution path for the CLI, generic CPU
+batching, provider-backed requests, and the GPU runtime's generated-JS binding
+helper. Alongside it, the embedding API now has an implemented step-based path:
+
+```text
+Program ── bindModule(...): Effect ──▶ immutable BoundModule
+   │                                      │
+   └──────────── TeaNode row wiring ──────┘
+                         │ .to(sink) subscribes
+                         ▼
+                StateMachineRuntime.step(input)
+```
+
+`bindModule()` is an immutable, subscription-free binding transition. Its
+first call with a `Program` creates a `BoundModule` even when no assignments are
+supplied. A Program with no semantic requirements is therefore ready after that
+first call. Further calls take the previous `BoundModule` and return a new
+snapshot; expected failures use the `BindingError` channel of the returned
+`Effect`. `ready()` means all semantic requirements have targets and generated
+`init`/`bind` evaluation has produced immutable bound depths, parameter facts,
+output declarations, and static request facts. It does not subscribe to a
+source or guarantee that every fact kind is executable by TeaNode.
+
+Observable composition belongs to `TeaNode`, not `BoundModule`. Successive
+`TeaNode.bind()` calls retain attached row streams while applying the binding
+transition synchronously. `.to(sink)` is the current subscription boundary: it
+creates one `StateMachineRuntime`, serializes synchronized rows through
+`step()`, forwards `StepResult`, and disposes the runtime when the Observable
+terminates. This slice currently constructs numeric series rows and uses final
+steps only. Builtin input wiring and static-request child execution still fail
+explicitly in `.to()`; binding static request facts is implemented, executing
+them through TeaNode is not.
+
+`StateMachineRuntime` owns one committed `State`, one same-row `Intermediate`,
+and one context-local Heap. A successful provisional step replaces only its
+Intermediate; a successful final step replaces both State and Intermediate;
+an `Effect` failure advances neither. The generic `Intermediate` value contains
+only its frame root—the Heap is injected into `stateMachine()`, retained by the
+runtime facade, and disposed with it. `StepResult` exposes only output, effects,
+and the provisional flag, so neither state nor storage ownership crosses the
+host boundary.
+
 ## The generated JS module
 
 Lowering emits one self-describing module — code plus the manifest the

@@ -1,11 +1,11 @@
 # runtime
 
-Tea execution after bind-independent codegen. `JSRuntime` implements the JS
-Runtime ABI (`abi.ts` is the stable facade; `value.ts`, `schema.ts`,
-`module-abi.ts`, `provider.ts`, `output.ts`, `binding.ts`, and `errors.ts` own
-the internal contracts; `docs/runtime.md` is the authority)
-and owns the main loop — binding, exact value layouts, frame trees, rings,
-unified Heap storage, provisional/commit, and emission flushing.
+Tea execution after bind-independent codegen. The legacy `JSRuntime` still
+implements the existing provider/sink, request-child, batch, CLI, and GPU bind
+paths. `StateMachineRuntime` is the implemented step-based migration target;
+both currently coexist. `abi.ts` is the stable legacy facade; `value.ts`,
+`schema.ts`, `module-abi.ts`, `provider.ts`, `output.ts`, `binding.ts`, and
+`errors.ts` own the internal contracts, and `docs/runtime.md` is the authority.
 Generic batch execution and GPU binding/execution also live here because bindings,
 datasets, buffers, devices, dispatch, and readback are runtime facts.
 The backend-neutral `executeProgram()` host harness lives one level above in
@@ -13,6 +13,20 @@ The backend-neutral `executeProgram()` host harness lives one level above in
 
 ## Invariants
 
+- `StateMachineRuntime` owns its `State`, `Intermediate`, and Heap. Its
+  `step()` returns an `Effect`: successful provisional steps replace only the
+  owned Intermediate, successful final steps replace both State and
+  Intermediate, and failures replace neither. `StepResult` exposes only dense
+  output, effects, and provisional finality. Disposal is idempotent.
+- The generic `Intermediate` contract contains only its frame root. Heap is an
+  injected resource of `stateMachine()` and is owned/disposed by
+  `StateMachineRuntime`; it never crosses the transition result. Root discovery
+  scans the runtime's retained State and Intermediate before beginning the next
+  Heap transaction.
+- The step runtime consumes already evaluated binding facts. Static request
+  facts can be produced by module binding, but TeaNode child-request execution
+  is not implemented yet; do not claim that the new path executes requests.
+  The legacy JSRuntime remains the current request execution path.
 - Only Time-Machine-relevant operations cross the ABI; generated code never
   sees ring indices, scratch heads, or storage layout. Hosts differ only in
   the injected DataProvider and OutputSink.

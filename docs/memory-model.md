@@ -263,6 +263,12 @@ typed `Ref<V>` and Heap framework. Collection backing and struct field storage
 have different `TypeInfo<A, V>` policies over the same reference, transaction,
 version guard, limits, reachability graph, and garbage collector.
 
+In the step-based runtime, the Heap is an owned execution resource, not part of
+the `Intermediate` value. `Intermediate` contains only same-row frame state;
+`StateMachineRuntime` owns and disposes the Heap and injects it into the state
+transition. A transition result can therefore replace State/Intermediate
+without transferring storage ownership to its caller.
+
 Collection operations allocate persistent replacement backing. A struct field
 write stages a complete replacement body for the existing `Ref`; transactional
 reads see that overlay, commit installs it, and abort discards it. This physical

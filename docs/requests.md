@@ -257,6 +257,13 @@ declaration option does not enable an execution feature that the runtime cannot
 provide. The request-context budget still spans recursively bound static child
 contexts, with one context pair per edge.
 
+The two JavaScript paths are not yet equivalent here. The legacy `JSRuntime`
+executes these static children. The step-based binding slice records each
+static pair, options, child module, and retention in `BoundModuleFacts`, but
+`TeaNode.to()` currently rejects a ready module with request facts because its
+child Observable/runtime wiring has not been implemented. Binding readiness is
+therefore not a claim that TeaNode can execute requests yet.
+
 Each edge also owns four bind-time options in canonical order: `gaps`,
 `lookahead`, `ignore_invalid_symbol`, and `calc_bars_count`. They remain
 concrete Program expressions, and their separate evaluation-order permutation
