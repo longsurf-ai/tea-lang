@@ -87,7 +87,7 @@ Program ── JavaScript lowering ──▶ unbound JSModule
                                       │ TeaNode owns row wiring + Subject
                                       │ first .to(sink) starts execution
                                       ▼
-                                JSRuntime.step(ctx)
+                               JSRuntime.step(input)
 ```
 
 `bindModule()` is an immutable, subscription-free binding transition. Its
