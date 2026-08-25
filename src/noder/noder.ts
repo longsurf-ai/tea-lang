@@ -209,7 +209,7 @@ class Noder {
     };
     body.unshift(...this.nodePackageGlobals(this.program, packageGlobals));
     resolveDepths(program);
-    this.checkDynamicRequestsFlag(program);
+    this.checkRequestSupport(program);
     return program;
   }
 
@@ -374,22 +374,18 @@ class Noder {
     }
   }
 
-  // Pine v6 dynamic_requests defaults to true; an explicit false on the
-  // declaration restores the static-only gate on context args. A post-pass
-  // so declaration order cannot dodge it.
-  private checkDynamicRequestsFlag(program: Program): void {
-    const declared = program.outputs
-      .flatMap(output => output.staticArgs)
-      .find(arg => arg.name === 'dynamic_requests');
-    if (declared === undefined || declared.value !== false) {
-      return;
-    }
+  // The current runtime supports only request contexts that are completely
+  // known during binding. RequestEdge.dynamic is the noder-owned fact that
+  // captures this distinction after aliases and function frames have been
+  // projected. Check the complete request tree so a nested child cannot
+  // bypass the execution boundary.
+  private checkRequestSupport(program: Program): void {
     const visit = (requests: readonly RequestEdge[]): void => {
       for (const edge of requests) {
         if (edge.dynamic) {
           this.errors.errorAt(
             edge.pos,
-            'series context arguments need dynamic_requests=true',
+            'dynamic requests are not supported yet; symbol and timeframe must be bind-time-known',
           );
         }
         visit(edge.child.requests);

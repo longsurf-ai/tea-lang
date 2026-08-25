@@ -1195,10 +1195,9 @@ describe('requests', () => {
     ).toEqual([TypeKind.Float, TypeKind.Int]);
   });
 
-  test('request binding distinguishes root aliases from function locals', () => {
+  test('request binding accepts root bind values and rejects function locals', () => {
     const staticProgram = mustBuild(
       [
-        'indicator("t", dynamic_requests=false)',
         'sym = input.string("X")',
         'alias = sym + ""',
         'fetch() => request.security(alias, "D", close)',
@@ -1209,7 +1208,6 @@ describe('requests', () => {
 
     const local = buildText(
       [
-        'indicator("t", dynamic_requests=false)',
         'fetch(string symbol) => request.security(symbol, "D", close)',
         'sym = input.string("X")',
         'plot(fetch(sym))',
@@ -1218,26 +1216,50 @@ describe('requests', () => {
     expect(local.program).toBeNull();
     expect(local.errors.map(error => error.msg)).toContainEqual(
       expect.stringContaining(
-        'series context arguments need dynamic_requests=true',
+        'dynamic requests are not supported yet; symbol and timeframe must be bind-time-known',
       ),
     );
   });
 
-  test('request binding respects builtin qualifiers inline and through aliases', () => {
-    const program = mustBuild(
+  test('request binding rejects series contexts but keeps simple builtins static', () => {
+    const dynamic = buildText(
       [
+        'indicator("t", dynamic_requests=true)',
         'rowSymbol = barstate.isfirst ? "X" : "Y"',
-        'simpleSymbol = syminfo.type == "stock" ? "X" : "Y"',
         'inline = request.security(barstate.isfirst ? "X" : "Y", "D", close)',
         'aliased = request.security(rowSymbol, "D", close)',
+      ].join('\n'),
+    );
+    expect(dynamic.program).toBeNull();
+    expect(
+      dynamic.errors.filter(error =>
+        error.msg.includes('dynamic requests are not supported yet'),
+      ),
+    ).toHaveLength(2);
+
+    const staticProgram = mustBuild(
+      [
+        'simpleSymbol = syminfo.type == "stock" ? "X" : "Y"',
         'static = request.security(simpleSymbol, timeframe.period, close)',
       ].join('\n'),
     );
-    expect(program.requests.map(request => request.dynamic)).toEqual([
-      true,
-      true,
-      false,
-    ]);
+    expect(staticProgram.requests[0].dynamic).toBe(false);
+  });
+
+  test('dynamic request rejection visits nested child Programs', () => {
+    const result = buildText(
+      [
+        'nested = request.security(',
+        '    "OUTER", "D",',
+        '    request.security(barstate.isfirst ? "X" : "Y", "W", close))',
+      ].join('\n'),
+    );
+    expect(result.program).toBeNull();
+    expect(
+      result.errors.filter(error =>
+        error.msg.includes('dynamic requests are not supported yet'),
+      ),
+    ).toHaveLength(1);
   });
 
   test('script series variables cannot cross into captures', () => {

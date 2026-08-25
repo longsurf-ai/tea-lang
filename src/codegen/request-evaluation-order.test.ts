@@ -88,49 +88,6 @@ describe('request context evaluation order', () => {
     expect(module.manifest.requests[0].merge).toEqual({mode: 'sample'});
   });
 
-  test('binds options but no static pair for a dynamic edge', () => {
-    const program = mustBuild(
-      [
-        'indicator("dynamic request", dynamic_requests = true)',
-        'symbol = close > 0 ? "X" : "Y"',
-        'd = request.security(symbol, "D", close)',
-        'plot(d)',
-      ].join('\n'),
-    );
-    expect(program.requests[0].dynamic).toBe(true);
-
-    const js = generate(program);
-    const rootBind = js.lastIndexOf('bind(rt, fr)');
-    const bind = js.slice(rootBind, js.indexOf('funcs:', rootBind));
-    expect(bind).toContain('rt.bindRequestOptions(0,');
-    expect(bind).not.toContain('rt.bindRequest(0,');
-    expect(js).toContain('rt.requestFor(0,');
-  });
-
-  test('owns dynamic request context calls in the lexical function frame', () => {
-    const program = mustBuild(
-      [
-        'id(string s) => s',
-        'fetch(string s) => request.security(id(s), "D", close)',
-        'a = fetch(close > 3 ? "X" : "Y")',
-        'plot(a)',
-      ].join('\n'),
-    );
-
-    const module = new Function(generate(program))() as {
-      readonly manifest: {
-        readonly frames: readonly {
-          readonly subs: readonly {readonly fid: number}[];
-        }[];
-      };
-    };
-    expect(module.manifest.frames.map(frame => frame.subs)).toEqual([
-      [{fid: 1}],
-      [{fid: 2}],
-      [],
-    ]);
-  });
-
   test('evaluates a root Simple alias before binding request options', () => {
     const program = mustBuild(
       [

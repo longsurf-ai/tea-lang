@@ -170,12 +170,11 @@ export interface MergePolicy {
 // may cross from the root; automatic computed-root dependency closure is
 // staged and the checker rejects it meanwhile.
 export interface RequestEdge {
-  // The call site (diagnostics: post-pass errors like the
-  // dynamic_requests=false gate anchor here).
+  // The call site anchors noder post-pass support diagnostics.
   readonly pos: Pos;
-  // input/simple for static contexts; series-qualified exprs are the dynamic
-  // request form — the child stays one static template, and the runtime
-  // instantiates it per distinct (symbol, timeframe) pair it encounters.
+  // Input/simple expressions form static contexts. Series-qualified context
+  // expressions set `dynamic`, which currently fails closed at the noder
+  // boundary before a Program can reach codegen or runtime.
   readonly symbol: IrExpr;
   readonly timeframe: IrExpr;
   // Canonical parent-context operand indices (0 = symbol, 1 = timeframe) in
