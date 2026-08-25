@@ -4,6 +4,8 @@
 import {describe, expect, test} from 'vitest';
 import {of} from 'rxjs';
 import * as z from 'zod';
+import type {StepResult} from '../runtime/state-machine-runtime';
+import type {Sink} from './sink';
 import {DataStream} from './stream';
 import {TeaCompileError, tea} from './tea';
 
@@ -81,4 +83,59 @@ describe('tea', () => {
     expect(ready.ready()).toBe(true);
     expect(ready.boundModule()?.remaining()).toEqual([]);
   });
+
+  test('drives one state-owning runtime from the bound source Observable', async () => {
+    const source = new DataStream(
+      z.object({close: z.number()}),
+      subscriber => of({close: 1}, {close: 2}).subscribe(subscriber),
+    );
+    const node = tea`
+      length = input.int(14)
+      plot(close + length)
+    `
+      .bind(source)
+      .bind({length: 20});
+    const sink = new StepSink();
+
+    node.to(sink);
+    await sink.completion;
+
+    expect(
+      sink.values.map(result => result.output[0]?.channels[0]),
+    ).toEqual([21, 22]);
+  });
 });
+
+class StepSink implements Sink<StepResult> {
+  readonly values: StepResult[] = [];
+  readonly completion: Promise<void>;
+  private readonly resolve: () => void;
+  private readonly reject: (error: unknown) => void;
+
+  constructor() {
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    this.completion = new Promise<void>((onResolve, onReject) => {
+      resolve = onResolve;
+      reject = onReject;
+    });
+    this.resolve = resolve;
+    this.reject = reject;
+  }
+
+  next(value: StepResult): void {
+    this.write(value);
+  }
+
+  write(value: StepResult): void {
+    this.values.push(value);
+  }
+
+  error(error: unknown): void {
+    this.reject(error);
+  }
+
+  complete(): void {
+    this.resolve();
+  }
+}
