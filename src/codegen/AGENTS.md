@@ -2,8 +2,8 @@
 
 Bind-independent target lowering from the one canonical `Program`.
 `codegen.ts` + `lower.ts` emit a recursive self-describing `JSModule`; only its
-`main` and `funcs` target the execution `Runtime`, while `bind(values)` returns
-pure `JSModuleBinding` data. `wgsl/` audits the supported generic Program subset
+`main` and `funcs` target the execution `Runtime`, while
+`evaluateBinding(values)` returns pure `JSModuleBinding` data. `wgsl/` audits the supported generic Program subset
 and emits a complete WGSL module with target layouts. `docs/runtime.md` owns
 both binding boundaries.
 
@@ -33,7 +33,7 @@ both binding boundaries.
   codegen.
 - A WGSL artifact embeds the ordinary generated `JSModule` as its binding
   sidecar. GPU preparation calls that module's pure
-  `bind(values) -> JSModuleBinding` function to resolve per-binding history
+  `evaluateBinding(values) -> JSModuleBinding` function to resolve per-binding history
   capacities; neither codegen nor runtime may introduce a second
   bound-expression language or public binding ABI.
 - Only Time-Machine ops lower to rt calls; arithmetic, comparisons, math

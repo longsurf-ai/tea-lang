@@ -7,14 +7,15 @@ import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {type Value} from './abi';
 import {JSRuntime, type RuntimeContext, type StepResult} from './js-runtime';
+import {configureModule} from './module-binding';
 import {
   RUNTIME_ABI_VERSION,
   type Frame,
   type JSModule,
   type Runtime,
 } from './module-abi';
-import {staticModuleBinding} from './testing';
-import {ValueLayoutRegistry, type ValueLayout} from './value-layout';
+import {staticModuleBinding, testModule} from './testing';
+import type {ValueLayout} from './value-layout';
 
 const NUMBER = 0;
 const BOOLEAN = 1;
@@ -34,7 +35,7 @@ const LAYOUTS = [
 ] as const satisfies readonly ValueLayout[];
 
 function runtime(module: JSModule): JSRuntime {
-  return new JSRuntime(module, [], new ValueLayoutRegistry(LAYOUTS));
+  return new JSRuntime(configureModule(module, []));
 }
 
 function input({
@@ -63,7 +64,7 @@ function counter(rt: Runtime, frame: Frame): Value {
   return rt.read(frame, 0, 0);
 }
 
-const COUNTER_MODULE: JSModule = {
+const COUNTER_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -91,7 +92,7 @@ const COUNTER_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {1: counter},
@@ -99,9 +100,9 @@ const COUNTER_MODULE: JSModule = {
     rt.emit(0, 0, counter(rt, rt.frame(root, 0)));
     rt.emit(0, 1, counter(rt, rt.frame(root, 1)));
   },
-};
+});
 
-const TYPED_HISTORY_MODULE: JSModule = {
+const TYPED_HISTORY_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -145,7 +146,7 @@ const TYPED_HISTORY_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -157,9 +158,9 @@ const TYPED_HISTORY_MODULE: JSModule = {
     rt.emit(0, 1, rt.read(root, 1, 2));
     rt.emit(0, 2, rt.read(root, 2, 2));
   },
-};
+});
 
-const TICK_MODULE: JSModule = {
+const TICK_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -191,7 +192,7 @@ const TICK_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -206,10 +207,10 @@ const TICK_MODULE: JSModule = {
     rt.emit(0, 1, rt.read(root, 1, 0));
     rt.emit(0, 2, rt.read(root, 2, 0));
   },
-};
+});
 
 function arrayStateModule(): JSModule {
-  return {
+  return testModule({
     abi: RUNTIME_ABI_VERSION,
     layout: LAYOUTS,
     manifest: {
@@ -239,7 +240,7 @@ function arrayStateModule(): JSModule {
       ],
     },
     requests: [],
-    bind() {
+    evaluateBinding() {
       return staticModuleBinding(this);
     },
     funcs: {},
@@ -265,7 +266,7 @@ function arrayStateModule(): JSModule {
         );
       }
     },
-  };
+  });
 }
 
 describe('JSRuntime core parity', () => {
@@ -279,7 +280,7 @@ describe('JSRuntime core parity', () => {
 
   test('a failed first subframe activation disappears before retry', () => {
     let fail = true;
-    const module: JSModule = {
+    const module: JSModule = testModule({
       ...COUNTER_MODULE,
       main(rt, root) {
         if (fail) {
@@ -288,7 +289,7 @@ describe('JSRuntime core parity', () => {
         }
         rt.emit(0, 0, counter(rt, rt.frame(root, 0)));
       },
-    };
+    });
     const target = runtime(module);
     expect(() => run(target, input())).toThrow('after first call');
     fail = false;
@@ -327,7 +328,7 @@ describe('JSRuntime core parity', () => {
 
   test('provisional subframe activation survives a final same-row skip', () => {
     let invoke = true;
-    const module: JSModule = {
+    const module: JSModule = testModule({
       ...COUNTER_MODULE,
       manifest: {
         ...COUNTER_MODULE.manifest,
@@ -351,7 +352,7 @@ describe('JSRuntime core parity', () => {
       main(rt, root) {
         if (invoke) rt.emit(0, 0, counter(rt, rt.frame(root, 0)));
       },
-    };
+    });
     const target = runtime(module);
     expect(channels(run(target, input({provisional: true})))).toEqual([1]);
     invoke = false;
@@ -363,7 +364,7 @@ describe('JSRuntime core parity', () => {
 
   test('an active skipped subframe advances local history with typed empty', () => {
     let invoke = true;
-    const module: JSModule = {
+    const module: JSModule = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -396,7 +397,7 @@ describe('JSRuntime core parity', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
@@ -409,7 +410,7 @@ describe('JSRuntime core parity', () => {
         rt.write(child, 0, rt.series(0, 0));
         rt.emit(0, 0, rt.read(child, 0, 1));
       },
-    };
+    });
     const target = runtime(module);
     expect(
       Number.isNaN(channels(run(target, input({series: [10]})))[0] as number),
@@ -427,7 +428,7 @@ describe('JSRuntime core parity', () => {
   });
 
   test('struct history keeps a live reference rather than a body snapshot', () => {
-    const module: JSModule = {
+    const module: JSModule = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -466,7 +467,7 @@ describe('JSRuntime core parity', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
@@ -494,7 +495,7 @@ describe('JSRuntime core parity', () => {
           rt.emit(0, 1, rt.callCollection('array.size', NUMBER, [prior]));
         }
       },
-    };
+    });
     const target = runtime(module);
     expect(channels(run(target, input({builtins: [0]})))).toEqual([2, NaN]);
     expect(channels(run(target, input({builtins: [1]})))).toEqual([3, 3]);

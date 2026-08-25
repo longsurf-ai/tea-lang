@@ -10,7 +10,7 @@ import type {ExecutionError} from './errors';
 import type {Intermediate, RuntimeContext, State} from './state-machine';
 import {stateMachine, type TeaStateMachine} from './state-update';
 import type {Value} from './value';
-import type {LayoutId, ValueLayoutRegistry} from './value-layout';
+import {type LayoutId, ValueLayoutRegistry} from './value-layout';
 
 export interface JSRuntimeOptions {
   readonly heapLimits?: Partial<HeapLimits>;
@@ -34,6 +34,7 @@ export interface StepResult {
 export class JSRuntime {
   private readonly heap: ArenaHeap;
   private readonly machine: TeaStateMachine;
+  private readonly layouts: ValueLayoutRegistry;
   private state: State;
   private intermediate: Intermediate;
   private rootValues: readonly Value[] | null = null;
@@ -41,15 +42,17 @@ export class JSRuntime {
 
   constructor(
     private readonly module: JSModule,
-    params: readonly Value[],
-    private readonly layouts: ValueLayoutRegistry,
     options: JSRuntimeOptions = {},
   ) {
+    if (!module.ready() || module.parameterValues === null) {
+      fatal('JSRuntime requires a ready JSModule');
+    }
+    this.layouts = new ValueLayoutRegistry(module.layout);
     this.heap = new ArenaHeap(options.heapLimits);
     this.machine = stateMachine(
       module,
-      params,
-      layouts,
+      module.parameterValues,
+      this.layouts,
       this.heap,
       options.maxCollectionElements,
     );

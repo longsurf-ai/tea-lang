@@ -107,7 +107,7 @@ describe('typed builtin lowering', () => {
       },
     ]);
     expect(
-      module.bind({
+      module.evaluateBinding({
         params: [],
         builtins: new Map([[2, 'NASDAQ:AAPL']]),
       }).retention.builtins,

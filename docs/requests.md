@@ -260,9 +260,9 @@ provide. The request-context budget still spans recursively bound static child
 contexts, with one context pair per edge.
 
 The fixed-historical host adapter recursively executes these static children
-through the sole `JSRuntime`. Module binding records each static pair, options,
-child module, and retention in `BoundModuleFacts`, but
-`TeaNode.to()` currently rejects a ready module with request facts because its
+through the sole `JSRuntime`. Each bound `JSModule` directly stores its static
+pair, options, child module, and retention, but `TeaNode.to()` currently
+rejects a ready module with requests because its
 child Observable/runtime wiring has not been implemented. Binding readiness is
 therefore not a claim that TeaNode can execute requests yet.
 
@@ -271,7 +271,7 @@ Each edge also owns four bind-time options in canonical order: `gaps`,
 concrete Program expressions, and their separate evaluation-order permutation
 preserves source order among options before assembling that canonical vector.
 Omitted values are the concrete defaults `false`, `false`, `false`, and `0`.
-The generated module's pure `bind(values)` function returns exactly one request
+The generated module's pure `evaluateBinding(values)` function returns exactly one request
 entry containing the pair and four options for every edge. The manifest retains
 only merge mode, so there is no second owner for bound option values.
 
@@ -298,7 +298,7 @@ multiplying the final request result is not an acceptable approximation.
 
 Execution:
 
-- `JSModule.bind(values)` evaluates each edge's context args and output args and
+- `JSModule.evaluateBinding(values)` evaluates each edge's context args and output args and
   returns immutable request data. The fixed-historical host then awaits
   `resolveContext` with the bound range demand, runs the child over its exposed
   extent, and prepares the merged view. No supported row execution discovers a

@@ -2,6 +2,7 @@
 
 import {describe, expect, test} from 'vitest';
 import {mustBuild} from '../noder/testing';
+import {loadModule} from '../runtime/load';
 import {generate} from './codegen';
 
 describe('request context evaluation order', () => {
@@ -16,7 +17,7 @@ describe('request context evaluation order', () => {
       ].join('\n'),
     );
     const js = generate(program);
-    const bind = js.lastIndexOf('bind(values)');
+    const bind = js.lastIndexOf('evaluateBinding(values)');
     const timeframe = js.indexOf('"TIMEFRAME_SENTINEL"', bind);
     const symbol = js.indexOf('"SYMBOL_SENTINEL"', bind);
 
@@ -60,7 +61,7 @@ describe('request context evaluation order', () => {
     expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
 
     const js = generate(program);
-    const bind = js.slice(js.lastIndexOf('bind(values)'));
+    const bind = js.slice(js.lastIndexOf('evaluateBinding(values)'));
     const optionCall = bind.match(
       /rt\.bindRequestOptions\(0, \((t\d+)\), \((t\d+)\), \((t\d+)\), \((t\d+)\)\);/,
     );
@@ -80,11 +81,7 @@ describe('request context evaluation order', () => {
     expect(optionCallIndex).toBeGreaterThanOrEqual(0);
     expect(contextCallIndex).toBeGreaterThan(optionCallIndex);
 
-    const module = new Function(js)() as {
-      readonly manifest: {
-        readonly requests: readonly {readonly merge: unknown}[];
-      };
-    };
+    const module = loadModule(js);
     expect(module.manifest.requests[0].merge).toEqual({mode: 'sample'});
   });
 
@@ -98,18 +95,14 @@ describe('request context evaluation order', () => {
     );
 
     const js = generate(program);
-    const rootBind = js.lastIndexOf('bind(values)');
+    const rootBind = js.lastIndexOf('evaluateBinding(values)');
     const bind = js.slice(rootBind, js.indexOf('funcs:', rootBind));
     const executionRead = bind.indexOf('rt.builtin(0, 0)');
     const optionCall = bind.indexOf('rt.bindRequestOptions(0,');
     expect(executionRead).toBeGreaterThanOrEqual(0);
     expect(optionCall).toBeGreaterThan(executionRead);
 
-    const module = new Function(js)() as {
-      readonly manifest: {
-        readonly builtin: readonly {readonly source: unknown}[];
-      };
-    };
+    const module = loadModule(js);
     expect(module.manifest.builtin).toMatchObject([
       {source: {domain: 'syminfo', field: 'type'}},
     ]);

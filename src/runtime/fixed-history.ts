@@ -9,16 +9,18 @@ import type {BindInputs, BoundInput, FixedHistoryExecution} from './binding';
 import {BindError, ExecutionError, RequestError} from './errors';
 import {assertMergeAxis, sampleMergeMap} from './merge';
 import {
+  boundInputs,
+  configureChildModule,
+  configureModule,
+  moduleDeclaration,
   ModuleBindingEvaluationError,
-  evaluateChildModuleBinding,
-  evaluateModuleBinding,
-  type BoundModuleFacts,
-  type StaticRequestBinding,
+  requireModuleBinding,
 } from './module-binding';
 import {
   RUNTIME_ABI_VERSION,
   type BuiltinSpec,
   type JSModule,
+  type JSModuleBinding,
 } from './module-abi';
 import type {RowPublication} from './output';
 import {resolveParamValues} from './params';
@@ -90,9 +92,9 @@ export async function bindFixedHistory(
     ) ?? DEFAULT_MAX_FIXED_VALUE_LOGICAL_BYTES;
 
   const params = resolveParamValues(module.manifest.params, inputs.params);
-  let facts: BoundModuleFacts;
+  let configured: JSModule;
   try {
-    facts = evaluateModuleBinding(module, params);
+    configured = configureModule(module, params);
   } catch (error) {
     if (error instanceof ModuleBindingEvaluationError) {
       throw new BindError(error.message);
@@ -116,7 +118,7 @@ export async function bindFixedHistory(
     inputs.timeframe ?? '',
   );
 
-  const layouts = new ValueLayoutRegistry(facts.code.layout);
+  const layouts = new ValueLayoutRegistry(configured.layout);
   const heapLimits = {
     maxStorageCells: optionalLimit(
       inputs.maxHeapStorageCells,
@@ -148,31 +150,26 @@ export async function bindFixedHistory(
       maxLogicalBytes: maxFixedValueLogicalBytes,
     },
   };
-  const series = bindSeries(facts, params, context);
-  const builtins = bindBuiltins(facts, context, layouts, timeNow);
-  const workspace = reserveWorkspace(facts, environment, 'root state');
+  const series = bindSeries(configured, params, context);
+  const builtins = bindBuiltins(configured, context, layouts, timeNow);
+  const workspace = reserveWorkspace(configured, environment, 'root state');
   let requests: readonly RequestView[] = [];
   let runtime: JSRuntime | null = null;
   try {
     requests = await bindStaticRequests(
-      facts,
+      configured,
       context,
       contextIdentity,
       environment,
     );
-    runtime = new JSRuntime(
-      facts.code,
-      facts.params.map(param => param.value),
-      layouts,
-      {
-        maxCollectionElements,
-        heapLimits,
-      },
-    );
-    inputs.sink.declare(facts.declaration);
+    runtime = new JSRuntime(configured, {
+      maxCollectionElements,
+      heapLimits,
+    });
+    inputs.sink.declare(moduleDeclaration(configured));
     return new FixedHistoryExecutionImpl(
       runtime,
-      facts.params,
+      boundInputs(configured),
       context,
       series,
       builtins,
@@ -309,24 +306,26 @@ class FixedHistoryExecutionImpl implements FixedHistoryExecution {
 }
 
 async function bindStaticRequests(
-  facts: BoundModuleFacts,
+  module: JSModule,
   parent: ProviderContext,
   parentIdentity: ContextIdentity,
   environment: RequestEnvironment,
 ): Promise<readonly RequestView[]> {
-  if (facts.requests.length === 0) return [];
+  const requests = requireModuleBinding(module).requests;
+  if (requests.length === 0) return [];
   if (parent.axis === null) {
     throw new BindError(
       "requests require a time axis on the primary context (a csv context needs a 'time' column)",
     );
   }
   assertMergeAxis(parent.axis, parent.rows, 'primary context');
-  const views: RequestView[] = new Array(facts.code.manifest.requests.length);
+  const views: RequestView[] = new Array(module.manifest.requests.length);
   try {
-    for (const binding of facts.requests) {
-      views[binding.requestId] = await bindStaticRequest(
+    for (const [requestId, binding] of requests.entries()) {
+      views[requestId] = await bindStaticRequest(
+        requestId,
         binding,
-        facts,
+        module,
         parent,
         parentIdentity,
         environment,
@@ -340,16 +339,17 @@ async function bindStaticRequests(
 }
 
 async function bindStaticRequest(
-  binding: StaticRequestBinding,
-  parentFacts: BoundModuleFacts,
+  requestId: number,
+  binding: JSModuleBinding['requests'][number],
+  parentModule: JSModule,
   parent: ProviderContext,
   parentIdentity: ContextIdentity,
   environment: RequestEnvironment,
 ): Promise<RequestView> {
-  const spec = parentFacts.code.manifest.requests[binding.requestId];
+  const spec = parentModule.manifest.requests[requestId];
   if (spec === undefined || spec.dynamic) {
     throw new BindError(
-      `dynamic request ${binding.requestId} is unsupported by fixed historical binding`,
+      `dynamic request ${requestId} is unsupported by fixed historical binding`,
     );
   }
   assertRequestTransportLayout(environment.layouts, spec.layout);
@@ -366,9 +366,9 @@ async function bindStaticRequest(
   }
 
   const range: RangeDemand =
-    binding.options.calcBarsCount === 0
+    binding.calcBarsCount === 0
       ? FULL_RANGE
-      : {kind: 'trailing-bars', bars: binding.options.calcBarsCount};
+      : {kind: 'trailing-bars', bars: binding.calcBarsCount};
   const resolved = await environment.provider.resolveContext(
     symbol,
     timeframe,
@@ -377,7 +377,7 @@ async function bindStaticRequest(
   if (isContextError(resolved)) {
     const ignorable =
       resolved.error === 'unknownSymbol' || resolved.error === 'unknownSource';
-    if (binding.options.ignoreInvalidSymbol && ignorable) {
+    if (binding.ignoreInvalidSymbol && ignorable) {
       const empty = environment.layouts.empty(spec.layout);
       return {at: () => empty, release() {}};
     }
@@ -402,12 +402,13 @@ async function bindStaticRequest(
       symbol,
       timeframe,
     );
-    let childFacts: BoundModuleFacts;
+    const child = parentModule.requests[requestId];
+    if (child === undefined) {
+      throw new BindError(`static request ${requestId} has no child module`);
+    }
+    let childModule: JSModule;
     try {
-      childFacts = evaluateChildModuleBinding(
-        binding.child,
-        environment.params,
-      );
+      childModule = configureChildModule(child, environment.params);
     } catch (error) {
       if (error instanceof ModuleBindingEvaluationError) {
         throw new BindError(error.message);
@@ -415,7 +416,7 @@ async function bindStaticRequest(
       throw error;
     }
     const result = await runRequestChild(
-      childFacts,
+      childModule,
       childContext,
       childIdentity,
       spec.resultSlot,
@@ -428,7 +429,7 @@ async function bindStaticRequest(
         parent.rows,
         childContext.axis,
         childContext.rows,
-        binding.options,
+        binding,
       );
       const empty = environment.layouts.empty(spec.layout);
       return {
@@ -451,7 +452,7 @@ async function bindStaticRequest(
 }
 
 async function runRequestChild(
-  facts: BoundModuleFacts,
+  module: JSModule,
   context: ProviderContext,
   contextIdentity: ContextIdentity,
   resultSlot: number,
@@ -462,21 +463,25 @@ async function runRequestChild(
   readonly lease: StateStorageLease;
 }> {
   validateRows(context);
-  const series = bindSeries(facts, environment.params, context);
+  const series = bindSeries(module, environment.params, context);
   const builtins = bindBuiltins(
-    facts,
+    module,
     context,
     environment.layouts,
     environment.timeNow,
   );
-  const workspace = reserveWorkspace(facts, environment, 'request child state');
+  const workspace = reserveWorkspace(
+    module,
+    environment,
+    'request child state',
+  );
   let requests: readonly RequestView[] = [];
   let resultLease: StateStorageLease | null = null;
   let runtime: JSRuntime | null = null;
   let completed = false;
   try {
     requests = await bindStaticRequests(
-      facts,
+      module,
       context,
       contextIdentity,
       environment,
@@ -487,15 +492,10 @@ async function runRequestChild(
       context.rows,
       'request result column',
     );
-    runtime = new JSRuntime(
-      facts.code,
-      environment.params,
-      environment.layouts,
-      {
-        maxCollectionElements: environment.maxCollectionElements,
-        heapLimits: environment.heapLimits,
-      },
-    );
+    runtime = new JSRuntime(module, {
+      maxCollectionElements: environment.maxCollectionElements,
+      heapLimits: environment.heapLimits,
+    });
     const values: Value[] = [];
     for (let row = 0; row < context.rows; row += 1) {
       Effect.runSync(
@@ -603,14 +603,14 @@ function clampContext(
 }
 
 function bindSeries(
-  facts: BoundModuleFacts,
+  module: JSModule,
   params: readonly Value[],
   context: ProviderContext,
 ): readonly SeriesData[] {
-  return facts.code.manifest.series.map((spec, sid) => {
+  return module.manifest.series.map((spec, sid) => {
     let id = spec.id;
     if (id === null) {
-      const pid = facts.code.manifest.params.findIndex(
+      const pid = module.manifest.params.findIndex(
         param => param.seriesSid === sid,
       );
       if (pid < 0 || typeof params[pid] !== 'string') {
@@ -632,13 +632,13 @@ function bindSeries(
 }
 
 function bindBuiltins(
-  facts: BoundModuleFacts,
+  module: JSModule,
   context: ProviderContext,
   layouts: ValueLayoutRegistry,
   timeNow: number,
 ): readonly ((row: number) => Value)[] {
   let axisValidated = false;
-  return facts.code.manifest.builtin.map((spec, bid) => {
+  return module.manifest.builtin.map((spec, bid) => {
     layouts.layout(spec.layout);
     const source = spec.source;
     if (source.domain === 'syminfo' || source.domain === 'timeframe') {
@@ -777,10 +777,11 @@ function validateRows(context: ProviderContext): void {
 }
 
 function reserveWorkspace(
-  facts: BoundModuleFacts,
+  module: JSModule,
   environment: RequestEnvironment,
   what: string,
 ): StateStorageLease {
+  const retention = requireModuleBinding(module).retention;
   let logicalBytes = 0;
   const add = (layout: LayoutId, cells: number, label: string) => {
     const bytes = fixedLogicalBytes(environment.layouts, layout, cells, label);
@@ -795,17 +796,17 @@ function reserveWorkspace(
         `${what} has recursively sized frame ${fid}`,
       );
     }
-    const spec = facts.code.manifest.frames[fid];
-    const retention = facts.retention.frames[fid];
-    if (spec === undefined || retention === undefined) {
+    const spec = module.manifest.frames[fid];
+    const frameRetention = retention.frames[fid];
+    if (spec === undefined || frameRetention === undefined) {
       return fatal(`${what} references unknown frame ${fid}`);
     }
     active.add(fid);
     spec.locals.forEach((local, slot) => {
       const retained =
         local.storage === Storage.Var || local.storage === Storage.Varip
-          ? Math.max(1, retention[slot]!)
-          : retention[slot]!;
+          ? Math.max(1, frameRetention[slot]!)
+          : frameRetention[slot]!;
       add(local.layout, retained + 1, `${what} frame ${fid} slot ${slot}`);
     });
     spec.subs.forEach(sub => frame(sub.fid));
@@ -813,19 +814,19 @@ function reserveWorkspace(
   };
   frame(0);
 
-  facts.code.manifest.series.forEach((_spec, sid) => {
+  module.manifest.series.forEach((_spec, sid) => {
     const label = `${what} series ${sid}`;
     logicalBytes = addLogicalBytes(
       logicalBytes,
-      fixedRawBytes(8, facts.retention.series[sid]!, label),
+      fixedRawBytes(8, retention.series[sid]!, label),
       what,
     );
   });
-  facts.code.manifest.builtin.forEach((spec, bid) =>
-    add(spec.layout, facts.retention.builtins[bid]!, `${what} builtin ${bid}`),
+  module.manifest.builtin.forEach((spec, bid) =>
+    add(spec.layout, retention.builtins[bid]!, `${what} builtin ${bid}`),
   );
-  facts.code.manifest.requests.forEach((spec, rid) =>
-    add(spec.layout, facts.retention.requests[rid]!, `${what} request ${rid}`),
+  module.manifest.requests.forEach((spec, rid) =>
+    add(spec.layout, retention.requests[rid]!, `${what} request ${rid}`),
   );
   return reserveLogicalBytes(environment, logicalBytes, what);
 }

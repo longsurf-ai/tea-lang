@@ -1,10 +1,23 @@
 // Purpose: Test-only builders for hand-authored generated-module fixtures.
 
-import type {
-  DepthSpec,
+import type {DepthSpec, JSModule, JSModuleBinding} from './module-abi';
+import {createGeneratedModule, initializeModuleTree} from './module-binding';
+
+type GeneratedModuleFixture = Pick<
   JSModule,
-  JSModuleBinding,
-} from './module-abi';
+  | 'abi'
+  | 'layout'
+  | 'manifest'
+  | 'requests'
+  | 'evaluateBinding'
+  | 'funcs'
+  | 'main'
+>;
+
+/** Add ordinary immutable binding state to hand-authored generated code. */
+export function testModule(code: GeneratedModuleFixture): JSModule {
+  return initializeModuleTree(createGeneratedModule(code));
+}
 
 interface StaticBindingOverrides {
   readonly retention?: Partial<JSModuleBinding['retention']>;
@@ -23,7 +36,9 @@ export function staticModuleBinding(
     retention: {
       frames:
         overrides.retention?.frames ??
-        manifest.frames.map(frame => frame.locals.map(local => bars(local.depth))),
+        manifest.frames.map(frame =>
+          frame.locals.map(local => bars(local.depth)),
+        ),
       series:
         overrides.retention?.series ??
         manifest.series.map(series => bars(series.depth)),
@@ -34,8 +49,7 @@ export function staticModuleBinding(
         overrides.retention?.requests ??
         manifest.requests.map(request => bars(request.depth)),
     },
-    activeParams:
-      overrides.activeParams ?? manifest.params.map(() => true),
+    activeParams: overrides.activeParams ?? manifest.params.map(() => true),
     outputs: overrides.outputs ?? manifest.outputs.map(() => []),
     requests: overrides.requests ?? [],
   };
@@ -51,6 +65,8 @@ function bars(depth: DepthSpec): number {
         ? depth.bars
         : 0;
     case 'bound':
-      throw new Error('hand-authored bound depth requires a retention override');
+      throw new Error(
+        'hand-authored bound depth requires a retention override',
+      );
   }
 }

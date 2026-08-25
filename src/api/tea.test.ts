@@ -10,7 +10,7 @@ import {DataStream} from './stream';
 import {TeaCompileError, tea} from './tea';
 
 describe('tea', () => {
-  test('compiles an indented template through the ordinary Program frontend', () => {
+  test('compiles an indented template into a generated JSModule', () => {
     const fastWindow = 14;
     const node = tea`
       //@version=1
@@ -27,12 +27,11 @@ describe('tea', () => {
       plotshape(crossed, "Crossover")
     `;
 
-    expect(node.module.program.version).toBe(1);
-    expect(node.module.program.params.map(param => param.name)).toEqual([
+    expect(node.module.manifest.params.map(param => param.name)).toEqual([
       'fast_window',
       'slow_window',
     ]);
-    expect(node.module.program.outputs.map(output => output.effect)).toEqual([
+    expect(node.module.manifest.outputs.map(output => output.effect)).toEqual([
       'indicator',
       'plot',
       'plot',
@@ -64,7 +63,7 @@ describe('tea', () => {
     );
   });
 
-  test('owns a BoundModule from creation and keeps binding steps immutable', () => {
+  test('owns a JSModule from creation and keeps binding steps immutable', () => {
     const node = tea`
       length = input.int(14)
       plot(close + length)
@@ -145,6 +144,20 @@ describe('tea', () => {
       "no bind-known root series or static request child matches 'X'",
     );
     expect(node.bind({Y: source}).ready()).toBe(true);
+  });
+
+  test('propagates compilation-global parameters into request child binding', () => {
+    const node = tea`
+      length = input.int(3)
+      requested = request.security("X", "D", close[length])
+      plot(requested)
+    `
+      .bind({length: 6})
+      .bind({X: numericSource(1)});
+
+    expect(node.ready()).toBe(true);
+    expect(node.module.requests[0]?.parameterValues).toEqual([6]);
+    expect(node.module.requests[0]?.binding?.retention.series).toEqual([6]);
   });
 
   test('discovers nested request children after their parents bind', () => {

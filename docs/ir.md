@@ -439,11 +439,11 @@ gives these values privileged nodes or ABI slots. Its fail-closed audit
 describes only which generic Program constructs its current target profile can
 represent.
 
-Concrete bindings are not Program facts. After codegen, the CPU runtime may
+Concrete bindings are not Program properties. After codegen, the CPU runtime may
 bind one ordinary JS module repeatedly to isolated providers/parameters and
 capture committed emissions through an `OutputSink`. The bind-independent GPU
 artifact carries both WGSL and the ordinary generated JS binding module. The
-GPU runtime calls that module's pure `bind(values) -> JSModuleBinding` function
+GPU runtime calls that module's pure `evaluateBinding(values) -> JSModuleBinding` function
 for each ordered `BindInputs` element, sizes its physical history payload,
 packs buffers, constructs dispatch/readback metadata, and submits the shared
 shader to an injected device. It does not revisit the Program or evaluate a

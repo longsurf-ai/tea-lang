@@ -14,7 +14,7 @@ import {
 } from './abi';
 import {bindFixedHistory as bindRuntime} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
-import {staticModuleBinding} from './testing';
+import {staticModuleBinding, testModule} from './testing';
 import type {ValueLayout} from './value-layout';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
@@ -85,7 +85,7 @@ function param(
   };
 }
 
-const EMPTY_VALUES_MODULE: JSModule = {
+const EMPTY_VALUES_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: TEST_LAYOUTS,
   manifest: {
@@ -129,7 +129,7 @@ const EMPTY_VALUES_MODULE: JSModule = {
     requests: [],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -138,10 +138,10 @@ const EMPTY_VALUES_MODULE: JSModule = {
     rt.emit(0, 1, rt.read(fr, 1, 0));
     rt.emit(0, 2, rt.read(fr, 2, 0));
   },
-};
+});
 
 function paramModule(spec: ParamSpec): JSModule {
-  return {
+  return testModule({
     abi: RUNTIME_ABI_VERSION,
     layout: TEST_LAYOUTS,
     manifest: {
@@ -154,12 +154,12 @@ function paramModule(spec: ParamSpec): JSModule {
       requests: [],
     },
     requests: [],
-    bind() {
+    evaluateBinding() {
       return staticModuleBinding(this);
     },
     funcs: {},
     main() {},
-  };
+  });
 }
 
 describe('runtime value contract', () => {
@@ -178,14 +178,14 @@ describe('runtime value contract', () => {
   });
 
   test('invalid history offsets return each slot class empty value', async () => {
-    const module: JSModule = {
+    const module: JSModule = testModule({
       ...EMPTY_VALUES_MODULE,
       main(rt, fr) {
         rt.emit(0, 0, rt.read(fr, 0, -1));
         rt.emit(0, 1, rt.read(fr, 1, NaN));
         rt.emit(0, 2, rt.read(fr, 2, 0.5));
       },
-    };
+    });
     const sink = new Sink();
     const bound = await bind(module, {
       params: {},
@@ -241,7 +241,7 @@ describe('runtime value contract', () => {
   });
 
   test('provider NaN is numeric na, but provider infinity is fatal', async () => {
-    const module: JSModule = {
+    const module: JSModule = testModule({
       ...EMPTY_VALUES_MODULE,
       manifest: {
         ...EMPTY_VALUES_MODULE.manifest,
@@ -251,7 +251,7 @@ describe('runtime value contract', () => {
       main(rt) {
         rt.emit(0, 0, rt.series(0, 0));
       },
-    };
+    });
 
     const naSink = new Sink();
     const naBound = await bind(module, {

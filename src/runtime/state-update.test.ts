@@ -14,7 +14,7 @@ import {ArenaHeap} from './heap';
 import {bindFixedHistory as bind} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {stateMachine} from './state-update';
-import {staticModuleBinding} from './testing';
+import {staticModuleBinding, testModule} from './testing';
 import {ValueLayoutRegistry, type ValueLayout} from './value-layout';
 
 const NUMBER = 0;
@@ -34,7 +34,7 @@ const LAYOUTS = [
   },
 ] as const satisfies readonly ValueLayout[];
 
-const MODULE: JSModule = {
+const MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -77,7 +77,7 @@ const MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -89,9 +89,9 @@ const MODULE: JSModule = {
     rt.emit(0, 2, rt.read(root, 0, 2));
     rt.emitEffect(0, current);
   },
-};
+});
 
-const PROVISIONAL_MODULE: JSModule = {
+const PROVISIONAL_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -128,7 +128,7 @@ const PROVISIONAL_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -144,10 +144,10 @@ const PROVISIONAL_MODULE: JSModule = {
     rt.emit(0, 2, rt.read(root, 2, 0));
     rt.emitEffect(0, close);
   },
-};
+});
 
 function structModule(shouldFail: () => boolean): JSModule {
-  return {
+  return testModule({
     abi: RUNTIME_ABI_VERSION,
     layout: LAYOUTS,
     manifest: {
@@ -173,7 +173,7 @@ function structModule(shouldFail: () => boolean): JSModule {
       ],
     },
     requests: [],
-    bind() {
+    evaluateBinding() {
       return staticModuleBinding(this);
     },
     funcs: {},
@@ -187,10 +187,10 @@ function structModule(shouldFail: () => boolean): JSModule {
       if (shouldFail()) throw new Error('struct update failed');
       rt.emit(0, 0, value);
     },
-  };
+  });
 }
 
-const COLLECTION_MODULE: JSModule = {
+const COLLECTION_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -223,7 +223,7 @@ const COLLECTION_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -268,7 +268,7 @@ const COLLECTION_MODULE: JSModule = {
     rt.emit(0, 2, rt.callCollection('map.size', NUMBER, [map]));
     rt.emit(0, 3, rt.collectionEntries(array).length);
   },
-};
+});
 
 class ArraySeries {
   constructor(readonly values: number[]) {}

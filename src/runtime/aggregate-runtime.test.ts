@@ -15,7 +15,7 @@ import {
 } from './abi';
 import {bindFixedHistory as bindRuntime} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
-import {staticModuleBinding} from './testing';
+import {staticModuleBinding, testModule} from './testing';
 import type {ValueLayout} from './value-layout';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
@@ -95,7 +95,7 @@ const OUTPUT = {
 } as const;
 
 function arrayStateModule(): JSModule {
-  return {
+  return testModule({
     abi: RUNTIME_ABI_VERSION,
     layout: LAYOUTS,
     manifest: {
@@ -124,7 +124,7 @@ function arrayStateModule(): JSModule {
       ],
     },
     requests: [],
-    bind() {
+    evaluateBinding() {
       return staticModuleBinding(this);
     },
     funcs: {},
@@ -150,14 +150,14 @@ function arrayStateModule(): JSModule {
         );
       }
     },
-  };
+  });
 }
 
 describe('aggregate state and commit integration', () => {
   test('a first-row var struct keeps its reference while its body accumulates across ticks', async () => {
     const sink = new Sink();
     let fail = false;
-    const module: JSModule = {
+    const module = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -177,7 +177,7 @@ describe('aggregate state and commit integration', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
@@ -191,7 +191,7 @@ describe('aggregate state and commit integration', () => {
         if (fail) throw new Error('tick failed');
         rt.emit(0, 0, next);
       },
-    };
+    });
     const bound = await bind(module, {
       params: {},
       provider: provider(context(1)),
@@ -263,7 +263,7 @@ describe('aggregate state and commit integration', () => {
     const sink = new Sink();
     let fail = false;
     const base = arrayStateModule();
-    const module: JSModule = {
+    const module = testModule({
       ...base,
       main(rt, fr) {
         base.main(rt, fr);
@@ -271,7 +271,7 @@ describe('aggregate state and commit integration', () => {
           throw new Error('transaction failed');
         }
       },
-    };
+    });
     const bound = await bind(module, {
       params: {},
       provider: provider(),
@@ -295,7 +295,7 @@ describe('aggregate state and commit integration', () => {
     const sink = new Sink();
     let fail = true;
     const base = arrayStateModule();
-    const module: JSModule = {
+    const module = testModule({
       ...base,
       main(rt, fr) {
         base.main(rt, fr);
@@ -303,7 +303,7 @@ describe('aggregate state and commit integration', () => {
           throw new Error('first transaction failed');
         }
       },
-    };
+    });
     const bound = await bind(module, {
       params: {},
       provider: provider(),
@@ -325,7 +325,7 @@ describe('aggregate state and commit integration', () => {
       code: string;
       rootIdentityPreserved: boolean;
     }[] = [];
-    const module: JSModule = {
+    const module = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -359,7 +359,7 @@ describe('aggregate state and commit integration', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
@@ -389,7 +389,7 @@ describe('aggregate state and commit integration', () => {
         rt.emit(0, 0, rt.callCollection('array.size', INT, [current]));
         rt.emit(0, 1, rt.callCollection('array.get', INT, [current, 0]));
       },
-    };
+    });
     const bound = await bind(module, {
       params: {},
       provider: provider(context(2)),
@@ -435,7 +435,7 @@ describe('aggregate state and commit integration', () => {
 
   test('struct history stores live references rather than body snapshots', async () => {
     const sink = new Sink();
-    const module: JSModule = {
+    const module = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -473,7 +473,7 @@ describe('aggregate state and commit integration', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
@@ -503,7 +503,7 @@ describe('aggregate state and commit integration', () => {
           rt.emit(0, 1, NaN);
         }
       },
-    };
+    });
     const bound = await bind(module, {
       params: {},
       provider: provider(context(2)),
@@ -540,7 +540,7 @@ describe('request Heap isolation', () => {
         });
       },
     };
-    const leaf: JSModule = {
+    const leaf = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -560,15 +560,15 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
       main(rt, fr) {
         rt.write(fr, 0, rt.callCollection('array.from', ARRAY, [41]));
       },
-    };
-    const middle: JSModule = {
+    });
+    const middle = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -598,7 +598,7 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [leaf],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this, {
           requests: [
             {
@@ -616,8 +616,8 @@ describe('request Heap isolation', () => {
       main(rt, fr) {
         rt.write(fr, 0, rt.request(0, 0));
       },
-    };
-    const root: JSModule = {
+    });
+    const root = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -640,7 +640,7 @@ describe('request Heap isolation', () => {
         frames: [{locals: [], subs: []}],
       },
       requests: [middle],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this, {
           requests: [
             {
@@ -662,7 +662,7 @@ describe('request Heap isolation', () => {
           rt.callCollection('array.first', INT, [rt.request(0, 0)]),
         );
       },
-    };
+    });
     await expect(
       bind(root, {
         params: {},
@@ -683,7 +683,7 @@ describe('request Heap isolation', () => {
     let childTuple: Value = null;
     let copied = false;
     let frozen = false;
-    const child: JSModule = {
+    const child = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -707,7 +707,7 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
@@ -716,8 +716,8 @@ describe('request Heap isolation', () => {
         childTuple = value;
         rt.write(fr, 0, value);
       },
-    };
-    const root: JSModule = {
+    });
+    const root = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -746,7 +746,7 @@ describe('request Heap isolation', () => {
         frames: [{locals: [], subs: []}],
       },
       requests: [child],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this, {
           requests: [
             {
@@ -769,7 +769,7 @@ describe('request Heap isolation', () => {
         rt.emit(0, 0, result[0]);
         rt.emit(0, 1, result[1]);
       },
-    };
+    });
     const sink = new Sink();
     const bound = await bind(root, {
       params: {},
@@ -804,7 +804,7 @@ describe('request Heap isolation', () => {
       resolveContext: symbol =>
         Promise.resolve(symbol === 'X' ? childContext : primary),
     };
-    const child: JSModule = {
+    const child = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -824,15 +824,15 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
       main(rt, fr) {
         rt.write(fr, 0, rt.series(0, 0));
       },
-    };
-    const root: JSModule = {
+    });
+    const root = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -872,7 +872,7 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [child, child],
-      bind() {
+      evaluateBinding() {
         const request = {
           symbol: 'X',
           timeframe: '',
@@ -888,7 +888,7 @@ describe('request Heap isolation', () => {
         rt.emit(0, 0, rt.request(0, 0));
         rt.emit(0, 1, rt.request(1, 0));
       },
-    };
+    });
     const sink = new Sink();
     const bound = await bind(root, {
       params: {},
@@ -927,7 +927,7 @@ describe('request Heap isolation', () => {
       resolveContext: symbol =>
         Promise.resolve(symbol === 'X' ? childContext : primary),
     };
-    const child: JSModule = {
+    const child = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -948,7 +948,7 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
@@ -965,8 +965,8 @@ describe('request Heap isolation', () => {
         );
         rt.write(fr, 1, mutation.replacement);
       },
-    };
-    const root: JSModule = {
+    });
+    const root = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -1000,7 +1000,7 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [child],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this, {
           requests: [
             {
@@ -1019,7 +1019,7 @@ describe('request Heap isolation', () => {
         rt.write(fr, 0, rt.callCollection('array.from', ARRAY, [7]));
         rt.emit(0, 0, rt.request(0, 0));
       },
-    };
+    });
     const sink = new Sink();
     const bound = await bind(root, {
       params: {},
@@ -1084,7 +1084,7 @@ describe('runtime boundaries', () => {
 
   test('all reachable frame workspace is reserved before the first step', async () => {
     let requestLargeFrame = true;
-    const module: JSModule = {
+    const module = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
       manifest: {
@@ -1112,14 +1112,14 @@ describe('runtime boundaries', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
       main(rt, fr) {
         rt.frame(fr, requestLargeFrame ? 0 : 1);
       },
-    };
+    });
     const bound = await bind(module, {
       params: {},
       provider: provider(),
@@ -1144,21 +1144,26 @@ describe('runtime boundaries', () => {
     ).rejects.toThrow('FIXED_VALUE_STORAGE_LIMIT_EXCEEDED');
   });
 
-  test('a non-current ABI is rejected before bind code runs', async () => {
-    let bound = false;
+  test('a non-current ABI is rejected before binding evaluation', async () => {
+    let evaluated = false;
     const current = arrayStateModule();
-    const old = {
-      ...current,
-      abi: 2,
-      bind() {
-        bound = true;
-        return staticModuleBinding(current);
+    const oldAbi = RUNTIME_ABI_VERSION - 1;
+    const old = Object.create(current, {
+      abi: {value: oldAbi, enumerable: true},
+      evaluateBinding: {
+        enumerable: true,
+        get() {
+          evaluated = true;
+          return current.evaluateBinding;
+        },
       },
-    } as unknown as JSModule;
+    });
     await expect(
       bind(old, {params: {}, provider: provider(), sink: new Sink()}),
-    ).rejects.toThrow('unsupported module ABI 2; expected 4');
-    expect(bound).toBe(false);
+    ).rejects.toThrow(
+      `unsupported module ABI ${oldAbi}; expected ${RUNTIME_ABI_VERSION}`,
+    );
+    expect(evaluated).toBe(false);
   });
 
   test('dispose aborts a pending final row and is idempotent', async () => {

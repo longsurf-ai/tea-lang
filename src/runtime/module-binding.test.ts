@@ -1,5 +1,5 @@
 // Purpose: Generated bind evaluation may use aggregate values inside one
-// abort-only Heap transaction without leaking them into immutable facts.
+// abort-only Heap transaction without leaking them into module binding data.
 
 import {describe, expect, test} from 'vitest';
 import {generate} from '../codegen/codegen';
@@ -8,7 +8,7 @@ import {CollectionRuntime} from './collections';
 import {ExecutionError} from './errors';
 import {ArenaHeap} from './heap';
 import {loadModule} from './load';
-import {evaluateModuleBinding} from './module-binding';
+import {configureModule} from './module-binding';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {StructStorageRuntime} from './struct-storage';
 import {type ValueLayout, ValueLayoutRegistry} from './value-layout';
@@ -31,7 +31,7 @@ const LAYOUTS = [
 ] as const satisfies readonly ValueLayout[];
 
 describe('module binding aggregates', () => {
-  test('evaluates collection and struct operations into scalar bind facts', () => {
+  test('evaluates collection and struct operations into scalar binding data', () => {
     const module = bindingModule(`
       const values = rt.callCollection('array.from', ${ARRAY}, [7]);
       const holder = rt.newStruct(${HOLDER}, [values, 1]);
@@ -52,12 +52,12 @@ describe('module binding aggregates', () => {
       );
     `);
 
-    const facts = evaluateModuleBinding(module, []);
+    const configured = configureModule(module, []);
 
-    expect(facts.declaration.outputs[0].boundArgs).toEqual([
+    expect(configured.binding?.outputs[0]).toEqual([
       {name: 'price', value: 14},
     ]);
-    expect(Object.isFrozen(facts)).toBe(true);
+    expect(Object.isFrozen(configured)).toBe(true);
   });
 
   test('preserves an ordinary fallible collection error from eager bind code', () => {
@@ -68,7 +68,7 @@ describe('module binding aggregates', () => {
 
     let thrown: unknown;
     try {
-      evaluateModuleBinding(module, []);
+      configureModule(module, []);
     } catch (error) {
       thrown = error;
     }
@@ -85,7 +85,7 @@ describe('module binding aggregates', () => {
         rt.callCollection('array.from', ${ARRAY}, [7])
       );
     `);
-    const escaped = module.bind({params: []}).outputs[0]![0]!
+    const escaped = module.evaluateBinding({params: []}).outputs[0]![0]!
       .value as ArrayValue;
 
     const heap = new ArenaHeap();
@@ -114,7 +114,7 @@ describe('generated pure binding', () => {
       ),
     );
 
-    const binding = module.bind({params: [4, 25]});
+    const binding = module.evaluateBinding({params: [4, 25]});
 
     expect('init' in module).toBe(false);
     expect(binding.retention.series).toEqual([4]);
@@ -128,11 +128,12 @@ describe('generated pure binding', () => {
       generate(mustBuild('length = timeframe.multiplier\nplot(close[length])')),
     );
 
-    expect(() => module.bind({params: []})).toThrow(
+    expect(() => module.evaluateBinding({params: []})).toThrow(
       "builtin 'timeframe.multiplier' is not bind-visible",
     );
     expect(
-      module.bind({params: [], builtins: new Map([[0, 7]])}).retention.series,
+      module.evaluateBinding({params: [], builtins: new Map([[0, 7]])})
+        .retention.series,
     ).toEqual([7]);
   });
 
@@ -147,7 +148,7 @@ describe('generated pure binding', () => {
     const child = module.requests[0]!;
 
     expect(child.manifest.params).toEqual([]);
-    expect(child.bind({params: [6]}).retention.series).toEqual([6]);
+    expect(child.evaluateBinding({params: [6]}).retention.series).toEqual([6]);
   });
 });
 
@@ -174,8 +175,8 @@ function bindingModule(body: string): JSModule {
       layout: ${JSON.stringify(LAYOUTS)},
       manifest: ${JSON.stringify(manifest)},
       requests: [],
-      bind(values) {
-        return $bind(M, values, (rt, fr) => {
+      evaluateBinding(values) {
+        return $evaluate(M, values, (rt, fr) => {
           ${body}
         });
       },

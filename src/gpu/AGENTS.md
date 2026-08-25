@@ -19,4 +19,4 @@ runtime consumes it.
 - The ABI also carries the ordinary generated `JSModule` binding sidecar,
   fixed state prefix, per-local history descriptors, and per-job state
   offset/word count. GPU preparation consumes its pure `JSModuleBinding`;
-  concrete capacities remain runtime binding facts, never codegen inputs.
+  concrete capacities remain runtime binding data, never codegen inputs.

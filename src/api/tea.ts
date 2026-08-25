@@ -7,19 +7,19 @@ import {OperationalError} from '../base/operational-error';
 import {formatPos} from '../base/pos';
 import {Errors, type ErrorMsg} from '../base/print';
 import {compileToProgram} from '../compile';
+import {generate} from '../codegen/codegen';
 import type {Program} from '../ir/program';
-import {
-  bindModule,
-  type Binding,
-  type BindingAssignment,
-  type BoundModule,
-} from './binding';
-import {boundModuleFacts} from './bound-module-internal';
+import {bindModule, type BindingAssignment} from './binding';
 import type {Sink} from './sink';
 import {DataStream} from './stream';
 import {sync} from './sync';
 import {JSRuntime, type StepResult} from '../runtime/js-runtime';
-import {ValueLayoutRegistry} from '../runtime/value-layout';
+import {loadModule} from '../runtime/load';
+import {
+  requireModuleBinding,
+  withRequestModule,
+} from '../runtime/module-binding';
+import type {JSModule, ModuleInputBinding} from '../runtime/module-abi';
 
 const TEMPLATE_FILENAME = '<tea-template>';
 
@@ -38,43 +38,48 @@ export type TeaBindingInput =
   | Readonly<Record<string, DataStream<unknown>>>;
 
 /**
- * Public Tea program node. Its BoundModule owns the canonical Program while
- * the node owns the concrete Observables attached by immutable binding steps.
+ * Public Tea program node. Its JSModule tracks host-neutral binding state
+ * while the node owns concrete Observables and their composition.
  */
 export class TeaNode {
+  readonly module: JSModule;
   private readonly requestChildren: readonly TeaNode[];
 
   constructor(
-    readonly module: BoundModule,
+    module: JSModule,
     private readonly rows: Observable<
       Readonly<Record<string, unknown>>
     > | null = null,
     requestChildren?: readonly TeaNode[],
   ) {
-    const program = module.program;
     const children =
       requestChildren ??
-      program.requests.map(
-        request => new TeaNode(initialModule(request.child)),
-      );
-    if (children.length !== program.requests.length) {
+      module.requests.map(request => new TeaNode(bindEmpty(request)));
+    if (children.length !== module.requests.length) {
       throw new Error(
-        'TeaNode request children disagree with Program requests',
+        'TeaNode request children disagree with JSModule requests',
       );
     }
     this.requestChildren = Object.freeze([...children]);
+    this.module = children.reduce(
+      (parent, child, requestId) =>
+        parent.requests[requestId] === child.module
+          ? parent
+          : withRequestModule(parent, requestId, child.module),
+      module,
+    );
   }
 
   bind(input: TeaBindingInput): TeaNode {
     if (isKeyedStreams(input)) {
-      return this.bindKeyedStreams(input);
+      return this.bindStreams(input);
     }
     const prepared = prepareBinding(input, this.module.remaining());
     const next = Effect.runSync(bindModule(this.module, prepared.assignments));
     return new TeaNode(
       next,
       combineRows(this.rows, prepared.rows),
-      this.requestChildren,
+      this.childrenFor(next),
     );
   }
 
@@ -93,14 +98,11 @@ export class TeaNode {
           .join(', ')}`,
       );
     }
-    const facts = boundModuleFacts(this.module);
-    if (facts === null) {
-      throw new Error('ready BoundModule has no runtime facts');
-    }
-    if (facts.code.manifest.builtin.length !== 0) {
+    const binding = requireModuleBinding(this.module);
+    if (this.module.manifest.builtin.length !== 0) {
       throw new Error('TeaNode builtin input wiring is not implemented yet');
     }
-    if (facts.requests.length !== 0) {
+    if (binding.requests.length !== 0) {
       // A request child needs temporal merge semantics. DataStream currently
       // exposes only values, so choosing row order as time would invent a
       // contract for alignment, missing values, and provisional finality.
@@ -109,14 +111,10 @@ export class TeaNode {
       );
     }
 
-    const runtime = new JSRuntime(
-      facts.code,
-      facts.params.map(param => param.value),
-      new ValueLayoutRegistry(facts.code.layout),
-    );
+    const runtime = new JSRuntime(this.module);
     const seriesNames = this.module.bindings
       .filter(
-        (binding): binding is Extract<Binding, {kind: 'series'}> =>
+        (binding): binding is Extract<ModuleInputBinding, {kind: 'series'}> =>
           binding.kind === 'series',
       )
       .map(binding => binding.name);
@@ -146,7 +144,7 @@ export class TeaNode {
       });
   }
 
-  private bindKeyedStreams(
+  private bindStreams(
     input: Readonly<Record<string, DataStream<unknown>>>,
   ): TeaNode {
     let node: TeaNode = this;
@@ -154,7 +152,7 @@ export class TeaNode {
     const rootSeries = new Set(
       node.module.bindings
         .filter(
-          (binding): binding is Extract<Binding, {kind: 'series'}> =>
+          (binding): binding is Extract<ModuleInputBinding, {kind: 'series'}> =>
             binding.kind === 'series',
         )
         .map(binding => binding.name),
@@ -172,7 +170,7 @@ export class TeaNode {
       node = new TeaNode(
         next,
         combineRows(node.rows, prepared.rows),
-        node.requestChildren,
+        node.childrenFor(next),
       );
       for (const [name] of rootEntries) {
         if (node.requestPaths(name).length !== 0) {
@@ -209,9 +207,10 @@ export class TeaNode {
   }
 
   private requestPaths(name: string): readonly (readonly number[])[] {
-    const direct = (boundModuleFacts(this.module)?.requests ?? [])
-      .filter(request => request.symbol === name)
-      .map(request => [request.requestId] as const);
+    const direct = (this.module.binding?.requests ?? []).flatMap(
+      (request, requestId) =>
+        request.symbol === name ? [[requestId] as const] : [],
+    );
     const nested = this.requestChildren.flatMap((child, requestId) =>
       child
         .requestPaths(name)
@@ -236,7 +235,25 @@ export class TeaNode {
         : child.bindRequestPath(rest, stream);
     const children = [...this.requestChildren];
     children[requestId] = nextChild;
-    return new TeaNode(this.module, this.rows, children);
+    return new TeaNode(
+      withRequestModule(this.module, requestId, nextChild.module),
+      this.rows,
+      children,
+    );
+  }
+
+  private childrenFor(module: JSModule): readonly TeaNode[] {
+    return module.requests.map((request, requestId) => {
+      const child = this.requestChildren[requestId];
+      return child === undefined
+        ? new TeaNode(request)
+        : child.withModule(request);
+    });
+  }
+
+  private withModule(module: JSModule): TeaNode {
+    const next = bindEmpty(module);
+    return new TeaNode(next, this.rows, this.childrenFor(next));
   }
 }
 
@@ -260,11 +277,12 @@ export function tea(
   if (program === null) {
     throw new TeaCompileError(errors.flushErrors());
   }
-  return new TeaNode(initialModule(program));
+
+  return new TeaNode(bindEmpty(loadModule(generate(program))));
 }
 
-function initialModule(program: Program): BoundModule {
-  return Effect.runSync(bindModule(program, []));
+function bindEmpty(module: JSModule): JSModule {
+  return Effect.runSync(bindModule(module, []));
 }
 
 interface PreparedBinding {
@@ -274,11 +292,11 @@ interface PreparedBinding {
 
 function prepareBinding(
   input: TeaBindingInput,
-  requirements: readonly Binding[],
+  requirements: readonly ModuleInputBinding[],
 ): PreparedBinding {
   if (input instanceof DataStream) {
     const series = requirements.filter(
-      (binding): binding is Extract<Binding, {kind: 'series'}> =>
+      (binding): binding is Extract<ModuleInputBinding, {kind: 'series'}> =>
         binding.kind === 'series',
     );
     const rows = sourceRows(
@@ -289,7 +307,6 @@ function prepareBinding(
       assignments: series.map(binding => ({
         kind: 'series' as const,
         name: binding.name,
-        target: rows.pipe(map(row => row[binding.name])),
       })),
       rows,
     };
@@ -308,7 +325,6 @@ function prepareBinding(
         assignment: {
           kind: 'series' as const,
           name,
-          target: rows.pipe(map(row => row[name])),
         },
         rows,
       };
@@ -325,7 +341,7 @@ function prepareBinding(
     assignments: entries.map(([name, target]) => ({
       kind: 'parameter' as const,
       name,
-      target,
+      value: target,
     })),
     rows: null,
   };

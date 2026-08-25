@@ -6,7 +6,7 @@ import {MemorySink} from '../providers/sinks/memory-sink';
 import {type DataProvider, type ProviderContext} from './abi';
 import {bindFixedHistory} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
-import {staticModuleBinding} from './testing';
+import {staticModuleBinding, testModule} from './testing';
 import type {ValueLayout} from './value-layout';
 
 const NUMBER = 0;
@@ -43,7 +43,7 @@ function axis(span: number) {
   };
 }
 
-const MODULE: JSModule = {
+const MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -83,7 +83,7 @@ const MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -95,9 +95,9 @@ const MODULE: JSModule = {
     rt.emit(0, 2, rt.builtin(0, 0));
     rt.emitEffect(0, close);
   },
-};
+});
 
-const REQUEST_CHILD: JSModule = {
+const REQUEST_CHILD: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -117,16 +117,16 @@ const REQUEST_CHILD: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
   main(rt, root) {
     rt.write(root, 0, rt.series(0, 0));
   },
-};
+});
 
-const NESTED_REQUEST_CHILD: JSModule = {
+const NESTED_REQUEST_CHILD: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -154,7 +154,7 @@ const NESTED_REQUEST_CHILD: JSModule = {
     ],
   },
   requests: [REQUEST_CHILD],
-  bind() {
+  evaluateBinding() {
     return {
       retention: {
         frames: [[0]],
@@ -180,10 +180,10 @@ const NESTED_REQUEST_CHILD: JSModule = {
   main(rt, root) {
     rt.write(root, 0, rt.request(0, 0));
   },
-};
+});
 
 function requestModule(dynamic = false): JSModule {
-  const module: JSModule = {
+  const module: JSModule = testModule({
     ...MODULE,
     manifest: {
       ...MODULE.manifest,
@@ -212,7 +212,7 @@ function requestModule(dynamic = false): JSModule {
       ],
     },
     requests: [REQUEST_CHILD],
-    bind() {
+    evaluateBinding() {
       return {
         retention: {
           frames: [[]],
@@ -238,11 +238,11 @@ function requestModule(dynamic = false): JSModule {
       rt.emit(0, 0, rt.request(0, 0));
       rt.emit(0, 1, rt.request(0, 1));
     },
-  };
+  });
   return module;
 }
 
-const ARRAY_WORKSPACE_MODULE: JSModule = {
+const ARRAY_WORKSPACE_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -263,12 +263,12 @@ const ARRAY_WORKSPACE_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
   main() {},
-};
+});
 
 describe('bindFixedHistory', () => {
   test('binds provider rows, declares the sink, and runs fixed history', async () => {
@@ -401,7 +401,10 @@ describe('bindFixedHistory', () => {
   });
 
   test('recursively executes nested static children before the parent', async () => {
-    const module = {...requestModule(), requests: [NESTED_REQUEST_CHILD]};
+    const module = testModule({
+      ...requestModule(),
+      requests: [NESTED_REQUEST_CHILD],
+    });
     const parent: ProviderContext = {
       rows: 6,
       axis: axis(1),
@@ -470,7 +473,7 @@ describe('bindFixedHistory', () => {
 
   test('shares request-column budget while releasing completed child workspace', async () => {
     const base = requestModule();
-    const module: JSModule = {
+    const module: JSModule = testModule({
       ...base,
       manifest: {
         ...base.manifest,
@@ -487,7 +490,7 @@ describe('bindFixedHistory', () => {
         ],
       },
       requests: [REQUEST_CHILD, REQUEST_CHILD],
-      bind() {
+      evaluateBinding() {
         return {
           retention: {
             frames: [[]],
@@ -511,7 +514,7 @@ describe('bindFixedHistory', () => {
         rt.emit(0, 0, rt.request(0, 0));
         rt.emit(0, 1, rt.request(1, 0));
       },
-    };
+    });
     const parent: ProviderContext = {
       rows: 6,
       axis: axis(1),

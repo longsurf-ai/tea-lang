@@ -5,9 +5,10 @@ import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {JSRuntime, type RuntimeContext, type StepResult} from './js-runtime';
+import {configureModule} from './module-binding';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
-import {staticModuleBinding} from './testing';
-import {ValueLayoutRegistry, type ValueLayout} from './value-layout';
+import {staticModuleBinding, testModule} from './testing';
+import type {ValueLayout} from './value-layout';
 
 const NUMBER = 0;
 const ARRAY = 1;
@@ -34,7 +35,7 @@ function input(value: number, provisional: boolean): RuntimeContext {
   return {series: [value], builtins: [], requests: [], provisional};
 }
 
-const PROVISIONAL_MODULE: JSModule = {
+const PROVISIONAL_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -64,7 +65,7 @@ const PROVISIONAL_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -76,10 +77,10 @@ const PROVISIONAL_MODULE: JSModule = {
     rt.emit(0, 0, rt.read(root, 0, 0));
     rt.emit(0, 1, rt.read(root, 1, 0));
   },
-};
+});
 
 function structModule(shouldFail: () => boolean): JSModule {
-  return {
+  return testModule({
     abi: RUNTIME_ABI_VERSION,
     layout: LAYOUTS,
     manifest: {
@@ -105,7 +106,7 @@ function structModule(shouldFail: () => boolean): JSModule {
       ],
     },
     requests: [],
-    bind() {
+    evaluateBinding() {
       return staticModuleBinding(this);
     },
     funcs: {},
@@ -119,11 +120,11 @@ function structModule(shouldFail: () => boolean): JSModule {
       if (shouldFail()) throw new Error('step failed');
       rt.emit(0, 0, value);
     },
-  };
+  });
 }
 
 function structEffectModule(shouldFail: () => boolean): JSModule {
-  return {
+  return testModule({
     abi: RUNTIME_ABI_VERSION,
     layout: LAYOUTS,
     manifest: {
@@ -165,7 +166,7 @@ function structEffectModule(shouldFail: () => boolean): JSModule {
       ],
     },
     requests: [],
-    bind() {
+    evaluateBinding() {
       return staticModuleBinding(this);
     },
     funcs: {},
@@ -181,10 +182,10 @@ function structEffectModule(shouldFail: () => boolean): JSModule {
       rt.storeStructField(counter, COUNTER, 0, next + 100);
       if (shouldFail()) throw new Error('effect step failed');
     },
-  };
+  });
 }
 
-const WRONG_NOMINAL_MODULE: JSModule = {
+const WRONG_NOMINAL_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -204,7 +205,7 @@ const WRONG_NOMINAL_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -213,9 +214,9 @@ const WRONG_NOMINAL_MODULE: JSModule = {
       rt.initialize(root, 0, rt.newStruct(COUNTER, [0]));
     }
   },
-};
+});
 
-const GC_MODULE: JSModule = {
+const GC_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: LAYOUTS,
   manifest: {
@@ -245,7 +246,7 @@ const GC_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -260,7 +261,7 @@ const GC_MODULE: JSModule = {
         : rt.callCollection('array.size', NUMBER, [rt.read(root, 0, 2)]),
     );
   },
-};
+});
 
 function channels(result: StepResult) {
   return result.output[0]?.channels;
@@ -268,11 +269,7 @@ function channels(result: StepResult) {
 
 describe('JSRuntime', () => {
   test('owns State and Intermediate across provisional and final steps', () => {
-    const runtime = new JSRuntime(
-      PROVISIONAL_MODULE,
-      [],
-      new ValueLayoutRegistry(LAYOUTS),
-    );
+    const runtime = new JSRuntime(configureModule(PROVISIONAL_MODULE, []));
 
     expect(channels(Effect.runSync(runtime.step(input(10, true))))).toEqual([
       10, 1,
@@ -296,9 +293,10 @@ describe('JSRuntime', () => {
   test('does not advance owned state or Heap writes after a failed step', () => {
     let fail = false;
     const runtime = new JSRuntime(
-      structModule(() => fail),
-      [],
-      new ValueLayoutRegistry(LAYOUTS),
+      configureModule(
+        structModule(() => fail),
+        [],
+      ),
     );
 
     expect(channels(Effect.runSync(runtime.step(input(0, false))))).toEqual([
@@ -318,9 +316,10 @@ describe('JSRuntime', () => {
   test('snapshots nested struct effects at emit time and drops failed emissions', () => {
     let fail = true;
     const runtime = new JSRuntime(
-      structEffectModule(() => fail),
-      [],
-      new ValueLayoutRegistry(LAYOUTS),
+      configureModule(
+        structEffectModule(() => fail),
+        [],
+      ),
     );
 
     expect(() =>
@@ -356,11 +355,7 @@ describe('JSRuntime', () => {
   });
 
   test('rejects nominally wrong struct values at State initialization', () => {
-    const runtime = new JSRuntime(
-      WRONG_NOMINAL_MODULE,
-      [],
-      new ValueLayoutRegistry(LAYOUTS),
-    );
+    const runtime = new JSRuntime(configureModule(WRONG_NOMINAL_MODULE, []));
     expect(() =>
       Effect.runSync(
         runtime.step({
@@ -375,11 +370,7 @@ describe('JSRuntime', () => {
   });
 
   test('accepts provider NaN but fails closed when a read sees infinity', () => {
-    const runtime = new JSRuntime(
-      PROVISIONAL_MODULE,
-      [],
-      new ValueLayoutRegistry(LAYOUTS),
-    );
+    const runtime = new JSRuntime(configureModule(PROVISIONAL_MODULE, []));
     const na = Effect.runSync(runtime.step(input(NaN, false)));
     expect(Number.isNaN(na.output[0]?.channels[0] as number)).toBe(true);
     expect(() => Effect.runSync(runtime.step(input(Infinity, false)))).toThrow(
@@ -389,11 +380,7 @@ describe('JSRuntime', () => {
   });
 
   test('collects from retained owner state rather than a provisional candidate', () => {
-    const runtime = new JSRuntime(
-      GC_MODULE,
-      [],
-      new ValueLayoutRegistry(LAYOUTS),
-    );
+    const runtime = new JSRuntime(configureModule(GC_MODULE, []));
 
     Effect.runSync(runtime.step(input(1, false)));
     Effect.runSync(runtime.step(input(2, false)));

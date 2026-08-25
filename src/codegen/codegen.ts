@@ -73,9 +73,9 @@ export function generate(program: Program): string {
     `const L = ${json(emitter.layouts satisfies readonly ValueLayout[])};`,
   );
   out.push(...emitter.childDecls);
-  out.push('const M = {');
+  out.push('const M = $module({');
   out.push(...indent(rootBody));
-  out.push('};');
+  out.push('});');
   out.push('return M;');
   return `${out.join('\n')}\n`;
 }
@@ -256,7 +256,7 @@ class ModuleEmitter {
     const generator = new Generator(child, ref, this, parent);
     const body = generator.moduleBody();
     const resultSlot = generator.programFrameSlot(resultName);
-    this.childDecls.push(`const ${ref} = {`, ...indent(body), '};');
+    this.childDecls.push(`const ${ref} = $module({`, ...indent(body), '});');
     return {ref, resultSlot};
   }
 }
@@ -400,9 +400,9 @@ class Generator {
     // them so the embedded manifest stays parseable everywhere.
     out.push(`manifest: ${json(manifest)},`);
     out.push(`requests: [${children.map(c => c.ref).join(', ')}],`);
-    out.push('bind(values) {');
+    out.push('evaluateBinding(values) {');
     out.push(
-      `  return $bind(${this.moduleRef}, values, (rt, fr) => {`,
+      `  return $evaluate(${this.moduleRef}, values, (rt, fr) => {`,
       ...indent(indent(bindLines)),
       '  });',
       '},',

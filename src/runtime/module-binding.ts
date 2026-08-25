@@ -1,5 +1,5 @@
-// Purpose: Evaluate a generated module's pure binding function and project
-// its immutable facts for JavaScript and GPU execution hosts.
+// Purpose: Evaluate generated binding code and return immutable JSModule
+// snapshots consumed by JavaScript and GPU execution hosts.
 
 import {Storage} from '../ir/node';
 import {
@@ -13,6 +13,7 @@ import {
   type Frame,
   type JSModule,
   type JSModuleBinding,
+  type ModuleInputBinding,
 } from './module-abi';
 import type {BindInputs, BoundInput} from './binding';
 import {CollectionRuntime} from './collections';
@@ -29,27 +30,113 @@ import {type LayoutId, ValueLayoutRegistry} from './value-layout';
 
 const DEFAULT_MAX_COLLECTION_ELEMENTS = 100_000;
 
-export interface StaticRequestBinding {
-  readonly requestId: number;
-  readonly child: JSModule;
-  readonly symbol: string;
-  readonly timeframe: string;
-  readonly options: {
-    readonly gaps: boolean;
-    readonly lookahead: boolean;
-    readonly ignoreInvalidSymbol: boolean;
-    readonly calcBarsCount: number;
-  };
+type GeneratedModule = Pick<
+  JSModule,
+  | 'abi'
+  | 'layout'
+  | 'manifest'
+  | 'requests'
+  | 'evaluateBinding'
+  | 'funcs'
+  | 'main'
+>;
+
+/** Attach immutable host-neutral binding state to generated module code. */
+export function createGeneratedModule(code: GeneratedModule): JSModule {
+  const requests = code.requests.map(child =>
+    'bindings' in child ? child : createGeneratedModule(child),
+  );
+  return moduleSnapshot(code, initialInputBindings(code), null, null, requests);
 }
 
-/** Immutable facts consumed when constructing the step-based runtime. */
-export interface BoundModuleFacts {
-  /** Generated code whose root manifest contains no unresolved bound depth. */
-  readonly code: JSModule;
-  readonly params: readonly BoundInput[];
-  readonly retention: JSModuleBinding['retention'];
-  readonly declaration: ExecutionDeclaration;
-  readonly requests: readonly StaticRequestBinding[];
+/** Initialize one freshly loaded request tree with its global parameter state. */
+export function initializeModuleTree(module: JSModule): JSModule {
+  const parameterValues =
+    module.manifest.params.length === 0 ? Object.freeze([]) : null;
+  return installParameterValues(module, parameterValues);
+}
+
+/** Return a module snapshot with new host-neutral input bindings. */
+export function withModuleBindings(
+  module: JSModule,
+  bindings: readonly ModuleInputBinding[],
+  parameterValues: readonly Value[] | null,
+): JSModule {
+  const requests = module.requests.map(child =>
+    installParameterValues(child, parameterValues),
+  );
+  return completeModule(
+    moduleSnapshot(module, bindings, parameterValues, null, requests),
+  );
+}
+
+/** Return a parent snapshot whose request path contains the new child. */
+export function withRequestModule(
+  module: JSModule,
+  requestId: number,
+  child: JSModule,
+): JSModule {
+  if (module.requests[requestId] === undefined) {
+    throw new ModuleBindingEvaluationError(
+      `unknown generated request child ${requestId}`,
+    );
+  }
+  if (child.abi !== module.abi || child.layout !== module.layout) {
+    throw new ModuleBindingEvaluationError(
+      `request child ${requestId} does not belong to this generated module tree`,
+    );
+  }
+  const requests = [...module.requests];
+  requests[requestId] = child;
+  return moduleSnapshot(
+    module,
+    module.bindings,
+    module.parameterValues,
+    module.binding,
+    requests,
+  );
+}
+
+/** Require the completed generated configuration of one module context. */
+export function requireModuleBinding(module: JSModule): JSModuleBinding {
+  if (module.binding === null) {
+    throw new ModuleBindingEvaluationError(
+      'JavaScript module has incomplete input bindings',
+    );
+  }
+  return module.binding;
+}
+
+/** Ordered validated parameters exposed by execution hosts. */
+export function boundInputs(module: JSModule): readonly BoundInput[] {
+  const values = module.parameterValues;
+  const binding = requireModuleBinding(module);
+  if (values === null) {
+    throw new ModuleBindingEvaluationError(
+      'JavaScript module has no compilation-global parameter vector',
+    );
+  }
+  return Object.freeze(
+    module.manifest.params.map((spec, pid) =>
+      Object.freeze({
+        spec,
+        value: values[pid]!,
+        active: binding.activeParams[pid]!,
+      }),
+    ),
+  );
+}
+
+/** Host output declaration after generated binding expressions are evaluated. */
+export function moduleDeclaration(module: JSModule): ExecutionDeclaration {
+  const binding = requireModuleBinding(module);
+  return deepFreeze({
+    outputs: module.manifest.outputs.map((spec, oid) => ({
+      spec,
+      boundArgs: binding.outputs[oid]!,
+    })),
+    effects: module.manifest.effects.map(effect => effect.declaration),
+  });
 }
 
 export interface GeneratedBindingLayout {
@@ -64,25 +151,27 @@ export class ModuleBindingEvaluationError extends Error {
   }
 }
 
-/** Evaluate one already-generated module without acquiring runtime resources. */
-export function evaluateModuleBinding(
+/** Apply one complete parameter vector to a generated root module. */
+export function configureModule(
   code: JSModule,
   paramValues: readonly Value[],
-): BoundModuleFacts {
-  return evaluateBinding(code, paramValues, true);
+  bindBuiltinValues: ReadonlyMap<number, Value> = new Map(),
+): JSModule {
+  return configure(code, paramValues, true, bindBuiltinValues);
 }
 
-/** Evaluate a request child against compilation-global parent parameters. */
-export function evaluateChildModuleBinding(
+/** Apply compilation-global parameters to one generated request child. */
+export function configureChildModule(
   code: JSModule,
   paramValues: readonly Value[],
-): BoundModuleFacts {
-  return evaluateBinding(code, paramValues, false);
+  bindBuiltinValues: ReadonlyMap<number, Value> = new Map(),
+): JSModule {
+  return configure(code, paramValues, false, bindBuiltinValues);
 }
 
 /**
  * Call the generated pure binding function with one already-resolved provider
- * context and project only the layout facts required by GPU preparation.
+ * context and project only the capacities required by GPU preparation.
  */
 export function resolveGeneratedBindingLayout(
   code: JSModule,
@@ -121,7 +210,8 @@ export function resolveGeneratedBindingLayout(
   const layouts = new ValueLayoutRegistry(code.layout);
   const builtinValues = validateProviderBuiltins(code, context, layouts);
   const series = providerSeries(code, params, context);
-  const facts = evaluateBinding(code, params, true, builtinValues);
+  const configured = configure(code, params, true, builtinValues);
+  const binding = requireModuleBinding(configured);
   series.forEach((data, sid) => {
     if (data.length !== context.rows) {
       throw new BindError(
@@ -131,7 +221,7 @@ export function resolveGeneratedBindingLayout(
   });
   return Object.freeze({
     frameHistoryCapacities: Object.freeze(
-      facts.retention.frames.map((frame, fid) =>
+      binding.retention.frames.map((frame, fid) =>
         Object.freeze(
           frame.map((retention, slot) => {
             const storage = code.manifest.frames[fid]?.locals[slot]?.storage;
@@ -144,7 +234,7 @@ export function resolveGeneratedBindingLayout(
         ),
       ),
     ),
-    inputs: Object.freeze([...facts.params]),
+    inputs: boundInputs(configured),
   });
 }
 
@@ -276,29 +366,62 @@ function builtinSourceName(spec: BuiltinSpec): string {
   }
 }
 
-function evaluateBinding(
+function configure(
   code: JSModule,
   paramValues: readonly Value[],
   exactParams: boolean,
   bindBuiltinValues: ReadonlyMap<number, Value> = new Map(),
-): BoundModuleFacts {
+): JSModule {
   validateParamCount(code, paramValues, exactParams);
-  const binding = code.bind({
+  const raw = code.evaluateBinding({
     params: paramValues,
     builtins: bindBuiltinValues,
   }) as unknown;
-  return bindingFacts(code, paramValues, binding);
+  validateBindingShape(code, raw);
+  code.manifest.requests.forEach((spec, requestId) => {
+    if (spec.dynamic) {
+      throw new ModuleBindingEvaluationError(
+        `dynamic request ${requestId} is unsupported`,
+      );
+    }
+    if (code.requests[requestId] === undefined) {
+      throw new ModuleBindingEvaluationError(
+        `static request ${requestId} has no generated child module`,
+      );
+    }
+  });
+  const requests = code.requests.map(child =>
+    installParameterValues(child, paramValues),
+  );
+  const bindings = code.bindings.map(input =>
+    input.kind === 'series'
+      ? Object.freeze({...input, supplied: true})
+      : Object.freeze({
+          ...input,
+          value:
+            paramValues[
+              code.manifest.params.findIndex(spec => spec.name === input.name)
+            ],
+        }),
+  );
+  return moduleSnapshot(
+    {...code, manifest: concreteManifest(code, raw.retention)},
+    bindings,
+    paramValues,
+    raw,
+    requests,
+  );
 }
 
 /** @internal Loader injection; the operational callback has no exported type. */
-export function bindGeneratedModule(
+export function evaluateGeneratedModule(
   code: JSModule,
-  values: Parameters<JSModule['bind']>[0],
+  values: Parameters<JSModule['evaluateBinding']>[0],
   body: unknown,
 ): JSModuleBinding {
   if (typeof body !== 'function') {
     throw new ModuleBindingEvaluationError(
-      'generated module bind body is not callable',
+      'generated module binding body is not callable',
     );
   }
   const heap = new ArenaHeap();
@@ -348,60 +471,6 @@ function validateParamCount(
       `expected ${code.manifest.params.length} parameter values, got ${paramValues.length}`,
     );
   }
-}
-
-function bindingFacts(
-  code: JSModule,
-  paramValues: readonly Value[],
-  rawBinding: unknown,
-): BoundModuleFacts {
-  validateBindingShape(code, rawBinding);
-  const binding = rawBinding;
-  const retention = deepFreeze(binding.retention);
-  const requests = code.manifest.requests.map((spec, requestId) => {
-    if (spec.dynamic) {
-      throw new ModuleBindingEvaluationError(
-        `dynamic request ${requestId} is unsupported`,
-      );
-    }
-    const values = binding.requests[requestId];
-    const child = code.requests[requestId];
-    if (values === undefined || child === undefined) {
-      throw new ModuleBindingEvaluationError(
-        `static request ${requestId} has incomplete binding facts`,
-      );
-    }
-    return {
-      requestId,
-      child,
-      symbol: values.symbol,
-      timeframe: values.timeframe,
-      options: {
-        gaps: values.gaps,
-        lookahead: values.lookahead,
-        ignoreInvalidSymbol: values.ignoreInvalidSymbol,
-        calcBarsCount: values.calcBarsCount,
-      },
-    } satisfies StaticRequestBinding;
-  });
-
-  return deepFreeze({
-    code: concreteModule(code, retention),
-    params: code.manifest.params.map((spec, pid) => ({
-      spec,
-      value: paramValues[pid]!,
-      active: binding.activeParams[pid]!,
-    })),
-    retention,
-    declaration: {
-      outputs: code.manifest.outputs.map((spec, oid) => ({
-        spec,
-        boundArgs: binding.outputs[oid]!,
-      })),
-      effects: code.manifest.effects.map(effect => effect.declaration),
-    },
-    requests,
-  });
 }
 
 function validateBindingShape(
@@ -475,7 +544,7 @@ function validateBindingShape(
       request.calcBarsCount < 0
     ) {
       throw new ModuleBindingEvaluationError(
-        `request ${rid} has invalid binding facts`,
+        `request ${rid} has invalid binding data`,
       );
     }
   });
@@ -516,9 +585,87 @@ function requireRetention(bars: unknown, label: string): void {
   }
 }
 
-/** Freeze generated code before it becomes part of a BoundModule snapshot. */
-export function freezeGeneratedModule(code: JSModule): JSModule {
-  return deepFreeze(code);
+function initialInputBindings(
+  code: Pick<JSModule, 'manifest'>,
+): readonly ModuleInputBinding[] {
+  const series = new Set<string>();
+  return Object.freeze([
+    ...code.manifest.params.map(
+      (spec): ModuleInputBinding =>
+        Object.freeze({kind: 'parameter', name: spec.name}),
+    ),
+    ...code.manifest.series.flatMap((spec): readonly ModuleInputBinding[] => {
+      if (spec.id === null || series.has(spec.id)) return [];
+      series.add(spec.id);
+      return [Object.freeze({kind: 'series', name: spec.id, supplied: false})];
+    }),
+  ]);
+}
+
+function moduleSnapshot(
+  code: GeneratedModule,
+  bindings: readonly ModuleInputBinding[],
+  parameterValues: readonly Value[] | null,
+  binding: JSModuleBinding | null,
+  requests: readonly JSModule[],
+): JSModule {
+  let module!: JSModule;
+  module = {
+    ...code,
+    requests: Object.freeze([...requests]),
+    bindings: Object.freeze(bindings.map(input => Object.freeze({...input}))),
+    parameterValues:
+      parameterValues === null ? null : Object.freeze([...parameterValues]),
+    binding: binding === null ? null : deepFreeze(binding),
+    ready: () => module.binding !== null,
+    remaining: () =>
+      Object.freeze(module.bindings.filter(input => !inputSupplied(input))),
+  };
+  return deepFreeze(module);
+}
+
+function inputSupplied(input: ModuleInputBinding): boolean {
+  return input.kind === 'series'
+    ? input.supplied
+    : Object.hasOwn(input, 'value');
+}
+
+function installParameterValues(
+  module: JSModule,
+  parameterValues: readonly Value[] | null,
+): JSModule {
+  const requests = module.requests.map(child =>
+    installParameterValues(child, parameterValues),
+  );
+  const snapshot = moduleSnapshot(
+    module,
+    module.bindings,
+    parameterValues,
+    null,
+    requests,
+  );
+  return snapshot;
+}
+
+function completeModule(module: JSModule): JSModule {
+  if (
+    module.parameterValues === null ||
+    module.bindings.some(input => !inputSupplied(input))
+  ) {
+    return module;
+  }
+  const configured = configure(
+    module,
+    module.parameterValues,
+    module.manifest.params.length !== 0,
+  );
+  return moduleSnapshot(
+    configured,
+    module.bindings,
+    module.parameterValues,
+    configured.binding,
+    configured.requests,
+  );
 }
 
 const UNSET = Symbol('unset binding value');
@@ -538,7 +685,7 @@ class BindFrame implements Frame {
   }
 }
 
-// Private evaluator captured by the loader-injected `$bind` function. It is
+// Private evaluator captured by the loader-injected `$evaluate` function. It is
 // neither the generated JSModule interface nor the per-row Runtime ABI.
 class ModuleBindEvaluation {
   private readonly rootFrame: BindFrame;
@@ -613,7 +760,7 @@ class ModuleBindEvaluation {
       const child = this.code.requests[requestId];
       if (pair === null || options === null || child === undefined) {
         throw new ModuleBindingEvaluationError(
-          `static request ${requestId} has incomplete binding facts`,
+          `static request ${requestId} has incomplete binding data`,
         );
       }
       return {
@@ -927,34 +1074,31 @@ function requiredDepth(depth: number | null, label: string): number {
   return depth;
 }
 
-function concreteModule(
+function concreteManifest(
   code: JSModule,
   retention: JSModuleBinding['retention'],
-): JSModule {
+): JSModule['manifest'] {
   return deepFreeze({
-    ...code,
-    manifest: {
-      ...code.manifest,
-      frames: code.manifest.frames.map((frame, fid) => ({
-        ...frame,
-        locals: frame.locals.map((local, slot) => ({
-          ...local,
-          depth: concreteDepth(local.depth, retention.frames[fid]![slot]!),
-        })),
+    ...code.manifest,
+    frames: code.manifest.frames.map((frame, fid) => ({
+      ...frame,
+      locals: frame.locals.map((local, slot) => ({
+        ...local,
+        depth: concreteDepth(local.depth, retention.frames[fid]![slot]!),
       })),
-      series: code.manifest.series.map((series, sid) => ({
-        ...series,
-        depth: concreteDepth(series.depth, retention.series[sid]!),
-      })),
-      builtin: code.manifest.builtin.map((builtin, bid) => ({
-        ...builtin,
-        depth: concreteDepth(builtin.depth, retention.builtins[bid]!),
-      })),
-      requests: code.manifest.requests.map((request, rid) => ({
-        ...request,
-        depth: concreteDepth(request.depth, retention.requests[rid]!),
-      })),
-    },
+    })),
+    series: code.manifest.series.map((series, sid) => ({
+      ...series,
+      depth: concreteDepth(series.depth, retention.series[sid]!),
+    })),
+    builtin: code.manifest.builtin.map((builtin, bid) => ({
+      ...builtin,
+      depth: concreteDepth(builtin.depth, retention.builtins[bid]!),
+    })),
+    requests: code.manifest.requests.map((request, rid) => ({
+      ...request,
+      depth: concreteDepth(request.depth, retention.requests[rid]!),
+    })),
   });
 }
 

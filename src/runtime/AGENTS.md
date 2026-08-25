@@ -10,7 +10,7 @@ execution. Fixed-historical provider/sink orchestration is a host adapter in
 `binding.ts`, and `errors.ts` own the remaining contracts, and
 `docs/runtime.md` is the authority.
 Generic batch execution and GPU binding/execution also live here because bindings,
-datasets, buffers, devices, dispatch, and readback are runtime facts.
+datasets, buffers, devices, dispatch, and readback are runtime concerns.
 The backend-neutral `executeProgram()` host harness lives one level above in
 `src/execute.ts`; CLI reporting and Dawn process selection are host concerns.
 
@@ -26,20 +26,20 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   `JSRuntime`; it never crosses the transition result. Root discovery
   scans the runtime's retained State and Intermediate before beginning the next
   Heap transaction.
-- The fixed-historical adapter consumes evaluated binding facts and recursively
+- The fixed-historical adapter consumes completed JSModule binding data and recursively
   executes static request children through independent `JSRuntime` instances.
   TeaNode Observable request wiring is a separate, still-unimplemented host
   concern; do not confuse that API gap with runtime request support.
 - The generated execution body receives only Time-Machine operations; it never
   sees history indices, scratch storage, provider objects, or physical layout.
-  `JSModule.bind(values)` is a separate pure function returning immutable
+  `JSModule.evaluateBinding(values)` is a separate pure function returning immutable
   `JSModuleBinding` data. Generated implementations may delegate expression
   evaluation to the loader-injected private helper in `module-binding.ts`, but
   that evaluator is not an ABI interface and is never implemented by
   `JSRuntime`. Do not merge binding-only operations or a dynamic-request
   protocol into the execution-only `Runtime`.
 - `RUNTIME_ABI_VERSION` is the only JavaScript Runtime ABI version source and
-  is currently `4`; do not add compatibility branches for earlier versions.
+  is currently `5`; do not add compatibility branches for earlier versions.
 - Runtime implementation files import the narrow internal contract they use,
   never their own `abi.ts` facade. The versioned physical GPU artifact lives
   in `gpu/contract.ts`; runtime/gpu must not import codegen implementation
@@ -133,7 +133,7 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   provider state and fails loudly at the read; host numeric inputs are stricter
   and reject NaN and both infinities at bind, while int inputs additionally
   require a safe integer so the runtime representation stays exact.
-- Each `JSModule` has one pure `bind(values) -> JSModuleBinding` boundary for
+- Each `JSModule` has one pure `evaluateBinding(values) -> JSModuleBinding` boundary for
   immutable depths, parameter activity, output args, and static request
   pairs/options. The generated implementation uses a loader-private evaluator;
   its frame and local abort-only Heap transaction are discarded before the

@@ -39,7 +39,7 @@ bind-independent artifact containing the shader, the ordinary generated JS
 binding module, numeric contract, required inputs, output/effect schemas, and
 physical layouts. The artifact remains reusable when only datasets or the
 binding grid change. The JS sidecar is generated from the same Program and
-exposes the same pure `bind(values) -> JSModuleBinding` function as CPU; it is
+exposes the same pure `evaluateBinding(values) -> JSModuleBinding` function as CPU; it is
 not a second compiler or a second history-expression evaluator.
 
 ## Executable deterministic subset
@@ -140,7 +140,7 @@ string, and color parameters and request contexts remain fail-closed target
 exclusions.
 
 Before allocating device state, the runtime loads the artifact's generated JS
-binding module and calls its pure `bind(values)` function. The loader-private
+binding module and calls its pure `evaluateBinding(values)` function. The loader-private
 helper evaluates bound history expressions against each binding's concrete
 parameters and provider metadata, and `JSModuleBinding` returns capacities by
 the artifact's published frame ids and slots. The runtime validates that static

@@ -8,7 +8,7 @@ import type {EffectSpec, ParamSpec} from './schema';
 import type {LayoutId, ValueLayout} from './value-layout';
 import type {CollectionValue, ExecutionResult, Value} from './value';
 
-export const RUNTIME_ABI_VERSION = 4 as const;
+export const RUNTIME_ABI_VERSION = 5 as const;
 
 export type DepthSpec =
   | {readonly kind: 'none'}
@@ -65,6 +65,19 @@ export interface Frame {
   readonly kind: 'frame';
 }
 
+/** One host-neutral input requirement and its immutable binding state. */
+export type ModuleInputBinding =
+  | {
+      readonly kind: 'series';
+      readonly name: string;
+      readonly supplied: boolean;
+    }
+  | {
+      readonly kind: 'parameter';
+      readonly name: string;
+      readonly value?: Value;
+    };
+
 /** One self-describing generated JavaScript module in the request tree. */
 export interface JSModule {
   readonly abi: typeof RUNTIME_ABI_VERSION;
@@ -72,8 +85,18 @@ export interface JSModule {
   readonly layout: readonly ValueLayout[];
   readonly manifest: ModuleManifest;
   readonly requests: readonly JSModule[];
+  /** Host-neutral bindings for this execution context. */
+  readonly bindings: readonly ModuleInputBinding[];
+  /** Compilation-global parameter vector once every root parameter is bound. */
+  readonly parameterValues: readonly Value[] | null;
+  /** Generated execution configuration once this context can execute. */
+  readonly binding: JSModuleBinding | null;
+  /** True when this module context has complete execution configuration. */
+  ready(): boolean;
+  /** Missing inputs in this module context. Request children expose their own. */
+  remaining(): readonly ModuleInputBinding[];
   /** Evaluate this module's bind-time values without acquiring runtime state. */
-  bind(values: {
+  evaluateBinding(values: {
     /** The compilation-global parameter vector, including for request children. */
     readonly params: readonly Value[];
     /** Sparse context-constant builtins visible to provider-aware binding. */

@@ -1,5 +1,5 @@
 // Purpose: Fixed-historical host coverage retained across the runtime rewrite:
-// generated bind facts, typed builtins, and static request execution.
+// generated binding data, typed builtins, and static request execution.
 
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
@@ -21,7 +21,7 @@ import {
   type JSModule,
   type JSModuleBinding,
 } from './module-abi';
-import {staticModuleBinding} from './testing';
+import {staticModuleBinding, testModule} from './testing';
 import type {ValueLayout} from './value-layout';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
@@ -111,7 +111,7 @@ function num(v: Value): number {
 // e := na(e) ? close : 0.5 * close + 0.5 * e
 // plot(e)
 
-const EMA_MODULE: JSModule = {
+const EMA_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: TEST_LAYOUTS,
   manifest: {
@@ -135,7 +135,7 @@ const EMA_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -146,12 +146,12 @@ const EMA_MODULE: JSModule = {
     rt.write(fr, 0, Number.isNaN(e) ? close : 0.5 * close + 0.5 * e);
     rt.emit(0, 0, rt.read(fr, 0, 0));
   },
-};
+});
 
 // ---- two call sites, one func ----------------------------------------------
 // counter() => var c = 0; c := c + 1; c
 
-const COUNTER_MODULE: JSModule = {
+const COUNTER_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: TEST_LAYOUTS,
   manifest: {
@@ -185,7 +185,7 @@ const COUNTER_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {
@@ -201,12 +201,12 @@ const COUNTER_MODULE: JSModule = {
     rt.emit(0, 0, a);
     rt.emit(0, 1, b);
   },
-};
+});
 
 // ---- name history -----------------------------------------------------------
 // x = close; plot(x[2])
 
-const HISTORY_MODULE: JSModule = {
+const HISTORY_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: TEST_LAYOUTS,
   manifest: {
@@ -230,7 +230,7 @@ const HISTORY_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -238,14 +238,14 @@ const HISTORY_MODULE: JSModule = {
     rt.write(fr, 0, rt.series(0, 0));
     rt.emit(0, 0, rt.read(fr, 0, 2));
   },
-};
+});
 
 // ---- provisional protocol ---------------------------------------------------
 // var v = 0;   v := v + close     (rolls back per tick)
 // varip p = 0; p := p + 1         (accumulates across ticks)
 // x = close                       (perBar)
 
-const TICK_MODULE: JSModule = {
+const TICK_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: TEST_LAYOUTS,
   manifest: {
@@ -289,7 +289,7 @@ const TICK_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -303,13 +303,13 @@ const TICK_MODULE: JSModule = {
     rt.emit(0, 1, rt.read(fr, 1, 0));
     rt.emit(0, 2, rt.read(fr, 2, 0));
   },
-};
+});
 
 // ---- bind-time section ------------------------------------------------------
 // level = input.float(70.0, minval=0)
 // hline(level)  +  a bound-depth local read at offset len
 
-const BIND_MODULE: JSModule = {
+const BIND_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: TEST_LAYOUTS,
   manifest: {
@@ -369,7 +369,7 @@ const BIND_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind(values) {
+  evaluateBinding(values) {
     return {
       retention: {
         frames: [[num(values.params[1]!)]],
@@ -387,7 +387,7 @@ const BIND_MODULE: JSModule = {
     rt.write(fr, 0, rt.series(0, 0));
     rt.emit(1, 0, rt.read(fr, 0, num(rt.param(1))));
   },
-};
+});
 
 describe('binding', () => {
   test('pure binding data configures depth and output arguments', async () => {
@@ -522,7 +522,7 @@ describe('typed builtins', () => {
   }
 
   function builtinModule(): JSModule {
-    const module: JSModule = {
+    const module: JSModule = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: layouts,
       manifest: {
@@ -560,7 +560,7 @@ describe('typed builtins', () => {
         frames: [{locals: [], subs: []}],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
@@ -571,7 +571,7 @@ describe('typed builtins', () => {
         rt.emit(1, 2, rt.builtin(11, 1));
         rt.emit(1, 3, rt.builtin(2, 1));
       },
-    };
+    });
     return module;
   }
 
@@ -613,15 +613,15 @@ describe('typed builtins', () => {
   test('bind-time builtin reads fail before provider resolution', async () => {
     const calls: string[] = [];
     const base = builtinModule();
-    const module: JSModule = {
+    const module: JSModule = testModule({
       ...base,
-      bind(values) {
+      evaluateBinding(values) {
         if (values.builtins?.get(11) === undefined) {
           throw new Error("builtin 'syminfo.tickerid' is not bind-visible");
         }
         return staticModuleBinding(this);
       },
-    };
+    });
     await expect(
       bind(module, {
         params: {},
@@ -659,7 +659,7 @@ describe('typed builtins', () => {
 
   test('provider typed empty metadata is a value, not missing', async () => {
     const base = builtinModule();
-    const module: JSModule = {
+    const module: JSModule = testModule({
       ...base,
       manifest: {
         ...base.manifest,
@@ -674,13 +674,13 @@ describe('typed builtins', () => {
           },
         ],
       },
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       main(rt) {
         rt.emit(0, 0, rt.builtin(0, 0));
       },
-    };
+    });
     const sink = new RecordingSink();
     const bound = await bind(module, {
       params: {},
@@ -754,7 +754,7 @@ function contexts(byId: Record<string, ProviderContext>): DataProvider {
   };
 }
 
-const CHILD_MODULE: JSModule = {
+const CHILD_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: TEST_LAYOUTS,
   manifest: {
@@ -778,7 +778,7 @@ const CHILD_MODULE: JSModule = {
     ],
   },
   requests: [],
-  bind() {
+  evaluateBinding() {
     return staticModuleBinding(this);
   },
   funcs: {},
@@ -789,7 +789,7 @@ const CHILD_MODULE: JSModule = {
     // Bind-time params are compilation-global: pid 0 is the PARENT's param.
     rt.write(fr, 0, rt.series(0, 0) * num(rt.param(0)));
   },
-};
+});
 
 function requestModule(
   overrides: Partial<{
@@ -806,7 +806,7 @@ function requestModule(
     calcBarsCount: 0,
     ...overrides,
   };
-  const module: JSModule = {
+  const module: JSModule = testModule({
     abi: RUNTIME_ABI_VERSION,
     layout: TEST_LAYOUTS,
     manifest: {
@@ -852,7 +852,7 @@ function requestModule(
       frames: [{locals: [], subs: []}],
     },
     requests: [CHILD_MODULE],
-    bind(_values) {
+    evaluateBinding(_values) {
       return {
         retention: {
           frames: [[]],
@@ -876,7 +876,7 @@ function requestModule(
       rt.emit(0, 0, rt.request(0, 0));
       rt.emit(0, 1, rt.request(0, 1));
     },
-  };
+  });
   return module;
 }
 
@@ -983,32 +983,32 @@ describe('requests', () => {
           provider,
           sink: new RecordingSink(),
         }),
-      ).rejects.toThrow('request 0 has invalid binding facts');
+      ).rejects.toThrow('request 0 has invalid binding data');
       expect(calls).toEqual([]);
     }
 
     const base = requestModule({});
-    const missingOptions: JSModule = {
+    const missingOptions: JSModule = testModule({
       ...base,
-      bind(values) {
+      evaluateBinding(values) {
         return {
-          ...base.bind(values),
+          ...base.evaluateBinding(values),
           requests: [{symbol: 'X', timeframe: ''}],
         } as unknown as JSModuleBinding;
       },
-    };
+    });
     await expect(
       bind(missingOptions, {
         params: {},
         provider: contexts({'': parent(), X: child()}),
         sink: new RecordingSink(),
       }),
-    ).rejects.toThrow('request 0 has invalid binding facts');
+    ).rejects.toThrow('request 0 has invalid binding data');
 
-    const invalidBoolean: JSModule = {
+    const invalidBoolean: JSModule = testModule({
       ...base,
-      bind(values) {
-        const binding = base.bind(values);
+      evaluateBinding(values) {
+        const binding = base.evaluateBinding(values);
         return {
           ...binding,
           requests: [
@@ -1019,18 +1019,18 @@ describe('requests', () => {
           ],
         } as unknown as JSModuleBinding;
       },
-    };
+    });
     await expect(
       bind(invalidBoolean, {
         params: {},
         provider: contexts({'': parent(), X: child()}),
         sink: new RecordingSink(),
       }),
-    ).rejects.toThrow('request 0 has invalid binding facts');
+    ).rejects.toThrow('request 0 has invalid binding data');
   });
 
   test('a bounded child restarts bar_index at zero inside the retained tail', async () => {
-    const barIndexChild: JSModule = {
+    const barIndexChild: JSModule = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: TEST_LAYOUTS,
       manifest: {
@@ -1060,7 +1060,7 @@ describe('requests', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
@@ -1070,9 +1070,9 @@ describe('requests', () => {
       ) {
         rt.write(fr, 0, rt.builtin(0, 0));
       },
-    };
+    });
     const base = requestModule({calcBarsCount: 2});
-    const module: JSModule = {...base, requests: [barIndexChild]};
+    const module: JSModule = testModule({...base, requests: [barIndexChild]});
     const sink = new RecordingSink();
     const bound = await bind(module, {
       params: {},
@@ -1126,13 +1126,13 @@ describe('requests', () => {
 
   test('invalid request offsets cannot expose future or undefined values', async () => {
     const module = requestModule({});
-    const probing: JSModule = {
+    const probing: JSModule = testModule({
       ...module,
       main(rt) {
         rt.emit(0, 0, rt.request(0, -1));
         rt.emit(0, 1, rt.request(0, 100));
       },
-    };
+    });
     const sink = new RecordingSink();
     const bound = await bind(probing, {
       params: {},
@@ -1156,7 +1156,7 @@ describe('requests', () => {
   });
 
   test('nested empty request args inherit the child provider-normalized identity', async () => {
-    const innerChild: JSModule = {
+    const innerChild: JSModule = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: TEST_LAYOUTS,
       manifest: {
@@ -1180,7 +1180,7 @@ describe('requests', () => {
         ],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
@@ -1190,8 +1190,8 @@ describe('requests', () => {
       ) {
         rt.write(fr, 0, rt.series(0, 0));
       },
-    };
-    const outerChild = {
+    });
+    const outerChild = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: TEST_LAYOUTS,
       manifest: {
@@ -1223,7 +1223,7 @@ describe('requests', () => {
         ],
       },
       requests: [innerChild],
-      bind(_values: Parameters<JSModule['bind']>[0]) {
+      evaluateBinding(_values: Parameters<JSModule['evaluateBinding']>[0]) {
         return {
           retention: {
             frames: [[0]],
@@ -1252,9 +1252,9 @@ describe('requests', () => {
       ) {
         rt.write(fr, 0, rt.request(0, 0));
       },
-    } as const satisfies JSModule;
+    });
     const base = requestModule({});
-    const module: JSModule = {...base, requests: [outerChild]};
+    const module: JSModule = testModule({...base, requests: [outerChild]});
     const calls: string[] = [];
     const rootContext = context(
       {close: new ArraySeries([1])},

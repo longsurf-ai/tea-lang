@@ -11,7 +11,7 @@ import {
 } from './abi';
 import {bindFixedHistory as bind} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
-import {staticModuleBinding} from './testing';
+import {staticModuleBinding, testModule} from './testing';
 import type {ValueLayout} from './value-layout';
 
 const NUMBER = 0;
@@ -38,7 +38,7 @@ const INT_EFFECT = {
 };
 
 function effectModule(main: JSModule['main']): JSModule {
-  return {
+  return testModule({
     abi: RUNTIME_ABI_VERSION,
     layout: LAYOUTS,
     manifest: {
@@ -51,12 +51,12 @@ function effectModule(main: JSModule['main']): JSModule {
       requests: [],
     },
     requests: [],
-    bind() {
+    evaluateBinding() {
       return staticModuleBinding(this);
     },
     funcs: {},
     main,
-  };
+  });
 }
 
 describe('effect row transactions', () => {
@@ -114,7 +114,7 @@ describe('effect row transactions', () => {
 
   test('struct effects snapshot fields at emit time', async () => {
     const structLayout = 1;
-    const module: JSModule = {
+    const module = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: [
         {kind: 'number', numeric: 'int'},
@@ -147,7 +147,7 @@ describe('effect row transactions', () => {
         requests: [],
       },
       requests: [],
-      bind() {
+      evaluateBinding() {
         return staticModuleBinding(this);
       },
       funcs: {},
@@ -156,7 +156,7 @@ describe('effect row transactions', () => {
         rt.emitEffect(0, payload);
         rt.storeStructField(payload, structLayout, 0, 2);
       },
-    };
+    });
     const sink = new MemorySink();
     const execution = await bind(module, {
       params: {},
@@ -179,7 +179,7 @@ describe('effect row transactions', () => {
   });
 
   test('manifest validation rejects non-fixed effect layouts', async () => {
-    const unsafe: JSModule = {
+    const unsafe = testModule({
       ...effectModule(() => {}),
       layout: [
         {kind: 'number', numeric: 'int'},
@@ -189,7 +189,7 @@ describe('effect row transactions', () => {
         ...effectModule(() => {}).manifest,
         effects: [{...INT_EFFECT, layout: 1}],
       },
-    };
+    });
 
     await expect(
       bind(unsafe, {params: {}, provider, sink: new MemorySink(), timeNow: 0}),
@@ -199,7 +199,7 @@ describe('effect row transactions', () => {
   });
 
   test('manifest validation keeps logical declarations aligned with physical layouts', async () => {
-    const mismatched: JSModule = {
+    const mismatched = testModule({
       ...effectModule(() => {}),
       manifest: {
         ...effectModule(() => {}).manifest,
@@ -211,7 +211,7 @@ describe('effect row transactions', () => {
           },
         ],
       },
-    };
+    });
 
     await expect(
       bind(mismatched, {
@@ -230,7 +230,7 @@ describe('effect row transactions', () => {
       rt.emit(0, 0, 5);
       rt.emitEffect(0, 6);
     });
-    const module: JSModule = {
+    const module = testModule({
       ...base,
       manifest: {
         ...base.manifest,
@@ -242,7 +242,7 @@ describe('effect row transactions', () => {
           },
         ],
       },
-    };
+    });
     const publications: Parameters<OutputSink['publish']>[0][] = [];
     const sink: OutputSink = {
       declare() {},
@@ -281,7 +281,7 @@ describe('effect row transactions', () => {
       rt.emit(0, 0, current);
       if (current === 1) rt.emitEffect(0, 101);
     });
-    const module: JSModule = {
+    const module = testModule({
       ...base,
       manifest: {
         ...base.manifest,
@@ -293,7 +293,7 @@ describe('effect row transactions', () => {
           },
         ],
       },
-    };
+    });
     const publications: Parameters<OutputSink['publish']>[0][] = [];
     const sink: OutputSink = {
       capabilities: {denseRows: 'final'},
@@ -333,7 +333,7 @@ describe('effect row transactions', () => {
       rt.emit(0, 0, 17);
       rt.emitEffect(0, 101);
     });
-    const module: JSModule = {
+    const module = testModule({
       ...base,
       manifest: {
         ...base.manifest,
@@ -345,7 +345,7 @@ describe('effect row transactions', () => {
           },
         ],
       },
-    };
+    });
     const publications: Parameters<OutputSink['publish']>[0][] = [];
     const sink: OutputSink = {
       capabilities: {effects: 'none'},
