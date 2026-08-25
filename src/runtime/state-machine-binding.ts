@@ -165,7 +165,15 @@ class FixedHistoricalStateMachineBinding implements BoundProgram {
     }
     const result = Effect.runSync(
       this.runtime.step({
-        series: this.series.map(value => value.at(row)),
+        series: this.series.map((value, sid) => {
+          const current = value.at(row);
+          if (!Number.isFinite(current) && !Number.isNaN(current)) {
+            return fatal(
+              `provider series ${sid} returned a non-finite value at row ${row}`,
+            );
+          }
+          return current;
+        }),
         builtins: this.builtins.map(value => value(row)),
         requests: [],
         provisional,

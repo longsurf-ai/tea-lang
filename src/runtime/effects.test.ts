@@ -14,7 +14,8 @@ import {
   type TeaModule,
   type TimeAxis,
 } from './abi';
-import {bind} from './js-runtime';
+import {bind as bindLegacy} from './js-runtime';
+import {bindStateMachine as bind} from './state-machine-binding';
 
 const NUMBER = 0;
 const LAYOUTS = {
@@ -167,7 +168,7 @@ describe('effect row transactions', () => {
       },
     };
     const sink = new MemorySink();
-    const execution = await bind(parent, {
+    const execution = await bindLegacy(parent, {
       params: {},
       provider: contexts,
       sink,
