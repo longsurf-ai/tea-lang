@@ -10,6 +10,7 @@ import {
   type BindingAssignment,
   type BindingError,
 } from './binding';
+import {boundModuleFacts} from './bound-module-internal';
 
 describe('BoundModule', () => {
   test('is created on first bind and becomes ready across immutable steps', () => {
@@ -125,6 +126,92 @@ describe('BoundModule', () => {
 
     expect(module.ready()).toBe(true);
     expect(module.remaining()).toEqual([]);
+  });
+
+  test('resolves parameter-bound history into concrete runtime facts', () => {
+    const program = mustBuild(
+      [
+        'lookback = input.int(3)',
+        'value = close * 2',
+        'plot(value[lookback])',
+      ].join('\n'),
+    );
+
+    const module = Effect.runSync(
+      bindModule(program, [
+        {kind: 'parameter', name: 'lookback', target: 5},
+        {kind: 'series', name: 'close', target: of(1)},
+      ]),
+    );
+    const facts = boundModuleFacts(module);
+
+    expect(facts).not.toBeNull();
+    expect(facts?.retention.frames).toEqual([[5]]);
+    expect(facts?.retention.series).toEqual([0]);
+    expect(facts?.code.manifest.frames[0].locals[0].depth).toEqual({
+      kind: 'const',
+      bars: 5,
+    });
+  });
+
+  test('exposes frozen ordered params, activity, and output declarations only when ready', () => {
+    const program = mustBuild(
+      [
+        'enabled = input.bool(true)',
+        'width = input.int(2, active=enabled)',
+        'plot(close, linewidth=width)',
+      ].join('\n'),
+    );
+    const partial = Effect.runSync(
+      bindModule(program, [
+        {kind: 'parameter', name: 'enabled', target: false},
+      ]),
+    );
+
+    expect(boundModuleFacts(partial)).toBeNull();
+
+    const module = Effect.runSync(
+      bindModule(partial, [
+        {kind: 'parameter', name: 'width', target: 4},
+        {kind: 'series', name: 'close', target: of(1)},
+      ]),
+    );
+    const facts = boundModuleFacts(module);
+
+    expect(facts?.params.map(({value, active}) => ({value, active}))).toEqual([
+      {value: false, active: true},
+      {value: 4, active: false},
+    ]);
+    expect(facts?.declaration.outputs[0].boundArgs).toEqual([
+      {name: 'linewidth', value: 4},
+    ]);
+    expect(Object.isFrozen(facts)).toBe(true);
+    expect(Object.isFrozen(facts?.params)).toBe(true);
+    expect(Object.isFrozen(facts?.retention.frames)).toBe(true);
+    expect(Object.isFrozen(facts?.declaration.outputs)).toBe(true);
+  });
+
+  test('captures static request context and options without resolving data', () => {
+    const module = Effect.runSync(
+      bindModule(
+        mustBuild('r = request.security("X", "D", close)\nplot(r)'),
+        [],
+      ),
+    );
+
+    expect(boundModuleFacts(module)?.requests).toMatchObject([
+      {
+        requestId: 0,
+        symbol: 'X',
+        timeframe: 'D',
+        options: {
+          gaps: false,
+          lookahead: false,
+          ignoreInvalidSymbol: false,
+          calcBarsCount: 0,
+        },
+      },
+    ]);
   });
 });
 

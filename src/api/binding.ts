@@ -2,9 +2,24 @@ import {Effect} from 'effect';
 import {isObservable, type Observable} from 'rxjs';
 import * as z from 'zod';
 import {OperationalError} from '../base/operational-error';
+import {generate} from '../codegen/codegen';
 import type {Program} from '../ir/program';
 import {TypeKind, type Type} from '../ir/type';
 import {seriesInputsOf} from '../ir/visit';
+import {BindError} from '../runtime/errors';
+import {loadModule} from '../runtime/load';
+import type {TeaModule} from '../runtime/module-abi';
+import {resolveParamValues} from '../runtime/params';
+import {
+  boundModuleCode,
+  installBoundModuleState,
+} from './bound-module-internal';
+import {
+  ModuleBindingEvaluationError,
+  evaluateModuleBinding,
+  freezeGeneratedModule,
+  type BoundModuleFacts,
+} from './module-binding';
 
 export type Binding =
   | {
@@ -37,7 +52,8 @@ export type BindingErrorCode =
   | 'UNKNOWN_BINDING'
   | 'BINDING_KIND_MISMATCH'
   | 'DUPLICATE_BINDING'
-  | 'INVALID_BINDING';
+  | 'INVALID_BINDING'
+  | 'UNSUPPORTED_BINDING';
 
 /** An expected failure while applying host values to Program requirements. */
 export class BindingError extends OperationalError {
@@ -79,7 +95,12 @@ export function bindModule(
   return Effect.gen(function* () {
     const module = isBoundModule(target)
       ? target
-      : makeBoundModule(target, extract(target)[0]);
+      : makeBoundModule(
+          target,
+          freezeGeneratedModule(loadModule(generate(target))),
+          extract(target)[0],
+          null,
+        );
     let bindings = module.bindings;
 
     for (const assignment of supplied) {
@@ -157,7 +178,11 @@ export function bindModule(
       );
     }
 
-    return makeBoundModule(module.program, bindings);
+    const code = boundModuleCode(module);
+    const facts = bindings.every(hasTarget)
+      ? yield* bindFacts(code, bindings)
+      : null;
+    return makeBoundModule(module.program, code, bindings, facts);
   });
 }
 
@@ -165,14 +190,18 @@ class ImmutableBoundModule implements BoundModule {
   readonly program: Program;
   readonly bindings: readonly Binding[];
 
-  constructor(program: Program, bindings: readonly Binding[]) {
+  constructor(
+    program: Program,
+    bindings: readonly Binding[],
+    private readonly complete: boolean,
+  ) {
     this.program = program;
     this.bindings = Object.freeze(bindings.map(freezeBinding));
     Object.freeze(this);
   }
 
   ready(): boolean {
-    return this.bindings.every(hasTarget);
+    return this.complete;
   }
 
   remaining(): readonly Binding[] {
@@ -186,9 +215,44 @@ function isBoundModule(value: Program | BoundModule): value is BoundModule {
 
 function makeBoundModule(
   program: Program,
+  code: TeaModule,
   bindings: readonly Binding[],
+  facts: BoundModuleFacts | null,
 ): BoundModule {
-  return new ImmutableBoundModule(program, bindings);
+  const module = new ImmutableBoundModule(program, bindings, facts !== null);
+  installBoundModuleState(module, code, facts);
+  return module;
+}
+
+function bindFacts(
+  code: TeaModule,
+  bindings: readonly Binding[],
+): Effect.Effect<BoundModuleFacts, BindingError> {
+  return Effect.try({
+    try: () => {
+      const rawParams = Object.fromEntries(
+        bindings
+          .filter(
+            (binding): binding is Extract<
+              Binding,
+              {readonly kind: 'parameter'}
+            > => binding.kind === 'parameter' && hasTarget(binding),
+          )
+          .map(binding => [binding.name, binding.target]),
+      );
+      const values = resolveParamValues(code.manifest.params, rawParams);
+      return evaluateModuleBinding(code, values);
+    },
+    catch: error => {
+      if (error instanceof BindError) {
+        return new BindingError('INVALID_BINDING', error.message);
+      }
+      if (error instanceof ModuleBindingEvaluationError) {
+        return new BindingError('UNSUPPORTED_BINDING', error.message);
+      }
+      throw error;
+    },
+  });
 }
 
 function hasTarget(binding: Binding): boolean {
