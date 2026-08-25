@@ -1,4 +1,5 @@
-// Purpose: End-to-end JS proof that imported package globals use ordinary transactional var storage isolated per binding and request context.
+// Purpose: End-to-end JS proof that imported package globals use ordinary
+// transactional var storage isolated per binding.
 
 import {describe, expect, test} from 'vitest';
 import {Errors, fatal} from '../base/print';
@@ -11,10 +12,9 @@ import {
   type Registry,
 } from '../loader/loader';
 import {buildProgram} from '../noder/noder';
-import {csvContext, csvProvider} from '../providers/data/csv';
+import {csvProvider} from '../providers/data/csv';
 import {MemorySink} from '../providers/sinks/memory-sink';
 import {parse} from '../syntax/syntax';
-import type {DataProvider} from './abi';
 import {bind} from './js-runtime';
 import {loadModule} from './load';
 
@@ -125,42 +125,5 @@ describe('package runtime globals in JS', () => {
       [1, true],
       [1, false],
     ]);
-  });
-
-  test('rolls initialization back when a first-row request suspends', async () => {
-    const primary = csvContext('time,close\n1,1\n');
-    const child = csvContext('time,close\n1,1\n');
-    const provider: DataProvider = {
-      resolveContext: symbol =>
-        Promise.resolve(
-          symbol === ''
-            ? primary
-            : symbol === 'X'
-              ? child
-              : {
-                  error: 'unknownSymbol' as const,
-                  detail: `unknown '${symbol}'`,
-                },
-        ),
-    };
-    const source = [
-      'import counter',
-      'symbol = bar_index == 0 ? "X" : "Y"',
-      'plot(counter.next() + request.security(symbol, "1D", 1))',
-    ].join('\n');
-    const sink = new MemorySink();
-    const bound = await bind(moduleFor(source), {
-      params: {},
-      provider,
-      sink,
-      timeNow: 0,
-    });
-    try {
-      await bound.runAll();
-    } finally {
-      bound.dispose();
-    }
-    // The aborted transaction's counter increment vanished; retry starts at 0.
-    expect(sink.emissions.map(emission => emission.channels[0])).toEqual([2]);
   });
 });

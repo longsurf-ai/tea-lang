@@ -209,13 +209,14 @@ places to its depth pass for annotation.
   normalize to `false`, `false`, `false`, and `0`. Currency remains a
   positional but staged source parameter and does not enter the Program until
   its FX/unit model exists. One Program ↔ one context; composition is by
-  recursion, never by multi-context Programs. With input/simple context
-  arguments the context set is static; **dynamic requests** (Pine v6
-  `dynamic_requests`) are the same edge with series-qualified context exprs —
-  the child stays one static template and the runtime instantiates it per
-  distinct (symbol, timeframe) pair it encounters. Non-security request kinds
-  (financial/dividends/economic) map to edges whose child is a plain
-  series-input projection; their extra context args ride the same shape.
+  recursion, never by multi-context Programs. Context arguments must be known
+  during binding: constants, inputs, and root-safe `simple` expressions are
+  supported. The noder still classifies a series-qualified context as a
+  `RequestEdge.dynamic` fact, but fails compilation before that Program reaches
+  codegen or runtime. Pine's `dynamic_requests` declaration option therefore
+  does not enable dynamic contexts in this implementation. Non-security request
+  kinds (financial/dividends/economic) map to edges whose child is a plain
+  series-input projection; their extra context args ride the same static shape.
 - **funcs** (a projection, not a field): semantic function stencils are keyed
   only by `(FunctionObject, type + qualifier signature)`, not by a Program or
   request owner. They remain **real functions with runtime call dispatch**;

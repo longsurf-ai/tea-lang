@@ -1,5 +1,5 @@
 ---
-title: "Requests: cross-context data and the source facade"
+title: 'Requests: cross-context data and the source facade'
 sidebarTitle: Requests
 ---
 
@@ -183,9 +183,9 @@ the resolved ProviderContext, with two differences:
   values.
 
 The root binding constructs one shared execution state containing the exact
-value-layout registry, unique-context budget, fixed-value logical-byte budget,
-and the Heap-limit configuration. Every static and dynamic child receives those
-shared facts but constructs an independent Heap, `StructStorageRuntime`, and
+value-layout registry, request-context budget, fixed-value logical-byte budget,
+and the Heap-limit configuration. Every static child receives those shared
+facts but constructs an independent Heap, `StructStorageRuntime`, and
 `CollectionRuntime`. The configured Heap limits therefore apply separately to
 each execution context.
 
@@ -200,26 +200,20 @@ releases its frame/Ring reservations and its entire Heap. A `Ref` never crosses
 the request boundary. Aggregate request results remain unsupported until they
 have an explicit deep graph-copy contract.
 
-Suspension still closes and aborts the parent transaction before resolving a
-dynamic child, so retry observes exactly the pre-suspension parent state. Heap
-isolation means parent and child transactions never contend for one arena.
-
-Completed result views are keyed `(edge, symbol, timeframe)` in a per-binding
-table. Reusing an identical pair on one edge reuses that copied column and merge
-mapping; cross-edge dedup is a later optimization, not a semantic requirement.
+Each static edge owns one completed result view for its bind-time context pair.
+Cross-edge deduplication is a later optimization, not a semantic requirement.
+Heap isolation means parent and child transactions never contend for one arena.
 
 ## Merge
 
 Merge is a pure function of (parent axis, child axis, child committed
 result, MergePolicy). Its product is **a parent-row-indexed SeriesView per
 edge**, which `rt.request(rid, offset)` reads — so `result[1]` is "whatever
-the request returned on the previous parent bar", regardless of which pair
-served that bar (dynamic requests included).
+the request returned on the previous parent bar" for that edge's static child.
 
 **Merge is alignment, not repeated data movement**. The child first produces one
 parent-owned, by-value transport column; the merged view then combines that
-column with a parent→child row mapping (per row under dynamic requests, a
-`(view, childRow)` pair — still indices, never copied values). A sample-merge
+column with a parent→child row mapping. A sample-merge
 mapping is monotonic, so it compresses to O(child bars) breakpoints; a
 low-resolution child under a dense parent axis must never duplicate its value
 for every parent row. The view may avoid materializing the aligned parent-sized
@@ -247,23 +241,21 @@ bars fall inside the parent bar. It requires both the collect merge policy and
 an explicit child-to-parent aggregate graph-copy contract, so it remains a
 separate staged request feature.
 
-## Static and dynamic requests
+## Static requests
 
-Pine v6 semantics (`dynamic_requests`, default **true**):
+The supported request surface requires `symbol` and `timeframe` to be known
+during binding. Constants, input-qualified expressions, and root-safe `simple`
+expressions are accepted. A series-qualified context expression is classified
+as `RequestEdge.dynamic` by the noder and then rejected with:
 
-- Context args (`symbol`, `timeframe`) may be series; the requested
-  expression is always a static template — it cannot depend on enclosing
-  local-scope variables. The checker enforces this in the existing capture
-  rules; the IR needs nothing new (bind-evaluability of the context args
-  distinguishes the forms, published as `RequestSpec.dynamic`).
-  `dynamic_requests=false` on the indicator declaration restores the
-  static-only gate (a noder error).
-- Unique contexts are capped: default 40 per binding (Pine parity),
-  configurable via `BindInputs.maxRequestContexts`; the budget spans
-  request children. Every newly cached `(edge, symbol, timeframe)` pair counts,
-  including a pair cached as na by `ignore_invalid_symbol`; an uncached hard
-  resolution failure releases its reservation. Exceeding the cap is a
-  `RequestError`.
+```text
+dynamic requests are not supported yet; symbol and timeframe must be bind-time-known
+```
+
+This is fail-closed even when source declares `dynamic_requests=true`; the
+declaration option does not enable an execution feature that the runtime cannot
+provide. The request-context budget still spans recursively bound static child
+contexts, with one context pair per edge.
 
 Each edge also owns four bind-time options in canonical order: `gaps`,
 `lookahead`, `ignore_invalid_symbol`, and `calc_bars_count`. They remain
@@ -272,7 +264,7 @@ preserves source order among options before assembling that canonical vector.
 Omitted values are the concrete defaults `false`, `false`, `false`, and `0`.
 The generated module must call
 `rt.bindRequestOptions(rid, gaps, lookahead, ignoreInvalid, calcBars)` exactly
-once for every edge before any static or dynamic pair resolves; the manifest
+once for every edge before its static pair resolves; the manifest
 retains only merge mode, so there is no second owner for bound option values.
 
 All four options accept `simple` expressions evaluable from the root bind
@@ -285,10 +277,10 @@ the child's `bar_index` restarts at zero, history before the retained tail is
 typed empty, and parent rows before the limited child window merge to typed
 empty.
 
-Option evaluation and context-pair evaluation are deliberately two schedules:
-options run once during bind; a dynamic edge evaluates symbol and timeframe in
-source order per parent row. No ordering claim spans those phases. The captured
-expression belongs to neither schedule because it runs in the child Program.
+Option evaluation and context-pair evaluation retain separate source-order
+schedules during binding. Options execute before the static context pair. The
+captured expression belongs to neither schedule because it runs in the child
+Program.
 
 `currency` remains in the positional source signature so later optional
 arguments do not shift, but its catalog availability is staged. Supplying it
@@ -298,42 +290,25 @@ multiplying the final request result is not an acceptable approximation.
 
 Execution:
 
-- **Static edges** (const/input/simple context args): the frame-aware bind section
-  evaluates the args (like bindOutput args), awaits `resolveContext` with the
-  edge's bound range demand, runs each child over its exposed extent, and
-  prepares the merged view. No row ever suspends.
-- **Dynamic edges**: the offset-0 read evaluates the context args inline
-  and calls `rt.requestFor(rid, sym, tf)` — and that read IS the edge's
-  execution, so the noder materializes it: no alias binding, no history
-  collapse onto the place. `r = request.security(sym, …)` stays a real
-  per-row Name write and `r[1]` is a name-ring read (the parent-row
-  history of "whatever the request returned", whichever pair served each
-  row). History syntax only works on a directly readable name, so
-  `request.security(sym, …)[1]` is invalid. Bind the result first, then read
-  `r[1]`. One merged view per `(edge, pair)` is built on first encounter.
-- **Suspension**: an unresolved pair throws `ContextSuspension` out of
-  `executeRow`; the host awaits `resolvePending()` (where
-  `resolveContext`, the child's full-history run, and the merge happen)
-  and re-executes the same row. **The aborted transaction's tentative work
-  vanishes entirely**. Retry restores the exact pre-transaction varip candidate
-  (including one from an earlier successful provisional tick); an absent
-  first-row candidate reruns its declaration-site initializer. `runAll`
-  performs this loop itself; live hosts follow the same protocol per tick.
-  Determinism holds; no async ever touches row code.
+- The frame-aware bind section evaluates each edge's context args (like
+  bindOutput args), awaits `resolveContext` with the bound range demand, runs
+  the child over its exposed extent, and prepares the merged view. No supported
+  row execution discovers a context or suspends.
+- The parent reads the prepared view through `rt.request(rid, offset)`. History
+  is parent-row-indexed and follows the same direct-readable-binding rule as
+  other values.
 - Empty symbol/timeframe values inherit the current Program context's effective
   identity. At the root that may still be the host's empty/default pair; in a
   nested request it means the surrounding child, never an accidental jump back
   to the root provider default.
-- Errors: for static edges a failed context is a `BindError`; for dynamic
-  pairs it is a `RequestError` mid-run — or a per-row na (plus a warn
-  event) when the edge's `ignoreInvalidSymbol` is set. na context args
-  yield na for the row. The unique-context ceiling
-  (`BindInputs.maxRequestContexts`, default 40, shared across children)
-  is a `RequestError` when exceeded.
+- A failed context is a `BindError`, or an empty prepared view when the edge's
+  `ignoreInvalidSymbol` option is enabled. Context-budget exhaustion is also a
+  bind-time failure.
 
 ## Staged beyond this slice
 
-Collect merge and `security_lower_tf`;
+Dynamic series context arguments and their execution suspension protocol;
+collect merge and `security_lower_tf`;
 `dividends/splits/earnings/economic/financial` catalog sugar over the
 namespace conventions; currency-aware context identity and FX conversion;
 live ticks driving child contexts (child

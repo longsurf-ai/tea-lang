@@ -33,14 +33,8 @@ ghost = request.security("ZZZZZZZZ", "D", close, ignore_invalid_symbol=true)
 // covers the typed configuration error).
 cpi = request.security("FRED:CPIAUCSL", "M", ta.change(close), ignore_invalid_symbol=true)
 
-// DYNAMIC requests: the symbol is a series — a different context per row.
-// Each distinct pair resolves once, on first encounter (Pine v6
-// dynamic_requests, default on).
-rotate = request.security(bar_index % 2 == 0 ? "SPY" : "QQQ", "D", close)
-
 plot(spy, title="SPY ema10")
 plot(spyStep, title="SPY ema step")
 plot(qqqWeekly, title="QQQ weekly close")
 plot(ghost, title="ghost")
 plot(cpi, title="CPI m/m")
-plot(rotate, title="SPY/QQQ rotate")

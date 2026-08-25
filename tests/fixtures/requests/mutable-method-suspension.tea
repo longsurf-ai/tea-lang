@@ -1,4 +1,4 @@
-// Purpose: A mutable method that suspends after changing this must roll back its in-place receiver mutation and publish it only after a completed transaction.
+// Purpose: Rejected fixture — a function-local series request context must fail before runtime mutation or suspension is possible.
 
 //@version=1
 indicator("mutable method suspension", dynamic_requests = true)
@@ -10,8 +10,6 @@ struct Counter
         ignored = request.security(symbol, "D", close)
         this.value
 
-// varip retains completed same-row candidates, so a leaked suspended transaction
-// would make the retry increment twice and fail the caller-value assertion.
 varip Counter counter = Counter.new(0)
 returned = counter.advance(close > 3 ? "X" : "Y")
 

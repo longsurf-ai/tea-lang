@@ -1,5 +1,5 @@
 ---
-title: "The Tea runtime ABI (`rt`)"
+title: 'The Tea runtime ABI (`rt`)'
 sidebarTitle: Runtime
 ---
 
@@ -148,11 +148,7 @@ rt.read(fr, slot, offset); // a name's history
 rt.write(fr, slot, v);
 rt.needsInit(fr, slot); // persistent declaration has not initialized yet
 rt.initialize(fr, slot, v); // tentatively initialize at this lexical site
-rt.request(rid, offset); // the edge's merged result: static view or
-// dynamic result ring (docs/requests.md)
-rt.requestFor(rid, sym, tf); // dynamic offset-0 read; unresolved pairs
-// throw ContextSuspension (host awaits
-// resolvePending, re-executes the row)
+rt.request(rid, offset); // a static edge's merged parent-row view
 // frames
 rt.frame(fr, slot); // open the sub-frame at this call site
 rt.root(); // the program frame (globals read from funcs)
@@ -307,12 +303,12 @@ Two asymmetries between the runtime's rings and provider series:
 ## Frames and rings
 
 A frame is a call site's persistent box: one Ring per local slot, one
-sub-frame box per call-site slot, materialized lazily by `rt.frame` (frame
-trees can also appear at runtime — dynamic requests instantiate whole trees
-per context). Physical allocation does not mean the call site has executed:
+sub-frame box per call-site slot, materialized lazily by `rt.frame`. Static
+request children own independent frame trees in their own runtime contexts.
+Physical allocation does not mean the call site has executed:
 each frame carries separate committed and scratch activation state. Calling
 `rt.frame` tentatively activates its child for the current row transaction; abort
-or suspension restores the pre-transaction activation tree, while final commit
+restores the pre-transaction activation tree, while final commit
 promotes it. A successful provisional execution may retain a same-row
 activation candidate so `varip` state survives even when the final execution
 does not revisit that call site.
@@ -398,7 +394,7 @@ there are no incremental update paths, by construction:
   body persistence. The first successful ordinary-`var` initialization retains
   an initialization-only same-row candidate; later ordinary reassignments still
   roll back.
-- A throw or suspension invalidates scratch values, initialization bits,
+- A throw invalidates scratch values, initialization bits,
   tentative frame activation, and buffered emissions, aborts tentative
   allocations, and discards staged struct replacements. No mutation from the
   failed transaction remains observable.
@@ -709,11 +705,7 @@ alphavantage/tiingo with the same key treatment — as needed), live push
 feeds, and V8-isolate embedding. None of them change the surface above;
 they fill reserved entries.
 
-A dynamic-request suspension is part of the execution protocol: `executeRow`
-closes and aborts the parent transaction before child execution can begin. The host
-awaits `resolvePending()` and re-executes the SAME row. Tentative writes,
-buffered emissions, and tentative storage from the failed transaction vanish; the
-retry restores the exact pre-transaction same-row candidates, which may include
-varip state and the first successful ordinary-`var` initialization. If no prior
-candidate exists, retry reaches and reruns the declaration-site initializer.
-`runAll` runs this loop itself.
+Dynamic request contexts and an execution `Pause`/resume protocol are staged.
+The current noder rejects every request whose symbol or timeframe is not
+bind-time-known, so supported row execution never suspends to discover a child
+context. Static children resolve completely during binding before row 0.

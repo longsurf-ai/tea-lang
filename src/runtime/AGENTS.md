@@ -94,8 +94,8 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   stop-the-world, non-generational, non-moving Mark-Sweep collection. Root
   discovery scans Heap-external persistent values; `TypeInfo.trace` walks the
   Heap-internal transitive graph. Physical deallocation is private to the Heap.
-  Final sink delivery remains post-commit. Abort and suspension invalidate
-  scratch/emissions and all tentative storage.
+  Final sink delivery remains post-commit. Abort invalidates scratch/emissions
+  and all tentative storage.
 - A history offset names a cell only when it is a non-negative safe integer.
   Every other offset (including na, infinity, fractions, and negatives) returns
   the place's typed empty value and retains zero cells when reported at bind;
@@ -116,22 +116,17 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   begins; series depth demands are a provider contract, not an allocation.
   Both sections share one abort-only Heap transaction, so bind-time aggregate
   temporaries can never become committed storage.
-- bind is async, and awaits otherwise happen only at suspension points:
-  static contexts resolve before row 0; a dynamic pair's first encounter
-  throws `ContextSuspension` out of `executeRow`, the host awaits
-  `resolvePending()`, and the SAME row re-executes — the aborted transaction
-  vanishes entirely: tentative writes/storage disappear and retry restores the
-  exact pre-transaction varip candidate, including one produced by an earlier
-  successful provisional tick. Persistent initialization happens only when an
+- bind is async because every supported request context resolves before row 0;
+  the per-row hot path never awaits or discovers a child context. Persistent
+  initialization happens only when an
   emitted lexical `InitName` calls `needsInit`/`initialize`; its scratch and
-  committed bits follow the same transaction, so an absent first-row candidate
-  reruns the declaration-site initializer. Physical subframe allocation is
+  committed bits follow the same transaction. Physical subframe allocation is
   separate from scratch/committed activation: a first call activates
-  tentatively, abort/suspension restores the old activation tree, successful
+  tentatively, abort restores the old activation tree, successful
   provisional execution may retain its same-row candidate, and final commit
-  promotes it. The per-row hot path itself never awaits. Request children
+  promotes it. Request children
   recurse through the same JSRuntime class with a null sink, the parent's
-  resolved scalar params (compilation-global), the shared unique-context budget
+  resolved scalar params (compilation-global), the shared request-context budget
   (maxRequestContexts, default 40), the exact layout registry, and an independent
   Heap/struct/collection runtime. Heap limits apply independently to each
   context.
@@ -140,9 +135,8 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   parent-owned fixed-width result column; no `Ref` or host-resource handle may
   cross the child Heap boundary. The completed child then releases its Rings
   and Heap, while the merged view retains only the copied column and its lease.
-- Every cached `(edge, symbol, timeframe)` pair consumes the shared request
-  context budget, including ignored-invalid pairs cached as na; an uncached
-  hard resolution failure releases its reservation.
+- Every static edge consumes one request-context budget reservation; a hard
+  resolution failure releases it.
 - Every request edge reports its four evaluated options exactly once during
   bind. Zero `calc_bars_count` selects the full range; a positive safe integer
   selects an exact trailing child extent. Providers receive that demand, and
@@ -150,9 +144,7 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   Child row indices restart at zero, pre-window history/merge prefixes are the
   result layout's typed empty, and empty nested pair components inherit the
   current context's provider-normalized symbol/timeframe identity.
-- A dynamic edge's history lives in its result ring — "whatever the
-  request returned per parent row", whichever pair served it; merged
-  views are cached per (edge, pair) and never rebuilt.
+- A static edge's history lives in its parent-row-indexed result ring.
 - Merge is alignment, not data movement (`merge.ts` owns the mapping; the
   merged result is a parent-row-indexed view over child committed values).
   Merge reads committed child cells only — provisional child state is

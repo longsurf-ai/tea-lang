@@ -83,11 +83,10 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
 - Alias bindings: a never-reassigned plain declaration whose initializer is
   a current-bar read of a STABLE place (series, param, STATIC request —
   never a Name, whose later writes would leak through) binds the name to
-  the place, so history offsets land on the place itself. DYNAMIC request
-  reads never alias and never collapse history onto the place: the
-  offset-0 read IS the execution (rt.requestFor), so the declaration stays
-  a real per-row Name write and history rides that Name. Direct request-call
-  history is rejected with every other computed history operand.
+  the place, so history offsets land on the place itself. The noder computes
+  `RequestEdge.dynamic` from bind-evaluability, then reports every dynamic edge
+  as unsupported before a Program can cross the phase barrier. Direct
+  request-call history is rejected with every other computed history operand.
 - A request.\* call site nodes into a `RequestEdge`: symbol/timeframe/merge
   evaluate in the parent context; the captured expression nodes against the
   request resolution's child `Info` into a child Program with its own name and

@@ -226,8 +226,8 @@ return the binding layout's typed empty value.
 ## Transactions, realtime, `var`, and `varip`
 
 One execution transaction owns tentative storage allocation, struct-field
-mutation, Ring scratch, frame activation, and buffered emissions. Error or
-request suspension aborts the transaction; successful execution commits it.
+mutation, Ring scratch, frame activation, and buffered emissions. An execution
+error aborts the transaction; successful execution commits it.
 
 Successful provisional ticks commit struct-body mutations. Consequently, a
 shared reference supports natural realtime accumulation:
@@ -253,8 +253,8 @@ example also produces `1`, `2`, `3` on its first live row. Later ordinary-`var`
 reassignments still roll back between ticks; `varip` retains them.
 
 Persistent initialization occurs when execution first reaches the declaration,
-not when its frame is allocated. Failure or suspension before a successful
-initializer commit retains neither its value nor its initialized state.
+not when its frame is allocated. Failure before a successful initializer commit
+retains neither its value nor its initialized state.
 
 ## Runtime storage boundary
 

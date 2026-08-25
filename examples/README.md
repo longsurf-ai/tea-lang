@@ -135,9 +135,6 @@ provider credentials.
 tea run examples/indicator/requests-tour.tea \
   -i examples/data/demo/primary.csv
 
-tea run examples/indicator/dynamic-rotation.tea \
-  -i examples/data/demo/primary.csv
-
 tea run examples/language/struct-references.tea \
   -i examples/data/demo/primary.csv
 ```

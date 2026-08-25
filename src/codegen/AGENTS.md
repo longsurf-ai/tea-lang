@@ -68,15 +68,13 @@ WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
   by the acorn ES2015 parse gate and deny-list test in
   codegen/portability.test.ts. New emissions must stay inside the ceiling.
 - Request edges lower to one primitive: JSON metadata in
-  `manifest.requests[rid]` (incl. the `dynamic` flag — bind-evaluability
-  of the context args), the child Program recursively generated as a
+  `manifest.requests[rid]`, the child Program recursively generated as a
   sibling const (`M1`, `M2`… in dependency order — code cannot live in the
   JSON manifest) referenced from `requests: [...]`. Static edges declare
   their pair via `rt.bindRequest` in the frame-aware bind section and read via
-  `rt.request(rid, offset)`; a dynamic edge's offset-null read evaluates
-  its context args inline and calls `rt.requestFor(rid, sym, tf)` — the
-  noder guarantees dynamic reads are offset-null only (history rides
-  materialized Names). Every edge evaluates its four options once in its
+  `rt.request(rid, offset)`. The noder rejects every dynamic edge before a
+  valid Program reaches codegen, so generated request manifests are static.
+  Every edge evaluates its four options once in its
   Program-owned source order and calls `rt.bindRequestOptions`; option values
   never duplicate into JSON metadata. Every module's code names its own funcs table via
   its const (`ctx.moduleRef`), never `M`.
