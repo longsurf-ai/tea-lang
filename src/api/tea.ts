@@ -54,14 +54,28 @@ export type TeaBindingInput =
  * Observables attached by successive immutable binding steps.
  */
 export class TeaNode {
+  private readonly requestChildren: readonly TeaNode[];
+
   constructor(
     readonly program: Program,
     private readonly bound: BoundModule | null = null,
     private readonly rows: Observable<Readonly<Record<string, unknown>>> | null =
       null,
-  ) {}
+    requestChildren?: readonly TeaNode[],
+  ) {
+    const children =
+      requestChildren ??
+      program.requests.map(request => new TeaNode(request.child));
+    if (children.length !== program.requests.length) {
+      throw new Error('TeaNode request children disagree with Program requests');
+    }
+    this.requestChildren = Object.freeze([...children]);
+  }
 
   bind(input: TeaBindingInput): TeaNode {
+    if (isKeyedStreams(input)) {
+      return this.bindKeyedStreams(input);
+    }
     const requirements = this.bound?.remaining() ?? extract(this.program)[0];
     const prepared = prepareBinding(input, requirements);
     const next = Effect.runSync(
@@ -71,11 +85,15 @@ export class TeaNode {
       this.program,
       next,
       combineRows(this.rows, prepared.rows),
+      this.requestChildren,
     );
   }
 
   ready(): boolean {
-    return this.bound?.ready() ?? false;
+    return (
+      (this.bound?.ready() ?? false) &&
+      this.requestChildren.every(child => child.ready())
+    );
   }
 
   /** Internal handoff used when execution wiring is installed by `to()`. */
@@ -97,7 +115,12 @@ export class TeaNode {
       throw new Error('TeaNode builtin input wiring is not implemented yet');
     }
     if (facts.requests.length !== 0) {
-      throw new Error('TeaNode static request wiring is not implemented yet');
+      // A request child needs temporal merge semantics. DataStream currently
+      // exposes only values, so choosing row order as time would invent a
+      // contract for alignment, missing values, and provisional finality.
+      throw new Error(
+        'TeaNode request execution requires time and finality semantics that DataStream does not provide',
+      );
     }
 
     const runtime = new StateMachineRuntime(
@@ -136,6 +159,117 @@ export class TeaNode {
         error: error => sink.error(error),
         complete: () => sink.complete(),
       });
+  }
+
+  private bindKeyedStreams(
+    input: Readonly<Record<string, DataStream<unknown>>>,
+  ): TeaNode {
+    let node = this.ensureBoundModule();
+    const entries = Object.entries(input);
+    const rootSeries = new Set(
+      node.bound!.bindings
+        .filter(
+          (binding): binding is Extract<Binding, {kind: 'series'}> =>
+            binding.kind === 'series',
+        )
+        .map(binding => binding.name),
+    );
+    const rootEntries = entries.filter(([name]) => rootSeries.has(name));
+
+    if (rootEntries.length !== 0) {
+      const prepared = prepareBinding(
+        Object.fromEntries(rootEntries),
+        node.bound!.bindings,
+      );
+      const next = Effect.runSync(
+        bindModule(node.bound!, prepared.assignments),
+      );
+      node = new TeaNode(
+        node.program,
+        next,
+        combineRows(node.rows, prepared.rows),
+        node.requestChildren,
+      );
+      for (const [name] of rootEntries) {
+        if (node.requestPaths(name).length !== 0) {
+          throw new Error(
+            `binding key '${name}' is both a root series and a static request context`,
+          );
+        }
+      }
+    }
+
+    const pending = new Map(
+      entries.filter(([name]) => !rootSeries.has(name)),
+    );
+    let progressed = true;
+    while (pending.size !== 0 && progressed) {
+      progressed = false;
+      for (const [name, stream] of pending) {
+        const paths = node.requestPaths(name);
+        if (paths.length === 0) continue;
+        if (paths.length > 1) {
+          throw new Error(
+            `static request binding key '${name}' is ambiguous`,
+          );
+        }
+        node = node.bindRequestPath(paths[0]!, stream);
+        pending.delete(name);
+        progressed = true;
+      }
+    }
+
+    if (pending.size !== 0) {
+      const name = pending.keys().next().value as string;
+      throw new Error(
+        `no bind-known root series or static request child matches '${name}'`,
+      );
+    }
+    return node;
+  }
+
+  private ensureBoundModule(): TeaNode {
+    if (this.bound !== null) return this;
+    return new TeaNode(
+      this.program,
+      Effect.runSync(bindModule(this.program, [])),
+      this.rows,
+      this.requestChildren,
+    );
+  }
+
+  private requestPaths(name: string): readonly (readonly number[])[] {
+    const direct =
+      this.bound === null
+        ? []
+        : (boundModuleFacts(this.bound)?.requests ?? [])
+            .filter(request => request.symbol === name)
+            .map(request => [request.requestId] as const);
+    const nested = this.requestChildren.flatMap((child, requestId) =>
+      child
+        .requestPaths(name)
+        .map(path => [requestId, ...path] as readonly number[]),
+    );
+    return [...direct, ...nested];
+  }
+
+  private bindRequestPath(
+    path: readonly number[],
+    stream: DataStream<unknown>,
+  ): TeaNode {
+    const [requestId, ...rest] = path;
+    const child =
+      requestId === undefined ? undefined : this.requestChildren[requestId];
+    if (child === undefined) {
+      throw new Error('invalid TeaNode request path');
+    }
+    const nextChild =
+      rest.length === 0
+        ? child.bind(stream)
+        : child.bindRequestPath(rest, stream);
+    const children = [...this.requestChildren];
+    children[requestId] = nextChild;
+    return new TeaNode(this.program, this.bound, this.rows, children);
   }
 }
 
@@ -219,6 +353,15 @@ function prepareBinding(
     })),
     rows: null,
   };
+}
+
+function isKeyedStreams(
+  input: TeaBindingInput,
+): input is Readonly<Record<string, DataStream<unknown>>> {
+  return (
+    !(input instanceof DataStream) &&
+    Object.values(input).every(value => value instanceof DataStream)
+  );
 }
 
 function sourceRows(

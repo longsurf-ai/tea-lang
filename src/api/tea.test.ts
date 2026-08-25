@@ -104,7 +104,66 @@ describe('tea', () => {
       sink.values.map(result => result.output[0]?.channels[0]),
     ).toEqual([21, 22]);
   });
+
+  test('owns static request children and routes a bind-known context source', () => {
+    const source = numericSource(1, 2);
+    const node = tea`
+      requested = request.security("X", "D", close)
+      plot(requested)
+    `;
+
+    const ready = node.bind({X: source});
+
+    expect(node.ready()).toBe(false);
+    expect(ready.ready()).toBe(true);
+    expect(() => ready.to(new StepSink())).toThrow(
+      'TeaNode request execution requires time and finality semantics that DataStream does not provide',
+    );
+  });
+
+  test('uses bound request parameters as keyed child identities', () => {
+    const source = numericSource(1);
+    const node = tea`
+      symbol = input.symbol("X")
+      requested = request.security(symbol, "D", close)
+      plot(requested)
+    `.bind({symbol: 'Y'});
+
+    expect(node.ready()).toBe(false);
+    expect(() => node.bind({X: source})).toThrow(
+      "no bind-known root series or static request child matches 'X'",
+    );
+    expect(node.bind({Y: source}).ready()).toBe(true);
+  });
+
+  test('discovers nested request children after their parents bind', () => {
+    const source = numericSource(1);
+    const node = tea`
+      requested = request.security(
+        "X",
+        "D",
+        request.security("Y", "W", close)
+      )
+      plot(requested)
+    `;
+
+    const withOuter = node.bind({X: source});
+    const ready = withOuter.bind({Y: source});
+
+    expect(withOuter.ready()).toBe(false);
+    expect(ready.ready()).toBe(true);
+  });
 });
+
+function numericSource(...values: readonly number[]): DataStream<{
+  close: number;
+}> {
+  return new DataStream(
+    z.object({close: z.number()}),
+    subscriber =>
+      of(...values.map(close => ({close}))).subscribe(subscriber),
+  );
+}
 
 class StepSink implements Sink<StepResult> {
   readonly values: StepResult[] = [];
