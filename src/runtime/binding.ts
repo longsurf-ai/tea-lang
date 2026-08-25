@@ -27,7 +27,8 @@ export interface BoundInput {
   readonly active: boolean;
 }
 
-export interface BoundProgram {
+/** Host control surface for one finite, provider-backed historical run. */
+export interface FixedHistoryExecution {
   readonly rows: number;
   readonly inputs: readonly BoundInput[];
   executeRow(row: number, provisional: boolean): void;

@@ -5,7 +5,11 @@ import {Effect} from 'effect';
 import {fatal} from '../base/print';
 import type {BuiltinSource} from '../ir/builtin';
 import {Storage} from '../ir/node';
-import type {BindInputs, BoundInput, BoundProgram} from './binding';
+import type {
+  BindInputs,
+  BoundInput,
+  FixedHistoryExecution,
+} from './binding';
 import {BindError, ExecutionError, RequestError} from './errors';
 import {assertMergeAxis, sampleMergeMap} from './merge';
 import {
@@ -80,7 +84,7 @@ interface RequestEnvironment {
 export async function bindFixedHistory(
   module: TeaModule,
   inputs: BindInputs,
-): Promise<BoundProgram> {
+): Promise<FixedHistoryExecution> {
   if (module.abi !== RUNTIME_ABI_VERSION) {
     throw new BindError(
       `unsupported module ABI ${String(module.abi)}; expected ${RUNTIME_ABI_VERSION}`,
@@ -181,7 +185,7 @@ export async function bindFixedHistory(
       },
     );
     inputs.sink.declare(facts.declaration);
-    return new FixedHistoricalExecution(
+    return new FixedHistoryExecutionImpl(
       runtime,
       facts.params,
       context,
@@ -199,7 +203,7 @@ export async function bindFixedHistory(
   }
 }
 
-class FixedHistoricalExecution implements BoundProgram {
+class FixedHistoryExecutionImpl implements FixedHistoryExecution {
   readonly rows: number;
   readonly inputs: readonly BoundInput[];
   private committedRows = 0;
