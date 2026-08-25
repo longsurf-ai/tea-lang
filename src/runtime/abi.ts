@@ -1,8 +1,7 @@
-// Purpose: Stable public facade for the runtime value, module, provider, output, binding, and error contracts.
+// Purpose: Stable public facade for host values, providers, outputs, binding, and errors.
 
 export * from './binding';
 export * from './errors';
-export * from './module-abi';
 export * from './output';
 export * from './provider';
 export * from './schema';

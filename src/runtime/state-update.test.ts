@@ -5,16 +5,15 @@ import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {
-  RUNTIME_ABI_VERSION,
   type AggregateLayoutManifest,
   type DataProvider,
   type OutputSink,
   type ProviderContext,
-  type JSModule,
   type Value,
 } from './abi';
 import {ArenaHeap} from './heap';
 import {bindFixedHistory as bind} from './fixed-history';
+import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {stateMachine} from './state-update';
 import {staticModuleBinding} from './testing';
 import {ValueLayoutRegistry} from './value-layout';

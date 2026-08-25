@@ -39,8 +39,8 @@ bind-independent artifact containing the shader, the ordinary generated JS
 binding module, numeric contract, required inputs, output/effect schemas, and
 physical layouts. The artifact remains reusable when only datasets or the
 binding grid change. The JS sidecar is generated from the same Program and
-contains only the existing `init`/`bind` protocol; it is not a second compiler
-or a second history-expression evaluator.
+exposes the same pure `bind(values) -> JSModuleBinding` function as CPU; it is
+not a second compiler or a second history-expression evaluator.
 
 ## Executable deterministic subset
 
@@ -140,12 +140,12 @@ string, and color parameters and request contexts remain fail-closed target
 exclusions.
 
 Before allocating device state, the runtime loads the artifact's generated JS
-binding module and runs the same provisional-frame bind phase used by
-`JSRuntime`. That phase evaluates bound history expressions against each
-binding's concrete parameters and provider extent. It reports capacities by
-the artifact's published frame ids and slots; the runtime validates that
-static topology and uses the reports only for physical allocation. It never
-reads the Program or reconstructs Tea expressions.
+binding module and calls its pure `bind(values)` function. The loader-private
+helper evaluates bound history expressions against each binding's concrete
+parameters and provider metadata, and `JSModuleBinding` returns capacities by
+the artifact's published frame ids and slots. The runtime validates that static
+topology and uses the data only for physical allocation. It never constructs a
+`JSRuntime`, reads the Program, or reconstructs Tea expressions.
 
 The host injects the `GPUDevice` and therefore owns adapter and deployment
 policy. The runtime owns shader diagnostics, physical validation and packing,

@@ -1,14 +1,13 @@
 // Purpose: Deterministic collection traces compare immutable runtime headers with independent eager-copy reference models.
 
 import {describe, expect, test} from 'vitest';
-import {
-  type CollectionMutation,
-  type CollectionMutationOperation,
-  type CollectionOperation,
-  type CollectionValue,
-  type Value,
-} from '../abi';
+import {type CollectionValue, type Value} from '../abi';
 import {ArenaHeap, type HeapTransaction, type Ref} from '../heap';
+import type {
+  CollectionMutation,
+  CollectionMutationOperation,
+  CollectionOperation,
+} from '../module-abi';
 import {StructStorageRuntime} from '../struct-storage';
 import {
   type AggregateLayoutManifest,

@@ -16,6 +16,7 @@ runtime consumes it.
 - Reference structs have no GPU lowering yet. The WGSL producer must return a
   stable staged-unsupported issue before emitting an artifact containing a
   struct value or effect schema.
-- The ABI also carries the ordinary generated JS binding module, fixed state
-  prefix, per-local history descriptors, and per-job state offset/word count.
-  Concrete capacities remain runtime binding facts, never codegen inputs.
+- The ABI also carries the ordinary generated `JSModule` binding sidecar,
+  fixed state prefix, per-local history descriptors, and per-job state
+  offset/word count. GPU preparation consumes its pure `JSModuleBinding`;
+  concrete capacities remain runtime binding facts, never codegen inputs.

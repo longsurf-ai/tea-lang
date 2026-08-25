@@ -33,7 +33,7 @@ import {
   type StructField,
   type StructType,
 } from '../ir/type';
-import type {JSModule} from '../runtime/abi';
+import type {JSModule} from '../runtime/module-abi';
 import {loadModule} from '../runtime/load';
 import {generate} from './codegen';
 

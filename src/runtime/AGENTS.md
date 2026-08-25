@@ -4,9 +4,11 @@ Tea execution after bind-independent codegen. `JSRuntime` is the sole
 JavaScript semantic runtime and owns step-based State, Intermediate, and Heap
 execution. Fixed-historical provider/sink orchestration is a host adapter in
 `fixed-history.ts`; GPU binding projection lives in
-`module-binding.ts`. `abi.ts` is the stable public facade; `value.ts`,
-`schema.ts`, `module-abi.ts`, `provider.ts`, `output.ts`, `binding.ts`, and
-`errors.ts` own the internal contracts, and `docs/runtime.md` is the authority.
+`module-binding.ts`. `abi.ts` is the stable host-facing facade; the physical
+`JSModule`, `JSModuleBinding`, and execution-only `Runtime` stay internal to
+`module-abi.ts`. `value.ts`, `schema.ts`, `provider.ts`, `output.ts`,
+`binding.ts`, and `errors.ts` own the remaining contracts, and
+`docs/runtime.md` is the authority.
 Generic batch execution and GPU binding/execution also live here because bindings,
 datasets, buffers, devices, dispatch, and readback are runtime facts.
 The backend-neutral `executeProgram()` host harness lives one level above in
@@ -30,12 +32,14 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   concern; do not confuse that API gap with runtime request support.
 - The generated execution body receives only Time-Machine operations; it never
   sees history indices, scratch storage, provider objects, or physical layout.
-  Generated `init`/`bind` callbacks are evaluated by a private module-binding
-  context with reporting operations, not by `JSRuntime` and not through the
-  public execution interface. Do not merge binding-only operations or a
-  dynamic-request protocol back into the execution surface.
+  `JSModule.bind(values)` is a separate pure function returning immutable
+  `JSModuleBinding` data. Generated implementations may delegate expression
+  evaluation to the loader-injected private helper in `module-binding.ts`, but
+  that evaluator is not an ABI interface and is never implemented by
+  `JSRuntime`. Do not merge binding-only operations or a dynamic-request
+  protocol into the execution-only `Runtime`.
 - `RUNTIME_ABI_VERSION` is the only JavaScript Runtime ABI version source and
-  is currently `2`; do not add compatibility branches for earlier versions.
+  is currently `3`; do not add compatibility branches for earlier versions.
 - Runtime implementation files import the narrow internal contract they use,
   never their own `abi.ts` facade. The versioned physical GPU artifact lives
   in `gpu/contract.ts`; runtime/gpu must not import codegen implementation
@@ -121,19 +125,21 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   Every other offset (including na, infinity, fractions, and negatives) returns
   the place's typed empty value and retains zero cells when reported at bind;
   it can never address a future row or become an array length.
-- `historyDepth` applies that rule to each synthesized bound-demand component
-  before they are maximized; an invalid component contributes zero and cannot
-  poison a valid depth from the same carrier.
+- The loader-private binding evaluator applies the history-depth rule to each
+  synthesized bound-demand component before they are maximized; an invalid
+  component contributes zero and cannot poison a valid depth from the same
+  carrier.
 - Provider series values are finite numbers or NaN. Infinity is an impossible
   provider state and fails loudly at the read; host numeric inputs are stricter
   and reject NaN and both infinities at bind, while int inputs additionally
   require a safe integer so the runtime representation stays exact.
-- Binding has two ordered generated sections: frame-free `init`, then
-  frame-aware `bind`. `module-binding.ts` evaluates them into immutable depths,
-  parameter activity, output args, and static request pairs/options. Its private
-  frame and local abort-only Heap transaction are discarded after evaluation,
-  so bind-time aggregate temporaries never enter execution state. The same
-  module owns the provider-aware layout projection consumed by GPU preparation.
+- Each `JSModule` has one pure `bind(values) -> JSModuleBinding` boundary for
+  immutable depths, parameter activity, output args, and static request
+  pairs/options. The generated implementation uses a loader-private evaluator;
+  its frame and local abort-only Heap transaction are discarded before the
+  binding data returns, so bind-time aggregate temporaries never enter
+  execution state. The same module owns the provider-aware layout projection
+  consumed by GPU preparation.
 - `bindFixedHistory()` is async because every supported request context resolves before row 0;
   the per-row hot path never awaits or discovers a child context. Persistent
   initialization happens only when an
@@ -153,13 +159,13 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   the merged view retains only the copied column and its accounting.
 - Every static edge consumes one request-context budget reservation; a hard
   resolution failure releases it.
-- Every request edge reports its four evaluated options exactly once during
-  bind. Zero `calc_bars_count` selects the full range; a positive safe integer
-  selects an exact trailing child extent. Providers receive that demand, and
-  the runtime clamps an over-returned context again at its own trust boundary.
-  Child row indices restart at zero, pre-window history/merge prefixes are the
-  result layout's typed empty, and empty nested pair components inherit the
-  current context's provider-normalized symbol/timeframe identity.
+- Every request edge returns its four evaluated options exactly once in
+  `JSModuleBinding`. Zero `calc_bars_count` selects the full range; a positive
+  safe integer selects an exact trailing child extent. Providers receive that
+  demand, and the runtime clamps an over-returned context again at its own trust
+  boundary. Child row indices restart at zero, pre-window history/merge
+  prefixes are the result layout's typed empty, and empty nested pair components
+  inherit the current context's provider-normalized symbol/timeframe identity.
 - A static edge's history lives in its parent-row-indexed result sequence.
 - Merge is alignment, not data movement (`merge.ts` owns the mapping; the
   merged result is a parent-row-indexed view over copied child results).

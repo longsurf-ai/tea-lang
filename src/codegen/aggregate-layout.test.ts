@@ -3,7 +3,7 @@
 import {describe, expect, test} from 'vitest';
 import {DepthKind, IrKind, Storage, type Name} from '../ir/node';
 import type {Program} from '../ir/program';
-import {RUNTIME_ABI_VERSION} from '../runtime/abi';
+import {RUNTIME_ABI_VERSION} from '../runtime/module-abi';
 import {
   BoolType,
   ColorType,

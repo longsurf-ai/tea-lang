@@ -43,11 +43,10 @@ import type {
   DepthSpec,
   FrameLayout,
   ModuleManifest,
-  OutputChannelTransport,
-  OutputSpec,
   RequestSpec,
   SeriesSpec,
 } from '../runtime/module-abi';
+import type {OutputChannelTransport, OutputSpec} from '../runtime/output';
 import type {ManifestValue} from '../runtime/value';
 import type {
   AggregateLayoutManifest,

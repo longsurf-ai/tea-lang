@@ -169,8 +169,9 @@ keys), with the prefix as the routing key:
 
 ## Child execution
 
-The generated module gains one nested `ModuleCode` object per RequestEdge.
-`ModuleCode.requests[rid]` owns the child's manifest + init/bind/funcs/main;
+The generated root gains one nested `JSModule` per RequestEdge.
+`JSModule.requests[rid]` is a complete child with the same
+`abi`/shared-layout/manifest/bind/funcs/main shape as its parent;
 `manifest.requests[rid]` owns only the JSON-safe edge metadata.
 The fixed-historical adapter binds a child exactly as it binds the root — same
 frames, State/Intermediate transition, recursively for nested requests — against
@@ -270,10 +271,9 @@ Each edge also owns four bind-time options in canonical order: `gaps`,
 concrete Program expressions, and their separate evaluation-order permutation
 preserves source order among options before assembling that canonical vector.
 Omitted values are the concrete defaults `false`, `false`, `false`, and `0`.
-The generated module must call
-`rt.bindRequestOptions(rid, gaps, lookahead, ignoreInvalid, calcBars)` exactly
-once for every edge before its static pair resolves; the manifest
-retains only merge mode, so there is no second owner for bound option values.
+The generated module's pure `bind(values)` function returns exactly one request
+entry containing the pair and four options for every edge. The manifest retains
+only merge mode, so there is no second owner for bound option values.
 
 All four options accept `simple` expressions evaluable from the root bind
 frame. Function/capture locals and row-varying dependencies are rejected.
@@ -298,10 +298,11 @@ multiplying the final request result is not an acceptable approximation.
 
 Execution:
 
-- The frame-aware bind section evaluates each edge's context args (like
-  bindOutput args), awaits `resolveContext` with the bound range demand, runs
-  the child over its exposed extent, and prepares the merged view. No supported
-  row execution discovers a context or suspends.
+- `JSModule.bind(values)` evaluates each edge's context args and output args and
+  returns immutable request data. The fixed-historical host then awaits
+  `resolveContext` with the bound range demand, runs the child over its exposed
+  extent, and prepares the merged view. No supported row execution discovers a
+  context or suspends.
 - The parent reads the prepared view through `rt.request(rid, offset)`. History
   is parent-row-indexed and follows the same direct-readable-binding rule as
   other values.

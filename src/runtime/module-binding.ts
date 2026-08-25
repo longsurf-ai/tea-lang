@@ -81,7 +81,7 @@ export function evaluateChildModuleBinding(
 }
 
 /**
- * Evaluate the generated bind callback against one already-resolved provider
+ * Call the generated pure binding function with one already-resolved provider
  * context and project only the layout facts required by GPU preparation.
  */
 export function resolveGeneratedBindingLayout(

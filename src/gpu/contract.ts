@@ -73,8 +73,8 @@ export interface WgslModule {
 
 export interface WgslBindingModule {
   readonly language: 'javascript-es2015-function-body';
-  // The ordinary generated JS module. GPU preparation evaluates its exact
-  // init/bind sections through the shared ModuleBindContext implementation.
+  // The ordinary generated JSModule. GPU preparation calls its pure bind
+  // function; the loader alone owns any generated-expression evaluator.
   readonly source: string;
 }
 

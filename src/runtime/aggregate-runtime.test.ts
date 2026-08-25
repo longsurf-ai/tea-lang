@@ -9,14 +9,13 @@ import {
   type BindInputs,
   type DataProvider,
   ExecutionError,
-  type JSModule,
   type OutputSink,
   type ProviderContext,
-  RUNTIME_ABI_VERSION,
   type TimeAxis,
   type Value,
 } from './abi';
 import {bindFixedHistory as bindRuntime} from './fixed-history';
+import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {staticModuleBinding} from './testing';
 
 const TEST_TIME_NOW = 1_800_000_000_000;

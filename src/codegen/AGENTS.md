@@ -1,9 +1,11 @@
 # codegen
 
 Bind-independent target lowering from the one canonical `Program`.
-`codegen.ts` + `lower.ts` emit a self-describing JS module against the Runtime
-ABI; `wgsl/` audits the supported generic Program subset and emits a complete
-WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
+`codegen.ts` + `lower.ts` emit a recursive self-describing `JSModule`; only its
+`main` and `funcs` target the execution `Runtime`, while `bind(values)` returns
+pure `JSModuleBinding` data. `wgsl/` audits the supported generic Program subset
+and emits a complete WGSL module with target layouts. `docs/runtime.md` owns
+both binding boundaries.
 
 ## Invariants
 
@@ -29,10 +31,11 @@ WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
   provider, series payload, parameter sweep, job list, result capacity, GPU
   device, or dispatch policy. CPU/GPU runtimes own those physical inputs after
   codegen.
-- A WGSL artifact embeds the ordinary generated JS module as its binding
-  sidecar. GPU runtime executes that module's exact provisional `init`/`bind`
-  phase to resolve per-binding history capacities; neither codegen nor runtime
-  may introduce a second bound-expression language or evaluator.
+- A WGSL artifact embeds the ordinary generated `JSModule` as its binding
+  sidecar. GPU preparation calls that module's pure
+  `bind(values) -> JSModuleBinding` function to resolve per-binding history
+  capacities; neither codegen nor runtime may introduce a second
+  bound-expression language or public binding ABI.
 - Only Time-Machine ops lower to rt calls; arithmetic, comparisons, math
   intrinsics, and na()/nz() expand inline via the rules tables in lower.ts.
   Backend-specific rendering decisions live only in those tables.
@@ -55,10 +58,10 @@ WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
   concatenation propagates reference na instead of spelling `null`. A raw
   non-finite Program constant is an upstream invariant violation and fails
   lowering instead of being repaired here.
-- Synthesized mixed history demands normalize each bound component through
-  `rt.historyDepth` before `math.max`; never normalize only the aggregate,
-  because one invalid/unsafe input offset must contribute zero without erasing
-  another valid demand.
+- Synthesized mixed history demands normalize each bound component through the
+  loader-private binding evaluator before `math.max`; never normalize only the
+  aggregate, because one invalid/unsafe input offset must contribute zero
+  without erasing another valid demand.
 - Generated code is deterministic and pure: no Date, no Math.random, no
   host I/O; generation of the same Program is byte-identical (locked by
   tests).
@@ -69,19 +72,20 @@ WGSL module with target layouts. `docs/runtime.md` owns both binding boundaries.
   codegen/portability.test.ts. New emissions must stay inside the ceiling.
 - Request edges lower to one primitive: JSON metadata in
   `manifest.requests[rid]`, the child Program recursively generated as a
-  sibling const (`M1`, `M2`… in dependency order — code cannot live in the
-  JSON manifest) referenced from `requests: [...]`. Static edges declare
-  their pair via `rt.bindRequest` in the frame-aware bind section and read via
-  `rt.request(rid, offset)`. The noder rejects every dynamic edge before a
-  valid Program reaches codegen, so generated request manifests are static.
-  Every edge evaluates its four options once in its
-  Program-owned source order and calls `rt.bindRequestOptions`; option values
-  never duplicate into JSON metadata. Every module's code names its own funcs table via
-  its const (`ctx.moduleRef`), never `M`.
+  full sibling `JSModule` (`M1`, `M2`… in dependency order — code cannot live
+  in the JSON manifest) referenced from `requests: [...]`. Every child carries
+  the same ABI and shared layout-registry reference as the root. The pure
+  binding function returns the static pair and four options in
+  `JSModuleBinding`; execution reads the prepared result via
+  `rt.request(rid, offset)`. The noder rejects every dynamic edge before a valid
+  Program reaches codegen, so generated request manifests are static. Every
+  edge evaluates options and pair once in Program-owned source order; bound
+  values never duplicate into JSON metadata. Every module's code names its own
+  funcs table via its const (`ctx.moduleRef`), never `M`.
 - Typed builtins are a distinct runtime carrier: dense bids and exact
   `{source, layout, depth}` specs publish in `manifest.builtin`, reads lower
-  to `rt.builtin`, and bound history reports through
-  `rt.bindBuiltinDepth`. Numeric provider series remain `rt.series` only.
+  to `rt.builtin`, and bound history becomes `JSModuleBinding.retention`.
+  Numeric provider series remain `rt.series` only.
 - Struct construction and field access lower through `newStruct`,
   `structField`, and `storeStructField` using exact manifest layouts. A field
   store validates and captures its reference before the RHS. Collection

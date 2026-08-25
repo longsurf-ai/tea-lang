@@ -5,15 +5,14 @@
 import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
+import {type AggregateLayoutManifest, type Value} from './abi';
+import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
 import {
   RUNTIME_ABI_VERSION,
-  type AggregateLayoutManifest,
   type Frame,
-  type Runtime,
   type JSModule,
-  type Value,
-} from './abi';
-import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
+  type Runtime,
+} from './module-abi';
 import {staticModuleBinding} from './testing';
 import {ValueLayoutRegistry} from './value-layout';
 

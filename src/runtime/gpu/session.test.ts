@@ -6,7 +6,6 @@ import {compileProgramToWgsl} from '../../codegen/wgsl';
 import {mustBuild} from '../../noder/testing';
 import {MemorySink} from '../../providers/sinks/memory-sink';
 import {
-  RUNTIME_ABI_VERSION,
   type BindInputs,
   type ContextError,
   type DataProvider,
@@ -913,8 +912,8 @@ describe('GPU execution preparation', () => {
           bindingModule: {
             ...artifact.bindingModule,
             source: artifact.bindingModule.source.replace(
-              `  abi: ${RUNTIME_ABI_VERSION},`,
-              '  abi: 999,',
+              /\babi:\s*\d+,/,
+              'abi: 999,',
             ),
           },
         },

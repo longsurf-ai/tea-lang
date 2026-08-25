@@ -4,12 +4,9 @@
 import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
-import {
-  RUNTIME_ABI_VERSION,
-  type AggregateLayoutManifest,
-  type JSModule,
-} from './abi';
+import {type AggregateLayoutManifest} from './abi';
 import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
+import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {staticModuleBinding} from './testing';
 import {ValueLayoutRegistry} from './value-layout';
 

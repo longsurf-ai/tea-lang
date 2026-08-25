@@ -1,16 +1,12 @@
-// Purpose: Versioned generated-JavaScript module manifest and Runtime operation contract.
+// Purpose: Versioned recursive JSModule, pure binding data, and execution-only Runtime contracts.
 
 import type {BuiltinSource} from '../ir/builtin';
 import type {NameStorage} from '../ir/node';
 import type {Ref} from './heap';
+import type {OutputSpec} from './output';
 import type {EffectSpec, ParamSpec} from './schema';
 import type {AggregateLayoutManifest, LayoutId} from './value-layout';
-import type {
-  CollectionValue,
-  ExecutionResult,
-  ManifestValue,
-  Value,
-} from './value';
+import type {CollectionValue, ExecutionResult, Value} from './value';
 
 export const RUNTIME_ABI_VERSION = 3 as const;
 
@@ -40,49 +36,6 @@ export interface BuiltinSpec {
   readonly source: BuiltinSource;
   readonly layout: LayoutId;
   readonly depth: DepthSpec;
-}
-
-export type OutputChannelTransport =
-  | {readonly kind: 'int'}
-  | {readonly kind: 'float'}
-  | {readonly kind: 'bool'}
-  | {readonly kind: 'string'}
-  | {readonly kind: 'color'}
-  | {
-      readonly kind: 'enum';
-      readonly name: string;
-      readonly members: readonly string[];
-    }
-  | {
-      readonly kind: 'resource';
-      readonly handle:
-        | 'line'
-        | 'label'
-        | 'box'
-        | 'table'
-        | 'polyline'
-        | 'linefill';
-    }
-  | {readonly kind: 'output-ref'; readonly output: 'plot' | 'hline'}
-  | {readonly kind: 'struct'; readonly name: string}
-  | {readonly kind: 'array'}
-  | {readonly kind: 'matrix'}
-  | {readonly kind: 'map'}
-  | {readonly kind: 'tuple'};
-
-export interface OutputChannelSpec {
-  readonly name: string;
-  readonly type: string;
-  readonly transport: OutputChannelTransport;
-}
-
-export interface OutputSpec {
-  readonly effect: string;
-  readonly staticArgs: readonly {
-    readonly name: string;
-    readonly value: ManifestValue;
-  }[];
-  readonly channels: readonly OutputChannelSpec[];
 }
 
 export interface EffectManifestSpec {

@@ -443,13 +443,12 @@ Concrete bindings are not Program facts. After codegen, the CPU runtime may
 bind one ordinary JS module repeatedly to isolated providers/parameters and
 capture committed emissions through an `OutputSink`. The bind-independent GPU
 artifact carries both WGSL and the ordinary generated JS binding module. The
-GPU runtime runs that module's provisional bind phase for each ordered
-`BindInputs` element, sizes its physical history payload, packs buffers,
-constructs dispatch/readback metadata, and submits the shared shader to an
-injected device. It does not revisit the Program or evaluate a second form of
-the bound expression. Those runtime contracts do not change the Program or
-reinterpret Tea matching/accounting semantics. See [GPU
-Lowering](advanced/gpu-lowering.md).
+GPU runtime calls that module's pure `bind(values) -> JSModuleBinding` function
+for each ordered `BindInputs` element, sizes its physical history payload,
+packs buffers, constructs dispatch/readback metadata, and submits the shared
+shader to an injected device. It does not revisit the Program or evaluate a
+second form of the bound expression. Those runtime contracts do not change the
+Program or reinterpret Tea matching/accounting semantics. See [GPU Lowering](advanced/gpu-lowering.md).
 
 ## Open items
 

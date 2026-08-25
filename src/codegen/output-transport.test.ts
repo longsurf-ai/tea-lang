@@ -13,7 +13,7 @@ import {
   type EnumType,
   type StructType,
 } from '../ir/type';
-import {RUNTIME_ABI_VERSION, type JSModule} from '../runtime/abi';
+import {RUNTIME_ABI_VERSION, type JSModule} from '../runtime/module-abi';
 import {loadModule} from '../runtime/load';
 import {generate} from './codegen';
 

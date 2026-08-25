@@ -4,13 +4,12 @@ import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {MemorySink} from '../providers/sinks/memory-sink';
 import {
-  RUNTIME_ABI_VERSION,
   type AggregateLayoutManifest,
   type DataProvider,
   type ProviderContext,
-  type JSModule,
 } from './abi';
 import {bindFixedHistory} from './fixed-history';
+import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {staticModuleBinding} from './testing';
 
 const NUMBER = 0;

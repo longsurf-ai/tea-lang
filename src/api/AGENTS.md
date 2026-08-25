@@ -14,17 +14,18 @@ remain in their existing packages.
   is empty; a Program with no semantic requirements is ready after that first
   call. Passing a `BoundModule` creates the next immutable snapshot.
 - `BoundModule.ready()` means every extracted requirement has a target and the
-  generated `init`/`bind` callbacks have produced immutable runtime facts.
+  owned `JSModule.bind(values)` has produced immutable `JSModuleBinding` facts.
   `ready()` does not mean any source is subscribed, and it does not promise
   that `TeaNode.to()` supports every fact currently representable there.
   `remaining()` preserves Program requirement order.
 - Generated code and bind facts are private state associated with the minimal
   public `BoundModule`; callers cannot forge that state. Bind evaluation is
   provider- and subscription-free: it resolves params, bound depths, output
-  arguments, activity, and static request pairs/options. Internally it may use
-  one local abort-only Heap transaction for struct/collection expressions, but
-  no Heap, runtime state, or subscription is retained or transferred into the
-  returned BoundModule.
+  arguments, activity, and static request pairs/options through the pure module
+  binding result. A generated implementation may use the loader-private helper
+  and one local abort-only Heap transaction for struct/collection expressions,
+  but no Heap, runtime state, evaluator, or subscription is retained or
+  transferred into the returned BoundModule.
 - `TeaNode` owns DataStream/Observable wiring. Successive `.bind()` calls use
   `bindModule()` synchronously and return new nodes while retaining the row
   Observables attached by earlier steps. `BoundModule` stores individual

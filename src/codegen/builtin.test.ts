@@ -11,7 +11,7 @@ import {
 import type {BuiltinInput, Program} from '../ir/program';
 import {BoolType, IntType, Qualifier, StringType, type Type} from '../ir/type';
 import {mustBuild} from '../noder/testing';
-import {RUNTIME_ABI_VERSION, type JSModule} from '../runtime/abi';
+import {RUNTIME_ABI_VERSION, type JSModule} from '../runtime/module-abi';
 import {loadModule} from '../runtime/load';
 import {generate} from './codegen';
 

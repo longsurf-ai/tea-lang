@@ -8,18 +8,20 @@ import {
   type AggregateLayoutManifest,
   type BindInputs,
   type DataProvider,
-  type BuiltinSpec,
-  type JSModule,
-  type JSModuleBinding,
   type OutputSink,
   type ProviderContext,
   type RangeDemand,
-  RUNTIME_ABI_VERSION,
   type SeriesData,
   type TimeAxis,
   type Value,
 } from './abi';
 import {bindFixedHistory} from './fixed-history';
+import {
+  RUNTIME_ABI_VERSION,
+  type BuiltinSpec,
+  type JSModule,
+  type JSModuleBinding,
+} from './module-abi';
 import {staticModuleBinding} from './testing';
 
 const TEST_TIME_NOW = 1_800_000_000_000;

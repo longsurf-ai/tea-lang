@@ -20,7 +20,7 @@ const SOURCES = [
     'plot(ta.sar(0.02, 0.02, 0.2))',
   ].join(String.fromCharCode(10)),
   // Exercises the request emission shapes: sibling child-module consts,
-  // requests arrays, rt.bindRequest in bind, rt.request reads, and an
+  // requests arrays, pure binding results, rt.request reads, and an
   // input param crossing into the capture (compilation-global params).
   [
     'indicator("req")',
