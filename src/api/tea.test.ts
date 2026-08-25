@@ -2,12 +2,15 @@
 // implicit Tea libraries, diagnostics, and the canonical Program projection.
 
 import {describe, expect, test} from 'vitest';
+import {of} from 'rxjs';
+import * as z from 'zod';
+import {DataStream} from './stream';
 import {TeaCompileError, tea} from './tea';
 
 describe('tea', () => {
   test('compiles an indented template through the ordinary Program frontend', () => {
     const fastWindow = 14;
-    const program = tea`
+    const node = tea`
       //@version=1
       indicator("EMA crossover")
 
@@ -22,12 +25,12 @@ describe('tea', () => {
       plotshape(crossed, "Crossover")
     `;
 
-    expect(program.version).toBe(1);
-    expect(program.params.map(param => param.name)).toEqual([
+    expect(node.program.version).toBe(1);
+    expect(node.program.params.map(param => param.name)).toEqual([
       'fast_window',
       'slow_window',
     ]);
-    expect(program.outputs.map(output => output.effect)).toEqual([
+    expect(node.program.outputs.map(output => output.effect)).toEqual([
       'indicator',
       'plot',
       'plot',
@@ -57,5 +60,25 @@ describe('tea', () => {
     expect(error.message).toBe(
       '<tea-template>:1:11: string literal not terminated',
     );
+  });
+
+  test('creates BoundModule on first bind and keeps binding steps immutable', () => {
+    const program = tea`
+      length = input.int(14)
+      plot(close + length)
+    `;
+    const source = new DataStream(
+      z.object({close: z.number()}),
+      subscriber => of({close: 1}).subscribe(subscriber),
+    );
+
+    const withSource = program.bind(source);
+    const ready = withSource.bind({length: 20});
+
+    expect(program.boundModule()).toBeNull();
+    expect(program.ready()).toBe(false);
+    expect(withSource.ready()).toBe(false);
+    expect(ready.ready()).toBe(true);
+    expect(ready.boundModule()?.remaining()).toEqual([]);
   });
 });

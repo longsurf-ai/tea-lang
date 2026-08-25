@@ -1,3 +1,5 @@
+// @ts-nocheck -- executable API sketch; concrete WebSocket adapters are staged.
+
 import { tea, fromWS, fromCSV, to} from 'tea'
 
 

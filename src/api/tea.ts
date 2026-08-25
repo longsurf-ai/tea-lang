@@ -1,20 +1,24 @@
-// Purpose: JavaScript embedding API — compiles a Tea tagged template through
-// the canonical frontend and returns its static Program.
+// Purpose: JavaScript embedding API — compile Tea source into a TeaNode whose
+// immutable binding steps attach parameter values and concrete Observables.
 
+import {Effect} from 'effect';
+import {map, type Observable} from 'rxjs';
 import {OperationalError} from '../base/operational-error';
 import {formatPos} from '../base/pos';
 import {Errors, type ErrorMsg} from '../base/print';
 import {compileToProgram} from '../compile';
 import type {Program} from '../ir/program';
-import { Observable, Subject } from "rxjs";
-import type { DataStream } from "./stream";
-import * as z from "zod";
-import { extract, type Binding } from "./binding";
-import type { Sink } from "./sink";
-
+import {
+  bindModule,
+  extract,
+  type Binding,
+  type BindingAssignment,
+  type BoundModule,
+} from './binding';
+import type {Sink} from './sink';
+import {DataStream} from './stream';
 
 const TEMPLATE_FILENAME = '<tea-template>';
-type Key = string;
 
 export class TeaCompileError extends OperationalError {
   constructor(readonly errors: readonly ErrorMsg[]) {
@@ -25,50 +29,54 @@ export class TeaCompileError extends OperationalError {
   }
 }
 
-export class TeaNode {
-    private readonly input_bindings: Binding[];
-    private readonly output_bindings: Binding[];
-    private input: Observable<unknown>;
-    private output: Observable<unknown>;
-
-    constructor(private readonly ir: Program) {
-        [this.input_bindings, this.output_bindings] = extract(ir);
-    }
-
-    /**
-     * Bind inputs to the program
-     */
-    bind(inputs: DataStream<T> | Record<string, unknown> | Record<Key, DataStream<T>>): TeaNode {
-        if (inputs instanceof DataStream) {
-            // go through the inputs data stream, and try to match it to the input bindings
-
-            // for each data stream input, we need to somehow join it and update the input observable, as well as update the output Observable. The idea is that the output subscribes to the input observable, but runs the program on the input observable for every input received.
-        } else {
-            // try to match the inputs to the input bindings
-        }
-    }
-
-    /**
-     * Return true if the program is ready to be executed.
-     */
-    ready(): boolean {
-
-    }
-
-
-    to(sink: Sink<z.output<T>>): void {
-
-    }
-}
+export type TeaBindingInput =
+  | DataStream<unknown>
+  | Readonly<Record<string, unknown>>
+  | Readonly<Record<string, DataStream<unknown>>>;
 
 /**
- * Compile Tea source from a tagged template into a Program.
- * Interpolations are inserted as Tea source fragments.
+ * Public Tea program node. It owns the canonical Program and the concrete
+ * Observables attached by successive immutable binding steps.
  */
+export class TeaNode {
+  constructor(
+    readonly program: Program,
+    private readonly bound: BoundModule | null = null,
+  ) {}
+
+  bind(input: TeaBindingInput): TeaNode {
+    const requirements = this.bound?.remaining() ?? extract(this.program)[0];
+    const assignments = assignmentsFor(input, requirements);
+    const next = Effect.runSync(
+      bindModule(this.bound ?? this.program, assignments),
+    );
+    return new TeaNode(this.program, next);
+  }
+
+  ready(): boolean {
+    return this.bound?.ready() ?? false;
+  }
+
+  /** Internal handoff used when execution wiring is installed by `to()`. */
+  boundModule(): BoundModule | null {
+    return this.bound;
+  }
+
+  to(_sink: Sink<unknown>): void {
+    if (!this.ready()) {
+      throw new Error(
+        `TeaNode is missing bindings: ${this.bound?.remaining().map(binding => binding.name).join(', ') ?? 'all inputs'}`,
+      );
+    }
+    throw new Error('TeaNode execution wiring is not implemented yet');
+  }
+}
+
+/** Compile Tea source from a tagged template into its API-level TeaNode. */
 export function tea(
   strings: TemplateStringsArray,
   ...args: readonly unknown[]
-): Program {
+): TeaNode {
   const source = dedent(
     strings.raw.reduce(
       (result, part, index) =>
@@ -84,17 +92,67 @@ export function tea(
   if (program === null) {
     throw new TeaCompileError(errors.flushErrors());
   }
-  return program;
+  return new TeaNode(program);
+}
+
+function assignmentsFor(
+  input: TeaBindingInput,
+  requirements: readonly Binding[],
+): readonly BindingAssignment[] {
+  if (input instanceof DataStream) {
+    const series = requirements.filter(
+      (binding): binding is Extract<Binding, {kind: 'series'}> =>
+        binding.kind === 'series',
+    );
+    return series.map(binding => ({
+      kind: 'series' as const,
+      name: binding.name,
+      target: projectSeries(input.asObservable(), binding.name, series.length),
+    }));
+  }
+
+  const entries = Object.entries(input);
+  if (entries.every((entry): entry is [string, DataStream<unknown>] =>
+    entry[1] instanceof DataStream,
+  )) {
+    return entries.map(([name, stream]) => ({
+      kind: 'series' as const,
+      name,
+      target: projectSeries(stream.asObservable(), name, 1),
+    }));
+  }
+
+  return entries.map(([name, target]) => ({
+    kind: 'parameter' as const,
+    name,
+    target,
+  }));
+}
+
+function projectSeries(
+  source: Observable<unknown>,
+  name: string,
+  boundSeries: number,
+): Observable<unknown> {
+  return source.pipe(
+    map(value => {
+      if (isRecord(value) && Object.hasOwn(value, name)) {
+        return value[name];
+      }
+      if (boundSeries === 1) return value;
+      throw new Error(`source value does not provide series '${name}'`);
+    }),
+  );
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function dedent(source: string): string {
   const lines = source.split(/\r?\n/);
-  while (lines[0]?.trim() === '') {
-    lines.shift();
-  }
-  while (lines.at(-1)?.trim() === '') {
-    lines.pop();
-  }
+  while (lines[0]?.trim() === '') lines.shift();
+  while (lines.at(-1)?.trim() === '') lines.pop();
 
   const contentLines = lines.filter(line => line.trim() !== '');
   let prefix = contentLines[0]?.match(/^[ \t]*/)?.[0] ?? '';
