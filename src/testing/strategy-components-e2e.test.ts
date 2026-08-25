@@ -20,7 +20,7 @@ import {
 import {buildProgram} from '../noder/noder';
 import {csvProvider} from '../providers/data/csv';
 import type {EffectValue, OutputSink, Value} from '../runtime/abi';
-import {bind} from '../runtime/js-runtime';
+import {bindStateMachine as bind} from '../runtime/state-machine-binding';
 import {loadModule} from '../runtime/load';
 import {parse} from '../syntax/syntax';
 
