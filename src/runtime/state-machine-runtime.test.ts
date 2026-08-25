@@ -19,6 +19,7 @@ import {ValueLayoutRegistry} from './value-layout';
 const NUMBER = 0;
 const ARRAY = 1;
 const COUNTER = 2;
+const ENVELOPE = 3;
 const LAYOUTS = {
   layouts: [
     {kind: 'number', numeric: 'int'},
@@ -26,7 +27,14 @@ const LAYOUTS = {
     {
       kind: 'struct',
       name: 'Counter',
+      typeId: 'test.Counter',
       fields: [{name: 'value', layout: NUMBER}],
+    },
+    {
+      kind: 'struct',
+      name: 'Envelope',
+      typeId: 'test.Envelope',
+      fields: [{name: 'counter', layout: COUNTER}],
     },
   ],
 } as const satisfies AggregateLayoutManifest;
@@ -120,6 +128,97 @@ function structModule(shouldFail: () => boolean): TeaModule {
     },
   };
 }
+
+function structEffectModule(shouldFail: () => boolean): TeaModule {
+  return {
+    abi: RUNTIME_ABI_VERSION,
+    aggregateLayouts: LAYOUTS,
+    manifest: {
+      series: [],
+      builtin: [],
+      params: [],
+      outputs: [],
+      effects: [
+        {
+          layout: ENVELOPE,
+          declaration: {
+            payload: {
+              kind: 'struct',
+              typeId: 'test.Envelope',
+              displayName: 'Envelope',
+              fields: [
+                {
+                  name: 'counter',
+                  value: {
+                    kind: 'struct',
+                    typeId: 'test.Counter',
+                    displayName: 'Counter',
+                    fields: [{name: 'value', value: {kind: 'int'}}],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ],
+      requests: [],
+      frames: [
+        {
+          locals: [
+            {storage: Storage.Var, depth: {kind: 'none'}, layout: COUNTER},
+          ],
+          subs: [],
+        },
+      ],
+    },
+    requests: [],
+    init() {},
+    bind() {},
+    funcs: {},
+    main(rt, root) {
+      if (rt.needsInit(root, 0)) {
+        rt.initialize(root, 0, rt.newStruct(COUNTER, [0]));
+      }
+      const counter = rt.requireStruct(rt.read(root, 0, 0), COUNTER);
+      const next = Number(rt.structField(counter, COUNTER, 0)) + 1;
+      rt.storeStructField(counter, COUNTER, 0, next);
+      const envelope = rt.newStruct(ENVELOPE, [counter]);
+      rt.emitEffect(0, envelope);
+      rt.storeStructField(counter, COUNTER, 0, next + 100);
+      if (shouldFail()) throw new Error('effect step failed');
+    },
+  };
+}
+
+const WRONG_NOMINAL_MODULE: TeaModule = {
+  abi: RUNTIME_ABI_VERSION,
+  aggregateLayouts: LAYOUTS,
+  manifest: {
+    series: [],
+    builtin: [],
+    params: [],
+    outputs: [],
+    effects: [],
+    requests: [],
+    frames: [
+      {
+        locals: [
+          {storage: Storage.Var, depth: {kind: 'none'}, layout: ENVELOPE},
+        ],
+        subs: [],
+      },
+    ],
+  },
+  requests: [],
+  init() {},
+  bind() {},
+  funcs: {},
+  main(rt, root) {
+    if (rt.needsInit(root, 0)) {
+      rt.initialize(root, 0, rt.newStruct(COUNTER, [0]));
+    }
+  },
+};
 
 const GC_MODULE: TeaModule = {
   abi: RUNTIME_ABI_VERSION,
@@ -217,6 +316,79 @@ describe('StateMachineRuntime', () => {
     expect(channels(Effect.runSync(runtime.step(input(0, false))))).toEqual([
       2,
     ]);
+    runtime.dispose();
+  });
+
+  test('snapshots nested struct effects at emit time and drops failed emissions', () => {
+    let fail = true;
+    const runtime = new StateMachineRuntime(
+      structEffectModule(() => fail),
+      [],
+      new ValueLayoutRegistry(LAYOUTS),
+    );
+
+    expect(() =>
+      Effect.runSync(
+        runtime.step({
+          series: [],
+          builtins: [],
+          requests: [],
+          provisional: false,
+        }),
+      ),
+    ).toThrow('effect step failed');
+
+    fail = false;
+    const result = Effect.runSync(
+      runtime.step({
+        series: [],
+        builtins: [],
+        requests: [],
+        provisional: false,
+      }),
+    );
+    expect(result.effects).toEqual([
+      {
+        effectId: 0,
+        payload: {
+          kind: 'struct',
+          fields: [{kind: 'struct', fields: [1]}],
+        },
+      },
+    ]);
+    runtime.dispose();
+  });
+
+  test('rejects nominally wrong struct values at State initialization', () => {
+    const runtime = new StateMachineRuntime(
+      WRONG_NOMINAL_MODULE,
+      [],
+      new ValueLayoutRegistry(LAYOUTS),
+    );
+    expect(() =>
+      Effect.runSync(
+        runtime.step({
+          series: [],
+          builtins: [],
+          requests: [],
+          provisional: false,
+        }),
+      ),
+    ).toThrow("references 'Counter', expected 'Envelope'");
+    runtime.dispose();
+  });
+
+  test('accepts provider NaN but fails closed when a read sees infinity', () => {
+    const runtime = new StateMachineRuntime(
+      PROVISIONAL_MODULE,
+      [],
+      new ValueLayoutRegistry(LAYOUTS),
+    );
+    const na = Effect.runSync(runtime.step(input(NaN, false)));
+    expect(Number.isNaN(na.output[0]?.channels[0] as number)).toBe(true);
+    expect(() => Effect.runSync(runtime.step(input(Infinity, false)))).toThrow(
+      'provider series 0 returned a non-finite value',
+    );
     runtime.dispose();
   });
 

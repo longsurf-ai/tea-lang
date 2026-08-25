@@ -3,6 +3,7 @@
 
 import {Effect} from 'effect';
 import {Storage} from '../ir/node';
+import type {EffectValueSchema} from '../ir/program';
 import {fatal} from '../base/print';
 import {unimplemented} from '../base/unimplemented';
 import type {
@@ -71,6 +72,7 @@ export function stateMachine(
   heap: Heap,
   maxCollectionElements = DEFAULT_MAX_COLLECTION_ELEMENTS,
 ): TeaStateMachine {
+  validateEffectSchemas(module, layouts);
   const structs = new StructStorageRuntime(heap, layouts);
   const collections = new CollectionRuntime(
     heap,
@@ -104,7 +106,9 @@ function stateUpdate(
         // transaction begins. The supplied State and Intermediate are the
         // owner's actual retained values; a candidate produced by this update
         // may still be rejected by a provisional step.
-        heap.replaceRoots(discoverRoots(module, layouts, state, intermediate));
+        heap.replaceRoots(
+          discoverRoots(module, layouts, structs, state, intermediate),
+        );
         heap.collect();
         return Effect.succeed(
           new StateUpdateContext(
@@ -206,6 +210,9 @@ class StateUpdateContext implements Runtime {
     if (typeof value !== 'number') {
       return fatal(`series ${sid} produced a non-number value`);
     }
+    if (!Number.isFinite(value) && !Number.isNaN(value)) {
+      return fatal(`provider series ${sid} returned a non-finite value`);
+    }
     return value;
   }
 
@@ -282,7 +289,12 @@ class StateUpdateContext implements Runtime {
     if (local === undefined || spec === undefined) {
       return fatal(`write to unknown frame ${frame.fid} slot ${slot}`);
     }
-    this.layouts.assertValue(spec.layout, value, 'State write');
+    this.structs.assertValue(
+      spec.layout,
+      value,
+      'State write',
+      this.mustTransaction(),
+    );
     local.value = value;
   }
 
@@ -318,7 +330,12 @@ class StateUpdateContext implements Runtime {
     if (local.initialized) {
       return fatal(`frame ${frame.fid} slot ${slot} is already initialized`);
     }
-    this.layouts.assertValue(spec.layout, value, 'State initialization');
+    this.structs.assertValue(
+      spec.layout,
+      value,
+      'State initialization',
+      this.mustTransaction(),
+    );
     local.value = value;
     local.initialized = true;
     if (spec.storage === Storage.Var && !local.state.initialized) {
@@ -349,18 +366,62 @@ class StateUpdateContext implements Runtime {
   }
 
   emitEffect(effectId: number, payload: Value): void {
-    if (this.module.manifest.effects[effectId] === undefined) {
+    const spec = this.module.manifest.effects[effectId];
+    if (spec === undefined) {
       return fatal(`effect emission references unknown effect ${effectId}`);
     }
-    if (
-      typeof payload !== 'number' &&
-      typeof payload !== 'string' &&
-      typeof payload !== 'boolean' &&
-      payload !== null
-    ) {
-      return unimplemented('state update: aggregate effect payload', payload);
+    const transaction = this.mustTransaction();
+    this.structs.assertValue(
+      spec.layout,
+      payload,
+      `effect ${effectId} payload`,
+      transaction,
+    );
+    this.effects.push({
+      effectId,
+      payload: this.effectValue(
+        spec.layout,
+        spec.declaration.payload,
+        payload,
+        transaction,
+      ),
+    });
+  }
+
+  private effectValue(
+    layoutId: LayoutId,
+    schema: EffectValueSchema,
+    value: Value,
+    transaction: HeapTransaction,
+  ): EffectValue {
+    if (schema.kind !== 'struct' || value === null) {
+      if (
+        typeof value === 'number' ||
+        typeof value === 'string' ||
+        typeof value === 'boolean' ||
+        value === null
+      ) {
+        return value;
+      }
+      return fatal(`non-scalar value reached logical ${schema.kind} effect`);
     }
-    this.effects.push({effectId, payload: payload as EffectValue});
+    const layout = this.layouts.layout(layoutId);
+    if (!isStructRef(value) || layout.kind !== 'struct') {
+      return fatal(`non-struct value reached logical ${schema.typeId} effect`);
+    }
+    return Object.freeze({
+      kind: 'struct' as const,
+      fields: Object.freeze(
+        schema.fields.map((field, index) =>
+          this.effectValue(
+            layout.fields[index]!.layout,
+            field.value,
+            this.structs.field(value, layoutId, index, transaction),
+            transaction,
+          ),
+        ),
+      ),
+    });
   }
 
   requestFor(_rid: number, _symbol: Value, _timeframe: Value): Value {
@@ -501,14 +562,14 @@ class StateUpdateContext implements Runtime {
       }
     });
     this.input.builtins.forEach((value, bid) => {
-      this.layouts.assertValue(
+      this.structs.assertValue(
         this.module.manifest.builtin[bid]!.layout,
         value,
         `builtin ${bid}`,
       );
     });
     this.input.requests.forEach((value, rid) => {
-      this.layouts.assertValue(
+      this.structs.assertValue(
         this.module.manifest.requests[rid]!.layout,
         value,
         `request ${rid}`,
@@ -748,12 +809,15 @@ function depthRetention(
 function discoverRoots(
   module: ModuleCode,
   layouts: ValueLayoutRegistry,
+  structs: StructStorageRuntime,
   state: Readonly<State>,
   intermediate: Readonly<Intermediate>,
 ): Ref<unknown>[] {
   const roots: Ref<unknown>[] = [];
-  const visit = (layout: LayoutId, value: Value) =>
+  const visit = (layout: LayoutId, value: Value) => {
+    structs.assertValue(layout, value, 'StateMachine retained value');
     layouts.visitRefs(layout, value, ref => roots.push(ref));
+  };
 
   state.root.builtins.forEach((ring, bid) => {
     const spec = module.manifest.builtin[bid]!;
@@ -806,4 +870,90 @@ function visitIntermediateFrame(
 function frameLayout(module: ModuleCode, fid: number) {
   const layout = module.manifest.frames[fid];
   return layout === undefined ? fatal(`unknown frame layout ${fid}`) : layout;
+}
+
+function validateEffectSchemas(
+  module: ModuleCode,
+  layouts: ValueLayoutRegistry,
+): void {
+  const active = new Set<LayoutId>();
+  const validate = (layoutId: LayoutId, schema: EffectValueSchema): void => {
+    if (active.has(layoutId)) {
+      return fatal(`effect payload layout ${layoutId} is recursively sized`);
+    }
+    active.add(layoutId);
+    const layout = layouts.layout(layoutId);
+    switch (layout.kind) {
+      case 'number':
+        if (schema.kind !== layout.numeric) {
+          return fatal(
+            `effect payload layout ${layoutId} disagrees with logical ${schema.kind} schema`,
+          );
+        }
+        break;
+      case 'boolean':
+        if (schema.kind !== 'bool') {
+          return fatal(
+            `effect payload layout ${layoutId} disagrees with logical ${schema.kind} schema`,
+          );
+        }
+        break;
+      case 'nullable-scalar':
+        if (schema.kind !== layout.scalar) {
+          return fatal(
+            `effect payload layout ${layoutId} disagrees with logical ${schema.kind} schema`,
+          );
+        }
+        break;
+      case 'enum':
+        if (
+          schema.kind !== 'enum' ||
+          schema.typeId !== layout.typeId ||
+          schema.displayName !== layout.name ||
+          schema.members.length !== layout.members.length ||
+          schema.members.some(
+            (member, index) => member.name !== layout.members[index],
+          )
+        ) {
+          return fatal(
+            `effect payload layout ${layoutId} disagrees with logical enum schema`,
+          );
+        }
+        break;
+      case 'struct':
+        if (
+          schema.kind !== 'struct' ||
+          schema.typeId !== layout.typeId ||
+          schema.displayName !== layout.name ||
+          schema.fields.length !== layout.fields.length
+        ) {
+          return fatal(
+            `effect payload layout ${layoutId} disagrees with logical struct schema`,
+          );
+        }
+        layout.fields.forEach((field, index) => {
+          const logical = schema.fields[index];
+          if (logical === undefined || logical.name !== field.name) {
+            return fatal(
+              `effect payload layout ${layoutId} disagrees at field ${index}`,
+            );
+          }
+          validate(field.layout, logical.value);
+        });
+        break;
+      case 'resource':
+      case 'array':
+      case 'matrix':
+      case 'map':
+      case 'tuple':
+        return fatal(
+          `effect payload layout ${layoutId} has unsupported ${layout.kind} transport`,
+        );
+    }
+    active.delete(layoutId);
+  };
+
+  module.manifest.effects.forEach(effect =>
+    validate(effect.layout, effect.declaration.payload),
+  );
 }
