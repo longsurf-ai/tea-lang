@@ -16,8 +16,10 @@ import type {
 } from './module-abi';
 import type {EffectEmission, DenseEmission} from './output';
 import {ExecutionError} from './errors';
-import type {Heap, StorageRef} from './heap';
+import type {Heap, HeapTransaction, StorageRef} from './heap';
 import {isHistoryOffset} from './ring';
+import {CollectionRuntime} from './collections';
+import {StructStorageRuntime} from './struct-storage';
 import type {
   FrameState,
   Input,
@@ -32,7 +34,17 @@ import type {
   StateUpdate,
 } from './state-machine';
 import type {ValueLayoutRegistry, LayoutId} from './value-layout';
-import type {CollectionValue, EffectValue, Value} from './value';
+import {
+  isArrayValue,
+  isMapValue,
+  isMatrixValue,
+  isStructRef,
+  isTupleValue,
+  type EffectValue,
+  type Value,
+} from './value';
+
+const DEFAULT_MAX_COLLECTION_ELEMENTS = 100_000;
 
 export type TeaStateUpdate = StateUpdate<
   State,
@@ -57,7 +69,15 @@ export function stateMachine(
   params: readonly Value[],
   layouts: ValueLayoutRegistry,
   heap: Heap,
+  maxCollectionElements = DEFAULT_MAX_COLLECTION_ELEMENTS,
 ): TeaStateMachine {
+  const structs = new StructStorageRuntime(heap, layouts);
+  const collections = new CollectionRuntime(
+    heap,
+    layouts,
+    maxCollectionElements,
+    structs,
+  );
   return {
     initialState: {
       root: initialRoot(module),
@@ -66,14 +86,16 @@ export function stateMachine(
       root: initialIntermediateFrame(module, 0, true),
       heap,
     },
-    update: stateUpdate(module, params, layouts),
+    update: stateUpdate(module, params, layouts, structs, collections),
   };
 }
 
-export function stateUpdate(
+function stateUpdate(
   module: ModuleCode,
   params: readonly Value[],
   layouts: ValueLayoutRegistry,
+  structs: StructStorageRuntime,
+  collections: CollectionRuntime,
 ): TeaStateUpdate {
   return (state, intermediate, input) =>
     Effect.suspend(() => {
@@ -86,6 +108,8 @@ export function stateUpdate(
             state,
             intermediate,
             input,
+            structs,
+            collections,
           ).run(),
         );
       } catch (error) {
@@ -119,6 +143,7 @@ class SSMRuntime implements Runtime {
   private readonly rootFrame: WorkspaceFrame;
   private readonly outputs = new Map<number, Value[]>();
   private readonly effects: EffectEmission[] = [];
+  private transaction: HeapTransaction | null = null;
 
   constructor(
     private readonly module: ModuleCode,
@@ -127,27 +152,42 @@ class SSMRuntime implements Runtime {
     private readonly state: Readonly<State>,
     private readonly intermediate: Readonly<Intermediate>,
     private readonly input: Input,
+    private readonly structs: StructStorageRuntime,
+    private readonly collections: CollectionRuntime,
   ) {
     this.validateInput();
     this.rootFrame = this.openFrame(0, state.root, intermediate.root, true);
   }
 
   run() {
-    this.module.main(this, this.rootFrame);
-    return {
-      state: {
-        root: this.finishRoot(),
-      },
-      intermediate: {
-        root: this.finishIntermediateFrame(this.rootFrame),
-        heap: this.intermediate.heap,
-      },
-      output: [...this.outputs.entries()].map(([outputId, channels]) => ({
-        outputId,
-        channels,
-      })),
-      effects: this.effects,
-    };
+    const transaction = this.intermediate.heap.beginTransaction('state-update');
+    this.transaction = transaction;
+    let committed = false;
+    try {
+      this.module.main(this, this.rootFrame);
+      const result = {
+        state: {root: this.finishRoot()},
+        intermediate: {
+          root: this.finishIntermediateFrame(this.rootFrame),
+          heap: this.intermediate.heap,
+        },
+        output: [...this.outputs.entries()].map(([outputId, channels]) => ({
+          outputId,
+          channels,
+        })),
+        effects: this.effects,
+      };
+      const roots = this.heapRoots(result.state, result.intermediate);
+      transaction.prepareCommit(roots).commit();
+      committed = true;
+      this.transaction = null;
+      this.intermediate.heap.collect(roots);
+      return result;
+    } catch (error) {
+      if (!committed) transaction.abort();
+      this.transaction = null;
+      throw error;
+    }
   }
 
   series(sid: number, offset: number): number {
@@ -286,6 +326,15 @@ class SSMRuntime implements Runtime {
     if (spec === undefined || spec.channels[channel] === undefined) {
       return fatal(`emit to unknown output ${oid} channel ${channel}`);
     }
+    if (
+      isStructRef(value) ||
+      isArrayValue(value) ||
+      isMatrixValue(value) ||
+      isMapValue(value) ||
+      isTupleValue(value)
+    ) {
+      return fatal('aggregate values cannot cross an output channel in V1');
+    }
     let channels = this.outputs.get(oid);
     if (channels === undefined) {
       channels = new Array<Value>(spec.channels.length).fill(NaN);
@@ -351,46 +400,121 @@ class SSMRuntime implements Runtime {
     unimplemented('state update: bind request');
   }
 
-  newStruct(_layout: LayoutId, _fields: readonly Value[]): StorageRef<unknown> {
-    return unimplemented('state update: new struct');
+  newStruct(layout: LayoutId, fields: readonly Value[]): StorageRef<unknown> {
+    return this.structs.newStruct(this.mustTransaction(), layout, fields);
   }
 
-  requireStruct(_value: Value, _layout: LayoutId): StorageRef<unknown> {
-    return unimplemented('state update: require struct');
+  requireStruct(value: Value, layout: LayoutId): StorageRef<unknown> {
+    return this.structs.requireStruct(value, layout);
   }
 
-  structField(_value: Value, _ownerLayout: LayoutId, _index: number): Value {
-    return unimplemented('state update: struct field');
+  structField(value: Value, ownerLayout: LayoutId, index: number): Value {
+    return this.structs.field(value, ownerLayout, index);
   }
 
   storeStructField(
-    _value: Value,
-    _ownerLayout: LayoutId,
-    _index: number,
-    _replacement: Value,
+    value: Value,
+    ownerLayout: LayoutId,
+    index: number,
+    replacement: Value,
   ): void {
-    unimplemented('state update: store struct field');
+    this.structs.storeField(
+      this.mustTransaction(),
+      value,
+      ownerLayout,
+      index,
+      replacement,
+    );
   }
 
   callCollection(
-    _operation: CollectionOperation,
-    _resultLayout: LayoutId,
-    _args: readonly Value[],
+    operation: CollectionOperation,
+    resultLayout: LayoutId,
+    args: readonly Value[],
   ): Value {
-    return unimplemented('state update: collection operation');
+    return this.collections.call(
+      this.mustTransaction(),
+      operation,
+      resultLayout,
+      args,
+    );
   }
 
   mutateCollection(
-    _operation: CollectionMutationOperation,
-    _collectionLayout: LayoutId,
-    _receiver: Value,
-    _args: readonly Value[],
+    operation: CollectionMutationOperation,
+    collectionLayout: LayoutId,
+    receiver: Value,
+    args: readonly Value[],
   ): CollectionMutation {
-    return unimplemented('state update: collection mutation');
+    return this.collections.mutate(
+      this.mustTransaction(),
+      operation,
+      collectionLayout,
+      receiver,
+      args,
+    );
   }
 
-  collectionEntries(_value: Value): CollectionEntries {
-    return unimplemented('state update: collection entries');
+  collectionEntries(value: Value): CollectionEntries {
+    return this.collections.entries(value);
+  }
+
+  private mustTransaction(): HeapTransaction {
+    return this.transaction ?? fatal('aggregate operation outside StateUpdate');
+  }
+
+  private heapRoots(
+    state: State,
+    intermediate: Intermediate,
+  ): StorageRef<unknown>[] {
+    const roots: StorageRef<unknown>[] = [];
+    const visit = (layout: LayoutId, value: Value) =>
+      this.layouts.visitStorageRefs(layout, value, ref => roots.push(ref));
+
+    state.root.builtins.forEach((ring, bid) => {
+      const spec = this.module.manifest.builtin[bid]!;
+      ring.values.forEach(value => visit(spec.layout, value));
+    });
+    state.root.requests.forEach((ring, rid) => {
+      const spec = this.module.manifest.requests[rid]!;
+      ring.values.forEach(value => visit(spec.layout, value));
+    });
+    this.visitFrameState(state.root, 0, visit);
+    this.visitIntermediateFrame(intermediate.root, 0, visit);
+    return roots;
+  }
+
+  private visitFrameState(
+    frame: FrameState,
+    fid: number,
+    visit: (layout: LayoutId, value: Value) => void,
+  ): void {
+    const layout = this.frameLayout(fid);
+    frame.locals.forEach((local, slot) => {
+      const spec = layout.locals[slot]!;
+      local.ring.values.forEach(value => visit(spec.layout, value));
+    });
+    frame.subs.forEach((sub, slot) => {
+      if (sub !== null) {
+        this.visitFrameState(sub, layout.subs[slot]!.fid, visit);
+      }
+    });
+  }
+
+  private visitIntermediateFrame(
+    frame: IntermediateFrame,
+    fid: number,
+    visit: (layout: LayoutId, value: Value) => void,
+  ): void {
+    const layout = this.frameLayout(fid);
+    frame.locals.forEach((local, slot) => {
+      if (local !== null) visit(layout.locals[slot]!.layout, local.value);
+    });
+    frame.subs.forEach((sub, slot) => {
+      if (sub !== null) {
+        this.visitIntermediateFrame(sub, layout.subs[slot]!.fid, visit);
+      }
+    });
   }
 
   private validateInput(): void {
