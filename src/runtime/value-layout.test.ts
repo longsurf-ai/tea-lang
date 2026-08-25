@@ -1,11 +1,12 @@
-// Purpose: Runtime layout registry tests for immutable manifest ownership, typed empties, fixed-width struct carriers, and finite recursive declarations.
+// Purpose: Runtime layout registry tests for immutable table ownership, typed
+// empties, fixed-width struct carriers, and finite recursive declarations.
 
 import {describe, expect, test} from 'vitest';
 import {ValueClass} from './abi';
 import {type ValueLayout, ValueLayoutRegistry} from './value-layout';
 
 describe('ValueLayoutRegistry', () => {
-  test('owns a deeply frozen copy of the generated manifest', () => {
+  test('owns a deeply frozen copy of the generated layout table', () => {
     const enumLayout = {
       kind: 'enum',
       name: 'Side',
