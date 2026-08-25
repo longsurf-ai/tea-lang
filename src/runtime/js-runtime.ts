@@ -1,6 +1,5 @@
-// Purpose: State-owning execution facade over the explicit Tea StateMachine
-// transition. This is the migration target that will replace the legacy
-// JSRuntime once its callers have moved to step-based execution.
+// Purpose: State-owning JavaScript execution facade over the explicit Tea
+// StateMachine transition.
 
 import {Effect} from 'effect';
 import {fatal} from '../base/print';
@@ -13,7 +12,7 @@ import {stateMachine, type TeaStateMachine} from './state-update';
 import type {Value} from './value';
 import type {LayoutId, ValueLayoutRegistry} from './value-layout';
 
-export interface StateMachineRuntimeOptions {
+export interface JSRuntimeOptions {
   readonly heapLimits?: Partial<HeapLimits>;
   readonly maxCollectionElements?: number;
 }
@@ -40,7 +39,7 @@ export interface StepResult {
  * Callers provide only synchronized inputs; State, Intermediate, and Heap
  * never cross this boundary.
  */
-export class StateMachineRuntime {
+export class JSRuntime {
   private readonly heap: HeapArena;
   private readonly machine: TeaStateMachine;
   private state: State;
@@ -52,7 +51,7 @@ export class StateMachineRuntime {
     private readonly module: ModuleCode,
     params: readonly Value[],
     private readonly layouts: ValueLayoutRegistry,
-    options: StateMachineRuntimeOptions = {},
+    options: JSRuntimeOptions = {},
   ) {
     this.heap = new HeapArena(options.heapLimits);
     this.machine = stateMachine(

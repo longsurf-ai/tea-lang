@@ -4,7 +4,7 @@
 import {describe, expect, test} from 'vitest';
 import {of} from 'rxjs';
 import * as z from 'zod';
-import type {StepResult} from '../runtime/state-machine-runtime';
+import type {StepResult} from '../runtime/js-runtime';
 import type {Sink} from './sink';
 import {DataStream} from './stream';
 import {TeaCompileError, tea} from './tea';

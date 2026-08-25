@@ -28,9 +28,9 @@ import type {Sink} from './sink';
 import {DataStream} from './stream';
 import {sync} from './sync';
 import {
-  StateMachineRuntime,
+  JSRuntime,
   type StepResult,
-} from '../runtime/state-machine-runtime';
+} from '../runtime/js-runtime';
 import {ValueLayoutRegistry} from '../runtime/value-layout';
 
 const TEMPLATE_FILENAME = '<tea-template>';
@@ -123,7 +123,7 @@ export class TeaNode {
       );
     }
 
-    const runtime = new StateMachineRuntime(
+    const runtime = new JSRuntime(
       facts.code,
       facts.params.map(param => param.value),
       new ValueLayoutRegistry(facts.code.aggregateLayouts),

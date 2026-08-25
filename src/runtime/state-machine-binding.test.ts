@@ -1,4 +1,4 @@
-// Purpose: Fixed-history compatibility coverage over StateMachineRuntime.step.
+// Purpose: Fixed-history compatibility coverage over JSRuntime.step.
 
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';

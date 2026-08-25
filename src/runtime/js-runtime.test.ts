@@ -1,224 +1,68 @@
-// Purpose: Successor binding coverage retained from the legacy JS runtime:
-// generated bind facts, typed builtins, and static request execution.
+// Purpose: Ownership, provisional/final, rollback, and GC-safe-point coverage
+// for the state-owning JavaScript runtime.
 
+import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
 import {
-  BindError,
-  type AggregateLayoutManifest,
-  type BindInputs,
-  type DataProvider,
-  type BuiltinSpec,
-  type ModuleCode,
-  type OutputSink,
-  type ProviderContext,
-  type RangeDemand,
   RUNTIME_ABI_VERSION,
-  type SeriesData,
+  type AggregateLayoutManifest,
   type TeaModule,
-  type TimeAxis,
-  type Value,
 } from './abi';
-import {bindStateMachine} from './state-machine-binding';
+import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
+import {ValueLayoutRegistry} from './value-layout';
 
-const TEST_TIME_NOW = 1_800_000_000_000;
-
-function bind(
-  module: TeaModule,
-  inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
-) {
-  return bindStateMachine(module, {
-    ...inputs,
-    timeNow: inputs.timeNow ?? TEST_TIME_NOW,
-  });
-}
-
-const NUMBER_LAYOUT = 0;
-const TEST_LAYOUTS = {
-  layouts: [{kind: 'number', numeric: 'float'}],
+const NUMBER = 0;
+const ARRAY = 1;
+const COUNTER = 2;
+const ENVELOPE = 3;
+const LAYOUTS = {
+  layouts: [
+    {kind: 'number', numeric: 'int'},
+    {kind: 'array', element: NUMBER},
+    {
+      kind: 'struct',
+      name: 'Counter',
+      typeId: 'test.Counter',
+      fields: [{name: 'value', layout: NUMBER}],
+    },
+    {
+      kind: 'struct',
+      name: 'Envelope',
+      typeId: 'test.Envelope',
+      fields: [{name: 'counter', layout: COUNTER}],
+    },
+  ],
 } as const satisfies AggregateLayoutManifest;
 
-// ---- test doubles -----------------------------------------------------------
-
-class ArraySeries implements SeriesData {
-  constructor(readonly values: number[]) {}
-  get length(): number {
-    return this.values.length;
-  }
-  at(index: number): number {
-    return this.values[index];
-  }
+function input(value: number, provisional: boolean): StepInput {
+  return {series: [value], builtins: [], requests: [], provisional};
 }
 
-function provider(
-  series: Record<string, ArraySeries>,
-  axis: TimeAxis | null = null,
-): DataProvider {
-  const rows = Math.max(0, ...Object.values(series).map(s => s.length));
-  const context: ProviderContext = {
-    rows,
-    axis,
-    series: (id: string) => series[id] ?? null,
-    builtinValue: () => undefined,
-  };
-  return {resolveContext: () => Promise.resolve(context)};
-}
-
-function providerFromContext(context: ProviderContext): DataProvider {
-  return {resolveContext: () => Promise.resolve(context)};
-}
-
-class RecordingSink implements OutputSink {
-  declared: Parameters<OutputSink['declare']>[0]['outputs'] = [];
-  readonly emits: {
-    row: number;
-    oid: number;
-    channels: readonly Value[];
-    provisional: boolean;
-  }[] = [];
-
-  declare(declaration: Parameters<OutputSink['declare']>[0]): void {
-    this.declared = declaration.outputs;
-  }
-
-  publish(publication: Parameters<OutputSink['publish']>[0]): void {
-    for (const output of publication.outputs) {
-      this.emits.push({
-        row: publication.row,
-        oid: output.outputId,
-        channels: [...output.channels],
-        provisional: publication.provisional,
-      });
-    }
-  }
-}
-
-const PLOT_OUTPUT = {
-  effect: 'plot',
-  staticArgs: [],
-  channels: [{name: 'series', type: 'float', transport: {kind: 'float'}}],
-} as const;
-
-function num(v: Value): number {
-  return v as number;
-}
-
-// ---- an ema-shaped module ---------------------------------------------------
-// var e = na
-// e := na(e) ? close : 0.5 * close + 0.5 * e
-// plot(e)
-
-const EMA_MODULE: TeaModule = {
+const PROVISIONAL_MODULE: TeaModule = {
   abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
-  manifest: {
-    series: [{id: 'close', depth: {kind: 'none'}}],
-    builtin: [],
-    params: [],
-    outputs: [PLOT_OUTPUT],
-    effects: [],
-    requests: [],
-    frames: [
-      {
-        locals: [
-          {
-            storage: Storage.Var,
-            depth: {kind: 'none'},
-            layout: NUMBER_LAYOUT,
-          },
-        ],
-        subs: [],
-      },
-    ],
-  },
-  requests: [],
-  init() {},
-  bind() {},
-  funcs: {},
-  main(rt, fr) {
-    if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, NaN);
-    const e = num(rt.read(fr, 0, 0));
-    const close = rt.series(0, 0);
-    rt.write(fr, 0, Number.isNaN(e) ? close : 0.5 * close + 0.5 * e);
-    rt.emit(0, 0, rt.read(fr, 0, 0));
-  },
-};
-
-// ---- two call sites, one func ----------------------------------------------
-// counter() => var c = 0; c := c + 1; c
-
-const COUNTER_MODULE: TeaModule = {
-  abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
+  aggregateLayouts: LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
     params: [],
     outputs: [
       {
-        effect: 'plot',
+        effect: 'probe',
         staticArgs: [],
         channels: [
-          {name: 'a', type: 'int', transport: {kind: 'int'}},
-          {name: 'b', type: 'int', transport: {kind: 'int'}},
+          {name: 'var', type: 'int', transport: {kind: 'int'}},
+          {name: 'varip', type: 'int', transport: {kind: 'int'}},
         ],
       },
     ],
     effects: [],
     requests: [],
     frames: [
-      {locals: [], subs: [{fid: 1}, {fid: 1}]},
       {
         locals: [
-          {
-            storage: Storage.Var,
-            depth: {kind: 'none'},
-            layout: NUMBER_LAYOUT,
-          },
-        ],
-        subs: [],
-      },
-    ],
-  },
-  requests: [],
-  init() {},
-  bind() {},
-  funcs: {
-    1(rt, fr) {
-      if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, 0);
-      rt.write(fr, 0, num(rt.read(fr, 0, 0)) + 1);
-      return rt.read(fr, 0, 0);
-    },
-  },
-  main(rt, fr) {
-    const a = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0)) as Value;
-    const b = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 1)) as Value;
-    rt.emit(0, 0, a);
-    rt.emit(0, 1, b);
-  },
-};
-
-// ---- name history -----------------------------------------------------------
-// x = close; plot(x[2])
-
-const HISTORY_MODULE: TeaModule = {
-  abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
-  manifest: {
-    series: [{id: 'close', depth: {kind: 'none'}}],
-    builtin: [],
-    params: [],
-    outputs: [PLOT_OUTPUT],
-    effects: [],
-    requests: [],
-    frames: [
-      {
-        locals: [
-          {
-            storage: Storage.PerBar,
-            depth: {kind: 'const', bars: 2},
-            layout: NUMBER_LAYOUT,
-          },
+          {storage: Storage.Var, depth: {kind: 'none'}, layout: NUMBER},
+          {storage: Storage.Varip, depth: {kind: 'none'}, layout: NUMBER},
         ],
         subs: [],
       },
@@ -228,515 +72,125 @@ const HISTORY_MODULE: TeaModule = {
   init() {},
   bind() {},
   funcs: {},
-  main(rt, fr) {
-    rt.write(fr, 0, rt.series(0, 0));
-    rt.emit(0, 0, rt.read(fr, 0, 2));
+  main(rt, root) {
+    if (rt.needsInit(root, 0)) rt.initialize(root, 0, 0);
+    if (rt.needsInit(root, 1)) rt.initialize(root, 1, 0);
+    rt.write(root, 0, Number(rt.read(root, 0, 0)) + rt.series(0, 0));
+    rt.write(root, 1, Number(rt.read(root, 1, 0)) + 1);
+    rt.emit(0, 0, rt.read(root, 0, 0));
+    rt.emit(0, 1, rt.read(root, 1, 0));
   },
 };
 
-// ---- provisional protocol ---------------------------------------------------
-// var v = 0;   v := v + close     (rolls back per tick)
-// varip p = 0; p := p + 1         (accumulates across ticks)
-// x = close                       (perBar)
-
-const TICK_MODULE: TeaModule = {
-  abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
-  manifest: {
-    series: [{id: 'close', depth: {kind: 'none'}}],
-    builtin: [],
-    params: [],
-    outputs: [
-      {
-        effect: 'plot',
-        staticArgs: [],
-        channels: [
-          {name: 'v', type: 'float', transport: {kind: 'float'}},
-          {name: 'p', type: 'int', transport: {kind: 'int'}},
-          {name: 'x', type: 'float', transport: {kind: 'float'}},
-        ],
-      },
-    ],
-    effects: [],
-    requests: [],
-    frames: [
-      {
-        locals: [
-          {
-            storage: Storage.Var,
-            depth: {kind: 'none'},
-            layout: NUMBER_LAYOUT,
-          },
-          {
-            storage: Storage.Varip,
-            depth: {kind: 'none'},
-            layout: NUMBER_LAYOUT,
-          },
-          {
-            storage: Storage.PerBar,
-            depth: {kind: 'none'},
-            layout: NUMBER_LAYOUT,
-          },
-        ],
-        subs: [],
-      },
-    ],
-  },
-  requests: [],
-  init() {},
-  bind() {},
-  funcs: {},
-  main(rt, fr) {
-    if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, 0);
-    if (rt.needsInit(fr, 1)) rt.initialize(fr, 1, 0);
-    rt.write(fr, 0, num(rt.read(fr, 0, 0)) + rt.series(0, 0));
-    rt.write(fr, 1, num(rt.read(fr, 1, 0)) + 1);
-    rt.write(fr, 2, rt.series(0, 0));
-    rt.emit(0, 0, rt.read(fr, 0, 0));
-    rt.emit(0, 1, rt.read(fr, 1, 0));
-    rt.emit(0, 2, rt.read(fr, 2, 0));
-  },
-};
-
-// ---- bind-time section ------------------------------------------------------
-// level = input.float(70.0, minval=0)
-// hline(level)  +  a bound-depth local read at offset len
-
-const BIND_MODULE: TeaModule = {
-  abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
-  manifest: {
-    series: [{id: 'close', depth: {kind: 'none'}}],
-    builtin: [],
-    params: [
-      {
-        name: 'level',
-        title: null,
-        type: 'float',
-        control: 'auto',
-        group: null,
-        inline: null,
-        tooltip: null,
-        confirm: false,
-        display: 'all',
-        defaultValue: 70,
-        constraints: {
-          kind: 'range',
-          minval: 0,
-          maxval: null,
-          step: null,
+function structModule(shouldFail: () => boolean): TeaModule {
+  return {
+    abi: RUNTIME_ABI_VERSION,
+    aggregateLayouts: LAYOUTS,
+    manifest: {
+      series: [{id: 'close', depth: {kind: 'none'}}],
+      builtin: [],
+      params: [],
+      outputs: [
+        {
+          effect: 'probe',
+          staticArgs: [],
+          channels: [{name: 'value', type: 'int', transport: {kind: 'int'}}],
         },
-        enumType: null,
-        seriesSid: null,
-      },
-      {
-        name: 'len',
-        title: null,
-        type: 'int',
-        control: 'auto',
-        group: null,
-        inline: null,
-        tooltip: null,
-        confirm: false,
-        display: 'all',
-        defaultValue: 2,
-        constraints: null,
-        enumType: null,
-        seriesSid: null,
-      },
-    ],
-    outputs: [{effect: 'hline', staticArgs: [], channels: []}, PLOT_OUTPUT],
-    effects: [],
-    requests: [],
-    frames: [
-      {
-        locals: [
-          {
-            storage: Storage.PerBar,
-            depth: {kind: 'bound'},
-            layout: NUMBER_LAYOUT,
-          },
-        ],
-        subs: [],
-      },
-    ],
-  },
-  requests: [],
-  init(rt) {
-    rt.bindDepth(0, 0, num(rt.param(1)));
-  },
-  bind(rt) {
-    rt.bindOutput(0, 'price', rt.param(0));
-  },
-  funcs: {},
-  main(rt, fr) {
-    rt.write(fr, 0, rt.series(0, 0));
-    rt.emit(1, 0, rt.read(fr, 0, num(rt.param(1))));
-  },
-};
-
-describe('binding', () => {
-  test('init and bind evaluate their owned binding expressions', async () => {
-    const sink = new RecordingSink();
-    const bound = await bind(BIND_MODULE, {
-      params: {level: 105, len: 2},
-      provider: provider({close: new ArraySeries([1, 2, 3, 4])}),
-      sink,
-    });
-    expect(sink.declared[0].boundArgs).toEqual([{name: 'price', value: 105}]);
-    await bound.runAll();
-    const values = sink.emits.map(e => e.channels[0]);
-    expect(Number.isNaN(num(values[1]))).toBe(true);
-    expect(values[2]).toBe(1);
-    expect(values[3]).toBe(2);
-  });
-
-  test('bind failures are user-facing errors', async () => {
-    const inputs = {
-      provider: provider({close: new ArraySeries([1])}),
-      sink: new RecordingSink(),
-    };
-    await expect(
-      bind(BIND_MODULE, {...inputs, params: {level: -1}}),
-    ).rejects.toThrow(BindError);
-    await expect(
-      bind(BIND_MODULE, {...inputs, params: {nope: 1}}),
-    ).rejects.toThrow("unknown parameter 'nope'");
-    await expect(
-      bind(EMA_MODULE, {...inputs, params: {}, provider: provider({})}),
-    ).rejects.toThrow("series 'close' is not provided");
-    const bound = await bind(TICK_MODULE, {
-      ...inputs,
-      params: {},
-      provider: provider({close: new ArraySeries([1, 2])}),
-    });
-    bound.dispose();
-  });
-});
-
-describe('typed builtins', () => {
-  const INT_LAYOUT = 0;
-  const BOOL_LAYOUT = 1;
-  const STRING_LAYOUT = 2;
-  const layouts = {
-    layouts: [
-      {kind: 'number', numeric: 'int'},
-      {kind: 'boolean'},
-      {kind: 'nullable-scalar', scalar: 'string'},
-    ],
-  } as const satisfies AggregateLayoutManifest;
-  const builtins = [
-    {
-      source: {domain: 'time', field: 'time'},
-      layout: INT_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'time', field: 'time_close'},
-      layout: INT_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'time', field: 'timenow'},
-      layout: INT_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'bar', field: 'bar_index'},
-      layout: INT_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'bar', field: 'last_bar_index'},
-      layout: INT_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'barstate', field: 'isfirst'},
-      layout: BOOL_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'barstate', field: 'islast'},
-      layout: BOOL_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'barstate', field: 'ishistory'},
-      layout: BOOL_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'barstate', field: 'isrealtime'},
-      layout: BOOL_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'barstate', field: 'isconfirmed'},
-      layout: BOOL_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'barstate', field: 'isnew'},
-      layout: BOOL_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'syminfo', field: 'tickerid'},
-      layout: STRING_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-    {
-      source: {domain: 'timeframe', field: 'period'},
-      layout: STRING_LAYOUT,
-      depth: {kind: 'const', bars: 1},
-    },
-  ] as const satisfies readonly BuiltinSpec[];
-
-  function builtinContext(
-    builtinValue: ProviderContext['builtinValue'] = source =>
-      source.domain === 'syminfo' && source.field === 'tickerid'
-        ? 'NASDAQ:AAPL'
-        : source.domain === 'timeframe' && source.field === 'period'
-          ? 'D'
-          : undefined,
-  ): ProviderContext {
-    return {
-      rows: 3,
-      axis: regularAxis(100, 10, 3),
-      series: () => null,
-      builtinValue,
-    };
-  }
-
-  function builtinModule(): TeaModule {
-    return {
-      abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: layouts,
-      manifest: {
-        series: [],
-        builtin: builtins,
-        params: [],
-        outputs: [
-          {
-            effect: 'probe',
-            staticArgs: [],
-            channels: builtins.map((_, index) => ({
-              name: `value${index}`,
-              type: 'value',
-              transport:
-                index < 5 || index === 13
-                  ? ({kind: 'int'} as const)
-                  : index < 12
-                    ? ({kind: 'bool'} as const)
-                    : ({kind: 'string'} as const),
-            })),
-          },
-          {
-            effect: 'history',
-            staticArgs: [],
-            channels: [
-              {name: 'time', type: 'int', transport: {kind: 'int'}},
-              {name: 'barstate', type: 'bool', transport: {kind: 'bool'}},
-              {name: 'tickerid', type: 'string', transport: {kind: 'string'}},
-              {name: 'timenow', type: 'int', transport: {kind: 'int'}},
-            ],
-          },
-        ],
-        effects: [],
-        requests: [],
-        frames: [{locals: [], subs: []}],
-      },
+      ],
+      effects: [],
       requests: [],
-      init() {},
-      bind() {},
-      funcs: {},
-      main(rt) {
-        builtins.forEach((_, bid) => rt.emit(0, bid, rt.builtin(bid, 0)));
-        rt.emit(1, 0, rt.builtin(0, 1));
-        rt.emit(1, 1, rt.builtin(7, 1));
-        rt.emit(1, 2, rt.builtin(11, 1));
-        rt.emit(1, 3, rt.builtin(2, 1));
-      },
-    };
-  }
+      frames: [
+        {
+          locals: [
+            {storage: Storage.Var, depth: {kind: 'none'}, layout: COUNTER},
+          ],
+          subs: [],
+        },
+      ],
+    },
+    requests: [],
+    init() {},
+    bind() {},
+    funcs: {},
+    main(rt, root) {
+      if (rt.needsInit(root, 0)) {
+        rt.initialize(root, 0, rt.newStruct(COUNTER, [0]));
+      }
+      const counter = rt.requireStruct(rt.read(root, 0, 0), COUNTER);
+      const value = Number(rt.structField(counter, COUNTER, 0)) + 1;
+      rt.storeStructField(counter, COUNTER, 0, value);
+      if (shouldFail()) throw new Error('step failed');
+      rt.emit(0, 0, value);
+    },
+  };
+}
 
-  test('resolves row, extent, context, and fixed-history values exactly', async () => {
-    const sink = new RecordingSink();
-    const bound = await bind(builtinModule(), {
-      params: {},
-      provider: providerFromContext(builtinContext()),
-      sink,
-      timeNow: 1_777_777_777_777,
-    });
-    await bound.runAll();
-    const current = sink.emits.filter(event => event.oid === 0);
-    expect(current.map(event => event.channels.slice(0, 5))).toEqual([
-      [100, 110, 1_777_777_777_777, 0, 2],
-      [110, 120, 1_777_777_777_777, 1, 2],
-      [120, 130, 1_777_777_777_777, 2, 2],
-    ]);
-    expect(current.map(event => event.channels.slice(5, 11))).toEqual([
-      [true, false, true, false, true, true],
-      [false, false, true, false, true, true],
-      [false, true, true, false, true, true],
-    ]);
-    expect(current.map(event => event.channels.slice(11))).toEqual([
-      ['NASDAQ:AAPL', 'D'],
-      ['NASDAQ:AAPL', 'D'],
-      ['NASDAQ:AAPL', 'D'],
-    ]);
-    const history = sink.emits.filter(event => event.oid === 1);
-    expect(history[0].channels[0]).toBeNaN();
-    expect(history[0].channels.slice(1, 3)).toEqual([false, null]);
-    expect(history[0].channels[3]).toBeNaN();
-    expect(history.slice(1).map(event => event.channels)).toEqual([
-      [100, true, 'NASDAQ:AAPL', 1_777_777_777_777],
-      [110, true, 'NASDAQ:AAPL', 1_777_777_777_777],
-    ]);
-  });
-
-  test('bind-time builtin reads fail before provider resolution', async () => {
-    const calls: string[] = [];
-    const base = builtinModule();
-    const module: TeaModule = {
-      ...base,
-      bind(rt) {
-        rt.builtin(11, 0);
-      },
-    };
-    await expect(
-      bind(module, {
-        params: {},
-        provider: {
-          resolveContext: () => {
-            calls.push('resolve');
-            return Promise.resolve(builtinContext());
+function structEffectModule(shouldFail: () => boolean): TeaModule {
+  return {
+    abi: RUNTIME_ABI_VERSION,
+    aggregateLayouts: LAYOUTS,
+    manifest: {
+      series: [],
+      builtin: [],
+      params: [],
+      outputs: [],
+      effects: [
+        {
+          layout: ENVELOPE,
+          declaration: {
+            payload: {
+              kind: 'struct',
+              typeId: 'test.Envelope',
+              displayName: 'Envelope',
+              fields: [
+                {
+                  name: 'counter',
+                  value: {
+                    kind: 'struct',
+                    typeId: 'test.Counter',
+                    displayName: 'Counter',
+                    fields: [{name: 'value', value: {kind: 'int'}}],
+                  },
+                },
+              ],
+            },
           },
         },
-        sink: new RecordingSink(),
-        timeNow: 1_777_777_777_777,
-      }),
-    ).rejects.toThrow("builtin 'syminfo.tickerid' is not bind-visible");
-    expect(calls).toEqual([]);
-  });
-
-  test('missing demanded metadata and a missing demanded axis fail at bind', async () => {
-    await expect(
-      bind(builtinModule(), {
-        params: {},
-        provider: providerFromContext(builtinContext(() => undefined)),
-        sink: new RecordingSink(),
-      }),
-    ).rejects.toThrow("builtin 'syminfo.tickerid' is not provided");
-
-    const withoutAxis = {...builtinContext(), axis: null};
-    await expect(
-      bind(builtinModule(), {
-        params: {},
-        provider: providerFromContext(withoutAxis),
-        sink: new RecordingSink(),
-      }),
-    ).rejects.toThrow("builtin 'time' requires a time axis");
-  });
-
-  test('provider typed empty metadata is a value, not missing', async () => {
-    const base = builtinModule();
-    const module: TeaModule = {
-      ...base,
-      manifest: {
-        ...base.manifest,
-        builtin: [builtins[11]],
-        outputs: [
-          {
-            effect: 'probe',
-            staticArgs: [],
-            channels: [
-              {name: 'tickerid', type: 'string', transport: {kind: 'string'}},
-            ],
-          },
-        ],
-      },
-      main(rt) {
-        rt.emit(0, 0, rt.builtin(0, 0));
-      },
-    };
-    const sink = new RecordingSink();
-    const bound = await bind(module, {
-      params: {},
-      provider: providerFromContext(builtinContext(() => null)),
-      sink,
-    });
-    await bound.runAll();
-    expect(sink.emits.map(event => event.channels[0])).toEqual([
-      null,
-      null,
-      null,
-    ]);
-  });
-
-  test('timeNow rejects na, infinities, fractions, and unsafe integers', async () => {
-    for (const invalid of [
-      undefined as unknown as number,
-      NaN,
-      Infinity,
-      -Infinity,
-      1.5,
-      2 ** 53,
-    ]) {
-      await expect(
-        bindStateMachine(builtinModule(), {
-          params: {},
-          provider: providerFromContext(builtinContext()),
-          sink: new RecordingSink(),
-          timeNow: invalid,
-        }),
-      ).rejects.toThrow('timeNow must be a finite safe epoch-ms integer');
-    }
-  });
-});
-
-// ---- requests ---------------------------------------------------------------
-// r = request.security("X", "", close * scale)   (child reads a parent param)
-// plot(r), plot(r[1])
-
-function regularAxis(start: number, span: number, rows: number) {
-  void rows;
-  return {
-    time: (row: number) => start + row * span,
-    closeTime: (row: number) => start + (row + 1) * span,
-  };
-}
-
-function context(
-  series: Record<string, ArraySeries>,
-  axis: ReturnType<typeof regularAxis> | null,
-): ProviderContext {
-  const rows = Math.max(0, ...Object.values(series).map(s => s.length));
-  return {
-    rows,
-    axis,
-    series: (id: string) => series[id] ?? null,
-    builtinValue: () => undefined,
-  };
-}
-
-// Routes by symbol; unknown symbols are typed context errors.
-function contexts(byId: Record<string, ProviderContext>): DataProvider {
-  return {
-    resolveContext: (symbol: string) =>
-      Promise.resolve(
-        byId[symbol] ?? {
-          error: 'unknownSymbol' as const,
-          detail: `no context '${symbol}'`,
+      ],
+      requests: [],
+      frames: [
+        {
+          locals: [
+            {storage: Storage.Var, depth: {kind: 'none'}, layout: COUNTER},
+          ],
+          subs: [],
         },
-      ),
+      ],
+    },
+    requests: [],
+    init() {},
+    bind() {},
+    funcs: {},
+    main(rt, root) {
+      if (rt.needsInit(root, 0)) {
+        rt.initialize(root, 0, rt.newStruct(COUNTER, [0]));
+      }
+      const counter = rt.requireStruct(rt.read(root, 0, 0), COUNTER);
+      const next = Number(rt.structField(counter, COUNTER, 0)) + 1;
+      rt.storeStructField(counter, COUNTER, 0, next);
+      const envelope = rt.newStruct(ENVELOPE, [counter]);
+      rt.emitEffect(0, envelope);
+      rt.storeStructField(counter, COUNTER, 0, next + 100);
+      if (shouldFail()) throw new Error('effect step failed');
+    },
   };
 }
 
-const CHILD_MODULE = {
+const WRONG_NOMINAL_MODULE: TeaModule = {
+  abi: RUNTIME_ABI_VERSION,
+  aggregateLayouts: LAYOUTS,
   manifest: {
-    series: [{id: 'close', depth: {kind: 'none'}}],
+    series: [],
     builtin: [],
     params: [],
     outputs: [],
@@ -745,10 +199,46 @@ const CHILD_MODULE = {
     frames: [
       {
         locals: [
+          {storage: Storage.Var, depth: {kind: 'none'}, layout: ENVELOPE},
+        ],
+        subs: [],
+      },
+    ],
+  },
+  requests: [],
+  init() {},
+  bind() {},
+  funcs: {},
+  main(rt, root) {
+    if (rt.needsInit(root, 0)) {
+      rt.initialize(root, 0, rt.newStruct(COUNTER, [0]));
+    }
+  },
+};
+
+const GC_MODULE: TeaModule = {
+  abi: RUNTIME_ABI_VERSION,
+  aggregateLayouts: LAYOUTS,
+  manifest: {
+    series: [{id: 'close', depth: {kind: 'none'}}],
+    builtin: [],
+    params: [],
+    outputs: [
+      {
+        effect: 'probe',
+        staticArgs: [],
+        channels: [{name: 'old-size', type: 'int', transport: {kind: 'int'}}],
+      },
+    ],
+    effects: [],
+    requests: [],
+    frames: [
+      {
+        locals: [
           {
             storage: Storage.PerBar,
-            depth: {kind: 'none'},
-            layout: NUMBER_LAYOUT,
+            depth: {kind: 'const', bars: 2},
+            layout: ARRAY,
           },
         ],
         subs: [],
@@ -759,479 +249,156 @@ const CHILD_MODULE = {
   init() {},
   bind() {},
   funcs: {},
-  main(
-    rt: Parameters<TeaModule['main']>[0],
-    fr: Parameters<TeaModule['main']>[1],
-  ) {
-    // Bind-time params are compilation-global: pid 0 is the PARENT's param.
-    rt.write(fr, 0, rt.series(0, 0) * num(rt.param(0)));
+  main(rt, root) {
+    const close = rt.series(0, 0);
+    rt.write(root, 0, rt.callCollection('array.from', ARRAY, [close]));
+    rt.emit(
+      0,
+      0,
+      close < 3
+        ? 0
+        : rt.callCollection('array.size', NUMBER, [rt.read(root, 0, 2)]),
+    );
   },
-} satisfies ModuleCode;
+};
 
-function requestModule(
-  overrides: Partial<{
-    gaps: boolean;
-    lookahead: boolean;
-    ignoreInvalidSymbol: boolean;
-    calcBarsCount: number;
-  }>,
-): TeaModule {
-  const options = {
-    gaps: false,
-    lookahead: false,
-    ignoreInvalidSymbol: false,
-    calcBarsCount: 0,
-    ...overrides,
-  };
-  return {
-    abi: RUNTIME_ABI_VERSION,
-    aggregateLayouts: TEST_LAYOUTS,
-    manifest: {
-      series: [{id: 'close', depth: {kind: 'none'}}],
-      builtin: [],
-      params: [
-        {
-          name: 'scale',
-          title: null,
-          type: 'float',
-          control: 'auto',
-          group: null,
-          inline: null,
-          tooltip: null,
-          confirm: false,
-          display: 'all',
-          defaultValue: 10,
-          constraints: null,
-          enumType: null,
-          seriesSid: null,
-        },
-      ],
-      outputs: [
-        {
-          effect: 'plot',
-          staticArgs: [],
-          channels: [
-            {name: 'r', type: 'float', transport: {kind: 'float'}},
-            {name: 'prev', type: 'float', transport: {kind: 'float'}},
-          ],
-        },
-      ],
-      effects: [],
-      requests: [
-        {
-          merge: {mode: 'sample'},
-          depth: {kind: 'const', bars: 1},
-          resultSlot: 0,
-          layout: NUMBER_LAYOUT,
-          dynamic: false,
-        },
-      ],
-      frames: [{locals: [], subs: []}],
-    },
-    requests: [CHILD_MODULE],
-    init() {},
-    bind(rt) {
-      rt.bindRequestOptions(
-        0,
-        options.gaps,
-        options.lookahead,
-        options.ignoreInvalidSymbol,
-        options.calcBarsCount,
-      );
-      rt.bindRequest(0, 'X', '');
-    },
-    funcs: {},
-    main(rt) {
-      rt.emit(0, 0, rt.request(0, 0));
-      rt.emit(0, 1, rt.request(0, 1));
-    },
-  };
+function channels(result: StepResult) {
+  return result.output[0]?.channels;
 }
 
-describe('requests', () => {
-  const parent = () =>
-    context({close: new ArraySeries([1, 2, 3, 4, 5, 6])}, regularAxis(0, 1, 6));
-  const child = () =>
-    context({close: new ArraySeries([10, 20, 30])}, regularAxis(0, 2, 3));
+describe('JSRuntime', () => {
+  test('owns State and Intermediate across provisional and final steps', () => {
+    const runtime = new JSRuntime(
+      PROVISIONAL_MODULE,
+      [],
+      new ValueLayoutRegistry(LAYOUTS),
+    );
 
-  test('a child runs on its own context and merges committed results', async () => {
-    const sink = new RecordingSink();
-    const bound = await bind(requestModule({}), {
-      params: {},
-      provider: contexts({'': parent(), X: child()}),
-      sink,
-    });
-    await bound.runAll();
-    // Child values scale by the PARENT's param default (10): 100, 200, 300.
-    // lookahead_off over 2-span child bars: closed at t=2,4,6.
-    expect(sink.emits.map(e => e.channels[0])).toEqual([
-      NaN,
-      100,
-      100,
-      200,
-      200,
-      300,
+    expect(channels(Effect.runSync(runtime.step(input(10, true))))).toEqual([
+      10, 1,
     ]);
-    // History reads the merged view one parent row back — never the child.
-    expect(sink.emits.map(e => e.channels[1])).toEqual([
-      NaN,
-      NaN,
-      100,
-      100,
-      200,
-      200,
+    expect(channels(Effect.runSync(runtime.step(input(11, true))))).toEqual([
+      11, 2,
     ]);
+    expect(channels(Effect.runSync(runtime.step(input(12, false))))).toEqual([
+      12, 3,
+    ]);
+    expect(channels(Effect.runSync(runtime.step(input(5, false))))).toEqual([
+      17, 4,
+    ]);
+
+    runtime.dispose();
+    expect(() => Effect.runSync(runtime.step(input(1, false)))).toThrow(
+      'state-machine runtime is disposed',
+    );
   });
 
-  test('calc_bars_count zero is full; positive is an exact defensively-clamped tail; oversized stays full', async () => {
-    async function valuesFor(calcBarsCount: number): Promise<{
-      readonly values: readonly Value[];
-      readonly ranges: readonly RangeDemand[];
-    }> {
-      const ranges: RangeDemand[] = [];
-      const byId = {'': parent(), X: child()};
-      const provider: DataProvider = {
-        resolveContext(symbol, _timeframe, range) {
-          ranges.push(range);
-          // Deliberately over-return every context. The binding must still
-          // expose the exact trailing child extent it requested.
-          return Promise.resolve(
-            byId[symbol as keyof typeof byId] ?? {
-              error: 'unknownSymbol' as const,
-              detail: `no context '${symbol}'`,
-            },
-          );
-        },
-      };
-      const sink = new RecordingSink();
-      const bound = await bind(requestModule({calcBarsCount}), {
-        params: {},
-        provider,
-        sink,
-      });
-      await bound.runAll();
-      return {
-        values: sink.emits.map(event => event.channels[0]),
-        ranges,
-      };
-    }
+  test('does not advance owned state or Heap writes after a failed step', () => {
+    let fail = false;
+    const runtime = new JSRuntime(
+      structModule(() => fail),
+      [],
+      new ValueLayoutRegistry(LAYOUTS),
+    );
 
-    const full = await valuesFor(0);
-    expect(full.values).toEqual([NaN, 100, 100, 200, 200, 300]);
-    expect(full.ranges).toEqual([{kind: 'full'}, {kind: 'full'}]);
-
-    const trailing = await valuesFor(2);
-    expect(trailing.values).toEqual([NaN, NaN, NaN, 200, 200, 300]);
-    expect(trailing.ranges).toEqual([
-      {kind: 'full'},
-      {kind: 'trailing-bars', bars: 2},
-    ]);
-
-    const oversized = await valuesFor(10);
-    expect(oversized.values).toEqual(full.values);
-    expect(oversized.ranges).toEqual([
-      {kind: 'full'},
-      {kind: 'trailing-bars', bars: 10},
-    ]);
-  });
-
-  test('request options are mandatory, exact, and reject invalid bound values before child resolution', async () => {
-    const invalidCounts = [NaN, Infinity, -Infinity, -1, 1.5, 2 ** 53];
-    for (const calcBarsCount of invalidCounts) {
-      const calls: string[] = [];
-      const provider: DataProvider = {
-        resolveContext(symbol) {
-          calls.push(symbol);
-          return Promise.resolve(symbol === '' ? parent() : child());
-        },
-      };
-      await expect(
-        bind(requestModule({calcBarsCount}), {
-          params: {},
-          provider,
-          sink: new RecordingSink(),
-        }),
-      ).rejects.toThrow('request 0 has invalid bound options');
-      expect(calls).toEqual([]);
-    }
-
-    const base = requestModule({});
-    const missingOptions: TeaModule = {
-      ...base,
-      bind(rt) {
-        rt.bindRequest(0, 'X', '');
-      },
-    };
-    await expect(
-      bind(missingOptions, {
-        params: {},
-        provider: contexts({'': parent(), X: child()}),
-        sink: new RecordingSink(),
-      }),
-    ).rejects.toThrow('static request 0 has incomplete binding facts');
-
-    const invalidBoolean: TeaModule = {
-      ...base,
-      bind(rt) {
-        rt.bindRequestOptions(0, 'false', false, false, 0);
-        rt.bindRequest(0, 'X', '');
-      },
-    };
-    await expect(
-      bind(invalidBoolean, {
-        params: {},
-        provider: contexts({'': parent(), X: child()}),
-        sink: new RecordingSink(),
-      }),
-    ).rejects.toThrow('request 0 has invalid bound options');
-  });
-
-  test('a bounded child restarts bar_index at zero inside the retained tail', async () => {
-    const barIndexChild = {
-      manifest: {
-        series: [],
-        builtin: [
-          {
-            source: {domain: 'bar', field: 'bar_index'},
-            layout: NUMBER_LAYOUT,
-            depth: {kind: 'none'},
-          },
-        ],
-        params: [],
-        outputs: [],
-        effects: [],
-        requests: [],
-        frames: [
-          {
-            locals: [
-              {
-                storage: Storage.PerBar,
-                depth: {kind: 'none'},
-                layout: NUMBER_LAYOUT,
-              },
-            ],
-            subs: [],
-          },
-        ],
-      },
-      requests: [],
-      init() {},
-      bind() {},
-      funcs: {},
-      main(
-        rt: Parameters<TeaModule['main']>[0],
-        fr: Parameters<TeaModule['main']>[1],
-      ) {
-        rt.write(fr, 0, rt.builtin(0, 0));
-      },
-    } as const satisfies ModuleCode;
-    const base = requestModule({calcBarsCount: 2});
-    const module: TeaModule = {...base, requests: [barIndexChild]};
-    const sink = new RecordingSink();
-    const bound = await bind(module, {
-      params: {},
-      provider: contexts({'': parent(), X: child()}),
-      sink,
-    });
-    await bound.runAll();
-    expect(sink.emits.map(event => event.channels[0])).toEqual([
-      NaN,
-      NaN,
-      NaN,
-      0,
-      0,
+    expect(channels(Effect.runSync(runtime.step(input(0, false))))).toEqual([
       1,
     ]);
-  });
-
-  test('gaps_on merges na except where a new child bar arrived', async () => {
-    const sink = new RecordingSink();
-    const bound = await bind(
-      requestModule({gaps: true, lookahead: false, ignoreInvalidSymbol: false}),
-      {params: {}, provider: contexts({'': parent(), X: child()}), sink},
+    fail = true;
+    expect(() => Effect.runSync(runtime.step(input(0, false)))).toThrow(
+      'step failed',
     );
-    await bound.runAll();
-    expect(sink.emits.map(e => e.channels[0])).toEqual([
-      NaN,
-      100,
-      NaN,
-      200,
-      NaN,
-      300,
+    fail = false;
+    expect(channels(Effect.runSync(runtime.step(input(0, false))))).toEqual([
+      2,
     ]);
+    runtime.dispose();
   });
 
-  test('an unknown symbol is a BindError unless ignore_invalid_symbol', async () => {
-    const inputs = {
-      params: {},
-      provider: contexts({'': parent()}),
-      sink: new RecordingSink(),
-    };
-    await expect(bind(requestModule({}), inputs)).rejects.toThrow(BindError);
-
-    const sink = new RecordingSink();
-    const bound = await bind(
-      requestModule({gaps: false, lookahead: false, ignoreInvalidSymbol: true}),
-      {...inputs, sink},
+  test('snapshots nested struct effects at emit time and drops failed emissions', () => {
+    let fail = true;
+    const runtime = new JSRuntime(
+      structEffectModule(() => fail),
+      [],
+      new ValueLayoutRegistry(LAYOUTS),
     );
-    await bound.runAll();
-    expect(sink.emits.every(e => Number.isNaN(num(e.channels[0])))).toBe(true);
-  });
 
-  test('invalid request offsets cannot expose future or undefined values', async () => {
-    const module = requestModule({});
-    const probing: TeaModule = {
-      ...module,
-      main(rt) {
-        rt.emit(0, 0, rt.request(0, -1));
-        rt.emit(0, 1, rt.request(0, 100));
-      },
-    };
-    const sink = new RecordingSink();
-    const bound = await bind(probing, {
-      params: {},
-      provider: contexts({'': parent(), X: child()}),
-      sink,
-    });
-    bound.executeRow(0, false);
-    bound.commitRow(0);
-    expect(sink.emits[0].channels.every(v => Number.isNaN(num(v)))).toBe(true);
-  });
+    expect(() =>
+      Effect.runSync(
+        runtime.step({
+          series: [],
+          builtins: [],
+          requests: [],
+          provisional: false,
+        }),
+      ),
+    ).toThrow('effect step failed');
 
-  test('merge without a time axis on either context is a BindError', async () => {
-    const noAxis = context({close: new ArraySeries([1, 2, 3])}, null);
-    await expect(
-      bind(requestModule({}), {
-        params: {},
-        provider: contexts({'': noAxis, X: child()}),
-        sink: new RecordingSink(),
-      }),
-    ).rejects.toThrow('time axis');
-  });
-
-  test('nested empty request args inherit the child provider-normalized identity', async () => {
-    const innerChild = {
-      manifest: {
-        series: [{id: 'close', depth: {kind: 'none'}}],
-        builtin: [],
-        params: [],
-        outputs: [],
-        effects: [],
-        requests: [],
-        frames: [
-          {
-            locals: [
-              {
-                storage: Storage.PerBar,
-                depth: {kind: 'none'},
-                layout: NUMBER_LAYOUT,
-              },
-            ],
-            subs: [],
-          },
-        ],
-      },
-      requests: [],
-      init() {},
-      bind() {},
-      funcs: {},
-      main(
-        rt: Parameters<TeaModule['main']>[0],
-        fr: Parameters<TeaModule['main']>[1],
-      ) {
-        rt.write(fr, 0, rt.series(0, 0));
-      },
-    } as const satisfies ModuleCode;
-    const outerChild = {
-      manifest: {
+    fail = false;
+    const result = Effect.runSync(
+      runtime.step({
         series: [],
-        builtin: [],
-        params: [],
-        outputs: [],
-        effects: [],
-        requests: [
-          {
-            merge: {mode: 'sample'},
-            depth: {kind: 'none'},
-            resultSlot: 0,
-            layout: NUMBER_LAYOUT,
-            dynamic: false,
-          },
-        ],
-        frames: [
-          {
-            locals: [
-              {
-                storage: Storage.PerBar,
-                depth: {kind: 'none'},
-                layout: NUMBER_LAYOUT,
-              },
-            ],
-            subs: [],
-          },
-        ],
-      },
-      requests: [innerChild],
-      init() {},
-      bind(rt: Parameters<TeaModule['bind']>[0]) {
-        rt.bindRequestOptions(0, false, false, false, 0);
-        rt.bindRequest(0, '', '');
-      },
-      funcs: {},
-      main(
-        rt: Parameters<TeaModule['main']>[0],
-        fr: Parameters<TeaModule['main']>[1],
-      ) {
-        rt.write(fr, 0, rt.request(0, 0));
-      },
-    } as const satisfies ModuleCode;
-    const base = requestModule({});
-    const module: TeaModule = {...base, requests: [outerChild]};
-    const calls: string[] = [];
-    const rootContext = context(
-      {close: new ArraySeries([1])},
-      regularAxis(0, 1, 1),
+        builtins: [],
+        requests: [],
+        provisional: false,
+      }),
     );
-    const outerContext: ProviderContext = {
-      rows: 1,
-      axis: regularAxis(0, 1, 1),
-      series: () => null,
-      builtinValue(source) {
-        if (source.domain === 'syminfo' && source.field === 'tickerid') {
-          return 'CANON:X';
-        }
-        if (source.domain === 'timeframe' && source.field === 'period') {
-          return 'M';
-        }
-        return undefined;
+    expect(result.effects).toEqual([
+      {
+        effectId: 0,
+        payload: {
+          kind: 'struct',
+          fields: [{kind: 'struct', fields: [1]}],
+        },
       },
-    };
-    const innerContext = context(
-      {close: new ArraySeries([7])},
-      regularAxis(0, 1, 1),
+    ]);
+    runtime.dispose();
+  });
+
+  test('rejects nominally wrong struct values at State initialization', () => {
+    const runtime = new JSRuntime(
+      WRONG_NOMINAL_MODULE,
+      [],
+      new ValueLayoutRegistry(LAYOUTS),
     );
-    const provider: DataProvider = {
-      resolveContext(symbol, timeframe) {
-        calls.push(`${symbol}|${timeframe}`);
-        if (symbol === '') {
-          return Promise.resolve(rootContext);
-        }
-        if (symbol === 'X' && timeframe === '') {
-          return Promise.resolve(outerContext);
-        }
-        if (symbol === 'CANON:X' && timeframe === 'M') {
-          return Promise.resolve(innerContext);
-        }
-        return Promise.resolve({
-          error: 'unknownSymbol' as const,
-          detail: `unexpected pair '${symbol}','${timeframe}'`,
-        });
-      },
-    };
-    const sink = new RecordingSink();
-    const bound = await bind(module, {params: {}, provider, sink});
-    await bound.runAll();
-    expect(calls).toEqual(['|', 'X|', 'CANON:X|M']);
-    expect(sink.emits.map(event => event.channels[0])).toEqual([7]);
+    expect(() =>
+      Effect.runSync(
+        runtime.step({
+          series: [],
+          builtins: [],
+          requests: [],
+          provisional: false,
+        }),
+      ),
+    ).toThrow("references 'Counter', expected 'Envelope'");
+    runtime.dispose();
+  });
+
+  test('accepts provider NaN but fails closed when a read sees infinity', () => {
+    const runtime = new JSRuntime(
+      PROVISIONAL_MODULE,
+      [],
+      new ValueLayoutRegistry(LAYOUTS),
+    );
+    const na = Effect.runSync(runtime.step(input(NaN, false)));
+    expect(Number.isNaN(na.output[0]?.channels[0] as number)).toBe(true);
+    expect(() => Effect.runSync(runtime.step(input(Infinity, false)))).toThrow(
+      'provider series 0 returned a non-finite value',
+    );
+    runtime.dispose();
+  });
+
+  test('collects from retained owner state rather than a provisional candidate', () => {
+    const runtime = new JSRuntime(
+      GC_MODULE,
+      [],
+      new ValueLayoutRegistry(LAYOUTS),
+    );
+
+    Effect.runSync(runtime.step(input(1, false)));
+    Effect.runSync(runtime.step(input(2, false)));
+    expect(channels(Effect.runSync(runtime.step(input(3, true))))).toEqual([1]);
+    expect(channels(Effect.runSync(runtime.step(input(4, true))))).toEqual([1]);
+    runtime.dispose();
   });
 });

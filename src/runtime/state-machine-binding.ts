@@ -1,6 +1,6 @@
 // Purpose: Temporary fixed-historical BoundProgram adapter over the
 // state-owning step runtime. This preserves legacy host call sites while
-// StateMachineRuntime.step remains the only execution semantic core.
+// JSRuntime.step remains the only execution semantic core.
 
 import {Effect} from 'effect';
 import {fatal} from '../base/print';
@@ -31,10 +31,10 @@ import {
   type SeriesData,
 } from './provider';
 import {
-  StateMachineRuntime,
-  type StateMachineRuntimeOptions,
+  JSRuntime,
+  type JSRuntimeOptions,
   type StepResult,
-} from './state-machine-runtime';
+} from './js-runtime';
 import {isTupleValue, type Value} from './value';
 import {
   type AggregateLayoutManifest,
@@ -69,7 +69,7 @@ interface RequestEnvironment {
   readonly aggregateLayouts: AggregateLayoutManifest;
   readonly timeNow: number;
   readonly maxCollectionElements: number;
-  readonly heapLimits: StateMachineRuntimeOptions['heapLimits'];
+  readonly heapLimits: JSRuntimeOptions['heapLimits'];
   readonly contextBudget: {used: number; readonly max: number};
   readonly stateStorage: {
     usedLogicalBytes: number;
@@ -164,7 +164,7 @@ export async function bindStateMachine(
   const builtins = bindBuiltins(facts, context, layouts, timeNow);
   const workspace = reserveWorkspace(facts, environment, 'root state');
   let requests: readonly RequestView[] = [];
-  let runtime: StateMachineRuntime | null = null;
+  let runtime: JSRuntime | null = null;
   try {
     requests = await bindStaticRequests(
       facts,
@@ -172,7 +172,7 @@ export async function bindStateMachine(
       contextIdentity,
       environment,
     );
-    runtime = new StateMachineRuntime(
+    runtime = new JSRuntime(
       facts.code,
       facts.params.map(param => param.value),
       layouts,
@@ -210,7 +210,7 @@ class FixedHistoricalStateMachineBinding implements BoundProgram {
   private terminalSinkFailure: unknown | null = null;
 
   constructor(
-    private readonly runtime: StateMachineRuntime,
+    private readonly runtime: JSRuntime,
     inputs: readonly BoundInput[],
     private readonly context: ProviderContext,
     private readonly series: readonly SeriesData[],
@@ -486,7 +486,7 @@ async function runRequestChild(
   const workspace = reserveWorkspace(facts, environment, 'request child state');
   let requests: readonly RequestView[] = [];
   let resultLease: StateStorageLease | null = null;
-  let runtime: StateMachineRuntime | null = null;
+  let runtime: JSRuntime | null = null;
   let completed = false;
   try {
     requests = await bindStaticRequests(
@@ -501,7 +501,7 @@ async function runRequestChild(
       context.rows,
       'request result column',
     );
-    runtime = new StateMachineRuntime(
+    runtime = new JSRuntime(
       facts.code,
       environment.params,
       environment.layouts,

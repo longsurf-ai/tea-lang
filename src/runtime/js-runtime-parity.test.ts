@@ -13,11 +13,7 @@ import {
   type TeaModule,
   type Value,
 } from './abi';
-import {
-  StateMachineRuntime,
-  type StepInput,
-  type StepResult,
-} from './state-machine-runtime';
+import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
 import {ValueLayoutRegistry} from './value-layout';
 
 const NUMBER = 0;
@@ -39,8 +35,8 @@ const LAYOUTS = {
   ],
 } as const satisfies AggregateLayoutManifest;
 
-function runtime(module: TeaModule): StateMachineRuntime {
-  return new StateMachineRuntime(module, [], new ValueLayoutRegistry(LAYOUTS));
+function runtime(module: TeaModule): JSRuntime {
+  return new JSRuntime(module, [], new ValueLayoutRegistry(LAYOUTS));
 }
 
 function input({
@@ -55,7 +51,7 @@ function input({
   return {series, builtins, requests: [], provisional};
 }
 
-function run(target: StateMachineRuntime, next: StepInput): StepResult {
+function run(target: JSRuntime, next: StepInput): StepResult {
   return Effect.runSync(target.step(next));
 }
 
@@ -270,7 +266,7 @@ function arrayStateModule(): TeaModule {
   };
 }
 
-describe('StateMachineRuntime core parity', () => {
+describe('JSRuntime core parity', () => {
   test('written call sites own independent persistent state', () => {
     const target = runtime(COUNTER_MODULE);
     expect(channels(run(target, input()))).toEqual([1, 1]);
