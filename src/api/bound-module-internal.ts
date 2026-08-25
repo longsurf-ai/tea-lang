@@ -3,7 +3,7 @@
 
 import type {TeaModule} from '../runtime/module-abi';
 import type {BoundModule} from './binding';
-import type {BoundModuleFacts} from './module-binding';
+import type {BoundModuleFacts} from '../runtime/module-binding';
 
 interface BoundModuleState {
   readonly code: TeaModule;

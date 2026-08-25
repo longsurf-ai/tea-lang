@@ -7,11 +7,11 @@ import type {
   ModuleCode,
   Runtime,
   TeaModule,
-} from '../runtime/module-abi';
-import type {BoundInput} from '../runtime/binding';
-import type {ExecutionDeclaration} from '../runtime/output';
-import {isHistoryOffset} from '../runtime/ring';
-import type {Value} from '../runtime/value';
+} from './module-abi';
+import type {BoundInput} from './binding';
+import type {ExecutionDeclaration} from './output';
+import {isHistoryOffset} from './ring';
+import type {Value} from './value';
 
 export interface BindingRetention {
   readonly frames: readonly (readonly number[])[];

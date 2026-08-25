@@ -19,7 +19,7 @@ import {
   evaluateModuleBinding,
   freezeGeneratedModule,
   type BoundModuleFacts,
-} from './module-binding';
+} from '../runtime/module-binding';
 
 export type Binding =
   | {
