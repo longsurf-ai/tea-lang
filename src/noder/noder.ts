@@ -725,9 +725,8 @@ class Noder {
       init.kind === IrKind.HistRead &&
       init.offset === null &&
       init.place.kind !== PlaceKind.Name &&
-      // Dynamic request reads must EXECUTE per row (rt.requestFor); an
-      // alias would erase the execution, so the declaration stays a real
-      // per-row Name write.
+      // Keep an unsupported dynamic request materialized until the recursive
+      // fail-closed support check reports it; never project it as an alias.
       !(init.place.kind === PlaceKind.Request && init.place.request.dynamic) &&
       rebindable &&
       d.mode === Mode.None
@@ -1310,9 +1309,8 @@ class Noder {
     if (
       x.kind === IrKind.HistRead &&
       x.offset === null &&
-      // A dynamic request read cannot collapse into an offset read — the
-      // offset-0 read is its execution. A direct source Name remains a real
-      // Ring precisely so history never targets requestFor itself.
+      // Keep an unsupported dynamic request materialized until the recursive
+      // fail-closed support check reports it; never project history past it.
       !(x.place.kind === PlaceKind.Request && x.place.request.dynamic)
     ) {
       return {
@@ -1630,9 +1628,9 @@ class Noder {
     return this.requestRead(c, edge, tv);
   }
 
-  // A dynamic edge's offset-0 read is its EXECUTION (rt.requestFor), so
-  // reads must materialize where the call appears: no alias binding, no
-  // history collapse onto the place — history rides a real per-row Name.
+  // Dynamic edges are rejected after the complete Program tree is built.
+  // Until then, keep their reads materialized so alias/history projection
+  // cannot erase the unsupported call site before its diagnostic is emitted.
   private requestRead(
     c: syntax.CallExpr,
     edge: RequestEdge,

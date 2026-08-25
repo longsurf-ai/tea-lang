@@ -267,10 +267,6 @@ class FixedHistoricalStateMachineBinding implements BoundProgram {
     this.publish(row, pending.result);
   }
 
-  async resolvePending(): Promise<void> {
-    this.assertLive();
-  }
-
   async runAll(): Promise<void> {
     this.assertLive();
     if (this.pending !== null) {

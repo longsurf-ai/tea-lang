@@ -282,7 +282,6 @@ class Generator {
   private readonly effectIds = new Map<EffectDecl, number>();
   private readonly funcIds = new Map<IrFunc, number>();
   private readonly requestIds = new Map<RequestEdge, number>();
-  private readonly dynamicRequests = new Set<RequestEdge>();
   private tempCounter = 0;
 
   constructor(
@@ -299,12 +298,10 @@ class Generator {
     this.builtins = builtinInputsOf(program);
     this.requests = requestsOf(program);
     this.requests.forEach((edge, rid) => {
-      this.requestIds.set(edge, rid);
-      // The noder owns this classification while the expression's frame is
-      // known. Dynamic edges have no bind-time pair and use rt.requestFor.
       if (edge.dynamic) {
-        this.dynamicRequests.add(edge);
+        return fatal('dynamic request reached generated JavaScript lowering');
       }
+      this.requestIds.set(edge, rid);
     });
 
     this.series.forEach((s, sid) => this.seriesIds.set(s, sid));
@@ -356,7 +353,6 @@ class Generator {
       effectIds: this.effectIds,
       funcIds: this.funcIds,
       requestIds: this.requestIds,
-      dynamicRequests: this.dynamicRequests,
       moduleRef: this.moduleRef,
       layoutOf: type => this.emitter.layoutOf(type),
       currentFid: fid,
@@ -491,8 +487,7 @@ class Generator {
         );
       });
     });
-    // Every edge binds its options exactly once. A static edge separately
-    // binds its context pair; a dynamic edge evaluates that pair per row.
+    // Every supported edge binds its options and fixed context pair once.
     this.requests.forEach((edge, rid) => {
       const [gaps, lookahead, ignoreInvalidSymbol, calcBarsCount] =
         captureArguments(
@@ -510,9 +505,6 @@ class Generator {
       lines.push(
         `rt.bindRequestOptions(${rid}, (${gaps}), (${lookahead}), (${ignoreInvalidSymbol}), (${calcBarsCount}));`,
       );
-      if (this.dynamicRequests.has(edge)) {
-        return;
-      }
       const [symbol, timeframe] = captureArguments(
         [edge.symbol, edge.timeframe],
         edge.contextArgumentEvaluationOrder,
@@ -655,7 +647,7 @@ class Generator {
         depth: depthSpec(edge.depth),
         resultSlot: children[rid].resultSlot,
         layout: this.emitter.layoutOf(edge.resultType),
-        dynamic: this.dynamicRequests.has(edge),
+        dynamic: false,
       };
     });
 

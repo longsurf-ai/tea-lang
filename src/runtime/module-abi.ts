@@ -115,8 +115,8 @@ export interface Frame {
 export interface ModuleCode {
   readonly manifest: ModuleManifest;
   readonly requests: readonly ModuleCode[];
-  init(rt: Runtime): void;
-  bind(rt: Runtime, fr: Frame): void;
+  init(ctx: ModuleBindContext): void;
+  bind(ctx: ModuleBindContext, fr: Frame): void;
   readonly funcs: Readonly<
     Record<
       number,
@@ -131,16 +131,7 @@ export interface TeaModule extends ModuleCode {
   readonly aggregateLayouts: AggregateLayoutManifest;
 }
 
-export interface ContextBudget {
-  used: number;
-  readonly max: number;
-}
-
-export interface FixedValueStorageBudget {
-  usedLogicalBytes: number;
-  readonly maxLogicalBytes: number;
-}
-
+/** Generated per-row execution operations. Runtime always means execution. */
 export interface Runtime {
   series(sid: number, offset: number): number;
   builtin(bid: number, offset: number): Value;
@@ -150,11 +141,41 @@ export interface Runtime {
   needsInit(fr: Frame, slot: number): boolean;
   initialize(fr: Frame, slot: number, v: Value): void;
   request(rid: number, offset: number): Value;
-  requestFor(rid: number, symbol: Value, timeframe: Value): Value;
   frame(fr: Frame, slot: number): Frame;
   root(): Frame;
   emit(oid: number, channel: number, v: Value): void;
   emitEffect(effectId: number, payload: Value): void;
+  newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown>;
+  requireStruct(value: Value, layout: LayoutId): Ref<unknown>;
+  structField(value: Value, ownerLayout: LayoutId, index: number): Value;
+  storeStructField(
+    value: Value,
+    ownerLayout: LayoutId,
+    index: number,
+    replacement: Value,
+  ): void;
+  callCollection(
+    operation: CollectionOperation,
+    resultLayout: LayoutId,
+    args: readonly Value[],
+  ): Value;
+  mutateCollection(
+    operation: CollectionMutationOperation,
+    collectionLayout: LayoutId,
+    receiver: Value,
+    args: readonly Value[],
+  ): CollectionMutation;
+  collectionEntries(value: Value): CollectionEntries;
+}
+
+/** Private generated callback surface used only by ModuleCode.init/bind. */
+export interface ModuleBindContext {
+  builtin(bid: number, offset: number): Value;
+  param(pid: number): Value;
+  read(fr: Frame, slot: number, offset: number): Value;
+  write(fr: Frame, slot: number, v: Value): void;
+  frame(fr: Frame, slot: number): Frame;
+  root(): Frame;
   historyDepth(offset: number): number;
   bindDepth(fid: number, slot: number, bars: number): void;
   bindSeriesDepth(sid: number, bars: number): void;

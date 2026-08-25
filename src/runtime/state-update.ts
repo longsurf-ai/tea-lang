@@ -425,48 +425,6 @@ class StateUpdateContext implements Runtime {
     });
   }
 
-  requestFor(_rid: number, _symbol: Value, _timeframe: Value): Value {
-    return fatal('dynamic requests are not supported by StateUpdate');
-  }
-
-  historyDepth(_offset: number): number {
-    return unimplemented('state update: bind history depth');
-  }
-
-  bindDepth(_fid: number, _slot: number, _bars: number): void {
-    unimplemented('state update: bind local depth');
-  }
-
-  bindSeriesDepth(_sid: number, _bars: number): void {
-    unimplemented('state update: bind series depth');
-  }
-
-  bindBuiltinDepth(_bid: number, _bars: number): void {
-    unimplemented('state update: bind builtin depth');
-  }
-
-  bindOutput(_oid: number, _argName: string, _value: Value): void {
-    unimplemented('state update: bind output');
-  }
-
-  bindParamActive(_pid: number, _active: Value): void {
-    unimplemented('state update: bind parameter active');
-  }
-
-  bindRequestOptions(
-    _rid: number,
-    _gaps: Value,
-    _lookahead: Value,
-    _ignoreInvalidSymbol: Value,
-    _calcBarsCount: Value,
-  ): void {
-    unimplemented('state update: bind request options');
-  }
-
-  bindRequest(_rid: number, _symbol: Value, _timeframe: Value): void {
-    unimplemented('state update: bind request');
-  }
-
   newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown> {
     return this.structs.newStruct(this.mustTransaction(), layout, fields);
   }

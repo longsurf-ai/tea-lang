@@ -47,7 +47,6 @@ describe('finite-or-na helpers', () => {
       effectIds: new Map(),
       funcIds: new Map(),
       requestIds: new Map(),
-      dynamicRequests: new Set(),
       moduleRef: 'M',
       layoutOf: () => 0,
       currentFid: 0,

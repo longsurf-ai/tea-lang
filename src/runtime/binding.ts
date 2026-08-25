@@ -31,7 +31,6 @@ export interface BoundProgram {
   readonly rows: number;
   readonly inputs: readonly BoundInput[];
   executeRow(row: number, provisional: boolean): void;
-  resolvePending(): Promise<void>;
   commitRow(row: number): void;
   dispose(): void;
   runAll(): Promise<void>;

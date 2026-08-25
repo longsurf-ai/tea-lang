@@ -11,8 +11,8 @@ import {
   type CollectionOperation,
   type DepthSpec,
   type Frame,
+  type ModuleBindContext,
   type ModuleCode,
-  type Runtime,
   type TeaModule,
 } from './module-abi';
 import type {BindInputs, BoundInput} from './binding';
@@ -333,7 +333,6 @@ const UNSET = Symbol('unset binding value');
 class BindFrame implements Frame {
   readonly kind = 'frame' as const;
   readonly values: (Value | typeof UNSET)[];
-  readonly initialized: boolean[];
   readonly subs: (BindFrame | null)[];
 
   constructor(
@@ -342,17 +341,13 @@ class BindFrame implements Frame {
     subCount: number,
   ) {
     this.values = new Array(localCount).fill(UNSET);
-    this.initialized = new Array(localCount).fill(false);
     this.subs = new Array(subCount).fill(null);
   }
 }
 
 // Compatibility evaluator for the current generated bind callback. It is a
-// private implementation detail of evaluateModuleBinding, not another public
-// runtime abstraction. A proxy rejects every execution-only Runtime method,
-// so this class does not reproduce that interface or its execution semantics.
-class ModuleBindEvaluation {
-  private readonly runtimeOperations: Runtime;
+// private implementation detail of evaluateModuleBinding, not a Runtime.
+class ModuleBindEvaluation implements ModuleBindContext {
   private readonly rootFrame: BindFrame;
   private readonly localDepths: (number | null)[][];
   private readonly seriesDepths: (number | null)[];
@@ -403,21 +398,10 @@ class ModuleBindEvaluation {
     this.outputArgs = code.manifest.outputs.map(() => []);
     this.requestOptions = code.manifest.requests.map(() => null);
     this.requestPairs = code.manifest.requests.map(() => null);
-    this.runtimeOperations = new Proxy(this as unknown as Runtime, {
-      get: (target, property) => {
-        const operation = Reflect.get(target, property, target);
-        if (operation === undefined) {
-          return () => this.unsupported(String(property));
-        }
-        return typeof operation === 'function'
-          ? operation.bind(this)
-          : operation;
-      },
-    });
   }
 
-  operations(): Runtime {
-    return this.runtimeOperations;
+  operations(): ModuleBindContext {
+    return this;
   }
 
   finish(): BoundModuleFacts {
@@ -527,17 +511,6 @@ class ModuleBindEvaluation {
     owner.values[slot] = value;
   }
 
-  needsInit(frame: Frame, slot: number): boolean {
-    const owner = this.requireLocal(frame, slot);
-    return !owner.initialized[slot];
-  }
-
-  initialize(frame: Frame, slot: number, value: Value): void {
-    const owner = this.requireLocal(frame, slot);
-    owner.values[slot] = value;
-    owner.initialized[slot] = true;
-  }
-
   historyDepth(offset: number): number {
     return retentionForOffset(offset);
   }
@@ -626,12 +599,6 @@ class ModuleBindEvaluation {
       );
     }
     this.requestPairs[rid] = deepFreeze({symbol, timeframe});
-  }
-
-  series(_sid: number, _offset: number): number {
-    // The legacy provisional bind frame has cursor -1, so every series read
-    // is before the first row and therefore observes numeric na.
-    return Number.NaN;
   }
 
   builtin(bid: number, offset: number): Value {

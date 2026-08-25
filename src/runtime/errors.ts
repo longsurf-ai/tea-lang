@@ -9,18 +9,6 @@ export class BindError extends OperationalError {
   }
 }
 
-// A dynamic request met a pair with no resolved context. Control flow, not a
-// failure: the host awaits resolvePending() and re-executes the row.
-export class ContextSuspension extends Error {
-  constructor(
-    readonly symbol: string,
-    readonly timeframe: string,
-  ) {
-    super(`unresolved request context '${symbol}','${timeframe}'`);
-    this.name = 'ContextSuspension';
-  }
-}
-
 export class RequestError extends OperationalError {
   constructor(msg: string) {
     super(msg);
