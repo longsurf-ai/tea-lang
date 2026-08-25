@@ -23,6 +23,7 @@ import {
   type StructType,
 } from '../ir/type';
 import {generate} from './codegen';
+import {loadModule} from '../runtime/load';
 
 const pos = {base: {filename: 'aggregate-layout.test.tea'}, line: 1, col: 1};
 
@@ -112,7 +113,7 @@ describe('aggregate layout projection', () => {
     };
 
     const source = generate(ir);
-    const module = new Function(source)() as {
+    const module = loadModule(source) as {
       readonly abi: number;
       readonly aggregateLayouts: {readonly layouts: readonly unknown[]};
       readonly manifest: {

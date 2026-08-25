@@ -5,12 +5,13 @@ import type {CompiledWgslProgram} from '../../gpu/contract';
 import {compileProgramToWgsl} from '../../codegen/wgsl';
 import {mustBuild} from '../../noder/testing';
 import {MemorySink} from '../../providers/sinks/memory-sink';
-import type {
-  BindInputs,
-  ContextError,
-  DataProvider,
-  ProviderContext,
-  SeriesData,
+import {
+  RUNTIME_ABI_VERSION,
+  type BindInputs,
+  type ContextError,
+  type DataProvider,
+  type ProviderContext,
+  type SeriesData,
 } from '../abi';
 import {
   createGpuExecution,
@@ -912,7 +913,7 @@ describe('GPU execution preparation', () => {
           bindingModule: {
             ...artifact.bindingModule,
             source: artifact.bindingModule.source.replace(
-              '  abi: 2,',
+              `  abi: ${RUNTIME_ABI_VERSION},`,
               '  abi: 999,',
             ),
           },

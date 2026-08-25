@@ -2,7 +2,6 @@
 // host-boundary, ABI, and disposal integration tests for the step runtime.
 
 import {describe, expect, test} from 'vitest';
-import {InternalError} from '../base/print';
 import {Storage} from '../ir/node';
 import {
   BindError,
@@ -18,6 +17,7 @@ import {
   type Value,
 } from './abi';
 import {bindFixedHistory as bindRuntime} from './fixed-history';
+import {staticModuleBinding} from './testing';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
 
@@ -127,8 +127,9 @@ function arrayStateModule(): JSModule {
       ],
     },
     requests: [],
-    init() {},
-    bind() {},
+    bind() {
+      return staticModuleBinding(this);
+    },
     funcs: {},
     main(rt, fr) {
       if (rt.needsInit(fr, 0)) {
@@ -179,8 +180,9 @@ describe('aggregate state and commit integration', () => {
         ],
       },
       requests: [],
-      init() {},
-      bind() {},
+      bind() {
+        return staticModuleBinding(this);
+      },
       funcs: {},
       main(rt, fr) {
         if (rt.needsInit(fr, 0)) {
@@ -360,8 +362,9 @@ describe('aggregate state and commit integration', () => {
         ],
       },
       requests: [],
-      init() {},
-      bind() {},
+      bind() {
+        return staticModuleBinding(this);
+      },
       funcs: {},
       main(rt, fr) {
         if (rt.needsInit(fr, 0)) {
@@ -473,8 +476,9 @@ describe('aggregate state and commit integration', () => {
         ],
       },
       requests: [],
-      init() {},
-      bind() {},
+      bind() {
+        return staticModuleBinding(this);
+      },
       funcs: {},
       main(rt, fr) {
         if (rt.needsInit(fr, 0)) {
@@ -559,8 +563,9 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      init() {},
-      bind() {},
+      bind() {
+        return staticModuleBinding(this);
+      },
       funcs: {},
       main(rt, fr) {
         rt.write(fr, 0, rt.callCollection('array.from', ARRAY, [41]));
@@ -596,10 +601,19 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [leaf],
-      init() {},
-      bind(rt) {
-        rt.bindRequestOptions(0, false, false, false, 0);
-        rt.bindRequest(0, 'LEAF', '');
+      bind() {
+        return staticModuleBinding(this, {
+          requests: [
+            {
+              symbol: 'LEAF',
+              timeframe: '',
+              gaps: false,
+              lookahead: false,
+              ignoreInvalidSymbol: false,
+              calcBarsCount: 0,
+            },
+          ],
+        });
       },
       funcs: {},
       main(rt, fr) {
@@ -629,10 +643,19 @@ describe('request Heap isolation', () => {
         frames: [{locals: [], subs: []}],
       },
       requests: [middle],
-      init() {},
-      bind(rt) {
-        rt.bindRequestOptions(0, false, false, false, 0);
-        rt.bindRequest(0, 'MID', '');
+      bind() {
+        return staticModuleBinding(this, {
+          requests: [
+            {
+              symbol: 'MID',
+              timeframe: '',
+              gaps: false,
+              lookahead: false,
+              ignoreInvalidSymbol: false,
+              calcBarsCount: 0,
+            },
+          ],
+        });
       },
       funcs: {},
       main(rt) {
@@ -687,8 +710,9 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      init() {},
-      bind() {},
+      bind() {
+        return staticModuleBinding(this);
+      },
       funcs: {},
       main(rt, fr) {
         const value = [41, 42] as const;
@@ -725,10 +749,19 @@ describe('request Heap isolation', () => {
         frames: [{locals: [], subs: []}],
       },
       requests: [child],
-      init() {},
-      bind(rt) {
-        rt.bindRequestOptions(0, false, false, false, 0);
-        rt.bindRequest(0, 'X', '');
+      bind() {
+        return staticModuleBinding(this, {
+          requests: [
+            {
+              symbol: 'X',
+              timeframe: '',
+              gaps: false,
+              lookahead: false,
+              ignoreInvalidSymbol: false,
+              calcBarsCount: 0,
+            },
+          ],
+        });
       },
       funcs: {},
       main(rt) {
@@ -794,8 +827,9 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      init() {},
-      bind() {},
+      bind() {
+        return staticModuleBinding(this);
+      },
       funcs: {},
       main(rt, fr) {
         rt.write(fr, 0, rt.series(0, 0));
@@ -841,12 +875,16 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [child, child],
-      init() {},
-      bind(rt) {
-        rt.bindRequestOptions(0, false, false, false, 0);
-        rt.bindRequestOptions(1, false, false, false, 0);
-        rt.bindRequest(0, 'X', '');
-        rt.bindRequest(1, 'X', '');
+      bind() {
+        const request = {
+          symbol: 'X',
+          timeframe: '',
+          gaps: false,
+          lookahead: false,
+          ignoreInvalidSymbol: false,
+          calcBarsCount: 0,
+        } as const;
+        return staticModuleBinding(this, {requests: [request, request]});
       },
       funcs: {},
       main(rt) {
@@ -913,8 +951,9 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      init() {},
-      bind() {},
+      bind() {
+        return staticModuleBinding(this);
+      },
       funcs: {},
       main(rt, fr) {
         if (rt.needsInit(fr, 1)) {
@@ -964,10 +1003,19 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [child],
-      init() {},
-      bind(rt) {
-        rt.bindRequestOptions(0, false, false, false, 0);
-        rt.bindRequest(0, 'X', '');
+      bind() {
+        return staticModuleBinding(this, {
+          requests: [
+            {
+              symbol: 'X',
+              timeframe: '',
+              gaps: false,
+              lookahead: false,
+              ignoreInvalidSymbol: false,
+              calcBarsCount: 0,
+            },
+          ],
+        });
       },
       funcs: {},
       main(rt, fr) {
@@ -991,72 +1039,6 @@ describe('request Heap isolation', () => {
 });
 
 describe('runtime boundaries', () => {
-  test('bind-time aggregate storage is abort-only and cannot remain retained', async () => {
-    let escaped: Value | undefined;
-    let rejection = '';
-    const module: JSModule = {
-      abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
-      manifest: {
-        series: [],
-        builtin: [],
-        params: [],
-        outputs: [OUTPUT],
-        effects: [],
-        requests: [],
-        frames: [
-          {
-            locals: [
-              {storage: Storage.Var, depth: {kind: 'none'}, layout: ARRAY},
-            ],
-            subs: [],
-          },
-        ],
-      },
-      requests: [],
-      init() {},
-      bind(rt, fr) {
-        escaped = rt.callCollection('array.from', ARRAY, [7]);
-        rt.write(fr, 0, escaped);
-      },
-      funcs: {},
-      main(rt, fr) {
-        if (escaped === undefined) {
-          throw new Error('bind did not execute');
-        }
-        try {
-          rt.callCollection('array.first', INT, [escaped]);
-        } catch (error) {
-          if (!(error instanceof InternalError)) {
-            throw error;
-          }
-          rejection = error.message;
-        }
-        const live = rt.callCollection('array.from', ARRAY, [8]);
-        rt.write(fr, 0, live);
-        rt.emit(0, 0, rt.callCollection('array.first', INT, [live]));
-      },
-    };
-    const sink = new Sink();
-    const bound = await bind(module, {
-      params: {},
-      provider: provider(context(1)),
-      sink,
-      // Both bind and execution may allocate one cell in their own transaction;
-      // only execution's cell may remain retained afterward.
-      maxHeapStorageCells: 1,
-      maxHeapLogicalBytes: 24,
-      maxHeapTransientStorageCells: 1,
-      maxHeapTransientLogicalBytes: 24,
-      maxFixedValueLogicalBytes: 64,
-    });
-
-    await bound.runAll();
-    expect(rejection).toContain('Ref belongs to another Heap arena');
-    expect(sink.values.map(entry => entry.values)).toEqual([[8]]);
-    bound.dispose();
-  });
-
   test('all host budgets reject invalid limits at the bind boundary', async () => {
     const names = [
       'maxRequestContexts',
@@ -1133,8 +1115,9 @@ describe('runtime boundaries', () => {
         ],
       },
       requests: [],
-      init() {},
-      bind() {},
+      bind() {
+        return staticModuleBinding(this);
+      },
       funcs: {},
       main(rt, fr) {
         rt.frame(fr, requestLargeFrame ? 0 : 1);
@@ -1164,19 +1147,21 @@ describe('runtime boundaries', () => {
     ).rejects.toThrow('FIXED_VALUE_STORAGE_LIMIT_EXCEEDED');
   });
 
-  test('a non-current ABI is rejected before init or bind code runs', async () => {
-    let initialized = false;
+  test('a non-current ABI is rejected before bind code runs', async () => {
+    let bound = false;
+    const current = arrayStateModule();
     const old = {
-      ...arrayStateModule(),
-      abi: 1,
-      init() {
-        initialized = true;
+      ...current,
+      abi: 2,
+      bind() {
+        bound = true;
+        return staticModuleBinding(current);
       },
     } as unknown as JSModule;
     await expect(
       bind(old, {params: {}, provider: provider(), sink: new Sink()}),
-    ).rejects.toThrow('unsupported module ABI 1; expected 2');
-    expect(initialized).toBe(false);
+    ).rejects.toThrow('unsupported module ABI 2; expected 3');
+    expect(bound).toBe(false);
   });
 
   test('dispose aborts a pending final row and is idempotent', async () => {

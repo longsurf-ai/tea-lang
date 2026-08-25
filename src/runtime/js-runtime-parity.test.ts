@@ -14,6 +14,7 @@ import {
   type Value,
 } from './abi';
 import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
+import {staticModuleBinding} from './testing';
 import {ValueLayoutRegistry} from './value-layout';
 
 const NUMBER = 0;
@@ -93,8 +94,9 @@ const COUNTER_MODULE: JSModule = {
     ],
   },
   requests: [],
-  init() {},
-  bind() {},
+  bind() {
+    return staticModuleBinding(this);
+  },
   funcs: {1: counter},
   main(rt, root) {
     rt.emit(0, 0, counter(rt, rt.frame(root, 0)));
@@ -146,8 +148,9 @@ const TYPED_HISTORY_MODULE: JSModule = {
     ],
   },
   requests: [],
-  init() {},
-  bind() {},
+  bind() {
+    return staticModuleBinding(this);
+  },
   funcs: {},
   main(rt, root) {
     rt.write(root, 0, 7);
@@ -191,8 +194,9 @@ const TICK_MODULE: JSModule = {
     ],
   },
   requests: [],
-  init() {},
-  bind() {},
+  bind() {
+    return staticModuleBinding(this);
+  },
   funcs: {},
   main(rt, root) {
     if (rt.needsInit(root, 0)) rt.initialize(root, 0, 0);
@@ -238,8 +242,9 @@ function arrayStateModule(): JSModule {
       ],
     },
     requests: [],
-    init() {},
-    bind() {},
+    bind() {
+      return staticModuleBinding(this);
+    },
     funcs: {},
     main(rt, root) {
       if (rt.needsInit(root, 0)) {
@@ -394,8 +399,9 @@ describe('JSRuntime core parity', () => {
         ],
       },
       requests: [],
-      init() {},
-      bind() {},
+      bind() {
+        return staticModuleBinding(this);
+      },
       funcs: {},
       main(rt, root) {
         if (!invoke) {
@@ -463,8 +469,9 @@ describe('JSRuntime core parity', () => {
         ],
       },
       requests: [],
-      init() {},
-      bind() {},
+      bind() {
+        return staticModuleBinding(this);
+      },
       funcs: {},
       main(rt, root) {
         if (rt.needsInit(root, 0)) {

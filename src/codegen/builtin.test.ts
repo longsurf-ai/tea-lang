@@ -12,6 +12,7 @@ import type {BuiltinInput, Program} from '../ir/program';
 import {BoolType, IntType, Qualifier, StringType, type Type} from '../ir/type';
 import {mustBuild} from '../noder/testing';
 import {RUNTIME_ABI_VERSION, type JSModule} from '../runtime/abi';
+import {loadModule} from '../runtime/load';
 import {generate} from './codegen';
 
 const pos = {
@@ -84,13 +85,7 @@ describe('typed builtin lowering', () => {
     };
 
     const source = generate(program);
-    const module = new Function(source)() as {
-      readonly abi: number;
-      readonly manifest: {
-        readonly series: readonly unknown[];
-        readonly builtin: readonly unknown[];
-      };
-    };
+    const module = loadModule(source);
 
     expect(module.abi).toBe(RUNTIME_ABI_VERSION);
     expect(module.manifest.series).toEqual([]);
@@ -111,7 +106,12 @@ describe('typed builtin lowering', () => {
         depth: {kind: 'none'},
       },
     ]);
-    expect(source).toContain('rt.bindBuiltinDepth(0, (3));');
+    expect(
+      module.bind({
+        params: [],
+        builtins: new Map([[2, 'NASDAQ:AAPL']]),
+      }).retention.builtins,
+    ).toEqual([3, 0, 0]);
     expect(source).toMatch(/rt\.builtin\(0, t\d+\)/);
     expect(source).toContain('rt.builtin(1, 0)');
     expect(source).toContain('rt.builtin(2, 0)');
@@ -121,7 +121,7 @@ describe('typed builtin lowering', () => {
     const source = generate(
       mustBuild('value = request.security("X", "D", bar_index)\nplot(value)'),
     );
-    const module = new Function(source)() as JSModule;
+    const module = loadModule(source) as JSModule;
 
     expect(module.manifest.builtin).toEqual([]);
     expect(module.requests[0].abi).toBe(RUNTIME_ABI_VERSION);

@@ -388,7 +388,6 @@ class Generator {
   moduleBody(): string[] {
     // Lower all code first: call sites (frame sub layouts) and helpers are
     // discovered during lowering; the manifest is assembled afterwards.
-    const initLines = this.lowerInit();
     const bindLines = this.lowerBind();
     const funcBodies = this.lowerFuncs();
     const mainLines: string[] = [];
@@ -406,8 +405,13 @@ class Generator {
     // them so the embedded manifest stays parseable everywhere.
     out.push(`manifest: ${json(manifest)},`);
     out.push(`requests: [${children.map(c => c.ref).join(', ')}],`);
-    out.push('init(rt) {', ...indent(initLines), '},');
-    out.push('bind(rt, fr) {', ...indent(bindLines), '},');
+    out.push('bind(values) {');
+    out.push(
+      `  return $bind(${this.moduleRef}, values, (rt, fr) => {`,
+      ...indent(indent(bindLines)),
+      '  });',
+      '},',
+    );
     out.push('funcs: {');
     for (const [fid, lines] of funcBodies) {
       out.push(`  ${fid}: ${lines[0]}`);
@@ -416,13 +420,6 @@ class Generator {
     out.push('},');
     out.push('main(rt, fr) {', ...indent(mainLines), '},');
     return out;
-  }
-
-  // Reserved for frame-free preparation before the provisional bind frame is
-  // allocated. Bound depths run in lowerBind because they may read immutable
-  // input aliases from that frame.
-  private lowerInit(): string[] {
-    return [];
   }
 
   // Bind-time expressions may use immutable input/simple aliases and the

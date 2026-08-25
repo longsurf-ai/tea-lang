@@ -34,6 +34,7 @@ import {
   type StructType,
 } from '../ir/type';
 import type {JSModule} from '../runtime/abi';
+import {loadModule} from '../runtime/load';
 import {generate} from './codegen';
 
 const pos = {base: {filename: 'aggregate-lowering.test.tea'}, line: 1, col: 1};
@@ -135,7 +136,7 @@ function compile(ir: Program): JSModule & {
   readonly abi: number;
 } {
   const js = generate(ir);
-  return new Function(js)() as JSModule & {
+  return loadModule(js) as JSModule & {
     readonly abi: number;
   };
 }

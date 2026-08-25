@@ -13,6 +13,7 @@ import {
   type TimeAxis,
 } from './abi';
 import {bindFixedHistory as bind} from './fixed-history';
+import {staticModuleBinding} from './testing';
 
 const NUMBER = 0;
 const LAYOUTS = {
@@ -51,8 +52,9 @@ function effectModule(main: JSModule['main']): JSModule {
       requests: [],
     },
     requests: [],
-    init() {},
-    bind() {},
+    bind() {
+      return staticModuleBinding(this);
+    },
     funcs: {},
     main,
   };
@@ -148,8 +150,9 @@ describe('effect row transactions', () => {
         requests: [],
       },
       requests: [],
-      init() {},
-      bind() {},
+      bind() {
+        return staticModuleBinding(this);
+      },
       funcs: {},
       main(rt) {
         const payload = rt.newStruct(structLayout, [1]);

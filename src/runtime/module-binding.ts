@@ -1,5 +1,5 @@
-// Purpose: Evaluate the generated module's existing bind section into an
-// immutable, context-free fact set for the step-based JavaScript runtime.
+// Purpose: Evaluate a generated module's pure binding function and project
+// its immutable facts for JavaScript and GPU execution hosts.
 
 import {Storage} from '../ir/node';
 import {
@@ -11,8 +11,8 @@ import {
   type CollectionOperation,
   type DepthSpec,
   type Frame,
-  type ModuleBindContext,
   type JSModule,
+  type JSModuleBinding,
 } from './module-abi';
 import type {BindInputs, BoundInput} from './binding';
 import {CollectionRuntime} from './collections';
@@ -28,13 +28,6 @@ import type {Value} from './value';
 import {type LayoutId, ValueLayoutRegistry} from './value-layout';
 
 const DEFAULT_MAX_COLLECTION_ELEMENTS = 100_000;
-
-export interface BindingRetention {
-  readonly frames: readonly (readonly number[])[];
-  readonly series: readonly number[];
-  readonly builtins: readonly number[];
-  readonly requests: readonly number[];
-}
 
 export interface StaticRequestBinding {
   readonly requestId: number;
@@ -54,7 +47,7 @@ export interface BoundModuleFacts {
   /** Generated code whose root manifest contains no unresolved bound depth. */
   readonly code: JSModule;
   readonly params: readonly BoundInput[];
-  readonly retention: BindingRetention;
+  readonly retention: JSModuleBinding['retention'];
   readonly declaration: ExecutionDeclaration;
   readonly requests: readonly StaticRequestBinding[];
 }
@@ -289,6 +282,25 @@ function evaluateBinding(
   exactParams: boolean,
   bindBuiltinValues: ReadonlyMap<number, Value> = new Map(),
 ): BoundModuleFacts {
+  validateParamCount(code, paramValues, exactParams);
+  const binding = code.bind({
+    params: paramValues,
+    builtins: bindBuiltinValues,
+  }) as unknown;
+  return bindingFacts(code, paramValues, binding);
+}
+
+/** @internal Loader injection; the operational callback has no exported type. */
+export function bindGeneratedModule(
+  code: JSModule,
+  values: Parameters<JSModule['bind']>[0],
+  body: unknown,
+): JSModuleBinding {
+  if (typeof body !== 'function') {
+    throw new ModuleBindingEvaluationError(
+      'generated module bind body is not callable',
+    );
+  }
   const heap = new ArenaHeap();
   const transaction = heap.begin('module-binding');
   try {
@@ -302,16 +314,17 @@ function evaluateBinding(
     );
     const evaluation = new ModuleBindEvaluation(
       code,
-      paramValues,
-      exactParams,
+      values.params,
       transaction,
       structs,
       collections,
-      bindBuiltinValues,
+      values.builtins ?? new Map(),
     );
-    const operations = evaluation.operations();
-    code.init(operations);
-    code.bind(operations, evaluation.root());
+    const evaluate = body as (
+      evaluation: ModuleBindEvaluation,
+      root: Frame,
+    ) => void;
+    evaluate(evaluation, evaluation.root());
     return evaluation.finish();
   } finally {
     try {
@@ -319,6 +332,187 @@ function evaluateBinding(
     } finally {
       heap.dispose();
     }
+  }
+}
+
+function validateParamCount(
+  code: JSModule,
+  paramValues: readonly Value[],
+  exactParams: boolean,
+): void {
+  if (
+    (exactParams && paramValues.length !== code.manifest.params.length) ||
+    (!exactParams && paramValues.length < code.manifest.params.length)
+  ) {
+    throw new ModuleBindingEvaluationError(
+      `expected ${code.manifest.params.length} parameter values, got ${paramValues.length}`,
+    );
+  }
+}
+
+function bindingFacts(
+  code: JSModule,
+  paramValues: readonly Value[],
+  rawBinding: unknown,
+): BoundModuleFacts {
+  validateBindingShape(code, rawBinding);
+  const binding = rawBinding;
+  const retention = deepFreeze(binding.retention);
+  const requests = code.manifest.requests.map((spec, requestId) => {
+    if (spec.dynamic) {
+      throw new ModuleBindingEvaluationError(
+        `dynamic request ${requestId} is unsupported`,
+      );
+    }
+    const values = binding.requests[requestId];
+    const child = code.requests[requestId];
+    if (values === undefined || child === undefined) {
+      throw new ModuleBindingEvaluationError(
+        `static request ${requestId} has incomplete binding facts`,
+      );
+    }
+    return {
+      requestId,
+      child,
+      symbol: values.symbol,
+      timeframe: values.timeframe,
+      options: {
+        gaps: values.gaps,
+        lookahead: values.lookahead,
+        ignoreInvalidSymbol: values.ignoreInvalidSymbol,
+        calcBarsCount: values.calcBarsCount,
+      },
+    } satisfies StaticRequestBinding;
+  });
+
+  return deepFreeze({
+    code: concreteModule(code, retention),
+    params: code.manifest.params.map((spec, pid) => ({
+      spec,
+      value: paramValues[pid]!,
+      active: binding.activeParams[pid]!,
+    })),
+    retention,
+    declaration: {
+      outputs: code.manifest.outputs.map((spec, oid) => ({
+        spec,
+        boundArgs: binding.outputs[oid]!,
+      })),
+      effects: code.manifest.effects.map(effect => effect.declaration),
+    },
+    requests,
+  });
+}
+
+function validateBindingShape(
+  code: JSModule,
+  value: unknown,
+): asserts value is JSModuleBinding {
+  const binding = requireRecord(value, 'module binding');
+  const retention = requireRecord(
+    binding.retention,
+    'module binding retention',
+  );
+  const frames = requireArray(retention.frames, 'frame retention');
+  requireCount(frames, code.manifest.frames.length, 'frame retention');
+  frames.forEach((value, fid) => {
+    const frame = requireArray(value, `frame ${fid} retention`);
+    requireCount(
+      frame,
+      code.manifest.frames[fid]!.locals.length,
+      `frame ${fid} retention`,
+    );
+    frame.forEach((bars, slot) =>
+      requireRetention(bars, `frame ${fid} slot ${slot}`),
+    );
+  });
+  const vectors = [
+    ['series', retention.series, code.manifest.series.length],
+    ['builtin', retention.builtins, code.manifest.builtin.length],
+    ['request', retention.requests, code.manifest.requests.length],
+  ] as const;
+  vectors.forEach(([label, value, count]) => {
+    const values = requireArray(value, `${label} retention`);
+    requireCount(values, count, `${label} retention`);
+    values.forEach((bars, index) =>
+      requireRetention(bars, `${label} ${index}`),
+    );
+  });
+  const activeParams = requireArray(binding.activeParams, 'parameter activity');
+  requireCount(activeParams, code.manifest.params.length, 'parameter activity');
+  activeParams.forEach((active, pid) => {
+    if (typeof active !== 'boolean') {
+      throw new ModuleBindingEvaluationError(
+        `parameter ${pid} active expression did not produce bool`,
+      );
+    }
+  });
+  const outputs = requireArray(binding.outputs, 'output binding');
+  requireCount(outputs, code.manifest.outputs.length, 'output binding');
+  outputs.forEach((value, oid) => {
+    const args = requireArray(value, `output ${oid} binding`);
+    args.forEach((value, index) => {
+      const arg = requireRecord(value, `output ${oid} argument ${index}`);
+      if (typeof arg.name !== 'string' || !('value' in arg)) {
+        throw new ModuleBindingEvaluationError(
+          `output ${oid} argument ${index} is invalid`,
+        );
+      }
+    });
+  });
+  const requests = requireArray(binding.requests, 'request binding');
+  requireCount(requests, code.manifest.requests.length, 'request binding');
+  requests.forEach((value, rid) => {
+    const request = requireRecord(value, `request ${rid} binding`);
+    if (
+      typeof request.symbol !== 'string' ||
+      typeof request.timeframe !== 'string' ||
+      typeof request.gaps !== 'boolean' ||
+      typeof request.lookahead !== 'boolean' ||
+      typeof request.ignoreInvalidSymbol !== 'boolean' ||
+      typeof request.calcBarsCount !== 'number' ||
+      !Number.isSafeInteger(request.calcBarsCount) ||
+      request.calcBarsCount < 0
+    ) {
+      throw new ModuleBindingEvaluationError(
+        `request ${rid} has invalid binding facts`,
+      );
+    }
+  });
+}
+
+function requireRecord(
+  value: unknown,
+  label: string,
+): Readonly<Record<string, unknown>> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ModuleBindingEvaluationError(`${label} is not an object`);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function requireArray(value: unknown, label: string): readonly unknown[] {
+  if (!Array.isArray(value)) {
+    throw new ModuleBindingEvaluationError(`${label} is not an array`);
+  }
+  return value;
+}
+
+function requireCount(
+  values: readonly unknown[],
+  expected: number,
+  label: string,
+): void {
+  if (values.length !== expected) {
+    throw new ModuleBindingEvaluationError(
+      `${label} expected ${expected} entries, got ${values.length}`,
+    );
+  }
+}
+
+function requireRetention(bars: unknown, label: string): void {
+  if (typeof bars !== 'number' || !Number.isSafeInteger(bars) || bars < 0) {
+    throw new ModuleBindingEvaluationError(`${label} has invalid retention`);
   }
 }
 
@@ -344,9 +538,9 @@ class BindFrame implements Frame {
   }
 }
 
-// Compatibility evaluator for the current generated bind callback. It is a
-// private implementation detail of evaluateModuleBinding, not a Runtime.
-class ModuleBindEvaluation implements ModuleBindContext {
+// Private evaluator captured by the loader-injected `$bind` function. It is
+// neither the generated JSModule interface nor the per-row Runtime ABI.
+class ModuleBindEvaluation {
   private readonly rootFrame: BindFrame;
   private readonly localDepths: (number | null)[][];
   private readonly seriesDepths: (number | null)[];
@@ -354,32 +548,23 @@ class ModuleBindEvaluation implements ModuleBindContext {
   private readonly requestDepths: (number | null)[];
   private readonly paramActive: boolean[];
   private readonly outputArgs: {name: string; value: Value}[][];
-  private readonly requestOptions: (
-    | StaticRequestBinding['options']
-    | null
-  )[];
-  private readonly requestPairs: (
-    | {readonly symbol: string; readonly timeframe: string}
-    | null
-  )[];
+  private readonly requestOptions: (Omit<
+    JSModuleBinding['requests'][number],
+    'symbol' | 'timeframe'
+  > | null)[];
+  private readonly requestPairs: ({
+    readonly symbol: string;
+    readonly timeframe: string;
+  } | null)[];
 
   constructor(
     private readonly code: JSModule,
     private readonly paramValues: readonly Value[],
-    exactParams: boolean,
     private readonly transaction: HeapTransaction,
     private readonly structs: StructStorageRuntime,
     private readonly collections: CollectionRuntime,
     private readonly bindBuiltinValues: ReadonlyMap<number, Value>,
   ) {
-    if (
-      (exactParams && paramValues.length !== code.manifest.params.length) ||
-      (!exactParams && paramValues.length < code.manifest.params.length)
-    ) {
-      throw new ModuleBindingEvaluationError(
-        `expected ${code.manifest.params.length} parameter values, got ${paramValues.length}`,
-      );
-    }
     this.rootFrame = this.newFrame(0);
     this.localDepths = code.manifest.frames.map(frame =>
       frame.locals.map(local => staticRetention(local.depth)),
@@ -399,11 +584,7 @@ class ModuleBindEvaluation implements ModuleBindContext {
     this.requestPairs = code.manifest.requests.map(() => null);
   }
 
-  operations(): ModuleBindContext {
-    return this;
-  }
-
-  finish(): BoundModuleFacts {
+  finish(): JSModuleBinding {
     const retention = deepFreeze({
       frames: this.localDepths.map((depths, fid) =>
         depths.map((depth, slot) =>
@@ -436,29 +617,15 @@ class ModuleBindEvaluation implements ModuleBindContext {
         );
       }
       return {
-        requestId,
-        child,
         ...pair,
-        options,
-      } satisfies StaticRequestBinding;
+        ...options,
+      } satisfies JSModuleBinding['requests'][number];
     });
 
-    const concreteCode = concreteModule(this.code, retention);
     return deepFreeze({
-      code: concreteCode,
-      params: this.code.manifest.params.map((spec, pid) => ({
-        spec,
-        value: this.paramValues[pid]!,
-        active: this.paramActive[pid]!,
-      })),
       retention,
-      declaration: {
-        outputs: this.code.manifest.outputs.map((spec, oid) => ({
-          spec,
-          boundArgs: this.outputArgs[oid]!,
-        })),
-        effects: this.code.manifest.effects.map(effect => effect.declaration),
-      },
+      activeParams: this.paramActive,
+      outputs: this.outputArgs,
       requests,
     });
   }
@@ -762,7 +929,7 @@ function requiredDepth(depth: number | null, label: string): number {
 
 function concreteModule(
   code: JSModule,
-  retention: BindingRetention,
+  retention: JSModuleBinding['retention'],
 ): JSModule {
   return deepFreeze({
     ...code,

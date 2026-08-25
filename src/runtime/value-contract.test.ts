@@ -16,6 +16,7 @@ import {
   type Value,
 } from './abi';
 import {bindFixedHistory as bindRuntime} from './fixed-history';
+import {staticModuleBinding} from './testing';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
 
@@ -131,8 +132,9 @@ const EMPTY_VALUES_MODULE: JSModule = {
     requests: [],
   },
   requests: [],
-  init() {},
-  bind() {},
+  bind() {
+    return staticModuleBinding(this);
+  },
   funcs: {},
   main(rt, fr) {
     rt.emit(0, 0, rt.read(fr, 0, 0));
@@ -155,8 +157,9 @@ function paramModule(spec: ParamSpec): JSModule {
       requests: [],
     },
     requests: [],
-    init() {},
-    bind() {},
+    bind() {
+      return staticModuleBinding(this);
+    },
     funcs: {},
     main() {},
   };

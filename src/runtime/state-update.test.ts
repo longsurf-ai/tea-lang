@@ -16,6 +16,7 @@ import {
 import {ArenaHeap} from './heap';
 import {bindFixedHistory as bind} from './fixed-history';
 import {stateMachine} from './state-update';
+import {staticModuleBinding} from './testing';
 import {ValueLayoutRegistry} from './value-layout';
 
 const NUMBER = 0;
@@ -80,8 +81,9 @@ const MODULE: JSModule = {
     ],
   },
   requests: [],
-  init() {},
-  bind() {},
+  bind() {
+    return staticModuleBinding(this);
+  },
   funcs: {},
   main(rt, root) {
     const current = rt.series(0, 0);
@@ -130,8 +132,9 @@ const PROVISIONAL_MODULE: JSModule = {
     ],
   },
   requests: [],
-  init() {},
-  bind() {},
+  bind() {
+    return staticModuleBinding(this);
+  },
   funcs: {},
   main(rt, root) {
     if (rt.needsInit(root, 0)) rt.initialize(root, 0, 0);
@@ -174,8 +177,9 @@ function structModule(shouldFail: () => boolean): JSModule {
       ],
     },
     requests: [],
-    init() {},
-    bind() {},
+    bind() {
+      return staticModuleBinding(this);
+    },
     funcs: {},
     main(rt, root) {
       if (rt.needsInit(root, 0)) {
@@ -223,8 +227,9 @@ const COLLECTION_MODULE: JSModule = {
     ],
   },
   requests: [],
-  init() {},
-  bind() {},
+  bind() {
+    return staticModuleBinding(this);
+  },
   funcs: {},
   main(rt, root) {
     if (rt.needsInit(root, 0)) {

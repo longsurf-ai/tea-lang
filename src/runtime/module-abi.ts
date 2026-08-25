@@ -12,7 +12,7 @@ import type {
   Value,
 } from './value';
 
-export const RUNTIME_ABI_VERSION = 2 as const;
+export const RUNTIME_ABI_VERSION = 3 as const;
 
 export type DepthSpec =
   | {readonly kind: 'none'}
@@ -119,8 +119,13 @@ export interface JSModule {
   readonly aggregateLayouts: AggregateLayoutManifest;
   readonly manifest: ModuleManifest;
   readonly requests: readonly JSModule[];
-  init(ctx: ModuleBindContext): void;
-  bind(ctx: ModuleBindContext, fr: Frame): void;
+  /** Evaluate this module's bind-time values without acquiring runtime state. */
+  bind(values: {
+    /** The compilation-global parameter vector, including for request children. */
+    readonly params: readonly Value[];
+    /** Sparse context-constant builtins visible to provider-aware binding. */
+    readonly builtins?: ReadonlyMap<number, Value>;
+  }): JSModuleBinding;
   readonly funcs: Readonly<
     Record<
       number,
@@ -128,6 +133,29 @@ export interface JSModule {
     >
   >;
   main(rt: Runtime, fr: Frame): void;
+}
+
+/** Immutable data produced by one generated module's pure binding function. */
+export interface JSModuleBinding {
+  readonly retention: {
+    readonly frames: readonly (readonly number[])[];
+    readonly series: readonly number[];
+    readonly builtins: readonly number[];
+    readonly requests: readonly number[];
+  };
+  readonly activeParams: readonly boolean[];
+  readonly outputs: readonly (readonly {
+    readonly name: string;
+    readonly value: Value;
+  }[])[];
+  readonly requests: readonly {
+    readonly symbol: string;
+    readonly timeframe: string;
+    readonly gaps: boolean;
+    readonly lookahead: boolean;
+    readonly ignoreInvalidSymbol: boolean;
+    readonly calcBarsCount: number;
+  }[];
 }
 
 /** Generated per-row execution operations. Runtime always means execution. */
@@ -144,51 +172,6 @@ export interface Runtime {
   root(): Frame;
   emit(oid: number, channel: number, v: Value): void;
   emitEffect(effectId: number, payload: Value): void;
-  newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown>;
-  requireStruct(value: Value, layout: LayoutId): Ref<unknown>;
-  structField(value: Value, ownerLayout: LayoutId, index: number): Value;
-  storeStructField(
-    value: Value,
-    ownerLayout: LayoutId,
-    index: number,
-    replacement: Value,
-  ): void;
-  callCollection(
-    operation: CollectionOperation,
-    resultLayout: LayoutId,
-    args: readonly Value[],
-  ): Value;
-  mutateCollection(
-    operation: CollectionMutationOperation,
-    collectionLayout: LayoutId,
-    receiver: Value,
-    args: readonly Value[],
-  ): CollectionMutation;
-  collectionEntries(value: Value): CollectionEntries;
-}
-
-/** Private generated callback surface used only by JSModule.init/bind. */
-export interface ModuleBindContext {
-  builtin(bid: number, offset: number): Value;
-  param(pid: number): Value;
-  read(fr: Frame, slot: number, offset: number): Value;
-  write(fr: Frame, slot: number, v: Value): void;
-  frame(fr: Frame, slot: number): Frame;
-  root(): Frame;
-  historyDepth(offset: number): number;
-  bindDepth(fid: number, slot: number, bars: number): void;
-  bindSeriesDepth(sid: number, bars: number): void;
-  bindBuiltinDepth(bid: number, bars: number): void;
-  bindOutput(oid: number, argName: string, v: Value): void;
-  bindParamActive(pid: number, active: Value): void;
-  bindRequestOptions(
-    rid: number,
-    gaps: Value,
-    lookahead: Value,
-    ignoreInvalidSymbol: Value,
-    calcBarsCount: Value,
-  ): void;
-  bindRequest(rid: number, symbol: Value, timeframe: Value): void;
   newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown>;
   requireStruct(value: Value, layout: LayoutId): Ref<unknown>;
   structField(value: Value, ownerLayout: LayoutId, index: number): Value;

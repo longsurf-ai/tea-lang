@@ -11,6 +11,7 @@ import {
   type JSModule,
 } from './abi';
 import {bindFixedHistory} from './fixed-history';
+import {staticModuleBinding} from './testing';
 
 const NUMBER = 0;
 const ARRAY = 1;
@@ -88,8 +89,9 @@ const MODULE: JSModule = {
     ],
   },
   requests: [],
-  init() {},
-  bind() {},
+  bind() {
+    return staticModuleBinding(this);
+  },
   funcs: {},
   main(rt, root) {
     const close = rt.series(0, 0);
@@ -121,8 +123,9 @@ const REQUEST_CHILD: JSModule = {
     ],
   },
   requests: [],
-  init() {},
-  bind() {},
+  bind() {
+    return staticModuleBinding(this);
+  },
   funcs: {},
   main(rt, root) {
     rt.write(root, 0, rt.series(0, 0));
@@ -157,10 +160,27 @@ const NESTED_REQUEST_CHILD: JSModule = {
     ],
   },
   requests: [REQUEST_CHILD],
-  init() {},
-  bind(rt) {
-    rt.bindRequestOptions(0, false, false, false, 0);
-    rt.bindRequest(0, 'Y', '2m');
+  bind() {
+    return {
+      retention: {
+        frames: [[0]],
+        series: [],
+        builtins: [],
+        requests: [0],
+      },
+      activeParams: [],
+      outputs: [],
+      requests: [
+        {
+          symbol: 'Y',
+          timeframe: '2m',
+          gaps: false,
+          lookahead: false,
+          ignoreInvalidSymbol: false,
+          calcBarsCount: 0,
+        },
+      ],
+    };
   },
   funcs: {},
   main(rt, root) {
@@ -169,7 +189,7 @@ const NESTED_REQUEST_CHILD: JSModule = {
 };
 
 function requestModule(dynamic = false): JSModule {
-  return {
+  const module: JSModule = {
     ...MODULE,
     manifest: {
       ...MODULE.manifest,
@@ -198,15 +218,34 @@ function requestModule(dynamic = false): JSModule {
       ],
     },
     requests: [REQUEST_CHILD],
-    bind(rt) {
-      rt.bindRequestOptions(0, false, false, false, 0);
-      if (!dynamic) rt.bindRequest(0, 'X', '2m');
+    bind() {
+      return {
+        retention: {
+          frames: [[]],
+          series: [],
+          builtins: [],
+          requests: [1],
+        },
+        activeParams: [],
+        outputs: [[]],
+        requests: [
+          {
+            symbol: 'X',
+            timeframe: '2m',
+            gaps: false,
+            lookahead: false,
+            ignoreInvalidSymbol: false,
+            calcBarsCount: 0,
+          },
+        ],
+      };
     },
     main(rt) {
       rt.emit(0, 0, rt.request(0, 0));
       rt.emit(0, 1, rt.request(0, 1));
     },
   };
+  return module;
 }
 
 const ARRAY_WORKSPACE_MODULE: JSModule = {
@@ -230,8 +269,9 @@ const ARRAY_WORKSPACE_MODULE: JSModule = {
     ],
   },
   requests: [],
-  init() {},
-  bind() {},
+  bind() {
+    return staticModuleBinding(this);
+  },
   funcs: {},
   main() {},
 };
@@ -453,11 +493,25 @@ describe('bindFixedHistory', () => {
         ],
       },
       requests: [REQUEST_CHILD, REQUEST_CHILD],
-      bind(rt) {
-        for (let rid = 0; rid < 2; rid += 1) {
-          rt.bindRequestOptions(rid, false, false, false, 0);
-          rt.bindRequest(rid, 'X', '2m');
-        }
+      bind() {
+        return {
+          retention: {
+            frames: [[]],
+            series: [],
+            builtins: [],
+            requests: [1, 1],
+          },
+          activeParams: [],
+          outputs: [[]],
+          requests: [0, 1].map(() => ({
+            symbol: 'X',
+            timeframe: '2m',
+            gaps: false,
+            lookahead: false,
+            ignoreInvalidSymbol: false,
+            calcBarsCount: 0,
+          })),
+        };
       },
       main(rt) {
         rt.emit(0, 0, rt.request(0, 0));
