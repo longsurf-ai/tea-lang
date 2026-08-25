@@ -12,8 +12,7 @@ import {
   type DepthSpec,
   type Frame,
   type ModuleBindContext,
-  type ModuleCode,
-  type TeaModule,
+  type JSModule,
 } from './module-abi';
 import type {BindInputs, BoundInput} from './binding';
 import {CollectionRuntime} from './collections';
@@ -39,7 +38,7 @@ export interface BindingRetention {
 
 export interface StaticRequestBinding {
   readonly requestId: number;
-  readonly child: ModuleCode;
+  readonly child: JSModule;
   readonly symbol: string;
   readonly timeframe: string;
   readonly options: {
@@ -53,7 +52,7 @@ export interface StaticRequestBinding {
 /** Immutable facts consumed when constructing the step-based runtime. */
 export interface BoundModuleFacts {
   /** Generated code whose root manifest contains no unresolved bound depth. */
-  readonly code: TeaModule;
+  readonly code: JSModule;
   readonly params: readonly BoundInput[];
   readonly retention: BindingRetention;
   readonly declaration: ExecutionDeclaration;
@@ -74,7 +73,7 @@ export class ModuleBindingEvaluationError extends Error {
 
 /** Evaluate one already-generated module without acquiring runtime resources. */
 export function evaluateModuleBinding(
-  code: TeaModule,
+  code: JSModule,
   paramValues: readonly Value[],
 ): BoundModuleFacts {
   return evaluateBinding(code, paramValues, true);
@@ -82,7 +81,7 @@ export function evaluateModuleBinding(
 
 /** Evaluate a request child against compilation-global parent parameters. */
 export function evaluateChildModuleBinding(
-  code: TeaModule,
+  code: JSModule,
   paramValues: readonly Value[],
 ): BoundModuleFacts {
   return evaluateBinding(code, paramValues, false);
@@ -93,7 +92,7 @@ export function evaluateChildModuleBinding(
  * context and project only the layout facts required by GPU preparation.
  */
 export function resolveGeneratedBindingLayout(
-  code: TeaModule,
+  code: JSModule,
   inputs: BindInputs,
   context: ProviderContext,
 ): GeneratedBindingLayout {
@@ -196,7 +195,7 @@ function validateContextIdentity(context: ProviderContext): void {
 }
 
 function providerSeries(
-  code: TeaModule,
+  code: JSModule,
   params: readonly Value[],
   context: ProviderContext,
 ): readonly SeriesData[] {
@@ -228,7 +227,7 @@ function providerSeries(
 }
 
 function validateProviderBuiltins(
-  code: TeaModule,
+  code: JSModule,
   context: ProviderContext,
   layouts: ValueLayoutRegistry,
 ): ReadonlyMap<number, Value> {
@@ -285,7 +284,7 @@ function builtinSourceName(spec: BuiltinSpec): string {
 }
 
 function evaluateBinding(
-  code: TeaModule,
+  code: JSModule,
   paramValues: readonly Value[],
   exactParams: boolean,
   bindBuiltinValues: ReadonlyMap<number, Value> = new Map(),
@@ -324,7 +323,7 @@ function evaluateBinding(
 }
 
 /** Freeze generated code before it becomes part of a BoundModule snapshot. */
-export function freezeGeneratedModule(code: TeaModule): TeaModule {
+export function freezeGeneratedModule(code: JSModule): JSModule {
   return deepFreeze(code);
 }
 
@@ -365,7 +364,7 @@ class ModuleBindEvaluation implements ModuleBindContext {
   )[];
 
   constructor(
-    private readonly code: TeaModule,
+    private readonly code: JSModule,
     private readonly paramValues: readonly Value[],
     exactParams: boolean,
     private readonly transaction: HeapTransaction,
@@ -762,9 +761,9 @@ function requiredDepth(depth: number | null, label: string): number {
 }
 
 function concreteModule(
-  code: TeaModule,
+  code: JSModule,
   retention: BindingRetention,
-): TeaModule {
+): JSModule {
   return deepFreeze({
     ...code,
     manifest: {

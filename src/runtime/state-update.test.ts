@@ -10,7 +10,7 @@ import {
   type DataProvider,
   type OutputSink,
   type ProviderContext,
-  type TeaModule,
+  type JSModule,
   type Value,
 } from './abi';
 import {ArenaHeap} from './heap';
@@ -37,7 +37,7 @@ const LAYOUTS = {
   ],
 } as const satisfies AggregateLayoutManifest;
 
-const MODULE: TeaModule = {
+const MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: LAYOUTS,
   manifest: {
@@ -93,7 +93,7 @@ const MODULE: TeaModule = {
   },
 };
 
-const PROVISIONAL_MODULE: TeaModule = {
+const PROVISIONAL_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: LAYOUTS,
   manifest: {
@@ -147,7 +147,7 @@ const PROVISIONAL_MODULE: TeaModule = {
   },
 };
 
-function structModule(shouldFail: () => boolean): TeaModule {
+function structModule(shouldFail: () => boolean): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
     aggregateLayouts: LAYOUTS,
@@ -190,7 +190,7 @@ function structModule(shouldFail: () => boolean): TeaModule {
   };
 }
 
-const COLLECTION_MODULE: TeaModule = {
+const COLLECTION_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: LAYOUTS,
   manifest: {

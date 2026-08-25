@@ -9,13 +9,12 @@ import {
   type BindInputs,
   type DataProvider,
   type BuiltinSpec,
-  type ModuleCode,
+  type JSModule,
   type OutputSink,
   type ProviderContext,
   type RangeDemand,
   RUNTIME_ABI_VERSION,
   type SeriesData,
-  type TeaModule,
   type TimeAxis,
   type Value,
 } from './abi';
@@ -24,7 +23,7 @@ import {bindFixedHistory} from './fixed-history';
 const TEST_TIME_NOW = 1_800_000_000_000;
 
 function bind(
-  module: TeaModule,
+  module: JSModule,
   inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
 ) {
   return bindFixedHistory(module, {
@@ -108,7 +107,7 @@ function num(v: Value): number {
 // e := na(e) ? close : 0.5 * close + 0.5 * e
 // plot(e)
 
-const EMA_MODULE: TeaModule = {
+const EMA_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
@@ -147,7 +146,7 @@ const EMA_MODULE: TeaModule = {
 // ---- two call sites, one func ----------------------------------------------
 // counter() => var c = 0; c := c + 1; c
 
-const COUNTER_MODULE: TeaModule = {
+const COUNTER_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
@@ -201,7 +200,7 @@ const COUNTER_MODULE: TeaModule = {
 // ---- name history -----------------------------------------------------------
 // x = close; plot(x[2])
 
-const HISTORY_MODULE: TeaModule = {
+const HISTORY_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
@@ -239,7 +238,7 @@ const HISTORY_MODULE: TeaModule = {
 // varip p = 0; p := p + 1         (accumulates across ticks)
 // x = close                       (perBar)
 
-const TICK_MODULE: TeaModule = {
+const TICK_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
@@ -302,7 +301,7 @@ const TICK_MODULE: TeaModule = {
 // level = input.float(70.0, minval=0)
 // hline(level)  +  a bound-depth local read at offset len
 
-const BIND_MODULE: TeaModule = {
+const BIND_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
@@ -509,7 +508,7 @@ describe('typed builtins', () => {
     };
   }
 
-  function builtinModule(): TeaModule {
+  function builtinModule(): JSModule {
     return {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: layouts,
@@ -599,7 +598,7 @@ describe('typed builtins', () => {
   test('bind-time builtin reads fail before provider resolution', async () => {
     const calls: string[] = [];
     const base = builtinModule();
-    const module: TeaModule = {
+    const module: JSModule = {
       ...base,
       bind(rt) {
         rt.builtin(11, 0);
@@ -642,7 +641,7 @@ describe('typed builtins', () => {
 
   test('provider typed empty metadata is a value, not missing', async () => {
     const base = builtinModule();
-    const module: TeaModule = {
+    const module: JSModule = {
       ...base,
       manifest: {
         ...base.manifest,
@@ -735,6 +734,8 @@ function contexts(byId: Record<string, ProviderContext>): DataProvider {
 }
 
 const CHILD_MODULE = {
+  abi: RUNTIME_ABI_VERSION,
+  aggregateLayouts: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -760,13 +761,13 @@ const CHILD_MODULE = {
   bind() {},
   funcs: {},
   main(
-    rt: Parameters<TeaModule['main']>[0],
-    fr: Parameters<TeaModule['main']>[1],
+    rt: Parameters<JSModule['main']>[0],
+    fr: Parameters<JSModule['main']>[1],
   ) {
     // Bind-time params are compilation-global: pid 0 is the PARENT's param.
     rt.write(fr, 0, rt.series(0, 0) * num(rt.param(0)));
   },
-} satisfies ModuleCode;
+} satisfies JSModule;
 
 function requestModule(
   overrides: Partial<{
@@ -775,7 +776,7 @@ function requestModule(
     ignoreInvalidSymbol: boolean;
     calcBarsCount: number;
   }>,
-): TeaModule {
+): JSModule {
   const options = {
     gaps: false,
     lookahead: false,
@@ -956,7 +957,7 @@ describe('requests', () => {
     }
 
     const base = requestModule({});
-    const missingOptions: TeaModule = {
+    const missingOptions: JSModule = {
       ...base,
       bind(rt) {
         rt.bindRequest(0, 'X', '');
@@ -970,7 +971,7 @@ describe('requests', () => {
       }),
     ).rejects.toThrow('static request 0 has incomplete binding facts');
 
-    const invalidBoolean: TeaModule = {
+    const invalidBoolean: JSModule = {
       ...base,
       bind(rt) {
         rt.bindRequestOptions(0, 'false', false, false, 0);
@@ -988,6 +989,8 @@ describe('requests', () => {
 
   test('a bounded child restarts bar_index at zero inside the retained tail', async () => {
     const barIndexChild = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: TEST_LAYOUTS,
       manifest: {
         series: [],
         builtin: [
@@ -1019,14 +1022,14 @@ describe('requests', () => {
       bind() {},
       funcs: {},
       main(
-        rt: Parameters<TeaModule['main']>[0],
-        fr: Parameters<TeaModule['main']>[1],
+        rt: Parameters<JSModule['main']>[0],
+        fr: Parameters<JSModule['main']>[1],
       ) {
         rt.write(fr, 0, rt.builtin(0, 0));
       },
-    } as const satisfies ModuleCode;
+    } as const satisfies JSModule;
     const base = requestModule({calcBarsCount: 2});
-    const module: TeaModule = {...base, requests: [barIndexChild]};
+    const module: JSModule = {...base, requests: [barIndexChild]};
     const sink = new RecordingSink();
     const bound = await bind(module, {
       params: {},
@@ -1080,7 +1083,7 @@ describe('requests', () => {
 
   test('invalid request offsets cannot expose future or undefined values', async () => {
     const module = requestModule({});
-    const probing: TeaModule = {
+    const probing: JSModule = {
       ...module,
       main(rt) {
         rt.emit(0, 0, rt.request(0, -1));
@@ -1111,6 +1114,8 @@ describe('requests', () => {
 
   test('nested empty request args inherit the child provider-normalized identity', async () => {
     const innerChild = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: TEST_LAYOUTS,
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
         builtin: [],
@@ -1136,13 +1141,15 @@ describe('requests', () => {
       bind() {},
       funcs: {},
       main(
-        rt: Parameters<TeaModule['main']>[0],
-        fr: Parameters<TeaModule['main']>[1],
+        rt: Parameters<JSModule['main']>[0],
+        fr: Parameters<JSModule['main']>[1],
       ) {
         rt.write(fr, 0, rt.series(0, 0));
       },
-    } as const satisfies ModuleCode;
+    } as const satisfies JSModule;
     const outerChild = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: TEST_LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -1173,20 +1180,20 @@ describe('requests', () => {
       },
       requests: [innerChild],
       init() {},
-      bind(rt: Parameters<TeaModule['bind']>[0]) {
+      bind(rt: Parameters<JSModule['bind']>[0]) {
         rt.bindRequestOptions(0, false, false, false, 0);
         rt.bindRequest(0, '', '');
       },
       funcs: {},
       main(
-        rt: Parameters<TeaModule['main']>[0],
-        fr: Parameters<TeaModule['main']>[1],
+        rt: Parameters<JSModule['main']>[0],
+        fr: Parameters<JSModule['main']>[1],
       ) {
         rt.write(fr, 0, rt.request(0, 0));
       },
-    } as const satisfies ModuleCode;
+    } as const satisfies JSModule;
     const base = requestModule({});
-    const module: TeaModule = {...base, requests: [outerChild]};
+    const module: JSModule = {...base, requests: [outerChild]};
     const calls: string[] = [];
     const rootContext = context(
       {close: new ArraySeries([1])},

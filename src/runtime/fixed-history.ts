@@ -22,8 +22,7 @@ import {
 import {
   RUNTIME_ABI_VERSION,
   type BuiltinSpec,
-  type ModuleCode,
-  type TeaModule,
+  type JSModule,
 } from './module-abi';
 import type {RowPublication} from './output';
 import {resolveParamValues} from './params';
@@ -40,7 +39,6 @@ import {
 } from './js-runtime';
 import {isTupleValue, type Value} from './value';
 import {
-  type AggregateLayoutManifest,
   type LayoutId,
   ValueLayoutRegistry,
 } from './value-layout';
@@ -69,7 +67,6 @@ interface RequestEnvironment {
   readonly provider: BindInputs['provider'];
   readonly params: readonly Value[];
   readonly layouts: ValueLayoutRegistry;
-  readonly aggregateLayouts: AggregateLayoutManifest;
   readonly timeNow: number;
   readonly maxCollectionElements: number;
   readonly heapLimits: JSRuntimeOptions['heapLimits'];
@@ -82,7 +79,7 @@ interface RequestEnvironment {
 
 /** Bind the migration runtime to one finite provider context. */
 export async function bindFixedHistory(
-  module: TeaModule,
+  module: JSModule,
   inputs: BindInputs,
 ): Promise<FixedHistoryExecution> {
   if (module.abi !== RUNTIME_ABI_VERSION) {
@@ -153,7 +150,6 @@ export async function bindFixedHistory(
     provider: inputs.provider,
     params,
     layouts,
-    aggregateLayouts: facts.code.aggregateLayouts,
     timeNow,
     maxCollectionElements,
     heapLimits,
@@ -417,10 +413,12 @@ async function bindStaticRequest(
       symbol,
       timeframe,
     );
-    const code = childModule(binding.child, environment.aggregateLayouts);
     let childFacts: BoundModuleFacts;
     try {
-      childFacts = evaluateChildModuleBinding(code, environment.params);
+      childFacts = evaluateChildModuleBinding(
+        binding.child,
+        environment.params,
+      );
     } catch (error) {
       if (error instanceof ModuleBindingEvaluationError) {
         throw new BindError(error.message);
@@ -535,17 +533,6 @@ async function runRequestChild(
     workspace.release();
     if (!completed) resultLease?.release();
   }
-}
-
-function childModule(
-  code: ModuleCode,
-  aggregateLayouts: AggregateLayoutManifest,
-): TeaModule {
-  return {
-    ...code,
-    abi: RUNTIME_ABI_VERSION,
-    aggregateLayouts,
-  };
 }
 
 function assertRequestTransportLayout(

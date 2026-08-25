@@ -7,7 +7,7 @@ import {Storage} from '../ir/node';
 import {
   RUNTIME_ABI_VERSION,
   type AggregateLayoutManifest,
-  type TeaModule,
+  type JSModule,
 } from './abi';
 import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
 import {ValueLayoutRegistry} from './value-layout';
@@ -39,7 +39,7 @@ function input(value: number, provisional: boolean): StepInput {
   return {series: [value], builtins: [], requests: [], provisional};
 }
 
-const PROVISIONAL_MODULE: TeaModule = {
+const PROVISIONAL_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: LAYOUTS,
   manifest: {
@@ -82,7 +82,7 @@ const PROVISIONAL_MODULE: TeaModule = {
   },
 };
 
-function structModule(shouldFail: () => boolean): TeaModule {
+function structModule(shouldFail: () => boolean): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
     aggregateLayouts: LAYOUTS,
@@ -125,7 +125,7 @@ function structModule(shouldFail: () => boolean): TeaModule {
   };
 }
 
-function structEffectModule(shouldFail: () => boolean): TeaModule {
+function structEffectModule(shouldFail: () => boolean): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
     aggregateLayouts: LAYOUTS,
@@ -186,7 +186,7 @@ function structEffectModule(shouldFail: () => boolean): TeaModule {
   };
 }
 
-const WRONG_NOMINAL_MODULE: TeaModule = {
+const WRONG_NOMINAL_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: LAYOUTS,
   manifest: {
@@ -216,7 +216,7 @@ const WRONG_NOMINAL_MODULE: TeaModule = {
   },
 };
 
-const GC_MODULE: TeaModule = {
+const GC_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: LAYOUTS,
   manifest: {

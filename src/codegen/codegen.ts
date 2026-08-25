@@ -74,12 +74,11 @@ export function generate(program: Program): string {
   // Request children are sibling consts in dependency order (a nested
   // child's const precedes its parent's), referenced from the requests
   // arrays — code cannot live inside the JSON manifest.
+  out.push(
+    `const L = ${json({layouts: emitter.layouts} satisfies AggregateLayoutManifest)};`,
+  );
   out.push(...emitter.childDecls);
   out.push('const M = {');
-  out.push(`  abi: ${RUNTIME_ABI_VERSION},`);
-  out.push(
-    `  aggregateLayouts: ${json({layouts: emitter.layouts} satisfies AggregateLayoutManifest)},`,
-  );
   out.push(...indent(rootBody));
   out.push('};');
   out.push('return M;');
@@ -384,8 +383,8 @@ class Generator {
     return where.slot;
   }
 
-  // The module object's body lines (between the braces). The root wraps
-  // them with abi + return; children become sibling consts via the emitter.
+  // The module object's body lines (between the braces). Every node is a
+  // complete JSModule; the request tree shares the one emitted layout table.
   moduleBody(): string[] {
     // Lower all code first: call sites (frame sub layouts) and helpers are
     // discovered during lowering; the manifest is assembled afterwards.
@@ -401,6 +400,8 @@ class Generator {
     const manifest = this.buildManifest(children);
 
     const out: string[] = [];
+    out.push(`abi: ${RUNTIME_ABI_VERSION},`);
+    out.push('aggregateLayouts: L,');
     // U+2028/2029 are line terminators in ES2015 string literals; escape
     // them so the embedded manifest stays parseable everywhere.
     out.push(`manifest: ${json(manifest)},`);

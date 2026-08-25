@@ -10,7 +10,7 @@ import {
   type AggregateLayoutManifest,
   type Frame,
   type Runtime,
-  type TeaModule,
+  type JSModule,
   type Value,
 } from './abi';
 import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
@@ -35,7 +35,7 @@ const LAYOUTS = {
   ],
 } as const satisfies AggregateLayoutManifest;
 
-function runtime(module: TeaModule): JSRuntime {
+function runtime(module: JSModule): JSRuntime {
   return new JSRuntime(module, [], new ValueLayoutRegistry(LAYOUTS));
 }
 
@@ -65,7 +65,7 @@ function counter(rt: Runtime, frame: Frame): Value {
   return rt.read(frame, 0, 0);
 }
 
-const COUNTER_MODULE: TeaModule = {
+const COUNTER_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: LAYOUTS,
   manifest: {
@@ -102,7 +102,7 @@ const COUNTER_MODULE: TeaModule = {
   },
 };
 
-const TYPED_HISTORY_MODULE: TeaModule = {
+const TYPED_HISTORY_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: LAYOUTS,
   manifest: {
@@ -159,7 +159,7 @@ const TYPED_HISTORY_MODULE: TeaModule = {
   },
 };
 
-const TICK_MODULE: TeaModule = {
+const TICK_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: LAYOUTS,
   manifest: {
@@ -207,7 +207,7 @@ const TICK_MODULE: TeaModule = {
   },
 };
 
-function arrayStateModule(): TeaModule {
+function arrayStateModule(): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
     aggregateLayouts: LAYOUTS,
@@ -277,7 +277,7 @@ describe('JSRuntime core parity', () => {
 
   test('a failed first subframe activation disappears before retry', () => {
     let fail = true;
-    const module: TeaModule = {
+    const module: JSModule = {
       ...COUNTER_MODULE,
       main(rt, root) {
         if (fail) {
@@ -325,7 +325,7 @@ describe('JSRuntime core parity', () => {
 
   test('provisional subframe activation survives a final same-row skip', () => {
     let invoke = true;
-    const module: TeaModule = {
+    const module: JSModule = {
       ...COUNTER_MODULE,
       manifest: {
         ...COUNTER_MODULE.manifest,
@@ -361,7 +361,7 @@ describe('JSRuntime core parity', () => {
 
   test('an active skipped subframe advances local history with typed empty', () => {
     let invoke = true;
-    const module: TeaModule = {
+    const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
@@ -424,7 +424,7 @@ describe('JSRuntime core parity', () => {
   });
 
   test('struct history keeps a live reference rather than a body snapshot', () => {
-    const module: TeaModule = {
+    const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {

@@ -112,9 +112,13 @@ export interface Frame {
   readonly kind: 'frame';
 }
 
-export interface ModuleCode {
+/** One self-describing generated JavaScript module in the request tree. */
+export interface JSModule {
+  readonly abi: typeof RUNTIME_ABI_VERSION;
+  /** Shared by every module in one generated request tree. */
+  readonly aggregateLayouts: AggregateLayoutManifest;
   readonly manifest: ModuleManifest;
-  readonly requests: readonly ModuleCode[];
+  readonly requests: readonly JSModule[];
   init(ctx: ModuleBindContext): void;
   bind(ctx: ModuleBindContext, fr: Frame): void;
   readonly funcs: Readonly<
@@ -124,11 +128,6 @@ export interface ModuleCode {
     >
   >;
   main(rt: Runtime, fr: Frame): void;
-}
-
-export interface TeaModule extends ModuleCode {
-  readonly abi: typeof RUNTIME_ABI_VERSION;
-  readonly aggregateLayouts: AggregateLayoutManifest;
 }
 
 /** Generated per-row execution operations. Runtime always means execution. */
@@ -168,7 +167,7 @@ export interface Runtime {
   collectionEntries(value: Value): CollectionEntries;
 }
 
-/** Private generated callback surface used only by ModuleCode.init/bind. */
+/** Private generated callback surface used only by JSModule.init/bind. */
 export interface ModuleBindContext {
   builtin(bid: number, offset: number): Value;
   param(pid: number): Value;

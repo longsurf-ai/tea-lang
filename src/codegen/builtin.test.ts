@@ -11,7 +11,7 @@ import {
 import type {BuiltinInput, Program} from '../ir/program';
 import {BoolType, IntType, Qualifier, StringType, type Type} from '../ir/type';
 import {mustBuild} from '../noder/testing';
-import {RUNTIME_ABI_VERSION} from '../runtime/abi';
+import {RUNTIME_ABI_VERSION, type JSModule} from '../runtime/abi';
 import {generate} from './codegen';
 
 const pos = {
@@ -121,19 +121,11 @@ describe('typed builtin lowering', () => {
     const source = generate(
       mustBuild('value = request.security("X", "D", bar_index)\nplot(value)'),
     );
-    const module = new Function(source)() as {
-      readonly manifest: {
-        readonly builtin: readonly unknown[];
-      };
-      readonly requests: readonly {
-        readonly manifest: {
-          readonly series: readonly unknown[];
-          readonly builtin: readonly {readonly source: unknown}[];
-        };
-      }[];
-    };
+    const module = new Function(source)() as JSModule;
 
     expect(module.manifest.builtin).toEqual([]);
+    expect(module.requests[0].abi).toBe(RUNTIME_ABI_VERSION);
+    expect(module.requests[0].aggregateLayouts).toBe(module.aggregateLayouts);
     expect(module.requests[0].manifest.series).toEqual([]);
     expect(module.requests[0].manifest.builtin).toMatchObject([
       {source: {domain: 'bar', field: 'bar_index'}},

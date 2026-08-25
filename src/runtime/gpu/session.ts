@@ -21,7 +21,7 @@ import {
 import type {BindInputs, BoundInput} from '../binding';
 import {loadModule} from '../load';
 import {resolveGeneratedBindingLayout} from '../module-binding';
-import {RUNTIME_ABI_VERSION, type TeaModule} from '../module-abi';
+import {RUNTIME_ABI_VERSION, type JSModule} from '../module-abi';
 import {
   isContextError,
   type ContextError,
@@ -1321,7 +1321,7 @@ async function prepareGpuExecutionInputsWithLimits(
   deviceLimits?: GpuBufferDeviceLimits,
 ): Promise<PreparedGpuExecution> {
   validateArtifact(artifact);
-  let bindingModule: TeaModule;
+  let bindingModule: JSModule;
   try {
     bindingModule = loadModule(artifact.bindingModule.source);
     validateBindingModule(artifact, bindingModule);
@@ -2033,7 +2033,7 @@ function fatalGpuParamValue(name: string): never {
 
 function validateBindingModule(
   artifact: CompiledWgslProgram,
-  module: TeaModule,
+  module: JSModule,
 ): void {
   if (
     module.abi !== RUNTIME_ABI_VERSION ||

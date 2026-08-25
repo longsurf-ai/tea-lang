@@ -1,4 +1,4 @@
-// Purpose: Execute one generated ModuleCode invocation as an Effect state
+// Purpose: Execute one generated JSModule invocation as an Effect state
 // transition over explicit committed State, Intermediate, and Input values.
 
 import {Effect} from 'effect';
@@ -12,7 +12,7 @@ import type {
   CollectionMutationOperation,
   CollectionOperation,
   Frame,
-  ModuleCode,
+  JSModule,
   Runtime,
 } from './module-abi';
 import type {EffectEmission, DenseEmission} from './output';
@@ -66,7 +66,7 @@ export type TeaStateMachine = StateMachine<
 >;
 
 export function stateMachine(
-  module: ModuleCode,
+  module: JSModule,
   params: readonly Value[],
   layouts: ValueLayoutRegistry,
   heap: Heap,
@@ -92,7 +92,7 @@ export function stateMachine(
 }
 
 function stateUpdate(
-  module: ModuleCode,
+  module: JSModule,
   params: readonly Value[],
   layouts: ValueLayoutRegistry,
   heap: Heap,
@@ -157,7 +157,7 @@ class StateUpdateContext implements Runtime {
   private transaction: HeapTransaction | null = null;
 
   constructor(
-    private readonly module: ModuleCode,
+    private readonly module: JSModule,
     private readonly params: readonly Value[],
     private readonly layouts: ValueLayoutRegistry,
     private readonly heap: Heap,
@@ -709,7 +709,7 @@ class StateUpdateContext implements Runtime {
 }
 
 function initialFrame(
-  module: ModuleCode,
+  module: JSModule,
   fid: number,
   active: boolean,
 ): FrameState {
@@ -725,7 +725,7 @@ function initialFrame(
   };
 }
 
-function initialRoot(module: ModuleCode): RootState {
+function initialRoot(module: JSModule): RootState {
   return {
     ...initialFrame(module, 0, true),
     series: module.manifest.series.map(() => ({values: []})),
@@ -735,7 +735,7 @@ function initialRoot(module: ModuleCode): RootState {
 }
 
 function initialIntermediateFrame(
-  module: ModuleCode,
+  module: JSModule,
   fid: number,
   active: boolean,
 ): IntermediateFrame {
@@ -769,7 +769,7 @@ function commitHistory(
 }
 
 function depthRetention(
-  depth: ModuleCode['manifest']['series'][number]['depth'],
+  depth: JSModule['manifest']['series'][number]['depth'],
 ) {
   switch (depth.kind) {
     case 'none':
@@ -783,7 +783,7 @@ function depthRetention(
 }
 
 function discoverRoots(
-  module: ModuleCode,
+  module: JSModule,
   layouts: ValueLayoutRegistry,
   structs: StructStorageRuntime,
   state: Readonly<State>,
@@ -809,7 +809,7 @@ function discoverRoots(
 }
 
 function visitFrameState(
-  module: ModuleCode,
+  module: JSModule,
   frame: Readonly<FrameState>,
   fid: number,
   visit: (layout: LayoutId, value: Value) => void,
@@ -827,7 +827,7 @@ function visitFrameState(
 }
 
 function visitIntermediateFrame(
-  module: ModuleCode,
+  module: JSModule,
   frame: Readonly<IntermediateFrame>,
   fid: number,
   visit: (layout: LayoutId, value: Value) => void,
@@ -843,13 +843,13 @@ function visitIntermediateFrame(
   });
 }
 
-function frameLayout(module: ModuleCode, fid: number) {
+function frameLayout(module: JSModule, fid: number) {
   const layout = module.manifest.frames[fid];
   return layout === undefined ? fatal(`unknown frame layout ${fid}`) : layout;
 }
 
 function validateEffectSchemas(
-  module: ModuleCode,
+  module: JSModule,
   layouts: ValueLayoutRegistry,
 ): void {
   const active = new Set<LayoutId>();

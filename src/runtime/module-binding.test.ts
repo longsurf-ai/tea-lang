@@ -4,7 +4,7 @@
 import {describe, expect, test} from 'vitest';
 import {ExecutionError} from './errors';
 import {evaluateModuleBinding} from './module-binding';
-import {RUNTIME_ABI_VERSION, type TeaModule} from './module-abi';
+import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import type {AggregateLayoutManifest} from './value-layout';
 
 const NUMBER = 0;
@@ -73,7 +73,7 @@ describe('module binding aggregates', () => {
   });
 });
 
-function bindingModule(bind: TeaModule['bind']): TeaModule {
+function bindingModule(bind: JSModule['bind']): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
     aggregateLayouts: LAYOUTS,

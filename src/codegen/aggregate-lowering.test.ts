@@ -33,7 +33,7 @@ import {
   type StructField,
   type StructType,
 } from '../ir/type';
-import type {ModuleCode} from '../runtime/abi';
+import type {JSModule} from '../runtime/abi';
 import {generate} from './codegen';
 
 const pos = {base: {filename: 'aggregate-lowering.test.tea'}, line: 1, col: 1};
@@ -131,11 +131,11 @@ function program(body: readonly IrStmt[]): Program {
   };
 }
 
-function compile(ir: Program): ModuleCode & {
+function compile(ir: Program): JSModule & {
   readonly abi: number;
 } {
   const js = generate(ir);
-  return new Function(js)() as ModuleCode & {
+  return new Function(js)() as JSModule & {
     readonly abi: number;
   };
 }

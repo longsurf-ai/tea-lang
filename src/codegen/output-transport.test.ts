@@ -13,7 +13,7 @@ import {
   type EnumType,
   type StructType,
 } from '../ir/type';
-import {RUNTIME_ABI_VERSION, type TeaModule} from '../runtime/abi';
+import {RUNTIME_ABI_VERSION, type JSModule} from '../runtime/abi';
 import {loadModule} from '../runtime/load';
 import {generate} from './codegen';
 
@@ -67,7 +67,7 @@ describe('output manifest transport', () => {
       body: [],
     };
 
-    const module = loadModule(generate(program)) as TeaModule;
+    const module = loadModule(generate(program)) as JSModule;
     expect(module.abi).toBe(RUNTIME_ABI_VERSION);
     expect(module.manifest.outputs[0].channels).toEqual([
       {name: 'integer', type: 'int', transport: {kind: 'int'}},

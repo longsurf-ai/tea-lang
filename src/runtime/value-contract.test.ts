@@ -12,7 +12,7 @@ import {
   type ParamSpec,
   type ProviderContext,
   RUNTIME_ABI_VERSION,
-  type TeaModule,
+  type JSModule,
   type Value,
 } from './abi';
 import {bindFixedHistory as bindRuntime} from './fixed-history';
@@ -20,7 +20,7 @@ import {bindFixedHistory as bindRuntime} from './fixed-history';
 const TEST_TIME_NOW = 1_800_000_000_000;
 
 function bind(
-  module: TeaModule,
+  module: JSModule,
   inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
 ) {
   return bindRuntime(module, {
@@ -87,7 +87,7 @@ function param(
   };
 }
 
-const EMPTY_VALUES_MODULE: TeaModule = {
+const EMPTY_VALUES_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: TEST_LAYOUTS,
   manifest: {
@@ -141,7 +141,7 @@ const EMPTY_VALUES_MODULE: TeaModule = {
   },
 };
 
-function paramModule(spec: ParamSpec): TeaModule {
+function paramModule(spec: ParamSpec): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
     aggregateLayouts: TEST_LAYOUTS,
@@ -178,7 +178,7 @@ describe('runtime value contract', () => {
   });
 
   test('invalid history offsets return each slot class empty value', async () => {
-    const module: TeaModule = {
+    const module: JSModule = {
       ...EMPTY_VALUES_MODULE,
       main(rt, fr) {
         rt.emit(0, 0, rt.read(fr, 0, -1));
@@ -241,7 +241,7 @@ describe('runtime value contract', () => {
   });
 
   test('provider NaN is numeric na, but provider infinity is fatal', async () => {
-    const module: TeaModule = {
+    const module: JSModule = {
       ...EMPTY_VALUES_MODULE,
       manifest: {
         ...EMPTY_VALUES_MODULE.manifest,

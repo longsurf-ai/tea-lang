@@ -9,7 +9,7 @@ import {
   type DataProvider,
   type OutputSink,
   type ProviderContext,
-  type TeaModule,
+  type JSModule,
   type TimeAxis,
 } from './abi';
 import {bindFixedHistory as bind} from './fixed-history';
@@ -37,7 +37,7 @@ const INT_EFFECT = {
   declaration: {payload: {kind: 'int' as const}},
 };
 
-function effectModule(main: TeaModule['main']): TeaModule {
+function effectModule(main: JSModule['main']): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
     aggregateLayouts: LAYOUTS,
@@ -113,7 +113,7 @@ describe('effect row transactions', () => {
 
   test('struct effects snapshot fields at emit time', async () => {
     const structLayout = 1;
-    const module: TeaModule = {
+    const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: {
         layouts: [
@@ -179,7 +179,7 @@ describe('effect row transactions', () => {
   });
 
   test('manifest validation rejects non-fixed effect layouts', async () => {
-    const unsafe: TeaModule = {
+    const unsafe: JSModule = {
       ...effectModule(() => {}),
       aggregateLayouts: {
         layouts: [
@@ -201,7 +201,7 @@ describe('effect row transactions', () => {
   });
 
   test('manifest validation keeps logical declarations aligned with physical layouts', async () => {
-    const mismatched: TeaModule = {
+    const mismatched: JSModule = {
       ...effectModule(() => {}),
       manifest: {
         ...effectModule(() => {}).manifest,
@@ -232,7 +232,7 @@ describe('effect row transactions', () => {
       rt.emit(0, 0, 5);
       rt.emitEffect(0, 6);
     });
-    const module: TeaModule = {
+    const module: JSModule = {
       ...base,
       manifest: {
         ...base.manifest,
@@ -283,7 +283,7 @@ describe('effect row transactions', () => {
       rt.emit(0, 0, current);
       if (current === 1) rt.emitEffect(0, 101);
     });
-    const module: TeaModule = {
+    const module: JSModule = {
       ...base,
       manifest: {
         ...base.manifest,
@@ -335,7 +335,7 @@ describe('effect row transactions', () => {
       rt.emit(0, 0, 17);
       rt.emitEffect(0, 101);
     });
-    const module: TeaModule = {
+    const module: JSModule = {
       ...base,
       manifest: {
         ...base.manifest,

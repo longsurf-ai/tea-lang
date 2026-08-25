@@ -10,11 +10,10 @@ import {
   type BindInputs,
   type DataProvider,
   ExecutionError,
-  type ModuleCode,
+  type JSModule,
   type OutputSink,
   type ProviderContext,
   RUNTIME_ABI_VERSION,
-  type TeaModule,
   type TimeAxis,
   type Value,
 } from './abi';
@@ -23,7 +22,7 @@ import {bindFixedHistory as bindRuntime} from './fixed-history';
 const TEST_TIME_NOW = 1_800_000_000_000;
 
 function bind(
-  module: TeaModule,
+  module: JSModule,
   inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
 ) {
   return bindRuntime(module, {
@@ -98,7 +97,7 @@ const OUTPUT = {
   channels: [{name: 'value', type: 'int', transport: {kind: 'int'}}],
 } as const;
 
-function arrayStateModule(): TeaModule {
+function arrayStateModule(): JSModule {
   return {
     abi: RUNTIME_ABI_VERSION,
     aggregateLayouts: LAYOUTS,
@@ -160,7 +159,7 @@ describe('aggregate state and commit integration', () => {
   test('a first-row var struct keeps its reference while its body accumulates across ticks', async () => {
     const sink = new Sink();
     let fail = false;
-    const module: TeaModule = {
+    const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
@@ -265,7 +264,7 @@ describe('aggregate state and commit integration', () => {
     const sink = new Sink();
     let fail = false;
     const base = arrayStateModule();
-    const module: TeaModule = {
+    const module: JSModule = {
       ...base,
       main(rt, fr) {
         base.main(rt, fr);
@@ -297,7 +296,7 @@ describe('aggregate state and commit integration', () => {
     const sink = new Sink();
     let fail = true;
     const base = arrayStateModule();
-    const module: TeaModule = {
+    const module: JSModule = {
       ...base,
       main(rt, fr) {
         base.main(rt, fr);
@@ -327,7 +326,7 @@ describe('aggregate state and commit integration', () => {
       code: string;
       rootIdentityPreserved: boolean;
     }[] = [];
-    const module: TeaModule = {
+    const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
@@ -436,7 +435,7 @@ describe('aggregate state and commit integration', () => {
 
   test('struct history stores live references rather than body snapshots', async () => {
     const sink = new Sink();
-    const module: TeaModule = {
+    const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
@@ -540,7 +539,9 @@ describe('request Heap isolation', () => {
         });
       },
     };
-    const leaf: ModuleCode = {
+    const leaf: JSModule = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -565,7 +566,9 @@ describe('request Heap isolation', () => {
         rt.write(fr, 0, rt.callCollection('array.from', ARRAY, [41]));
       },
     };
-    const middle: ModuleCode = {
+    const middle: JSModule = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -603,7 +606,7 @@ describe('request Heap isolation', () => {
         rt.write(fr, 0, rt.request(0, 0));
       },
     };
-    const root: TeaModule = {
+    const root: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
@@ -660,7 +663,9 @@ describe('request Heap isolation', () => {
     let childTuple: Value = null;
     let copied = false;
     let frozen = false;
-    const child: ModuleCode = {
+    const child: JSModule = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: LAYOUTS,
       manifest: {
         series: [],
         builtin: [],
@@ -691,7 +696,7 @@ describe('request Heap isolation', () => {
         rt.write(fr, 0, value);
       },
     };
-    const root: TeaModule = {
+    const root: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
@@ -769,7 +774,9 @@ describe('request Heap isolation', () => {
       resolveContext: symbol =>
         Promise.resolve(symbol === 'X' ? childContext : primary),
     };
-    const child: ModuleCode = {
+    const child: JSModule = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: LAYOUTS,
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
         builtin: [],
@@ -794,7 +801,7 @@ describe('request Heap isolation', () => {
         rt.write(fr, 0, rt.series(0, 0));
       },
     };
-    const root: TeaModule = {
+    const root: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
@@ -885,7 +892,9 @@ describe('request Heap isolation', () => {
       resolveContext: symbol =>
         Promise.resolve(symbol === 'X' ? childContext : primary),
     };
-    const child: ModuleCode = {
+    const child: JSModule = {
+      abi: RUNTIME_ABI_VERSION,
+      aggregateLayouts: LAYOUTS,
       manifest: {
         series: [{id: 'close', depth: {kind: 'none'}}],
         builtin: [],
@@ -921,7 +930,7 @@ describe('request Heap isolation', () => {
         rt.write(fr, 1, mutation.replacement);
       },
     };
-    const root: TeaModule = {
+    const root: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
@@ -985,7 +994,7 @@ describe('runtime boundaries', () => {
   test('bind-time aggregate storage is abort-only and cannot remain retained', async () => {
     let escaped: Value | undefined;
     let rejection = '';
-    const module: TeaModule = {
+    const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
@@ -1096,7 +1105,7 @@ describe('runtime boundaries', () => {
 
   test('all reachable frame workspace is reserved before the first step', async () => {
     let requestLargeFrame = true;
-    const module: TeaModule = {
+    const module: JSModule = {
       abi: RUNTIME_ABI_VERSION,
       aggregateLayouts: LAYOUTS,
       manifest: {
@@ -1163,7 +1172,7 @@ describe('runtime boundaries', () => {
       init() {
         initialized = true;
       },
-    } as unknown as TeaModule;
+    } as unknown as JSModule;
     await expect(
       bind(old, {params: {}, provider: provider(), sink: new Sink()}),
     ).rejects.toThrow('unsupported module ABI 1; expected 2');

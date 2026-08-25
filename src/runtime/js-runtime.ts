@@ -3,7 +3,7 @@
 
 import {Effect} from 'effect';
 import {fatal} from '../base/print';
-import type {ModuleCode} from './module-abi';
+import type {JSModule} from './module-abi';
 import type {EffectEmission, DenseEmission} from './output';
 import {ArenaHeap, type HeapLimits} from './heap';
 import type {ExecutionError} from './errors';
@@ -48,7 +48,7 @@ export class JSRuntime {
   private disposed = false;
 
   constructor(
-    private readonly module: ModuleCode,
+    private readonly module: JSModule,
     params: readonly Value[],
     private readonly layouts: ValueLayoutRegistry,
     options: JSRuntimeOptions = {},

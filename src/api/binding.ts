@@ -8,7 +8,7 @@ import {TypeKind, type Type} from '../ir/type';
 import {seriesInputsOf} from '../ir/visit';
 import {BindError} from '../runtime/errors';
 import {loadModule} from '../runtime/load';
-import type {TeaModule} from '../runtime/module-abi';
+import type {JSModule} from '../runtime/module-abi';
 import {resolveParamValues} from '../runtime/params';
 import {
   boundModuleCode,
@@ -215,7 +215,7 @@ function isBoundModule(value: Program | BoundModule): value is BoundModule {
 
 function makeBoundModule(
   program: Program,
-  code: TeaModule,
+  code: JSModule,
   bindings: readonly Binding[],
   facts: BoundModuleFacts | null,
 ): BoundModule {
@@ -225,7 +225,7 @@ function makeBoundModule(
 }
 
 function bindFacts(
-  code: TeaModule,
+  code: JSModule,
   bindings: readonly Binding[],
 ): Effect.Effect<BoundModuleFacts, BindingError> {
   return Effect.try({

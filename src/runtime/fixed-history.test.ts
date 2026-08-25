@@ -8,8 +8,7 @@ import {
   type AggregateLayoutManifest,
   type DataProvider,
   type ProviderContext,
-  type ModuleCode,
-  type TeaModule,
+  type JSModule,
 } from './abi';
 import {bindFixedHistory} from './fixed-history';
 
@@ -49,7 +48,7 @@ function axis(span: number) {
   };
 }
 
-const MODULE: TeaModule = {
+const MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: LAYOUTS,
   manifest: {
@@ -102,7 +101,9 @@ const MODULE: TeaModule = {
   },
 };
 
-const REQUEST_CHILD: ModuleCode = {
+const REQUEST_CHILD: JSModule = {
+  abi: RUNTIME_ABI_VERSION,
+  aggregateLayouts: LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
@@ -128,7 +129,9 @@ const REQUEST_CHILD: ModuleCode = {
   },
 };
 
-const NESTED_REQUEST_CHILD: ModuleCode = {
+const NESTED_REQUEST_CHILD: JSModule = {
+  abi: RUNTIME_ABI_VERSION,
+  aggregateLayouts: LAYOUTS,
   manifest: {
     series: [],
     builtin: [],
@@ -165,7 +168,7 @@ const NESTED_REQUEST_CHILD: ModuleCode = {
   },
 };
 
-function requestModule(dynamic = false): TeaModule {
+function requestModule(dynamic = false): JSModule {
   return {
     ...MODULE,
     manifest: {
@@ -206,7 +209,7 @@ function requestModule(dynamic = false): TeaModule {
   };
 }
 
-const ARRAY_WORKSPACE_MODULE: TeaModule = {
+const ARRAY_WORKSPACE_MODULE: JSModule = {
   abi: RUNTIME_ABI_VERSION,
   aggregateLayouts: LAYOUTS,
   manifest: {
@@ -433,7 +436,7 @@ describe('bindFixedHistory', () => {
 
   test('shares request-column budget while releasing completed child workspace', async () => {
     const base = requestModule();
-    const module: TeaModule = {
+    const module: JSModule = {
       ...base,
       manifest: {
         ...base.manifest,
