@@ -1,24 +1,34 @@
-import { Observable, Observer, Subject, Subscriber, Subscribable, Subscription, TeardownLogic } from "rxjs";
-import * as z from "zod";
-import type { Sink } from "./sink";
+// Purpose: Schema-carrying read-only Observable input for the public API.
 
-/**
- * A data stream is a typed observable.
- */
+import {
+  Observable,
+  type Observer,
+  type Subscribable,
+  type Subscriber,
+  type Subscription,
+  type TeardownLogic,
+} from 'rxjs';
+import * as z from 'zod';
+
+/** A read-only Observable whose emitted values are described by one schema. */
 export class DataStream<T> implements Subscribable<T> {
-    readonly schema: z.input<T>;
-    private readonly observable: Observable<T>;
+  private readonly observable: Observable<T>;
 
-    constructor(
-        schema: z.input<T>,
-        subscribe?: (this: Observable<T>, subscriber: Subscriber<T>) => TeardownLogic
-    ) {
-        this.schema = schema;
-        this.observable = new Observable<T>(subscribe);
-    }
+  constructor(
+    readonly schema: z.ZodType<T>,
+    subscribe?: (
+      this: Observable<T>,
+      subscriber: Subscriber<T>,
+    ) => TeardownLogic,
+  ) {
+    this.observable = new Observable<T>(subscribe);
+  }
 
-    subscribe(observer: Partial<Observer<T>>): Subscription {
-        return this.observable.subscribe(observer);
-    }
+  subscribe(observer: Partial<Observer<T>>): Subscription {
+    return this.observable.subscribe(observer);
+  }
 
+  asObservable(): Observable<T> {
+    return this.observable;
+  }
 }

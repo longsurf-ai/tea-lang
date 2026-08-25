@@ -35,8 +35,10 @@ export class CSVSource<T extends z.ZodType> implements Source<T> {
 
   /** Return a cold stream; every subscription opens its own file reader. */
   stream(): DataStream<z.output<T>> {
-    return new DataStream(this.schema, subscriber =>
-      from(csvRows(this.path, this.schema)).subscribe(subscriber),
+    return new DataStream<z.output<T>>(
+      this.schema as z.ZodType<z.output<T>>,
+      subscriber =>
+        from(csvRows(this.path, this.schema)).subscribe(subscriber),
     );
   }
 }
