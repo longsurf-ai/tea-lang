@@ -1,4 +1,5 @@
-// Purpose: JSRuntime aggregate integration tests for Ring history, var/varip provisional policy, sink boundaries, request-Heap isolation, ABI gating, and disposal.
+// Purpose: Aggregate state/history, provisional commit, request-Heap isolation,
+// host-boundary, ABI, and disposal integration tests for the step runtime.
 
 import {describe, expect, test} from 'vitest';
 import {InternalError} from '../base/print';
@@ -17,7 +18,7 @@ import {
   type TimeAxis,
   type Value,
 } from './abi';
-import {bind as bindRuntime} from './js-runtime';
+import {bindStateMachine as bindRuntime} from './state-machine-binding';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
 
@@ -155,7 +156,7 @@ function arrayStateModule(): TeaModule {
   };
 }
 
-describe('aggregate Ring and commit integration', () => {
+describe('aggregate state and commit integration', () => {
   test('a first-row var struct keeps its reference while its body accumulates across ticks', async () => {
     const sink = new Sink();
     let fail = false;
@@ -320,7 +321,7 @@ describe('aggregate Ring and commit integration', () => {
     expect(sink.values[0].values).toEqual([2, 2]);
   });
 
-  test('a failed replacement allocation leaves its caller Ring root unchanged', async () => {
+  test('a failed replacement allocation leaves its retained root unchanged', async () => {
     const sink = new Sink();
     const failures: {
       code: string;
@@ -395,7 +396,7 @@ describe('aggregate Ring and commit integration', () => {
       provider: provider(context(2)),
       sink,
       // The one-element initializer is 24 bytes; its two-element replacement
-      // is 32 and must fail before it can replace the caller's Ring root.
+      // is 32 and must fail before it can replace the caller's retained root.
       maxHeapTransientLogicalBytes: 24,
     });
 
@@ -747,276 +748,7 @@ describe('request Heap isolation', () => {
     bound.dispose();
   });
 
-  test('dynamic scalar pair views retain copied results', async () => {
-    const parentAxis: TimeAxis = {
-      time: row => row * 60,
-      closeTime: row => (row + 1) * 60,
-    };
-    const childAxis: TimeAxis = {
-      time: () => 0,
-      closeTime: () => 60,
-    };
-    const primary: ProviderContext = {
-      rows: 3,
-      axis: parentAxis,
-      series: () => null,
-      builtinValue: () => undefined,
-    };
-    const pair = (value: number): ProviderContext => ({
-      rows: 1,
-      axis: childAxis,
-      series: id => (id === 'close' ? {length: 1, at: () => value} : null),
-      builtinValue: () => undefined,
-    });
-    const contexts: DataProvider = {
-      resolveContext: symbol => {
-        if (symbol === '') {
-          return Promise.resolve(primary);
-        }
-        if (symbol === 'X') {
-          return Promise.resolve(pair(11));
-        }
-        if (symbol === 'Y') {
-          return Promise.resolve(pair(22));
-        }
-        return Promise.resolve({
-          error: 'unknownSymbol' as const,
-          detail: `no context '${symbol}'`,
-        });
-      },
-    };
-    const child: ModuleCode = {
-      manifest: {
-        series: [{id: 'close', depth: {kind: 'none'}}],
-        builtin: [],
-        params: [],
-        outputs: [],
-        effects: [],
-        requests: [],
-        frames: [
-          {
-            locals: [
-              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: INT},
-            ],
-            subs: [],
-          },
-        ],
-      },
-      requests: [],
-      init() {},
-      bind() {},
-      funcs: {},
-      main(rt, fr) {
-        rt.write(fr, 0, rt.series(0, 0));
-      },
-    };
-    const root: TeaModule = {
-      abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
-      manifest: {
-        series: [],
-        builtin: [
-          {
-            source: {domain: 'bar', field: 'bar_index'},
-            layout: INT,
-            depth: {kind: 'none'},
-          },
-        ],
-        params: [],
-        outputs: [OUTPUT],
-        effects: [],
-        requests: [
-          {
-            merge: {
-              mode: 'sample',
-            },
-            depth: {kind: 'none'},
-            resultSlot: 0,
-            layout: INT,
-            dynamic: true,
-          },
-        ],
-        frames: [{locals: [], subs: []}],
-      },
-      requests: [child],
-      init() {},
-      bind(rt) {
-        rt.bindRequestOptions(0, false, false, false, 0);
-      },
-      funcs: {},
-      main(rt) {
-        const symbol = rt.builtin(0, 0) === 1 ? 'Y' : 'X';
-        rt.emit(0, 0, rt.requestFor(0, symbol, ''));
-      },
-    };
-    const sink = new Sink();
-    const bound = await bind(root, {
-      params: {},
-      provider: contexts,
-      sink,
-      maxFixedValueLogicalBytes: 128,
-    });
-
-    await bound.runAll();
-    expect(sink.values.map(entry => entry.values)).toEqual([[11], [22], [11]]);
-    bound.dispose();
-  });
-
-  test('tentative aggregate writes vanish across dynamic suspension retries', async () => {
-    const axis: TimeAxis = {
-      time: row => row * 60,
-      closeTime: row => (row + 1) * 60,
-    };
-    const primary: ProviderContext = {
-      rows: 1,
-      axis,
-      series: () => null,
-      builtinValue: () => undefined,
-    };
-    const childContext: ProviderContext = {
-      rows: 1,
-      axis,
-      series: id => (id === 'close' ? {length: 1, at: () => 1} : null),
-      builtinValue: () => undefined,
-    };
-    const contexts: DataProvider = {
-      resolveContext: symbol =>
-        Promise.resolve(symbol === '' ? primary : childContext),
-    };
-    const child: ModuleCode = {
-      manifest: {
-        series: [{id: 'close', depth: {kind: 'none'}}],
-        builtin: [],
-        params: [],
-        outputs: [],
-        effects: [],
-        requests: [],
-        frames: [
-          {
-            locals: [
-              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: INT},
-            ],
-            subs: [],
-          },
-        ],
-      },
-      requests: [],
-      init() {},
-      bind() {},
-      funcs: {},
-      main(rt, fr) {
-        rt.write(fr, 0, rt.series(0, 0));
-      },
-    };
-    let requestedSymbol = 'Y';
-    let marker = 11;
-    const root: TeaModule = {
-      abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
-      manifest: {
-        series: [],
-        builtin: [],
-        params: [],
-        outputs: [
-          {
-            ...OUTPUT,
-            channels: [
-              {name: 'size', type: 'int', transport: {kind: 'int'}},
-              {name: 'last', type: 'int', transport: {kind: 'int'}},
-            ],
-          },
-        ],
-        effects: [],
-        requests: [
-          {
-            merge: {
-              mode: 'sample',
-            },
-            depth: {kind: 'none'},
-            resultSlot: 0,
-            layout: INT,
-            dynamic: true,
-          },
-        ],
-        frames: [
-          {
-            locals: [
-              {storage: Storage.Varip, depth: {kind: 'none'}, layout: ARRAY},
-            ],
-            subs: [],
-          },
-        ],
-      },
-      requests: [child],
-      init() {},
-      bind(rt) {
-        rt.bindRequestOptions(0, false, false, false, 0);
-      },
-      funcs: {},
-      main(rt, fr) {
-        if (rt.needsInit(fr, 0)) {
-          rt.initialize(fr, 0, rt.callCollection('array.from', ARRAY, [0]));
-        }
-        const mutation = rt.mutateCollection(
-          'array.push',
-          ARRAY,
-          rt.read(fr, 0, 0),
-          [marker],
-        );
-        rt.write(fr, 0, mutation.replacement);
-        // The replacement above is tentative when this first encounters a
-        // pair. Suspension must abort that storage and restore the exact
-        // pre-transaction varip header before retrying the whole row.
-        rt.requestFor(0, requestedSymbol, '');
-        rt.emit(
-          0,
-          0,
-          rt.callCollection('array.size', INT, [mutation.replacement]),
-        );
-        rt.emit(
-          0,
-          1,
-          rt.callCollection('array.last', INT, [mutation.replacement]),
-        );
-      },
-    };
-    const sink = new Sink();
-    const bound = await bind(root, {
-      params: {},
-      provider: contexts,
-      sink,
-    });
-
-    expect(() => bound.executeRow(0, true)).toThrow('unresolved request');
-    await bound.resolvePending();
-    bound.executeRow(0, true);
-
-    // A second unresolved pair starts from the completed first tick's
-    // candidate. Its failed append must disappear, while that pre-transaction
-    // candidate survives for the retry.
-    requestedSymbol = 'X';
-    marker = 22;
-    expect(() => bound.executeRow(0, true)).toThrow('unresolved request');
-    await bound.resolvePending();
-    bound.executeRow(0, true);
-
-    marker = 33;
-    bound.executeRow(0, false);
-    bound.commitRow(0);
-    expect(sink.values.map(entry => entry.values)).toEqual([
-      [2, 11],
-      [3, 22],
-      [4, 33],
-    ]);
-    expect(sink.values.map(entry => entry.provisional)).toEqual([
-      true,
-      true,
-      false,
-    ]);
-    bound.dispose();
-  });
-
-  test('keep-zero scalar result leases transfer to views and child Rings release', async () => {
+  test('keep-zero scalar result columns outlive released child workspace', async () => {
     const axis: TimeAxis = {
       time: row => row * 60,
       closeTime: row => (row + 1) * 60,
@@ -1120,7 +852,8 @@ describe('request Heap isolation', () => {
       params: {},
       provider: contexts,
       sink,
-      // Peak: first view 64 + second child Ring 32 + result column 64.
+      // Peak: the first 64-byte result column remains while the second child
+      // uses 32 bytes of workspace and builds its own 64-byte result column.
       maxFixedValueLogicalBytes: 160,
     });
     await bound.runAll();
@@ -1128,124 +861,6 @@ describe('request Heap isolation', () => {
       [10, 10],
       [11, 11],
     ]);
-    bound.dispose();
-  });
-
-  test('a post-child merge failure releases the builder, child, and fixed lease', async () => {
-    const stableAxis: TimeAxis = {
-      time: () => 0,
-      closeTime: () => 60,
-    };
-    const primary: ProviderContext = {
-      rows: 1,
-      axis: stableAxis,
-      series: () => null,
-      builtinValue: () => undefined,
-    };
-    let childResolutions = 0;
-    const contexts: DataProvider = {
-      resolveContext: symbol => {
-        if (symbol !== 'X') {
-          return Promise.resolve(primary);
-        }
-        childResolutions += 1;
-        let closeReads = 0;
-        const axis: TimeAxis =
-          childResolutions === 1
-            ? {
-                time: () => 0,
-                closeTime: () => {
-                  closeReads += 1;
-                  if (closeReads > 1) {
-                    throw new Error('post-child axis failure');
-                  }
-                  return 60;
-                },
-              }
-            : stableAxis;
-        return Promise.resolve({
-          rows: 1,
-          axis,
-          series: () => null,
-          builtinValue: () => undefined,
-        });
-      },
-    };
-    const child: ModuleCode = {
-      manifest: {
-        series: [],
-        builtin: [],
-        params: [],
-        outputs: [],
-        effects: [],
-        requests: [],
-        frames: [
-          {
-            locals: [
-              {storage: Storage.PerBar, depth: {kind: 'none'}, layout: INT},
-            ],
-            subs: [],
-          },
-        ],
-      },
-      requests: [],
-      init() {},
-      bind() {},
-      funcs: {},
-      main(rt, fr) {
-        rt.write(fr, 0, 7);
-      },
-    };
-    const root: TeaModule = {
-      abi: RUNTIME_ABI_VERSION,
-      aggregateLayouts: LAYOUTS,
-      manifest: {
-        series: [],
-        builtin: [],
-        params: [],
-        outputs: [OUTPUT],
-        effects: [],
-        requests: [
-          {
-            merge: {
-              mode: 'sample',
-            },
-            depth: {kind: 'none'},
-            resultSlot: 0,
-            layout: INT,
-            dynamic: true,
-          },
-        ],
-        frames: [{locals: [], subs: []}],
-      },
-      requests: [child],
-      init() {},
-      bind(rt) {
-        rt.bindRequestOptions(0, false, false, false, 0);
-      },
-      funcs: {},
-      main(rt) {
-        rt.emit(0, 0, rt.requestFor(0, 'X', ''));
-      },
-    };
-    const sink = new Sink();
-    const bound = await bind(root, {
-      params: {},
-      provider: contexts,
-      sink,
-      // Root request Ring 32 + one child Ring 32 + one result column 32.
-      maxFixedValueLogicalBytes: 96,
-    });
-
-    expect(() => bound.executeRow(0, false)).toThrow('unresolved request');
-    await expect(bound.resolvePending()).rejects.toThrow(
-      'post-child axis failure',
-    );
-    expect(() => bound.executeRow(0, false)).toThrow('unresolved request');
-    await bound.resolvePending();
-    bound.executeRow(0, false);
-    bound.commitRow(0);
-    expect(sink.values[0].values).toEqual([7]);
     bound.dispose();
   });
 
@@ -1428,7 +1043,7 @@ describe('runtime boundaries', () => {
     });
 
     await bound.runAll();
-    expect(rejection).toContain('stale Ref');
+    expect(rejection).toContain('Ref belongs to another Heap arena');
     expect(sink.values.map(entry => entry.values)).toEqual([[8]]);
     bound.dispose();
   });
@@ -1457,12 +1072,14 @@ describe('runtime boundaries', () => {
     }
   });
 
-  test('fixed Ring cells reserve exact shallow-layout bytes before allocation', async () => {
+  test('fixed state workspace reserves exact shallow-layout bytes at bind', async () => {
     const exact = await bind(arrayStateModule(), {
       params: {},
       provider: provider(),
       sink: new Sink(),
-      // Provisional bind Rings release before these two final var Rings.
+      // Two persistent array locals reserve a current/scratch pair each:
+      // 2 * 2 * shallowBytes(array=32) = 128 bytes. The depth-none input is
+      // supplied directly to each step and needs no retained state cell.
       maxFixedValueLogicalBytes: 128,
     });
     exact.dispose();
@@ -1472,14 +1089,12 @@ describe('runtime boundaries', () => {
         params: {},
         provider: provider(),
         sink: new Sink(),
-        // Two array var Rings each reserve scratch + one committed cell:
-        // 2 * 2 * shallowBytes(array=32) = 128.
         maxFixedValueLogicalBytes: 127,
       }),
     ).rejects.toThrow('FIXED_VALUE_STORAGE_LIMIT_EXCEEDED');
   });
 
-  test('a partially allocated lazy frame rolls its Ring leases back', async () => {
+  test('all reachable frame workspace is reserved before the first step', async () => {
     let requestLargeFrame = true;
     const module: TeaModule = {
       abi: RUNTIME_ABI_VERSION,
@@ -1520,17 +1135,24 @@ describe('runtime boundaries', () => {
       params: {},
       provider: provider(),
       sink: new Sink(),
-      // One array scratch Ring fits (32); two do not.
-      maxFixedValueLogicalBytes: 48,
+      // All three per-bar array cells are part of the bounded state shape,
+      // regardless of which subframe the first row enters.
+      maxFixedValueLogicalBytes: 96,
     });
 
-    expect(() => bound.executeRow(0, false)).toThrow(
-      'FIXED_VALUE_STORAGE_LIMIT_EXCEEDED',
-    );
-    requestLargeFrame = false;
     bound.executeRow(0, false);
     bound.commitRow(0);
     bound.dispose();
+
+    requestLargeFrame = false;
+    await expect(
+      bind(module, {
+        params: {},
+        provider: provider(),
+        sink: new Sink(),
+        maxFixedValueLogicalBytes: 95,
+      }),
+    ).rejects.toThrow('FIXED_VALUE_STORAGE_LIMIT_EXCEEDED');
   });
 
   test('a non-current ABI is rejected before init or bind code runs', async () => {

@@ -1,4 +1,5 @@
-// Purpose: JSRuntime tests — hand-lowered modules (the exact shape codegen will emit) drive bind, frames, rings, and the provisional/commit protocol end to end.
+// Purpose: Successor binding coverage retained from the legacy JS runtime:
+// generated bind facts, typed builtins, and static request execution.
 
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
@@ -18,22 +19,11 @@ import {
   type TimeAxis,
   type Value,
 } from './abi';
-import {bind as bindRuntime} from './js-runtime';
 import {bindStateMachine} from './state-machine-binding';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
 
 function bind(
-  module: TeaModule,
-  inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
-) {
-  return bindRuntime(module, {
-    ...inputs,
-    timeNow: inputs.timeNow ?? TEST_TIME_NOW,
-  });
-}
-
-function bindStep(
   module: TeaModule,
   inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
 ) {
@@ -154,21 +144,6 @@ const EMA_MODULE: TeaModule = {
   },
 };
 
-describe('historical execution', () => {
-  test('var state carries across committed rows', async () => {
-    const sink = new RecordingSink();
-    const bound = await bind(EMA_MODULE, {
-      params: {},
-      provider: provider({close: new ArraySeries([10, 20, 30])}),
-      sink,
-    });
-    expect(bound.rows).toBe(3);
-    await bound.runAll();
-    expect(sink.emits.map(e => e.channels[0])).toEqual([10, 15, 22.5]);
-    expect(sink.emits.every(e => !e.provisional)).toBe(true);
-  });
-});
-
 // ---- two call sites, one func ----------------------------------------------
 // counter() => var c = 0; c := c + 1; c
 
@@ -223,48 +198,6 @@ const COUNTER_MODULE: TeaModule = {
   },
 };
 
-describe('frames', () => {
-  test('call sites share the compiled body but own separate state', async () => {
-    const sink = new RecordingSink();
-    const bound = await bind(COUNTER_MODULE, {
-      params: {},
-      provider: provider({close: new ArraySeries([1, 1, 1])}),
-      sink,
-    });
-    await bound.runAll();
-    expect(sink.emits.map(e => e.channels)).toEqual([
-      [1, 1],
-      [2, 2],
-      [3, 3],
-    ]);
-  });
-
-  test('first activation is discarded when the row transaction throws', async () => {
-    let shouldThrow = true;
-    const module: TeaModule = {
-      ...COUNTER_MODULE,
-      main(rt, fr) {
-        if (shouldThrow) {
-          COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0));
-          throw new Error('after first call');
-        }
-        rt.emit(0, 0, COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0)) as Value);
-      },
-    };
-    const sink = new RecordingSink();
-    const bound = await bind(module, {
-      params: {},
-      provider: provider({close: new ArraySeries([1])}),
-      sink,
-    });
-    expect(() => bound.executeRow(0, false)).toThrow('after first call');
-    shouldThrow = false;
-    bound.executeRow(0, false);
-    bound.commitRow(0);
-    expect(sink.emits.map(emit => emit.channels[0])).toEqual([1]);
-  });
-});
-
 // ---- name history -----------------------------------------------------------
 // x = close; plot(x[2])
 
@@ -300,23 +233,6 @@ const HISTORY_MODULE: TeaModule = {
     rt.emit(0, 0, rt.read(fr, 0, 2));
   },
 };
-
-describe('rings', () => {
-  test('history offsets see committed cells; early rows read na', async () => {
-    const sink = new RecordingSink();
-    const bound = await bind(HISTORY_MODULE, {
-      params: {},
-      provider: provider({close: new ArraySeries([1, 2, 3, 4])}),
-      sink,
-    });
-    await bound.runAll();
-    const values = sink.emits.map(e => e.channels[0]);
-    expect(Number.isNaN(num(values[0]))).toBe(true);
-    expect(Number.isNaN(num(values[1]))).toBe(true);
-    expect(values[2]).toBe(1);
-    expect(values[3]).toBe(2);
-  });
-});
 
 // ---- provisional protocol ---------------------------------------------------
 // var v = 0;   v := v + close     (rolls back per tick)
@@ -381,119 +297,6 @@ const TICK_MODULE: TeaModule = {
     rt.emit(0, 2, rt.read(fr, 2, 0));
   },
 };
-
-describe('provisional protocol', () => {
-  test('ticks re-execute from committed state; varip alone accumulates', async () => {
-    const sink = new RecordingSink();
-    const close = new ArraySeries([10, 5]);
-    const bound = await bind(TICK_MODULE, {
-      params: {},
-      provider: provider({close}),
-      sink,
-    });
-
-    // Row 0 lives: two provisional ticks with changing values, then close.
-    bound.executeRow(0, true);
-    close.values[0] = 11;
-    bound.executeRow(0, true);
-    close.values[0] = 12;
-    bound.executeRow(0, false);
-    bound.commitRow(0);
-    // Row 1 straight to committed.
-    bound.executeRow(1, false);
-    bound.commitRow(1);
-
-    const [tick1, tick2, commit0, commit1] = sink.emits;
-    // var rolls back to its initializer until something commits.
-    expect(tick1.channels[0]).toBe(10);
-    expect(tick2.channels[0]).toBe(11);
-    expect(commit0.channels[0]).toBe(12);
-    expect(commit1.channels[0]).toBe(17); // 12 committed + 5
-    // varip accumulates across the three executions of row 0.
-    expect(tick1.channels[1]).toBe(1);
-    expect(tick2.channels[1]).toBe(2);
-    expect(commit0.channels[1]).toBe(3);
-    expect(commit1.channels[1]).toBe(4);
-    expect(tick1.provisional).toBe(true);
-    expect(commit0.provisional).toBe(false);
-  });
-
-  test('for var and perBar, ticks then commit equals never having ticked', async () => {
-    const run = async (withTicks: boolean) => {
-      const sink = new RecordingSink();
-      const close = new ArraySeries([12, 5]);
-      const bound = await bind(TICK_MODULE, {
-        params: {},
-        provider: provider({close}),
-        sink,
-      });
-      if (withTicks) {
-        close.values[0] = 10;
-        bound.executeRow(0, true);
-        close.values[0] = 12;
-      }
-      bound.executeRow(0, false);
-      bound.commitRow(0);
-      bound.executeRow(1, false);
-      bound.commitRow(1);
-      return sink.emits.filter(e => !e.provisional);
-    };
-    const ticked = await run(true);
-    const clean = await run(false);
-    // var and perBar channels agree; varip legitimately differs.
-    expect(ticked.map(e => [e.channels[0], e.channels[2]])).toEqual(
-      clean.map(e => [e.channels[0], e.channels[2]]),
-    );
-  });
-
-  test('provisional activation survives a final same-row skip', async () => {
-    let invoke = true;
-    const sink = new RecordingSink();
-    const module: TeaModule = {
-      ...COUNTER_MODULE,
-      manifest: {
-        ...COUNTER_MODULE.manifest,
-        frames: [
-          COUNTER_MODULE.manifest.frames[0],
-          {
-            locals: [
-              {
-                storage: Storage.Varip,
-                depth: {kind: 'none'},
-                layout: NUMBER_LAYOUT,
-              },
-            ],
-            subs: [],
-          },
-        ],
-      },
-      main(rt, fr) {
-        if (invoke) {
-          const value = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0)) as Value;
-          rt.emit(0, 0, value);
-        }
-      },
-    };
-    const bound = await bind(module, {
-      params: {},
-      provider: provider({close: new ArraySeries([1, 1])}),
-      sink,
-    });
-    bound.executeRow(0, true);
-    invoke = false;
-    bound.executeRow(0, false);
-    bound.commitRow(0);
-    invoke = true;
-    bound.executeRow(1, false);
-    bound.commitRow(1);
-    expect(
-      sink.emits.map(emit => [emit.channels[0], emit.provisional]),
-    ).toEqual([
-      [1, true],
-      [2, false],
-    ]);
-  });
-});
 
 // ---- bind-time section ------------------------------------------------------
 // level = input.float(70.0, minval=0)
@@ -793,42 +596,29 @@ describe('typed builtins', () => {
     ]);
   });
 
-  test('simple context metadata is available during bind', async () => {
-    const seen: Value[] = [];
+  test('bind-time builtin reads fail before provider resolution', async () => {
+    const calls: string[] = [];
     const base = builtinModule();
     const module: TeaModule = {
       ...base,
       bind(rt) {
-        seen.push(rt.builtin(11, 0), rt.builtin(12, 0));
+        rt.builtin(11, 0);
       },
     };
-    await bind(module, {
-      params: {},
-      provider: providerFromContext(builtinContext()),
-      sink: new RecordingSink(),
-      timeNow: 1_777_777_777_777,
-    });
-    expect(seen).toEqual(['NASDAQ:AAPL', 'D']);
-  });
-
-  test('series-qualified builtins fail loudly during bind', async () => {
-    for (const bid of [0, 2, 3, 5]) {
-      const base = builtinModule();
-      const module: TeaModule = {
-        ...base,
-        bind(rt) {
-          rt.builtin(bid, 0);
+    await expect(
+      bind(module, {
+        params: {},
+        provider: {
+          resolveContext: () => {
+            calls.push('resolve');
+            return Promise.resolve(builtinContext());
+          },
         },
-      };
-      await expect(
-        bind(module, {
-          params: {},
-          provider: providerFromContext(builtinContext()),
-          sink: new RecordingSink(),
-          timeNow: 1_777_777_777_777,
-        }),
-      ).rejects.toThrow('is not bind-visible');
-    }
+        sink: new RecordingSink(),
+        timeNow: 1_777_777_777_777,
+      }),
+    ).rejects.toThrow("builtin 'syminfo.tickerid' is not bind-visible");
+    expect(calls).toEqual([]);
   });
 
   test('missing demanded metadata and a missing demanded axis fail at bind', async () => {
@@ -895,7 +685,7 @@ describe('typed builtins', () => {
       2 ** 53,
     ]) {
       await expect(
-        bindRuntime(builtinModule(), {
+        bindStateMachine(builtinModule(), {
           params: {},
           provider: providerFromContext(builtinContext()),
           sink: new RecordingSink(),
@@ -1066,7 +856,7 @@ describe('requests', () => {
 
   test('a child runs on its own context and merges committed results', async () => {
     const sink = new RecordingSink();
-    const bound = await bindStep(requestModule({}), {
+    const bound = await bind(requestModule({}), {
       params: {},
       provider: contexts({'': parent(), X: child()}),
       sink,
@@ -1103,7 +893,7 @@ describe('requests', () => {
       const provider: DataProvider = {
         resolveContext(symbol, _timeframe, range) {
           ranges.push(range);
-          // Deliberately over-return every context. JSRuntime must still
+          // Deliberately over-return every context. The binding must still
           // expose the exact trailing child extent it requested.
           return Promise.resolve(
             byId[symbol as keyof typeof byId] ?? {
@@ -1114,7 +904,7 @@ describe('requests', () => {
         },
       };
       const sink = new RecordingSink();
-      const bound = await bindStep(requestModule({calcBarsCount}), {
+      const bound = await bind(requestModule({calcBarsCount}), {
         params: {},
         provider,
         sink,
@@ -1161,10 +951,8 @@ describe('requests', () => {
           provider,
           sink: new RecordingSink(),
         }),
-      ).rejects.toThrow(
-        'calc_bars_count must bind to a non-negative safe integer',
-      );
-      expect(calls).toEqual(['']);
+      ).rejects.toThrow('request 0 has invalid bound options');
+      expect(calls).toEqual([]);
     }
 
     const base = requestModule({});
@@ -1180,7 +968,7 @@ describe('requests', () => {
         provider: contexts({'': parent(), X: child()}),
         sink: new RecordingSink(),
       }),
-    ).rejects.toThrow('request 0 was never given bind options');
+    ).rejects.toThrow('static request 0 has incomplete binding facts');
 
     const invalidBoolean: TeaModule = {
       ...base,
@@ -1195,9 +983,7 @@ describe('requests', () => {
         provider: contexts({'': parent(), X: child()}),
         sink: new RecordingSink(),
       }),
-    ).rejects.toThrow(
-      'gaps, lookahead, and ignore_invalid_symbol must bind to bool values',
-    );
+    ).rejects.toThrow('request 0 has invalid bound options');
   });
 
   test('a bounded child restarts bar_index at zero inside the retained tail', async () => {
@@ -1242,7 +1028,7 @@ describe('requests', () => {
     const base = requestModule({calcBarsCount: 2});
     const module: TeaModule = {...base, requests: [barIndexChild]};
     const sink = new RecordingSink();
-    const bound = await bindStep(module, {
+    const bound = await bind(module, {
       params: {},
       provider: contexts({'': parent(), X: child()}),
       sink,
@@ -1260,7 +1046,7 @@ describe('requests', () => {
 
   test('gaps_on merges na except where a new child bar arrived', async () => {
     const sink = new RecordingSink();
-    const bound = await bindStep(
+    const bound = await bind(
       requestModule({gaps: true, lookahead: false, ignoreInvalidSymbol: false}),
       {params: {}, provider: contexts({'': parent(), X: child()}), sink},
     );
@@ -1447,274 +1233,5 @@ describe('requests', () => {
     await bound.runAll();
     expect(calls).toEqual(['|', 'X|', 'CANON:X|M']);
     expect(sink.emits.map(event => event.channels[0])).toEqual([7]);
-  });
-});
-
-// ---- dynamic requests (ABI protocol) ---------------------------------------
-// sym = close > 3 ? 'X' : 'Y';  r = requestFor(...);  history via rt.request
-
-const IDENTITY_CHILD = {
-  manifest: {
-    series: [{id: 'close', depth: {kind: 'none'}}],
-    builtin: [],
-    params: [],
-    outputs: [],
-    effects: [],
-    requests: [],
-    frames: [
-      {
-        locals: [
-          {
-            storage: Storage.PerBar,
-            depth: {kind: 'none'},
-            layout: NUMBER_LAYOUT,
-          },
-        ],
-        subs: [],
-      },
-    ],
-  },
-  requests: [],
-  init() {},
-  bind() {},
-  funcs: {},
-  main(
-    rt: Parameters<TeaModule['main']>[0],
-    fr: Parameters<TeaModule['main']>[1],
-  ) {
-    rt.write(fr, 0, rt.series(0, 0));
-  },
-} satisfies ModuleCode;
-
-const DYNAMIC_MODULE: TeaModule = {
-  abi: RUNTIME_ABI_VERSION,
-  aggregateLayouts: TEST_LAYOUTS,
-  manifest: {
-    series: [{id: 'close', depth: {kind: 'none'}}],
-    builtin: [],
-    params: [],
-    outputs: [
-      {
-        effect: 'plot',
-        staticArgs: [],
-        channels: [
-          {name: 'r', type: 'float', transport: {kind: 'float'}},
-          {name: 'prev', type: 'float', transport: {kind: 'float'}},
-        ],
-      },
-    ],
-    effects: [],
-    requests: [
-      {
-        merge: {
-          mode: 'sample',
-        },
-        depth: {kind: 'const', bars: 1},
-        resultSlot: 0,
-        layout: NUMBER_LAYOUT,
-        dynamic: true,
-      },
-    ],
-    frames: [{locals: [], subs: []}],
-  },
-  requests: [IDENTITY_CHILD],
-  init() {},
-  bind(rt) {
-    rt.bindRequestOptions(0, false, false, false, 0);
-  },
-  funcs: {},
-  main(rt) {
-    const sym = rt.series(0, 0) > 3 ? 'X' : 'Y';
-    rt.emit(0, 0, rt.requestFor(0, sym, ''));
-    rt.emit(0, 1, rt.request(0, 1));
-  },
-};
-
-describe('dynamic requests', () => {
-  const parentSix = () =>
-    context({close: new ArraySeries([1, 2, 3, 4, 5, 6])}, regularAxis(0, 1, 6));
-  const twoSpan = (values: number[]) =>
-    context({close: new ArraySeries(values)}, regularAxis(0, 2, values.length));
-
-  test('pairs resolve on first encounter; the ring serves history', async () => {
-    const sink = new RecordingSink();
-    const bound = await bind(DYNAMIC_MODULE, {
-      params: {},
-      provider: contexts({
-        '': parentSix(),
-        X: twoSpan([10, 20, 30]),
-        Y: twoSpan([100, 200, 300]),
-      }),
-      sink,
-    });
-    await bound.runAll();
-    expect(sink.emits.map(e => e.channels[0])).toEqual([
-      NaN,
-      100,
-      100,
-      20,
-      20,
-      30,
-    ]);
-    expect(sink.emits.map(e => e.channels[1])).toEqual([
-      NaN,
-      NaN,
-      100,
-      100,
-      20,
-      20,
-    ]);
-  });
-
-  test('the unique-context cap is a RequestError', async () => {
-    const bound = await bind(DYNAMIC_MODULE, {
-      params: {},
-      provider: contexts({
-        '': parentSix(),
-        X: twoSpan([10, 20, 30]),
-        Y: twoSpan([100, 200, 300]),
-      }),
-      sink: new RecordingSink(),
-      maxRequestContexts: 1,
-    });
-    expect(bound.runAll()).rejects.toThrow('exceed the cap of 1');
-  });
-
-  test('ignored-invalid dynamic pairs still consume the unique-context budget', async () => {
-    const invalidPairs: TeaModule = {
-      ...DYNAMIC_MODULE,
-      bind(rt) {
-        rt.bindRequestOptions(0, false, false, true, 0);
-      },
-    };
-    const bound = await bind(invalidPairs, {
-      params: {},
-      provider: contexts({'': parentSix()}),
-      sink: new RecordingSink(),
-      maxRequestContexts: 1,
-    });
-    await expect(bound.runAll()).rejects.toThrow('exceed the cap of 1');
-  });
-});
-
-const VARIP_DYNAMIC_MODULE: TeaModule = {
-  ...DYNAMIC_MODULE,
-  manifest: {
-    ...DYNAMIC_MODULE.manifest,
-    frames: [
-      {
-        locals: [
-          {
-            storage: Storage.Varip,
-            depth: {kind: 'none'},
-            layout: NUMBER_LAYOUT,
-          },
-        ],
-        subs: [],
-      },
-    ],
-  },
-  main(rt, fr) {
-    if (rt.needsInit(fr, 0)) rt.initialize(fr, 0, 0);
-    // varip increments BEFORE the request read, so an aborted transaction
-    // would contaminate it without the snapshot restore.
-    rt.write(fr, 0, num(rt.read(fr, 0, 0)) + 1);
-    const sym = rt.series(0, 0) > 3 ? 'X' : 'Y';
-    rt.emit(0, 0, rt.requestFor(0, sym, ''));
-    rt.emit(0, 1, rt.read(fr, 0, 0));
-  },
-};
-
-describe('suspension protocol', () => {
-  const parentSix = () =>
-    context({close: new ArraySeries([1, 2, 3, 4, 5, 6])}, regularAxis(0, 1, 6));
-  const twoSpan = (values: number[]) =>
-    context({close: new ArraySeries(values)}, regularAxis(0, 2, values.length));
-
-  test('commitRow after a suspended execution is protocol misuse', async () => {
-    const bound = await bind(DYNAMIC_MODULE, {
-      params: {},
-      provider: contexts({'': parentSix(), X: twoSpan([1]), Y: twoSpan([2])}),
-      sink: new RecordingSink(),
-    });
-    expect(() => bound.executeRow(0, false)).toThrow(
-      'unresolved request context',
-    );
-    expect(() => bound.commitRow(0)).toThrow('after a suspended execution');
-    // The documented recovery: resolve, re-execute, then commit.
-    await bound.resolvePending();
-    bound.executeRow(0, false);
-    bound.commitRow(0);
-  });
-
-  test('first child activation vanishes across suspension and retry', async () => {
-    const module: TeaModule = {
-      ...DYNAMIC_MODULE,
-      manifest: {
-        ...DYNAMIC_MODULE.manifest,
-        frames: [
-          {locals: [], subs: [{fid: 1}]},
-          {
-            locals: [
-              {
-                storage: Storage.Var,
-                depth: {kind: 'none'},
-                layout: NUMBER_LAYOUT,
-              },
-            ],
-            subs: [],
-          },
-        ],
-      },
-      funcs: COUNTER_MODULE.funcs,
-      main(rt, fr) {
-        const count = COUNTER_MODULE.funcs[1](rt, rt.frame(fr, 0)) as Value;
-        const result = rt.requestFor(0, 'Y', '');
-        rt.emit(0, 0, count);
-        rt.emit(0, 1, result);
-      },
-    };
-    const sink = new RecordingSink();
-    const bound = await bind(module, {
-      params: {},
-      provider: contexts({
-        '': context({close: new ArraySeries([1])}, regularAxis(0, 1, 1)),
-        Y: twoSpan([100]),
-      }),
-      sink,
-    });
-    expect(() => bound.executeRow(0, false)).toThrow('unresolved');
-    await bound.resolvePending();
-    bound.executeRow(0, false);
-    bound.commitRow(0);
-    expect(sink.emits.map(emit => emit.channels[0])).toEqual([1]);
-  });
-
-  test('varip survives completed ticks but not aborted transactions', async () => {
-    const close = new ArraySeries([1, 2]);
-    const sink = new RecordingSink();
-    const bound = await bind(VARIP_DYNAMIC_MODULE, {
-      params: {},
-      provider: contexts({
-        '': context({close}, regularAxis(0, 1, 2)),
-        X: twoSpan([10]),
-        Y: twoSpan([100]),
-      }),
-      sink,
-    });
-    // Tick 1 on row 0: pair Y unresolved — the transaction aborts, resolves,
-    // and the retry completes with p=1 (the abort vanished).
-    expect(() => bound.executeRow(0, true)).toThrow('unresolved');
-    await bound.resolvePending();
-    bound.executeRow(0, true);
-    // Tick 2 flips the symbol to the unresolved pair X mid-row: the abort
-    // must not eat tick 1's legitimate varip accumulation.
-    close.values[0] = 5;
-    expect(() => bound.executeRow(0, true)).toThrow('unresolved');
-    await bound.resolvePending();
-    bound.executeRow(0, true);
-    const varips = sink.emits.map(e => e.channels[1]);
-    // tick1 completes with p=1; tick2 completes with p=2.
-    expect(varips).toEqual([1, 2]);
   });
 });
