@@ -1,6 +1,5 @@
-// Purpose: Temporary fixed-historical BoundProgram adapter over the
-// state-owning step runtime. This preserves legacy host call sites while
-// JSRuntime.step remains the only execution semantic core.
+// Purpose: Fixed-historical DataProvider/OutputSink host adapter over
+// JSRuntime.step, which remains the only JavaScript execution semantic core.
 
 import {Effect} from 'effect';
 import {fatal} from '../base/print';
@@ -78,7 +77,7 @@ interface RequestEnvironment {
 }
 
 /** Bind the migration runtime to one finite provider context. */
-export async function bindStateMachine(
+export async function bindFixedHistory(
   module: TeaModule,
   inputs: BindInputs,
 ): Promise<BoundProgram> {
@@ -182,7 +181,7 @@ export async function bindStateMachine(
       },
     );
     inputs.sink.declare(facts.declaration);
-    return new FixedHistoricalStateMachineBinding(
+    return new FixedHistoricalExecution(
       runtime,
       facts.params,
       context,
@@ -200,7 +199,7 @@ export async function bindStateMachine(
   }
 }
 
-class FixedHistoricalStateMachineBinding implements BoundProgram {
+class FixedHistoricalExecution implements BoundProgram {
   readonly rows: number;
   readonly inputs: readonly BoundInput[];
   private committedRows = 0;

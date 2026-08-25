@@ -15,7 +15,7 @@ import {
   type TeaModule,
   type Value,
 } from './abi';
-import {bindStateMachine as bindRuntime} from './state-machine-binding';
+import {bindFixedHistory as bindRuntime} from './fixed-history';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
 

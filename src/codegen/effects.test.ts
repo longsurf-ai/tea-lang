@@ -13,7 +13,7 @@ import {
 } from '../ir/type';
 import {MemorySink} from '../providers/sinks/memory-sink';
 import type {DataProvider, ProviderContext} from '../runtime/abi';
-import {bindStateMachine as bind} from '../runtime/state-machine-binding';
+import {bindFixedHistory as bind} from '../runtime/fixed-history';
 import {loadModule} from '../runtime/load';
 import {mustBuild} from '../noder/testing';
 import {generate} from './codegen';

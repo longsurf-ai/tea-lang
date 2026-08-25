@@ -8,7 +8,7 @@ import {
   type OutputSink,
   type ProviderContext,
 } from '../runtime/abi';
-import {bindStateMachine as bind} from '../runtime/state-machine-binding';
+import {bindFixedHistory as bind} from '../runtime/fixed-history';
 import {loadModule} from '../runtime/load';
 import {generate} from './codegen';
 

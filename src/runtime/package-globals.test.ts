@@ -15,7 +15,7 @@ import {buildProgram} from '../noder/noder';
 import {csvProvider} from '../providers/data/csv';
 import {MemorySink} from '../providers/sinks/memory-sink';
 import {parse} from '../syntax/syntax';
-import {bindStateMachine as bind} from './state-machine-binding';
+import {bindFixedHistory as bind} from './fixed-history';
 import {loadModule} from './load';
 
 const COUNTER = [

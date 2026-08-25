@@ -1,4 +1,4 @@
-// Purpose: Fixed-history binding coverage retained from the legacy runtime:
+// Purpose: Fixed-historical host coverage retained across the runtime rewrite:
 // generated bind facts, typed builtins, and static request execution.
 
 import {describe, expect, test} from 'vitest';
@@ -19,7 +19,7 @@ import {
   type TimeAxis,
   type Value,
 } from './abi';
-import {bindStateMachine} from './state-machine-binding';
+import {bindFixedHistory} from './fixed-history';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
 
@@ -27,7 +27,7 @@ function bind(
   module: TeaModule,
   inputs: Omit<BindInputs, 'timeNow'> & {readonly timeNow?: number},
 ) {
-  return bindStateMachine(module, {
+  return bindFixedHistory(module, {
     ...inputs,
     timeNow: inputs.timeNow ?? TEST_TIME_NOW,
   });
@@ -685,7 +685,7 @@ describe('typed builtins', () => {
       2 ** 53,
     ]) {
       await expect(
-        bindStateMachine(builtinModule(), {
+        bindFixedHistory(builtinModule(), {
           params: {},
           provider: providerFromContext(builtinContext()),
           sink: new RecordingSink(),

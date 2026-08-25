@@ -1,4 +1,4 @@
-// Purpose: Fixed-history compatibility coverage over JSRuntime.step.
+// Purpose: Fixed-history host-adapter coverage over JSRuntime.step.
 
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../ir/node';
@@ -11,7 +11,7 @@ import {
   type ModuleCode,
   type TeaModule,
 } from './abi';
-import {bindStateMachine} from './state-machine-binding';
+import {bindFixedHistory} from './fixed-history';
 
 const NUMBER = 0;
 const ARRAY = 1;
@@ -233,10 +233,10 @@ const ARRAY_WORKSPACE_MODULE: TeaModule = {
   main() {},
 };
 
-describe('bindStateMachine', () => {
+describe('bindFixedHistory', () => {
   test('binds provider rows, declares the sink, and runs fixed history', async () => {
     const sink = new MemorySink();
-    const execution = await bindStateMachine(MODULE, {
+    const execution = await bindFixedHistory(MODULE, {
       params: {},
       provider: provider(new Series([10, 20, 30])),
       sink,
@@ -260,7 +260,7 @@ describe('bindStateMachine', () => {
   test('publishes provisional immediately and final only from commitRow', async () => {
     const values = new Series([10]);
     const sink = new MemorySink();
-    const execution = await bindStateMachine(MODULE, {
+    const execution = await bindFixedHistory(MODULE, {
       params: {},
       provider: provider(values),
       sink,
@@ -295,7 +295,7 @@ describe('bindStateMachine', () => {
       builtinValue: () => undefined,
     };
     const sink = new MemorySink();
-    const execution = await bindStateMachine(requestModule(), {
+    const execution = await bindFixedHistory(requestModule(), {
       params: {},
       provider: {
         resolveContext: symbol =>
@@ -319,7 +319,7 @@ describe('bindStateMachine', () => {
   test('keeps dynamic requests unsupported before provider resolution', async () => {
     const calls: string[] = [];
     await expect(
-      bindStateMachine(requestModule(true), {
+      bindFixedHistory(requestModule(true), {
         params: {},
         provider: {
           resolveContext: symbol => {
@@ -341,7 +341,7 @@ describe('bindStateMachine', () => {
 
   test('rejects malformed provider-normalized context identity', async () => {
     await expect(
-      bindStateMachine(MODULE, {
+      bindFixedHistory(MODULE, {
         params: {},
         provider: {
           resolveContext: () =>
@@ -385,7 +385,7 @@ describe('bindStateMachine', () => {
       builtinValue: () => undefined,
     };
     const sink = new MemorySink();
-    const execution = await bindStateMachine(module, {
+    const execution = await bindFixedHistory(module, {
       params: {},
       provider: {
         resolveContext: symbol =>
@@ -409,7 +409,7 @@ describe('bindStateMachine', () => {
   });
 
   test('accounts exact shallow bytes for explicit State/history workspace', async () => {
-    const exact = await bindStateMachine(ARRAY_WORKSPACE_MODULE, {
+    const exact = await bindFixedHistory(ARRAY_WORKSPACE_MODULE, {
       params: {},
       provider: provider(new Series([1])),
       sink: new MemorySink(),
@@ -421,7 +421,7 @@ describe('bindStateMachine', () => {
     exact.dispose();
 
     await expect(
-      bindStateMachine(ARRAY_WORKSPACE_MODULE, {
+      bindFixedHistory(ARRAY_WORKSPACE_MODULE, {
         params: {},
         provider: provider(new Series([1])),
         sink: new MemorySink(),
@@ -487,13 +487,13 @@ describe('bindStateMachine', () => {
     // Peak: root request history 16 + retained first column 24 + second child
     // local workspace 8 + second result column 24 = 72. The first child's
     // 8-byte workspace must already have been released.
-    const exact = await bindStateMachine(module, {
+    const exact = await bindFixedHistory(module, {
       ...inputs,
       maxFixedValueLogicalBytes: 72,
     });
     exact.dispose();
     await expect(
-      bindStateMachine(module, {
+      bindFixedHistory(module, {
         ...inputs,
         sink: new MemorySink(),
         maxFixedValueLogicalBytes: 71,

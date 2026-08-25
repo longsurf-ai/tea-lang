@@ -14,7 +14,7 @@ import {
   type Value,
 } from './abi';
 import {HeapArena} from './heap';
-import {bindStateMachine as bind} from './state-machine-binding';
+import {bindFixedHistory as bind} from './fixed-history';
 import {stateMachine} from './state-update';
 import {ValueLayoutRegistry} from './value-layout';
 

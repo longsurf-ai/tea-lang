@@ -12,7 +12,7 @@ import {
   type TeaModule,
   type TimeAxis,
 } from './abi';
-import {bindStateMachine as bind} from './state-machine-binding';
+import {bindFixedHistory as bind} from './fixed-history';
 
 const NUMBER = 0;
 const LAYOUTS = {
