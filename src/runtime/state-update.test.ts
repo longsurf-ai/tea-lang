@@ -14,7 +14,7 @@ import {
   type Value,
 } from './abi';
 import {HeapArena} from './heap';
-import {bind} from './js-runtime';
+import {bindStateMachine as bind} from './state-machine-binding';
 import {stateMachine} from './state-update';
 import {ValueLayoutRegistry} from './value-layout';
 
