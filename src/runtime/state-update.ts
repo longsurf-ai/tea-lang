@@ -84,9 +84,8 @@ export function stateMachine(
     },
     initialIntermediate: {
       root: initialIntermediateFrame(module, 0, true),
-      heap,
     },
-    update: stateUpdate(module, params, layouts, structs, collections),
+    update: stateUpdate(module, params, layouts, heap, structs, collections),
   };
 }
 
@@ -94,17 +93,25 @@ function stateUpdate(
   module: ModuleCode,
   params: readonly Value[],
   layouts: ValueLayoutRegistry,
+  heap: Heap,
   structs: StructStorageRuntime,
   collections: CollectionRuntime,
 ): TeaStateUpdate {
   return (state, intermediate, input) =>
     Effect.suspend(() => {
       try {
+        // Collection is legal only at the transition boundary, before a new
+        // transaction begins. The supplied State and Intermediate are the
+        // owner's actual retained values; a candidate produced by this update
+        // may still be rejected by a provisional step.
+        heap.replaceRoots(discoverRoots(module, layouts, state, intermediate));
+        heap.collect();
         return Effect.succeed(
-          new SSMRuntime(
+          new StateUpdateContext(
             module,
             params,
             layouts,
+            heap,
             state,
             intermediate,
             input,
@@ -139,7 +146,7 @@ interface WorkspaceFrame extends Frame {
   active: boolean;
 }
 
-class SSMRuntime implements Runtime {
+class StateUpdateContext implements Runtime {
   private readonly rootFrame: WorkspaceFrame;
   private readonly outputs = new Map<number, Value[]>();
   private readonly effects: EffectEmission[] = [];
@@ -149,6 +156,7 @@ class SSMRuntime implements Runtime {
     private readonly module: ModuleCode,
     private readonly params: readonly Value[],
     private readonly layouts: ValueLayoutRegistry,
+    private readonly heap: Heap,
     private readonly state: Readonly<State>,
     private readonly intermediate: Readonly<Intermediate>,
     private readonly input: Input,
@@ -160,7 +168,7 @@ class SSMRuntime implements Runtime {
   }
 
   run() {
-    const transaction = this.intermediate.heap.begin('state-update');
+    const transaction = this.heap.begin('state-update');
     this.transaction = transaction;
     let committed = false;
     try {
@@ -169,7 +177,6 @@ class SSMRuntime implements Runtime {
         state: {root: this.finishRoot()},
         intermediate: {
           root: this.finishIntermediateFrame(this.rootFrame),
-          heap: this.intermediate.heap,
         },
         output: [...this.outputs.entries()].map(([outputId, channels]) => ({
           outputId,
@@ -177,12 +184,9 @@ class SSMRuntime implements Runtime {
         })),
         effects: this.effects,
       };
-      const roots = this.discoverRoots(result.state, result.intermediate);
       transaction.commit();
       committed = true;
       this.transaction = null;
-      this.intermediate.heap.replaceRoots(roots);
-      this.intermediate.heap.collect();
       return result;
     } catch (error) {
       if (!committed) transaction.abort();
@@ -360,7 +364,7 @@ class SSMRuntime implements Runtime {
   }
 
   requestFor(_rid: number, _symbol: Value, _timeframe: Value): Value {
-    return unimplemented('state update: dynamic request');
+    return fatal('dynamic requests are not supported by StateUpdate');
   }
 
   historyDepth(_offset: number): number {
@@ -467,60 +471,6 @@ class SSMRuntime implements Runtime {
 
   private mustTransaction(): HeapTransaction {
     return this.transaction ?? fatal('aggregate operation outside StateUpdate');
-  }
-
-  private discoverRoots(
-    state: State,
-    intermediate: Intermediate,
-  ): Ref<unknown>[] {
-    const roots: Ref<unknown>[] = [];
-    const visit = (layout: LayoutId, value: Value) =>
-      this.layouts.visitRefs(layout, value, ref => roots.push(ref));
-
-    state.root.builtins.forEach((ring, bid) => {
-      const spec = this.module.manifest.builtin[bid]!;
-      ring.values.forEach(value => visit(spec.layout, value));
-    });
-    state.root.requests.forEach((ring, rid) => {
-      const spec = this.module.manifest.requests[rid]!;
-      ring.values.forEach(value => visit(spec.layout, value));
-    });
-    this.visitFrameState(state.root, 0, visit);
-    this.visitIntermediateFrame(intermediate.root, 0, visit);
-    return roots;
-  }
-
-  private visitFrameState(
-    frame: FrameState,
-    fid: number,
-    visit: (layout: LayoutId, value: Value) => void,
-  ): void {
-    const layout = this.frameLayout(fid);
-    frame.locals.forEach((local, slot) => {
-      const spec = layout.locals[slot]!;
-      local.ring.values.forEach(value => visit(spec.layout, value));
-    });
-    frame.subs.forEach((sub, slot) => {
-      if (sub !== null) {
-        this.visitFrameState(sub, layout.subs[slot]!.fid, visit);
-      }
-    });
-  }
-
-  private visitIntermediateFrame(
-    frame: IntermediateFrame,
-    fid: number,
-    visit: (layout: LayoutId, value: Value) => void,
-  ): void {
-    const layout = this.frameLayout(fid);
-    frame.locals.forEach((local, slot) => {
-      if (local !== null) visit(layout.locals[slot]!.layout, local.value);
-    });
-    frame.subs.forEach((sub, slot) => {
-      if (sub !== null) {
-        this.visitIntermediateFrame(sub, layout.subs[slot]!.fid, visit);
-      }
-    });
   }
 
   private validateInput(): void {
@@ -793,4 +743,67 @@ function depthRetention(
     case 'bound':
       return unimplemented('state update: bound history depth');
   }
+}
+
+function discoverRoots(
+  module: ModuleCode,
+  layouts: ValueLayoutRegistry,
+  state: Readonly<State>,
+  intermediate: Readonly<Intermediate>,
+): Ref<unknown>[] {
+  const roots: Ref<unknown>[] = [];
+  const visit = (layout: LayoutId, value: Value) =>
+    layouts.visitRefs(layout, value, ref => roots.push(ref));
+
+  state.root.builtins.forEach((ring, bid) => {
+    const spec = module.manifest.builtin[bid]!;
+    ring.values.forEach(value => visit(spec.layout, value));
+  });
+  state.root.requests.forEach((ring, rid) => {
+    const spec = module.manifest.requests[rid]!;
+    ring.values.forEach(value => visit(spec.layout, value));
+  });
+  visitFrameState(module, state.root, 0, visit);
+  visitIntermediateFrame(module, intermediate.root, 0, visit);
+  return roots;
+}
+
+function visitFrameState(
+  module: ModuleCode,
+  frame: Readonly<FrameState>,
+  fid: number,
+  visit: (layout: LayoutId, value: Value) => void,
+): void {
+  const layout = frameLayout(module, fid);
+  frame.locals.forEach((local, slot) => {
+    const spec = layout.locals[slot]!;
+    local.ring.values.forEach(value => visit(spec.layout, value));
+  });
+  frame.subs.forEach((sub, slot) => {
+    if (sub !== null) {
+      visitFrameState(module, sub, layout.subs[slot]!.fid, visit);
+    }
+  });
+}
+
+function visitIntermediateFrame(
+  module: ModuleCode,
+  frame: Readonly<IntermediateFrame>,
+  fid: number,
+  visit: (layout: LayoutId, value: Value) => void,
+): void {
+  const layout = frameLayout(module, fid);
+  frame.locals.forEach((local, slot) => {
+    if (local !== null) visit(layout.locals[slot]!.layout, local.value);
+  });
+  frame.subs.forEach((sub, slot) => {
+    if (sub !== null) {
+      visitIntermediateFrame(module, sub, layout.subs[slot]!.fid, visit);
+    }
+  });
+}
+
+function frameLayout(module: ModuleCode, fid: number) {
+  const layout = module.manifest.frames[fid];
+  return layout === undefined ? fatal(`unknown frame layout ${fid}`) : layout;
 }

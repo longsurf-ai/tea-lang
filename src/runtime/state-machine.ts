@@ -1,7 +1,6 @@
 // Purpose: Generic Effect state-machine algebra for Tea execution.
 
 import type {Effect} from 'effect';
-import type {Heap} from './heap';
 import type {Value} from './value';
 
 // One synchronized set of external values presented to a state update.
@@ -41,7 +40,6 @@ export interface LocalState {
 // State with exactly one live copy across provisional and committed updates.
 export interface Intermediate {
   readonly root: IntermediateFrame;
-  readonly heap: Heap;
 }
 
 export interface IntermediateFrame {
