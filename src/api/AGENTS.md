@@ -6,7 +6,8 @@ remain in their existing packages.
 
 ## Invariants
 
-- `bindModule(target, assignments)` is the pure public binding transition. It
+- `bindModule(target, assignments)` is the externally immutable public binding
+  transition. It
   returns `Effect<BoundModule, BindingError>`, never mutates its `Program` or
   prior `BoundModule`, and never subscribes to an Observable. Passing a
   `Program` creates the first immutable `BoundModule` even when `assignments`
@@ -19,15 +20,17 @@ remain in their existing packages.
   `remaining()` preserves Program requirement order.
 - Generated code and bind facts are private state associated with the minimal
   public `BoundModule`; callers cannot forge that state. Bind evaluation is
-  resource-free and context-free: it resolves params, bound depths, output
-  arguments, activity, and static request pairs/options, but acquires no
-  provider, Heap, runtime, or subscription.
+  provider- and subscription-free: it resolves params, bound depths, output
+  arguments, activity, and static request pairs/options. Internally it may use
+  one local abort-only Heap transaction for struct/collection expressions, but
+  no Heap, runtime state, or subscription is retained or transferred into the
+  returned BoundModule.
 - `TeaNode` owns DataStream/Observable wiring. Successive `.bind()` calls use
   `bindModule()` synchronously and return new nodes while retaining the row
   Observables attached by earlier steps. `BoundModule` stores individual
   targets only; it never owns row synchronization.
 - `.to(sink)` is the currently implemented execution boundary. It creates one
-  `StateMachineRuntime`, serializes synchronized rows through `step()`, sends
+  `JSRuntime`, serializes synchronized rows through `step()`, sends
   `StepResult` values to the sink, and disposes the runtime when the Observable
   terminates. Current TeaNode steps are final (`provisional: false`).
 - TeaNode execution currently supports numeric series and parameters only.

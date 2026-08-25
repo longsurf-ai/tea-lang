@@ -38,7 +38,7 @@ export interface LowerCtx {
   readonly nameSlots: Map<Name, {fid: number; slot: number}>;
   // History-free function receivers and parameters are ordinary generated-JS
   // locals. They never cross the Time-Machine ABI unless a later operation
-  // writes their value into real state; history-bearing formals remain Rings.
+  // writes their value into real state; history-bearing formals remain stateful.
   readonly directNames: ReadonlyMap<Name, string>;
   readonly seriesIds: Map<SeriesInput, number>;
   readonly builtinIds: Map<BuiltinInput, number>;

@@ -28,9 +28,13 @@ This keeps future scan and live hosts free to add context kinds without
 changing the language-to-Program boundary.
 
 ```text
-generated JS module ──▶ JSRuntime ──data──▶ DataProvider (injected)
-                            │
-                            └────sink────▶ OutputSink (injected)
+generated JS module + BindInputs
+              │
+              ▼
+fixed-historical host adapter ──▶ DataProvider / OutputSink
+              │ synchronized StepInput
+              ▼
+         JSRuntime.step()
 
 generated WGSL artifact + BindInputs[] + injected GPUDevice
                                       │
@@ -41,12 +45,12 @@ generated WGSL artifact + BindInputs[] + injected GPUDevice
 ```
 
 Both branches execute artifacts lowered from the same `Program`; neither owns
-a second execution-mode model. `JSRuntime` owns exact value layouts,
-frames, rings, context-local Heap storage, the main loop, provisional/commit, and
-request-child scheduling. Hosts vary through the injected DataProvider and
-OutputSink. The GPU runtime owns target data validation, physical packing,
-device dispatch, and readback; Tea state transitions remain in the emitted
-WGSL.
+a second execution-mode model. `JSRuntime` owns the JavaScript State,
+Intermediate, context-local Heap, and one-step provisional/final transition.
+The fixed-historical adapter owns provider/sink I/O, row chronology, static
+request children, merge, and publication. The GPU runtime owns target data
+validation, physical packing, device dispatch, and readback; Tea state
+transitions remain in the emitted WGSL.
 
 ## Pipeline order
 
@@ -58,19 +62,21 @@ Compilation ─▶ Target lowering ─▶ Runtime binding ─▶ Execution
 Lowering is **bind-independent**: one artifact per Program and target, reusable
 across bindings. A settings, dataset, or binding-grid change does not re-run
 codegen. For JS, bind-time expressions (bound depths, input metadata, and
-output bindArgs) remain lowered code: binding runs frame-free `init`, creates a
-scratch-only provisional program frame, runs frame-aware `bind`, then allocates
-the final frame tree from its depth reports. For WGSL, the runtime combines the
+output bindArgs) remain lowered code: `module-binding.ts` evaluates frame-free
+`init` and frame-aware `bind` through a private context, producing immutable
+binding facts. It uses one local abort-only Heap transaction when bind-time
+struct or collection evaluation requires storage, then discards all local
+state. For WGSL, the runtime combines the
 already-emitted module/layout contract with concrete provider-backed bindings
 and physical resource policy to create a resumable execution session. Baking
 bound constants into specialized artifacts is a permitted later optimization,
 not the model.
 
-## Implemented step-based migration slice
+## JavaScript binding and execution
 
-The legacy `JSRuntime` remains the execution path for the CLI, generic CPU
-batching, provider-backed requests, and the GPU runtime's generated-JS binding
-helper. Alongside it, the embedding API now has an implemented step-based path:
+There is one JavaScript semantic runtime. Hosts reach it through two adapters:
+the fixed-historical `bindFixedHistory()` path used by CPU execution, and the
+Observable-owning TeaNode embedding path.
 
 ```text
 Program ── bindModule(...): Effect ──▶ immutable BoundModule
@@ -78,7 +84,7 @@ Program ── bindModule(...): Effect ──▶ immutable BoundModule
    └──────────── TeaNode row wiring ──────┘
                          │ .to(sink) subscribes
                          ▼
-                StateMachineRuntime.step(input)
+                JSRuntime.step(input)
 ```
 
 `bindModule()` is an immutable, subscription-free binding transition. Its
@@ -89,19 +95,22 @@ snapshot; expected failures use the `BindingError` channel of the returned
 `Effect`. `ready()` means all semantic requirements have targets and generated
 `init`/`bind` evaluation has produced immutable bound depths, parameter facts,
 output declarations, and static request facts. It does not subscribe to a
-source or guarantee that every fact kind is executable by TeaNode.
+source or guarantee that every fact kind is executable by TeaNode. Internally,
+module binding may use a local abort-only Heap transaction for bind-time
+struct/collection expressions; it retains and transfers no Heap or execution
+state.
 
 Observable composition belongs to `TeaNode`, not `BoundModule`. Successive
 `TeaNode.bind()` calls retain attached row streams while applying the binding
 transition synchronously. `.to(sink)` is the current subscription boundary: it
-creates one `StateMachineRuntime`, serializes synchronized rows through
+creates one `JSRuntime`, serializes synchronized rows through
 `step()`, forwards `StepResult`, and disposes the runtime when the Observable
 terminates. This slice currently constructs numeric series rows and uses final
 steps only. Builtin input wiring and static-request child execution still fail
 explicitly in `.to()`; binding static request facts is implemented, executing
 them through TeaNode is not.
 
-`StateMachineRuntime` owns one committed `State`, one same-row `Intermediate`,
+`JSRuntime` owns one committed `State`, one same-row `Intermediate`,
 and one context-local Heap. A successful provisional step replaces only its
 Intermediate; a successful final step replaces both State and Intermediate;
 an `Effect` failure advances neither. The generic `Intermediate` value contains
@@ -109,6 +118,15 @@ only its frame root—the Heap is injected into `stateMachine()`, retained by th
 runtime facade, and disposed with it. `StepResult` exposes only output, effects,
 and the provisional flag, so neither state nor storage ownership crosses the
 host boundary.
+
+For fixed historical execution, `bindFixedHistory()` resolves the provider,
+constructs synchronized inputs, drives `JSRuntime.step()`, and publishes to the
+sink. It recursively evaluates every static request child in an independent
+`JSRuntime` and Heap, copies each scalar or scalar-only tuple result into a
+parent-owned column, disposes the child, and sample-merges that column onto the
+parent axis. TeaNode does not yet have the time/finality model needed to perform
+the same request wiring, so `.to()` still rejects builtin and static-request
+facts explicitly.
 
 ## The generated JS module
 
@@ -156,9 +174,9 @@ reference, struct, or aggregate shape). Runtime transports branch only on that f
 they never recover machine semantics by parsing the display string.
 
 `aggregateLayouts` appears once on the root `TeaModule`. Every request child is
-a `ModuleCode` that inherits the same immutable registry and execution-wide
-request/fixed-value budgets from the shared execution state, but owns an
-independent Heap. Children cannot define a second layout-id namespace, and
+a `ModuleCode` evaluated with the same immutable registry and host-owned
+request/fixed-value budgets, but owns an independent Heap. Children cannot
+define a second layout-id namespace, and
 request results cross into the parent only as copied scalars or scalar-only
 tuples; a `Ref` never crosses arenas.
 
@@ -176,9 +194,10 @@ crosses the `rt` parameter. Any ES2015 engine loads it with
 `new Function(src)()` (Node, browsers, and V8 isolates alike); an ES2015
 parse gate plus a deny-list test enforce the ceiling so it cannot drift.
 
-## The rt surface
+## Generated operation surfaces
 
-Only Time-Machine-relevant operations cross the ABI. Everything else —
+The generated execution body receives only Time-Machine-relevant operations.
+Everything else —
 arithmetic, comparisons, `math.*`, `na()`/`nz()`/`fixnan` — expands inline
 in generated code via the backend's emitter rules table (a codegen-internal
 seam: JS renders these natively; another backend supplies another table).
@@ -199,15 +218,6 @@ rt.root(); // the program frame (globals read from funcs)
 // emissions
 rt.emit(oid, channel, v);
 rt.emitEffect(effectId, payload); // ordered sparse append for this row transaction
-// frame-aware bind section (against a provisional scratch-only frame)
-rt.historyDepth(offset); // invalid history offsets normalize to zero
-rt.bindDepth(fid, slot, bars); // a name's bound history depth
-rt.bindSeriesDepth(sid, bars); // a series/input.source bound depth
-rt.bindBuiltinDepth(bid, bars); // a typed builtin's bound depth
-rt.bindParamActive(pid, active); // resolved input enablement
-rt.bindOutput(oid, argName, v); // an output's bind-time argument
-rt.bindRequestOptions(rid, gaps, lookahead, ignoreInvalid, calcBars);
-rt.bindRequest(rid, sym, tf); // a static request edge's context pair
 // structs and collections
 rt.newStruct(layout, fields);
 rt.requireStruct(value, ownerLayout); // pre-RHS/argument receiver check
@@ -218,16 +228,23 @@ rt.mutateCollection(operation, collectionLayout, receiver, args);
 rt.collectionEntries(value);
 ```
 
+Generated `init` and `bind` callbacks run through a private module-binding
+context rather than `JSRuntime`. Besides the expression operations required by
+bind-time code, that context alone owns reporting operations for history depth,
+parameter activity, output arguments, and static request options/pairs. Those
+operations produce immutable `BoundModuleFacts`; they are not executable-row
+ABI methods and never appear on the host-facing runtime.
+
 `mutateCollection` returns a private `{replacement, result}` ABI envelope.
 Generated code captures the receiver/location before evaluating arguments,
 calls the operation once, and writes `replacement` to either the captured Name
-or struct field. The envelope is not a Tea tuple and can never enter a Ring or
-collection. Mutable and const methods both return only their declared Tea
-result; a mutable method changes the receiver's Heap storage in place.
+or struct field. The envelope is not a Tea tuple and can never enter persistent
+state or a collection. Mutable and const methods both return only their declared
+Tea result; a mutable method changes the receiver's Heap storage in place.
 
-`rt.frame(fr, slot)` is the seam where per-call-site state materializes:
-fetch the sub-frame at compartment `slot` of `fr`, creating its physical
-storage on first use and tentatively activating it for this row transaction.
+`rt.frame(fr, slot)` is the seam where per-call-site logical state opens:
+fetch the sub-frame at compartment `slot` of `fr` and tentatively activate it
+for this row transition.
 Persistent initialization remains inside the callee's lexical `InitName`
 statements. A call site lowers to:
 
@@ -262,14 +279,13 @@ const v = f_3(rt, rt.frame(fr, 0), rt.series(0, 0), 9);
   `Ref`. Mutators allocate sealed replacement backing and return a new
   header; they never edit a committed payload. Capacity is implementation
   state and is not exposed to Tea.
-- Storage is runtime-owned and invisible to source code: rings may use compact
-  typed arrays plus validity, plain JS arrays, or anything else. Layout IDs
-  validate exact values and locate nested collection storage; they are not a
-  second source-language type identity.
+- Storage is runtime-owned and invisible to source code. Layout IDs validate
+  exact values and locate nested collection storage; they are not a second
+  source-language type identity.
 - V1 output/effect channels accept only scalar or resource values. Aggregate
   host ownership is rejected until the ABI defines deep serialization or an
-  explicit root lease; a sink cannot silently retain an unregistered
-  `Ref`.
+  explicit host root-registration contract; a sink cannot silently retain an
+  unregistered `Ref`.
 
 ## Typed builtins
 
@@ -296,12 +312,12 @@ historical `timenow` are context-constant. For fixed historical execution,
 `isfirst`/`islast` derive from the target row. This does not define a live-tick
 update object; realtime state remains a separate host-protocol design.
 
-Only simple symbol/timeframe metadata may be read at offset zero during module
-bind, before a row cursor exists. Although the host-injected `timeNow` value is
-fixed and context-constant across one historical run, source-level `timenow`
-remains series-qualified and is not a bind expression; `time`, `timenow`,
-`bar`, and `barstate` reads during bind are malformed generated-code protocol
-and fail loudly. `BindInputs.timeNow` is a required finite safe
+Public `bindModule()` and fixed-history fact evaluation are
+provider-independent, so generated bind code cannot read a builtin there.
+GPU's separate provider-aware layout projection may supply only the
+context-constant syminfo/timeframe metadata needed by its binding sidecar.
+Source-level `time`, `timenow`, `bar`, and `barstate` reads during bind remain
+invalid and fail loudly. `BindInputs.timeNow` is a required finite safe
 epoch-millisecond value shared by the root and every request child; only the
 CLI obtains it from `Date.now()`. Generated modules and the runtime never read
 the wall clock.
@@ -318,11 +334,11 @@ An offset names history only when it is a non-negative safe integer. Negative,
 fractional, non-finite, and na offsets are out of range and return that place's
 typed empty value (NaN, null, or false); they never turn into future-row indices
 or array properties. The same rule normalizes a bind-reported depth to zero,
-and fixed-context ring retention never exceeds the context's row extent.
+and fixed-context history retention never exceeds the context's row extent.
 
-Every time-addressed read goes through this interface — externally provided
-columnar structures (TSGraph's low-copy pages), the runtime's own rings, and
-later request results. Neither the runtime's read path nor generated code
+Every time-addressed read follows this interface — externally provided
+columnar structures, runtime-owned bounded history state, and request results.
+Neither the runtime's read path nor generated code
 ever assumes a native array; providers try to be efficient, the contract
 doesn't require it.
 
@@ -333,93 +349,76 @@ per-input index mapping inside a Program; cross-axis mapping exists only at
 request edges, where the MergePolicy names it explicitly. The runtime
 rejects misaligned series at bind.
 
-Two asymmetries between the runtime's rings and provider series:
+Providers expose absolute-indexed committed rows through `SeriesData`. The
+fixed-historical adapter turns each absolute row into one synchronized
+`StepInput`; `JSRuntime` keeps only the bounded history required by the module.
+Depth is a retention requirement for runtime state and a provider contract for
+historical availability.
 
-- Providers hand over **absolute-indexed committed rows** (`SeriesData`);
-  the runtime wraps them, owning the cursor anchoring (offset → absolute)
-  and, under live ticks, the provisional head — so external series and
-  rings behave identically under the provisional protocol.
-- Depth means **allocation** for rings (the runtime sizes them) but
-  **contract** for providers: the demanded depth is the promise `at()` must
-  honor that far back (a paged provider keeps pages accordingly; a csv
-  provider ignores it).
+## Frames and history state
 
-## Frames and rings
+A frame is a call site's logical persistent state: one bounded history value
+sequence per local and one optional child-frame state per call-site slot.
+Calling `rt.frame` tentatively activates that child for the current transition;
+abort restores the prior activation tree, while a final success promotes it. A
+successful provisional step may retain a same-row activation candidate so
+`varip` survives even when the final step does not revisit that call site.
 
-A frame is a call site's persistent box: one Ring per local slot, one
-sub-frame box per call-site slot, materialized lazily by `rt.frame`. Static
-request children own independent frame trees in their own runtime contexts.
-Physical allocation does not mean the call site has executed:
-each frame carries separate committed and scratch activation state. Calling
-`rt.frame` tentatively activates its child for the current row transaction; abort
-restores the pre-transaction activation tree, while final commit
-promotes it. A successful provisional execution may retain a same-row
-activation candidate so `varip` state survives even when the final execution
-does not revisit that call site.
+Manifest depth determines the newest-first values retained in `State`:
+`none` retains no readable past value, `const n` and `capped n` retain at most
+`n`, and `bound` is replaced by the concrete depth reported during module
+binding. Each local and request entry carries an exact `LayoutId`; the shared
+`ValueLayoutRegistry` validates values, derives typed empties, and discovers
+aggregate Heap roots.
 
-One Ring class serves all layouts; ring capacity comes
-from the manifest depth (`none` = current cell only, `const
-n` / `capped n` = n + 1 cells, `bound` = the value `bind` reported via
-`rt.bindDepth`). Each local and request manifest entry carries an exact
-`LayoutId`. The shared `ValueLayoutRegistry` validates writes, derives the
-typed empty value, and walks aggregate values for Heap roots. A Ring implements
-SeriesView.
+The fixed-historical host reserves deterministic logical capacity through
+`BindInputs.maxFixedValueLogicalBytes` (default 64 MiB), separately from
+variable-sized Heap backing. It accounts the root and child frame workspaces,
+input history, and materialized request-result columns from exact shallow layout
+sizes. After copying a child's scalar result column, it disposes that child's
+`JSRuntime` and Heap; only the parent-owned copied column and its accounting
+remain until the request view is released.
 
-Fixed-width value storage has its own shared deterministic budget,
-`BindInputs.maxFixedValueLogicalBytes` (default 64 MiB), separate from
-variable-sized Heap backing. Before allocation, each Ring reserves
-`(scratch + committed capacity) * shallowBytes(layout)`. Materialized request
-result columns reserve the same exact per-layout size. Child results are copied
-as scalars or scalar-only tuples into that parent-owned column; the merged view
-owns its lease until disposal. Scratch-only bind Rings release before final
-frame allocation, and completed request children release their frame/request-
-Ring leases and independent Heaps after the copy completes.
-
-Module `init` and `bind` run inside a dedicated abort-only Heap transaction. The
-provisional bind frame and every collection backing allocated while computing
-bind-time values are discarded before row execution; no bind temporary can
-become committed Heap storage.
+Generated `init` and `bind` use one private local frame plus an abort-only Heap
+transaction. Every collection or struct backing created while computing bind
+facts is discarded afterward; no binding temporary becomes execution storage.
 
 ## Main loop and the provisional protocol
 
 ```
-bind(module, params, provider, sink, timeNow): # async — awaits live here only
-  await provider.resolveContext('', '', full) # the primary context
-  validate params
-  resolve manifest.series from the context    # a missing id is a bind error
-  validate demanded execution metadata/axis   # exact typed sources only
-  run module.init                              # frame-free preparation after
-                                               # context carriers are bound
-  build scratch-only provisional frame
-  run module.bind                            # aliases/UDFs, depths, active,
-                                             # output args, request options/pairs
-  discard it; allocate final rings/frame tree from reported depths
-  per request edge: await resolveContext(pair); bind + run the child
-  (recursively, same machinery, null sink); build the merged view
+bindFixedHistory(module, params, provider, sink, timeNow):
+  evaluate module.init/bind into immutable facts
+  await provider.resolveContext('', '', full)
+  validate series, builtins, axis, limits, and fixed-width capacity
+  per static request edge:
+    await resolveContext(pair, range)
+    recursively bind/run an independent child JSRuntime
+    copy its scalar result column; dispose the child; build the merged view
+  create the root JSRuntime
   sink.declare(outputs + bound args)
 
-per row r (historical):        execute(r); commit(r)
-per live tick on row r:        execute(r) — provisional
-on row close:                  execute(r); commit(r)
+per row r (historical): JSRuntime.step({...inputs, provisional: false})
+per live tick:          JSRuntime.step({...inputs, provisional: true})
+on row close:           JSRuntime.step({...inputs, provisional: false})
 ```
 
-`execute(r)` always runs the full body **from its storage-class baseline** —
+`step()` always runs the full body **from its storage-class baseline** —
 there are no incremental update paths, by construction:
 
-- Every ring has committed cells plus a **scratch head** for the row being
-  executed. Reads at offset 0 see this execution's writes (or the storage
-  class's start value); offsets ≥ 1 see committed history.
+- The transition workspace starts from committed `State` plus the owned
+  same-row `Intermediate`. Reads at offset 0 see this step's writes (or the
+  storage class's start value); offsets ≥ 1 see committed history.
 - A persistent declaration is an ordinary `InitName` statement at its lexical
   execution site. Generated code first asks `rt.needsInit(frame, slot)` and
   evaluates the initializer only when that answer is true, then publishes the
   tentative value through `rt.initialize`. The runtime tracks committed and
-  scratch initialization bits separately; an untaken declaration therefore
+  same-row initialization bits separately; an untaken declaration therefore
   does not initialize, and an initializer may read current call arguments or
   perform any other ordinary Tea evaluation in source order.
-- At execution start the scratch head resets: `var` starts from its last
+- At execution start the local candidate resets: `var` starts from its last
   committed value only when its committed initialization bit is set; otherwise
   it stays typed-empty and eligible for `InitName`. PerBar starts unwritten
-  (na until written). **varip** scratch value, initialized bit, and later
+  (na until written). **varip** same-row value, initialized bit, and later
   rebindings survive successful same-row executions. An ordinary `var` retains
   only its first successful same-row initialization candidate; later writes
   still reset to the storage-class baseline.
@@ -427,8 +426,7 @@ there are no incremental update paths, by construction:
   a write to an existing identity stages a complete replacement payload, and
   transactional reads observe that overlay before committed state. Commit
   installs all replacements and tentative allocations; abort discards them.
-  Ring heads and buffered internal state follow the corresponding successful
-  row transition.
+  State and Intermediate follow the corresponding successful transition.
 - After the transaction is terminal, the runtime discovers the complete roots
   held by its own persistent values, replaces the Heap's stored root snapshot,
   and may run Mark-Sweep collection. Final sink delivery is post-commit; a sink
@@ -438,7 +436,7 @@ there are no incremental update paths, by construction:
   body persistence. The first successful ordinary-`var` initialization retains
   an initialization-only same-row candidate; later ordinary reassignments still
   roll back.
-- A throw invalidates scratch values, initialization bits,
+- A throw invalidates candidate values, initialization bits,
   tentative frame activation, and buffered emissions, aborts tentative
   allocations, and discards staged struct replacements. No mutation from the
   failed transaction remains observable.
@@ -503,9 +501,9 @@ runCpuBatch(module, bindings: readonly BindInputs[])
 
 Each binding already carries its parameters, provider, deterministic clock,
 limits, and `OutputSink`. Array order is execution and result order; an empty
-array is valid. The runner creates a fresh `JSRuntime` and frame tree per
-binding, calls the same `bind()` and `runAll()` used by `tea run`, always
-disposes the execution, and returns only generic row/input summaries.
+array is valid. The runner creates a fresh `FixedHistoryExecution` through
+`bindFixedHistory()` for each binding, calls `runAll()`, always disposes the
+adapter and its runtime tree, and returns only generic row/input summaries.
 
 Output/effect capture is caller policy. `MemorySink` is the optional structured
 in-memory sink for examples and tests; callers may instead inject table, trace,
@@ -515,7 +513,7 @@ journal layer between the caller's bindings, their sinks, and `runCpuBatch()`.
 
 ## Sweep reporting and visualization
 
-Sweep presentation remains outside both runtimes. `SweepReportSink` requests
+Sweep presentation remains outside both execution backends. `SweepReportSink` requests
 only each execution's final dense values and no effects. The reporting layer
 combines those snapshots with execution summaries and declared numeric ranges
 into a renderer-neutral `SweepResult`.
@@ -609,12 +607,12 @@ execution.
 Source/string/color parameters and requests remain fail-closed exclusions.
 
 For every concrete binding, the GPU runtime loads the artifact's JS sidecar and
-uses `JSRuntime`'s provisional bind-only phase. The generated `bind` section
-evaluates immutable aliases and bound history expressions against the concrete
-parameters and provider extent, then reports capacities by published frame id
-and slot. The provisional CPU frame is discarded before allocation. The GPU
-runtime validates the sidecar manifest against the artifact, but never reads a
-Program or interprets a Tea expression itself.
+calls the provider-aware layout projection in `module-binding.ts`. The private
+binding context evaluates immutable aliases and bound history expressions
+against the concrete parameters and provider metadata, then reports capacities
+by published frame id and slot. Its local frame and abort-only Heap transaction
+are discarded afterward. GPU preparation never constructs a `JSRuntime`, reads
+a Program, or interprets a Tea expression itself.
 
 `maxRowsPerChunk` is a physical ceiling whose default is 65,536 rows. Dense
 result capacity is exact from each execution's sink requirements: a complete

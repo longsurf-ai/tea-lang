@@ -622,7 +622,7 @@ describe('history', () => {
     );
   });
 
-  test('history forces otherwise-foldable and typed-na variables into Rings', () => {
+  test('history forces otherwise-foldable and typed-na variables into state', () => {
     const literal = mustBuild('source = 1\nx = source[1]\nplot(x)');
     expect(namesOf(literal).some(name => name.name === 'source')).toBe(true);
     expect(

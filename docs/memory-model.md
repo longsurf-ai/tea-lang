@@ -182,14 +182,14 @@ writes do not extend or reorder that iteration.
 
 ## History versions bindings
 
-Every runtime variable uses the same Ring. `name[N]` reads the value committed
-to that binding `N` iterations ago:
+Every runtime variable uses the same bounded history semantics. `name[N]` reads
+the value committed to that binding `N` iterations ago:
 
 - primitive history contains prior primitive values;
 - collection history contains prior headers and immutable backing;
 - struct history contains prior references, never struct-body snapshots.
 
-If a struct Name was not rebound, current and historical Ring cells may contain
+If a struct Name was not rebound, current and historical entries may contain
 the same reference and therefore observe the same live body. If the Name was
 rebound, history may contain a different, older reference. Mutating through a
 historical struct reference is legal:
@@ -226,8 +226,8 @@ return the binding layout's typed empty value.
 ## Transactions, realtime, `var`, and `varip`
 
 One execution transaction owns tentative storage allocation, struct-field
-mutation, Ring scratch, frame activation, and buffered emissions. An execution
-error aborts the transaction; successful execution commits it.
+mutation, same-row local candidates, frame activation, and buffered emissions.
+An execution error aborts the transaction; successful execution commits it.
 
 Successful provisional ticks commit struct-body mutations. Consequently, a
 shared reference supports natural realtime accumulation:
@@ -263,9 +263,9 @@ typed `Ref<V>` and Heap framework. Collection backing and struct field storage
 have different `TypeInfo<A, V>` policies over the same reference, transaction,
 version guard, limits, reachability graph, and garbage collector.
 
-In the step-based runtime, the Heap is an owned execution resource, not part of
+In `JSRuntime`, the Heap is an owned execution resource, not part of
 the `Intermediate` value. `Intermediate` contains only same-row frame state;
-`StateMachineRuntime` owns and disposes the Heap and injects it into the state
+`JSRuntime` owns and disposes the Heap and injects it into the state
 transition. A transition result can therefore replace State/Intermediate
 without transferring storage ownership to its caller.
 

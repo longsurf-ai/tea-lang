@@ -5,7 +5,7 @@ sidebarTitle: Requests
 
 Authority for request execution and the data-source registry. `docs/ir.md`
 owns the compile-time shape (RequestEdge, capture rules); `docs/runtime.md`
-owns the runtime basics this builds on (frames, rings, provisional protocol,
+owns the runtime basics this builds on (frames, bounded history, provisional protocol,
 SeriesView). This document owns everything between a `request.*()` call and
 a driver fetching bytes.
 
@@ -172,17 +172,17 @@ keys), with the prefix as the routing key:
 The generated module gains one nested `ModuleCode` object per RequestEdge.
 `ModuleCode.requests[rid]` owns the child's manifest + init/bind/funcs/main;
 `manifest.requests[rid]` owns only the JSON-safe edge metadata.
-The runtime binds a child instance exactly as it binds a program — same
-frames, rings, commit machinery, recursively for nested requests — against
+The fixed-historical adapter binds a child exactly as it binds the root — same
+frames, State/Intermediate transition, recursively for nested requests — against
 the resolved ProviderContext, with two differences:
 
 - Params are compilation-global (`ir.md`): the child reads the parent's
   bound params and declares none.
-- A child has no outputs. Its sole emission is `resultName`, an ordinary
-  ring in the child's program frame; merge reads that ring's **committed**
-  values.
+- A child has no outputs. Its `resultName` is an ordinary root-frame value;
+  after each successful final step the host copies that current value into the
+  result column.
 
-The root binding constructs one shared execution state containing the exact
+The root binding constructs one shared host environment containing the exact
 value-layout registry, request-context budget, fixed-value logical-byte budget,
 and the Heap-limit configuration. Every static child receives those shared
 facts but constructs an independent Heap, `StructStorageRuntime`, and
@@ -194,10 +194,10 @@ the checker rejects structs, collections, resources, and tuples containing any
 of them, and binding validates the physical result layout again. Each successful
 child-row result is recursively copied into a parent-owned column. That column
 reserves exactly `rows * shallowBytes(layout)` from the shared fixed-value
-budget, including when the child's result Ring retains zero committed cells.
-After the merged view takes the column and its lease, the completed child
-releases its frame/Ring reservations and its entire Heap. A `Ref` never crosses
-the request boundary. Aggregate request results remain unsupported until they
+budget. After copying the column, the fixed-historical adapter disposes the
+child `JSRuntime` and its Heap; the parent view retains only copied values and
+their logical storage accounting. A `Ref` never crosses the request boundary.
+Aggregate request results remain unsupported until they
 have an explicit deep graph-copy contract.
 
 Each static edge owns one completed result view for its bind-time context pair.
@@ -217,7 +217,7 @@ column with a parent→child row mapping. A sample-merge
 mapping is monotonic, so it compresses to O(child bars) breakpoints; a
 low-resolution child under a dense parent axis must never duplicate its value
 for every parent row. The view may avoid materializing the aligned parent-sized
-column, but it never retains the disposed child's Rings or Heap.
+column, but it never retains the disposed child's runtime or Heap.
 
 Sample mode (`security`):
 
@@ -244,9 +244,10 @@ separate staged request feature.
 ## Static requests
 
 The supported request surface requires `symbol` and `timeframe` to be known
-during binding. Constants, input-qualified expressions, and root-safe `simple`
-expressions are accepted. A series-qualified context expression is classified
-as `RequestEdge.dynamic` by the noder and then rejected with:
+during binding. Constants, input-qualified expressions, and
+provider-independent root-safe `simple` expressions are accepted. A
+series-qualified context expression is classified as `RequestEdge.dynamic` by
+the noder and then rejected with:
 
 ```text
 dynamic requests are not supported yet; symbol and timeframe must be bind-time-known
@@ -257,9 +258,9 @@ declaration option does not enable an execution feature that the runtime cannot
 provide. The request-context budget still spans recursively bound static child
 contexts, with one context pair per edge.
 
-The two JavaScript paths are not yet equivalent here. The legacy `JSRuntime`
-executes these static children. The step-based binding slice records each
-static pair, options, child module, and retention in `BoundModuleFacts`, but
+The fixed-historical host adapter recursively executes these static children
+through the sole `JSRuntime`. Module binding records each static pair, options,
+child module, and retention in `BoundModuleFacts`, but
 `TeaNode.to()` currently rejects a ready module with request facts because its
 child Observable/runtime wiring has not been implemented. Binding readiness is
 therefore not a claim that TeaNode can execute requests yet.

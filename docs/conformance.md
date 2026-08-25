@@ -22,7 +22,7 @@ string containing `Infinity` is not mistaken for a non-finite number.
 An input-focused reference may add `bindings`. The first scenario supplies the
 parameters for the execution whose outputs and rows the reference records;
 later scenarios rebind the same compiled module without executing it. Every
-scenario is an exact snapshot of `BoundProgram.inputs`, including the complete
+scenario is an exact snapshot of `FixedHistoryExecution.inputs`, including the complete
 manifest spec, bound value, and evaluated `active` flag. This makes UI metadata
 and parameter-dependent enablement part of the compile-through contract rather
 than incidental source that merely has to typecheck.

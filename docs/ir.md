@@ -271,7 +271,7 @@ method carries the receiver expression but no copy-out path and returns only
 its declared result.
 
 A mutating collection call carries a `CollectionLocation`: either a Name whose
-Ring receives the replacement header or a captured struct field whose storage
+state receives the replacement header or a captured struct field whose storage
 receives it. A collection accessor result alone is not a location. There are no
 Program nodes for Heap slots, `Ref` handles, transaction overlays, commit,
 abort, or garbage collection.

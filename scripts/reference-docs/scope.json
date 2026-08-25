@@ -156,7 +156,7 @@
       "title": "Request functions",
       "objective": "Document the supported request surface with exact context, merge, history, option, error, and example behavior. Omit staged arguments entirely and do not imply unsupported lower-timeframe or financial request APIs.",
       "validate": [
-        "npm test -- src/checker/check.test.ts src/runtime/run.test.ts src/runtime/js-runtime.test.ts src/testing/aggregate-request-e2e.test.ts",
+        "npm test -- src/checker/check.test.ts src/runtime/run.test.ts src/runtime/fixed-history.test.ts src/runtime/fixed-history-integration.test.ts src/testing/aggregate-request-e2e.test.ts",
         "npm test -- scripts/docs/generate-reference.test.ts",
         "npm run docs:check:generated"
       ]
