@@ -50,6 +50,11 @@ export interface LowerCtx {
   readonly effectIds: Map<EffectDecl, number>;
   readonly funcIds: Map<IrFunc, number>;
   readonly requestIds: Map<RequestEdge, number>;
+  // During manifest concretization, params/context constants and input-only
+  // function calls lower to ordinary generated-JS values rather than the
+  // execution RuntimeContext.
+  readonly concretize?: boolean;
+  readonly concretizeFuncRefs?: ReadonlyMap<IrFunc, string>;
   // The generated const this module's own code refers to itself by ('M'
   // for the root, 'M1'… for request children) — funcs-table dispatch must
   // name the module that owns the func.
@@ -70,6 +75,10 @@ export const HELPERS = {
   $div: '(a, b) => (b === 0 ? NaN : a / b)',
   $mod: '(a, b) => (b === 0 ? NaN : a % b)',
   $num: '(x) => (Number.isFinite(x) ? x : NaN)',
+  $historyDepth:
+    '(x) => (Number.isFinite(x) && Math.floor(x) === x && x >= 0 && x <= 9007199254740991 ? x : 0)',
+  $contextValue:
+    '(values, id, name) => { if (values === undefined || !values.has(id)) { throw new Error("builtin \'" + name + "\' is not bind-visible"); } return values.get(id); }',
   $rangeNext:
     '(x, step) => { const next = Number.isFinite(x + step) ? x + step : NaN; return (step > 0 && next > x) || (step < 0 && next < x) ? next : NaN; }',
   $eq: '(a, b) => (a === null || b === null || Number.isNaN(a) || Number.isNaN(b) ? false : a === b)',
@@ -162,6 +171,11 @@ function frameRef(ctx: LowerCtx, name: Name): string {
   if (entry.fid === ctx.currentFid) {
     return 'fr';
   }
+  if (ctx.concretize === true) {
+    return fatal(
+      `manifest concretization reached stateful name '${name.name}'`,
+    );
+  }
   if (entry.fid === 0) {
     return 'ctx.root()';
   }
@@ -192,11 +206,19 @@ function readName(
   if (direct !== undefined && current) {
     return direct;
   }
+  if (ctx.concretize === true) {
+    return fatal(`manifest concretization requires history for '${name.name}'`);
+  }
   return `ctx.read(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, ${offset})`;
 }
 
 function writeNameExpr(ctx: LowerCtx, name: Name, value: string): string {
   const direct = directName(ctx, name);
+  if (ctx.concretize === true && direct === undefined) {
+    return fatal(
+      `manifest concretization reached stateful name '${name.name}'`,
+    );
+  }
   return direct !== undefined
     ? `${direct} = (${value})`
     : `ctx.write(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, (${value}))`;
@@ -351,6 +373,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           return readName(ctx, e.place.name, off, current);
         }
         case PlaceKind.Series: {
+          if (ctx.concretize === true) {
+            return fatal('manifest concretization cannot read a source series');
+          }
           const sid = ctx.seriesIds.get(e.place.series);
           if (sid === undefined) {
             return fatal(`unmapped series '${e.place.series.id}'`);
@@ -364,21 +389,44 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
               `unmapped builtin '${e.place.builtin.source.domain}.${e.place.builtin.source.field}'`,
             );
           }
+          if (ctx.concretize === true) {
+            if (e.offset !== null) {
+              return fatal(
+                'manifest concretization cannot read builtin history',
+              );
+            }
+            ctx.useHelper('$contextValue');
+            const name = `${e.place.builtin.source.domain}.${e.place.builtin.source.field}`;
+            return `$contextValue(contextConstants, ${bid}, ${JSON.stringify(name)})`;
+          }
           return `ctx.builtin(${bid}, ${off})`;
         }
         case PlaceKind.Param: {
           const sid = ctx.paramSeriesIds.get(e.place.param);
           if (sid !== undefined) {
+            if (ctx.concretize === true) {
+              return fatal(
+                `manifest concretization cannot read source parameter '${e.place.param.name}'`,
+              );
+            }
             return `ctx.series(${sid}, ${off})`;
           }
           const pid = ctx.paramIds.get(e.place.param);
           if (pid === undefined) {
             return fatal(`unmapped param '${e.place.param.name}'`);
           }
+          if (ctx.concretize === true) {
+            return `manifest.params[${pid}].value`;
+          }
           // Scalar params are constant over rows; history is the value.
           return `ctx.param(${pid})`;
         }
         case PlaceKind.Request: {
+          if (ctx.concretize === true) {
+            return fatal(
+              'manifest concretization cannot read a request result',
+            );
+          }
           const edge = e.place.request;
           const rid = ctx.requestIds.get(edge);
           if (rid === undefined) {
@@ -420,6 +468,15 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `function call '${e.func.name}'`,
       );
+      const concretizeRef = ctx.concretizeFuncRefs?.get(e.func);
+      if (ctx.concretize === true) {
+        if (concretizeRef === undefined) {
+          return fatal(
+            `manifest concretization reached unavailable function '${e.func.name}'`,
+          );
+        }
+        return `${concretizeRef}(${args.map(arg => `(${arg})`).join(', ')})`;
+      }
       return `${ctx.moduleRef}.funcs[${fid}](ctx, ctx.frame(fr, ${e.slot})${args.map(arg => `, ${arg}`).join('')})`;
     }
     case IrKind.CallConstMethod: {
@@ -451,9 +508,23 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `const method call '${e.func.name}'`,
       );
+      const concretizeRef = ctx.concretizeFuncRefs?.get(e.func);
+      if (ctx.concretize === true) {
+        if (concretizeRef === undefined) {
+          return fatal(
+            `manifest concretization reached unavailable method '${e.func.name}'`,
+          );
+        }
+        return `${concretizeRef}((${receiver})${args.map(arg => `, (${arg})`).join('')})`;
+      }
       return `${ctx.moduleRef}.funcs[${fid}](ctx, ctx.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')})`;
     }
     case IrKind.CallMutableMethod: {
+      if (ctx.concretize === true) {
+        return fatal(
+          `manifest concretization cannot call mutable method '${e.func.name}'`,
+        );
+      }
       if (!typesEqual(e.func.receiver.type, e.receiver.type)) {
         return fatal(
           `mutable method call '${e.func.name}' receiver has the wrong type`,
@@ -503,6 +574,11 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
       );
     case IrKind.MutateCollection: {
+      if (ctx.concretize === true) {
+        return fatal(
+          `manifest concretization cannot mutate collection '${e.operation}'`,
+        );
+      }
       const locationType = collectionLocationType(e.location);
       const collectionKind = locationType.kind;
       if (
@@ -535,14 +611,25 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       return `${result}.result`;
     }
     case IrKind.MakeTuple: {
+      if (ctx.concretize === true) {
+        return fatal('manifest concretization cannot allocate a tuple');
+      }
       const elems = e.elems.map(el => capture(el, out, ctx));
       return `[${elems.map(x => `(${x})`).join(', ')}]`;
     }
     case IrKind.TupleGet: {
+      if (ctx.concretize === true) {
+        return fatal('manifest concretization cannot read a tuple');
+      }
       const tuple = capture(e.x, out, ctx);
       return `((${tuple}) === null ? ${emptyLiteral(e.type)} : (${tuple})[${e.index}])`;
     }
     case IrKind.NewStruct: {
+      if (ctx.concretize === true) {
+        return fatal(
+          `manifest concretization cannot allocate struct '${e.structType.name}'`,
+        );
+      }
       if (!typesEqual(e.type, e.structType)) {
         return fatal(
           `constructor for '${e.structType.name}' has a different result type`,
@@ -571,6 +658,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       return `ctx.newStruct(${ctx.layoutOf(e.structType)}, [${args.join(', ')}])`;
     }
     case IrKind.FieldGet: {
+      if (ctx.concretize === true) {
+        return fatal('manifest concretization cannot read a struct field');
+      }
       if (e.x.type.kind !== TypeKind.Struct) {
         return fatal(`field read traverses non-struct ${e.x.type.kind}`);
       }
@@ -689,6 +779,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       return temp;
     }
     case IrKind.ForInExpr: {
+      if (ctx.concretize === true) {
+        return fatal('manifest concretization cannot iterate a collection');
+      }
       const result = ctx.fresh();
       const collection = capture(e.x, out, ctx);
       const entries = ctx.fresh();
@@ -854,6 +947,10 @@ function lowerNative(
   // Internal depth-pass primitive: each component is normalized before a
   // synthesized maximum so one invalid offset cannot erase valid demands.
   if (native === '$historyDepth') {
+    if (ctx.concretize === true) {
+      ctx.useHelper('$historyDepth');
+      return `$historyDepth((${args[0]}))`;
+    }
     return `ctx.historyDepth((${args[0]}))`;
   }
   if (
@@ -861,6 +958,11 @@ function lowerNative(
     native.startsWith('matrix.') ||
     native.startsWith('map.')
   ) {
+    if (ctx.concretize === true) {
+      return fatal(
+        `manifest concretization cannot call aggregate native '${native}'`,
+      );
+    }
     return `ctx.callCollection(${JSON.stringify(native)}, ${ctx.layoutOf(resultType)}, [${args.join(', ')}])`;
   }
   // na/nz inspect their argument's type for the na representation.
@@ -956,6 +1058,16 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       return;
     }
     case IrKind.InitName: {
+      const direct = directName(ctx, stmt.name);
+      if (ctx.concretize === true && direct !== undefined) {
+        const body: string[] = [];
+        const value = lowerExpr(stmt.value, body, ctx);
+        out.push(`if (${direct} === undefined) {`);
+        out.push(...indent(body));
+        out.push(`  ${direct} = (${value});`);
+        out.push('}');
+        return;
+      }
       const frame = frameRef(ctx, stmt.name);
       const slot = slotOf(ctx, stmt.name);
       const body: string[] = [];
@@ -972,6 +1084,9 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       return;
     }
     case IrKind.StoreField: {
+      if (ctx.concretize === true) {
+        return fatal('manifest concretization cannot store a struct field');
+      }
       if (!typesEqual(stmt.object.type, stmt.owner)) {
         return fatal('struct field store object disagrees with its owner type');
       }
@@ -992,6 +1107,9 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       return;
     }
     case IrKind.Emit: {
+      if (ctx.concretize === true) {
+        return fatal('manifest concretization cannot emit a row output');
+      }
       const oid = ctx.outputIds.get(stmt.output);
       if (oid === undefined) {
         return fatal('lowering reached an unmapped output');
@@ -1009,6 +1127,9 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       return;
     }
     case IrKind.EmitEffect: {
+      if (ctx.concretize === true) {
+        return fatal('manifest concretization cannot emit an effect');
+      }
       const effectId = ctx.effectIds.get(stmt.effect);
       if (effectId === undefined) {
         return fatal('lowering reached an unmapped effect');

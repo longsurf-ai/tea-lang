@@ -12,15 +12,16 @@ import {
   boundInputs,
   configureChildModule,
   configureModule,
+  depthBars,
   moduleDeclaration,
   ModuleBindingEvaluationError,
-  requireModuleBinding,
+  requireConcreteModule,
 } from './module-binding';
 import {
   RUNTIME_ABI_VERSION,
   type BuiltinSpec,
   type JSModule,
-  type JSModuleBinding,
+  type RequestSpec,
 } from './module-abi';
 import type {RowPublication} from './output';
 import {resolveParamValues} from './params';
@@ -95,6 +96,7 @@ export async function bindFixedHistory(
   let configured: JSModule;
   try {
     configured = configureModule(module, params);
+    requireConcreteModule(configured);
   } catch (error) {
     if (error instanceof ModuleBindingEvaluationError) {
       throw new BindError(error.message);
@@ -150,7 +152,7 @@ export async function bindFixedHistory(
       maxLogicalBytes: maxFixedValueLogicalBytes,
     },
   };
-  const series = bindSeries(configured, params, context);
+  const series = bindSeries(configured, context);
   const builtins = bindBuiltins(configured, context, layouts, timeNow);
   const workspace = reserveWorkspace(configured, environment, 'root state');
   let requests: readonly RequestView[] = [];
@@ -311,8 +313,15 @@ async function bindStaticRequests(
   parentIdentity: ContextIdentity,
   environment: RequestEnvironment,
 ): Promise<readonly RequestView[]> {
-  const requests = requireModuleBinding(module).requests;
+  const requests = module.manifest.requests;
   if (requests.length === 0) return [];
+  requests.forEach((request, requestId) => {
+    if (request.dynamic) {
+      throw new BindError(
+        `dynamic request ${requestId} is unsupported by fixed historical binding`,
+      );
+    }
+  });
   if (parent.axis === null) {
     throw new BindError(
       "requests require a time axis on the primary context (a csv context needs a 'time' column)",
@@ -321,10 +330,16 @@ async function bindStaticRequests(
   assertMergeAxis(parent.axis, parent.rows, 'primary context');
   const views: RequestView[] = new Array(module.manifest.requests.length);
   try {
-    for (const [requestId, binding] of requests.entries()) {
+    for (const [requestId, spec] of requests.entries()) {
+      const context = spec.context;
+      if (context == null) {
+        throw new BindError(
+          `static request ${requestId} has incomplete context`,
+        );
+      }
       views[requestId] = await bindStaticRequest(
         requestId,
-        binding,
+        context,
         module,
         parent,
         parentIdentity,
@@ -340,7 +355,7 @@ async function bindStaticRequests(
 
 async function bindStaticRequest(
   requestId: number,
-  binding: JSModuleBinding['requests'][number],
+  binding: NonNullable<RequestSpec['context']>,
   parentModule: JSModule,
   parent: ProviderContext,
   parentIdentity: ContextIdentity,
@@ -463,7 +478,7 @@ async function runRequestChild(
   readonly lease: StateStorageLease;
 }> {
   validateRows(context);
-  const series = bindSeries(module, environment.params, context);
+  const series = bindSeries(module, context);
   const builtins = bindBuiltins(
     module,
     context,
@@ -604,7 +619,6 @@ function clampContext(
 
 function bindSeries(
   module: JSModule,
-  params: readonly Value[],
   context: ProviderContext,
 ): readonly SeriesData[] {
   return module.manifest.series.map((spec, sid) => {
@@ -613,10 +627,11 @@ function bindSeries(
       const pid = module.manifest.params.findIndex(
         param => param.seriesSid === sid,
       );
-      if (pid < 0 || typeof params[pid] !== 'string') {
+      const selected = module.manifest.params[pid]?.value;
+      if (pid < 0 || typeof selected !== 'string') {
         return fatal(`series slot ${sid} has neither host id nor parameter`);
       }
-      id = params[pid];
+      id = selected;
     }
     const value = context.series(id);
     if (value === null) {
@@ -781,7 +796,6 @@ function reserveWorkspace(
   environment: RequestEnvironment,
   what: string,
 ): StateStorageLease {
-  const retention = requireModuleBinding(module).retention;
   let logicalBytes = 0;
   const add = (layout: LayoutId, cells: number, label: string) => {
     const bytes = fixedLogicalBytes(environment.layouts, layout, cells, label);
@@ -797,16 +811,15 @@ function reserveWorkspace(
       );
     }
     const spec = module.manifest.frames[fid];
-    const frameRetention = retention.frames[fid];
-    if (spec === undefined || frameRetention === undefined) {
+    if (spec === undefined) {
       return fatal(`${what} references unknown frame ${fid}`);
     }
     active.add(fid);
     spec.locals.forEach((local, slot) => {
       const retained =
         local.storage === Storage.Var || local.storage === Storage.Varip
-          ? Math.max(1, frameRetention[slot]!)
-          : frameRetention[slot]!;
+          ? Math.max(1, depthBars(local.depth))
+          : depthBars(local.depth);
       add(local.layout, retained + 1, `${what} frame ${fid} slot ${slot}`);
     });
     spec.subs.forEach(sub => frame(sub.fid));
@@ -818,15 +831,15 @@ function reserveWorkspace(
     const label = `${what} series ${sid}`;
     logicalBytes = addLogicalBytes(
       logicalBytes,
-      fixedRawBytes(8, retention.series[sid]!, label),
+      fixedRawBytes(8, depthBars(module.manifest.series[sid]!.depth), label),
       what,
     );
   });
   module.manifest.builtin.forEach((spec, bid) =>
-    add(spec.layout, retention.builtins[bid]!, `${what} builtin ${bid}`),
+    add(spec.layout, depthBars(spec.depth), `${what} builtin ${bid}`),
   );
   module.manifest.requests.forEach((spec, rid) =>
-    add(spec.layout, retention.requests[rid]!, `${what} request ${rid}`),
+    add(spec.layout, depthBars(spec.depth), `${what} request ${rid}`),
   );
   return reserveLogicalBytes(environment, logicalBytes, what);
 }

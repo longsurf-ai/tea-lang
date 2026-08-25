@@ -1,22 +1,11 @@
-// Purpose: Module loader — evaluates generated JavaScript with its private
-// binding evaluator/module-constructor injection and returns an immutable
-// unbound JSModule.
+// Purpose: Module loader — evaluates one raw recursive generated JavaScript
+// module and initializes its immutable manifest snapshots.
 
 import type {JSModule} from './module-abi';
-import {
-  createGeneratedModule,
-  evaluateGeneratedModule,
-  initializeModuleTree,
-} from './module-binding';
+import {initializeModuleTree} from './module-binding';
 
-// Generated source is a strict-mode function body ending in `return {...}`.
+// Generated source is a strict-mode function body ending in `return M`.
 export function loadModule(js: string): JSModule {
-  const factory = new Function('$evaluate', '$module', js) as (
-    evaluate: typeof evaluateGeneratedModule,
-    module: typeof createGeneratedModule,
-  ) => JSModule;
-  const generated = factory(evaluateGeneratedModule, createGeneratedModule);
-  return initializeModuleTree(
-    'bindings' in generated ? generated : createGeneratedModule(generated),
-  );
+  const factory = new Function(js) as () => JSModule;
+  return initializeModuleTree(factory());
 }

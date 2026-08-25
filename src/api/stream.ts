@@ -15,7 +15,7 @@ export class DataStream<T> implements Subscribable<T> {
   private readonly observable: Observable<T>;
 
   constructor(
-    readonly schema: z.ZodType<T>,
+    public readonly schema: z.ZodType<T>,
     subscribe?: (
       this: Observable<T>,
       subscriber: Subscriber<T>,

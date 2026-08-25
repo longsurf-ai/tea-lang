@@ -15,7 +15,7 @@ import {
 } from './abi';
 import {bindFixedHistory as bindRuntime} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
-import {staticModuleBinding, testModule} from './testing';
+import {testModule} from './testing';
 import type {ValueLayout} from './value-layout';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
@@ -94,6 +94,17 @@ const OUTPUT = {
   channels: [{name: 'value', type: 'int', transport: {kind: 'int'}}],
 } as const;
 
+function staticRequest(symbol: string) {
+  return {
+    symbol,
+    timeframe: '',
+    gaps: false,
+    lookahead: false,
+    ignoreInvalidSymbol: false,
+    calcBarsCount: 0,
+  } as const;
+}
+
 function arrayStateModule(): JSModule {
   return testModule({
     abi: RUNTIME_ABI_VERSION,
@@ -124,9 +135,6 @@ function arrayStateModule(): JSModule {
       ],
     },
     requests: [],
-    evaluateBinding() {
-      return staticModuleBinding(this);
-    },
     funcs: {},
     main(ctx, fr) {
       if (ctx.needsInit(fr, 0)) {
@@ -177,9 +185,6 @@ describe('aggregate state and commit integration', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx, fr) {
         if (ctx.needsInit(fr, 0)) {
@@ -359,9 +364,6 @@ describe('aggregate state and commit integration', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx, fr) {
         if (ctx.needsInit(fr, 0)) {
@@ -473,9 +475,6 @@ describe('aggregate state and commit integration', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx, fr) {
         if (ctx.needsInit(fr, 0)) {
@@ -562,9 +561,6 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx, fr) {
         ctx.write(fr, 0, ctx.callCollection('array.from', ARRAY, [41]));
@@ -588,6 +584,7 @@ describe('request Heap isolation', () => {
             resultSlot: 0,
             layout: ARRAY,
             dynamic: false,
+            context: staticRequest('LEAF'),
           },
         ],
         frames: [
@@ -600,20 +597,6 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [leaf],
-      evaluateBinding() {
-        return staticModuleBinding(this, {
-          requests: [
-            {
-              symbol: 'LEAF',
-              timeframe: '',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
-              calcBarsCount: 0,
-            },
-          ],
-        });
-      },
       funcs: {},
       main(ctx, fr) {
         ctx.write(fr, 0, ctx.request(0, 0));
@@ -637,25 +620,12 @@ describe('request Heap isolation', () => {
             resultSlot: 0,
             layout: ARRAY,
             dynamic: false,
+            context: staticRequest('MID'),
           },
         ],
         frames: [{locals: [], subs: []}],
       },
       requests: [middle],
-      evaluateBinding() {
-        return staticModuleBinding(this, {
-          requests: [
-            {
-              symbol: 'MID',
-              timeframe: '',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
-              calcBarsCount: 0,
-            },
-          ],
-        });
-      },
       funcs: {},
       main(ctx) {
         ctx.emit(
@@ -709,9 +679,6 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx, fr) {
         const value = [41, 42] as const;
@@ -743,25 +710,12 @@ describe('request Heap isolation', () => {
             resultSlot: 0,
             layout: INT_PAIR,
             dynamic: false,
+            context: staticRequest('X'),
           },
         ],
         frames: [{locals: [], subs: []}],
       },
       requests: [child],
-      evaluateBinding() {
-        return staticModuleBinding(this, {
-          requests: [
-            {
-              symbol: 'X',
-              timeframe: '',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
-              calcBarsCount: 0,
-            },
-          ],
-        });
-      },
       funcs: {},
       main(ctx) {
         const result = ctx.request(0, 0);
@@ -826,9 +780,6 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx, fr) {
         ctx.write(fr, 0, ctx.series(0, 0));
@@ -861,6 +812,7 @@ describe('request Heap isolation', () => {
             resultSlot: 0,
             layout: INT,
             dynamic: false,
+            context: staticRequest('X'),
           },
           {
             merge: {
@@ -870,21 +822,11 @@ describe('request Heap isolation', () => {
             resultSlot: 0,
             layout: INT,
             dynamic: false,
+            context: staticRequest('X'),
           },
         ],
       },
       requests: [child, child],
-      evaluateBinding() {
-        const request = {
-          symbol: 'X',
-          timeframe: '',
-          gaps: false,
-          lookahead: false,
-          ignoreInvalidSymbol: false,
-          calcBarsCount: 0,
-        } as const;
-        return staticModuleBinding(this, {requests: [request, request]});
-      },
       funcs: {},
       main(ctx) {
         ctx.emit(0, 0, ctx.request(0, 0));
@@ -950,9 +892,6 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx, fr) {
         if (ctx.needsInit(fr, 1)) {
@@ -986,6 +925,7 @@ describe('request Heap isolation', () => {
             resultSlot: 0,
             layout: INT,
             dynamic: false,
+            context: staticRequest('X'),
           },
         ],
         frames: [
@@ -1002,20 +942,6 @@ describe('request Heap isolation', () => {
         ],
       },
       requests: [child],
-      evaluateBinding() {
-        return staticModuleBinding(this, {
-          requests: [
-            {
-              symbol: 'X',
-              timeframe: '',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
-              calcBarsCount: 0,
-            },
-          ],
-        });
-      },
       funcs: {},
       main(ctx, fr) {
         ctx.write(fr, 0, ctx.callCollection('array.from', ARRAY, [7]));
@@ -1114,9 +1040,6 @@ describe('runtime boundaries', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx, fr) {
         ctx.frame(fr, requestLargeFrame ? 0 : 1);
@@ -1146,17 +1069,17 @@ describe('runtime boundaries', () => {
     ).rejects.toThrow('FIXED_VALUE_STORAGE_LIMIT_EXCEEDED');
   });
 
-  test('a non-current ABI is rejected before binding evaluation', async () => {
-    let evaluated = false;
+  test('a non-current ABI is rejected before concretization', async () => {
+    let concretized = false;
     const current = arrayStateModule();
     const oldAbi = RUNTIME_ABI_VERSION - 1;
     const old = Object.create(current, {
       abi: {value: oldAbi, enumerable: true},
-      evaluateBinding: {
+      concretize: {
         enumerable: true,
         get() {
-          evaluated = true;
-          return current.evaluateBinding;
+          concretized = true;
+          return current.concretize;
         },
       },
     });
@@ -1165,7 +1088,7 @@ describe('runtime boundaries', () => {
     ).rejects.toThrow(
       `unsupported module ABI ${oldAbi}; expected ${RUNTIME_ABI_VERSION}`,
     );
-    expect(evaluated).toBe(false);
+    expect(concretized).toBe(false);
   });
 
   test('dispose aborts a pending final row and is idempotent', async () => {

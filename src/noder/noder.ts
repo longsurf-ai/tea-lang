@@ -22,6 +22,7 @@ import {
   type IrUnaryOp,
   type BlockExpr,
   type HistReadExpr,
+  type HistoryDepth,
   type Name as IrName,
   type OutputRefExpr,
   type Place,
@@ -62,7 +63,14 @@ import {
   type Type,
   type TypeAndValue,
 } from '../ir/type';
-import {bindEvaluable} from '../ir/visit';
+import {
+  bindEvaluable,
+  builtinInputsOf,
+  namesOf,
+  requestsOf,
+  seriesInputsOf,
+  walkIrExpr,
+} from '../ir/visit';
 import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
 import {Op} from '../syntax/tokens';
@@ -209,6 +217,7 @@ class Noder {
     };
     body.unshift(...this.nodePackageGlobals(this.program, packageGlobals));
     resolveDepths(program);
+    this.checkConcretizationSupport(program);
     this.checkRequestSupport(program);
     return program;
   }
@@ -392,6 +401,142 @@ class Noder {
       }
     };
     visit(program.requests);
+  }
+
+  // A manifest snapshot is concretized without RuntimeContext, frame state, or
+  // Heap storage. Reject expressions that would require those owners before a
+  // valid Program reaches target lowering.
+  private checkConcretizationSupport(program: Program): void {
+    const visitProgram = (current: Program): void => {
+      const writes = new Map<IrName, IrExpr>();
+      for (const stmt of [...current.init, ...current.body]) {
+        if (
+          (stmt.kind === IrKind.InitName || stmt.kind === IrKind.WriteName) &&
+          !writes.has(stmt.name)
+        ) {
+          writes.set(stmt.name, stmt.value);
+        }
+      }
+
+      const supported = (root: IrExpr): boolean => {
+        let valid = true;
+        const names = new Set<IrName>();
+        const funcs = new Set<IrFunc>();
+        const scan = (
+          expr: IrExpr,
+          localNames: ReadonlySet<IrName> = new Set(),
+        ): void => {
+          walkIrExpr(expr, {
+            stmt: stmt => {
+              if (stmt.kind === IrKind.InitName) valid = false;
+            },
+            expr: nested => {
+              switch (nested.kind) {
+                case IrKind.HistRead:
+                  if (nested.offset !== null) {
+                    valid = false;
+                    return;
+                  }
+                  if (nested.place.kind === PlaceKind.Series ||
+                      nested.place.kind === PlaceKind.Request) {
+                    valid = false;
+                    return;
+                  }
+                  if (
+                    nested.place.kind === PlaceKind.Param &&
+                    nested.place.param.defaultValue?.kind ===
+                      ParamDefaultKind.Series
+                  ) {
+                    valid = false;
+                    return;
+                  }
+                  if (
+                    nested.place.kind === PlaceKind.Name &&
+                    !localNames.has(nested.place.name) &&
+                    !names.has(nested.place.name)
+                  ) {
+                    names.add(nested.place.name);
+                    const value = writes.get(nested.place.name);
+                    if (value === undefined) valid = false;
+                    else scan(value);
+                  }
+                  return;
+                case IrKind.CallFunc:
+                  if (!funcs.has(nested.func)) {
+                    funcs.add(nested.func);
+                    scan(
+                      nested.func.body,
+                      new Set([
+                        ...nested.func.params,
+                        ...nested.func.locals,
+                      ]),
+                    );
+                  }
+                  return;
+                case IrKind.CallConstMethod:
+                case IrKind.CallMutableMethod:
+                case IrKind.MutateCollection:
+                case IrKind.NewStruct:
+                case IrKind.MakeTuple:
+                case IrKind.TupleGet:
+                case IrKind.FieldGet:
+                case IrKind.ForInExpr:
+                  valid = false;
+                  return;
+                case IrKind.CallNative:
+                  if (
+                    nested.native.startsWith('array.') ||
+                    nested.native.startsWith('matrix.') ||
+                    nested.native.startsWith('map.')
+                  ) {
+                    valid = false;
+                  }
+                  return;
+                default:
+                  return;
+              }
+            },
+          });
+        };
+        scan(root);
+        return valid;
+      };
+
+      const check = (expr: IrExpr): void => {
+        if (!supported(expr)) {
+          this.errors.errorAt(
+            expr.pos,
+            'module configuration must depend only on constants, scalar parameters, and non-allocating simple expressions',
+          );
+        }
+      };
+      const checkDepth = (depth: HistoryDepth): void => {
+        if (depth.kind === DepthKind.Bound) check(depth.expr);
+      };
+
+      namesOf(current).forEach(name => checkDepth(name.depth));
+      seriesInputsOf(current).forEach(series => checkDepth(series.depth));
+      builtinInputsOf(current).forEach(builtin => checkDepth(builtin.depth));
+      current.params.forEach(param => {
+        check(param.active);
+        checkDepth(param.depth);
+      });
+      current.outputs.forEach(output =>
+        output.bindArgs.forEach(argument => check(argument.expr)),
+      );
+      requestsOf(current).forEach(request => {
+        checkDepth(request.depth);
+        if (request.dynamic) return;
+        check(request.symbol);
+        check(request.timeframe);
+        check(request.merge.gaps);
+        check(request.merge.lookahead);
+        check(request.merge.ignoreInvalidSymbol);
+        check(request.merge.calcBarsCount);
+      });
+      current.requests.forEach(request => visitProgram(request.child));
+    };
+    visitProgram(program);
   }
 
   private tvOf(e: syntax.Expr): TypeAndValue {

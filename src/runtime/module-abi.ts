@@ -7,15 +7,20 @@ import type {Ref} from './heap';
 import type {OutputSpec} from './output';
 import type {EffectSpec, ParamSpec} from './schema';
 import type {LayoutId, ValueLayout} from './value-layout';
-import type {CollectionValue, ExecutionResult, Value} from './value';
+import type {
+  CollectionValue,
+  ExecutionResult,
+  ManifestValue,
+  Value,
+} from './value';
 
-export const RUNTIME_ABI_VERSION = 5 as const;
+export const RUNTIME_ABI_VERSION = 6 as const;
 
 export type DepthSpec =
-  | {readonly kind: 'none'}
-  | {readonly kind: 'const'; readonly bars: number}
-  | {readonly kind: 'bound'}
-  | {readonly kind: 'capped'; readonly bars: number};
+  | {readonly kind: 'none'} // no depth retention
+  | {readonly kind: 'const'; readonly bars: number} // depth known at compile time
+  | {readonly kind: 'bound'} // depth known at binding time
+  | {readonly kind: 'capped'; readonly bars: number}; // depth unknown, capped at compile time
 
 export interface LocalSpec {
   readonly storage: NameStorage;
@@ -31,6 +36,8 @@ export interface FrameLayout {
 export interface SeriesSpec {
   readonly id: string | null;
   readonly depth: DepthSpec;
+  /** Whether the host has supplied this execution context's source series. */
+  readonly supplied?: boolean;
 }
 
 export interface BuiltinSpec {
@@ -50,13 +57,37 @@ export interface RequestSpec {
   readonly resultSlot: number;
   readonly layout: LayoutId;
   readonly dynamic: boolean;
+  /** Concrete static request configuration, or null until concretization. */
+  readonly context?: {
+    readonly symbol: string;
+    readonly timeframe: string;
+    readonly gaps: boolean;
+    readonly lookahead: boolean;
+    readonly ignoreInvalidSymbol: boolean;
+    readonly calcBarsCount: number;
+  } | null;
 }
 
 export interface ModuleManifest {
   readonly series: readonly SeriesSpec[];
   readonly builtin: readonly BuiltinSpec[];
-  readonly params: readonly ParamSpec[];
-  readonly outputs: readonly OutputSpec[];
+  readonly params: readonly (ParamSpec & {
+    /** True only where the host binds this compilation-global parameter. */
+    readonly bindable?: boolean;
+    /** Current host-bound value; absent on an incomplete module snapshot. */
+    readonly value?: ManifestValue;
+    /** Null until a parameter-dependent activity expression resolves. */
+    readonly active?: boolean | null;
+  })[];
+  readonly outputs: readonly (OutputSpec & {
+    /** Concrete declaration arguments, or null until concretization. */
+    readonly boundArgs?:
+      | readonly {
+          readonly name: string;
+          readonly value: Value;
+        }[]
+      | null;
+  })[];
   readonly effects: readonly EffectManifestSpec[];
   readonly frames: readonly FrameLayout[];
   readonly requests: readonly RequestSpec[];
@@ -66,8 +97,8 @@ export interface Frame {
   readonly kind: 'frame';
 }
 
-/** One host-neutral input requirement and its immutable binding state. */
-export type ModuleInputBinding =
+/** One binding state derived from the concrete manifest. */
+export type ModuleBinding =
   | {
       readonly kind: 'series';
       readonly name: string;
@@ -76,7 +107,7 @@ export type ModuleInputBinding =
   | {
       readonly kind: 'parameter';
       readonly name: string;
-      readonly value?: Value;
+      readonly value?: ManifestValue;
     };
 
 /** One self-describing generated JavaScript module in the request tree. */
@@ -86,23 +117,15 @@ export interface JSModule {
   readonly layout: readonly ValueLayout[];
   readonly manifest: ModuleManifest;
   readonly requests: readonly JSModule[];
-  /** Host-neutral bindings for this execution context. */
-  readonly bindings: readonly ModuleInputBinding[];
-  /** Compilation-global parameter vector once every root parameter is bound. */
-  readonly parameterValues: readonly Value[] | null;
-  /** Generated execution configuration once this context can execute. */
-  readonly binding: JSModuleBinding | null;
-  /** True when this module context has complete execution configuration. */
+  /** True when this module context's manifest is concrete and fully supplied. */
   ready(): boolean;
-  /** Missing inputs in this module context. Request children expose their own. */
-  remaining(): readonly ModuleInputBinding[];
-  /** Evaluate this module's bind-time values without acquiring runtime state. */
-  evaluateBinding(values: {
-    /** The compilation-global parameter vector, including for request children. */
-    readonly params: readonly Value[];
-    /** Sparse context-constant builtins visible to provider-aware binding. */
-    readonly builtins?: ReadonlyMap<number, Value>;
-  }): JSModuleBinding;
+  /** Missing bindings derived from this module context's manifest. */
+  remaining(): readonly ModuleBinding[];
+  /** Mutate only the caller-owned fresh manifest copy with late concrete facts. */
+  concretize(
+    manifest: ModuleManifest,
+    contextConstants?: ReadonlyMap<number, Value>,
+  ): void;
   readonly funcs: Readonly<
     Record<
       number,
@@ -110,29 +133,6 @@ export interface JSModule {
     >
   >;
   main(ctx: RuntimeContext, fr: Frame): void;
-}
-
-/** Immutable data produced by one generated module's pure binding function. */
-export interface JSModuleBinding {
-  readonly retention: {
-    readonly frames: readonly (readonly number[])[];
-    readonly series: readonly number[];
-    readonly builtins: readonly number[];
-    readonly requests: readonly number[];
-  };
-  readonly activeParams: readonly boolean[];
-  readonly outputs: readonly (readonly {
-    readonly name: string;
-    readonly value: Value;
-  }[])[];
-  readonly requests: readonly {
-    readonly symbol: string;
-    readonly timeframe: string;
-    readonly gaps: boolean;
-    readonly lookahead: boolean;
-    readonly ignoreInvalidSymbol: boolean;
-    readonly calcBarsCount: number;
-  }[];
 }
 
 /** Operations available to generated code during one runtime step. */

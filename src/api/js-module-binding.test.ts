@@ -6,7 +6,11 @@ import {describe, expect, test} from 'vitest';
 import {generate} from '../codegen/codegen';
 import {mustBuild} from '../noder/testing';
 import {loadModule} from '../runtime/load';
-import {boundInputs, moduleDeclaration} from '../runtime/module-binding';
+import {
+  boundInputs,
+  moduleBindings,
+  moduleDeclaration,
+} from '../runtime/module-binding';
 import type {JSModule} from '../runtime/module-abi';
 import {bindModule, type BindingAssignment, type BindingError} from './binding';
 
@@ -46,14 +50,13 @@ describe('JSModule binding', () => {
       ['enabled = input.bool(true)', 'plot(enabled ? close : open)'].join('\n'),
     );
 
-    expect(module.bindings.map(binding => binding.name)).toEqual([
+    expect(moduleBindings(module).map(binding => binding.name)).toEqual([
       'enabled',
       'close',
       'open',
     ]);
     expect(Object.isFrozen(module)).toBe(true);
-    expect(Object.isFrozen(module.bindings)).toBe(true);
-    expect(module.bindings.every(Object.isFrozen)).toBe(true);
+    expect(Object.isFrozen(module.manifest)).toBe(true);
     expect(module.ready()).toBe(false);
   });
 
@@ -67,7 +70,7 @@ describe('JSModule binding', () => {
     expect(error.message).toContain("parameter 'length'");
   });
 
-  test('fails unknown, wrong-kind, and duplicate assignments explicitly', () => {
+  test('fails unknown and wrong-kind assignments and replaces parameters', () => {
     const module = compileModule(
       'length = input.int(14)\nplot(close + length)',
     );
@@ -83,10 +86,11 @@ describe('JSModule binding', () => {
     const once = Effect.runSync(
       bindModule(module, [{kind: 'parameter', name: 'length', value: 10}]),
     );
-    expect(
-      bindingFailure(once, [{kind: 'parameter', name: 'length', value: 20}])
-        .code,
-    ).toBe('DUPLICATE_BINDING');
+    const twice = Effect.runSync(
+      bindModule(once, [{kind: 'parameter', name: 'length', value: 20}]),
+    );
+    expect(once.manifest.params[0]?.value).toBe(10);
+    expect(twice.manifest.params[0]?.value).toBe(20);
   });
 
   test('stores only a supplied marker for a series', () => {
@@ -96,9 +100,40 @@ describe('JSModule binding', () => {
       ]),
     );
 
-    expect(module.bindings).toEqual([
+    expect(moduleBindings(module)).toEqual([
       {kind: 'series', name: 'close', supplied: true},
     ]);
+  });
+
+  test('derives input.source series binding from its current parameter value', () => {
+    const initial = compileModule(
+      'source = input.source(close)\nplot(source)',
+    );
+    const selected = Effect.runSync(
+      bindModule(initial, [
+        {kind: 'parameter', name: 'source', value: 'close'},
+      ]),
+    );
+    const supplied = Effect.runSync(
+      bindModule(selected, [{kind: 'series', name: 'close'}]),
+    );
+    const switched = Effect.runSync(
+      bindModule(supplied, [
+        {kind: 'parameter', name: 'source', value: 'open'},
+      ]),
+    );
+
+    expect(moduleBindings(selected)).toEqual([
+      {kind: 'parameter', name: 'source', value: 'close'},
+      {kind: 'series', name: 'close', supplied: false},
+    ]);
+    expect(supplied.ready()).toBe(true);
+    expect(moduleBindings(switched)).toEqual([
+      {kind: 'parameter', name: 'source', value: 'open'},
+      {kind: 'series', name: 'close', supplied: true},
+      {kind: 'series', name: 'open', supplied: false},
+    ]);
+    expect(switched.ready()).toBe(false);
   });
 
   test('a module without semantic inputs becomes ready on an empty bind', () => {
@@ -125,8 +160,6 @@ describe('JSModule binding', () => {
       ),
     );
 
-    expect(module.binding?.retention.frames).toEqual([[5]]);
-    expect(module.binding?.retention.series).toEqual([0]);
     expect(module.manifest.frames[0].locals[0].depth).toEqual({
       kind: 'const',
       bars: 5,
@@ -145,7 +178,7 @@ describe('JSModule binding', () => {
       bindModule(initial, [{kind: 'parameter', name: 'enabled', value: false}]),
     );
 
-    expect(partial.binding).toBeNull();
+    expect(partial.ready()).toBe(false);
 
     const module = Effect.runSync(
       bindModule(partial, [
@@ -163,9 +196,9 @@ describe('JSModule binding', () => {
     expect(moduleDeclaration(module).outputs[0].boundArgs).toEqual([
       {name: 'linewidth', value: 4},
     ]);
-    expect(Object.isFrozen(module.binding)).toBe(true);
-    expect(Object.isFrozen(module.parameterValues)).toBe(true);
-    expect(Object.isFrozen(module.binding?.retention.frames)).toBe(true);
+    expect(Object.isFrozen(module.manifest)).toBe(true);
+    expect(Object.isFrozen(module.manifest.params)).toBe(true);
+    expect(Object.isFrozen(module.manifest.frames)).toBe(true);
   });
 
   test('captures static request settings without resolving data', () => {
@@ -176,7 +209,7 @@ describe('JSModule binding', () => {
       ),
     );
 
-    expect(module.binding?.requests).toEqual([
+    expect(module.manifest.requests.map(request => request.context)).toEqual([
       {
         symbol: 'X',
         timeframe: 'D',

@@ -6,7 +6,7 @@ import {MemorySink} from '../providers/sinks/memory-sink';
 import {type DataProvider, type ProviderContext} from './abi';
 import {bindFixedHistory} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
-import {staticModuleBinding, testModule} from './testing';
+import {testModule} from './testing';
 import type {ValueLayout} from './value-layout';
 
 const NUMBER = 0;
@@ -83,9 +83,6 @@ const MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, root) {
     const close = ctx.series(0, 0);
@@ -117,9 +114,6 @@ const REQUEST_CHILD: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, root) {
     ctx.write(root, 0, ctx.series(0, 0));
@@ -142,6 +136,14 @@ const NESTED_REQUEST_CHILD: JSModule = testModule({
         resultSlot: 0,
         layout: NUMBER,
         dynamic: false,
+        context: {
+          symbol: 'Y',
+          timeframe: '2m',
+          gaps: false,
+          lookahead: false,
+          ignoreInvalidSymbol: false,
+          calcBarsCount: 0,
+        },
       },
     ],
     frames: [
@@ -154,28 +156,6 @@ const NESTED_REQUEST_CHILD: JSModule = testModule({
     ],
   },
   requests: [REQUEST_CHILD],
-  evaluateBinding() {
-    return {
-      retention: {
-        frames: [[0]],
-        series: [],
-        builtins: [],
-        requests: [0],
-      },
-      activeParams: [],
-      outputs: [],
-      requests: [
-        {
-          symbol: 'Y',
-          timeframe: '2m',
-          gaps: false,
-          lookahead: false,
-          ignoreInvalidSymbol: false,
-          calcBarsCount: 0,
-        },
-      ],
-    };
-  },
   funcs: {},
   main(ctx, root) {
     ctx.write(root, 0, ctx.request(0, 0));
@@ -197,6 +177,14 @@ function requestModule(dynamic = false): JSModule {
           resultSlot: 0,
           layout: NUMBER,
           dynamic,
+          context: {
+            symbol: 'X',
+            timeframe: '2m',
+            gaps: false,
+            lookahead: false,
+            ignoreInvalidSymbol: false,
+            calcBarsCount: 0,
+          },
         },
       ],
       frames: [{locals: [], subs: []}],
@@ -212,28 +200,6 @@ function requestModule(dynamic = false): JSModule {
       ],
     },
     requests: [REQUEST_CHILD],
-    evaluateBinding() {
-      return {
-        retention: {
-          frames: [[]],
-          series: [],
-          builtins: [],
-          requests: [1],
-        },
-        activeParams: [],
-        outputs: [[]],
-        requests: [
-          {
-            symbol: 'X',
-            timeframe: '2m',
-            gaps: false,
-            lookahead: false,
-            ignoreInvalidSymbol: false,
-            calcBarsCount: 0,
-          },
-        ],
-      };
-    },
     main(ctx) {
       ctx.emit(0, 0, ctx.request(0, 0));
       ctx.emit(0, 1, ctx.request(0, 1));
@@ -263,9 +229,6 @@ const ARRAY_WORKSPACE_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main() {},
 });
@@ -490,26 +453,6 @@ describe('bindFixedHistory', () => {
         ],
       },
       requests: [REQUEST_CHILD, REQUEST_CHILD],
-      evaluateBinding() {
-        return {
-          retention: {
-            frames: [[]],
-            series: [],
-            builtins: [],
-            requests: [1, 1],
-          },
-          activeParams: [],
-          outputs: [[]],
-          requests: [0, 1].map(() => ({
-            symbol: 'X',
-            timeframe: '2m',
-            gaps: false,
-            lookahead: false,
-            ignoreInvalidSymbol: false,
-            calcBarsCount: 0,
-          })),
-        };
-      },
       main(ctx) {
         ctx.emit(0, 0, ctx.request(0, 0));
         ctx.emit(0, 1, ctx.request(1, 0));

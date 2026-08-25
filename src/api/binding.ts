@@ -1,11 +1,12 @@
 import {Effect} from 'effect';
 import {OperationalError} from '../base/operational-error';
 import {BindError} from '../runtime/errors';
-import type {JSModule, ModuleInputBinding} from '../runtime/module-abi';
+import type {JSModule, ModuleBinding} from '../runtime/module-abi';
 import {resolveParamValues} from '../runtime/params';
-import type {Value} from '../runtime/value';
+import type {ManifestValue, Value} from '../runtime/value';
 import {
   ModuleBindingEvaluationError,
+  moduleBindings,
   withModuleBindings,
 } from '../runtime/module-binding';
 
@@ -41,14 +42,14 @@ export class BindingError extends OperationalError {
 
 /**
  * Apply parameter values and series-supplied markers without mutating the
- * module. Concrete streams remain owned by TeaNode.
+ * module. Concrete streams remain owned by the public Node implementation.
  */
 export function bindModule(
   module: JSModule,
   supplied: readonly BindingAssignment[],
 ): Effect.Effect<JSModule, BindingError> {
   return Effect.gen(function* () {
-    let bindings = module.bindings;
+    let bindings = moduleBindings(module);
 
     for (const assignment of supplied) {
       const sameName = bindings.filter(
@@ -75,7 +76,10 @@ export function bindModule(
         );
       }
 
-      if (matches.some(inputSupplied)) {
+      if (
+        assignment.kind === 'series' &&
+        matches.some(inputSupplied)
+      ) {
         yield* Effect.fail(
           new BindingError(
             'DUPLICATE_BINDING',
@@ -116,33 +120,16 @@ export function bindModule(
             return freezeModuleInput({...binding, supplied: true});
           }
           if (binding.kind !== 'parameter') return binding;
-          return freezeModuleInput({...binding, value: parameterValue});
+          return freezeModuleInput({
+            ...binding,
+            value: parameterValue as ManifestValue,
+          });
         }),
       );
     }
 
-    let parameterValues = module.parameterValues;
-    if (module.manifest.params.length !== 0) {
-      const parameters = bindings.filter(
-        (
-          binding,
-        ): binding is Extract<
-          ModuleInputBinding,
-          {readonly kind: 'parameter'}
-        > => binding.kind === 'parameter',
-      );
-      parameterValues = parameters.every(inputSupplied)
-        ? resolveParamValues(
-            module.manifest.params,
-            Object.fromEntries(
-              parameters.map(parameter => [parameter.name, parameter.value]),
-            ),
-          )
-        : null;
-    }
-
     return yield* Effect.try({
-      try: () => withModuleBindings(module, bindings, parameterValues),
+      try: () => withModuleBindings(module, bindings),
       catch: error => {
         if (error instanceof BindError) {
           return new BindingError('INVALID_BINDING', error.message);
@@ -156,12 +143,12 @@ export function bindModule(
   });
 }
 
-function inputSupplied(input: ModuleInputBinding): boolean {
+function inputSupplied(input: ModuleBinding): boolean {
   return input.kind === 'series'
     ? input.supplied
     : Object.hasOwn(input, 'value');
 }
 
-function freezeModuleInput(input: ModuleInputBinding): ModuleInputBinding {
+function freezeModuleInput(input: ModuleBinding): ModuleBinding {
   return Object.freeze({...input});
 }

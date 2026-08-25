@@ -7,7 +7,7 @@ import {Storage} from '../ir/node';
 import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
 import {configureModule} from './module-binding';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
-import {staticModuleBinding, testModule} from './testing';
+import {testModule} from './testing';
 import type {ValueLayout} from './value-layout';
 
 const NUMBER = 0;
@@ -65,9 +65,6 @@ const PROVISIONAL_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, root) {
     if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
@@ -106,9 +103,6 @@ function structModule(shouldFail: () => boolean): JSModule {
       ],
     },
     requests: [],
-    evaluateBinding() {
-      return staticModuleBinding(this);
-    },
     funcs: {},
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
@@ -166,9 +160,6 @@ function structEffectModule(shouldFail: () => boolean): JSModule {
       ],
     },
     requests: [],
-    evaluateBinding() {
-      return staticModuleBinding(this);
-    },
     funcs: {},
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
@@ -205,9 +196,6 @@ const WRONG_NOMINAL_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, root) {
     if (ctx.needsInit(root, 0)) {
@@ -246,9 +234,6 @@ const GC_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, root) {
     const close = ctx.series(0, 0);

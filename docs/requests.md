@@ -26,7 +26,7 @@ Provider     prefix registry:  "FRED:" -> fred(apiKey)
              "" -> host primary | unprefixed -> yahoo   csv
              drivers normalize + resample; errors are typed
                  ^
-Host config  registry construction + API keys (CLI config / OpenChart)
+Host config  registry construction + API keys (CLI / embedding-host config)
 ```
 
 - One primitive: every `request.*` family member lowers to a RequestEdge.
@@ -130,7 +130,7 @@ keys), with the prefix as the routing key:
   primary context, any other unprefixed symbol defaults to yahoo, so
   `request.security("AAPL", …)` works over a csv-driven chart); hosts only
   parameterize it — a primary context and an opaque config record (the
-  CLI hands in `process.env`; OpenChart hands in its own store). Driver
+  CLI hands in `process.env`; an embedding host hands in its own store). Driver
   configuration conventions (`FRED_API_KEY`) belong to `builtinSources`,
   the way quantmod's `getSymbols.av` owns its `av.key` convention — hosts
   never know which driver needs what, and keys never appear in Tea source
@@ -171,14 +171,16 @@ keys), with the prefix as the routing key:
 
 The generated root gains one nested `JSModule` per RequestEdge.
 `JSModule.requests[rid]` is a complete child with the same
-`abi`/shared-layout/manifest/bind/funcs/main shape as its parent;
-`manifest.requests[rid]` owns only the JSON-safe edge metadata.
+`abi`/shared-layout/manifest/concretize/funcs/main shape as its parent;
+`manifest.requests[rid]` owns the JSON-safe edge metadata and its late concrete
+context.
 The fixed-historical adapter binds a child exactly as it binds the root — same
 frames, State/Intermediate transition, recursively for nested requests — against
 the resolved ProviderContext, with two differences:
 
-- Params are compilation-global (`ir.md`): the child reads the parent's
-  bound params and declares none.
+- Params are compilation-global (`ir.md`): the child declares no new UI inputs,
+  and its immutable manifest snapshot receives the root's current parameter
+  values before child concretization and execution.
 - A child has no outputs. Its `resultName` is an ordinary root-frame value;
   after each successful final step the host copies that current value into the
   result column.
@@ -260,26 +262,30 @@ provide. The request-context budget still spans recursively bound static child
 contexts, with one context pair per edge.
 
 The fixed-historical host adapter recursively executes these static children
-through the sole `JSRuntime`. Each bound `JSModule` directly stores its static
-pair, options, child module, and retention, but `TeaNode.to()` currently
+through the sole `JSRuntime`. Each concrete `JSModule` manifest directly stores
+its static pair, options, depth, and child metadata, while `requests[rid]` owns
+the child code module. `Node.to()` currently
 rejects a ready module with requests because its
 child Observable/runtime wiring has not been implemented. Binding readiness is
-therefore not a claim that TeaNode can execute requests yet. Request-source
-bindings still participate in TeaNode's atomic mutable binding step: a failed
-keyed bind leaves both the recursive module state and the already-built
-Observable graph unchanged.
+therefore not a claim that Node can execute requests yet. Request-source
+bindings recurse through the child Node tree. One keyed stream fans out to all
+matching request symbols; unknown keys fail before mutation. The complete
+recursive module snapshot is assembled only when exposed or executed.
 
 Each edge also owns four bind-time options in canonical order: `gaps`,
 `lookahead`, `ignore_invalid_symbol`, and `calc_bars_count`. They remain
 concrete Program expressions, and their separate evaluation-order permutation
 preserves source order among options before assembling that canonical vector.
 Omitted values are the concrete defaults `false`, `false`, `false`, and `0`.
-The generated module's pure `evaluateBinding(values)` function returns exactly one request
-entry containing the pair and four options for every edge. The manifest retains
-only merge mode, so there is no second owner for bound option values.
+The generated module's `concretize()` method writes exactly one `context`
+containing the pair and four options into each request manifest entry. Static
+values are emitted there directly; there is no second owner for request
+configuration.
 
-All four options accept `simple` expressions evaluable from the root bind
-frame. Function/capture locals and row-varying dependencies are rejected.
+All four options accept `simple` expressions reducible during direct
+concretization from parameters, immutable root-safe aliases, and permitted
+context constants. Function/capture locals and row-varying dependencies are
+rejected.
 `calc_bars_count` rejects na and known negative values in the checker; runtime
 binding then requires a non-negative safe integer. Omitted or zero means full
 extent. A positive `N` produces `{kind:'trailing-bars', bars:N}` and exposes
@@ -301,11 +307,11 @@ multiplying the final request result is not an acceptable approximation.
 
 Execution:
 
-- `JSModule.evaluateBinding(values)` evaluates each edge's context args and output args and
-  returns immutable request data. The fixed-historical host then awaits
-  `resolveContext` with the bound range demand, runs the child over its exposed
-  extent, and prepares the merged view. No supported row execution discovers a
-  context or suspends.
+- Binding deep-copies the recursive manifests, installs parameter values, and
+  runs each module's direct `concretize()` method. The fixed-historical host
+  reads the frozen request context, awaits `resolveContext` with its range
+  demand, runs the child over its exposed extent, and prepares the merged view.
+  No supported row execution discovers a context or suspends.
 - The parent reads the prepared view through `ctx.request(rid, offset)`. History
   is parent-row-indexed and follows the same direct-readable-binding rule as
   other values.

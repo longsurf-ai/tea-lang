@@ -6,7 +6,7 @@ import {loadModule} from '../runtime/load';
 import {generate} from './codegen';
 
 describe('request context evaluation order', () => {
-  test('static bind captures named context arguments in source order', () => {
+  test('publishes a fully static request context directly in the manifest', () => {
     const program = mustBuild(
       [
         'd = request.security(',
@@ -17,25 +17,17 @@ describe('request context evaluation order', () => {
       ].join('\n'),
     );
     const js = generate(program);
-    const bind = js.lastIndexOf('evaluateBinding(values)');
-    const timeframe = js.indexOf('"TIMEFRAME_SENTINEL"', bind);
-    const symbol = js.indexOf('"SYMBOL_SENTINEL"', bind);
+    const module = loadModule(js);
 
-    expect(bind).toBeGreaterThanOrEqual(0);
-    expect(timeframe).toBeGreaterThan(bind);
-    expect(symbol).toBeGreaterThan(timeframe);
-    const bindSource = js.slice(bind);
-    const timeframeTemp = bindSource.match(
-      /const (t\d+) = \("TIMEFRAME_SENTINEL"\);/,
-    )?.[1];
-    const symbolTemp = bindSource.match(
-      /const (t\d+) = \("SYMBOL_SENTINEL"\);/,
-    )?.[1];
-    expect(timeframeTemp).toBeDefined();
-    expect(symbolTemp).toBeDefined();
-    expect(bindSource).toContain(
-      `ctx.bindRequest(0, (${symbolTemp}), (${timeframeTemp}));`,
-    );
+    expect(module.manifest.requests[0].context).toEqual({
+      symbol: 'SYMBOL_SENTINEL',
+      timeframe: 'TIMEFRAME_SENTINEL',
+      gaps: false,
+      lookahead: false,
+      ignoreInvalidSymbol: false,
+      calcBarsCount: 0,
+    });
+    expect(js).not.toContain('manifest.requests[0].context =');
   });
 
   test('binds every option once in its independent source order', () => {
@@ -61,25 +53,29 @@ describe('request context evaluation order', () => {
     expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
 
     const js = generate(program);
-    const bind = js.slice(js.lastIndexOf('evaluateBinding(values)'));
-    const optionCall = bind.match(
-      /ctx\.bindRequestOptions\(0, \((t\d+)\), \((t\d+)\), \((t\d+)\), \((t\d+)\)\);/,
+    const concretize = js.slice(js.lastIndexOf('concretize(manifest'));
+    const assignment = concretize.match(
+      /manifest\.requests\[0\]\.context = \{symbol: \((t\d+)\), timeframe: \((t\d+)\), gaps: \((t\d+)\), lookahead: \((t\d+)\), ignoreInvalidSymbol: \((t\d+)\), calcBarsCount: \((t\d+)\)\};/,
     );
-    expect(optionCall).not.toBeNull();
-    if (optionCall === null) {
+    expect(assignment).not.toBeNull();
+    if (assignment === null) {
       return;
     }
-    const [, gaps, lookahead, ignoreInvalidSymbol, calcBarsCount] = optionCall;
+    const [, , , gaps, lookahead, ignoreInvalidSymbol, calcBarsCount] =
+      assignment;
     const captures = [calcBarsCount, lookahead, ignoreInvalidSymbol, gaps].map(
-      temp => bind.indexOf(`const ${temp} =`),
+      temp => concretize.indexOf(`const ${temp} =`),
     );
     expect(captures.every(index => index >= 0)).toBe(true);
     expect(captures).toEqual([...captures].sort((a, b) => a - b));
 
-    const optionCallIndex = bind.indexOf('ctx.bindRequestOptions(0');
-    const contextCallIndex = bind.indexOf('ctx.bindRequest(0');
-    expect(optionCallIndex).toBeGreaterThanOrEqual(0);
-    expect(contextCallIndex).toBeGreaterThan(optionCallIndex);
+    const symbolCapture = concretize.indexOf('"SYMBOL_SENTINEL"');
+    const optionCapture = Math.max(...captures);
+    const assignmentIndex = concretize.indexOf(
+      'manifest.requests[0].context =',
+    );
+    expect(symbolCapture).toBeGreaterThan(optionCapture);
+    expect(assignmentIndex).toBeGreaterThan(symbolCapture);
 
     const module = loadModule(js);
     expect(module.manifest.requests[0].merge).toEqual({mode: 'sample'});
@@ -95,10 +91,12 @@ describe('request context evaluation order', () => {
     );
 
     const js = generate(program);
-    const rootBind = js.lastIndexOf('evaluateBinding(values)');
+    const rootBind = js.lastIndexOf('concretize(manifest');
     const bind = js.slice(rootBind, js.indexOf('funcs:', rootBind));
-    const executionRead = bind.indexOf('ctx.builtin(0, 0)');
-    const optionCall = bind.indexOf('ctx.bindRequestOptions(0,');
+    const executionRead = bind.indexOf(
+      '$contextValue(contextConstants, 0, "syminfo.type")',
+    );
+    const optionCall = bind.indexOf('manifest.requests[0].context =');
     expect(executionRead).toBeGreaterThanOrEqual(0);
     expect(optionCall).toBeGreaterThan(executionRead);
 

@@ -919,7 +919,7 @@ describe('GPU execution preparation', () => {
         },
         [],
       ),
-    ).rejects.toThrow(/binding module disagrees with the artifact manifest/);
+    ).rejects.toThrow(/unsupported module ABI 999; expected 6/);
     await expect(
       prepareGpuExecutionInputs(
         {...artifact, executionStateFixedByteSize: 4},

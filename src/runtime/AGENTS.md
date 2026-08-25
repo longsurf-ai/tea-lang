@@ -5,8 +5,8 @@ JavaScript semantic runtime and owns step-based State, Intermediate, and Heap
 execution. Fixed-historical provider/sink orchestration is a host adapter in
 `fixed-history.ts`; GPU binding projection lives in
 `module-binding.ts`. `abi.ts` is the stable host-facing facade; the physical
-`JSModule`, `JSModuleBinding`, and execution-only `RuntimeContext` stay internal to
-`module-abi.ts`. `value.ts`, `schema.ts`, `provider.ts`, `output.ts`,
+`JSModule`, concrete `ModuleManifest`, and execution-only `RuntimeContext` stay
+internal to `module-abi.ts`. `value.ts`, `schema.ts`, `provider.ts`, `output.ts`,
 `binding.ts`, and `errors.ts` own the remaining contracts, and
 `docs/runtime.md` is the authority.
 Generic batch execution and GPU binding/execution also live here because bindings,
@@ -26,20 +26,19 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   `JSRuntime`; it never crosses the transition result. Root discovery
   scans the runtime's retained State and Intermediate before beginning the next
   Heap transaction.
-- The fixed-historical adapter consumes completed JSModule binding data and recursively
-  executes static request children through independent `JSRuntime` instances.
-  TeaNode Observable request wiring is a separate, still-unimplemented host
+- The fixed-historical adapter consumes a concrete JSModule manifest and
+  recursively executes static request children through independent `JSRuntime`
+  instances.
+  Node RxJS request wiring is a separate, still-unimplemented host
   concern; do not confuse that API gap with runtime request support.
 - The generated execution body receives only Time-Machine operations; it never
   sees history indices, scratch storage, provider objects, or physical layout.
-  `JSModule.evaluateBinding(values)` is a separate pure function returning immutable
-  `JSModuleBinding` data. Generated implementations may delegate expression
-  evaluation to the loader-injected private helper in `module-binding.ts`, but
-  that evaluator is not an ABI interface and is never implemented by
-  `JSRuntime`. Do not merge binding-only operations or a dynamic-request
-  protocol into the execution-only `RuntimeContext`.
+  `JSModule.concretize(manifest, contextConstants?)` instead mutates only its
+  caller-owned fresh manifest copy. It is not implemented by `JSRuntime` and
+  receives no runtime context. Do not merge manifest concretization or a
+  dynamic-request protocol into the execution-only `RuntimeContext`.
 - `RUNTIME_ABI_VERSION` is the only JavaScript Runtime ABI version source and
-  is currently `5`; do not add compatibility branches for earlier versions.
+  is currently `6`; do not add compatibility branches for earlier versions.
 - Runtime implementation files import the narrow internal contract they use,
   never their own `abi.ts` facade. The versioned physical GPU artifact lives
   in `gpu/contract.ts`; runtime/gpu must not import codegen implementation
@@ -56,8 +55,9 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   injected sink.
 - GPU execution consumes a bind-independent WGSL artifact, an injected
   `GPUDevice`, and an ordered `BindInputs[]`. It resolves providers, validates
-  and normalizes required inputs, evaluates the artifact's generated JS binding
-  sidecar through `module-binding.ts`, sizes each binding's history payload,
+  and normalizes required inputs, concretizes a fresh manifest snapshot from
+  the artifact's generated JS module through `module-binding.ts`, sizes each
+  binding's history payload,
   derives dense capacity, bounds sparse effect storage, and packs private buffers while
   creating one resumable session. The fixed frame topology and ids come only
   from the artifact; runtime never reads Program or reinterprets Tea depth
@@ -70,8 +70,14 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   restore separate physical-plan surfaces, GPU-specific job wrappers, caller-owned
   result-cell capacity, materialized-series bindings, or a second compilation
   path.
-- The manifest is the runtime's single input besides code: ids (sid/pid/oid/
-  fid/slots) are never re-derived from the Program.
+- The manifest is the runtime's single configuration input besides code: ids
+  (sid/pid/oid/fid/slots), parameter values, series markers, concrete depths,
+  output arguments, and request contexts are never re-derived from the Program
+  or copied into a parallel binding object.
+- Parameter values and series-supplied markers are the only module binding
+  forms. Every transition deep-copies and freezes the recursive manifest tree,
+  leaving old snapshots observable and unchanged; `JSRuntime.State`, never the
+  module, owns frame, input, and request history buffers.
 - Numeric provider series and typed builtins are separate carriers.
   `BuiltinSource.domain` classifies builtin identifiers only; it never
   implies a domain-shaped runtime object. A demanded provider metadata key
@@ -79,9 +85,9 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   legitimate typed-empty/value results validated against the manifest layout.
 - Fixed historical execution has one required host `timeNow`: a finite safe
   epoch-ms integer shared by the root and every request child. The runtime
-  never consults wall-clock time. Public/fixed-history module-fact evaluation
-  is provider-independent, so no builtin is bind-visible there; GPU's separate
-  provider-aware layout projection may read only context-constant
+  never consults wall-clock time. Public manifest concretization is
+  provider-independent, while fixed-history/GPU provider-aware concretization
+  may read only context-constant
   syminfo/timeframe metadata. Historical
   `barstate` is derived solely from the target row/extent and never invents a
   realtime update object.
@@ -125,7 +131,7 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   Every other offset (including na, infinity, fractions, and negatives) returns
   the place's typed empty value and retains zero cells when reported at bind;
   it can never address a future row or become an array length.
-- The loader-private binding evaluator applies the history-depth rule to each
+- Generated manifest concretization applies the history-depth rule to each
   synthesized bound-demand component before they are maximized; an invalid
   component contributes zero and cannot poison a valid depth from the same
   carrier.
@@ -133,13 +139,11 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   provider state and fails loudly at the read; host numeric inputs are stricter
   and reject NaN and both infinities at bind, while int inputs additionally
   require a safe integer so the runtime representation stays exact.
-- Each `JSModule` has one pure `evaluateBinding(values) -> JSModuleBinding` boundary for
-  immutable depths, parameter activity, output args, and static request
-  pairs/options. The generated implementation uses a loader-private evaluator;
-  its frame and local abort-only Heap transaction are discarded before the
-  binding data returns, so bind-time aggregate temporaries never enter
-  execution state. The same module owns the provider-aware layout projection
-  consumed by GPU preparation.
+- Each `JSModule` has one direct `concretize(manifest, contextConstants?)`
+  boundary for late depths, parameter activity, output args, and static request
+  contexts. Static facts are emitted concrete. Concretization is
+  non-allocating and has no frame, Heap, or execution state; CPU and GPU consume
+  the resulting immutable manifest snapshot.
 - `bindFixedHistory()` is async because every supported request context resolves before row 0;
   the per-row hot path never awaits or discovers a child context. Persistent
   initialization happens only when an
@@ -159,11 +163,11 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   the merged view retains only the copied column and its accounting.
 - Every static edge consumes one request-context budget reservation; a hard
   resolution failure releases it.
-- Every request edge returns its four evaluated options exactly once in
-  `JSModuleBinding`. Zero `calc_bars_count` selects the full range; a positive
-  safe integer selects an exact trailing child extent. Providers receive that
-  demand, and the runtime clamps an over-returned context again at its own trust
-  boundary. Child row indices restart at zero, pre-window history/merge
+- Every request edge stores its four evaluated options exactly once in its
+  concrete manifest context. Zero `calc_bars_count` selects the full range; a
+  positive safe integer selects an exact trailing child extent. Providers
+  receive that demand, and the runtime clamps an over-returned context again at
+  its own trust boundary. Child row indices restart at zero, pre-window history/merge
   prefixes are the result layout's typed empty, and empty nested pair components
   inherit the current context's provider-normalized symbol/timeframe identity.
 - A static edge's history lives in its parent-row-indexed result sequence.

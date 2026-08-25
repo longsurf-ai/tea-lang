@@ -189,8 +189,9 @@ places to its depth pass for annotation.
   `staticArgs` (compile-time constants),
   `bindArgs` (input-qualified exprs — hline price, plot linewidth,
   plotshape offset — plus `fill`'s plot/hline references, evaluated once in
-  module.bind and delivered before the first bar), and per-bar `channels` written
-  via `Emit`. `bindArgumentEvaluationOrder` keeps bind-time named arguments in
+  module manifest concretization and stored as `boundArgs` before the first
+  bar), and per-bar `channels` written via `Emit`.
+  `bindArgumentEvaluationOrder` keeps bind-time named arguments in
   source order while `bindArgs` remains in canonical parameter order. A plot
   assignment lowers to the OutputDecl plus a const plot-typed binding holding
   the OutputId.
@@ -442,13 +443,14 @@ represent.
 Concrete bindings are not Program properties. After codegen, the CPU runtime may
 bind one ordinary JS module repeatedly to isolated providers/parameters and
 capture committed emissions through an `OutputSink`. The bind-independent GPU
-artifact carries both WGSL and the ordinary generated JS binding module. The
-GPU runtime calls that module's pure `evaluateBinding(values) -> JSModuleBinding` function
-for each ordered `BindInputs` element, sizes its physical history payload,
-packs buffers, constructs dispatch/readback metadata, and submits the shared
-shader to an injected device. It does not revisit the Program or evaluate a
+artifact carries both WGSL and the ordinary generated JS module. For each
+ordered `BindInputs` element, the GPU runtime deep-copies its manifest, installs
+parameter values and series markers, runs the generated direct concretizer,
+and sizes physical history from the frozen concrete depths before packing and
+dispatching the shared shader. It does not revisit the Program or evaluate a
 second form of the bound expression. Those runtime contracts do not change the
-Program or reinterpret Tea matching/accounting semantics. See [GPU Lowering](advanced/gpu-lowering.md).
+Program or reinterpret Tea matching/accounting semantics. See
+[GPU Lowering](advanced/gpu-lowering.md).
 
 ## Open items
 

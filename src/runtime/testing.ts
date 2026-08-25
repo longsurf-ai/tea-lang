@@ -1,72 +1,78 @@
 // Purpose: Test-only builders for hand-authored generated-module fixtures.
 
-import type {DepthSpec, JSModule, JSModuleBinding} from './module-abi';
-import {createGeneratedModule, initializeModuleTree} from './module-binding';
-
-type GeneratedModuleFixture = Pick<
+import type {
   JSModule,
-  | 'abi'
-  | 'layout'
-  | 'manifest'
-  | 'requests'
-  | 'evaluateBinding'
-  | 'funcs'
-  | 'main'
->;
+  ModuleManifest,
+  RequestSpec,
+  SeriesSpec,
+} from './module-abi';
+import {initializeModuleTree} from './module-binding';
+import type {OutputSpec} from './output';
+import type {ParamSpec} from './schema';
+import type {ManifestValue, Value} from './value';
 
-/** Add ordinary immutable binding state to hand-authored generated code. */
+type FixtureManifest = Omit<
+  ModuleManifest,
+  'series' | 'params' | 'outputs' | 'requests'
+> & {
+  readonly series: readonly (Omit<SeriesSpec, 'supplied'> & {
+    readonly supplied?: boolean;
+  })[];
+  readonly params: readonly (ParamSpec & {
+    readonly bindable?: boolean;
+    readonly value?: ManifestValue;
+    readonly active?: boolean | null;
+  })[];
+  readonly outputs: readonly (OutputSpec & {
+    readonly boundArgs?:
+      | readonly {readonly name: string; readonly value: Value}[]
+      | null;
+  })[];
+  readonly requests: readonly (Omit<RequestSpec, 'context'> & {
+    readonly context?: RequestSpec['context'];
+  })[];
+};
+
+type GeneratedModuleFixture = Omit<
+  Pick<
+    JSModule,
+    'abi' | 'layout' | 'manifest' | 'requests' | 'concretize' | 'funcs' | 'main'
+  >,
+  'manifest' | 'concretize'
+> & {
+  readonly manifest: FixtureManifest;
+  readonly concretize?: JSModule['concretize'];
+};
+
+/**
+ * Normalize concise hand-authored fixtures into the concrete-manifest ABI.
+ * Runtime tests start with supplied series and statically complete declarations
+ * unless a fixture explicitly models an incomplete field.
+ */
 export function testModule(code: GeneratedModuleFixture): JSModule {
-  return initializeModuleTree(createGeneratedModule(code));
-}
-
-interface StaticBindingOverrides {
-  readonly retention?: Partial<JSModuleBinding['retention']>;
-  readonly activeParams?: JSModuleBinding['activeParams'];
-  readonly outputs?: JSModuleBinding['outputs'];
-  readonly requests?: JSModuleBinding['requests'];
-}
-
-/** Build binding data for a hand-authored module with statically known depth. */
-export function staticModuleBinding(
-  module: Pick<JSModule, 'manifest'>,
-  overrides: StaticBindingOverrides = {},
-): JSModuleBinding {
-  const manifest = module.manifest;
-  return {
-    retention: {
-      frames:
-        overrides.retention?.frames ??
-        manifest.frames.map(frame =>
-          frame.locals.map(local => bars(local.depth)),
-        ),
-      series:
-        overrides.retention?.series ??
-        manifest.series.map(series => bars(series.depth)),
-      builtins:
-        overrides.retention?.builtins ??
-        manifest.builtin.map(builtin => bars(builtin.depth)),
-      requests:
-        overrides.retention?.requests ??
-        manifest.requests.map(request => bars(request.depth)),
-    },
-    activeParams: overrides.activeParams ?? manifest.params.map(() => true),
-    outputs: overrides.outputs ?? manifest.outputs.map(() => []),
-    requests: overrides.requests ?? [],
+  const manifest: ModuleManifest = {
+    ...code.manifest,
+    series: code.manifest.series.map(series => ({
+      ...series,
+      supplied: series.supplied ?? true,
+    })),
+    params: code.manifest.params.map(param => ({
+      ...param,
+      bindable: param.bindable ?? true,
+      active: param.active ?? true,
+    })),
+    outputs: code.manifest.outputs.map(output => ({
+      ...output,
+      boundArgs: output.boundArgs === undefined ? [] : output.boundArgs,
+    })),
+    requests: code.manifest.requests.map(request => ({
+      ...request,
+      context: request.context ?? null,
+    })),
   };
-}
-
-function bars(depth: DepthSpec): number {
-  switch (depth.kind) {
-    case 'none':
-      return 0;
-    case 'const':
-    case 'capped':
-      return Number.isSafeInteger(depth.bars) && depth.bars >= 0
-        ? depth.bars
-        : 0;
-    case 'bound':
-      throw new Error(
-        'hand-authored bound depth requires a retention override',
-      );
-  }
+  return initializeModuleTree({
+    ...code,
+    manifest,
+    concretize: code.concretize ?? (() => {}),
+  });
 }

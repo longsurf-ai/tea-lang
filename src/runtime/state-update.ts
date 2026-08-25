@@ -67,7 +67,6 @@ export type TeaStateMachine = StateMachine<
 
 export function stateMachine(
   module: JSModule,
-  params: readonly Value[],
   layouts: ValueLayoutRegistry,
   heap: Heap,
   maxCollectionElements = DEFAULT_MAX_COLLECTION_ELEMENTS,
@@ -87,13 +86,12 @@ export function stateMachine(
     initialIntermediate: {
       root: initialIntermediateFrame(module, 0, true),
     },
-    update: stateUpdate(module, params, layouts, heap, structs, collections),
+    update: stateUpdate(module, layouts, heap, structs, collections),
   };
 }
 
 function stateUpdate(
   module: JSModule,
-  params: readonly Value[],
   layouts: ValueLayoutRegistry,
   heap: Heap,
   structs: StructStorageRuntime,
@@ -113,7 +111,6 @@ function stateUpdate(
         return Effect.succeed(
           new RuntimeOperations(
             module,
-            params,
             layouts,
             heap,
             state,
@@ -158,7 +155,6 @@ class RuntimeOperations implements RuntimeContext {
 
   constructor(
     private readonly module: JSModule,
-    private readonly params: readonly Value[],
     private readonly layouts: ValueLayoutRegistry,
     private readonly heap: Heap,
     private readonly state: Readonly<State>,
@@ -242,8 +238,11 @@ class RuntimeOperations implements RuntimeContext {
   }
 
   param(pid: number): Value {
-    const value = this.params[pid];
-    return value === undefined ? fatal(`unknown parameter ${pid}`) : value;
+    const parameter = this.module.manifest.params[pid];
+    if (parameter === undefined || !Object.hasOwn(parameter, 'value')) {
+      return fatal(`unknown parameter ${pid}`);
+    }
+    return parameter.value as Value;
   }
 
   root(): Frame {

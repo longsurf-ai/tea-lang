@@ -62,72 +62,78 @@ Compilation ─▶ Target lowering ─▶ Runtime binding ─▶ Execution
 Lowering is **bind-independent**: one artifact per Program and target, reusable
 across bindings. A settings, dataset, or binding-grid change does not re-run
 codegen. For JS, bind-time expressions (bound depths, input metadata, and
-output bindArgs) remain lowered code. Every `JSModule` exposes one pure
-`evaluateBinding(values) -> JSModuleBinding` function. The generated implementation may
-delegate expression evaluation to the helper injected only by `loadModule()`;
-that private evaluator uses a local abort-only Heap transaction when bind-time
-struct or collection evaluation requires storage, then discards all local
-state before returning immutable data. For WGSL, the runtime combines the
-already-emitted module/layout contract with concrete provider-backed bindings
-and physical resource policy to create a resumable execution session. Baking
-bound constants into specialized artifacts is a permitted later optimization,
-not the model.
+output bindArgs) remain lowered code. Every `JSModule` exposes one direct
+`concretize(manifest, contextConstants?)` method. Binding deep-copies the
+recursive manifest, writes parameter values or series-supplied markers, calls
+that method to fill only late concrete fields, then freezes and returns a new
+module snapshot. No binding-time frame, Heap, or parallel binding result exists.
+For WGSL, the runtime concretizes the artifact's ordinary generated JS module
+for each provider-backed binding and uses that same manifest with physical
+resource policy to create a resumable execution session.
 
 ## JavaScript binding and execution
 
 There is one JavaScript semantic runtime. Hosts reach it through two adapters:
 the fixed-historical `bindFixedHistory()` path used by CPU execution, and the
-Observable-owning TeaNode embedding path.
+RxJS-owning `Node` embedding path.
 
 ```text
 Program ── JavaScript lowering ──▶ unbound JSModule
                                       │ bindModule(...): Effect
                                       ▼
                                 bound JSModule
-                                      │ TeaNode owns row wiring + Subject
-                                      │ first .to(sink) starts execution
+                                      │ Node owns RxJS rows + Subject
+                                      │ first to(sink) starts execution
                                       ▼
                                JSRuntime.step(input)
 ```
 
-`bindModule()` is an immutable, subscription-free binding transition. Its
-input and returns a new `JSModule`; expected failures use the `BindingError`
+`bindModule()` is an immutable, subscription-free binding transition. It
+returns a new `JSModule`; expected failures use the `BindingError`
 channel of the returned `Effect`. Parameter assignments retain validated Tea
 values. Series assignments retain only a supplied marker: actual Observables,
 DataStreams, providers, and sinks remain outside the module. `JSModule.ready()`
-means its context has complete inputs and generated binding data;
-`TeaNode.ready()` checks the recursive request tree. Neither subscribes to a
-source or guarantees that
-every input kind is executable by TeaNode. Internally, generated binding
-evaluation may use a local abort-only Heap transaction for bind-time
-struct/collection expressions; it retains and transfers no Heap or execution
-state.
+means its manifest has parameter values, supplied series, concrete depths,
+parameter activity, output arguments, and static request contexts;
+`Node.ready()` checks the recursive request tree. Neither subscribes to a
+source or guarantees that every input kind is executable by Node.
+
+The module binding surface has exactly two forms: a parameter value and a
+series-supplied marker. Depths, activity, output arguments, and request contexts
+are concrete manifest configuration derived from those bindings, not additional
+binding kinds. Concretization is restricted to non-allocating const/input/simple
+expressions; it cannot create aggregate Heap state.
 
 `tea()` lowers the compiler's canonical `Program`, loads its recursive
 `JSModule`, and performs an initial empty binding for the root and request
-children. Each `TeaNode` then owns exactly one module tree. The Program is a
-compiler value and is not retained in either the JSModule or TeaNode.
+children. Each public `Node` is backed by one file-private `TeaNode` that owns
+the recursive module/request tree directly. The Program is a compiler value
+and is retained by neither the JSModule nor Node.
+The public API is deliberately synchronous and mutable. Its implementation
+runs binding, setup, and disposal through Effects internally; callers receive
+Node or Subscription values rather than Effect values.
 
-Observable composition belongs to `TeaNode`, not JSModule. A `TeaNode` keeps one
-stable identity: successive `bind()` calls synchronously extend its row graph,
-replace its immutable module/state-tree snapshot atomically, and return the same
-node for chaining. A failed keyed or request-child binding installs nothing.
-Binding is rejected after execution starts or after disposal.
+Observable composition belongs to the Node, not JSModule. `Node` is the public
+interface; its private class directly owns one module context, its RxJS data,
+and recursive request-child Nodes, with no parallel state interface. `bind()`
+dispatches only to parameter or stream binding. Keyed request streams fan out
+recursively to matching children, while the complete JSModule tree is assembled
+only when exposed or executed. Binding after execution starts or disposal
+throws.
 
-Each node creates one plain `Subject<StepResult>` at construction. The first
-`.to(sink)` validates readiness and the currently supported input kinds,
-subscribes the sink to that Subject, creates and retains one `JSRuntime`, then
-connects the already-built input graph through sequential `step()` calls into
-the Subject. Later `.to()` calls only subscribe another sink to the same
-Subject; they neither create a runtime nor reconnect the source. Consequently a
-late sink observes future results only. The returned subscription controls only
-that sink, while the source connection and runtime remain owned by the node.
-`dispose()` idempotently cancels the connection, disposes the runtime, and
-completes the Subject; ordinary source termination also disposes the runtime.
+Each node creates one plain `Subject<StepResult>`. The first `.to(sink)` call
+runs internal setup Effects, validates readiness/input support, subscribes the
+sink, creates one `JSRuntime`, and connects the existing RxJS graph. Later
+`.to()` calls only subscribe new sinks to future values. It returns that sink's
+Subscription; RxJS owns
+ongoing values, errors, and completion, and unsubscribe interrupts the current
+step Effect. `dispose()` synchronously runs an internal Effect that cancels the connection,
+disposes the runtime, and completes the Subject; source termination also
+disposes the runtime.
 This slice currently constructs numeric series rows and uses final steps only.
 Builtin input wiring and static-request child execution still fail explicitly
 in `.to()`; binding static request settings is implemented, executing them
-through TeaNode is not.
+through Node is not.
 
 `JSRuntime` owns one committed `State`, one same-row `Intermediate`,
 and one context-local Heap. A successful provisional step replaces only its
@@ -143,61 +149,67 @@ constructs synchronized inputs, drives `JSRuntime.step()`, and publishes to the
 sink. It recursively evaluates every static request child in an independent
 `JSRuntime` and Heap, copies each scalar or scalar-only tuple result into a
 parent-owned column, disposes the child, and sample-merges that column onto the
-parent axis. TeaNode does not yet have the time/finality model needed to perform
+parent axis. Node does not yet have the time/finality model needed to perform
 the same request wiring, so `.to()` still rejects builtin and static-request
 facts explicitly.
 
 ## The generated JS module
 
 Lowering emits one recursive, self-describing `JSModule` tree — code plus the
-manifest the runtime needs to allocate and bind. The generated source, not the
-Program, is the runtime artifact (`tea build` output, cacheable, serializable).
-Conceptually every root and request child has exactly the same shape:
+manifest the runtime needs to configure and allocate. The generated source,
+not the Program, is the runtime artifact (`tea build` output, cacheable,
+serializable). Conceptually every root and request child has exactly the same
+shape:
 
 ```js
 const L = [...];
-const M1 = $module({
-  abi: 5,
+const M1 = {
+  abi: 6,
   layout: L,
   manifest: {...},
   requests: [],
-  evaluateBinding(values) { return {/* JSModuleBinding */}; },
+  concretize(manifest, contextConstants) {
+    // Direct assignments to this fresh manifest copy only.
+  },
   funcs: {fid: (runtime, frame, ...args) => value},
   main(runtime, frame) {...},
-});
+};
 
-return $module({
-  abi: 5,
+return {
+  abi: 6,
   layout: L,                              // same array reference as every child
   manifest: {
-    series:  [{id, depth}, ...],          // sid -> numeric provider column
+    series:  [{id, depth, supplied}, ...], // sid -> numeric provider column
     builtin: [{source, layout, depth}, ...], // bid -> typed builtin
     params:  [{name, type, control, defaultValue, constraints, // control = UI flavor
                enumType, group, inline, tooltip, confirm,
-               display, seriesSid?}, ...],
-    outputs: [{effect, staticArgs, channels: [{name, type, transport}]}, ...],
+               display, seriesSid?, value?, active}, ...],
+    outputs: [{effect, staticArgs, boundArgs, channels: [{name, type, transport}]}, ...],
     effects: [{layout}, ...],              // effect id -> fixed payload layout
     frames:  [                            // fid 0 = the program frame
       {locals: [{storage, depth, layout}, ...], // slot-indexed; exact ValueLayout
        subs:   [{fid}, ...]},             // call-site-slot-indexed
     ],
-    requests: [{merge: {mode}, depth, resultSlot, layout}, ...], // rid-indexed metadata
+    requests: [{merge: {mode}, depth, resultSlot, layout, context}, ...],
   },
   requests: [M1, ...],           // rid-indexed child modules (same shape,
                                  // sibling consts — code cannot live in the
                                  // JSON manifest)
-  evaluateBinding(values) { return {/* JSModuleBinding */}; },
+  concretize(manifest, contextConstants) {
+    // Read manifest.params[pid].value and write late concrete fields.
+  },
   funcs: {fid: (runtime, frame, ...args) => value},
   main(runtime, frame) {...},     // per-row body (frame = program frame)
-});
+};
 ```
 
-`$module` is a loader-owned constructor. It derives ordered host-neutral
-`bindings` from the manifest and installs `parameterValues`, `binding`,
-`ready()`, and `remaining()` on every immutable module snapshot. The emitted
-code never imports API streams or provider objects.
+`loadModule()` evaluates this host-neutral FunctionBody and initializes the
+recursive module tree. Ordered binding requirements, `ready()`, and
+`remaining()` are derived from manifest parameter values and series markers;
+there is no parallel `bindings`, parameter vector, or other binding state stored
+on the module. The emitted code never imports API streams or provider objects.
 
-`RUNTIME_ABI_VERSION` is the single version source and is currently `5`.
+`RUNTIME_ABI_VERSION` is the single version source and is currently `6`.
 Before launch, this contract evolves in place; the runtime does not carry
 compatibility branches for older generated modules.
 
@@ -208,7 +220,7 @@ reference, struct, or aggregate shape). Runtime transports branch only on that f
 they never recover machine semantics by parsing the display string.
 
 Every request child is a complete `JSModule`, including `abi`, `layout`,
-`manifest`, `requests`, `bind`, `funcs`, and `main`. Codegen emits the raw
+`manifest`, `requests`, `concretize`, `funcs`, and `main`. Codegen emits the raw
 `ValueLayout[]` table once and every module stores the same array reference, so
 children cannot define a second layout-id namespace. The runtime clones and
 seals that table at its trust boundary.
@@ -225,12 +237,10 @@ separate id spaces; numeric Tea type alone never moves a builtin between them.
 **2015 (ES6)** FunctionBody: no module syntax (import/export/require), no
 host I/O, no nondeterminism, and only whitelisted standard globals —
 `Math.{abs, sign, floor, ceil, round, trunc, sqrt, pow, log, log10, exp,
-max, min}`, `Number.{isFinite,isNaN}`, `String`, `NaN` — everything else
-crosses an explicit generated-function parameter. Any ES2015 engine loads it
-with `new Function('$evaluate', '$module', src)(privateEvaluator, moduleFactory)`
-(Node, browsers, and V8 isolates alike); an ES2015 parse gate plus a deny-list
-test enforce the ceiling so it cannot drift. Both injected functions are
-loader-private and are not `RuntimeContext` operations.
+max, min}`, `Number.{isFinite,isNaN}`, `String`, `Error`, `NaN`. Any ES2015 engine loads
+the FunctionBody with `new Function(src)()` (Node, browsers, and V8 isolates
+alike); an ES2015 parse gate plus a deny-list test enforce the ceiling so it
+cannot drift.
 
 ## Generated operation surfaces
 
@@ -245,7 +255,7 @@ seam: JS renders these natively; another backend supplies another table).
 // reads and writes (offset 0 = current row)
 ctx.series(sid, offset); // numeric provider series and input.source params
 ctx.builtin(bid, offset); // typed time/bar/barstate/syminfo/timeframe value
-ctx.param(pid); // bind-time scalar
+ctx.param(pid); // scalar stored in the concrete manifest
 ctx.read(fr, slot, offset); // a name's history
 ctx.write(fr, slot, v);
 ctx.needsInit(fr, slot); // persistent declaration has not initialized yet
@@ -267,21 +277,20 @@ ctx.mutateCollection(operation, collectionLayout, receiver, args);
 ctx.collectionEntries(value);
 ```
 
-`evaluateBinding` does not receive `RuntimeContext`. Its public contract is only:
+`concretize` does not receive `RuntimeContext`. Its contract is:
 
 ```ts
-evaluateBinding(values: {
-  params: readonly Value[];
-  builtins?: ReadonlyMap<number, Value>;
-}): JSModuleBinding;
+concretize(
+  manifest: ModuleManifest,
+  contextConstants?: ReadonlyMap<number, Value>,
+): void;
 ```
 
-`JSModuleBinding` contains retention vectors, parameter activity, output
-arguments, and static request pairs/options. The emitted implementation uses a
-loader-private helper to evaluate lowered expressions, but neither that helper
-nor its temporary frame/Heap evaluator has a public interface. The execution
-path supplies only `RuntimeContext` to `main` and `funcs`; hand-authored modules can
-return the binding data directly.
+The caller owns the fresh manifest copy. The generated method reads parameter
+values from it and writes bound depths, parameter activity, output arguments,
+and static request contexts directly into it. Static facts are emitted already
+concrete. Only the execution path supplies `RuntimeContext` to `main` and
+`funcs`.
 
 `mutateCollection` returns a private `{replacement, result}` ABI envelope.
 Generated code captures the receiver/location before evaluating arguments,
@@ -360,10 +369,10 @@ historical `timenow` are context-constant. For fixed historical execution,
 `isfirst`/`islast` derive from the target row. This does not define a live-tick
 update object; realtime state remains a separate host-protocol design.
 
-Public `bindModule()` and fixed-history configuration call `evaluateBinding(values)`
-without provider builtins, so bind-time code cannot read one there. GPU's
-separate provider-aware layout projection may supply only the
-context-constant syminfo/timeframe metadata needed by its binding sidecar.
+Public `bindModule()` concretizes without provider builtins, so bind-time code
+cannot read one there. Fixed-history and GPU preparation may supply only the
+context-constant syminfo/timeframe metadata needed while concretizing a fresh
+manifest copy.
 Source-level `time`, `timenow`, `bar`, and `barstate` reads during bind remain
 invalid and fail loudly. `BindInputs.timeNow` is a required finite safe
 epoch-millisecond value shared by the root and every request child; only the
@@ -415,10 +424,10 @@ successful provisional step may retain a same-row activation candidate so
 
 Manifest depth determines the newest-first values retained in `State`:
 `none` retains no readable past value, `const n` and `capped n` retain at most
-`n`, and `bound` is replaced by the concrete depth reported during module
-binding. Each local and request entry carries an exact `LayoutId`; the shared
-`ValueLayoutRegistry` validates values, derives typed empties, and discovers
-aggregate Heap roots.
+`n`; `bound` exists only on an incomplete snapshot and concretization replaces
+it before execution. Each local and request entry carries an exact `LayoutId`;
+the shared `ValueLayoutRegistry` validates values, derives typed empties, and
+discovers aggregate Heap roots.
 
 The fixed-historical host reserves deterministic logical capacity through
 `BindInputs.maxFixedValueLogicalBytes` (default 64 MiB), separately from
@@ -428,17 +437,17 @@ sizes. After copying a child's scalar result column, it disposes that child's
 `JSRuntime` and Heap; only the parent-owned copied column and its accounting
 remain until the request view is released.
 
-The generated `evaluateBinding(values)` implementation may use the loader-private helper's
-local frame and abort-only Heap transaction. Every collection or struct backing
-created while computing binding data is discarded afterward; no binding
-temporary becomes execution storage.
+Manifest concretization has no frame, `State`, or Heap. Runtime buffers are
+allocated only when `JSRuntime` is created, and are owned exclusively by its
+`State`; rebinding an unstarted module therefore never migrates history.
 
 ## Main loop and the provisional protocol
 
 ```
 bindFixedHistory(module, params, provider, sink, timeNow):
-  call module.evaluateBinding(values) and validate its immutable JSModuleBinding
   await provider.resolveContext('', '', full)
+  bind params/series into a fresh manifest; call module.concretize(manifest)
+  validate the frozen concrete manifest
   validate series, builtins, axis, limits, and fixed-width capacity
   per static request edge:
     await resolveContext(pair, range)
@@ -605,11 +614,11 @@ runtime nor the generic reporting layer recognizes strategy packages.
 ## GPU binding and execution
 
 WGSL codegen returns a bind-independent artifact: the complete shader, the
-ordinary generated JS binding module, target numeric/layout contract, required
+ordinary generated JS module, target numeric/layout contract, required
 inputs, output/effect schemas, persistent execution-state layout, and bounded
 effect analysis. It contains no concrete rows, binding identities, resource
-allocation, or device. The JS sidecar is generated from the same Program and
-exposes the same pure `evaluateBinding(values) -> JSModuleBinding` function; it is not
+allocation, or device. The embedded JS module is generated from the same
+Program and exposes the same direct manifest concretizer as CPU; it is not
 another semantic representation.
 
 That physical boundary is the versioned `CompiledWgslProgram` contract in
@@ -656,14 +665,12 @@ int/float/bool/enum parameters share the ordinary resolver and are packed per
 execution.
 Source/string/color parameters and requests remain fail-closed exclusions.
 
-For every concrete binding, the GPU runtime loads the artifact's JS sidecar and
-calls the provider-aware layout projection in `module-binding.ts`. The private
-loader helper evaluates immutable aliases and bound history expressions against
-the concrete parameters and provider metadata; `evaluateBinding(values)` returns capacities
-by published frame id and slot in `JSModuleBinding`. The helper's local frame
-and abort-only Heap transaction are discarded afterward. GPU preparation never
-constructs a `JSRuntime`, reads a Program, or interprets a second Tea expression
-representation.
+For every concrete binding, the GPU runtime loads the artifact's embedded JS
+module, deep-copies its manifest tree, writes the parameters and provider
+series markers, and calls `concretize()` with permitted context constants. It
+validates the resulting concrete depths by published frame id and slot and uses
+them to size physical history. GPU preparation never constructs a `JSRuntime`,
+reads a Program, or interprets a second Tea expression representation.
 
 `maxRowsPerChunk` is a physical ceiling whose default is 65,536 rows. Dense
 result capacity is exact from each execution's sink requirements: a complete

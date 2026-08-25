@@ -5,6 +5,7 @@ import {describe, expect, test} from 'vitest';
 import {of, Subject} from 'rxjs';
 import * as z from 'zod';
 import type {StepResult} from '../runtime/js-runtime';
+import {moduleBindings} from '../runtime/module-binding';
 import type {Sink} from './sink';
 import {DataStream} from './stream';
 import {TeaCompileError, tea} from './tea';
@@ -63,7 +64,7 @@ describe('tea', () => {
     );
   });
 
-  test('keeps one TeaNode identity while installing immutable module snapshots', () => {
+  test('keeps one Node identity while installing immutable module snapshots', () => {
     const node = tea`
       length = input.int(14)
       plot(close + length)
@@ -107,9 +108,9 @@ describe('tea', () => {
     const node = tea`
       length = input.int(14)
       plot(close + length)
-    `
-      .bind(source)
-      .bind({length: 20});
+    `;
+    node.bind(source);
+    node.bind({length: 20});
     const sink = new StepSink();
 
     node.to(sink);
@@ -131,7 +132,7 @@ describe('tea', () => {
     expect(node.bind({X: source})).toBe(node);
     expect(node.ready()).toBe(true);
     expect(() => node.to(new StepSink())).toThrow(
-      'TeaNode request execution requires time and finality semantics that DataStream does not provide',
+      'Node request execution requires time and finality semantics that DataStream does not provide',
     );
   });
 
@@ -141,16 +142,41 @@ describe('tea', () => {
       symbol = input.symbol("X")
       requested = request.security(symbol, "D", close)
       plot(requested)
-    `.bind({symbol: 'Y'});
+    `;
+    node.bind({symbol: 'Y'});
 
     expect(node.ready()).toBe(false);
     const beforeFailure = node.module;
     expect(() => node.bind({X: source})).toThrow(
       "no bind-known root series or static request child matches 'X'",
     );
-    expect(node.module).toBe(beforeFailure);
+    expect(node.module.manifest).toStrictEqual(beforeFailure.manifest);
+    expect(node.module.requests[0]?.manifest).toStrictEqual(
+      beforeFailure.requests[0]?.manifest,
+    );
     expect(node.ready()).toBe(false);
     expect(node.bind({Y: source})).toBe(node);
+    expect(node.ready()).toBe(true);
+  });
+
+  test('invalidates a bound request stream when its parameter identity changes', () => {
+    const node = tea`
+      symbol = input.symbol("X")
+      requested = request.security(symbol, "D", close)
+      plot(requested)
+    `;
+    node.bind({symbol: 'X'});
+
+    node.bind({X: numericSource(1)});
+    const oldModule = node.module;
+    expect(node.ready()).toBe(true);
+
+    node.bind({symbol: 'Y'});
+    expect(oldModule.manifest.requests[0]?.context?.symbol).toBe('X');
+    expect(node.module.manifest.requests[0]?.context?.symbol).toBe('Y');
+    expect(node.ready()).toBe(false);
+
+    node.bind({Y: numericSource(2)});
     expect(node.ready()).toBe(true);
   });
 
@@ -159,13 +185,18 @@ describe('tea', () => {
       length = input.int(3)
       requested = request.security("X", "D", close[length])
       plot(requested)
-    `
-      .bind({length: 6})
-      .bind({X: numericSource(1)});
+    `;
+    node.bind({length: 6});
+    node.bind({X: numericSource(1)});
 
     expect(node.ready()).toBe(true);
-    expect(node.module.requests[0]?.parameterValues).toEqual([6]);
-    expect(node.module.requests[0]?.binding?.retention.series).toEqual([6]);
+    expect(
+      node.module.requests[0]?.manifest.params.map(param => param.value),
+    ).toEqual([6]);
+    expect(node.module.requests[0]?.manifest.series[0]?.depth).toEqual({
+      kind: 'const',
+      bars: 6,
+    });
   });
 
   test('discovers nested request children after their parents bind', () => {
@@ -185,20 +216,41 @@ describe('tea', () => {
     expect(node.ready()).toBe(true);
   });
 
-  test('keeps a keyed root/request collision atomic', () => {
+  test('fans one keyed stream into matching root and request-child series', () => {
     const node = tea`
       requested = request.security("close", "D", close)
       plot(close + requested)
     `;
-    const initial = node.module;
-
-    expect(() => node.bind({close: numericSource(1)})).toThrow(
-      "binding key 'close' is both a root series and a static request context",
-    );
-    expect(node.module).toBe(initial);
+    expect(node.bind({close: numericSource(1)})).toBe(node);
+    expect(node.ready()).toBe(true);
     expect(
-      node.module.bindings.find(binding => binding.name === 'close'),
-    ).toMatchObject({kind: 'series', supplied: false});
+      moduleBindings(node.module).find(binding => binding.name === 'close'),
+    ).toMatchObject({kind: 'series', supplied: true});
+    expect(
+      moduleBindings(node.module.requests[0]!).find(
+        binding => binding.name === 'close',
+      ),
+    ).toMatchObject({kind: 'series', supplied: true});
+  });
+
+  test('fans one request key into every recursively matching child', () => {
+    const node = tea`
+      daily = request.security("X", "D", close)
+      weekly = request.security("X", "W", close)
+      plot(daily + weekly)
+    `;
+
+    node.bind({X: numericSource(1)});
+
+    expect(node.ready()).toBe(true);
+    expect(
+      node.module.requests.map(request =>
+        moduleBindings(request).find(binding => binding.name === 'close'),
+      ),
+    ).toEqual([
+      {kind: 'series', name: 'close', supplied: true},
+      {kind: 'series', name: 'close', supplied: true},
+    ]);
   });
 
   test('keeps request-child binding atomic when a later key fails', () => {
@@ -226,7 +278,8 @@ describe('tea', () => {
       sourceSubscriptions += 1;
       return rows.subscribe(subscriber);
     });
-    const node = tea`plot(close)`.bind(source);
+    const node = tea`plot(close)`;
+    node.bind(source);
     const first = new StepSink();
     const second = new StepSink();
 
@@ -259,12 +312,13 @@ describe('tea', () => {
     const source = new DataStream(z.object({close: z.number()}), subscriber =>
       rows.subscribe(subscriber),
     );
-    const node = tea`plot(close)`.bind(source);
+    const node = tea`plot(close)`;
+    node.bind(source);
     const sink = new StepSink();
 
     node.to(sink);
     expect(() => node.bind({})).toThrow(
-      'TeaNode cannot bind after execution has started',
+      'Node cannot bind after execution has started',
     );
     rows.complete();
     await sink.completion;
@@ -280,7 +334,8 @@ describe('tea', () => {
         subscription.unsubscribe();
       };
     });
-    const node = tea`plot(close)`.bind(source);
+    const node = tea`plot(close)`;
+    node.bind(source);
     const sink = new StepSink();
     const sinkSubscription = node.to(sink);
 
@@ -290,8 +345,8 @@ describe('tea', () => {
 
     expect(teardowns).toBe(1);
     expect(sinkSubscription.closed).toBe(true);
-    expect(() => node.bind({})).toThrow('TeaNode is disposed');
-    expect(() => node.to(new StepSink())).toThrow('TeaNode is disposed');
+    expect(() => node.bind({})).toThrow('Node is disposed');
+    expect(() => node.to(new StepSink())).toThrow('Node is disposed');
   });
 });
 

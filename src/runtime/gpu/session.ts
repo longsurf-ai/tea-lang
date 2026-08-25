@@ -2035,12 +2035,14 @@ function validateBindingModule(
   artifact: CompiledWgslProgram,
   module: JSModule,
 ): void {
+  const parameterSchema = module.manifest.params.map(
+    ({value: _value, active: _active, bindable: _bindable, ...spec}) => spec,
+  );
   if (
     module.abi !== RUNTIME_ABI_VERSION ||
     module.manifest.requests.length !== 0 ||
     module.manifest.frames.length !== artifact.state.frames.length ||
-    JSON.stringify(module.manifest.params) !==
-      JSON.stringify(artifact.params) ||
+    JSON.stringify(parameterSchema) !== JSON.stringify(artifact.params) ||
     module.manifest.series.length !== artifact.requiredSeries.length ||
     module.manifest.series.some(
       (series, sid) => series.id !== artifact.requiredSeries[sid]?.id,

@@ -93,7 +93,7 @@ describe('typed builtin lowering', () => {
       {
         source: {domain: 'time', field: 'time'},
         layout: 0,
-        depth: {kind: 'bound'},
+        depth: {kind: 'const', bars: 3},
       },
       {
         source: {domain: 'barstate', field: 'isfirst'},
@@ -106,12 +106,7 @@ describe('typed builtin lowering', () => {
         depth: {kind: 'none'},
       },
     ]);
-    expect(
-      module.evaluateBinding({
-        params: [],
-        builtins: new Map([[2, 'NASDAQ:AAPL']]),
-      }).retention.builtins,
-    ).toEqual([3, 0, 0]);
+    expect(source).not.toContain('manifest.builtin[0].depth =');
     expect(source).toMatch(/ctx\.builtin\(0, t\d+\)/);
     expect(source).toContain('ctx.builtin(1, 0)');
     expect(source).toContain('ctx.builtin(2, 0)');

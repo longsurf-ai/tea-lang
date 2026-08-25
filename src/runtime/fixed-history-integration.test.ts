@@ -19,9 +19,9 @@ import {
   RUNTIME_ABI_VERSION,
   type BuiltinSpec,
   type JSModule,
-  type JSModuleBinding,
+  type RequestSpec,
 } from './module-abi';
-import {staticModuleBinding, testModule} from './testing';
+import {testModule} from './testing';
 import type {ValueLayout} from './value-layout';
 
 const TEST_TIME_NOW = 1_800_000_000_000;
@@ -135,9 +135,6 @@ const EMA_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, fr) {
     if (ctx.needsInit(fr, 0)) ctx.initialize(fr, 0, NaN);
@@ -185,9 +182,6 @@ const COUNTER_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {
     1(ctx, fr) {
       if (ctx.needsInit(fr, 0)) ctx.initialize(fr, 0, 0);
@@ -230,9 +224,6 @@ const HISTORY_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, fr) {
     ctx.write(fr, 0, ctx.series(0, 0));
@@ -289,9 +280,6 @@ const TICK_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, fr) {
     if (ctx.needsInit(fr, 0)) ctx.initialize(fr, 0, 0);
@@ -369,18 +357,15 @@ const BIND_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding(values) {
-    return {
-      retention: {
-        frames: [[num(values.params[1]!)]],
-        series: [0],
-        builtins: [],
-        requests: [],
-      },
-      activeParams: [true, true],
-      outputs: [[{name: 'price', value: values.params[0]!}], []],
-      requests: [],
-    };
+  concretize(manifest) {
+    const level = manifest.params[0]!.value;
+    const length = manifest.params[1]!.value;
+    Object.assign(manifest.frames[0]!.locals[0]!, {
+      depth: {kind: 'const', bars: num(length!)},
+    });
+    Object.assign(manifest.outputs[0]!, {
+      boundArgs: [{name: 'price', value: level!}],
+    });
   },
   funcs: {},
   main(ctx, fr) {
@@ -560,9 +545,6 @@ describe('typed builtins', () => {
         frames: [{locals: [], subs: []}],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx) {
         builtins.forEach((_, bid) => ctx.emit(0, bid, ctx.builtin(bid, 0)));
@@ -615,11 +597,10 @@ describe('typed builtins', () => {
     const base = builtinModule();
     const module: JSModule = testModule({
       ...base,
-      evaluateBinding(values) {
-        if (values.builtins?.get(11) === undefined) {
+      concretize(_manifest, contextConstants) {
+        if (contextConstants?.get(11) === undefined) {
           throw new Error("builtin 'syminfo.tickerid' is not bind-visible");
         }
-        return staticModuleBinding(this);
       },
     });
     await expect(
@@ -673,9 +654,6 @@ describe('typed builtins', () => {
             ],
           },
         ],
-      },
-      evaluateBinding() {
-        return staticModuleBinding(this);
       },
       main(ctx) {
         ctx.emit(0, 0, ctx.builtin(0, 0));
@@ -754,13 +732,29 @@ function contexts(byId: Record<string, ProviderContext>): DataProvider {
   };
 }
 
+const SCALE_PARAM = {
+  name: 'scale',
+  title: null,
+  type: 'float',
+  control: 'auto',
+  group: null,
+  inline: null,
+  tooltip: null,
+  confirm: false,
+  display: 'all',
+  defaultValue: 10,
+  constraints: null,
+  enumType: null,
+  seriesSid: null,
+} as const;
+
 const CHILD_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
   layout: TEST_LAYOUTS,
   manifest: {
     series: [{id: 'close', depth: {kind: 'none'}}],
     builtin: [],
-    params: [],
+    params: [{...SCALE_PARAM, bindable: false}],
     outputs: [],
     effects: [],
     requests: [],
@@ -778,9 +772,6 @@ const CHILD_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(
     ctx: Parameters<JSModule['main']>[0],
@@ -812,23 +803,7 @@ function requestModule(
     manifest: {
       series: [{id: 'close', depth: {kind: 'none'}}],
       builtin: [],
-      params: [
-        {
-          name: 'scale',
-          title: null,
-          type: 'float',
-          control: 'auto',
-          group: null,
-          inline: null,
-          tooltip: null,
-          confirm: false,
-          display: 'all',
-          defaultValue: 10,
-          constraints: null,
-          enumType: null,
-          seriesSid: null,
-        },
-      ],
+      params: [SCALE_PARAM],
       outputs: [
         {
           effect: 'plot',
@@ -847,30 +822,16 @@ function requestModule(
           resultSlot: 0,
           layout: NUMBER_LAYOUT,
           dynamic: false,
+          context: {
+            symbol: 'X',
+            timeframe: '',
+            ...options,
+          },
         },
       ],
       frames: [{locals: [], subs: []}],
     },
     requests: [CHILD_MODULE],
-    evaluateBinding(_values) {
-      return {
-        retention: {
-          frames: [[]],
-          series: [0],
-          builtins: [],
-          requests: [1],
-        },
-        activeParams: [true],
-        outputs: [[]],
-        requests: [
-          {
-            symbol: 'X',
-            timeframe: '',
-            ...options,
-          },
-        ],
-      };
-    },
     funcs: {},
     main(ctx) {
       ctx.emit(0, 0, ctx.request(0, 0));
@@ -983,18 +944,24 @@ describe('requests', () => {
           provider,
           sink: new RecordingSink(),
         }),
-      ).rejects.toThrow('request 0 has invalid binding data');
+      ).rejects.toThrow('request 0 has invalid concrete context');
       expect(calls).toEqual([]);
     }
 
     const base = requestModule({});
     const missingOptions: JSModule = testModule({
       ...base,
-      evaluateBinding(values) {
-        return {
-          ...base.evaluateBinding(values),
-          requests: [{symbol: 'X', timeframe: ''}],
-        } as unknown as JSModuleBinding;
+      manifest: {
+        ...base.manifest,
+        requests: [
+          {
+            ...base.manifest.requests[0]!,
+            context: {
+              symbol: 'X',
+              timeframe: '',
+            } as unknown as RequestSpec['context'],
+          },
+        ],
       },
     });
     await expect(
@@ -1003,21 +970,21 @@ describe('requests', () => {
         provider: contexts({'': parent(), X: child()}),
         sink: new RecordingSink(),
       }),
-    ).rejects.toThrow('request 0 has invalid binding data');
+    ).rejects.toThrow('request 0 has invalid concrete context');
 
     const invalidBoolean: JSModule = testModule({
       ...base,
-      evaluateBinding(values) {
-        const binding = base.evaluateBinding(values);
-        return {
-          ...binding,
-          requests: [
-            {
-              ...binding.requests[0]!,
+      manifest: {
+        ...base.manifest,
+        requests: [
+          {
+            ...base.manifest.requests[0]!,
+            context: {
+              ...base.manifest.requests[0]!.context!,
               gaps: 'false',
-            },
-          ],
-        } as unknown as JSModuleBinding;
+            } as unknown as RequestSpec['context'],
+          },
+        ],
       },
     });
     await expect(
@@ -1026,7 +993,7 @@ describe('requests', () => {
         provider: contexts({'': parent(), X: child()}),
         sink: new RecordingSink(),
       }),
-    ).rejects.toThrow('request 0 has invalid binding data');
+    ).rejects.toThrow('request 0 has invalid concrete context');
   });
 
   test('a bounded child restarts bar_index at zero inside the retained tail', async () => {
@@ -1060,9 +1027,6 @@ describe('requests', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(
         ctx: Parameters<JSModule['main']>[0],
@@ -1180,9 +1144,6 @@ describe('requests', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(
         ctx: Parameters<JSModule['main']>[0],
@@ -1207,6 +1168,14 @@ describe('requests', () => {
             resultSlot: 0,
             layout: NUMBER_LAYOUT,
             dynamic: false,
+            context: {
+              symbol: '',
+              timeframe: '',
+              gaps: false,
+              lookahead: false,
+              ignoreInvalidSymbol: false,
+              calcBarsCount: 0,
+            },
           },
         ],
         frames: [
@@ -1223,28 +1192,6 @@ describe('requests', () => {
         ],
       },
       requests: [innerChild],
-      evaluateBinding(_values: Parameters<JSModule['evaluateBinding']>[0]) {
-        return {
-          retention: {
-            frames: [[0]],
-            series: [],
-            builtins: [],
-            requests: [0],
-          },
-          activeParams: [],
-          outputs: [],
-          requests: [
-            {
-              symbol: '',
-              timeframe: '',
-              gaps: false,
-              lookahead: false,
-              ignoreInvalidSymbol: false,
-              calcBarsCount: 0,
-            },
-          ],
-        };
-      },
       funcs: {},
       main(
         ctx: Parameters<JSModule['main']>[0],

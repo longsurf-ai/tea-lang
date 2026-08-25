@@ -43,8 +43,8 @@ values = array.from(10, 20)
 earlier = values
 values.push(30)
 
-plot(earlier.size()) // 2
-plot(values.size())  // 3
+plot(earlier.size() + bar_index * 0) // 2
+plot(values.size() + bar_index * 0)  // 3
 ```
 
 ### Sharing a contained struct

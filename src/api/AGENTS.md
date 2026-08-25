@@ -4,39 +4,46 @@ The JavaScript embedding surface over generated `JSModule` values. This
 directory owns host binding validation and Observable composition; compiler and
 runtime semantics remain in their existing packages.
 
+`tea.ts` owns only synchronous tagged-template compile/load construction;
+`node.ts` owns the public `Node` interface and its private class implementation.
+
 ## Invariants
 
 - `bindModule(module, assignments)` returns
   `Effect<JSModule, BindingError>`. It never mutates its input and never
-  subscribes. Parameter assignments store validated Tea values; series
-  assignments store only a supplied marker. Observable, DataStream, provider,
-  and sink objects never enter a JSModule snapshot.
-- Every loaded `JSModule` starts with ordered bindings derived from its
-  manifest. `ready()` means that module context has complete input bindings and
-  generated `JSModuleBinding` data. `remaining()` reports its missing inputs in
-  manifest order; `TeaNode.ready()` checks the recursive request tree.
-- Generated binding evaluation is provider- and subscription-free: it resolves
-  params, bound depths, output arguments, activity, and static request
-  settings. Its loader-private evaluator may use one local abort-only Heap
-  transaction for struct/collection expressions, but no Heap, runtime state,
-  evaluator, or subscription enters the returned JSModule.
-- `TeaNode` owns DataStream/Observable wiring and keeps one stable public
-  identity. Successive `.bind()` calls synchronously draft the recursive module
-  state and row graph, install both atomically, and return `this`; a failure
-  installs neither. Binding after execution starts or after disposal is
-  rejected. The compiler `Program` is consumed during lowering and is not
-  retained by either TeaNode or JSModule.
-- Every TeaNode creates one plain `Subject<StepResult>`. The first `.to(sink)`
-  validates execution support, subscribes the sink first, creates and owns one
-  `JSRuntime`, then connects the already-built row graph through sequential
-  `step()` calls to the Subject. Later `.to()` calls only subscribe sinks to
-  that Subject, so late sinks receive future values only and never create a
-  second runtime or source subscription. `.to()` returns the sink subscription;
-  the node retains the execution connection. `dispose()` idempotently cancels
-  that connection, disposes the runtime, and completes the Subject. Current
-  TeaNode steps are final (`provisional: false`).
-- TeaNode execution currently supports numeric series and parameters only.
+  subscribes. Parameter values and series-supplied markers are the only module
+  binding forms. Observable, DataStream, provider, and sink objects never enter
+  a JSModule snapshot.
+- Binding deep-copies the recursive manifest tree, writes the assignment, runs
+  each generated direct `concretize()` method on its caller-owned copy, freezes
+  the result, and returns a new snapshot. Old module and manifest references
+  remain unchanged; code and layouts may be shared.
+- `ready()` and ordered `remaining()` facts are derived from manifest parameter
+  values, series markers, concrete depths, activity, output arguments, and
+  request contexts; public `Node.ready()` checks the recursive request tree. There
+  is no parallel parameter vector or binding-result object.
+- Concretization is provider- and subscription-free in the public API and is
+  restricted to non-allocating const/input/simple expressions. It never owns a
+  frame, Heap, runtime state, evaluator, or subscription.
+- Public `Node` is an interface; file-private `TeaNode` owns one module context,
+  its RxJS data, and recursive request-child Nodes directly. There is no
+  parallel `TeaNodeState` or continuously reattached parent module tree.
+  `bind()` dispatches only to parameters or streams; keyed request streams fan
+  out recursively, and `snapshot()` assembles the complete module tree only
+  when exposed or executed. Public methods remain synchronous and mutable.
+  The compiler `Program` is consumed during lowering and is retained by neither
+  the Node nor JSModule.
+- The `tea` tagged template is the deliberate synchronous exception: it only
+  performs in-memory compile/load construction and throws `TeaCompileError`.
+  Effects remain implementation details of `bind`/`to`/`dispose`.
+- Every Node owns one plain `Subject<StepResult>`. The first `.to(sink)` call
+  runs internal setup Effects, subscribes the sink, creates one `JSRuntime`,
+  connects the RxJS row graph, and returns the Subscription. Later `.to()`
+  calls only add sinks for future values. RxJS owns ongoing values/errors/
+  completion, and teardown interrupts the current step Effect. `dispose()` is
+  synchronous and idempotent. Current steps are final (`provisional: false`).
+- Node execution currently supports numeric series and parameters only.
   Builtin row construction and static-request child execution fail explicitly
-  in `.to()`. Generated binding may already produce static request settings;
-  do not confuse readiness with implemented TeaNode request wiring. Dynamic
+  in `.to()`. A concrete manifest may already contain static request settings;
+  do not confuse readiness with implemented Node request wiring. Dynamic
   requests fail earlier at the noder boundary.

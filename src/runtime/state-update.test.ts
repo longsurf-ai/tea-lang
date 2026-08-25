@@ -14,7 +14,7 @@ import {ArenaHeap} from './heap';
 import {bindFixedHistory as bind} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {stateMachine} from './state-update';
-import {staticModuleBinding, testModule} from './testing';
+import {testModule} from './testing';
 import {ValueLayoutRegistry, type ValueLayout} from './value-layout';
 
 const NUMBER = 0;
@@ -77,9 +77,6 @@ const MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, root) {
     const current = ctx.series(0, 0);
@@ -128,9 +125,6 @@ const PROVISIONAL_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, root) {
     if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
@@ -173,9 +167,6 @@ function structModule(shouldFail: () => boolean): JSModule {
       ],
     },
     requests: [],
-    evaluateBinding() {
-      return staticModuleBinding(this);
-    },
     funcs: {},
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
@@ -223,9 +214,6 @@ const COLLECTION_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, root) {
     if (ctx.needsInit(root, 0)) {
@@ -325,7 +313,6 @@ describe('StateUpdate', () => {
     const heap = new ArenaHeap();
     const machine = stateMachine(
       MODULE,
-      [],
       new ValueLayoutRegistry(LAYOUTS),
       heap,
     );
@@ -387,7 +374,6 @@ describe('StateUpdate', () => {
     const heap = new ArenaHeap();
     const machine = stateMachine(
       PROVISIONAL_MODULE,
-      [],
       new ValueLayoutRegistry(LAYOUTS),
       heap,
     );
@@ -467,7 +453,6 @@ describe('StateUpdate', () => {
     const heap = new ArenaHeap();
     const machine = stateMachine(
       structModule(() => failure),
-      [],
       new ValueLayoutRegistry(LAYOUTS),
       heap,
     );
@@ -522,7 +507,6 @@ describe('StateUpdate', () => {
     const heap = new ArenaHeap();
     const machine = stateMachine(
       COLLECTION_MODULE,
-      [],
       new ValueLayoutRegistry(LAYOUTS),
       heap,
     );

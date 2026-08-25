@@ -1,6 +1,6 @@
 // @ts-nocheck -- executable API sketch; concrete WebSocket adapters are staged.
 
-import { tea, fromWS, fromCSV, to} from 'tea'
+import {tea, fromWS, fromCSV, to} from 'tea'
 
 
 var program = tea`
@@ -30,7 +30,8 @@ const basket_combine = tea`
 `
 
 var s1 = fromCSV('wss://stream.longsurf.com/symbol/AAPL')
-program = program.bind(s1).bind({fast_window: 14, slow_window: 28, signal_window: 9})
+program.bind(s1)
+program.bind({fast_window: 14, slow_window: 28, signal_window: 9})
 // program.ready() is true now
 var sink = new WSSink('wss://localhost:8080/ws')
 

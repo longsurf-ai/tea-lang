@@ -14,7 +14,7 @@ import {
   type JSModule,
   type RuntimeContext,
 } from './module-abi';
-import {staticModuleBinding, testModule} from './testing';
+import {testModule} from './testing';
 import type {ValueLayout} from './value-layout';
 
 const NUMBER = 0;
@@ -92,9 +92,6 @@ const COUNTER_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {1: counter},
   main(ctx, root) {
     ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
@@ -146,9 +143,6 @@ const TYPED_HISTORY_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, root) {
     ctx.write(root, 0, 7);
@@ -192,9 +186,6 @@ const TICK_MODULE: JSModule = testModule({
     ],
   },
   requests: [],
-  evaluateBinding() {
-    return staticModuleBinding(this);
-  },
   funcs: {},
   main(ctx, root) {
     if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
@@ -240,9 +231,6 @@ function arrayStateModule(): JSModule {
       ],
     },
     requests: [],
-    evaluateBinding() {
-      return staticModuleBinding(this);
-    },
     funcs: {},
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
@@ -397,9 +385,6 @@ describe('JSRuntime core parity', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx, root) {
         if (!invoke) {
@@ -467,9 +452,6 @@ describe('JSRuntime core parity', () => {
         ],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx, root) {
         if (ctx.needsInit(root, 0)) {

@@ -44,14 +44,13 @@ export class JSRuntime {
     private readonly module: JSModule,
     options: JSRuntimeOptions = {},
   ) {
-    if (!module.ready() || module.parameterValues === null) {
+    if (!module.ready()) {
       fatal('JSRuntime requires a ready JSModule');
     }
     this.layouts = new ValueLayoutRegistry(module.layout);
     this.heap = new ArenaHeap(options.heapLimits);
     this.machine = stateMachine(
       module,
-      module.parameterValues,
       this.layouts,
       this.heap,
       options.maxCollectionElements,

@@ -36,11 +36,11 @@ An indicator inside the same generic subset follows the identical path.
 `analyzeWgslEligibility(program)` reports support.
 `compileProgramToWgsl(program)` returns either those diagnostics or a complete,
 bind-independent artifact containing the shader, the ordinary generated JS
-binding module, numeric contract, required inputs, output/effect schemas, and
-physical layouts. The artifact remains reusable when only datasets or the
-binding grid change. The JS sidecar is generated from the same Program and
-exposes the same pure `evaluateBinding(values) -> JSModuleBinding` function as CPU; it is
-not a second compiler or a second history-expression evaluator.
+module, numeric contract, required inputs, output/effect schemas, and physical
+layouts. The artifact remains reusable when only datasets or the binding grid
+change. The embedded JS module is generated from the same Program and exposes
+the same direct manifest `concretize()` method as CPU; it is not a second
+compiler or a second history-expression evaluator.
 
 ## Executable deterministic subset
 
@@ -140,12 +140,12 @@ string, and color parameters and request contexts remain fail-closed target
 exclusions.
 
 Before allocating device state, the runtime loads the artifact's generated JS
-binding module and calls its pure `evaluateBinding(values)` function. The loader-private
-helper evaluates bound history expressions against each binding's concrete
-parameters and provider metadata, and `JSModuleBinding` returns capacities by
-the artifact's published frame ids and slots. The runtime validates that static
-topology and uses the data only for physical allocation. It never constructs a
-`JSRuntime`, reads the Program, or reconstructs Tea expressions.
+module. For each binding it deep-copies the manifest tree, writes concrete
+parameter values and series markers, and calls `concretize()` with permitted
+provider context constants. It validates concrete depths by the artifact's
+published frame ids and slots and uses them only for physical allocation. It
+never constructs a `JSRuntime`, reads the Program, or reconstructs Tea
+expressions.
 
 The host injects the `GPUDevice` and therefore owns adapter and deployment
 policy. The runtime owns shader diagnostics, physical validation and packing,

@@ -11,7 +11,7 @@ import {
 } from './abi';
 import {bindFixedHistory as bind} from './fixed-history';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
-import {staticModuleBinding, testModule} from './testing';
+import {testModule} from './testing';
 import type {ValueLayout} from './value-layout';
 
 const NUMBER = 0;
@@ -51,9 +51,6 @@ function effectModule(main: JSModule['main']): JSModule {
       requests: [],
     },
     requests: [],
-    evaluateBinding() {
-      return staticModuleBinding(this);
-    },
     funcs: {},
     main,
   });
@@ -147,9 +144,6 @@ describe('effect row transactions', () => {
         requests: [],
       },
       requests: [],
-      evaluateBinding() {
-        return staticModuleBinding(this);
-      },
       funcs: {},
       main(ctx) {
         const payload = ctx.newStruct(structLayout, [1]);

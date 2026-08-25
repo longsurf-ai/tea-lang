@@ -113,7 +113,7 @@ describe('hand-checked vectors', () => {
     ]);
   });
 
-  test('eager ternary retains and executes an unselected fallible operand', async () => {
+  test('rejects aggregate-dependent output configuration before execution', async () => {
     await expect(
       runSource(
         ['value = true ? 1 : array.new<int>().first()', 'plot(value)'].join(
@@ -121,7 +121,9 @@ describe('hand-checked vectors', () => {
         ),
         seriesCsv([1]),
       ),
-    ).rejects.toThrow('EMPTY_COLLECTION');
+    ).rejects.toThrow(
+      'module configuration must depend only on constants, scalar parameters, and non-allocating simple expressions',
+    );
   });
 
   test('ta.sma matches hand-computed values', async () => {

@@ -1,111 +1,14 @@
-// Purpose: Generated bind evaluation may use aggregate values inside one
-// abort-only Heap transaction without leaking them into module binding data.
+// Purpose: Concrete-manifest binding resolves only late scalar facts and
+// freezes each immutable module snapshot without a second runtime evaluator.
 
 import {describe, expect, test} from 'vitest';
 import {generate} from '../codegen/codegen';
 import {mustBuild} from '../noder/testing';
-import {CollectionRuntime} from './collections';
-import {ExecutionError} from './errors';
-import {ArenaHeap} from './heap';
 import {loadModule} from './load';
 import {configureModule} from './module-binding';
-import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
-import {StructStorageRuntime} from './struct-storage';
-import {type ValueLayout, ValueLayoutRegistry} from './value-layout';
-import type {ArrayValue} from './value';
 
-const NUMBER = 0;
-const ARRAY = 1;
-const HOLDER = 2;
-const LAYOUTS = [
-  {kind: 'number', numeric: 'int'},
-  {kind: 'array', element: NUMBER},
-  {
-    kind: 'struct',
-    name: 'Holder',
-    fields: [
-      {name: 'values', layout: ARRAY},
-      {name: 'marker', layout: NUMBER},
-    ],
-  },
-] as const satisfies readonly ValueLayout[];
-
-describe('module binding aggregates', () => {
-  test('evaluates collection and struct operations into scalar binding data', () => {
-    const module = bindingModule(`
-      const values = ctx.callCollection('array.from', ${ARRAY}, [7]);
-      const holder = ctx.newStruct(${HOLDER}, [values, 1]);
-      const ref = ctx.requireStruct(holder, ${HOLDER});
-      const mutation = ctx.mutateCollection(
-        'array.push',
-        ${ARRAY},
-        ctx.structField(ref, ${HOLDER}, 0),
-        [9]
-      );
-      ctx.storeStructField(ref, ${HOLDER}, 0, mutation.replacement);
-      ctx.storeStructField(ref, ${HOLDER}, 1, 5);
-      const entries = ctx.collectionEntries(ctx.structField(ref, ${HOLDER}, 0));
-      ctx.bindOutput(
-        0,
-        'price',
-        Number(entries[1]) + Number(ctx.structField(ref, ${HOLDER}, 1))
-      );
-    `);
-
-    const configured = configureModule(module, []);
-
-    expect(configured.binding?.outputs[0]).toEqual([
-      {name: 'price', value: 14},
-    ]);
-    expect(Object.isFrozen(configured)).toBe(true);
-  });
-
-  test('preserves an ordinary fallible collection error from eager bind code', () => {
-    const module = bindingModule(`
-      const empty = ctx.callCollection('array.new', ${ARRAY}, []);
-      ctx.callCollection('array.first', ${NUMBER}, [empty]);
-    `);
-
-    let thrown: unknown;
-    try {
-      configureModule(module, []);
-    } catch (error) {
-      thrown = error;
-    }
-
-    expect(thrown).toBeInstanceOf(ExecutionError);
-    expect(thrown).toMatchObject({code: 'EMPTY_COLLECTION'});
-  });
-
-  test('invalidates an aggregate that a generated closure tries to retain', () => {
-    const module = bindingModule(`
-      ctx.bindOutput(
-        0,
-        'price',
-        ctx.callCollection('array.from', ${ARRAY}, [7])
-      );
-    `);
-    const escaped = module.evaluateBinding({params: []}).outputs[0]![0]!
-      .value as ArrayValue;
-
-    const heap = new ArenaHeap();
-    const transaction = heap.begin('module-binding-test');
-    const layouts = new ValueLayoutRegistry(LAYOUTS);
-    const structs = new StructStorageRuntime(heap, layouts);
-    const collections = new CollectionRuntime(heap, layouts, 100, structs);
-    try {
-      expect(() =>
-        collections.call(transaction, 'array.first', NUMBER, [escaped!]),
-      ).toThrow('Ref belongs to another Heap arena');
-    } finally {
-      transaction.abort();
-      heap.dispose();
-    }
-  });
-});
-
-describe('generated pure binding', () => {
-  test('accepts values and returns immutable data without an init phase', () => {
+describe('generated manifest concretization', () => {
+  test('writes parameter-dependent depth, activity, and output arguments', () => {
     const module = loadModule(
       generate(
         mustBuild(
@@ -114,13 +17,23 @@ describe('generated pure binding', () => {
       ),
     );
 
-    const binding = module.evaluateBinding({params: [4, 25]});
+    const configured = configureModule(module, [4, 25]);
 
     expect('init' in module).toBe(false);
-    expect(binding.retention.series).toEqual([4]);
-    expect(binding.activeParams).toEqual([true, true]);
-    expect(binding.outputs[0]).toEqual([{name: 'price', value: 25}]);
-    expect(Object.isFrozen(binding)).toBe(true);
+    expect(configured.manifest.series[0]?.depth).toEqual({
+      kind: 'const',
+      bars: 4,
+    });
+    expect(configured.manifest.params.map(param => param.active)).toEqual([
+      true,
+      true,
+    ]);
+    expect(configured.manifest.outputs[0]?.boundArgs).toEqual([
+      {name: 'price', value: 25},
+    ]);
+    expect(Object.isFrozen(configured)).toBe(true);
+    expect(Object.isFrozen(configured.manifest)).toBe(true);
+    expect(module.manifest.series[0]?.depth).toEqual({kind: 'bound'});
   });
 
   test('preserves sparse provider builtin visibility', () => {
@@ -128,16 +41,16 @@ describe('generated pure binding', () => {
       generate(mustBuild('length = timeframe.multiplier\nplot(close[length])')),
     );
 
-    expect(() => module.evaluateBinding({params: []})).toThrow(
+    expect(() => configureModule(module, [])).toThrow(
       "builtin 'timeframe.multiplier' is not bind-visible",
     );
     expect(
-      module.evaluateBinding({params: [], builtins: new Map([[0, 7]])})
-        .retention.series,
-    ).toEqual([7]);
+      configureModule(module, [], new Map([[0, 7]])).manifest.series[0]
+        ?.depth,
+    ).toEqual({kind: 'const', bars: 7});
   });
 
-  test('request children consume the compilation-global parameter vector', () => {
+  test('request children receive compilation-global parameter values', () => {
     const module = loadModule(
       generate(
         mustBuild(
@@ -145,44 +58,17 @@ describe('generated pure binding', () => {
         ),
       ),
     );
-    const child = module.requests[0]!;
 
-    expect(child.manifest.params).toEqual([]);
-    expect(child.evaluateBinding({params: [6]}).retention.series).toEqual([6]);
+    const configured = configureModule(module, [6]);
+    const child = configured.requests[0]!;
+
+    expect(child.manifest.params.map(param => param.value)).toEqual([6]);
+    expect(child.manifest.params.every(param => param.bindable === false)).toBe(
+      true,
+    );
+    expect(child.manifest.series[0]?.depth).toEqual({
+      kind: 'const',
+      bars: 6,
+    });
   });
 });
-
-function bindingModule(body: string): JSModule {
-  const manifest = {
-    series: [],
-    builtin: [],
-    params: [],
-    outputs: [
-      {
-        effect: 'hline',
-        staticArgs: [],
-        channels: [],
-      },
-    ],
-    effects: [],
-    frames: [{locals: [], subs: []}],
-    requests: [],
-  };
-  return loadModule(`
-    "use strict";
-    const M = {
-      abi: ${RUNTIME_ABI_VERSION},
-      layout: ${JSON.stringify(LAYOUTS)},
-      manifest: ${JSON.stringify(manifest)},
-      requests: [],
-      evaluateBinding(values) {
-        return $evaluate(M, values, (ctx, fr) => {
-          ${body}
-        });
-      },
-      funcs: {},
-      main() {},
-    };
-    return M;
-  `);
-}
