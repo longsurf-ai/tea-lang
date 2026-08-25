@@ -18,7 +18,7 @@ import type {
 import type {EffectEmission, DenseEmission} from './output';
 import {ExecutionError} from './errors';
 import type {Heap, HeapTransaction, Ref} from './heap';
-import {isHistoryOffset} from './ring';
+import {isHistoryOffset} from './history';
 import {CollectionRuntime} from './collections';
 import {StructStorageRuntime} from './struct-storage';
 import type {
@@ -28,7 +28,7 @@ import type {
   IntermediateFrame,
   IntermediateLocal,
   LocalState,
-  RingState,
+  HistoryState,
   RootState,
   State,
   StateMachine,
@@ -280,7 +280,7 @@ class StateUpdateContext implements Runtime {
     const empty = this.layouts.empty(spec.layout);
     if (!isHistoryOffset(offset)) return empty;
     if (offset === 0) return local.value;
-    return local.state.ring.values[offset - 1] ?? empty;
+    return local.state.history.values[offset - 1] ?? empty;
   }
 
   write(fr: Frame, slot: number, value: Value): void {
@@ -584,7 +584,7 @@ class StateUpdateContext implements Runtime {
             spec.storage === Storage.Varip && current !== null
               ? current.value
               : spec.storage === Storage.Var && local.initialized
-                ? (local.ring.values[0] ?? this.layouts.empty(spec.layout))
+                ? (local.history.values[0] ?? this.layouts.empty(spec.layout))
                 : spec.storage === Storage.Var && current !== null
                   ? current.value
                   : this.layouts.empty(spec.layout),
@@ -608,7 +608,7 @@ class StateUpdateContext implements Runtime {
         const spec = layout.locals[slot]!;
         const keep = localRetention(spec.storage, spec.depth);
         return {
-          ring: commitRing(local.state.ring, local.value, keep),
+          history: commitHistory(local.state.history, local.value, keep),
           initialized:
             (spec.storage === Storage.Var || spec.storage === Storage.Varip) &&
             local.initialized,
@@ -637,17 +637,17 @@ class StateUpdateContext implements Runtime {
     const frame = this.finishFrame(this.rootFrame);
     return {
       ...frame,
-      series: this.finishInputRings(
+      series: this.finishInputHistory(
         'series',
         this.state.root.series,
         this.module.manifest.series,
       ),
-      builtins: this.finishInputRings(
+      builtins: this.finishInputHistory(
         'builtins',
         this.state.root.builtins,
         this.module.manifest.builtin,
       ),
-      requests: this.finishInputRings(
+      requests: this.finishInputHistory(
         'requests',
         this.state.root.requests,
         this.module.manifest.requests,
@@ -655,17 +655,17 @@ class StateUpdateContext implements Runtime {
     };
   }
 
-  private finishInputRings(
+  private finishInputHistory(
     field: keyof Input,
-    rings: readonly RingState[],
+    histories: readonly HistoryState[],
     specs: readonly {readonly depth: Parameters<typeof depthRetention>[0]}[],
-  ): readonly RingState[] {
-    if (rings.length !== specs.length) {
-      return fatal(`${field} ring topology disagrees with the manifest`);
+  ): readonly HistoryState[] {
+    if (histories.length !== specs.length) {
+      return fatal(`${field} history topology disagrees with the manifest`);
     }
-    return rings.map((ring, id) =>
-      commitRing(
-        ring,
+    return histories.map((history, id) =>
+      commitHistory(
+        history,
         this.input[field][id]!,
         depthRetention(specs[id]!.depth),
       ),
@@ -718,7 +718,7 @@ function initialFrame(
   return {
     active,
     locals: layout.locals.map(() => ({
-      ring: {values: []},
+      history: {values: []},
       initialized: false,
     })),
     subs: layout.subs.map(() => null),
@@ -758,9 +758,13 @@ function localRetention(
     : keep;
 }
 
-function commitRing(ring: RingState, value: Value, keep: number): RingState {
+function commitHistory(
+  history: HistoryState,
+  value: Value,
+  keep: number,
+): HistoryState {
   return {
-    values: keep === 0 ? [] : [value, ...ring.values].slice(0, keep),
+    values: keep === 0 ? [] : [value, ...history.values].slice(0, keep),
   };
 }
 
@@ -813,7 +817,7 @@ function visitFrameState(
   const layout = frameLayout(module, fid);
   frame.locals.forEach((local, slot) => {
     const spec = layout.locals[slot]!;
-    local.ring.values.forEach(value => visit(spec.layout, value));
+    local.history.values.forEach(value => visit(spec.layout, value));
   });
   frame.subs.forEach((sub, slot) => {
     if (sub !== null) {

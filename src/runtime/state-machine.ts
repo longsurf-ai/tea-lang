@@ -10,20 +10,20 @@ export interface Input {
   readonly requests: readonly Value[];
 }
 
-// Committed Tea state. Every time-addressed binding owns an explicit RingState
-// whose values are newest-first.
+// Committed Tea state. Every time-addressed binding owns explicit newest-first
+// history.
 export interface State {
   readonly root: RootState;
 }
 
-export interface RingState {
+export interface HistoryState {
   readonly values: readonly Value[];
 }
 
 export interface RootState extends FrameState {
-  readonly series: readonly RingState[];
-  readonly builtins: readonly RingState[];
-  readonly requests: readonly RingState[];
+  readonly series: readonly HistoryState[];
+  readonly builtins: readonly HistoryState[];
+  readonly requests: readonly HistoryState[];
 }
 
 export interface FrameState {
@@ -33,7 +33,7 @@ export interface FrameState {
 }
 
 export interface LocalState {
-  readonly ring: RingState;
+  readonly history: HistoryState;
   readonly initialized: boolean;
 }
 

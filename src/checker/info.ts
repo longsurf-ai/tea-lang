@@ -159,7 +159,7 @@ export interface Info {
   readonly defs: Map<syntax.Name, Object>;
   readonly reassigned: Set<VariableObject>;
   // Variables used as direct history operands must retain their own runtime
-  // Name/Ring even when their initializer would otherwise fold or alias.
+  // name state even when their initializer would otherwise fold or alias.
   readonly historyBindings: Set<VariableObject>;
   readonly calls: Map<syntax.CallExpr, CallResolution>;
   readonly updates: Map<syntax.AssignStmt, StructFieldStore>;

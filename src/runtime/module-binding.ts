@@ -23,7 +23,7 @@ import {assertMergeAxis} from './merge';
 import type {ExecutionDeclaration} from './output';
 import {resolveParamValues} from './params';
 import type {ProviderContext, SeriesData} from './provider';
-import {isHistoryOffset} from './ring';
+import {isHistoryOffset} from './history';
 import {StructStorageRuntime} from './struct-storage';
 import type {Value} from './value';
 import {type LayoutId, ValueLayoutRegistry} from './value-layout';

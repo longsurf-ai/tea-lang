@@ -627,7 +627,7 @@ describe('aggregate expression and reference-store lowering', () => {
     expect(js).not.toContain('return {receiver:');
   });
 
-  test('keeps a history-bearing function formal in its checked Ring', () => {
+  test('keeps a history-bearing function formal in checked state', () => {
     const source = name('source', IntType);
     source.depth = {kind: DepthKind.Const, bars: 1};
     const previous: FreeIrFunc = {

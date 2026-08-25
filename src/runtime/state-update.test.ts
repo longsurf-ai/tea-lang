@@ -357,7 +357,7 @@ describe('StateUpdate', () => {
     ]);
     expect(effects).toEqual(values);
     expect(state.root.series[0]?.values).toEqual([4]);
-    expect(state.root.locals[0]?.ring.values).toEqual([4, 3]);
+    expect(state.root.locals[0]?.history.values).toEqual([4, 3]);
 
     execution.dispose();
     heap.dispose();
