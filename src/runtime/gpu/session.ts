@@ -19,8 +19,8 @@ import {
   type WgslValueSchema,
 } from '../../gpu/contract';
 import type {BindInputs, BoundInput} from '../binding';
-import {resolveGeneratedBindingLayout} from '../js-runtime';
 import {loadModule} from '../load';
+import {resolveGeneratedBindingLayout} from '../module-binding';
 import {RUNTIME_ABI_VERSION, type TeaModule} from '../module-abi';
 import {
   isContextError,

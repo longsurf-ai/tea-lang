@@ -1,21 +1,28 @@
 // Purpose: Evaluate the generated module's existing bind section into an
 // immutable, context-free fact set for the step-based JavaScript runtime.
 
-import type {
-  CollectionEntries,
-  CollectionMutation,
-  CollectionMutationOperation,
-  CollectionOperation,
-  DepthSpec,
-  Frame,
-  ModuleCode,
-  Runtime,
-  TeaModule,
+import {Storage} from '../ir/node';
+import {
+  RUNTIME_ABI_VERSION,
+  type BuiltinSpec,
+  type CollectionEntries,
+  type CollectionMutation,
+  type CollectionMutationOperation,
+  type CollectionOperation,
+  type DepthSpec,
+  type Frame,
+  type ModuleCode,
+  type Runtime,
+  type TeaModule,
 } from './module-abi';
-import type {BoundInput} from './binding';
+import type {BindInputs, BoundInput} from './binding';
 import {CollectionRuntime} from './collections';
+import {BindError} from './errors';
 import {HeapArena, type HeapTransaction, type Ref} from './heap';
+import {assertMergeAxis} from './merge';
 import type {ExecutionDeclaration} from './output';
+import {resolveParamValues} from './params';
+import type {ProviderContext, SeriesData} from './provider';
 import {isHistoryOffset} from './ring';
 import {StructStorageRuntime} from './struct-storage';
 import type {Value} from './value';
@@ -53,6 +60,11 @@ export interface BoundModuleFacts {
   readonly requests: readonly StaticRequestBinding[];
 }
 
+export interface GeneratedBindingLayout {
+  readonly frameHistoryCapacities: readonly (readonly number[])[];
+  readonly inputs: readonly BoundInput[];
+}
+
 export class ModuleBindingEvaluationError extends Error {
   constructor(message: string) {
     super(message);
@@ -76,10 +88,207 @@ export function evaluateChildModuleBinding(
   return evaluateBinding(code, paramValues, false);
 }
 
+/**
+ * Evaluate the generated bind callback against one already-resolved provider
+ * context and project only the layout facts required by GPU preparation.
+ */
+export function resolveGeneratedBindingLayout(
+  code: TeaModule,
+  inputs: BindInputs,
+  context: ProviderContext,
+): GeneratedBindingLayout {
+  if (code.abi !== RUNTIME_ABI_VERSION) {
+    throw new BindError(
+      `unsupported module ABI ${String(code.abi)}; expected ${RUNTIME_ABI_VERSION}`,
+    );
+  }
+  bindTimeNow(inputs.timeNow);
+  optionalBindLimit(inputs.maxRequestContexts, 'maxRequestContexts');
+  optionalBindLimit(inputs.maxCollectionElements, 'maxCollectionElements');
+  optionalBindLimit(inputs.maxHeapStorageCells, 'maxHeapStorageCells');
+  optionalBindLimit(inputs.maxHeapLogicalBytes, 'maxHeapLogicalBytes');
+  optionalBindLimit(
+    inputs.maxHeapTransientStorageCells,
+    'maxHeapTransientStorageCells',
+  );
+  optionalBindLimit(
+    inputs.maxHeapTransientLogicalBytes,
+    'maxHeapTransientLogicalBytes',
+  );
+  optionalBindLimit(
+    inputs.maxFixedValueLogicalBytes,
+    'maxFixedValueLogicalBytes',
+  );
+  if (!Number.isSafeInteger(context.rows) || context.rows < 0) {
+    throw new BindError(
+      `provider context row count must be a non-negative safe integer, got ${context.rows}`,
+    );
+  }
+  validateContextIdentity(context);
+  const params = resolveParamValues(code.manifest.params, inputs.params);
+  const layouts = new ValueLayoutRegistry(code.aggregateLayouts);
+  const builtinValues = validateProviderBuiltins(code, context, layouts);
+  const series = providerSeries(code, params, context);
+  const facts = evaluateBinding(code, params, true, builtinValues);
+  series.forEach((data, sid) => {
+    if (data.length !== context.rows) {
+      throw new BindError(
+        `series ${sid} has ${data.length} rows, context has ${context.rows}`,
+      );
+    }
+  });
+  return Object.freeze({
+    frameHistoryCapacities: Object.freeze(
+      facts.retention.frames.map((frame, fid) =>
+        Object.freeze(
+          frame.map((retention, slot) => {
+            const storage = code.manifest.frames[fid]?.locals[slot]?.storage;
+            let capacity = Math.min(retention, context.rows);
+            if (storage === Storage.Var || storage === Storage.Varip) {
+              capacity = Math.max(capacity, 1);
+            }
+            return capacity;
+          }),
+        ),
+      ),
+    ),
+    inputs: Object.freeze([...facts.params]),
+  });
+}
+
+function optionalBindLimit(
+  value: number | undefined,
+  name: string,
+): number | undefined {
+  if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+    throw new BindError(`${name} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
+function bindTimeNow(value: number): number {
+  if (!Number.isSafeInteger(value)) {
+    throw new BindError('timeNow must be a finite safe epoch-ms integer');
+  }
+  return value;
+}
+
+function validateContextIdentity(context: ProviderContext): void {
+  const symbol = context.builtinValue({domain: 'syminfo', field: 'tickerid'});
+  const timeframe = context.builtinValue({
+    domain: 'timeframe',
+    field: 'period',
+  });
+  if (symbol !== undefined && symbol !== null && typeof symbol !== 'string') {
+    throw new BindError(
+      "provider builtin 'syminfo.tickerid' must be a string or typed empty",
+    );
+  }
+  if (
+    timeframe !== undefined &&
+    timeframe !== null &&
+    typeof timeframe !== 'string'
+  ) {
+    throw new BindError(
+      "provider builtin 'timeframe.period' must be a string or typed empty",
+    );
+  }
+}
+
+function providerSeries(
+  code: TeaModule,
+  params: readonly Value[],
+  context: ProviderContext,
+): readonly SeriesData[] {
+  return code.manifest.series.map((spec, sid) => {
+    let id = spec.id;
+    if (id === null) {
+      const parameter = code.manifest.params.find(
+        param => param.seriesSid === sid,
+      );
+      if (parameter === undefined) {
+        throw new ModuleBindingEvaluationError(
+          `series slot ${sid} has neither host id nor parameter`,
+        );
+      }
+      const value = params[code.manifest.params.indexOf(parameter)];
+      if (typeof value !== 'string') {
+        throw new BindError(
+          `series parameter '${parameter.name}' is not a string`,
+        );
+      }
+      id = value;
+    }
+    const data = context.series(id);
+    if (data === null) {
+      throw new BindError(`series '${id}' is not provided by this context`);
+    }
+    return data;
+  });
+}
+
+function validateProviderBuiltins(
+  code: TeaModule,
+  context: ProviderContext,
+  layouts: ValueLayoutRegistry,
+): ReadonlyMap<number, Value> {
+  let axisValidated = false;
+  const values = new Map<number, Value>();
+  code.manifest.builtin.forEach((spec, bid) => {
+    layouts.layout(spec.layout);
+    const source = spec.source;
+    if (source.domain === 'syminfo' || source.domain === 'timeframe') {
+      const value = context.builtinValue(source);
+      if (value === undefined) {
+        throw new BindError(
+          `builtin '${builtinSourceName(spec)}' is not provided by this context`,
+        );
+      }
+      layouts.assertValue(
+        spec.layout,
+        value,
+        `provider builtin '${builtinSourceName(spec)}'`,
+      );
+      values.set(bid, value);
+      return;
+    }
+    if (
+      source.domain === 'time' &&
+      (source.field === 'time' || source.field === 'time_close')
+    ) {
+      const axis = context.axis;
+      if (axis === null) {
+        throw new BindError(
+          `builtin '${source.field}' requires a time axis in this context`,
+        );
+      }
+      if (!axisValidated) {
+        assertMergeAxis(axis, context.rows, 'runtime context');
+        axisValidated = true;
+      }
+    }
+  });
+  return values;
+}
+
+function builtinSourceName(spec: BuiltinSpec): string {
+  const source = spec.source;
+  switch (source.domain) {
+    case 'time':
+    case 'bar':
+      return source.field;
+    case 'barstate':
+    case 'syminfo':
+    case 'timeframe':
+      return `${source.domain}.${source.field}`;
+  }
+}
+
 function evaluateBinding(
   code: TeaModule,
   paramValues: readonly Value[],
   exactParams: boolean,
+  bindBuiltinValues: ReadonlyMap<number, Value> = new Map(),
 ): BoundModuleFacts {
   const heap = new HeapArena();
   const transaction = heap.begin('module-binding');
@@ -99,6 +308,7 @@ function evaluateBinding(
       transaction,
       structs,
       collections,
+      bindBuiltinValues,
     );
     const operations = evaluation.operations();
     code.init(operations);
@@ -166,6 +376,7 @@ class ModuleBindEvaluation {
     private readonly transaction: HeapTransaction,
     private readonly structs: StructStorageRuntime,
     private readonly collections: CollectionRuntime,
+    private readonly bindBuiltinValues: ReadonlyMap<number, Value>,
   ) {
     if (
       (exactParams && paramValues.length !== code.manifest.params.length) ||
@@ -415,6 +626,32 @@ class ModuleBindEvaluation {
       );
     }
     this.requestPairs[rid] = deepFreeze({symbol, timeframe});
+  }
+
+  series(_sid: number, _offset: number): number {
+    // The legacy provisional bind frame has cursor -1, so every series read
+    // is before the first row and therefore observes numeric na.
+    return Number.NaN;
+  }
+
+  builtin(bid: number, offset: number): Value {
+    const spec = this.code.manifest.builtin[bid];
+    if (spec === undefined) {
+      throw new ModuleBindingEvaluationError(
+        `builtin read from unknown input ${bid}`,
+      );
+    }
+    if (
+      offset === 0 &&
+      (spec.source.domain === 'syminfo' ||
+        spec.source.domain === 'timeframe') &&
+      this.bindBuiltinValues.has(bid)
+    ) {
+      return this.bindBuiltinValues.get(bid) as Value;
+    }
+    throw new ModuleBindingEvaluationError(
+      `builtin '${builtinSourceName(spec)}' is not bind-visible`,
+    );
   }
 
   newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown> {
