@@ -13,7 +13,7 @@ import {
   type TeaModule,
   type Value,
 } from './abi';
-import {HeapArena} from './heap';
+import {ArenaHeap} from './heap';
 import {bindFixedHistory as bind} from './fixed-history';
 import {stateMachine} from './state-update';
 import {ValueLayoutRegistry} from './value-layout';
@@ -321,7 +321,7 @@ describe('StateUpdate', () => {
     });
     await execution.runAll();
 
-    const heap = new HeapArena();
+    const heap = new ArenaHeap();
     const machine = stateMachine(
       MODULE,
       [],
@@ -382,7 +382,7 @@ describe('StateUpdate', () => {
     execution.executeRow(1, false);
     execution.commitRow(1);
 
-    const heap = new HeapArena();
+    const heap = new ArenaHeap();
     const machine = stateMachine(
       PROVISIONAL_MODULE,
       [],
@@ -461,7 +461,7 @@ describe('StateUpdate', () => {
     oldExecution.commitRow(0);
 
     let failure = false;
-    const heap = new HeapArena();
+    const heap = new ArenaHeap();
     const machine = stateMachine(
       structModule(() => failure),
       [],
@@ -515,7 +515,7 @@ describe('StateUpdate', () => {
     oldExecution.executeRow(1, false);
     oldExecution.commitRow(1);
 
-    const heap = new HeapArena();
+    const heap = new ArenaHeap();
     const machine = stateMachine(
       COLLECTION_MODULE,
       [],

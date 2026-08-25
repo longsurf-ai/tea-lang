@@ -5,7 +5,7 @@ import {Effect} from 'effect';
 import {fatal} from '../base/print';
 import type {ModuleCode} from './module-abi';
 import type {EffectEmission, DenseEmission} from './output';
-import {HeapArena, type HeapLimits} from './heap';
+import {ArenaHeap, type HeapLimits} from './heap';
 import type {ExecutionError} from './errors';
 import type {Input, Intermediate, State} from './state-machine';
 import {stateMachine, type TeaStateMachine} from './state-update';
@@ -40,7 +40,7 @@ export interface StepResult {
  * never cross this boundary.
  */
 export class JSRuntime {
-  private readonly heap: HeapArena;
+  private readonly heap: ArenaHeap;
   private readonly machine: TeaStateMachine;
   private state: State;
   private intermediate: Intermediate;
@@ -53,7 +53,7 @@ export class JSRuntime {
     private readonly layouts: ValueLayoutRegistry,
     options: JSRuntimeOptions = {},
   ) {
-    this.heap = new HeapArena(options.heapLimits);
+    this.heap = new ArenaHeap(options.heapLimits);
     this.machine = stateMachine(
       module,
       params,

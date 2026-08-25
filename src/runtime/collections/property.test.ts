@@ -8,7 +8,7 @@ import {
   type CollectionValue,
   type Value,
 } from '../abi';
-import {HeapArena, type HeapTransaction, type Ref} from '../heap';
+import {ArenaHeap, type HeapTransaction, type Ref} from '../heap';
 import {StructStorageRuntime} from '../struct-storage';
 import {
   type AggregateLayoutManifest,
@@ -64,7 +64,7 @@ const MANIFEST = {
 } as const satisfies AggregateLayoutManifest;
 
 interface Harness {
-  readonly heap: HeapArena;
+  readonly heap: ArenaHeap;
   readonly layouts: ValueLayoutRegistry;
   readonly collections: CollectionRuntime;
   readonly structs: StructStorageRuntime;
@@ -72,7 +72,7 @@ interface Harness {
 }
 
 function harness(maxElements = 10_000): Harness {
-  const heap = new HeapArena();
+  const heap = new ArenaHeap();
   const layouts = new ValueLayoutRegistry(MANIFEST);
   const structs = new StructStorageRuntime(heap, layouts);
   return {

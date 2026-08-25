@@ -1,7 +1,7 @@
 // Purpose: Struct-reference runtime contracts — fresh identity, shared mutation, typed-empty reads, whole-payload transaction rollback, nominal checks, and cyclic reachability.
 
 import {describe, expect, test} from 'vitest';
-import {HeapArena} from './heap';
+import {ArenaHeap} from './heap';
 import {StructStorageRuntime} from './struct-storage';
 import {
   type AggregateLayoutManifest,
@@ -43,7 +43,7 @@ const MANIFEST = {
 } as const satisfies AggregateLayoutManifest;
 
 function harness() {
-  const heap = new HeapArena();
+  const heap = new ArenaHeap();
   const layouts = new ValueLayoutRegistry(MANIFEST);
   const structs = new StructStorageRuntime(heap, layouts);
   return {heap, layouts, structs};

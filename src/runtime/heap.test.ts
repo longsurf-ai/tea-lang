@@ -3,7 +3,7 @@
 import {describe, expect, expectTypeOf, test} from 'vitest';
 import {ExecutionError} from './errors';
 import {
-  HeapArena,
+  ArenaHeap,
   isRef,
   type AnyRef,
   type HeapTransaction,
@@ -58,7 +58,7 @@ const BOX: TypeInfo<BoxValue, BoxValue> = {
 };
 
 function commit(
-  heap: HeapArena,
+  heap: ArenaHeap,
   transaction: HeapTransaction,
   roots: Iterable<AnyRef>,
 ): void {
@@ -69,7 +69,7 @@ function commit(
 
 describe('Heap arena', () => {
   test('transaction reads tentative values and Mark-Sweep keeps only rooted closure', () => {
-    const heap = new HeapArena();
+    const heap = new ArenaHeap();
     const transaction = heap.begin('row');
     const child = transaction.allocate(NODE, {value: 2});
     const kept = transaction.allocate(NODE, {value: 1, children: [child]});
@@ -98,7 +98,7 @@ describe('Heap arena', () => {
   });
 
   test('whole-payload writes are isolated until commit and disappear on abort', () => {
-    const heap = new HeapArena();
+    const heap = new ArenaHeap();
     const allocation = heap.begin('allocate');
     const box = allocation.allocate(BOX, {value: 1, child: null});
     commit(heap, allocation, [box]);
@@ -121,7 +121,7 @@ describe('Heap arena', () => {
   });
 
   test('writes validate introduced refs and Mark-Sweep handles sharing and cycles', () => {
-    const heap = new HeapArena();
+    const heap = new ArenaHeap();
     const transaction = heap.begin('cycle');
     const a = transaction.allocate(BOX, {value: 1, child: null});
     const b = transaction.allocate(BOX, {value: 2, child: null});
@@ -137,8 +137,8 @@ describe('Heap arena', () => {
   });
 
   test('cross-arena refs fail before allocation or write becomes visible', () => {
-    const left = new HeapArena();
-    const right = new HeapArena();
+    const left = new ArenaHeap();
+    const right = new ArenaHeap();
     const rightTx = right.begin('right');
     const foreign = rightTx.allocate(NODE, {value: 9});
     commit(right, rightTx, [foreign]);
@@ -152,7 +152,7 @@ describe('Heap arena', () => {
   });
 
   test('transaction states reject overlap, late use, and double completion', () => {
-    const heap = new HeapArena();
+    const heap = new ArenaHeap();
     const transaction = heap.begin('one');
     expect(() => heap.begin('two')).toThrow('cannot begin Heap transaction');
     const ref = transaction.allocate(NODE, {value: 1});
@@ -168,7 +168,7 @@ describe('Heap arena', () => {
   });
 
   test('slot reuse never revives a stale Ref', () => {
-    const heap = new HeapArena();
+    const heap = new ArenaHeap();
     const first = heap.begin('first');
     const stale = first.allocate(NODE, {value: 1});
     commit(heap, first, []);
@@ -193,7 +193,7 @@ describe('Heap arena', () => {
       },
       bytesOf: () => 16,
     };
-    const heap = new HeapArena({maxTransientLogicalBytes: 15});
+    const heap = new ArenaHeap({maxTransientLogicalBytes: 15});
     const transaction = heap.begin('row');
     expect(() => transaction.allocate(counted, {value: 1})).toThrow(
       ExecutionError,
@@ -204,7 +204,7 @@ describe('Heap arena', () => {
   });
 
   test('live limits are checked after mark and before sweep', () => {
-    const heap = new HeapArena({
+    const heap = new ArenaHeap({
       maxStorageCells: 1,
       maxLogicalBytes: 8,
       maxTransientStorageCells: 2,
@@ -225,7 +225,7 @@ describe('Heap arena', () => {
   });
 
   test('dispose aborts active work and invalidates every Ref', () => {
-    const heap = new HeapArena();
+    const heap = new ArenaHeap();
     const transaction = heap.begin('row');
     const ref = transaction.allocate(NODE, {value: 1});
     heap.dispose();

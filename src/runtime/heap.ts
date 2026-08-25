@@ -101,7 +101,7 @@ type CellState = 'tentative' | 'committed';
 type TransactionState = 'active' | 'committed' | 'aborted';
 
 interface RefRecord {
-  readonly arena: HeapArena;
+  readonly arena: ArenaHeap;
   readonly slot: number;
   readonly version: number;
   readonly type: TypeId;
@@ -146,7 +146,7 @@ function bytes(value: number, info: ErasedTypeInfo, source: string) {
   return value;
 }
 
-export class HeapArena implements Heap {
+export class ArenaHeap implements Heap {
   private readonly limits: HeapLimits;
   private readonly cells: (Cell | null)[] = [];
   private readonly versions: number[] = [];
@@ -551,7 +551,7 @@ class TransactionImpl implements HeapTransaction {
   transientBytes = 0;
 
   constructor(
-    private readonly arena: HeapArena,
+    private readonly arena: ArenaHeap,
     readonly id: number,
     readonly key: TransactionKey,
   ) {}

@@ -18,7 +18,7 @@ import {
 import type {BindInputs, BoundInput} from './binding';
 import {CollectionRuntime} from './collections';
 import {BindError} from './errors';
-import {HeapArena, type HeapTransaction, type Ref} from './heap';
+import {ArenaHeap, type HeapTransaction, type Ref} from './heap';
 import {assertMergeAxis} from './merge';
 import type {ExecutionDeclaration} from './output';
 import {resolveParamValues} from './params';
@@ -290,7 +290,7 @@ function evaluateBinding(
   exactParams: boolean,
   bindBuiltinValues: ReadonlyMap<number, Value> = new Map(),
 ): BoundModuleFacts {
-  const heap = new HeapArena();
+  const heap = new ArenaHeap();
   const transaction = heap.begin('module-binding');
   try {
     const layouts = new ValueLayoutRegistry(code.aggregateLayouts);
