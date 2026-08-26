@@ -1,6 +1,6 @@
 // Purpose: Execute one compiled Program from a validated execution configuration and host dependencies.
 
-import {executeProgram, type ExecutionSummary} from '../execute';
+import {executeProgram, type ExecutionSummary} from './execute';
 import type {Program} from '../ir/program';
 import type {ExecutionConfig} from './config';
 import {createExecutionContext, type ExecutionDependencies} from './context';

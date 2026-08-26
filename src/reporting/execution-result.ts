@@ -1,6 +1,6 @@
 // Purpose: Versioned machine-readable execution envelope shared by CLI and editor hosts.
 
-import type {ExecutionSummary} from '../execute';
+import type {ExecutionSummary} from '../execution/execute';
 import type {RunResult} from '../execution/run';
 import type {SweepResult} from './sweep';
 import type {TrajectoryResult} from './trajectory';

@@ -10,7 +10,7 @@ import {
   compileProgramToWgsl,
   type WgslEligibilityIssueCode,
 } from '../src/codegen/wgsl';
-import {compileToProgram} from '../src/compile';
+import {compileToProgram} from '../src/compiler';
 import type {Program} from '../src/ir/program';
 
 const STRATEGY_ROOT = join(

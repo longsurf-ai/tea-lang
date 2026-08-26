@@ -4,7 +4,7 @@ import {describe, expect, test} from 'vitest';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Errors} from '../base/print';
-import {compileToProgram} from '../compile';
+import {compileToProgram} from '../compiler';
 import type {ExecutionConfig} from './config';
 import {runProgram} from './run';
 

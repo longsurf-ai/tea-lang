@@ -184,7 +184,7 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   request call's own `CallResolution` owns the child semantic facts and result
   types; that capture is not physical Program identity.
 - `checkPackage` is the pipeline's check stage, wired between loadPackage
-  and buildProgram behind a phase barrier in `src/compile.ts` — the only
+  and buildProgram behind a phase barrier in `src/compiler.ts` — the only
   module that owns stage ordering.
 - Semantic vocabularies are named constants, never bare string literals at
   use sites: `ObjectKind.*`, `CallKind.*`, and `SelectionKind.*` (semantic

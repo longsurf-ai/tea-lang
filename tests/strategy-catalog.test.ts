@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
 import {paramSpecsOf} from '../src/codegen/params';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
-import {compileToProgram} from '../src/compile';
+import {compileToProgram} from '../src/compiler';
 import {loadConfig, resolveExecutionParameters} from '../src/execution';
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');

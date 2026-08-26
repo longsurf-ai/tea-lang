@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {describe, expect, test} from 'vitest';
 import {Errors} from '../base/print';
-import {compileToProgram} from '../compile';
+import {compileToProgram} from '../compiler';
 import type {Program} from '../ir/program';
 import {
   isContextError,

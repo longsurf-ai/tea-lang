@@ -4,7 +4,7 @@
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {describe, expect, test} from 'vitest';
-import {compile} from '../compile';
+import {compile} from '../compiler';
 
 const FIXTURES = join(
   fileURLToPath(new URL('.', import.meta.url)),

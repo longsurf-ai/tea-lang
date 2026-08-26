@@ -1,6 +1,6 @@
 // Purpose: Generic report collectors: complete run capture and memory-bounded sweep summaries.
 
-import type {ExecutionSummary} from '../../execute';
+import type {ExecutionSummary} from '../../execution/execute';
 import type {ReportCell, ReportSection} from '../../reporting/report';
 import {reportValue} from '../../reporting/report';
 import {

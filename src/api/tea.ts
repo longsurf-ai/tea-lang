@@ -3,7 +3,7 @@
 import {OperationalError} from '../base/operational-error';
 import {formatPos} from '../base/pos';
 import {Errors, type ErrorMsg} from '../base/print';
-import {compileToProgram} from '../compile';
+import {compileToProgram} from '../compiler';
 import {generate} from '../codegen/codegen';
 import {loadModule} from '../runtime/load';
 import {moduleBindings, withModuleBindings} from '../runtime/module-binding';

@@ -10,7 +10,7 @@ import {Errors} from '../../base/print';
 import {generate} from '../../codegen/codegen';
 import {compileProgramToWgsl} from '../../codegen/wgsl';
 import type {CompiledWgslProgram} from '../../gpu/contract';
-import {compileToProgram} from '../../compile';
+import {compileToProgram} from '../../compiler';
 import type {Program} from '../../ir/program';
 import {TypeKind} from '../../ir/type';
 import {mustBuild} from '../../noder/testing';

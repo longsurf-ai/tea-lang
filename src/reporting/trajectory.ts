@@ -1,6 +1,6 @@
 // Purpose: Renderer-neutral full-row output trajectories and typed sparse-effect annotations for one execution.
 
-import type {ExecutionBindingSummary} from '../execute';
+import type {ExecutionBindingSummary} from '../execution/execute';
 import type {
   EffectValue,
   EffectValueSchema,

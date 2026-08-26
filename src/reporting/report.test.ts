@@ -1,7 +1,7 @@
 // Purpose: Generic report sections render deterministically from backend-neutral execution summaries.
 
 import {describe, expect, test} from 'vitest';
-import type {ExecutionSummary} from '../execute';
+import type {ExecutionSummary} from '../execution/execute';
 import type {ParamSpec} from '../runtime/abi';
 import {
   parameterReportSection,

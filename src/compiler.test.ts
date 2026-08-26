@@ -5,7 +5,7 @@ import {describe, expect, test} from 'vitest';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Errors} from './base/print';
-import {compile, compileToProgram} from './compile';
+import {compile, compileToProgram} from './compiler';
 import {loadModule} from './runtime/load';
 
 const TESTDATA = join(

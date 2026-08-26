@@ -1,7 +1,7 @@
 // Purpose: Full trajectory projection keeps stable output/effect ids and logical payloads.
 
 import {describe, expect, test} from 'vitest';
-import type {ExecutionBindingSummary} from '../execute';
+import type {ExecutionBindingSummary} from '../execution/execute';
 import type {ExecutionDeclaration} from '../runtime/abi';
 import {
   buildTrajectoryResult,

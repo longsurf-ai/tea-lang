@@ -1,36 +1,31 @@
-import {pathToFileURL} from 'node:url';
 import {CSVSink, fromCSV, tea} from 'tea';
 import * as z from 'zod';
 
-const row = z.object({close: z.coerce.number()});
-
-export async function run(input: string, output: string): Promise<void> {
-  const node = tea`
-    threshold = input.float(1.5, "Threshold")
-    var float balance = 0.0
-    if close >= threshold
-        balance := balance + close
-    else
-        balance := balance - close
-
-    plot(balance, "Signed running balance")
-    plot(close >= threshold ? 1 : 0, "Above threshold")
-  `;
-  node.bind({threshold: 1.5});
-  node.bind(await fromCSV(input, row));
-  const sink = new CSVSink(output, 'w');
-  node.to(sink);
-  await sink.completion;
-  node.dispose();
+const inputPath = process.argv[2];
+const outputPath = process.argv[3];
+if (inputPath === undefined || outputPath === undefined) {
+  throw new Error('usage: node examples/api/csv-to-csv.ts INPUT OUTPUT');
 }
 
-if (
-  process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-) {
-  const [, , input, output] = process.argv;
-  if (input === undefined || output === undefined) {
-    throw new Error('usage: tsx examples/api/csv-to-csv.ts INPUT OUTPUT');
-  }
-  await run(input, output);
-}
+const schema = z.object({close: z.coerce.number()});
+const source = await fromCSV(inputPath, schema);
+
+const node = tea`
+  threshold = input.float(1.5, "Threshold")
+  var float balance = 0.0
+  if close >= threshold
+      balance := balance + close
+  else
+      balance := balance - close
+
+  plot(balance, "Signed running balance")
+  plot(close >= threshold ? 1 : 0, "Above threshold")
+`;
+
+node.bind(source);
+node.bind({threshold: 1.5});
+
+const csv = new CSVSink(outputPath, 'w');
+node.to(csv);
+
+await csv.completion;

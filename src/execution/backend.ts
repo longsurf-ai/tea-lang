@@ -1,6 +1,6 @@
 // Purpose: Acquire one host-owned execution backend from a validated runtime configuration.
 
-import type {ExecutionBackend} from '../execute';
+import type {ExecutionBackend} from './execute';
 import {createDawnDevice, type GpuDeviceLease} from '../providers/gpu/dawn';
 import type {RuntimeConfig, WebGpuRuntimeConfig} from './config';
 

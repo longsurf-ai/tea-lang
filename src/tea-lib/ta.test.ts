@@ -2,7 +2,7 @@
 // indicators that depend on it.
 
 import {describe, expect, test} from 'vitest';
-import {executeProgram} from '../execute';
+import {executeProgram} from '../execution/execute';
 import {mustBuild} from '../noder/testing';
 import {csvProvider} from '../providers/data/csv';
 import {MemorySink} from '../providers/sinks/memory-sink';

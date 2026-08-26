@@ -1,7 +1,7 @@
 // Purpose: Structured sweep results preserve stable identities independently of display labels.
 
 import {describe, expect, test} from 'vitest';
-import type {ExecutionSummary} from '../execute';
+import type {ExecutionSummary} from '../execution/execute';
 import type {ExecutionDeclaration, ParamSpec} from '../runtime/abi';
 import {
   buildSweepResult,

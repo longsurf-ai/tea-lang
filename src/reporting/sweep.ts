@@ -1,6 +1,6 @@
 // Purpose: Renderer-neutral sweep results and their terminal report projection.
 
-import type {ExecutionSummary} from '../execute';
+import type {ExecutionSummary} from '../execution/execute';
 import type {SweepRange} from '../execution/parameters';
 import type {DeclaredOutput, ExecutionDeclaration, Value} from '../runtime/abi';
 import {reportValue, type ReportSection} from './report';

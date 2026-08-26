@@ -2,20 +2,20 @@
 
 /// <reference types="@webgpu/types" />
 
-import {OperationalError} from './base/operational-error';
-import {generate} from './codegen/codegen';
-import {compileProgramToWgsl, type WgslEligibilityIssue} from './codegen/wgsl';
-import type {WgslNumericContract} from './gpu/contract';
-import type {Program} from './ir/program';
-import type {BindInputs, BoundInput} from './runtime/abi';
+import {OperationalError} from '../base/operational-error';
+import {generate} from '../codegen/codegen';
+import {compileProgramToWgsl, type WgslEligibilityIssue} from '../codegen/wgsl';
+import type {WgslNumericContract} from '../gpu/contract';
+import type {Program} from '../ir/program';
+import type {BindInputs, BoundInput} from '../runtime/abi';
 import {
   createGpuExecution,
   type GpuCachePlacement,
   type GpuExecutionOptions,
   type GpuRunTiming,
-} from './runtime/gpu';
-import {executeFixedHistory} from './runtime/js/fixed-history';
-import {loadModule} from './runtime/load';
+} from '../runtime/gpu';
+import {executeFixedHistory} from '../runtime/js/fixed-history';
+import {loadModule} from '../runtime/load';
 
 export interface CpuExecutionBackend {
   readonly kind: 'cpu';

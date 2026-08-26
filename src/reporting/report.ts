@@ -1,7 +1,7 @@
 // Purpose: Backend-neutral report sections and deterministic terminal rendering.
 
 import {TabWriter} from '../base/tabwriter';
-import type {ExecutionSummary} from '../execute';
+import type {ExecutionSummary} from '../execution/execute';
 import type {Value} from '../runtime/abi';
 
 export type ReportCell = string | number | boolean | null;

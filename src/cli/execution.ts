@@ -1,12 +1,11 @@
 // Purpose: CLI host adapters for the three first-class execution entry points: run, sweep, and configured execute.
 
 import {resolve} from 'node:path';
-import {OperationalError} from '../base/operational-error';
 import type {ErrorMsg} from '../base/print';
 import {Errors} from '../base/print';
-import {compileToProgram} from '../compile';
+import {compileToProgram} from '../compiler';
 import {paramSpecsOf} from '../codegen/params';
-import type {ExecutionSummary} from '../execute';
+import type {ExecutionSummary} from '../execution/execute';
 import {type ExecutionConfig, ExecutionConfigError} from '../execution/config';
 import {runProgram, type RunResult} from '../execution/run';
 import {RunReportSink, SweepReportSink} from '../providers/sinks/report-sink';
@@ -32,6 +31,7 @@ import {
   parseRunParameterSelections,
   parseSweepParameterSelections,
 } from './parameters';
+import type {CliResult} from './result';
 
 const JSON_RESULT_MAX_BYTES = 256 * 1024 * 1024;
 
@@ -63,21 +63,6 @@ export interface CliExecutionHost {
   readonly now: () => number;
   print(line: string): void;
 }
-
-export type CliFailure = {
-  readonly ok: false;
-  readonly kind: 'failure';
-  readonly message: string;
-};
-
-export type CliResult =
-  | {readonly ok: true}
-  | {
-      readonly ok: false;
-      readonly kind: 'diagnostics';
-      readonly errors: readonly ErrorMsg[];
-    }
-  | CliFailure;
 
 export type ExecuteOutput = 'text' | 'json';
 
@@ -238,11 +223,6 @@ export async function sweepCommand(
   );
   renderSweepExecution(host, execution, sinks);
   return {ok: true};
-}
-
-export function cliFailure(error: unknown): CliFailure | null {
-  if (!(error instanceof OperationalError)) return null;
-  return {ok: false, kind: 'failure', message: error.message};
 }
 
 function directConfig(

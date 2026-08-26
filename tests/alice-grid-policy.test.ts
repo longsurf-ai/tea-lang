@@ -8,7 +8,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
 import {paramSpecsOf} from '../src/codegen/params';
-import {compileToProgram} from '../src/compile';
+import {compileToProgram} from '../src/compiler';
 import {
   runProgram,
   loadConfig,

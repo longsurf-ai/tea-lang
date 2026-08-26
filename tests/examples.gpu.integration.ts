@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import test from 'node:test';
 import {Errors} from '../src/base/print';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
-import {compileToProgram} from '../src/compile';
+import {compileToProgram} from '../src/compiler';
 import type {Program} from '../src/ir/program';
 
 const SOURCE = join(process.cwd(), 'examples/strategy/ema-cross/strategy.tea');

@@ -1,7 +1,7 @@
 // Purpose: Compact, budgeted full-trajectory capture for generic sweep results.
 
 import {OperationalError} from '../../base/operational-error';
-import type {ExecutionBindingSummary} from '../../execute';
+import type {ExecutionBindingSummary} from '../../execution/execute';
 import type {SweepReportSnapshot} from '../../reporting/sweep';
 import type {SweepCell} from '../../reporting/sweep';
 import {
