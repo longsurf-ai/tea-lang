@@ -851,15 +851,14 @@ class Generator {
     });
 
     const requests: RequestSpec[] = this.requests.map((edge, rid) => {
-      if (edge.merge.mode !== MergeMode.Sample) {
-        return unimplemented('codegen: collect merge (security_lower_tf)');
-      }
       return {
+        name: edge.name,
         merge: {
-          mode: MergeMode.Sample,
+          mode: edge.merge.mode,
         },
         depth: depthSpec(edge.depth),
         resultSlot: children[rid].resultSlot,
+        resultLayout: this.emitter.layoutOf(edge.captureType),
         layout: this.emitter.layoutOf(edge.resultType),
         dynamic: false,
         context: staticRequestContext(edge),

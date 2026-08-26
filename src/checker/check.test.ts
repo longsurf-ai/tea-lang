@@ -380,38 +380,43 @@ describe('semantic ownership', () => {
     ).toBe(false);
   });
 
-  test('request results reject Heap-backed types and recursively containing tuples', () => {
+  test('request results reject every non-scalar type', () => {
     const cases = [
       {
         source: [
           'type Sample',
           '    int value',
-          'request.security("X", "D", Sample.new(1))',
+          'x = request.security("X", "D", Sample.new(1))',
         ].join('\n'),
         type: 'Sample',
       },
       {
-        source: 'request.security("X", "D", array.new<int>())',
+        source: 'x = request.security("X", "D", array.new<int>())',
         type: 'array<int>',
       },
       {
-        source: 'request.security("X", "D", matrix.new<int>(1, 1, 0))',
+        source: 'x = request.security("X", "D", matrix.new<int>(1, 1, 0))',
         type: 'matrix<int>',
       },
       {
-        source: 'request.security("X", "D", map.new<string, int>())',
+        source: 'x = request.security("X", "D", map.new<string, int>())',
         type: 'map<string, int>',
       },
       {
-        source: 'request.security("X", "D", [close, [true, array.new<int>()]])',
+        source:
+          'x = request.security("X", "D", [close, [true, array.new<int>()]])',
         type: '[float, [bool, array<int>]]',
+      },
+      {
+        source: 'x = request.security("X", "D", [close, true])',
+        type: '[float, bool]',
       },
     ] as const;
 
     for (const {source, type} of cases) {
       const result = checkText(source);
       expect(result.errors.map(error => error.msg)).toEqual([
-        `request expression cannot return ${type}; request results must be scalars or scalar-only tuples`,
+        `request expression cannot return ${type}; request results must be scalar`,
       ]);
       expect(
         [...result.info.calls.values()].some(
@@ -421,12 +426,11 @@ describe('semantic ownership', () => {
     }
   });
 
-  test('request results allow scalars and scalar-only tuples', () => {
+  test('request results have fixed scalar and window-array shapes', () => {
     const result = checkText(
       [
         'scalar = request.security("X", "D", close)',
-        '[left, right] = request.security("Y", "D", [open, true])',
-        'request.security("Z", "D", [close, [true, "ready"]])',
+        'window = request.security_lower_tf("Y", "1", open)',
       ].join('\n'),
     );
 
@@ -435,7 +439,28 @@ describe('semantic ownership', () => {
       [...result.info.calls.values()].filter(
         resolution => resolution.kind === CallKind.Request,
       ),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
+    expect(initTvOf(result, 'scalar').type.kind).toBe(TypeKind.Float);
+    expect(initTvOf(result, 'window').type).toMatchObject({
+      kind: TypeKind.Array,
+      elem: {kind: TypeKind.Float},
+    });
+  });
+
+  test('request calls require one plain top-level declaration target', () => {
+    for (const source of [
+      'plot(request.security("X", "D", close))',
+      'request.security("X", "D", close)',
+      '[left, right] = request.security("X", "D", [open, close])',
+      'var value = request.security("X", "D", close)',
+      'if true\n    value = request.security("X", "D", close)',
+      'fetch() => request.security("X", "D", close)\nvalue = fetch()',
+      'value = request.security("X", "D", request.security("Y", "W", close))',
+    ]) {
+      expect(checkText(source).errors.map(error => error.msg)).toContain(
+        'request call must directly initialize one plain top-level variable',
+      );
+    }
   });
 });
 
@@ -877,7 +902,7 @@ describe('calls', () => {
           'fetch(bool gaps) => request.security("X", "D", close, gaps=gaps)',
           'x = fetch(true)',
         ].join('\n'),
-        "request option 'gaps' cannot depend on local execution state",
+        'request call must directly initialize one plain top-level variable',
       ],
     ] as const;
     for (const [source, diagnostic] of cases) {
@@ -904,7 +929,7 @@ describe('calls', () => {
     const r = checkText(
       [
         'f(bool x) =>',
-        '    y = request.security("X", "D", close)',
+        '    y = close',
         '    z = y + 1',
         '    x',
         'enabled = input.bool(true)',

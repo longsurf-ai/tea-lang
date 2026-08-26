@@ -30,6 +30,37 @@ describe('request context evaluation order', () => {
     expect(js).not.toContain('manifest.requests[0].context =');
   });
 
+  test('publishes named scalar and collect result layouts', () => {
+    const module = loadModule(
+      generate(
+        mustBuild(
+          [
+            'scalar = request.security("X", "D", close)',
+            'window = request.security_lower_tf("X", "1", close)',
+            'plot(scalar + window.size())',
+          ].join('\n'),
+        ),
+      ),
+    );
+
+    expect(module.manifest.requests).toMatchObject([
+      {
+        name: 'scalar',
+        merge: {mode: 'sample'},
+        resultLayout: module.manifest.requests[0]!.layout,
+      },
+      {
+        name: 'window',
+        merge: {mode: 'collect'},
+      },
+    ]);
+    const window = module.manifest.requests[1]!;
+    expect(module.layout[window.layout]).toEqual({
+      kind: 'array',
+      element: window.resultLayout,
+    });
+  });
+
   test('binds every option once in its independent source order', () => {
     const program = mustBuild(
       [

@@ -3,48 +3,51 @@ title: 'Requests: cross-context data and the source facade'
 sidebarTitle: Requests
 ---
 
-Authority for request execution and the data-source registry. `docs/ir.md`
-owns the compile-time shape (RequestEdge, capture rules); `docs/runtime.md`
-owns the runtime basics this builds on (frames, bounded history, provisional protocol,
-SeriesView). This document owns everything between a `request.*()` call and
-a driver fetching bytes.
+Authority for request execution, public Node request-stream synchronization,
+and the data-source registry. `docs/ir.md` owns the compile-time Program shape;
+`docs/runtime.md` owns frames, bounded history, transactions, and publication.
+This document owns the direct request-declaration restriction, Node binding and
+`sync()` policies, and the separate fixed-history provider path.
 
 ```text
-Tea script   request.security("FRED:CPIAUCSL", "M", close)     Pine surface,
-                 |  compile: the whole family lowers            unchanged
+Tea script   cpi = request.security("FRED:CPIAUCSL", "M", close)
+                 |  supported direct declaration lowers
                  v  to one primitive
-IR           RequestEdge{symbol, timeframe, context order,
-                          option expressions/order, child Program}
-                 |  bind (async)
-                 v
-Runtime      child instance per (edge, symbol, timeframe)
-             child rows -> commit -> MERGE onto the parent axis
-             (sample/collect, gaps/lookahead — source-independent)
-                 |  resolveContext(symbol, timeframe, range)
-                 v
-Provider     prefix registry:  "FRED:" -> fred(apiKey)
-             "" -> host primary | unprefixed -> yahoo   csv
-             drivers normalize + resample; errors are typed
-                 ^
-Host config  registry construction + API keys (CLI / embedding-host config)
+IR           RequestEdge{name, symbol, timeframe, mode,
+                          capture/result types, child Program}
+                 |
+       +---------+--------------------------------+
+       |                                          |
+       v                                          v
+Node   bind DataStream by `name`          Fixed history (async bind)
+       child JSRuntime -> sync policy     resolveContext(symbol, timeframe)
+       -> parent step                     -> child JSRuntime -> sample merge
+                                                  |
+                                                  v
+                                         Provider prefix registry + drivers
 ```
 
-- One primitive: every `request.*` family member lowers to a RequestEdge.
-  `security_lower_tf` is collect merge; `dividends`/`splits`/`earnings`/
+- One primitive: every supported `request.*` family member lowers to a
+  RequestEdge. `security` carries one scalar child value; `security_lower_tf`
+  carries scalar child values that public Node collects into a parent-owned Tea
+  array. The fixed-history adapter supports only scalar `security` sample merge
+  and rejects collect. `dividends`/`splits`/`earnings`/
   `economic`/`financial` are namespace conventions plus a fixed child body.
-  One merge engine, N drivers.
+  Fixed-history keeps one sample-merge engine for N drivers; Node uses the
+  separate `sync()` projectors specified below.
 - The facade is not a language feature. Pine already namespaces symbols by
   prefix (`NASDAQ:AAPL`, `FRED:UNRATE` are valid TradingView symbols), so
   source routing lives entirely in the host's registry; existing Pine
-  scripts run unchanged. This is the superset-while-compliant mechanism:
+  scripts retain the same symbol spelling. This is the
+  superset-while-compliant mechanism:
   quantmod's `src="FRED"` becomes the `FRED:` prefix.
 - Named `symbol` and `timeframe` arguments evaluate in source order and are
   then assembled into the canonical runtime pair. The captured expression is
   not part of that parent schedule; it executes once per row in the child
   Program's context.
-- Merge semantics are runtime-owned and never delegated to drivers: a FRED
-  monthly series sampled onto a daily axis obeys exactly the gaps/lookahead
-  rules an equity HTF request obeys.
+- Fixed-history merge semantics are runtime-owned and never delegated to
+  drivers: a FRED monthly series sampled onto a daily axis obeys exactly the
+  gaps/lookahead rules an equity HTF request obeys.
 
 ## The provider contract
 
@@ -175,8 +178,9 @@ The generated root gains one nested `JSModule` per RequestEdge.
 `manifest.requests[rid]` owns the JSON-safe edge metadata and its late concrete
 context.
 The fixed-historical adapter binds a child exactly as it binds the root — same
-frames, State/Intermediate transition, recursively for nested requests — against
-the resolved ProviderContext, with two differences:
+frames and State/Intermediate transition — against the resolved
+ProviderContext. Current source rules reject requests inside another request
+capture. A child otherwise differs from the root in two ways:
 
 - Params are compilation-global (`ir.md`): the child declares no new UI inputs,
   and its immutable manifest snapshot receives the root's current parameter
@@ -185,29 +189,34 @@ the resolved ProviderContext, with two differences:
   after each successful final step the host copies that current value into the
   result column.
 
-The root binding constructs one shared host environment containing the exact
-value-layout registry, request-context budget, fixed-value logical-byte budget,
-and the Heap-limit configuration. Every static child receives those shared
-facts but constructs an independent Heap, `StructStorageRuntime`, and
-`CollectionRuntime`. The configured Heap limits therefore apply separately to
-each execution context.
+Fixed-history root binding constructs one shared host environment containing
+the exact value-layout registry, request-context budget, fixed-value
+logical-byte budget, and Heap-limit configuration. Every static child receives
+those shared facts but constructs an independent Heap,
+`StructStorageRuntime`, and `CollectionRuntime`. The configured Heap limits
+therefore apply separately to each execution context.
 
-The request boundary admits only scalars and recursively scalar-only tuples;
-the checker rejects structs, collections, resources, and tuples containing any
-of them, and binding validates the physical result layout again. Each successful
-child-row result is recursively copied into a parent-owned column. That column
-reserves exactly `rows * shallowBytes(layout)` from the shared fixed-value
-budget. After copying the column, the fixed-historical adapter disposes the
-child `JSRuntime` and its Heap; the parent view retains only copied values and
-their logical storage accounting. A `Ref` never crosses the request boundary.
-Aggregate request results remain unsupported until they
-have an explicit deep graph-copy contract.
+The request boundary admits only scalar child values. The checker rejects
+structs, resources, collections, and tuples, and each execution adapter
+validates the physical `resultLayout` again. In fixed-history sample mode, each
+successful child-row scalar is copied into a parent-owned column. That column
+reserves exactly `rows * shallowBytes(resultLayout)` from the shared fixed-value
+budget. After copying it, fixed-history disposes the child `JSRuntime` and Heap;
+the parent view retains only copied values and their logical accounting. A
+`Ref` never crosses the request boundary.
 
-Each static edge owns one completed result view for its bind-time context pair.
-Cross-edge deduplication is a later optimization, not a semantic requirement.
-Heap isolation means parent and child transactions never contend for one arena.
+`security_lower_tf` does not transport a child collection. Public Node carries
+a frozen batch of copied scalar values into the parent step, where runtime
+creates the ordinary Tea array inside the parent Heap transaction. This collect
+path is Node-only. Fixed-history rejects collect before resolving its child
+provider.
 
-## Merge
+In fixed-history, each static edge owns one completed result view for its
+bind-time context pair. Cross-edge deduplication is a later optimization, not a
+semantic requirement. Heap isolation means parent and child transactions never
+contend for one arena.
+
+## Fixed-history sample merge
 
 Merge is a pure function of (parent axis, child axis, child committed
 result, MergePolicy). Its product is **a parent-row-indexed SeriesView per
@@ -239,10 +248,110 @@ barSpan(p)` — i.e. the most recent child bar that has _closed_ by the
 - **gaps_on**: rows where no _new_ child bar closed merge as na;
   **gaps_off** carries the last merged value forward.
 
-Collect mode (`security_lower_tf`) will return the array of child results whose
-bars fall inside the parent bar. It requires both the collect merge policy and
-an explicit child-to-parent aggregate graph-copy contract, so it remains a
-separate staged request feature.
+Fixed-history accepts only Sample mode. A `security_lower_tf` Collect edge fails
+before child-provider resolution; it never silently applies sample alignment. Public
+Node collect behavior is the separate synchronization contract below.
+
+## Public Node request streams
+
+Public Node does not resolve provider contexts or reuse the fixed-history axis
+merge. The host binds one `DataStream` to each request declaration, and Node
+builds one lazy RxJS execution graph from those streams.
+
+### Direct declaration and binding identity
+
+A request call must directly initialize one ordinary top-level variable:
+
+```tea
+daily = request.security("X", "D", close)
+intraday = request.security_lower_tf("X", "15", close)
+```
+
+That variable name is the public binding key:
+
+```ts
+node.bind({daily: dailyStream, intraday: intradayStream});
+```
+
+The symbol is context configuration, not stream identity. Two declarations may
+request the same symbol at different timeframes and bind different streams.
+Changing a bound symbol parameter does not clear the declaration's stream. A
+key that names both a root series and a request is ambiguous; unknown and
+ambiguous keys fail before any module marker or Observable changes.
+
+Inline calls, bare expression statements, tuple targets, `var`/`varip`
+declarations, local blocks, functions or methods, and calls inside another
+request capture are rejected. The captured child value must be scalar.
+`request.security` has source-visible type `T`; `request.security_lower_tf`
+captures the same scalar `T` but has source-visible type `array<T>`.
+
+### Clock and event-time inputs
+
+`DataStream.clock` is a regular duration in Tea's nanosecond-based `Clock`
+units; `i` means irregular or unknown. Concrete request timeframes convert to a
+clock only for positive minute strings and `[N]S`, `[N]D`, `[N]W`, or `[N]M`;
+unsupported or empty strings produce `i`. Known clocks bound into one Node must
+agree. A known request-timeframe clock must also agree with a known child clock;
+`.to()` reports a setup error rather than resampling.
+
+Event time is separate metadata: a directly bound Zod object schema may declare
+the reserved field `time: bigint`, representing Unix epoch seconds. It is not a
+Tea numeric series and never enters `StepInput.series`. Each source's event time
+must be nondecreasing; synchronized root fields that both carry time must agree.
+Event-window selection additionally requires strictly increasing main times.
+
+### Synchronization policies
+
+Every request child owns an independent `JSRuntime` and produces its captured
+scalar after each successful final step. Node folds request edges in dense rid
+order. Each fold uses the existing target-driven `sync()` operator to write one
+result into the main datum under the edge's declaration name. Before stepping,
+Node projects those named fields back into manifest rid order. The parent
+runtime does not step until every edge has supplied its entry.
+
+| Request and policy | Selection                                                  | Ready condition                     | Parent value                                         | Consumed child values            |
+| ------------------ | ---------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------- | -------------------------------- |
+| scalar one-to-one  | every `security` edge                                      | at least one child result           | first `T`                                            | 1                                |
+| count window       | Collect; main and child clocks known; `main % child === 0` | at least `N = main / child` results | first `N` values                                     | `N`                              |
+| event-time window  | remaining Collect; both schemas declare `time: bigint`     | immediately for each main datum     | values with `previousMain < child.time <= main.time` | late values plus selected prefix |
+| array one-to-one   | remaining Collect                                          | at least one child result           | `[first]`                                            | 1                                |
+
+Collect policy precedence is count window, then event-time window, then array
+one-to-one. A count ratio must fit in a JavaScript safe integer. The first event
+window has no lower bound and selects every buffered child with
+`child.time <= main.time`; later windows are open on the left and closed on the
+right. An empty event window emits `[]`. A child value arriving at or before the
+already emitted lower boundary is late: Node consumes and drops it silently.
+Buffered future values remain for a later main datum. Scalar `security` always
+uses one-to-one synchronization in Node; its fixed-history `gaps`, `lookahead`,
+`ignore_invalid_symbol`, and `calc_bars_count` settings do not select a Node
+policy.
+
+### Ordering, completion, errors, and cancellation
+
+`sync()` subscribes its buffered source before its target. Consequently every
+child graph is connected before the main stream, even though a main datum may
+wait in the target FIFO until enough child values exist. A child/source error
+fails the synchronized stream immediately. Target completion discards unused
+source values. If a completed source cannot satisfy the oldest pending target,
+the synchronized output completes instead of retaining an impossible wait.
+
+The root Node owns one execution connection and one public result `Subject`.
+Later sinks observe future root results only. The Subscription returned by
+`.to()` controls only that sink; unsubscribing it does not stop the Node-owned
+execution. Connection termination or idempotent `dispose()` tears down the
+complete child graph, interrupts an in-flight step Effect, and disposes every
+runtime once.
+
+### Parent-Heap collect materialization
+
+For a Collect edge, Node passes a frozen raw scalar batch in the corresponding
+`StepInput.requests` slot. After the parent Heap transaction opens and before
+generated `main`, runtime validates every element against `resultLayout` and
+uses the ordinary `array.from` operation to create the array described by the
+parent `layout`. `ctx.request` and request history see that parent-owned array.
+A failed step aborts its allocation; successful final state retains it through
+ordinary Heap root discovery. No child `Ref` or array header crosses runtimes.
 
 ## Static requests
 
@@ -258,19 +367,16 @@ dynamic requests are not supported yet; symbol and timeframe must be bind-time-k
 
 This is fail-closed even when source declares `dynamic_requests=true`; the
 declaration option does not enable an execution feature that the runtime cannot
-provide. The request-context budget still spans recursively bound static child
-contexts, with one context pair per edge.
+provide. Fixed-history reserves one request-context budget entry for each
+accepted static edge.
 
-The fixed-historical host adapter recursively executes these static children
+The fixed-historical host adapter executes each static child
 through the sole `JSRuntime`. Each concrete `JSModule` manifest directly stores
 its static pair, options, depth, and child metadata, while `requests[rid]` owns
-the child code module. `Node.to()` currently
-rejects a ready module with requests because its
-child Observable/runtime wiring has not been implemented. Binding readiness is
-therefore not a claim that Node can execute requests yet. Request-source
-bindings recurse through the child Node tree. One keyed stream fans out to all
-matching request symbols; unknown keys fail before mutation. The complete
-recursive module snapshot is assembled only when exposed or executed.
+the child code module. It executes only Sample edges and rejects Collect before
+provider resolution. Public Node instead receives explicitly bound request
+streams by declaration name and applies the synchronization policies above;
+symbol identity never selects or fans out a Node stream.
 
 Each edge also owns four bind-time options in canonical order: `gaps`,
 `lookahead`, `ignore_invalid_symbol`, and `calc_bars_count`. They remain
@@ -308,27 +414,32 @@ multiplying the final request result is not an acceptable approximation.
 Execution:
 
 - Binding deep-copies the recursive manifests, installs parameter values, and
-  runs each module's direct `concretize()` method. The fixed-historical host
-  reads the frozen request context, awaits `resolveContext` with its range
-  demand, runs the child over its exposed extent, and prepares the merged view.
-  No supported row execution discovers a context or suspends.
-- The parent reads the prepared view through `ctx.request(rid, offset)`. History
-  is parent-row-indexed and follows the same direct-readable-binding rule as
-  other values.
+  runs each module's direct `concretize()` method.
+- The fixed-historical host reads the frozen request context, awaits
+  `resolveContext` with its range demand, runs the child over its exposed
+  extent, and prepares the merged view. No supported row execution discovers a
+  context or suspends.
+- Public Node never resolves that context. It consumes the host-bound
+  `DataStream`, synchronizes each child value into the main datum under its
+  declaration name, then projects the manifest-ordered request vector passed to
+  the same `JSRuntime` interface.
+- The parent reads the current or historical value through
+  `ctx.request(rid, offset)`. Request history is parent-step-indexed and follows
+  the same direct-readable-binding rule as other values.
 - Empty symbol/timeframe values inherit the current Program context's effective
-  identity. At the root that may still be the host's empty/default pair; in a
-  nested request it means the surrounding child, never an accidental jump back
-  to the root provider default.
+  identity in fixed-history. At the root that may still be the host's
+  empty/default pair.
 - A failed context is a `BindError`, or an empty prepared view when the edge's
   `ignoreInvalidSymbol` option is enabled. Context-budget exhaustion is also a
-  bind-time failure.
+  bind-time failure. These provider rules do not apply to Node's already-bound
+  streams.
 
 ## Staged beyond this slice
 
 Dynamic series context arguments and their execution suspension protocol;
-collect merge and `security_lower_tf`;
+fixed-history execution of `security_lower_tf`; request calls outside one
+direct plain top-level declaration, including nested request captures;
 `dividends/splits/earnings/economic/financial` catalog sugar over the
 namespace conventions; currency-aware context identity and FX conversion;
-live ticks driving child contexts (child
-provisional state exists, push feeds do not); cross-edge instance dedup;
-disk caching for network drivers.
+provisional/final live request updates, watermarks, and implicit resampling;
+cross-edge instance dedup; disk caching for network drivers.

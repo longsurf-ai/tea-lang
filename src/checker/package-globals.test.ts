@@ -247,7 +247,9 @@ describe('library package runtime globals', () => {
       'import bad\nvalue = bad.read()',
     );
     expect(
-      messages(request).some(message => message.includes('requests')),
+      messages(request).some(message =>
+        message.includes('directly initialize one plain top-level variable'),
+      ),
     ).toBe(true);
 
     const mutation = checkWith(

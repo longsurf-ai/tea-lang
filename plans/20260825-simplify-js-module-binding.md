@@ -40,14 +40,14 @@ deep-copy manifest --> direct generated concretization --> frozen JSModule snaps
 The existing data moves into the concrete manifest instead of a parallel
 `JSModuleBinding`:
 
-| Current owner | Concrete-manifest owner |
-| --- | --- |
-| `bindings[].parameter.value`, `parameterValues` | `manifest.params[pid].value` |
-| `bindings[].series.supplied` | `manifest.series[sid].supplied` |
-| `binding.retention` | each manifest `depth` field |
-| `binding.activeParams` | `manifest.params[pid].active` |
-| `binding.outputs` | `manifest.outputs[oid].boundArgs` |
-| `binding.requests` | `manifest.requests[rid].context` |
+| Current owner                                   | Concrete-manifest owner           |
+| ----------------------------------------------- | --------------------------------- |
+| `bindings[].parameter.value`, `parameterValues` | `manifest.params[pid].value`      |
+| `bindings[].series.supplied`                    | `manifest.series[sid].supplied`   |
+| `binding.retention`                             | each manifest `depth` field       |
+| `binding.activeParams`                          | `manifest.params[pid].active`     |
+| `binding.outputs`                               | `manifest.outputs[oid].boundArgs` |
+| `binding.requests`                              | `manifest.requests[rid].context`  |
 
 ## 2. Problem
 
@@ -91,8 +91,8 @@ the module; no second compiler or runtime path is added.
      write the parameter value or series marker, run direct concretization when
      dependencies are present, freeze, and return a new module tree.
    - Derive readiness/missing inputs from manifest fields. Allow a parameter to
-     replace an earlier value before execution; keep streams Node-owned and fan
-     keyed request streams recursively through child Nodes.
+     replace an earlier value before execution; keep streams Node-owned and
+     bind request streams to child Nodes by direct declaration name.
    - Propagate compilation-global parameter values into request-child manifest
      snapshots so each child `ctx.param(pid)` reads its own current module.
 

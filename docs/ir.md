@@ -199,12 +199,17 @@ places to its depth pass for annotation.
   the request call's resolution; the noder projects that resolution to a
   `RequestEdge` and compiles its captured expression into a **child Program**
   with its own context, axis, names, series inputs, slots, and rollback. The
-  capture facts are not the child Program itself. Constants and direct scalar
-  inputs may cross from the root; automatic closure over computed root names
-  is staged and rejected in the meantime. The child designates a
-  **result name** (`RequestEdge.resultName`, written each child bar; its type
-  is the edge's `resultType`) whose committed values the runtime merges onto
-  the parent axis. The edge retains four concrete bind-time option
+  capture facts are not the child Program itself. A request must directly
+  initialize one plain top-level variable; that target becomes
+  `RequestEdge.name` and the public Node stream-binding identity. Inline,
+  tuple, persistent, local, function-owned, and nested request calls fail in
+  checking. Constants and direct scalar inputs may cross from the root;
+  automatic closure over computed root names is staged and rejected in the
+  meantime. The child designates a **result name**
+  (`RequestEdge.resultName`, written each child bar) whose type is the scalar
+  `captureType`. `request.security` exposes the same `T` as `resultType` with
+  Sample mode; `request.security_lower_tf` exposes `array<T>` as `resultType`
+  with Collect mode. The edge retains four concrete bind-time option
   expressions (`gaps`, `lookahead`, `ignore_invalid_symbol`, and
   `calc_bars_count`) plus their source evaluation order; omitted options
   normalize to `false`, `false`, `false`, and `0`. Currency remains a
@@ -218,6 +223,8 @@ places to its depth pass for annotation.
   does not enable dynamic contexts in this implementation. Non-security request
   kinds (financial/dividends/economic) map to edges whose child is a plain
   series-input projection; their extra context args ride the same static shape.
+  [Requests](requests.md) owns the detailed Node synchronization and separate
+  fixed-history sample contracts.
 - **funcs** (a projection, not a field): semantic function stencils are keyed
   only by `(FunctionObject, type + qualifier signature)`, not by a Program or
   request owner. They remain **real functions with runtime call dispatch**;
@@ -378,7 +385,11 @@ unreachable never enter `requests` — dead-request elimination by construction.
   be constants or direct scalar input bindings. Bind-time params are
   compilation-global: the child references the parent's ParamInputs and
   declares none of its own. Materializing computed root values in the child is
-  a possible later extension.
+  a possible later extension. The checker has already proved that the request
+  call directly initializes its named top-level declaration and that the child
+  transport type is scalar; the noder preserves that name plus distinct child
+  `captureType` and parent `resultType` rather than re-deriving placement or
+  collection policy.
 - Libraries link at check time through the import seam (Go's
   types2.Importer split): the loader's registry decides what a path means
   and loads libraries recursively (cycle detection included); the checker
@@ -460,5 +471,5 @@ Program or reinterpret Tea matching/accounting semantics. See
 - General interval analysis can refine history demands for compound expressions
   over loop induction variables; exact direct-induction reads are already
   resolved.
-- Merge policy details for `request.security_lower_tf` (collect) vs
-  `security` (sample) to be finalized against real host semantics.
+- Fixed-history collect merge for `request.security_lower_tf`; public Node
+  collect synchronization is already defined in [Requests](requests.md).

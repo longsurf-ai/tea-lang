@@ -158,6 +158,7 @@ const child: Program = {
 
 const edge: RequestEdge = {
   pos,
+  name: 'requested',
   symbol: {
     kind: IrKind.Const,
     pos,
@@ -182,6 +183,7 @@ const edge: RequestEdge = {
     calcBarsCount: int(0),
   },
   resultName: childResult,
+  captureType: FloatType,
   resultType: FloatType,
   dynamic: false,
   depth: {kind: DepthKind.None},

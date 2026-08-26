@@ -1058,6 +1058,17 @@ function buildFuncs(): NativeFunc[] {
       Qualifier.Series,
       Effect.Request,
     ),
+    func(
+      'request.security_lower_tf',
+      [
+        req('symbol', StringType, Qualifier.Series, {acceptsNa: false}),
+        req('timeframe', StringType, Qualifier.Series, {acceptsNa: false}),
+        req('expression', TypeRef.Any, Qualifier.Series, {capture: true}),
+      ],
+      FloatType,
+      Qualifier.Series,
+      Effect.Request,
+    ),
   );
 
   // na handling and conversions.

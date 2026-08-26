@@ -163,6 +163,15 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   catalog inputs. Offset zero follows the same rule. Field selections, calls,
   collection accessors, arithmetic, and other computed operands never acquire
   synthetic history Names.
+- A request call must directly initialize one plain top-level Name declaration.
+  Inline calls, expression statements, tuple targets, persistent declarations,
+  blocks, functions/methods, and calls inside another request capture are user
+  errors. That declaration Name is the public Node stream-binding identity;
+  symbol and timeframe never serve as binding keys. `RequestCall` owns this
+  `bindingName`, the scalar `captureType`, and the source-visible `resultType`:
+  `request.security` returns the captured scalar `T`, while
+  `request.security_lower_tf` returns `array<T>`. Structs, resources,
+  collections, and tuples cannot cross the child boundary.
 - Request captures re-check in a CHILD semantic context with fresh `Info`:
   only constant values and direct scalar input bindings cross contexts;
   computed root aliases fail closed because no child-frame projection exists
@@ -173,7 +182,7 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   cleanly. Scalar input declarations remain compilation-global across the
   capture boundary; source inputs are context-owned and rejected there. The
   request call's own `CallResolution` owns the child semantic facts and result
-  type; that capture is not physical Program identity.
+  types; that capture is not physical Program identity.
 - `checkPackage` is the pipeline's check stage, wired between loadPackage
   and buildProgram behind a phase barrier in `src/compile.ts` — the only
   module that owns stage ordering.

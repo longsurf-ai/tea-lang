@@ -321,6 +321,11 @@ async function bindStaticRequests(
         `dynamic request ${requestId} is unsupported by fixed historical binding`,
       );
     }
+    if (request.merge.mode === 'collect') {
+      throw new BindError(
+        `collect request ${requestId} is unsupported by fixed historical binding`,
+      );
+    }
   });
   if (parent.axis === null) {
     throw new BindError(
@@ -367,7 +372,7 @@ async function bindStaticRequest(
       `dynamic request ${requestId} is unsupported by fixed historical binding`,
     );
   }
-  assertRequestTransportLayout(environment.layouts, spec.layout);
+  assertRequestTransportLayout(environment.layouts, spec.resultLayout);
   const symbol = binding.symbol === '' ? parentIdentity.symbol : binding.symbol;
   const timeframe =
     binding.timeframe === '' ? parentIdentity.timeframe : binding.timeframe;
@@ -435,7 +440,7 @@ async function bindStaticRequest(
       childContext,
       childIdentity,
       spec.resultSlot,
-      spec.layout,
+      spec.resultLayout,
       environment,
     );
     try {

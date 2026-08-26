@@ -5,7 +5,7 @@ import {describe, expect, test} from 'vitest';
 import {of, Subject} from 'rxjs';
 import * as z from 'zod';
 import type {StepResult} from '../runtime/js-runtime';
-import {moduleBindings} from '../runtime/module-binding';
+import {d, m, ns, w, y, type Clock} from './clock';
 import type {Sink} from './sink';
 import {DataStream} from './stream';
 import {TeaCompileError, tea} from './tea';
@@ -121,45 +121,83 @@ describe('tea', () => {
     ]);
   });
 
-  test('owns static request children and routes a bind-known context source', () => {
-    const source = numericSource(1, 2);
+  test('binds request streams by declaration name, not requested symbol', async () => {
+    const node = tea`
+      daily = request.security("X", "D", close)
+      weekly = request.security("X", "W", close)
+      plot(daily + weekly)
+    `;
+
+    expect(node.module.manifest.requests.map(request => request.name)).toEqual([
+      'daily',
+      'weekly',
+    ]);
+    expect(() => node.bind({X: numericSource(1)})).toThrow(
+      "no bind-known root series or static request child matches 'X'",
+    );
+    expect(
+      node.bind({
+        daily: clockedNumericSource(d, 1),
+        weekly: clockedNumericSource(w, 10),
+      }),
+    ).toBe(node);
+    expect(node.ready()).toBe(true);
+
+    const sink = new StepSink();
+    node.to(sink);
+    await sink.completion;
+
+    expect(values(sink)).toEqual([11]);
+  });
+
+  test('rejects request and DataStream clock disagreement before subscribing', () => {
+    let subscriptions = 0;
     const node = tea`
       requested = request.security("X", "D", close)
       plot(requested)
     `;
+    node.bind({
+      requested: new DataStream(
+        z.object({close: z.number()}),
+        subscriber => {
+          subscriptions += 1;
+          return of({close: 1}).subscribe(subscriber);
+        },
+        m,
+      ),
+    });
 
-    expect(node.ready()).toBe(false);
-    expect(node.bind({X: source})).toBe(node);
-    expect(node.ready()).toBe(true);
-    expect(() => node.to(new StepSink())).toThrow(
-      'Node request execution requires time and finality semantics that DataStream does not provide',
-    );
+    expect(() => node.to(new StepSink())).toThrow('expects clock');
+    expect(subscriptions).toBe(0);
   });
 
-  test('uses bound request parameters as keyed child identities', () => {
-    const source = numericSource(1);
+  test('rejects conflicting root clocks before changing binding state', () => {
+    const node = tea`plot(close + open)`;
+    const initial = node.module;
+
+    expect(() =>
+      node.bind({
+        close: clockedNumericSource(d, 1),
+        open: clockedNumericSource(w, 1),
+      }),
+    ).toThrow('bound DataStream clocks disagree');
+    expect(node.module).toBe(initial);
+  });
+
+  test('rejects a count-window ratio outside JavaScript safe integers', () => {
     const node = tea`
-      symbol = input.symbol("X")
-      requested = request.security(symbol, "D", close)
-      plot(requested)
+      lower = request.security_lower_tf("X", "", close)
+      plot(close + lower.size())
     `;
-    node.bind({symbol: 'Y'});
+    node.bind({
+      close: clockedNumericSource(y, 10),
+      lower: clockedNumericSource(ns, 1),
+    });
 
-    expect(node.ready()).toBe(false);
-    const beforeFailure = node.module;
-    expect(() => node.bind({X: source})).toThrow(
-      "no bind-known root series or static request child matches 'X'",
-    );
-    expect(node.module.manifest).toStrictEqual(beforeFailure.manifest);
-    expect(node.module.requests[0]?.manifest).toStrictEqual(
-      beforeFailure.requests[0]?.manifest,
-    );
-    expect(node.ready()).toBe(false);
-    expect(node.bind({Y: source})).toBe(node);
-    expect(node.ready()).toBe(true);
+    expect(() => node.to(new StepSink())).toThrow('clock ratio is too large');
   });
 
-  test('invalidates a bound request stream when its parameter identity changes', () => {
+  test('keeps a request stream bound when its symbol parameter changes', () => {
     const node = tea`
       symbol = input.symbol("X")
       requested = request.security(symbol, "D", close)
@@ -167,16 +205,13 @@ describe('tea', () => {
     `;
     node.bind({symbol: 'X'});
 
-    node.bind({X: numericSource(1)});
+    node.bind({requested: numericSource(1)});
     const oldModule = node.module;
     expect(node.ready()).toBe(true);
 
     node.bind({symbol: 'Y'});
     expect(oldModule.manifest.requests[0]?.context?.symbol).toBe('X');
     expect(node.module.manifest.requests[0]?.context?.symbol).toBe('Y');
-    expect(node.ready()).toBe(false);
-
-    node.bind({Y: numericSource(2)});
     expect(node.ready()).toBe(true);
   });
 
@@ -187,7 +222,7 @@ describe('tea', () => {
       plot(requested)
     `;
     node.bind({length: 6});
-    node.bind({X: numericSource(1)});
+    node.bind({requested: numericSource(1)});
 
     expect(node.ready()).toBe(true);
     expect(
@@ -199,9 +234,16 @@ describe('tea', () => {
     });
   });
 
-  test('discovers nested request children after their parents bind', () => {
-    const source = numericSource(1);
-    const node = tea`
+  test('rejects inline, function-owned, and nested request calls', () => {
+    const inline = () => tea`
+      plot(request.security("X", "D", close))
+    `;
+    const inFunction = () => tea`
+      fetch() => request.security("X", "D", close)
+      requested = fetch()
+      plot(requested)
+    `;
+    const nested = () => tea`
       requested = request.security(
         "X",
         "D",
@@ -210,46 +252,138 @@ describe('tea', () => {
       plot(requested)
     `;
 
-    expect(node.bind({X: source})).toBe(node);
-    expect(node.ready()).toBe(false);
-    expect(node.bind({Y: source})).toBe(node);
-    expect(node.ready()).toBe(true);
+    for (const compile of [inline, inFunction, nested]) {
+      expect(compile).toThrow(
+        'request call must directly initialize one plain top-level variable',
+      );
+    }
   });
 
-  test('fans one keyed stream into matching root and request-child series', () => {
+  test('executes scalar requests one-to-one', async () => {
     const node = tea`
-      requested = request.security("close", "D", close)
+      requested = request.security("X", "D", close)
       plot(close + requested)
     `;
-    expect(node.bind({close: numericSource(1)})).toBe(node);
-    expect(node.ready()).toBe(true);
-    expect(
-      moduleBindings(node.module).find(binding => binding.name === 'close'),
-    ).toMatchObject({kind: 'series', supplied: true});
-    expect(
-      moduleBindings(node.module.requests[0]!).find(
-        binding => binding.name === 'close',
-      ),
-    ).toMatchObject({kind: 'series', supplied: true});
+    node.bind({
+      close: numericSource(10, 20),
+      requested: numericSource(1, 2),
+    });
+    const sink = new StepSink();
+
+    node.to(sink);
+    await sink.completion;
+
+    expect(values(sink)).toEqual([11, 22]);
   });
 
-  test('fans one request key into every recursively matching child', () => {
+  test('collects lower-timeframe values by regular clock count', async () => {
+    const twoMinutes = (2n * m) as Clock;
     const node = tea`
-      daily = request.security("X", "D", close)
-      weekly = request.security("X", "W", close)
-      plot(daily + weekly)
+      lower = request.security_lower_tf("X", "1", close)
+      plot(close)
+      plot(lower.size())
+      plot(lower.first())
+      plot(lower.last())
     `;
+    node.bind({
+      close: clockedNumericSource(twoMinutes, 10, 20),
+      lower: clockedNumericSource(m, 1, 2, 3, 4),
+    });
+    const sink = new StepSink();
 
-    node.bind({X: numericSource(1)});
+    node.to(sink);
+    await sink.completion;
 
-    expect(node.ready()).toBe(true);
-    expect(
-      node.module.requests.map(request =>
-        moduleBindings(request).find(binding => binding.name === 'close'),
+    expect(outputValues(sink)).toEqual([
+      [10, 2, 1, 2],
+      [20, 2, 3, 4],
+    ]);
+  });
+
+  test('collects event-time windows including empty windows', async () => {
+    const node = tea`
+      lower = request.security_lower_tf("X", "", close)
+      plot(close)
+      plot(lower.size())
+    `;
+    node.bind({
+      close: timedNumericSource(
+        {time: 10n, close: 10},
+        {time: 20n, close: 20},
+        {time: 30n, close: 30},
       ),
-    ).toEqual([
-      {kind: 'series', name: 'close', supplied: true},
-      {kind: 'series', name: 'close', supplied: true},
+      lower: timedNumericSource(
+        {time: 5n, close: 1},
+        {time: 10n, close: 2},
+        {time: 25n, close: 3},
+      ),
+    });
+    const sink = new StepSink();
+
+    node.to(sink);
+    await sink.completion;
+
+    expect(outputValues(sink)).toEqual([
+      [10, 2],
+      [20, 0],
+      [30, 1],
+    ]);
+  });
+
+  test('drops lower-timeframe values that arrive after their window', async () => {
+    const mainRows = new Subject<TimedNumericDatum>();
+    const childRows = new Subject<TimedNumericDatum>();
+    const node = tea`
+      lower = request.security_lower_tf("X", "", close)
+      plot(close)
+      plot(lower.size())
+      plot(lower.first())
+    `;
+    node.bind({
+      close: timedNumericSubject(mainRows),
+      lower: timedNumericSubject(childRows),
+    });
+    const sink = new StepSink();
+    node.to(sink);
+
+    childRows.next({time: 5n, close: 1});
+    mainRows.next({time: 10n, close: 10});
+    await sink.waitFor(1);
+
+    childRows.next({time: 8n, close: 99});
+    childRows.next({time: 15n, close: 2});
+    mainRows.next({time: 20n, close: 20});
+    await sink.waitFor(2);
+
+    childRows.complete();
+    mainRows.complete();
+    await sink.completion;
+
+    expect(outputValues(sink)).toEqual([
+      [10, 1, 1],
+      [20, 1, 2],
+    ]);
+  });
+
+  test('falls back to one-to-one arrays without clocks or event time', async () => {
+    const node = tea`
+      lower = request.security_lower_tf("X", "D", close)
+      plot(close)
+      plot(lower.size())
+      plot(lower.first())
+    `;
+    node.bind({
+      close: numericSource(10, 20),
+      lower: numericSource(1, 2),
+    });
+    const sink = new StepSink();
+
+    node.to(sink);
+    await sink.completion;
+
+    expect(outputValues(sink)).toEqual([
+      [10, 1, 1],
+      [20, 1, 2],
     ]);
   });
 
@@ -262,12 +396,12 @@ describe('tea', () => {
     const initial = node.module;
     const source = numericSource(1);
 
-    expect(() => node.bind({X: source, missing: source})).toThrow(
+    expect(() => node.bind({x: source, missing: source})).toThrow(
       "no bind-known root series or static request child matches 'missing'",
     );
     expect(node.module).toBe(initial);
     expect(node.ready()).toBe(false);
-    expect(node.bind({X: source, Y: source})).toBe(node);
+    expect(node.bind({x: source, y: source})).toBe(node);
     expect(node.ready()).toBe(true);
   });
 
@@ -354,11 +488,51 @@ function values(sink: StepSink): readonly unknown[] {
   return sink.values.map(result => result.output[0]?.channels[0]);
 }
 
+function outputValues(sink: StepSink): readonly (readonly unknown[])[] {
+  return sink.values.map(result =>
+    result.output.map(output => output.channels[0]),
+  );
+}
+
 function numericSource(...values: readonly number[]): DataStream<{
   close: number;
 }> {
   return new DataStream(z.object({close: z.number()}), subscriber =>
     of(...values.map(close => ({close}))).subscribe(subscriber),
+  );
+}
+
+function clockedNumericSource(
+  clock: Clock,
+  ...values: readonly number[]
+): DataStream<{close: number}> {
+  return new DataStream(
+    z.object({close: z.number()}),
+    subscriber => of(...values.map(close => ({close}))).subscribe(subscriber),
+    clock,
+  );
+}
+
+interface TimedNumericDatum {
+  readonly time: bigint;
+  readonly close: number;
+}
+
+const timedNumericSchema = z.object({time: z.bigint(), close: z.number()});
+
+function timedNumericSource(
+  ...values: readonly TimedNumericDatum[]
+): DataStream<TimedNumericDatum> {
+  return new DataStream(timedNumericSchema, subscriber =>
+    of(...values).subscribe(subscriber),
+  );
+}
+
+function timedNumericSubject(
+  source: Subject<TimedNumericDatum>,
+): DataStream<TimedNumericDatum> {
+  return new DataStream(timedNumericSchema, subscriber =>
+    source.subscribe(subscriber),
   );
 }
 

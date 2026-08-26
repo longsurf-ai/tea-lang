@@ -152,6 +152,7 @@ class RuntimeOperations implements RuntimeContext {
   private readonly outputs = new Map<number, Value[]>();
   private readonly effects: EffectEmission[] = [];
   private transaction: HeapTransaction | null = null;
+  private requestValues: readonly Value[] = [];
 
   constructor(
     private readonly module: JSModule,
@@ -172,6 +173,17 @@ class RuntimeOperations implements RuntimeContext {
     this.transaction = transaction;
     let committed = false;
     try {
+      this.requestValues = this.input.requests.map((value, rid) => {
+        const spec = this.module.manifest.requests[rid]!;
+        return spec.merge.mode === 'sample'
+          ? value
+          : this.collections.call(
+              transaction,
+              'array.from',
+              spec.layout,
+              value as readonly Value[],
+            );
+      });
       this.module.main(this, this.rootFrame);
       const result = {
         state: {root: this.finishRoot()},
@@ -527,10 +539,30 @@ class RuntimeOperations implements RuntimeContext {
       );
     });
     this.input.requests.forEach((value, rid) => {
-      this.structs.assertValue(
-        this.module.manifest.requests[rid]!.layout,
-        value,
-        `request ${rid}`,
+      const spec = this.module.manifest.requests[rid]!;
+      if (spec.merge.mode === 'sample') {
+        this.structs.assertValue(spec.layout, value, `request ${rid}`);
+        return;
+      }
+      if (!Array.isArray(value)) {
+        throw new ExecutionError(
+          'VALUE_LAYOUT_MISMATCH',
+          `request ${rid} collect input is not an array`,
+        );
+      }
+      const layout = this.layouts.layout(spec.layout);
+      if (layout.kind !== 'array' || layout.element !== spec.resultLayout) {
+        throw new ExecutionError(
+          'VALUE_LAYOUT_MISMATCH',
+          `request ${rid} collect layout does not match its result layout`,
+        );
+      }
+      value.forEach((element, index) =>
+        this.structs.assertValue(
+          spec.resultLayout,
+          element,
+          `request ${rid} element ${index}`,
+        ),
       );
     });
   }
@@ -546,7 +578,11 @@ class RuntimeOperations implements RuntimeContext {
       return fatal(`unknown ${field} input ${id}`);
     }
     if (!isHistoryOffset(offset)) return empty;
-    if (offset === 0) return this.input[field][id] ?? empty;
+    if (offset === 0) {
+      const values =
+        field === 'requests' ? this.requestValues : this.input[field];
+      return values[id] ?? empty;
+    }
     return this.state.root[field][id]?.values[offset - 1] ?? empty;
   }
 
@@ -665,7 +701,7 @@ class RuntimeOperations implements RuntimeContext {
     return histories.map((history, id) =>
       commitHistory(
         history,
-        this.input[field][id]!,
+        (field === 'requests' ? this.requestValues : this.input[field])[id]!,
         depthRetention(specs[id]!.depth),
       ),
     );

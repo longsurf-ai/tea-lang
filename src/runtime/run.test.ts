@@ -568,11 +568,36 @@ describe('requests end to end', () => {
     ]);
   });
 
+  test('fixed history rejects collect before resolving its child context', async () => {
+    const calls: string[] = [];
+    const contexts = csvContexts({'': primaryCsv, X: childCsv});
+    const provider: DataProvider = {
+      resolveContext(symbol, timeframe, range) {
+        calls.push(symbol);
+        return contexts.resolveContext(symbol, timeframe, range);
+      },
+    };
+
+    await expect(
+      runSource(
+        [
+          'window = request.security_lower_tf("X", "1", close)',
+          'plot(window.size())',
+        ].join(chr10()),
+        '',
+        {},
+        provider,
+      ),
+    ).rejects.toThrow('collect request 0 is unsupported');
+    expect(calls).toEqual(['']);
+  });
+
   test('an input param crosses into the capture (compilation-global params)', async () => {
     const lines = await runSource(
       [
         'scale = input.float(10.0)',
-        'plot(request.security("X", "D", close * scale))',
+        'requested = request.security("X", "D", close * scale)',
+        'plot(requested)',
       ].join(chr10()),
       '',
       {},
@@ -590,7 +615,10 @@ describe('requests end to end', () => {
 
   test('a scalar input declared inside a request capture is compilation-global', async () => {
     const lines = await runSource(
-      'plot(request.security("X", "D", close * input.float(2.0, "Scale")))',
+      [
+        'requested = request.security("X", "D", close * input.float(2.0, "Scale"))',
+        'plot(requested)',
+      ].join(chr10()),
       '',
       {},
       csvContexts({'': primaryCsv, X: childCsv}),
@@ -605,8 +633,8 @@ describe('requests end to end', () => {
     ]);
   });
 
-  test('a request inside a UDF binds a computed global input alias statically', async () => {
-    const lines = await runSource(
+  test('a request inside a UDF is rejected before lowering', () => {
+    const {program, errors} = buildText(
       [
         'indicator("t", dynamic_requests=false)',
         'identity(string value) => value',
@@ -615,22 +643,18 @@ describe('requests end to end', () => {
         'fetch() => request.security(alias, "D", close)',
         'plot(fetch())',
       ].join(chr10()),
-      '',
-      {},
-      csvContexts({'': primaryCsv, X: childCsv}),
     );
-    expect(lines.filter(line => !line.startsWith('#'))).toEqual([
-      '0 1 na',
-      '1 1 10',
-      '2 1 10',
-      '3 1 20',
-      '4 1 20',
-      '5 1 30',
-    ]);
+    expect(program).toBeNull();
+    expect(errors.map(error => error.msg)).toContain(
+      'request call must directly initialize one plain top-level variable',
+    );
   });
 
   test('a corrupt or shuffled time axis is a BindError, never silent na', async () => {
-    const src = 'plot(request.security("X", "D", close))';
+    const src = [
+      'requested = request.security("X", "D", close)',
+      'plot(requested)',
+    ].join(chr10());
     // Blank time cell in the parent axis.
     await expect(
       runSource(
@@ -671,7 +695,10 @@ describe('requests end to end', () => {
 
   test('the captured expression computes with state inside the child context', async () => {
     const lines = await runSource(
-      'plot(request.security("X", "D", ta.change(close)))',
+      [
+        'requested = request.security("X", "D", ta.change(close))',
+        'plot(requested)',
+      ].join(chr10()),
       '',
       {},
       csvContexts({'': primaryCsv, X: childCsv}),
@@ -970,7 +997,8 @@ describe('unsupported dynamic requests', () => {
     const {program, errors} = buildText(
       [
         'indicator("t", dynamic_requests=true)',
-        'plot(request.security(close > 3 ? "X" : "Y", "D", close))',
+        'requested = request.security(close > 3 ? "X" : "Y", "D", close)',
+        'plot(requested)',
       ].join(chr10()),
     );
     expect(program).toBeNull();

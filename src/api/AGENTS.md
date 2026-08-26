@@ -28,22 +28,31 @@ runtime semantics remain in their existing packages.
 - Public `Node` is an interface; file-private `TeaNode` owns one module context,
   its RxJS data, and recursive request-child Nodes directly. There is no
   parallel `TeaNodeState` or continuously reattached parent module tree.
-  `bind()` dispatches only to parameters or streams; keyed request streams fan
-  out recursively, and `snapshot()` assembles the complete module tree only
-  when exposed or executed. Public methods remain synchronous and mutable.
-  The compiler `Program` is consumed during lowering and is retained by neither
-  the Node nor JSModule.
+  `bind()` dispatches only to parameters or streams. A request stream is keyed
+  by the direct top-level request declaration's variable name, not its symbol;
+  it binds exactly that child, and a key shared with a root series is
+  ambiguous. All keys validate before mutation. `snapshot()` assembles the
+  complete module tree only when exposed or executed. Public methods remain
+  synchronous and mutable. The compiler `Program` is consumed during lowering
+  and is retained by neither the Node nor JSModule.
 - The `tea` tagged template is the deliberate synchronous exception: it only
   performs in-memory compile/load construction and throws `TeaCompileError`.
   Effects remain implementation details of `bind`/`to`/`dispose`.
 - Every Node owns one plain `Subject<StepResult>`. The first `.to(sink)` call
   runs internal setup Effects, subscribes the sink, creates one `JSRuntime`,
-  connects the RxJS row graph, and returns the Subscription. Later `.to()`
-  calls only add sinks for future values. RxJS owns ongoing values/errors/
-  completion, and teardown interrupts the current step Effect. `dispose()` is
-  synchronous and idempotent. Current steps are final (`provisional: false`).
-- Node execution currently supports numeric series and parameters only.
-  Builtin row construction and static-request child execution fail explicitly
-  in `.to()`. A concrete manifest may already contain static request settings;
-  do not confuse readiness with implemented Node request wiring. Dynamic
-  requests fail earlier at the noder boundary.
+  recursively constructs child execution streams, folds their results into the
+  parent through `sync()` in request-id order, and returns the Subscription.
+  That Subscription controls only its sink; later `.to()` calls add sinks for
+  future values without reconnecting execution. RxJS owns ongoing
+  values/errors/completion. Node-owned connection teardown interrupts the
+  current step Effect and whole child graph. `dispose()` is synchronous and
+  idempotent. Current steps are final (`provisional: false`).
+- Node execution supports numeric series, parameters, scalar `security`
+  requests, and `security_lower_tf` arrays. Scalar requests consume one child
+  result per parent datum. Collect requests select count-window,
+  event-time-window, then one-to-one-array synchronization in that order; the
+  exact clock, boundary, completion, error, and cancellation policies belong to
+  `docs/requests.md`. Collect batches cross the API/runtime seam only as frozen
+  scalar arrays and become ordinary Tea arrays inside the parent Heap
+  transaction. This collect path is Node-only. Builtin row construction remains
+  unsupported, and dynamic requests fail earlier at the noder boundary.

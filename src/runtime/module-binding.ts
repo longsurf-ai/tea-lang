@@ -514,6 +514,7 @@ function allDepths(manifest: ModuleManifest): readonly DepthSpec[] {
 }
 
 function validateConcreteManifest(module: JSModule): void {
+  const layouts = new ValueLayoutRegistry(module.layout);
   module.manifest.params.forEach((param, pid) => {
     if (!Object.hasOwn(param, 'value') || typeof param.active !== 'boolean') {
       throw new ModuleBindingEvaluationError(`parameter ${pid} is incomplete`);
@@ -528,6 +529,23 @@ function validateConcreteManifest(module: JSModule): void {
     }
   });
   module.manifest.requests.forEach((request, rid) => {
+    if (request.name.length === 0) {
+      throw new ModuleBindingEvaluationError(
+        `request ${rid} has no binding name`,
+      );
+    }
+    layouts.layout(request.resultLayout);
+    const parent = layouts.layout(request.layout);
+    if (
+      (request.merge.mode === 'sample' &&
+        request.layout !== request.resultLayout) ||
+      (request.merge.mode === 'collect' &&
+        (parent.kind !== 'array' || parent.element !== request.resultLayout))
+    ) {
+      throw new ModuleBindingEvaluationError(
+        `request ${rid} has inconsistent ${request.merge.mode} layouts`,
+      );
+    }
     if (request.dynamic) {
       throw new ModuleBindingEvaluationError(
         `dynamic request ${rid} is unsupported`,

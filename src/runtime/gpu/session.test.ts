@@ -919,7 +919,7 @@ describe('GPU execution preparation', () => {
         },
         [],
       ),
-    ).rejects.toThrow(/unsupported module ABI 999; expected 6/);
+    ).rejects.toThrow(/unsupported module ABI 999; expected 7/);
     await expect(
       prepareGpuExecutionInputs(
         {...artifact, executionStateFixedByteSize: 4},

@@ -246,6 +246,10 @@ class Checker {
   // the function/capture execution frame that contained the call.
   private readonly inputBindings = new Set<VariableObject>();
   private readonly rootBindNames = new Set<VariableObject>();
+  private requestBinding: {
+    readonly call: syntax.CallExpr;
+    readonly name: string;
+  } | null = null;
   constructor(
     files: readonly syntax.File[],
     private readonly errors: Errors,
@@ -1458,7 +1462,19 @@ class Checker {
     d: syntax.DeclStmt,
     afterInit?: (tv: TypeAndValue) => void,
   ): TypeAndValue {
+    const direct = unwrapParens(d.init);
+    const previousRequestBinding = this.requestBinding;
+    this.requestBinding =
+      d.mode === Mode.None &&
+      d.target.kind === NodeKind.Name &&
+      this.blockDepth === 0 &&
+      this.funcBoundary === null &&
+      this.captureDepth === 0 &&
+      direct.kind === NodeKind.CallExpr
+        ? {call: direct, name: d.target.value}
+        : null;
     const initTv = this.checkExpr(d.init);
+    this.requestBinding = previousRequestBinding;
     if (
       (d.mode === Mode.Var || d.mode === Mode.Varip) &&
       this.expressionCallsEffect(d.init, this.info, Effect.Emit)
@@ -4884,6 +4900,14 @@ class Checker {
     args: readonly (syntax.Expr | null)[],
     argumentEvaluationOrder: readonly number[],
   ): TypeAndValue {
+    const binding = this.requestBinding;
+    const validBinding = binding !== null && binding.call === c;
+    if (!validBinding) {
+      this.error(
+        c.pos,
+        'request call must directly initialize one plain top-level variable',
+      );
+    }
     for (const optionName of [
       'gaps',
       'lookahead',
@@ -4935,19 +4959,26 @@ class Checker {
     if (!isRequestTransportType(captureTv.type)) {
       this.error(
         expr.pos,
-        `request expression cannot return ${formatType(captureTv.type)}; request results must be scalars or scalar-only tuples`,
+        `request expression cannot return ${formatType(captureTv.type)}; request results must be scalar`,
       );
       return INVALID_TV;
     }
+    if (!validBinding) return INVALID_TV;
+    const resultType: Type =
+      native.name === 'request.security_lower_tf'
+        ? {kind: TypeKind.Array, elem: captureTv.type}
+        : captureTv.type;
     parentInfo.calls.set(c, {
       kind: CallKind.Request,
       native,
+      bindingName: binding.name,
       args,
       argumentEvaluationOrder,
       capture: info,
-      resultType: captureTv.type,
+      captureType: captureTv.type,
+      resultType,
     });
-    return {type: captureTv.type, qualifier: Qualifier.Series, value: null};
+    return {type: resultType, qualifier: Qualifier.Series, value: null};
   }
 
   private rejectSuppliedStagedNativeArguments(
@@ -6067,7 +6098,7 @@ interface InferredNativeType {
 }
 
 // Request contexts own independent Heaps and host-resource lifecycles. Only
-// scalar values and recursively scalar tuples cross that boundary by value.
+// scalar values cross that boundary by value.
 function isRequestTransportType(type: Type): boolean {
   switch (type.kind) {
     case TypeKind.Invalid:
@@ -6078,8 +6109,6 @@ function isRequestTransportType(type: Type): boolean {
     case TypeKind.Color:
     case TypeKind.Enum:
       return true;
-    case TypeKind.Tuple:
-      return type.elems.every(isRequestTransportType);
     default:
       return false;
   }

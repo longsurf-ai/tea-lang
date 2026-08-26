@@ -8,12 +8,14 @@ import {JSRuntime, type StepInput, type StepResult} from './js-runtime';
 import {configureModule} from './module-binding';
 import {RUNTIME_ABI_VERSION, type JSModule} from './module-abi';
 import {testModule} from './testing';
+import type {Value} from './value';
 import type {ValueLayout} from './value-layout';
 
 const NUMBER = 0;
 const ARRAY = 1;
 const COUNTER = 2;
 const ENVELOPE = 3;
+const BOOLEAN = 4;
 const LAYOUTS = [
   {kind: 'number', numeric: 'int'},
   {kind: 'array', element: NUMBER},
@@ -29,6 +31,7 @@ const LAYOUTS = [
     typeId: 'test.Envelope',
     fields: [{name: 'counter', layout: COUNTER}],
   },
+  {kind: 'boolean'},
 ] as const satisfies readonly ValueLayout[];
 
 function input(value: number, provisional: boolean): StepInput {
@@ -248,6 +251,110 @@ const GC_MODULE: JSModule = testModule({
   },
 });
 
+const COLLECT_CHILD_MODULE: JSModule = testModule({
+  abi: RUNTIME_ABI_VERSION,
+  layout: LAYOUTS,
+  manifest: {
+    series: [],
+    builtin: [],
+    params: [],
+    outputs: [],
+    effects: [],
+    requests: [],
+    frames: [
+      {
+        locals: [
+          {storage: Storage.PerBar, depth: {kind: 'none'}, layout: NUMBER},
+        ],
+        subs: [],
+      },
+    ],
+  },
+  requests: [],
+  funcs: {},
+  main(ctx, root) {
+    ctx.write(root, 0, 0);
+  },
+});
+
+const COLLECT_REQUEST_MODULE: JSModule = testModule({
+  abi: RUNTIME_ABI_VERSION,
+  layout: LAYOUTS,
+  manifest: {
+    series: [],
+    builtin: [],
+    params: [],
+    outputs: [
+      {
+        effect: 'probe',
+        staticArgs: [],
+        channels: [
+          {name: 'size', type: 'int', transport: {kind: 'int'}},
+          {name: 'empty', type: 'bool', transport: {kind: 'bool'}},
+          {name: 'first', type: 'int', transport: {kind: 'int'}},
+          {name: 'last', type: 'int', transport: {kind: 'int'}},
+          {name: 'prior-size', type: 'int', transport: {kind: 'int'}},
+          {name: 'prior-first', type: 'int', transport: {kind: 'int'}},
+        ],
+      },
+    ],
+    effects: [],
+    requests: [
+      {
+        name: 'ticks',
+        merge: {mode: 'collect'},
+        depth: {kind: 'const', bars: 1},
+        resultSlot: 0,
+        resultLayout: NUMBER,
+        layout: ARRAY,
+        dynamic: false,
+        context: {
+          symbol: 'X',
+          timeframe: '1m',
+          gaps: false,
+          lookahead: false,
+          ignoreInvalidSymbol: false,
+          calcBarsCount: 0,
+        },
+      },
+    ],
+    frames: [{locals: [], subs: []}],
+  },
+  requests: [COLLECT_CHILD_MODULE],
+  funcs: {},
+  main(ctx) {
+    const current = ctx.request(0, 0);
+    const prior = ctx.request(0, 1);
+    const size = Number(ctx.callCollection('array.size', NUMBER, [current]));
+    const priorSize =
+      prior === null
+        ? -1
+        : Number(ctx.callCollection('array.size', NUMBER, [prior]));
+    ctx.emit(0, 0, size);
+    ctx.emit(0, 1, ctx.callCollection('array.is_empty', BOOLEAN, [current]));
+    ctx.emit(
+      0,
+      2,
+      size === 0 ? -1 : ctx.callCollection('array.first', NUMBER, [current]),
+    );
+    ctx.emit(
+      0,
+      3,
+      size === 0 ? -1 : ctx.callCollection('array.last', NUMBER, [current]),
+    );
+    ctx.emit(0, 4, priorSize);
+    ctx.emit(
+      0,
+      5,
+      priorSize <= 0 ? -1 : ctx.callCollection('array.first', NUMBER, [prior]),
+    );
+  },
+});
+
+function collectInput(values: Value, provisional = false): StepInput {
+  return {series: [], builtins: [], requests: [values], provisional};
+}
+
 function channels(result: StepResult) {
   return result.output[0]?.channels;
 }
@@ -371,6 +478,102 @@ describe('JSRuntime', () => {
     Effect.runSync(runtime.step(input(2, false)));
     expect(channels(Effect.runSync(runtime.step(input(3, true))))).toEqual([1]);
     expect(channels(Effect.runSync(runtime.step(input(4, true))))).toEqual([1]);
+    runtime.dispose();
+  });
+
+  test('materializes empty, single, and multiple request batches as Tea arrays with history', () => {
+    const runtime = new JSRuntime(configureModule(COLLECT_REQUEST_MODULE, []));
+
+    expect(channels(Effect.runSync(runtime.step(collectInput([]))))).toEqual([
+      0,
+      true,
+      -1,
+      -1,
+      -1,
+      -1,
+    ]);
+    expect(channels(Effect.runSync(runtime.step(collectInput([7]))))).toEqual([
+      1,
+      false,
+      7,
+      7,
+      0,
+      -1,
+    ]);
+    expect(
+      channels(Effect.runSync(runtime.step(collectInput([10, 20, 30])))),
+    ).toEqual([3, false, 10, 30, 1, 7]);
+
+    runtime.dispose();
+  });
+
+  test('rejects non-batch and invalid collect request elements without poisoning state', () => {
+    const runtime = new JSRuntime(configureModule(COLLECT_REQUEST_MODULE, []));
+
+    expect(() => Effect.runSync(runtime.step(collectInput(7)))).toThrow(
+      'request 0 collect input is not an array',
+    );
+    expect(() =>
+      Effect.runSync(runtime.step(collectInput([1, 'bad']))),
+    ).toThrow('request 0 element 1 does not match number layout 0');
+    expect(channels(Effect.runSync(runtime.step(collectInput([5]))))).toEqual([
+      1,
+      false,
+      5,
+      5,
+      -1,
+      -1,
+    ]);
+
+    runtime.dispose();
+  });
+
+  test('aborts a materialized request array and its history when main fails', () => {
+    let fail = true;
+    const module = testModule({
+      ...COLLECT_REQUEST_MODULE,
+      main(ctx, root) {
+        COLLECT_REQUEST_MODULE.main(ctx, root);
+        if (fail) throw new Error('parent failed');
+      },
+    });
+    const runtime = new JSRuntime(configureModule(module, []));
+
+    expect(() => Effect.runSync(runtime.step(collectInput([1, 2])))).toThrow(
+      'parent failed',
+    );
+    fail = false;
+    expect(channels(Effect.runSync(runtime.step(collectInput([3]))))).toEqual([
+      1,
+      false,
+      3,
+      3,
+      -1,
+      -1,
+    ]);
+
+    runtime.dispose();
+  });
+
+  test('rejects a collect request whose parent layout is not its Tea array layout', () => {
+    const mismatched = testModule({
+      ...COLLECT_REQUEST_MODULE,
+      manifest: {
+        ...COLLECT_REQUEST_MODULE.manifest,
+        requests: [
+          {
+            ...COLLECT_REQUEST_MODULE.manifest.requests[0]!,
+            layout: NUMBER,
+          },
+        ],
+      },
+    });
+    const runtime = new JSRuntime(configureModule(mismatched, []));
+
+    expect(() => Effect.runSync(runtime.step(collectInput([1])))).toThrow(
+      'request 0 collect layout does not match its result layout',
+    );
+
     runtime.dispose();
   });
 });

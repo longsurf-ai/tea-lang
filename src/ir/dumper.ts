@@ -148,9 +148,11 @@ export function dumpProgram(program: Program): string {
   requestsOf(program).forEach((edge, i) => {
     const m = edge.merge;
     const flags = [
+      `name=${JSON.stringify(edge.name)}`,
       `mode=${m.mode}`,
       `context_order=${edge.contextArgumentEvaluationOrder.join(',')}`,
       `option_order=${edge.optionArgumentEvaluationOrder.join(',')}`,
+      `capture=${formatType(edge.captureType)}`,
       `result=${formatType(edge.resultType)}`,
     ]
       .filter(part => part !== null)

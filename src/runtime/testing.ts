@@ -28,8 +28,13 @@ type FixtureManifest = Omit<
       | readonly {readonly name: string; readonly value: Value}[]
       | null;
   })[];
-  readonly requests: readonly (Omit<RequestSpec, 'context'> & {
+  readonly requests: readonly (Omit<
+    RequestSpec,
+    'context' | 'name' | 'resultLayout'
+  > & {
     readonly context?: RequestSpec['context'];
+    readonly name?: string;
+    readonly resultLayout?: number;
   })[];
 };
 
@@ -65,8 +70,10 @@ export function testModule(code: GeneratedModuleFixture): JSModule {
       ...output,
       boundArgs: output.boundArgs === undefined ? [] : output.boundArgs,
     })),
-    requests: code.manifest.requests.map(request => ({
+    requests: code.manifest.requests.map((request, requestId) => ({
       ...request,
+      name: request.name ?? `request@${requestId}`,
+      resultLayout: request.resultLayout ?? request.layout,
       context: request.context ?? null,
     })),
   };

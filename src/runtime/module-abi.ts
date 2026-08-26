@@ -14,7 +14,7 @@ import type {
   Value,
 } from './value';
 
-export const RUNTIME_ABI_VERSION = 6 as const;
+export const RUNTIME_ABI_VERSION = 7 as const;
 
 export type DepthSpec =
   | {readonly kind: 'none'} // no depth retention
@@ -52,9 +52,11 @@ export interface EffectManifestSpec {
 }
 
 export interface RequestSpec {
-  readonly merge: {readonly mode: 'sample'};
+  readonly name: string;
+  readonly merge: {readonly mode: 'sample' | 'collect'};
   readonly depth: DepthSpec;
   readonly resultSlot: number;
+  readonly resultLayout: LayoutId;
   readonly layout: LayoutId;
   readonly dynamic: boolean;
   /** Concrete static request configuration, or null until concretization. */

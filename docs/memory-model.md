@@ -277,10 +277,12 @@ edit/undo journal.
 
 Effect emission snapshots permitted struct fields at call time. It never hands
 a live struct reference to a sink. Each request child owns an independent Heap,
-and request results are restricted to scalars or scalar-only tuples copied by
-value into parent-owned storage. A `Ref` never crosses that boundary; aggregate
-request results remain unsupported until an explicit graph-copy contract is
-implemented.
+and child request results are restricted to scalars copied by value into the
+parent adapter. A `Ref` never crosses that boundary. For the Node-only
+`security_lower_tf` path, a frozen scalar batch enters the parent step and is
+materialized as an ordinary Tea array inside the parent Heap transaction;
+fixed-history collect remains unsupported. Detailed synchronization belongs to
+[Requests](requests.md).
 
 ## Empty values and errors
 

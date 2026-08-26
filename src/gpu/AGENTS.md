@@ -16,7 +16,7 @@ runtime consumes it.
 - Reference structs have no GPU lowering yet. The WGSL producer must return a
   stable staged-unsupported issue before emitting an artifact containing a
   struct value or effect schema.
-- The ABI also carries the ordinary generated Runtime-ABI-6 `JSModule`, fixed
+- The ABI also carries the ordinary generated Runtime-ABI-7 `JSModule`, fixed
   state prefix, per-local history descriptors, and per-job state offset/word
   count. GPU preparation installs each binding into a deep-copied manifest,
   calls the module's direct `concretize()` method, and consumes its concrete

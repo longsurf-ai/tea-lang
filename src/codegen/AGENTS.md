@@ -32,7 +32,7 @@ owns both execution boundaries.
   provider, series payload, parameter sweep, job list, result capacity, GPU
   device, or dispatch policy. CPU/GPU runtimes own those physical inputs after
   codegen.
-- Generated JavaScript uses Runtime ABI 6. Static depths, activity, output
+- Generated JavaScript uses Runtime ABI 7. Static depths, activity, output
   arguments, and request contexts emit directly in the manifest; only facts
   that depend on parameters or permitted context constants emit assignments in
   `concretize()`.
@@ -82,11 +82,14 @@ owns both execution boundaries.
   the same ABI and shared `layout` table reference as the root. Static pairs and
   options emit directly into `manifest.requests[rid].context`; late values are
   assigned there by `concretize()`. Execution reads the prepared result via
-  `ctx.request(rid, offset)`. The noder rejects every dynamic edge before a valid
-  Program reaches codegen, so generated request manifests are static. Every
-  edge evaluates options and pair once in Program-owned source order; bound
-  values have no parallel owner. Every module's code names its own
-  funcs table via its const (`ctx.moduleRef`), never `M`.
+  `ctx.request(rid, offset)`. Each spec also carries the direct declaration
+  `name`, `Sample`/`Collect` mode, child `resultSlot`/`resultLayout`, and parent
+  `layout`; collect therefore transports child scalars while the parent sees an
+  array layout. The noder rejects every dynamic edge before a valid Program
+  reaches codegen, so generated request manifests are static. Every edge
+  evaluates options and pair once in Program-owned source order; bound values
+  have no parallel owner. Every module's code names its own funcs table via its
+  const (`ctx.moduleRef`), never `M`.
 - Typed builtins are a distinct runtime carrier: dense bids and exact
   `{source, layout, depth}` specs publish in `manifest.builtin`, reads lower
   to `ctx.builtin`, and bound history becomes concrete manifest depth.
@@ -101,7 +104,7 @@ owns both execution boundaries.
   struct reference until a later GPU storage design lands.
 - Output bind arguments and per-bar channels evaluate in their Program-owned
   source order before codegen assembles the canonical host argument order.
-- Staged constructs (matrix iteration, collect merge, unlisted natives) throw
+- Staged constructs (matrix iteration, unlisted natives) throw
   UnimplementedError at generation — exit 2, never wrong code.
 - Bound depth expressions may read root-frame immutable aliases and call
   input-only UDFs; request options may also read context-constant builtins.

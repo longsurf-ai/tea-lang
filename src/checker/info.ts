@@ -74,9 +74,11 @@ export interface ConstructorCall {
 export interface RequestCall {
   readonly kind: typeof CallKind.Request;
   readonly native: NativeFunc;
+  readonly bindingName: string;
   readonly args: readonly (syntax.Expr | null)[];
   readonly argumentEvaluationOrder: readonly number[];
   readonly capture: Info;
+  readonly captureType: Type;
   readonly resultType: Type;
 }
 

@@ -28,9 +28,10 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   Heap transaction.
 - The fixed-historical adapter consumes a concrete JSModule manifest and
   recursively executes static request children through independent `JSRuntime`
-  instances.
-  Node RxJS request wiring is a separate, still-unimplemented host
-  concern; do not confuse that API gap with runtime request support.
+  instances, copies scalar results, and preserves provider-axis sample merge.
+  It rejects collect before provider resolution. Public Node owns its separate
+  RxJS request synchronization path; `docs/requests.md` is the detailed policy
+  authority for that adapter.
 - The generated execution body receives only Time-Machine operations; it never
   sees history indices, scratch storage, provider objects, or physical layout.
   `JSModule.concretize(manifest, contextConstants?)` instead mutates only its
@@ -38,7 +39,7 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   receives no runtime context. Do not merge manifest concretization or a
   dynamic-request protocol into the execution-only `RuntimeContext`.
 - `RUNTIME_ABI_VERSION` is the only JavaScript Runtime ABI version source and
-  is currently `6`; do not add compatibility branches for earlier versions.
+  is currently `7`; do not add compatibility branches for earlier versions.
 - Runtime implementation files import the narrow internal contract they use,
   never their own `abi.ts` facade. The versioned physical GPU artifact lives
   in `gpu/contract.ts`; runtime/gpu must not import codegen implementation
@@ -98,10 +99,12 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   value/rebinding candidate across completed same-row executions; an ordinary
   var retains only its first successful same-row initialization candidate.
   A final success pushes the candidate into history; rollback discards it.
-- Every local and request result carries an exact `LayoutId`; the shared
-  registry validates values, derives typed empty, and walks nested collection
-  storage roots. State keeps newest-first bounded history values, and
-  `var`/`varip` retain at least one committed value regardless of history depth.
+- Every local and request result carries exact layout identity; a Sample spec
+  uses its scalar `layout`, while a Collect spec separates child
+  `resultLayout` from parent array `layout`. The shared registry validates
+  values, derives typed empty, and walks nested collection storage roots. State
+  keeps newest-first bounded history values, and `var`/`varip` retain at least
+  one committed value regardless of history depth.
 - The fixed-historical adapter accounts frame workspace, input history, and
   materialized request-result columns against the shared
   `maxFixedValueLogicalBytes` budget using exact shallow layout sizes. A child
@@ -156,11 +159,16 @@ The backend-neutral `executeProgram()` host harness lives one level above in
   per static request child, passing compilation-global params, the shared
   request-context/fixed-width budgets, and exact layout registry. Each child
   owns an independent Heap, so Heap limits apply separately per context.
-- Request results are limited by the checker and defended again at binding to
-  scalars or recursively scalar-only tuples. Each child row is copied into a
-  parent-owned fixed-width result column; no `Ref` or host-resource handle may
-  cross the child Heap boundary. The completed child is disposed immediately;
-  the merged view retains only the copied column and its accounting.
+- Request captures are limited by the checker to scalars. In fixed-history
+  sample mode, each child row is copied into a parent-owned fixed-width result
+  column; no `Ref` or host-resource handle may cross the child Heap boundary.
+  The completed child is disposed immediately, and the merged view retains only
+  the copied column and its accounting. In the Node-only collect path,
+  `StepInput.requests` carries a frozen raw scalar array; after the parent Heap
+  transaction opens, runtime validates every element against `resultLayout`
+  and materializes the ordinary parent-layout Tea array through `array.from`.
+  Commit/history/root discovery and abort then follow the normal collection
+  contract. Fixed-history never accepts collect.
 - Every static edge consumes one request-context budget reservation; a hard
   resolution failure releases it.
 - Every request edge stores its four evaluated options exactly once in its

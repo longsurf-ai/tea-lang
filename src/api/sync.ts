@@ -32,6 +32,7 @@ export function sync<S, T, U = S | readonly S[]>(
       const drain = () => {
         if (draining || subscriber.closed) return;
         draining = true;
+        let blocked = false;
         try {
           while (pending.length > 0 && !subscriber.closed) {
             const targetValue = pending[0]!;
@@ -50,7 +51,10 @@ export function sync<S, T, U = S | readonly S[]>(
               return;
             }
 
-            if (result === undefined) break;
+            if (result === undefined) {
+              blocked = true;
+              break;
+            }
             const [value, requestedConsume] = result;
             const consume = requestedConsume ?? values.length;
             if (
@@ -72,6 +76,13 @@ export function sync<S, T, U = S | readonly S[]>(
           }
         } finally {
           draining = false;
+        }
+        if (
+          sourceComplete &&
+          (buffered.length === 0 || (blocked && pending.length > 0))
+        ) {
+          subscriber.complete();
+          return;
         }
         completeIfDone();
       };

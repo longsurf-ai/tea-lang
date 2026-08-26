@@ -102,7 +102,7 @@ The module binding surface has exactly two forms: a parameter value and a
 series-supplied marker. Depths, activity, output arguments, and request contexts
 are concrete manifest configuration derived from those bindings, not additional
 binding kinds. Concretization is restricted to non-allocating const/input/simple
-expressions; it cannot create aggregate Heap state.
+expressions; it cannot create collection or struct Heap state.
 
 `tea()` lowers the compiler's canonical `Program`, loads its recursive
 `JSModule`, and performs an initial empty binding for the root and request
@@ -116,24 +116,30 @@ Node or Subscription values rather than Effect values.
 Observable composition belongs to the Node, not JSModule. `Node` is the public
 interface; its private class directly owns one module context, its RxJS data,
 and recursive request-child Nodes, with no parallel state interface. `bind()`
-dispatches only to parameter or stream binding. Keyed request streams fan out
-recursively to matching children, while the complete JSModule tree is assembled
-only when exposed or executed. Binding after execution starts or disposal
-throws.
+dispatches only to parameter or stream binding. A request stream is keyed by
+the direct top-level request declaration's variable name, never its symbol, and
+binds exactly that child; every key validates before mutation. The complete
+JSModule tree is assembled only when exposed or executed. Binding after
+execution starts or disposal throws.
 
 Each node creates one plain `Subject<StepResult>`. The first `.to(sink)` call
 runs internal setup Effects, validates readiness/input support, subscribes the
 sink, creates one `JSRuntime`, and connects the existing RxJS graph. Later
 `.to()` calls only subscribe new sinks to future values. It returns that sink's
-Subscription; RxJS owns
-ongoing values, errors, and completion, and unsubscribe interrupts the current
-step Effect. `dispose()` synchronously runs an internal Effect that cancels the connection,
-disposes the runtime, and completes the Subject; source termination also
-disposes the runtime.
+Subscription; unsubscribing it removes only that sink. RxJS owns ongoing
+values, errors, and completion. `dispose()` synchronously runs an internal
+Effect that cancels the Node-owned execution connection, interrupts its current
+step Effect, disposes the complete runtime tree, and completes the Subject;
+source termination also disposes the runtimes.
 This slice currently constructs numeric series rows and uses final steps only.
-Builtin input wiring and static-request child execution still fail explicitly
-in `.to()`; binding static request settings is implemented, executing them
-through Node is not.
+Builtin input wiring still fails explicitly in `.to()`. Static request children
+execute recursively: each child owns a `JSRuntime`, exposes its copied scalar
+result, and joins the parent through target-driven `sync()` in request-id order.
+`security` uses scalar one-to-one synchronization. `security_lower_tf` selects
+count-window, event-time-window, then one-to-one-array synchronization; its
+frozen scalar batch becomes a parent-Heap Tea array inside the parent step
+transaction. [Requests](requests.md#public-node-request-streams) owns the exact
+clock, window, FIFO, late-data, completion, error, and cancellation policies.
 
 `JSRuntime` owns one committed `State`, one same-row `Intermediate`,
 and one context-local Heap. A successful provisional step replaces only its
@@ -147,11 +153,11 @@ host boundary.
 For fixed historical execution, `bindFixedHistory()` resolves the provider,
 constructs synchronized inputs, drives `JSRuntime.step()`, and publishes to the
 sink. It recursively evaluates every static request child in an independent
-`JSRuntime` and Heap, copies each scalar or scalar-only tuple result into a
-parent-owned column, disposes the child, and sample-merges that column onto the
-parent axis. Node does not yet have the time/finality model needed to perform
-the same request wiring, so `.to()` still rejects builtin and static-request
-facts explicitly.
+`JSRuntime` and Heap, copies each scalar `security` result into a parent-owned
+column, disposes the child, and sample-merges that column onto the parent axis.
+It rejects Collect before provider resolution. This provider-axis path is
+deliberately separate from Node's RxJS synchronization; Node collect is not a
+new fixed-history merge policy.
 
 ## The generated JS module
 
@@ -164,7 +170,7 @@ shape:
 ```js
 const L = [...];
 const M1 = {
-  abi: 6,
+  abi: 7,
   layout: L,
   manifest: {...},
   requests: [],
@@ -176,7 +182,7 @@ const M1 = {
 };
 
 return {
-  abi: 6,
+  abi: 7,
   layout: L,                              // same array reference as every child
   manifest: {
     series:  [{id, depth, supplied}, ...], // sid -> numeric provider column
@@ -190,7 +196,8 @@ return {
       {locals: [{storage, depth, layout}, ...], // slot-indexed; exact ValueLayout
        subs:   [{fid}, ...]},             // call-site-slot-indexed
     ],
-    requests: [{merge: {mode}, depth, resultSlot, layout, context}, ...],
+    requests: [{name, merge: {mode}, depth, resultSlot,
+                resultLayout, layout, context}, ...],
   },
   requests: [M1, ...],           // rid-indexed child modules (same shape,
                                  // sibling consts — code cannot live in the
@@ -209,14 +216,14 @@ recursive module tree. Ordered binding requirements, `ready()`, and
 there is no parallel `bindings`, parameter vector, or other binding state stored
 on the module. The emitted code never imports API streams or provider objects.
 
-`RUNTIME_ABI_VERSION` is the single version source and is currently `6`.
+`RUNTIME_ABI_VERSION` is the single version source and is currently `7`.
 Before launch, this contract evolves in place; the runtime does not carry
 compatibility branches for older generated modules.
 
 An output channel's `type` is the human Tea spelling. The current ABI publishes
 an exhaustive `transport` discriminant projected directly from the checked IR
 type (`int`, `float`, `bool`, `string`, `color`, `enum`, resource, output
-reference, struct, or aggregate shape). Runtime transports branch only on that field;
+reference, struct, or collection shape). Runtime transports branch only on that field;
 they never recover machine semantics by parsing the display string.
 
 Every request child is a complete `JSModule`, including `abi`, `layout`,
@@ -225,8 +232,11 @@ Every request child is a complete `JSModule`, including `abi`, `layout`,
 children cannot define a second layout-id namespace. The runtime clones and
 seals that table at its trust boundary.
 Each child uses the shared host-owned request/fixed-value budgets but owns an
-independent Heap. Request results cross into the parent only as copied scalars
-or scalar-only tuples; a `Ref` never crosses arenas.
+independent Heap. Child request results cross into the parent only as copied
+scalars; a `Ref` never crosses arenas. A Collect spec distinguishes the child's
+scalar `resultLayout` from the parent's array `layout`. Only the Node adapter
+supplies such a raw scalar batch, which runtime materializes inside the parent
+Heap transaction; fixed-history rejects Collect.
 
 Dense ids (`sid`, `bid`, `pid`, `oid`, `fid`, local slots) are assigned by the
 lowering walk; the manifest is their single source of truth — the runtime
@@ -260,7 +270,7 @@ ctx.read(fr, slot, offset); // a name's history
 ctx.write(fr, slot, v);
 ctx.needsInit(fr, slot); // persistent declaration has not initialized yet
 ctx.initialize(fr, slot, v); // tentatively initialize at this lexical site
-ctx.request(rid, offset); // a static edge's merged parent-row view
+ctx.request(rid, offset); // the current or parent-step-history request value
 // frames
 ctx.frame(fr, slot); // open the sub-frame at this call site
 ctx.root(); // the program frame (globals read from funcs)
@@ -808,4 +818,8 @@ they fill reserved entries.
 Dynamic request contexts and an execution `Pause`/resume protocol are staged.
 The current noder rejects every request whose symbol or timeframe is not
 bind-time-known, so supported row execution never suspends to discover a child
-context. Static children resolve completely during binding before row 0.
+context. Fixed-history resolves each static provider context completely during
+binding before row 0. Public Node performs no provider resolution; it consumes
+request `DataStream`s already bound by declaration name. Fixed-history collect,
+Node provisional/final request updates, watermarks, and implicit resampling
+remain staged. See [Requests](requests.md).

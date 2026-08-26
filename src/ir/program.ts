@@ -172,6 +172,8 @@ export interface MergePolicy {
 export interface RequestEdge {
   // The call site anchors noder post-pass support diagnostics.
   readonly pos: Pos;
+  // Public Node binding identity: the direct top-level declaration target.
+  readonly name: string;
   // Input/simple expressions form static contexts. Series-qualified context
   // expressions set `dynamic`, which currently fails closed at the noder
   // boundary before a Program can reach codegen or runtime.
@@ -186,10 +188,11 @@ export interface RequestEdge {
   // canonical order so module.bind evaluates each option exactly once.
   readonly optionArgumentEvaluationOrder: readonly number[];
   readonly merge: MergePolicy;
-  // The designated result: a Name OF THE CHILD written each child bar; the
-  // runtime merges its committed values onto the parent axis. resultType
-  // must equal that name's type (tuples for multi-value requests).
+  // The designated result is a Name OF THE CHILD written each child bar.
   readonly resultName: Name;
+  readonly captureType: Type;
+  // Source-visible parent type: captureType for sample, array<captureType>
+  // for collect.
   readonly resultType: Type;
   // Classified once by the noder, where the expression's owning frame is
   // still known. Downstream stages consume this fact instead of re-deriving

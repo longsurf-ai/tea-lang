@@ -1,11 +1,159 @@
 // Purpose: Target retention, source buffering, projection, and lifecycle
 // contracts for the sync Observable operator.
 
-import {Subject} from 'rxjs';
+import {Observable, Subject, type Subscriber} from 'rxjs';
 import {describe, expect, test, vi} from 'vitest';
 import {sync} from './sync';
 
 describe('sync', () => {
+  test('subscribes the source before the target', () => {
+    const order: string[] = [];
+    const values: number[] = [];
+    const source = new Observable<number>(subscriber => {
+      order.push('source');
+      subscriber.next(1);
+    });
+    const target = new Observable<void>(subscriber => {
+      order.push('target');
+      subscriber.next();
+    });
+
+    source.pipe(sync(target)).subscribe(value =>
+      values.push(value as number),
+    );
+
+    expect(order).toEqual(['source', 'target']);
+    expect(values).toEqual([1]);
+  });
+
+  test('an empty completed source finishes without subscribing the target', () => {
+    const targetSubscribed = vi.fn();
+    const project = vi.fn(() => undefined);
+    const complete = vi.fn();
+    const source = new Observable<number>(subscriber => subscriber.complete());
+    const target = new Observable<void>(() => {
+      targetSubscribed();
+    });
+
+    source.pipe(sync(target, project)).subscribe({complete});
+
+    expect(complete).toHaveBeenCalledOnce();
+    expect(targetSubscribed).not.toHaveBeenCalled();
+    expect(project).not.toHaveBeenCalled();
+  });
+
+  test('serves targets from a buffered completed source', () => {
+    const target = new Subject<string>();
+    const values: string[] = [];
+    const complete = vi.fn();
+    const source = new Observable<number>(subscriber => {
+      subscriber.next(1);
+      subscriber.next(2);
+      subscriber.complete();
+    });
+
+    source
+      .pipe(
+        sync(target, (name, buffered) => {
+          const first = buffered[0];
+          return first === undefined ? undefined : [`${name}:${first}`, 1];
+        }),
+      )
+      .subscribe({next: value => values.push(value), complete});
+
+    target.next('first');
+    expect(values).toEqual(['first:1']);
+    expect(complete).not.toHaveBeenCalled();
+
+    target.next('second');
+    expect(values).toEqual(['first:1', 'second:2']);
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
+  test('completes when a finished source cannot satisfy a pending target', () => {
+    const source = new Subject<number>();
+    const target = new Subject<void>();
+    const values: Array<readonly number[]> = [];
+    const complete = vi.fn();
+
+    source
+      .pipe(
+        sync(target, (_, buffered) =>
+          buffered.length < 2
+            ? undefined
+            : [buffered.slice(0, 2), 2],
+        ),
+      )
+      .subscribe({next: value => values.push(value), complete});
+
+    target.next();
+    source.next(1);
+    source.complete();
+
+    expect(values).toEqual([]);
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
+  test('target completion discards buffered source leftovers', () => {
+    let sourceSubscriber!: Subscriber<number>;
+    const sourceTeardown = vi.fn();
+    const source = new Observable<number>(subscriber => {
+      sourceSubscriber = subscriber;
+      return sourceTeardown;
+    });
+    const target = new Subject<void>();
+    const values: number[] = [];
+    const complete = vi.fn();
+
+    source
+      .pipe(
+        sync(target, (_, buffered) => {
+          const first = buffered[0];
+          return first === undefined ? undefined : [first, 1];
+        }),
+      )
+      .subscribe({next: value => values.push(value), complete});
+
+    sourceSubscriber.next(1);
+    sourceSubscriber.next(2);
+    target.next();
+    target.complete();
+
+    expect(values).toEqual([1]);
+    expect(complete).toHaveBeenCalledOnce();
+    expect(sourceTeardown).toHaveBeenCalledOnce();
+    expect(sourceSubscriber.closed).toBe(true);
+  });
+
+  test('cancellation tears down both subscriptions and stops work', () => {
+    let sourceSubscriber!: Subscriber<number>;
+    let targetSubscriber!: Subscriber<void>;
+    const sourceTeardown = vi.fn();
+    const targetTeardown = vi.fn();
+    const values: Array<number | readonly number[]> = [];
+    const source = new Observable<number>(subscriber => {
+      sourceSubscriber = subscriber;
+      return sourceTeardown;
+    });
+    const target = new Observable<void>(subscriber => {
+      targetSubscriber = subscriber;
+      return targetTeardown;
+    });
+    const subscription = source
+      .pipe(sync(target))
+      .subscribe(value => values.push(value));
+
+    subscription.unsubscribe();
+    sourceSubscriber.next(1);
+    targetSubscriber.next();
+
+    expect(sourceTeardown).toHaveBeenCalledOnce();
+    expect(targetTeardown).toHaveBeenCalledOnce();
+    expect(sourceSubscriber.closed).toBe(true);
+    expect(targetSubscriber.closed).toBe(true);
+    expect(values).toEqual([]);
+  });
+
   test('retains a target until the source has a value', () => {
     const source = new Subject<number>();
     const target = new Subject<string>();

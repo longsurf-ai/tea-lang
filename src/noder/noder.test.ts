@@ -1175,17 +1175,24 @@ describe('requests', () => {
     });
   });
 
-  test('request captures stay isolated across function specializations', () => {
+  test('request edges retain distinct child and parent result types', () => {
     const program = mustBuild(
       [
-        'fetch(value) => request.security("X", "D", value)',
-        'price = fetch(close)',
-        'index = fetch(bar_index)',
+        'price = request.security("X", "D", close)',
+        'indices = request.security_lower_tf("X", "1", bar_index)',
       ].join('\n'),
     );
     expect(program.requests.map(edge => edge.resultType.kind)).toEqual([
       TypeKind.Float,
+      TypeKind.Array,
+    ]);
+    expect(program.requests.map(edge => edge.captureType.kind)).toEqual([
+      TypeKind.Float,
       TypeKind.Int,
+    ]);
+    expect(program.requests.map(edge => edge.name)).toEqual([
+      'price',
+      'indices',
     ]);
     expect(
       program.requests.map(edge => {
@@ -1195,13 +1202,12 @@ describe('requests', () => {
     ).toEqual([TypeKind.Float, TypeKind.Int]);
   });
 
-  test('request binding accepts root bind values and rejects function locals', () => {
+  test('request binding accepts root bind values and rejects function ownership', () => {
     const staticProgram = mustBuild(
       [
         'sym = input.string("X")',
         'alias = sym + ""',
-        'fetch() => request.security(alias, "D", close)',
-        'plot(fetch())',
+        'value = request.security(alias, "D", close)',
       ].join('\n'),
     );
     expect(staticProgram.requests[0].dynamic).toBe(false);
@@ -1216,7 +1222,7 @@ describe('requests', () => {
     expect(local.program).toBeNull();
     expect(local.errors.map(error => error.msg)).toContainEqual(
       expect.stringContaining(
-        'dynamic requests are not supported yet; symbol and timeframe must be bind-time-known',
+        'request call must directly initialize one plain top-level variable',
       ),
     );
   });
@@ -1246,7 +1252,7 @@ describe('requests', () => {
     expect(staticProgram.requests[0].dynamic).toBe(false);
   });
 
-  test('dynamic request rejection visits nested child Programs', () => {
+  test('nested request calls fail at the direct-declaration boundary', () => {
     const result = buildText(
       [
         'nested = request.security(',
@@ -1255,11 +1261,9 @@ describe('requests', () => {
       ].join('\n'),
     );
     expect(result.program).toBeNull();
-    expect(
-      result.errors.filter(error =>
-        error.msg.includes('dynamic requests are not supported yet'),
-      ),
-    ).toHaveLength(1);
+    expect(result.errors.map(error => error.msg)).toContain(
+      'request call must directly initialize one plain top-level variable',
+    );
   });
 
   test('script series variables cannot cross into captures', () => {

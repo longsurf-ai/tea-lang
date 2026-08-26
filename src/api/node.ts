@@ -7,24 +7,27 @@ import {
   map,
   Observable,
   of,
-  share,
   Subject,
   Subscription,
 } from 'rxjs';
+import * as z from 'zod';
 import {fatal} from '../base/print';
 import {JSRuntime, type StepResult} from '../runtime/js-runtime';
-import {
-  moduleBindings,
-  withModuleBindings,
-  withRequestModule,
-} from '../runtime/module-binding';
-import type {JSModule, ModuleBinding} from '../runtime/module-abi';
+import {moduleBindings, withRequestModule} from '../runtime/module-binding';
+import type {JSModule, RequestSpec} from '../runtime/module-abi';
+import type {Value} from '../runtime/value';
 import {bindModule} from './binding';
+import {i, timeframeClock, type Clock} from './clock';
 import type {Sink} from './sink';
 import {DataStream} from './stream';
 import {sync} from './sync';
 
 type Datum = Readonly<Record<string, unknown>>;
+type RequestOutput = readonly [Datum, Value];
+type RequestProjector = (
+  datum: Datum,
+  buffered: readonly RequestOutput[],
+) => readonly [Datum, number] | undefined;
 
 export type BindingInput =
   | DataStream<unknown>
@@ -76,6 +79,8 @@ class TeaNode implements Node {
   private _module: JSModule;
   private data: Observable<Datum> | null;
   private requests: TeaNode[];
+  private clock: Clock = i;
+  private timed = false;
   private readonly results = new Subject<StepResult>();
   private runtime: JSRuntime | null = null;
   private connection: Subscription | null = null;
@@ -88,15 +93,9 @@ class TeaNode implements Node {
    * @example `new TeaNode(rootModule)` creates children for
    * `rootModule.requests`.
    */
-  constructor(
-    module: JSModule,
-    data: Observable<Datum> | null = null,
-    requests?: readonly TeaNode[],
-  ) {
-    this.data = data;
-    this.requests = requests
-      ? [...requests]
-      : module.requests.map(request => new TeaNode(request));
+  constructor(module: JSModule) {
+    this.data = null;
+    this.requests = module.requests.map(request => new TeaNode(request));
     this._module = module;
   }
 
@@ -113,7 +112,7 @@ class TeaNode implements Node {
    * Runs the internal binding Effect behind the synchronous public API.
    *
    * @example `node.bind(stream).bind({length: 20})`
-  */
+   */
   bind(input: BindingInput): Node {
     if (this.disposed) throw new Error('Node is disposed');
     if (this.started) {
@@ -139,8 +138,7 @@ class TeaNode implements Node {
    */
   ready(): boolean {
     return (
-      this._module.ready() &&
-      this.requests.every(request => request.ready())
+      this._module.ready() && this.requests.every(request => request.ready())
     );
   }
 
@@ -148,7 +146,7 @@ class TeaNode implements Node {
    * Runs execution setup internally and returns the RxJS sink subscription.
    *
    * @example `node.to(firstSink); node.to(lateSink)` shares one runtime.
-  */
+   */
   to(sink: Sink<StepResult>): Subscription {
     if (this.disposed) throw new Error('Node is disposed');
     if (this.started) return this.results.subscribe(sink);
@@ -160,64 +158,46 @@ class TeaNode implements Node {
           .join(', ')}`,
       );
     }
-    const module = this.snapshot();
-    if (module.manifest.builtin.length !== 0) {
+    if (this._module.manifest.builtin.length !== 0) {
       throw new Error('Node builtin input wiring is not implemented yet');
     }
-    if (module.manifest.requests.length !== 0) {
-      throw new Error(
-        'Node request execution requires time and finality semantics that DataStream does not provide',
-      );
-    }
-
     const sinkSubscription = this.results.subscribe(sink);
-    let runtime: JSRuntime;
+    let execution: Observable<readonly [Datum, StepResult]>;
     try {
-      runtime = new JSRuntime(module);
+      execution = this.steps();
     } catch (error) {
       sinkSubscription.unsubscribe();
+      this.disposeRuntime();
       throw error;
     }
-    this.runtime = runtime;
     this.started = true;
 
-    const seriesNames = moduleBindings(module)
-      .filter(
-        (binding): binding is Extract<ModuleBinding, {kind: 'series'}> =>
-          binding.kind === 'series',
-      )
-      .map(binding => binding.name);
-    const inputData = this.data ?? of(Object.freeze({}) as Datum);
-
-    const connection = new Subscription();
-    this.connection = connection;
-    connection.add(
-      inputData
-        .pipe(
-          concatMap(datum => this.stepDatum(runtime, seriesNames, datum)),
-          finalize(() => runtime.dispose()),
-        )
-        .subscribe({
-          next: result => this.results.next(result),
-          error: error => this.results.error(error),
-          complete: () => this.results.complete(),
-        }),
-    );
+    this.connection = execution.subscribe({
+      next: ([, result]) => this.results.next(result),
+      error: error => this.results.error(error),
+      complete: () => this.results.complete(),
+    });
     return sinkSubscription;
   }
 
   /**
    * Runs idempotent cleanup without exposing Effect in the public contract.
    *
-  * @example Calling `node.dispose()` twice performs one teardown.
-  */
+   * @example Calling `node.dispose()` twice performs one teardown.
+   */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.connection?.unsubscribe();
-    this.runtime?.dispose();
-    this.requests.forEach(request => request.dispose());
+    this.disposeRuntime();
     this.results.complete();
+  }
+
+  /** Dispose every runtime in this private request subtree. */
+  private disposeRuntime(): void {
+    this.runtime?.dispose();
+    this.runtime = null;
+    this.requests.forEach(request => request.disposeRuntime());
   }
 
   /**
@@ -241,20 +221,19 @@ class TeaNode implements Node {
       self.updateModule(module);
       if (JSON.stringify(before) !== JSON.stringify(self.seriesNames())) {
         self.data = null;
+        self.clock = i;
+        self.timed = false;
       }
     });
   }
 
   /**
-   * Binds this Node's streams, then recursively fans request streams to children.
+   * Binds direct series and request-variable streams.
    *
-   * @example `{close: root, SPY: child}` binds `close` here and passes `SPY`
-   * to every request child whose concrete symbol is `SPY`.
+   * @example `{close: root, daily: child}` targets a series and one request.
    */
   private bindStreams(
-    input:
-      | DataStream<unknown>
-      | Readonly<Record<string, DataStream<unknown>>>,
+    input: DataStream<unknown> | Readonly<Record<string, DataStream<unknown>>>,
   ): Effect.Effect<void, Error> {
     const self = this;
     return Effect.gen(function* () {
@@ -267,45 +246,72 @@ class TeaNode implements Node {
           kind: 'series' as const,
           name,
         }));
+        if (
+          self.clock !== i &&
+          input.clock !== i &&
+          self.clock !== input.clock
+        ) {
+          return yield* Effect.fail(
+            new Error('bound DataStream clocks disagree'),
+          );
+        }
         const module = yield* bindModule(self.snapshot(), assignments);
         self.updateModule(module);
-        self.data = self.combineData(
-          self.data,
-          self.sourceData(input.asObservable(), names),
-        );
+        if (self.clock === i) self.clock = input.clock;
+        self.timed ||= self.hasTime(input);
+        self.data = self.combineData(self.data, self.sourceData(input, names));
         return;
       }
 
-      const known = new Set(self.seriesNames());
-      self.requestStreamKeys(known);
+      const rootNames = self.seriesNames();
+      const requestNames = self._module.manifest.requests.map(
+        request => request.name,
+      );
       for (const name of Object.keys(input)) {
-        if (!known.has(name)) {
+        const root = rootNames.includes(name);
+        const requests = requestNames.filter(
+          candidate => candidate === name,
+        ).length;
+        if ((root ? 1 : 0) + requests === 0) {
           return yield* Effect.fail(
             new Error(
               `no bind-known root series or static request child matches '${name}'`,
             ),
           );
         }
+        if ((root ? 1 : 0) + requests > 1) {
+          return yield* Effect.fail(
+            new Error(`stream binding '${name}' is ambiguous`),
+          );
+        }
       }
 
       const root = Object.entries(input).filter(([name]) =>
-        self.seriesNames().includes(name),
+        rootNames.includes(name),
       );
       if (root.length !== 0) {
+        const clocks = [
+          self.clock,
+          ...root.map(([, stream]) => stream.clock),
+        ].filter(clock => clock !== i);
+        if (clocks.some(clock => clock !== clocks[0])) {
+          return yield* Effect.fail(
+            new Error('bound DataStream clocks disagree'),
+          );
+        }
         const assignments = root.map(([name]) => ({
           kind: 'series' as const,
           name,
         }));
         const data = root.reduce<Observable<Datum> | null>(
           (combined, [name, stream]) =>
-            self.combineData(
-              combined,
-              self.sourceData(stream.asObservable(), [name]),
-            ),
+            self.combineData(combined, self.sourceData(stream, [name])),
           null,
         );
         const module = yield* bindModule(self.snapshot(), assignments);
         self.updateModule(module);
+        self.clock = clocks[0] ?? i;
+        self.timed ||= root.some(([, stream]) => self.hasTime(stream));
         self.data = self.combineData(self.data, data);
       }
 
@@ -314,10 +320,9 @@ class TeaNode implements Node {
   }
 
   /**
-   * Recursively binds streams selected by each request child's context symbol.
+   * Binds each request variable's stream to its generated child Node.
    *
-   * @example Two `SPY` request children both receive the same `input.SPY`
-   * stream; a nested `QQQ` child is reached by the recursive call.
+   * @example `input.daily` binds only the request declared as `daily`.
    */
   private bindRequestStreams(
     input: Readonly<Record<string, DataStream<unknown>>>,
@@ -326,10 +331,9 @@ class TeaNode implements Node {
     return Effect.gen(function* () {
       for (let requestId = 0; requestId < self.requests.length; requestId++) {
         const child = self.requests[requestId]!;
-        const symbol = self._module.manifest.requests[requestId]?.context?.symbol;
-        const stream = symbol === undefined ? undefined : input[symbol];
+        const name = self._module.manifest.requests[requestId]?.name;
+        const stream = name === undefined ? undefined : input[name];
         if (stream !== undefined) yield* child.bindStreams(stream);
-        yield* child.bindRequestStreams(input);
       }
     });
   }
@@ -337,55 +341,17 @@ class TeaNode implements Node {
   /**
    * Updates each Node from the corresponding module in a newly bound tree.
    *
-   * @example Changing request symbol `X` to `Y` updates that child module and
-   * clears the stream previously selected by `X`.
+   * @example Parameter concretization replaces child manifests in rid order.
    */
   private updateModule(module: JSModule): void {
     const requests = module.requests.map((request, requestId) => {
       const child = this.requests[requestId];
       if (child === undefined) return new TeaNode(request);
-      const previous = this._module.manifest.requests[requestId]?.context;
-      const current = module.manifest.requests[requestId]?.context;
       child.updateModule(request);
-      if (JSON.stringify(previous ?? null) !== JSON.stringify(current ?? null)) {
-        child.clearStreams();
-      }
       return child;
     });
     this._module = module;
     this.requests = requests;
-  }
-
-  /**
-   * Adds every recursively bindable request symbol to a caller-owned set.
-   *
-   * @example A root request for `SPY` with nested `QQQ` adds both keys.
-   * @param keys - The set populated with concrete request symbols.
-   */
-  private requestStreamKeys(keys: Set<string>): void {
-    this._module.manifest.requests.forEach(request => {
-      if (request.context !== null && request.context !== undefined) {
-        keys.add(request.context.symbol);
-      }
-    });
-    this.requests.forEach(child => child.requestStreamKeys(keys));
-  }
-
-  /**
-   * Clears this Node's data and series markers recursively.
-   *
-   * @example After request symbol `X` becomes `Y`, the previous `X` child
-   * cannot remain ready through its old `close` marker.
-   */
-  private clearStreams(): void {
-    this.data = null;
-    const bindings = moduleBindings(this._module).map(binding =>
-      binding.kind === 'series'
-        ? Object.freeze({...binding, supplied: false})
-        : binding,
-    );
-    this._module = withModuleBindings(this._module, bindings);
-    this.requests.forEach(child => child.clearStreams());
   }
 
   /**
@@ -398,15 +364,12 @@ class TeaNode implements Node {
     if (this.requests.length !== this._module.requests.length) {
       return fatal('TeaNode request state disagrees with JSModule requests');
     }
-    return this.requests.reduce(
-      (parent, child, requestId) => {
-        const childModule = child.snapshot();
-        return parent.requests[requestId] === childModule
-          ? parent
-          : withRequestModule(parent, requestId, childModule);
-      },
-      this._module,
-    );
+    return this.requests.reduce((parent, child, requestId) => {
+      const childModule = child.snapshot();
+      return parent.requests[requestId] === childModule
+        ? parent
+        : withRequestModule(parent, requestId, childModule);
+    }, this._module);
   }
 
   /**
@@ -427,29 +390,37 @@ class TeaNode implements Node {
    * record emissions must already contain every requested name.
    */
   private sourceData(
-    source: Observable<unknown>,
+    source: DataStream<unknown>,
     names: readonly string[],
   ): Observable<Datum> {
-    return source.pipe(
+    const timed = this.hasTime(source);
+    let previousTime: bigint | null = null;
+    return source.asObservable().pipe(
       map(value => {
-        if (this.isRecord(value)) {
-          return Object.freeze(
-            Object.fromEntries(
-              names.map(name => {
-                if (!Object.hasOwn(value, name)) {
-                  throw new Error(
-                    `source value does not provide series '${name}'`,
-                  );
-                }
-                return [name, value[name]];
-              }),
-            ),
-          );
+        const parsed = source.schema.parse(value);
+        if (this.isRecord(parsed)) {
+          const entries = names.map(name => {
+            if (!Object.hasOwn(parsed, name)) {
+              throw new Error(`source value does not provide series '${name}'`);
+            }
+            return [name, parsed[name]] as const;
+          });
+          if (timed) {
+            const time = parsed.time;
+            if (
+              typeof time !== 'bigint' ||
+              (previousTime !== null && time < previousTime)
+            ) {
+              throw new Error('DataStream time must be a nondecreasing bigint');
+            }
+            previousTime = time;
+            entries.push(['time', time]);
+          }
+          return Object.freeze(Object.fromEntries(entries));
         }
-        if (names.length === 1) return Object.freeze({[names[0]!]: value});
+        if (names.length === 1) return Object.freeze({[names[0]!]: parsed});
         throw new Error(`source value does not provide series '${names[0]}'`);
       }),
-      share(),
     );
   }
 
@@ -468,10 +439,24 @@ class TeaNode implements Node {
     return current.pipe(
       sync(next, (right, buffered) => {
         const left = buffered[0];
-        return left === undefined
-          ? undefined
-          : [Object.freeze({...left, ...right}), 1];
+        if (left === undefined) return undefined;
+        if (
+          Object.hasOwn(left, 'time') &&
+          Object.hasOwn(right, 'time') &&
+          left.time !== right.time
+        ) {
+          throw new Error('synchronized DataStream times disagree');
+        }
+        return [Object.freeze({...left, ...right}), 1];
       }),
+    );
+  }
+
+  /** Whether this stream's Zod object schema declares `time: bigint`. */
+  private hasTime(stream: DataStream<unknown>): boolean {
+    return (
+      stream.schema instanceof z.ZodObject &&
+      stream.schema.shape.time instanceof z.ZodBigInt
     );
   }
 
@@ -497,6 +482,223 @@ class TeaNode implements Node {
     return value;
   }
 
+  /** Execute this Node after recursively synchronizing every request child. */
+  private steps(): Observable<readonly [Datum, StepResult]> {
+    if (this._module.manifest.builtin.length !== 0) {
+      throw new Error('Node builtin input wiring is not implemented yet');
+    }
+    const runtime = new JSRuntime(this._module);
+    this.runtime = runtime;
+    const names = this.seriesNames();
+    const specs = this._module.manifest.requests;
+    let pending = this.data ?? of(Object.freeze({}) as Datum);
+    specs.forEach((spec, requestId) => {
+      const child = this.requests[requestId];
+      if (child === undefined) {
+        return fatal(`request ${requestId} has no child Node`);
+      }
+      pending = this.synchronize(spec, child, pending);
+    });
+    return pending.pipe(
+      concatMap(datum =>
+        this.stepDatum(
+          runtime,
+          names,
+          datum,
+          specs.map(spec => {
+            if (!Object.hasOwn(datum, spec.name)) {
+              return fatal(`request '${spec.name}' was not synchronized`);
+            }
+            return datum[spec.name] as Value;
+          }),
+        ).pipe(map(result => [datum, result] as const)),
+      ),
+      finalize(() => runtime.dispose()),
+    );
+  }
+
+  /** Execute a child and expose only its declared request result. */
+  private requestOutput(spec: RequestSpec): Observable<RequestOutput> {
+    return this.steps().pipe(
+      map(([datum]) => {
+        const runtime = this.runtime;
+        if (runtime === null) return fatal('request child has no runtime');
+        return [
+          datum,
+          runtime.readResult(spec.resultSlot, spec.resultLayout),
+        ] as const;
+      }),
+    );
+  }
+
+  /** Apply the scalar or collect synchronization selected for one edge. */
+  private synchronize(
+    spec: RequestSpec,
+    child: TeaNode,
+    target: Observable<Datum>,
+  ): Observable<Datum> {
+    const count = this.requestCount(spec, child);
+    const project =
+      spec.merge.mode === 'sample'
+        ? this.oneToOne(spec.name, false)
+        : count !== null
+          ? this.countWindow(spec.name, count)
+          : this.timed && child.timed
+            ? this.eventWindow(spec.name)
+            : this.oneToOne(spec.name, true);
+    return child.requestOutput(spec).pipe(sync(target, project));
+  }
+
+  /**
+   * Validate an edge's declared and supplied clocks and derive its batch size.
+   *
+   * Clock division proves a structural relationship between two regular
+   * streams: one main period contains an exact number of child periods. It
+   * does not inspect timestamps or observed arrival rates.
+   *
+   * @param spec - The parent request whose timeframe supplies an expected clock.
+   * @param child - The child Node whose bound DataStream supplies its actual clock.
+   * @returns The exact positive child count for a divisible collect window, or
+   * `null` when clock-count synchronization does not apply.
+   *
+   * @example A five-minute main clock divided by a one-minute child clock
+   * yields `5`; a five-minute clock and a two-minute clock have no exact count.
+   */
+  private requestCount(spec: RequestSpec, child: TeaNode): number | null {
+    const expected = timeframeClock(spec.context?.timeframe ?? '');
+    if (expected !== i && child.clock !== i && expected !== child.clock) {
+      throw new Error(
+        `request '${spec.name}' expects clock ${expected}, received ${child.clock}`,
+      );
+    }
+    const childClock = child.clock === i ? expected : child.clock;
+    if (
+      spec.merge.mode !== 'collect' ||
+      this.clock === i ||
+      childClock === i ||
+      this.clock % childClock !== 0n
+    ) {
+      return null;
+    }
+    const ratio = this.clock / childClock;
+    if (ratio > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`request '${spec.name}' clock ratio is too large`);
+    }
+    return Number(ratio);
+  }
+
+  /**
+   * Synchronize the streams by ordinal position.
+   *
+   * The first main datum pairs with the first child result, the second with the
+   * second, and so on. A main datum waits if its child counterpart has not
+   * arrived. This policy assigns no meaning to timestamps or cadence.
+   *
+   * @param name - The request declaration name written into the main datum.
+   * @param array - Whether to preserve the collect result as `[value]` instead
+   * of exposing the scalar value directly.
+   * @returns A stateless `sync` projector that waits when the child buffer is
+   * empty and otherwise consumes exactly its first value.
+   *
+   * @example
+   * ```text
+   * main:  A   B   C
+   * child: 1   2   3
+   * pair:  A+1 B+2 C+3
+   * ```
+   */
+  private oneToOne(name: string, array: boolean): RequestProjector {
+    return (datum, buffered) => {
+      const first = buffered[0];
+      if (first === undefined) return undefined;
+      const value = array ? Object.freeze([first[1]]) : first[1];
+      return [Object.freeze({...datum, [name]: value}), 1];
+    };
+  }
+
+  /**
+   * Synchronize regular streams by grouping a fixed number of child periods.
+   *
+   * One main datum represents one complete group of `count` consecutive child
+   * results. The main stream waits until the whole group exists; partial groups
+   * never advance the parent program.
+   *
+   * @param name - The request declaration name written into the main datum.
+   * @param count - The number of child values required for each main datum.
+   * @returns A stateless `sync` projector that waits for `count` buffered
+   * values, writes them as one frozen array, and consumes exactly that batch.
+   *
+   * @example With a two-minute main clock and one-minute child clock:
+   * ```text
+   * main:  A       B       C
+   * child: 1   2   3   4   5   6
+   * pair:  A+[1,2] B+[3,4] C+[5,6]
+   * ```
+   */
+  private countWindow(name: string, count: number): RequestProjector {
+    return (datum, buffered) => {
+      if (buffered.length < count) return undefined;
+      const values = Object.freeze(
+        buffered.slice(0, count).map(([, value]) => value),
+      );
+      return [Object.freeze({...datum, [name]: values}), count];
+    };
+  }
+
+  /**
+   * Synchronize irregular streams using main event times as window boundaries.
+   *
+   * The first window selects `child.time <= main.time`. Later windows select
+   * `previousMain < child.time <= main.time`. Values at or before the previous
+   * boundary arrived too late: the projector consumes and drops them. Values
+   * after the current boundary remain buffered for a later main datum.
+   *
+   * @param name - The request declaration name written into the main datum.
+   * @returns A stateful `sync` projector that always emits a frozen array,
+   * including an empty array when the current window contains no child values.
+   *
+   * @example
+   * ```text
+   * time:  | 5 | 8 | 10      | 20   | 25 | 30    |
+   * main:  |   |   | A       | B    |    | C     |
+   * child: | 1 | 2 |         |      | 3  |       |
+   * pair:  |   |   | A+[1,2] | B+[] |    | C+[3] |
+   * ```
+   */
+  private eventWindow(name: string): RequestProjector {
+    let previousMain: bigint | null = null;
+    return (datum, buffered) => {
+      const mainTime = datum.time;
+      if (
+        typeof mainTime !== 'bigint' ||
+        (previousMain !== null && mainTime <= previousMain)
+      ) {
+        throw new Error('main DataStream time must be an increasing bigint');
+      }
+      const values: Value[] = [];
+      let consume = 0;
+      for (const [childDatum, value] of buffered) {
+        const childTime = childDatum.time;
+        if (typeof childTime !== 'bigint') {
+          return fatal('timed child datum has no bigint time');
+        }
+        if (childTime > mainTime) break;
+        consume += 1;
+        if (previousMain !== null && childTime <= previousMain) {
+          // Its window already emitted: consume this late value without
+          // publishing it into the current window.
+          continue;
+        }
+        values.push(value);
+      }
+      previousMain = mainTime;
+      return [
+        Object.freeze({...datum, [name]: Object.freeze(values)}),
+        consume,
+      ];
+    };
+  }
+
   /**
    * Adapts one `JSRuntime.step()` Effect into a cancelable one-value Observable.
    *
@@ -507,13 +709,14 @@ class TeaNode implements Node {
     runtime: JSRuntime,
     seriesNames: readonly string[],
     datum: Datum,
+    requests: readonly Value[],
   ): Observable<StepResult> {
     return new Observable(subscriber => {
       const cancel = Effect.runCallback(
         runtime.step({
           series: seriesNames.map(name => this.numericSeries(datum[name])),
           builtins: [],
-          requests: [],
+          requests,
           provisional: false,
         }),
         {

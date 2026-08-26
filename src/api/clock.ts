@@ -7,7 +7,6 @@
  *
  */
 
-import * as z from 'zod';
 declare const clock: unique symbol;
 
 export type Clock = bigint & {
@@ -28,49 +27,15 @@ export const w: Clock = (7n * d) as Clock;
 export const M: Clock = (30n * d) as Clock;
 export const y: Clock = (360n * d) as Clock;
 
-export const enum Interpolation {
-  Stepwise = 1,
-  Linear,
-  Absent,
-}
-
-export abstract class Clocked {
-  abstract readonly clock: Clock;
-
-  /**
-   * Check if this clock divides the other clock.
-   * Note that runtime divisibility check is intentionally made conservative.
-   * @param other
-   * @returns
-   */
-  public divides(other: Clocked): boolean {
-    if (
-      other.clock === i ||
-      this.clock === i ||
-      other.clock % this.clock !== 0n
-    ) {
-      return false;
-    }
-    return true;
+/** Convert one concrete Tea timeframe to its regular clock, or `i`. */
+export function timeframeClock(timeframe: string): Clock {
+  const match = /^([1-9]\d*)?([SDWM])$/.exec(timeframe);
+  if (/^[1-9]\d*$/.test(timeframe)) {
+    return (BigInt(timeframe) * m) as Clock;
   }
-
-  public matches(other: Clocked): boolean {
-    return this.clock === other.clock;
-  }
-}
-
-export class TimeSeries<S extends z.ZodType> extends Clocked {
-  readonly schema: S;
-
-  constructor(
-    schema: S,
-    public readonly clock: Clock,
-  ) {
-    super();
-    this.schema = schema;
-  }
-}
-
-export class MergePolicy {
-  constructor(public readonly ip: Interpolation) {}
+  if (match === null) return i;
+  const count = BigInt(match[1] ?? '1');
+  const unit =
+    match[2] === 'S' ? s : match[2] === 'D' ? d : match[2] === 'W' ? w : M;
+  return (count * unit) as Clock;
 }

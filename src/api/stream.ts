@@ -9,6 +9,7 @@ import {
   type TeardownLogic,
 } from 'rxjs';
 import * as z from 'zod';
+import {i, type Clock} from './clock';
 
 /** A read-only Observable whose emitted values are described by one schema. */
 export class DataStream<T> implements Subscribable<T> {
@@ -20,6 +21,7 @@ export class DataStream<T> implements Subscribable<T> {
       this: Observable<T>,
       subscriber: Subscriber<T>,
     ) => TeardownLogic,
+    public readonly clock: Clock = i,
   ) {
     this.observable = new Observable<T>(subscribe);
   }

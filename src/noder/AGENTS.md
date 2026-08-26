@@ -87,12 +87,16 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   `RequestEdge.dynamic` from bind-evaluability, then reports every dynamic edge
   as unsupported before a Program can cross the phase barrier. Direct
   request-call history is rejected with every other computed history operand.
-- A request.\* call site nodes into a `RequestEdge`: symbol/timeframe/merge
-  evaluate in the parent context; the captured expression nodes against the
-  request resolution's child `Info` into a child Program with its own name and
-  series projection, frame, slot counter, request list, and `$result` name.
-  The child `Info` is semantic capture facts, not Program identity or an IR
-  cache key.
+- A checked request call nodes into one `RequestEdge` whose `name` is the
+  direct top-level declaration target and therefore the public Node stream key.
+  Symbol/timeframe/merge evaluate in the parent context; the captured scalar
+  expression nodes against the request resolution's child `Info` into a child
+  Program with its own name and series projection, frame, slot counter,
+  request list, and `$result` Name. `captureType` is the child result type;
+  `resultType` is the parent's scalar `T` for sample mode or `array<T>` for
+  collect mode. `request.security` selects `Sample`, and
+  `request.security_lower_tf` selects `Collect`. The child `Info` is semantic
+  capture facts, not Program identity or an IR cache key.
   Direct bind-time params stay compilation-global — a child references the
   parent's `ParamInput` objects and declares none of its own. Computed root
   aliases are rejected by the checker until dependency-closure extraction can

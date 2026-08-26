@@ -437,8 +437,10 @@ class Noder {
                     valid = false;
                     return;
                   }
-                  if (nested.place.kind === PlaceKind.Series ||
-                      nested.place.kind === PlaceKind.Request) {
+                  if (
+                    nested.place.kind === PlaceKind.Series ||
+                    nested.place.kind === PlaceKind.Request
+                  ) {
                     valid = false;
                     return;
                   }
@@ -466,10 +468,7 @@ class Noder {
                     funcs.add(nested.func);
                     scan(
                       nested.func.body,
-                      new Set([
-                        ...nested.func.params,
-                        ...nested.func.locals,
-                      ]),
+                      new Set([...nested.func.params, ...nested.func.locals]),
                     );
                   }
                   return;
@@ -1643,13 +1642,8 @@ class Noder {
     const optionParamIndices = optionNames.map(name =>
       resolved.native.params.findIndex(param => param.name === name),
     );
-    if (optionParamIndices.some(index => index === -1)) {
-      return fatal(
-        `request native '${resolved.native.name}' lost its bind option contract`,
-      );
-    }
     const suppliedOptionOrder = resolved.argumentEvaluationOrder
-      .filter(index => optionParamIndices.includes(index))
+      .filter(index => index >= 0 && optionParamIndices.includes(index))
       .map(index => optionParamIndices.indexOf(index));
     const omittedOptionOrder = optionNames
       .map((name, index) => (argExpr(name) === null ? index : null))
@@ -1677,7 +1671,10 @@ class Noder {
         : this.nodeExpr(expr, this.tvOf(expr).type);
     };
     const merge: MergePolicy = {
-      mode: MergeMode.Sample,
+      mode:
+        resolved.native.name === 'request.security_lower_tf'
+          ? MergeMode.Collect
+          : MergeMode.Sample,
       gaps: optionExpr('gaps', BoolType, false),
       lookahead: optionExpr('lookahead', BoolType, false),
       ignoreInvalidSymbol: optionExpr('ignore_invalid_symbol', BoolType, false),
@@ -1702,7 +1699,7 @@ class Noder {
     const resultName: IrName = {
       name: '$result',
       storage: Storage.PerBar,
-      type: resolved.resultType,
+      type: resolved.captureType,
       qualifier: Qualifier.Series,
       depth: {kind: DepthKind.None},
     };
@@ -1718,7 +1715,7 @@ class Noder {
     this.program = childContext;
     this.frame = childContext.rootFrame;
     this.nesting += 1;
-    const childValue = this.nodeExpr(captureExpr, resolved.resultType);
+    const childValue = this.nodeExpr(captureExpr, resolved.captureType);
     this.nesting = savedNesting;
     this.info = savedInfo;
     this.program = parentProgram;
@@ -1757,12 +1754,14 @@ class Noder {
       this.requestContextBindEvaluable(expr);
     const edge: RequestEdge = {
       pos: c.pos,
+      name: resolved.bindingName,
       symbol,
       timeframe,
       contextArgumentEvaluationOrder,
       optionArgumentEvaluationOrder,
       merge,
       resultName,
+      captureType: resolved.captureType,
       resultType: resolved.resultType,
       dynamic: !staticAtBind(symbol) || !staticAtBind(timeframe),
       depth: {kind: DepthKind.None},
