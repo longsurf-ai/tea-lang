@@ -205,40 +205,9 @@ for their allocation behavior.
 binding. `execution.kind: sweep` forms the Cartesian product of its ranges;
 `maxExecutions` defaults to and cannot exceed 10,000, and rejects an oversized
 product before it is materialized. A sweep with no ranges is valid and has one
-binding. `tea execute` accepts no runtime, parameter, tracing, or visualization
-overrides: the config is its single execution specification. `--json` changes
-only publication into the versioned renderer-neutral result.
-
-### Explore a sweep in VS Code or Cursor
-
-The Tea editor extension can use the same execution config without adding an
-editor-specific run format. In a trusted local workspace, run
-`Tea: Open Sweep Dashboard` and select the YAML or JSON file. The normal Tea
-editor stays open on the left; the dashboard opens beside it with a restrained
-3D parameter surface above a selected execution's trajectory.
-
-Tea's one-shot JSON result contains the compact sweep summary plus each
-execution's row-aligned scalar outputs and typed effects captured during that
-same sweep. Clicking a point selects its trajectory locally; it does not retain
-a Tea process or rerun the strategy. The trajectory uses provider timestamps
-and can annotate `broker.FillExecuted` entries and exits. The extension calls
-the versioned `tea execute <config> --json` interface, then uses the shared
-visualization projection without embedding another compiler or runtime.
-
-Because drill-down comes from the completed sweep, Programs using
-request-backed contexts retain the same result they originally produced.
-Snapshot hashes identify the config, Tea source closure, primary provider, and
-clock used by that result.
-
-If `tea` is not available on the extension host's `PATH`, set the
-application-scoped `tea.executablePath` setting to an absolute executable path.
-The command is intentionally unavailable in untrusted workspaces.
-
-JSON sweep capture accepts scalar output transports and has a 256 MiB charged
-retention/projection limit. Use it for daily data and other moderate histories.
-Multi-million-row minute sweeps require output selection or another generic
-result transport; Tea fails clearly rather than truncating or silently
-rerunning them.
+binding. `tea execute` accepts no runtime, parameter, or tracing overrides: the
+config is its single execution specification. `--json` changes only publication
+into the versioned structured result.
 
 ### Direct source commands
 
@@ -294,20 +263,12 @@ strategy on the GPU and it does not silently switch runtimes. The existing
 WebGPU backend remains usable for scalar and numeric programs that do not
 reach struct values.
 
-Visualization is a separate consumer of Tea's renderer-neutral JSON result.
-The editor dashboard uses the shared visualization projection; the Tea CLI
-does not start a browser or own visualization state.
-
 Each binding has isolated runtime state and can eventually vary providers,
 symbols, or other inputs—not just parameters. The sweep reporter requests only
 final dense values and no effect payloads. The `tea` CLI runs under Node with
 the packaged `tsx` loader; GPU commands dynamically load the optional `webgpu`
 Dawn binding in that same process.
 No path introduces a strategy compiler or host-side matching/accounting.
-
-The result model and X/Y/Z/slice projection are renderer-neutral. The editor's
-Plotly adapter uses pinned local assets, so visualization does not send strategy
-results to a CDN.
 
 See [Strategy model](../strategy.md) for the normative source contract and
 [GPU Lowering](../advanced/gpu-lowering.md) for the backend boundary.

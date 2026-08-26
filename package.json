@@ -1,5 +1,5 @@
 {
-  "name": "tea-lang",
+  "name": "tea",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,6 +11,7 @@
   },
   "files": [
     "docs",
+    "dist",
     "src",
     "website",
     "website/build",
@@ -20,16 +21,20 @@
     "tea": "./src/main.ts"
   },
   "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/loader/index.js"
+    },
     "./codegen/wgsl": "./src/codegen/wgsl/index.ts",
     "./execution": "./src/execution/index.ts",
     "./reporting": "./src/reporting/index.ts",
-    "./runtime/batch": "./src/runtime/batch/index.ts",
     "./runtime/gpu": "./src/runtime/gpu/index.ts",
-    "./visualization": "./src/visualization/index.ts",
     "./*": "./src/*.ts"
   },
   "scripts": {
-    "check": "npm run typecheck && npm test && npm run docs:check",
+    "build:package": "node --import tsx scripts/build-package.ts",
+    "check": "npm run typecheck && npm test && npm run test:package && npm run docs:check",
     "docs:build": "npm run docs:generate && npm run docs:mintlify:check && npm run docs:typecheck && npm run docs:offline:build",
     "docs:check": "npm run docs:check:generated && npm run docs:mintlify:check && npm run docs:typecheck && npm run docs:offline:build",
     "docs:check:generated": "node --import tsx scripts/docs/generate-reference.ts --check",
@@ -41,8 +46,10 @@
     "docs:serve": "node --import tsx scripts/docs/mint.ts dev --no-open",
     "docs:typecheck": "tsc --noEmit -p website/tsconfig.json",
     "prepack": "npm run docs:build",
+    "prepare": "npm run build:package",
     "reference-docs": "node --import tsx scripts/reference-docs/workflow.ts",
     "test:gpu": "node --import tsx --test --test-concurrency=1 src/runtime/gpu/dawn.integration.ts tests/examples.gpu.integration.ts",
+    "test:package": "npm run build:package && node examples/api/simple-sync.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --no-file-parallelism"
   },
@@ -52,7 +59,6 @@
     "csv-stringify": "6.8.3",
     "effect": "3.22.1",
     "open": "10.0.0",
-    "plotly.js-gl3d-dist-min": "3.7.0",
     "rxjs": "^7.8.2",
     "tsx": "4.23.10",
     "yaml": "2.9.0",

@@ -1,12 +1,18 @@
 // Purpose: CSVSink Observer lifecycle, schema validation, and CSV encoding.
 
-import {existsSync, mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {of} from 'rxjs';
 import {afterEach, describe, expect, test} from 'vitest';
 import * as z from 'zod';
-import {CSVSink} from './sink';
+import {CSVSink, StdoutSink} from './sink';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const temporaryDirectories: string[] = [];
@@ -81,5 +87,69 @@ describe('CSVSink', () => {
 
     await expect(sink.completion).rejects.toBe(error);
     expect(existsSync(path)).toBe(false);
+  });
+
+  test('infers overwrite columns and JSON-encodes nested values', async () => {
+    const path = outputPath();
+    const sink = new CSVSink(path, 'w');
+
+    sink.write({value: 1, detail: {color: 'green'}, effects: []});
+    sink.complete();
+    await sink.completion;
+
+    expect(readFileSync(path, 'utf8')).toBe(
+      'value,detail,effects\n1,"{""color"":""green""}",[]\n',
+    );
+  });
+
+  test('appends by column set while preserving existing header order', async () => {
+    const path = outputPath();
+    writeFileSync(path, 'symbol,close\nAAPL,100\n');
+    const sink = new CSVSink(path, 'a');
+
+    sink.write({close: 200, symbol: 'NVDA'});
+    sink.complete();
+    await sink.completion;
+
+    expect(readFileSync(path, 'utf8')).toBe(
+      'symbol,close\nAAPL,100\nNVDA,200\n',
+    );
+  });
+
+  test('rejects append rows with missing or additional columns', async () => {
+    const path = outputPath();
+    writeFileSync(path, 'symbol,close\nAAPL,100\n');
+    const sink = new CSVSink(path, 'a');
+
+    sink.write({symbol: 'NVDA', extra: true});
+
+    await expect(sink.completion).rejects.toThrow('CSV columns do not match');
+    expect(readFileSync(path, 'utf8')).toBe('symbol,close\nAAPL,100\n');
+  });
+
+  test('creates an empty file when overwrite has no schema or rows', async () => {
+    const path = outputPath();
+    const sink = new CSVSink(path, 'w');
+
+    sink.complete();
+    await sink.completion;
+
+    expect(readFileSync(path, 'utf8')).toBe('');
+  });
+});
+
+describe('StdoutSink', () => {
+  test('prints every formatted value immediately without a completion Promise', () => {
+    const lines: string[] = [];
+    const sink = new StdoutSink<{value: number}>(
+      value => `value=${value.value}`,
+      line => lines.push(line),
+    );
+
+    sink.write({value: 1});
+    sink.write({value: 2});
+    expect(lines).toEqual(['value=1', 'value=2']);
+    sink.complete();
+    expect('completion' in sink).toBe(false);
   });
 });

@@ -9,7 +9,7 @@ import {loadModule} from '../runtime/load';
 import {moduleBindings, withModuleBindings} from '../runtime/module-binding';
 import {createNode, type Node} from './node';
 
-export type {BindingInput, Node} from './node';
+export type {BindingInput, Datum, Node} from './node';
 
 const TEMPLATE_FILENAME = '<tea-template>';
 
@@ -22,7 +22,7 @@ export class TeaCompileError extends OperationalError {
   }
 }
 
-/** Compile Tea source synchronously; Node lifecycle operations are Effects. */
+/** Compile Tea source synchronously; Node keeps lifecycle Effects internal. */
 export function tea(
   strings: TemplateStringsArray,
   ...args: readonly unknown[]

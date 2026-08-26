@@ -26,10 +26,8 @@ The strategy composes Tea's canonical `broker.new`, `portfolio.new`, and
 `trade.ohlc` components. The broker owns same-close entries, persistent
 gap-aware stops, and time-close fills; the signed net portfolio owns cash,
 position, and P&L accounting. `marginLong=0` and `marginShort=0` preserve the
-published fixed-unit profile without a cash-admission gate. Current dashboard
-annotations classify every buy as an entry and every sell as an exit, so
-short-open and short-cover markers remain visually reversed even though
-quantities, cash, and P&L are correct.
+published fixed-unit profile without a cash-admission gate. Quantities, cash,
+and P&L remain correct.
 
 The 36-scenario CPU sweep varies cluster length, ATR tightness, breakout buffer,
 and strong-close threshold over the SHA-256-pinned BTCUSDT daily snapshot:

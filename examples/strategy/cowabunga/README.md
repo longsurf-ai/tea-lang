@@ -23,8 +23,6 @@ trail with an earlier extreme. The checked sweep has `trailing_offset=0`, so its
 published/default fill tape is unaffected. The strategy contains no private
 account or fill implementation.
 
-The strategy is two-sided because that is the published source behavior. In the current dashboard contract, a short opening sell is labeled as an exit and a short-cover buy as an entry; use the signed-position plot to disambiguate those markers.
-
 ## Data
 
 The strategy runs on [`../../data/binance/btcusdt-15m.csv`](../../data/binance/btcusdt-15m.csv), an immutable 20,000-row real Binance BTCUSDT snapshot deterministically aggregated from a hash-pinned one-minute archive. [`../../data/binance/btcusdt-15m.source.json`](../../data/binance/btcusdt-15m.source.json) records the source hash, aggregation, completeness rule, time range, and output hash.

@@ -2,14 +2,8 @@
 
 ## 0.3.0
 
-- Add a scientific sweep dashboard with a 3D parameter field and drill-down
-  output trajectory.
-- Add runtime/config statistics and typed entry/exit annotations.
-- Keep Plotly and result transport local to the extension host.
-- Resolve surface clicks from the rendered X/Y coordinates and add an exact
-  hover marker so the highlighted execution is always the clickable one.
-- Consume the complete bounded trajectories in Tea's generic JSON sweep result,
-  so drill-down stays editor-local without a persistent CLI session or replay.
+- Keep the extension activation-free and focused on generated TextMate syntax
+  highlighting.
 
 ## 0.2.0
 

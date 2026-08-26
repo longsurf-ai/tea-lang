@@ -4,6 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {firstValueFrom, toArray} from 'rxjs';
 import {describe, expect, test} from 'vitest';
 import * as z from 'zod';
+import {d} from './clock';
 import {CSVSource, fromCSV} from './source';
 
 const FIXTURES = new URL('../../tests/fixtures/api/', import.meta.url);
@@ -47,6 +48,16 @@ describe('CSVSource', () => {
       {time: 100, close: 1},
       {time: 200, close: 2},
     ]);
+  });
+
+  test('forwards a caller clock into the CSV DataStream', async () => {
+    const stream = await fromCSV(
+      CLI_DATA,
+      z.object({time: z.coerce.bigint(), close: z.coerce.number()}),
+      d,
+    );
+
+    expect(stream.clock).toBe(d);
   });
 
   test('handles quoted commas and multiline fields', async () => {

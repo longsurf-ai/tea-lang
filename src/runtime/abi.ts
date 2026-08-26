@@ -10,5 +10,5 @@ export * from './value';
 export type {BuiltinSource} from '../ir/builtin';
 export type {HistoryDepth} from '../ir/node';
 export type {EffectValueSchema} from '../ir/program';
-export type {HeapLimits} from './heap';
+export type {HeapLimits} from './js/heap';
 export type {LayoutId} from './value-layout';

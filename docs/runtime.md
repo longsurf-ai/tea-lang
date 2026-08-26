@@ -4,11 +4,10 @@ sidebarTitle: Runtime
 ---
 
 How target artifacts bind and execute. This document is the source of truth for
-the JS Runtime ABI, its two external seams, generic CPU batching, and the GPU
-binding/dispatch boundary. `src/runtime/` implements execution and
-`src/codegen/` emits bind-independent artifacts. The one Program contract stays
-owned by [ir.md](ir.md); the root `runtime.ts` sketch is superseded by this
-document.
+the JavaScript Runtime ABI, fixed-history hosting, and the GPU binding/dispatch
+boundary. Shared contracts live in `src/runtime/`, JavaScript execution in
+`src/runtime/js/`, and GPU execution in `src/runtime/gpu/`. `src/codegen/` emits
+bind-independent artifacts; [ir.md](ir.md) owns the one Program contract.
 
 ## Architecture
 
@@ -122,7 +121,7 @@ binds exactly that child; every key validates before mutation. The complete
 JSModule tree is assembled only when exposed or executed. Binding after
 execution starts or disposal throws.
 
-Each node creates one plain `Subject<StepResult>`. The first `.to(sink)` call
+Each node creates one plain `Subject<Datum>`. The first `.to(sink)` call
 runs internal setup Effects, validates readiness/input support, subscribes the
 sink, creates one `JSRuntime`, and connects the existing RxJS graph. Later
 `.to()` calls only subscribe new sinks to future values. It returns that sink's
@@ -131,6 +130,11 @@ values, errors, and completion. `dispose()` synchronously runs an internal
 Effect that cancels the Node-owned execution connection, interrupts its current
 step Effect, disposes the complete runtime tree, and completes the Subject;
 source termination also disposes the runtimes.
+Physical `StepResult` stays inside Node. Its `toDatum()` method projects one
+stable `output_<oid>` column per channel-bearing output, an `effects` array,
+and `provisional`; Node publishes that output Datum without copying input
+fields. Single-channel outputs are scalars and multi-channel outputs are
+objects keyed by manifest channel names.
 This slice currently constructs numeric series rows and uses final steps only.
 Builtin input wiring still fails explicitly in `.to()`. Static request children
 execute recursively: each child owns a `JSRuntime`, exposes its copied scalar
@@ -141,14 +145,29 @@ frozen scalar batch becomes a parent-Heap Tea array inside the parent step
 transaction. [Requests](requests.md#public-node-request-streams) owns the exact
 clock, window, FIFO, late-data, completion, error, and cancellation policies.
 
+Public API rows cross one Datum boundary. `DataStream` validates each decoded
+source emission once with its Zod schema and carries an optional Clock. A
+JavaScript runtime step is synchronous and one-to-one, so TeaNode uses ordinary
+RxJS `map`: one input Datum produces one StepResult before the source can emit
+its next Datum. `Node.to()` accepts an ordinary RxJS Observer and returns its
+Subscription; there is no separate public Sink protocol or execution queue.
+
+`CSVSink` accepts optional schemas and conventional `a`/`w` modes, preserving an
+existing append header's order while comparing column-name sets. Nested Datum
+values are JSON cells. `StdoutSink` is an Observer that writes each Datum
+immediately and needs no completion Promise. Final-only WebSocket adapters
+require caller schemas, accept/send JSON text, and never reconnect. The
+WebSocket sink alone bounds its real pending send queue. Provisional WebSocket
+messages, watermarks, and application ACK flow control remain staged.
+
 `JSRuntime` owns one committed `State`, one same-row `Intermediate`,
 and one context-local Heap. A successful provisional step replaces only its
 Intermediate; a successful final step replaces both State and Intermediate;
 an `Effect` failure advances neither. The generic `Intermediate` value contains
 only its frame root—the Heap is injected into `stateMachine()`, retained by the
-runtime facade, and disposed with it. `StepResult` exposes only output, effects,
-and the provisional flag, so neither state nor storage ownership crosses the
-host boundary.
+runtime facade, and disposed with it. `StepResult` exposes output, effects, the
+provisional flag, and the pure `toDatum()` projection, so neither state nor
+storage ownership crosses the host boundary.
 
 For fixed historical execution, `bindFixedHistory()` resolves the provider,
 constructs synchronized inputs, drives `JSRuntime.step()`, and publishes to the
@@ -349,10 +368,10 @@ const v = f_3(ctx, ctx.frame(fr, 0), ctx.series(0, 0), 9);
 - Storage is runtime-owned and invisible to source code. Layout IDs validate
   exact values and locate nested collection storage; they are not a second
   source-language type identity.
-- V1 output/effect channels accept only scalar or resource values. Aggregate
-  host ownership is rejected until the ABI defines deep serialization or an
-  explicit host root-registration contract; a sink cannot silently retain an
-  unregistered `Ref`.
+- V1 output/effect channels accept only scalar or resource values. Struct and
+  collection host ownership is rejected until the ABI defines deep
+  serialization or an explicit host root-registration contract; a sink cannot
+  silently retain an unregistered `Ref`.
 
 ## Typed builtins
 
@@ -437,7 +456,7 @@ Manifest depth determines the newest-first values retained in `State`:
 `n`; `bound` exists only on an incomplete snapshot and concretization replaces
 it before execution. Each local and request entry carries an exact `LayoutId`;
 the shared `ValueLayoutRegistry` validates values, derives typed empties, and
-discovers aggregate Heap roots.
+discovers struct and collection Heap roots.
 
 The fixed-historical host reserves deterministic logical capacity through
 `BindInputs.maxFixedValueLogicalBytes` (default 64 MiB), separately from
@@ -559,13 +578,13 @@ child. Provider series remain numeric and aligned to `rows`; typed builtin
 metadata uses `builtinValue`. `undefined` means that the provider cannot
 supply a demanded builtin and is never coerced to a Tea empty value.
 
-## Generic CPU batching
+## Ordered fixed-history execution
 
-Batching is composition over the ordinary JS runtime, not a separate
-compilation or strategy execution path:
+Executing multiple bindings is repetition over the ordinary JavaScript
+fixed-history adapter, not a separate runtime subsystem:
 
 ```ts
-runCpuBatch(module, bindings: readonly BindInputs[])
+executeFixedHistory(module, bindings: readonly BindInputs[])
 ```
 
 Each binding already carries its parameters, provider, deterministic clock,
@@ -578,27 +597,15 @@ Output/effect capture is caller policy. `MemorySink` is the optional structured
 in-memory sink for examples and tests; callers may instead inject table, trace,
 streaming, bounded, or transactional sinks. The runner does not assign job ids,
 own output capacity, or interpret sweep dimensions. There is no batch-plan or
-journal layer between the caller's bindings, their sinks, and `runCpuBatch()`.
+journal layer between the caller's bindings, their sinks, and
+`executeFixedHistory()`.
 
-## Sweep reporting and visualization
+## Sweep reporting
 
 Sweep presentation remains outside both execution backends. `SweepReportSink` requests
 only each execution's final dense values and no effects. The reporting layer
 combines those snapshots with execution summaries and declared numeric ranges
 into a renderer-neutral `SweepResult`.
-
-The visualization layer projects that result into a `SweepScene` from an
-explicit X parameter, Y parameter, numeric output metric, and one selected
-value for every remaining swept dimension. A complete rectangular coordinate
-grid with at least two values per axis becomes a surface and retains null
-metrics as holes. Auto geometry keeps incomplete or degenerate grids as points;
-an explicitly requested surface retains missing coordinates as holes. It never
-invents scenarios or interpolates results.
-
-Visualization hosts consume a presentation model containing the available
-axes, metrics, current view specification, and projected `SweepScene`. Tea's
-CLI does not import a renderer or start a browser server. The VS Code/Cursor
-host uses the same pure projection and packages its renderer assets locally.
 
 `tea execute <config> --json` returns one versioned, renderer-neutral result.
 For a sweep it contains both the compact `SweepResult` and every complete
@@ -612,7 +619,7 @@ replay.
 The result identifies the complete Tea source closure, primary-provider bytes,
 effective clock, binding identity, and effective parameters. Request-backed
 executions are safe because every trajectory comes from its original sweep
-execution. Unsupported aggregate/resource output transports or an exceeded
+execution. Unsupported collection/resource output transports or an exceeded
 archive budget fail before JSON is published.
 
 The resulting `TrajectoryResult` is renderer-neutral: it contains a row-aligned

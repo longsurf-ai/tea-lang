@@ -336,7 +336,8 @@ fails the synchronized stream immediately. Target completion discards unused
 source values. If a completed source cannot satisfy the oldest pending target,
 the synchronized output completes instead of retaining an impossible wait.
 
-The root Node owns one execution connection and one public result `Subject`.
+The root Node owns one execution connection and one public result
+`Subject<Datum>`.
 Later sinks observe future root results only. The Subscription returned by
 `.to()` controls only that sink; unsubscribing it does not stop the Node-owned
 execution. Connection termination or idempotent `dispose()` tears down the

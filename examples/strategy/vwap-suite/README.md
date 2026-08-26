@@ -41,11 +41,6 @@ update. Keeping that state local makes the selected historical contract
 auditable alongside the strategy even though the shared `ta` library now uses
 the same seed rule.
 
-The dashboard currently labels buys as entries and sells as exits. The signed
-portfolio is correct, but short opens/covers therefore appear with reversed
-marker labels until the visualization contract carries an explicit open/close
-action.
-
 ## Measured sweep
 
 Run from the repository root:

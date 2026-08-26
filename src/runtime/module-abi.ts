@@ -3,7 +3,7 @@
 
 import type {BuiltinSource} from '../ir/builtin';
 import type {NameStorage} from '../ir/node';
-import type {Ref} from './heap';
+import type {Ref} from './js/heap';
 import type {OutputSpec} from './output';
 import type {EffectSpec, ParamSpec} from './schema';
 import type {LayoutId, ValueLayout} from './value-layout';

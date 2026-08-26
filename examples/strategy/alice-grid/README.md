@@ -40,11 +40,6 @@ multi-bar session path. Tea can also express a fixed numeric UTC session;
 arbitrary Pine session-string parsing is not part of this profile.
 Presentation lines and tables are omitted.
 
-The current dashboard infers entry/exit solely from buy/sell. It therefore
-renders a short open (sell) as an exit and a short cover (buy) as an entry; the
-engine and command ids remain correct while that visualization schema is
-pending an explicit open/close action.
-
 ## Measured sweep
 
 ```sh

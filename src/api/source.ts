@@ -1,9 +1,10 @@
 // Purpose: External data sources for the RxJS-backed public runtime API.
 
 import {createReadStream} from 'node:fs';
-import {from} from 'rxjs';
+import {from, Observable} from 'rxjs';
 import {parse, type Options, type Parser} from 'csv-parse';
 import * as z from 'zod';
+import {i, type Clock} from './clock';
 import {DataStream} from './stream';
 
 export interface Source<T extends z.ZodType> {
@@ -20,16 +21,19 @@ export class CSVSource<T extends z.ZodType> implements Source<T> {
   constructor(
     readonly path: string,
     readonly schema: T,
+    readonly clock: Clock = i,
   ) {}
 
   /** Discover string-valued columns from the header when schema is omitted. */
   static async open<T extends z.ZodType = CSVSchema>(
     path: string,
     schema?: T,
+    clock: Clock = i,
   ): Promise<CSVSource<T>> {
     return new CSVSource(
       path,
       (schema ?? (await discoverCSVSchema(path))) as T,
+      clock,
     );
   }
 
@@ -37,8 +41,8 @@ export class CSVSource<T extends z.ZodType> implements Source<T> {
   stream(): DataStream<z.output<T>> {
     return new DataStream<z.output<T>>(
       this.schema as z.ZodType<z.output<T>>,
-      subscriber =>
-        from(csvRows(this.path, this.schema)).subscribe(subscriber),
+      from(csvRows<z.output<T>>(this.path)),
+      this.clock,
     );
   }
 }
@@ -69,14 +73,12 @@ export async function discoverCSVSchema(path: string): Promise<CSVSchema> {
 export async function fromCSV<T extends z.ZodType = CSVSchema>(
   path: string,
   schema?: T,
+  clock: Clock = i,
 ): Promise<DataStream<z.output<T>>> {
-  return (await CSVSource.open(path, schema)).stream();
+  return (await CSVSource.open(path, schema, clock)).stream();
 }
 
-async function* csvRows<T extends z.ZodType>(
-  path: string,
-  schema: T,
-): AsyncGenerator<z.output<T>> {
+async function* csvRows<T>(path: string): AsyncGenerator<T> {
   const parser = openCSV(path, {
     bom: true,
     columns: true,
@@ -85,7 +87,7 @@ async function* csvRows<T extends z.ZodType>(
   });
   try {
     for await (const record of parser) {
-      yield schema.parse(record);
+      yield record as T;
     }
   } finally {
     parser.destroy();
@@ -102,16 +104,71 @@ function openCSV(path: string, options: Options): Parser {
 
 /* WebSocket Source */
 
-export class WebSocketSource implements Source<z.ZodUnknown> {
-  readonly schema = z.unknown();
+export class WebSocketSource<T extends z.ZodType> implements Source<T> {
+  constructor(
+    private readonly url: string,
+    readonly schema: T,
+    readonly clock: Clock = i,
+    private readonly Socket: typeof WebSocket = globalThis.WebSocket,
+  ) {}
 
-  constructor(private readonly url: string) {}
-
-  stream(): DataStream<unknown> {
-    throw new Error(`WebSocketSource is not implemented for '${this.url}'`);
+  stream(): DataStream<z.output<T>> {
+    return new DataStream<z.output<T>>(
+      this.schema as z.ZodType<z.output<T>>,
+      new Observable(subscriber => {
+        if (typeof this.Socket !== 'function') {
+          subscriber.error(
+            new Error('this host provides no WebSocket implementation'),
+          );
+          return;
+        }
+        const socket = new this.Socket(this.url);
+        const message = (event: MessageEvent) => {
+          if (typeof event.data !== 'string') {
+            subscriber.error(
+              new TypeError('WebSocketSource accepts text frames only'),
+            );
+            return;
+          }
+          try {
+            subscriber.next(JSON.parse(event.data));
+          } catch (error) {
+            subscriber.error(error);
+          }
+        };
+        const error = () =>
+          subscriber.error(new Error(`WebSocket source '${this.url}' failed`));
+        const close = (event: CloseEvent) => {
+          if (event.wasClean) subscriber.complete();
+          else
+            subscriber.error(
+              new Error(`WebSocket source '${this.url}' closed uncleanly`),
+            );
+        };
+        socket.addEventListener('message', message);
+        socket.addEventListener('error', error);
+        socket.addEventListener('close', close);
+        return () => {
+          socket.removeEventListener('message', message);
+          socket.removeEventListener('error', error);
+          socket.removeEventListener('close', close);
+          if (
+            socket.readyState === WebSocket.CONNECTING ||
+            socket.readyState === WebSocket.OPEN
+          ) {
+            socket.close();
+          }
+        };
+      }),
+      this.clock,
+    );
   }
 }
 
-export function fromWS(url: string): DataStream<unknown> {
-  return new WebSocketSource(url).stream();
+export function fromWS<T extends z.ZodType>(
+  url: string,
+  schema: T,
+  clock: Clock = i,
+): DataStream<z.output<T>> {
+  return new WebSocketSource(url, schema, clock).stream();
 }

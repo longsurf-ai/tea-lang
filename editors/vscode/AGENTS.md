@@ -1,8 +1,7 @@
 # Tea VS Code extension
 
-Editor support for Tea `.tea` files in VS Code and compatible editors such as
-Cursor. Grammar support is activation-free; execution tooling activates only
-when its explicit command is invoked.
+Declarative Tea `.tea` syntax support for VS Code and compatible editors such
+as Cursor. The extension has no activation code or execution host.
 
 ## Invariants
 
@@ -24,15 +23,6 @@ when its explicit command is invoked.
   must regenerate and check the grammar before creating or installing one.
 - This extension targets the clean-room `tea-lang` grammar. Do not merge in
   legacy TSGraph/Monaco keywords, operators, braces, or semicolons.
-- Syntax highlighting stays declarative and must not require activation. The
-  sweep dashboard owns a narrow activated host under `src/dashboard/`; it runs
-  the public `tea execute <config> --json` process contract and must not import
-  or recreate compiler/runtime stages. Projection and renderer-model logic
-  come from `src/visualization`; the editor owns only its Webview adapter.
-- Dashboard execution is workspace-hosted, trusted-workspace-only, and uses
-  one `spawn` without a shell. The generic JSON sweep result contains every
-  bounded trajectory captured by the original execution; selection is local
-  and never opens a persistent Tea process or reruns a binding.
-- The webview accepts only validated messages and local packaged resources
-  under a restrictive CSP. It uses VS Code theme variables and must not fetch
-  code, fonts, or result data from a CDN or loopback server.
+- Syntax highlighting stays declarative and must not require activation. Do
+  not add execution, process, Webview, dashboard, or visualization ownership to
+  this package; those are separate host applications if they are ever needed.

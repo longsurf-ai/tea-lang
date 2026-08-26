@@ -2,28 +2,34 @@
 
 import {
   Observable,
+  map,
   type Observer,
   type Subscribable,
-  type Subscriber,
-  type Subscription,
-  type TeardownLogic,
+  Subscription,
 } from 'rxjs';
 import * as z from 'zod';
 import {i, type Clock} from './clock';
 
-/** A read-only Observable whose emitted values are described by one schema. */
+/**
+ * An Observable whose emissions are validated and transformed by a schema.
+ *
+ * @example
+ * ```ts
+ * const prices = new DataStream(
+ *   z.object({close: z.number()}),
+ *   of({close: 10}, {close: 11}),
+ * );
+ * ```
+ */
 export class DataStream<T> implements Subscribable<T> {
   private readonly observable: Observable<T>;
 
   constructor(
     public readonly schema: z.ZodType<T>,
-    subscribe?: (
-      this: Observable<T>,
-      subscriber: Subscriber<T>,
-    ) => TeardownLogic,
+    source: Observable<unknown>,
     public readonly clock: Clock = i,
   ) {
-    this.observable = new Observable<T>(subscribe);
+    this.observable = source.pipe(map(value => this.schema.parse(value)));
   }
 
   subscribe(observer: Partial<Observer<T>>): Subscription {

@@ -2,11 +2,10 @@
 // implicit Tea libraries, diagnostics, and the canonical Program projection.
 
 import {describe, expect, test} from 'vitest';
-import {of, Subject} from 'rxjs';
+import {Observable, of, Subject} from 'rxjs';
 import * as z from 'zod';
-import type {StepResult} from '../runtime/js-runtime';
 import {d, m, ns, w, y, type Clock} from './clock';
-import type {Sink} from './sink';
+import type {Datum} from './node';
 import {DataStream} from './stream';
 import {TeaCompileError, tea} from './tea';
 
@@ -69,8 +68,9 @@ describe('tea', () => {
       length = input.int(14)
       plot(close + length)
     `;
-    const source = new DataStream(z.object({close: z.number()}), subscriber =>
-      of({close: 1}).subscribe(subscriber),
+    const source = new DataStream(
+      z.object({close: z.number()}),
+      of({close: 1}),
     );
 
     const initial = node.module;
@@ -102,8 +102,9 @@ describe('tea', () => {
   });
 
   test('drives one state-owning runtime from the bound source Observable', async () => {
-    const source = new DataStream(z.object({close: z.number()}), subscriber =>
-      of({close: 1}, {close: 2}).subscribe(subscriber),
+    const source = new DataStream(
+      z.object({close: z.number()}),
+      of({close: 1}, {close: 2}),
     );
     const node = tea`
       length = input.int(14)
@@ -116,9 +117,24 @@ describe('tea', () => {
     node.to(sink);
     await sink.completion;
 
-    expect(sink.values.map(result => result.output[0]?.channels[0])).toEqual([
-      21, 22,
-    ]);
+    expect(sink.values.map(result => result['output_0'])).toEqual([21, 22]);
+  });
+
+  test('validates each DataStream emission exactly once', async () => {
+    let parses = 0;
+    const schema = z.object({close: z.number()}).transform(value => {
+      parses += 1;
+      return value;
+    });
+    const node = tea`plot(close)`;
+    node.bind(new DataStream(schema, of({close: 1}, {close: 2})));
+    const sink = new StepSink();
+
+    node.to(sink);
+    await sink.completion;
+
+    expect(parses).toBe(2);
+    expect(values(sink)).toEqual([1, 2]);
   });
 
   test('binds request streams by declaration name, not requested symbol', async () => {
@@ -159,10 +175,10 @@ describe('tea', () => {
     node.bind({
       requested: new DataStream(
         z.object({close: z.number()}),
-        subscriber => {
+        new Observable(subscriber => {
           subscriptions += 1;
           return of({close: 1}).subscribe(subscriber);
-        },
+        }),
         m,
       ),
     });
@@ -408,10 +424,13 @@ describe('tea', () => {
   test('fans out one execution and gives late sinks only future results', async () => {
     const rows = new Subject<{close: number}>();
     let sourceSubscriptions = 0;
-    const source = new DataStream(z.object({close: z.number()}), subscriber => {
-      sourceSubscriptions += 1;
-      return rows.subscribe(subscriber);
-    });
+    const source = new DataStream(
+      z.object({close: z.number()}),
+      new Observable(subscriber => {
+        sourceSubscriptions += 1;
+        return rows.subscribe(subscriber);
+      }),
+    );
     const node = tea`plot(close)`;
     node.bind(source);
     const first = new StepSink();
@@ -443,9 +462,7 @@ describe('tea', () => {
 
   test('rejects binding after execution starts', async () => {
     const rows = new Subject<{close: number}>();
-    const source = new DataStream(z.object({close: z.number()}), subscriber =>
-      rows.subscribe(subscriber),
-    );
+    const source = new DataStream(z.object({close: z.number()}), rows);
     const node = tea`plot(close)`;
     node.bind(source);
     const sink = new StepSink();
@@ -461,13 +478,16 @@ describe('tea', () => {
   test('owns source cancellation and disposes idempotently', async () => {
     const rows = new Subject<{close: number}>();
     let teardowns = 0;
-    const source = new DataStream(z.object({close: z.number()}), subscriber => {
-      const subscription = rows.subscribe(subscriber);
-      return () => {
-        teardowns += 1;
-        subscription.unsubscribe();
-      };
-    });
+    const source = new DataStream(
+      z.object({close: z.number()}),
+      new Observable(subscriber => {
+        const subscription = rows.subscribe(subscriber);
+        return () => {
+          teardowns += 1;
+          subscription.unsubscribe();
+        };
+      }),
+    );
     const node = tea`plot(close)`;
     node.bind(source);
     const sink = new StepSink();
@@ -485,20 +505,24 @@ describe('tea', () => {
 });
 
 function values(sink: StepSink): readonly unknown[] {
-  return sink.values.map(result => result.output[0]?.channels[0]);
+  return sink.values.map(result => result['output_0']);
 }
 
 function outputValues(sink: StepSink): readonly (readonly unknown[])[] {
   return sink.values.map(result =>
-    result.output.map(output => output.channels[0]),
+    Object.entries(result)
+      .filter(([name]) => name.startsWith('output_'))
+      .sort(([left], [right]) => Number(left.slice(7)) - Number(right.slice(7)))
+      .map(([, value]) => value),
   );
 }
 
 function numericSource(...values: readonly number[]): DataStream<{
   close: number;
 }> {
-  return new DataStream(z.object({close: z.number()}), subscriber =>
-    of(...values.map(close => ({close}))).subscribe(subscriber),
+  return new DataStream(
+    z.object({close: z.number()}),
+    of(...values.map(close => ({close}))),
   );
 }
 
@@ -508,7 +532,7 @@ function clockedNumericSource(
 ): DataStream<{close: number}> {
   return new DataStream(
     z.object({close: z.number()}),
-    subscriber => of(...values.map(close => ({close}))).subscribe(subscriber),
+    of(...values.map(close => ({close}))),
     clock,
   );
 }
@@ -523,21 +547,17 @@ const timedNumericSchema = z.object({time: z.bigint(), close: z.number()});
 function timedNumericSource(
   ...values: readonly TimedNumericDatum[]
 ): DataStream<TimedNumericDatum> {
-  return new DataStream(timedNumericSchema, subscriber =>
-    of(...values).subscribe(subscriber),
-  );
+  return new DataStream(timedNumericSchema, of(...values));
 }
 
 function timedNumericSubject(
   source: Subject<TimedNumericDatum>,
 ): DataStream<TimedNumericDatum> {
-  return new DataStream(timedNumericSchema, subscriber =>
-    source.subscribe(subscriber),
-  );
+  return new DataStream(timedNumericSchema, source);
 }
 
-class StepSink implements Sink<StepResult> {
-  readonly values: StepResult[] = [];
+class StepSink {
+  readonly values: Datum[] = [];
   readonly completion: Promise<void>;
   private readonly resolve: () => void;
   private readonly reject: (error: unknown) => void;
@@ -558,11 +578,7 @@ class StepSink implements Sink<StepResult> {
     this.reject = reject;
   }
 
-  next(value: StepResult): void {
-    this.write(value);
-  }
-
-  write(value: StepResult): void {
+  next(value: Datum): void {
     this.values.push(value);
     for (let index = this.waiters.length - 1; index >= 0; index -= 1) {
       const waiter = this.waiters[index]!;

@@ -27,7 +27,7 @@ import type {
   Value,
 } from '../abi';
 import {isEffectStructValue, isStructRef} from '../abi';
-import {runCpuBatch} from '../batch';
+import {executeFixedHistory} from '../js/fixed-history';
 import {loadModule} from '../load';
 import {createGpuExecution} from './session';
 
@@ -103,7 +103,9 @@ test('canonical explicit-quantity structs fail closed before Dawn', async () => 
 
   const source = provider({open: [10, 20, 30], close: [10, 20, 30]});
   const cpuSink = new MemorySink();
-  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+  await executeFixedHistory(loadModule(generate(program)), [
+    binding(source, cpuSink),
+  ]);
 
   Object.assign(globalThis, globals);
   const gpu = create([]);
@@ -169,7 +171,9 @@ test('canonical percent-equity structs fail closed before Dawn', async () => {
     close: [10, 11, 7, 9],
   });
   const cpuSink = new MemorySink();
-  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+  await executeFixedHistory(loadModule(generate(program)), [
+    binding(source, cpuSink),
+  ]);
 
   const cpuEffectTimeline = cpuSink.publications.flatMap(publication =>
     publication.effects.map(effect => {
@@ -254,7 +258,9 @@ test('resting cash-budget structs fail closed before Dawn', async () => {
     close: [10, 11, 13],
   });
   const cpuSink = new MemorySink();
-  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+  await executeFixedHistory(loadModule(generate(program)), [
+    binding(source, cpuSink),
+  ]);
 
   const effectField = (
     emissionIndex: number,
@@ -387,7 +393,9 @@ test('target-rebalance structs fail closed before Dawn', async () => {
     close: [10, 20, 12],
   });
   const cpuSink = new MemorySink();
-  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+  await executeFixedHistory(loadModule(generate(program)), [
+    binding(source, cpuSink),
+  ]);
 
   assert.deepEqual(
     cpuSink.effectEmissions.map(emission => {
@@ -555,7 +563,7 @@ test('parameter-sweep struct effects fail closed before Dawn', async () => {
     {length: 4, scale: 2.25, enabled: false, mode: 'slow'},
   ] as const;
   const cpuSinks = [new MemorySink(), new MemorySink()];
-  await runCpuBatch(
+  await executeFixedHistory(
     loadModule(generate(program)),
     values.map((params, index) => ({
       ...binding(provider({close: [10, 20]}), cpuSinks[index]),
@@ -650,7 +658,9 @@ test('Dawn matches CPU for unrestricted numeric ranges and core math', async () 
 
   const source = provider({close: [-1.25, 3.75, -4]});
   const cpuSink = new MemorySink();
-  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+  await executeFixedHistory(loadModule(generate(program)), [
+    binding(source, cpuSink),
+  ]);
   assert.deepEqual(
     cpuSink.emissions
       .filter(emission => emission.outputId === 1)
@@ -681,7 +691,9 @@ test('Dawn matches CPU for unrestricted numeric ranges and core math', async () 
 
 test('transient struct fixture fails closed before Dawn execution', () => {
   assertStructReferenceUnsupported(
-    fixtureProgram(join(process.cwd(), 'tests/fixtures/gpu/transient/source.tea')),
+    fixtureProgram(
+      join(process.cwd(), 'tests/fixtures/gpu/transient/source.tea'),
+    ),
   );
 });
 
@@ -722,7 +734,7 @@ test('Dawn preserves temporal frames and history across one-row chunks', async (
     {fastLength: 3, slowLength: 5},
   ] as const;
   const cpuSinks = datasets.map(() => new MemorySink());
-  await runCpuBatch(
+  await executeFixedHistory(
     loadModule(generate(program)),
     datasets.map((columns, index) => ({
       ...binding(provider(columns), cpuSinks[index]),
@@ -775,7 +787,9 @@ test('Dawn advances skipped active parameter history at row cadence', async () =
 
   const cpuSink = new MemorySink();
   const source = provider({close: [10, 11, 12, 13, 14]});
-  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+  await executeFixedHistory(loadModule(generate(program)), [
+    binding(source, cpuSink),
+  ]);
   Object.assign(globalThis, globals);
   const gpu = create([]);
   const adapter = await gpu.requestAdapter();
@@ -824,7 +838,7 @@ test('final-dense struct effects fail closed before Dawn', async () => {
   );
   const cpuFullSink = new MemorySink();
   const cpuSink = new FinalDenseSink();
-  await runCpuBatch(loadModule(generate(program)), [
+  await executeFixedHistory(loadModule(generate(program)), [
     binding(source, cpuFullSink),
     binding(source, cpuSink),
   ]);
@@ -880,7 +894,9 @@ test('Dawn omits all effect transport while preserving final dense parity', asyn
   if (result.status !== 'compiled') return;
   const source = provider({close: [10, 11, 12]});
   const cpuSink = new FinalDenseWithoutEffectsSink();
-  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+  await executeFixedHistory(loadModule(generate(program)), [
+    binding(source, cpuSink),
+  ]);
 
   Object.assign(globalThis, globals);
   const gpu = create([]);
@@ -920,7 +936,9 @@ test('Dawn storage, partial, and full cache placements are equivalent', async ()
   if (result.status !== 'compiled') return;
   const source = provider({close: [5, 4, 6, 8, 3]});
   const cpuSink = new MemorySink();
-  await runCpuBatch(loadModule(generate(program)), [binding(source, cpuSink)]);
+  await executeFixedHistory(loadModule(generate(program)), [
+    binding(source, cpuSink),
+  ]);
   Object.assign(globalThis, globals);
   const gpu = create([]);
   const adapter = await gpu.requestAdapter();

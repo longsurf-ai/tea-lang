@@ -13,7 +13,7 @@ import {
   type ValueClass as ValueClassType,
 } from './value';
 import {ExecutionError} from './errors';
-import type {Ref} from './heap';
+import type {Ref} from './js/heap';
 
 export type LayoutId = number;
 export type StructLayoutId = LayoutId;

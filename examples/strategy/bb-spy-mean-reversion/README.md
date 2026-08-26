@@ -10,8 +10,8 @@ volatility-of-volatility bands, optional width-rank regime gates, persistent
 direction bias and re-arm behavior, 5%-of-equity sizing, marketable or resting
 buy-stop entries, confirmed-month ATR stop/target segmentation, break-even
 replacement, optional time exits, fees, tick slippage, and deterministic
-same-bar bracket ordering. Standard `broker.FillExecuted` events feed the
-dashboard.
+same-bar bracket ordering. Standard `broker.FillExecuted` events remain
+available to output sinks.
 
 The strategy now composes the shipped `broker.new`, `portfolio.new`, and
 `trade.ohlc` components. Resting buy stops, atomic stop/target exits,

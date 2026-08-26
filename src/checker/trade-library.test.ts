@@ -8,7 +8,7 @@ import {defaultRegistry} from '../loader/loader';
 import {mustBuild} from '../noder/testing';
 import {csvProvider} from '../providers/data/csv';
 import type {OutputSink, Value} from '../runtime/abi';
-import {bindFixedHistory as bind} from '../runtime/fixed-history';
+import {bindFixedHistory as bind} from '../runtime/js/fixed-history';
 import {loadModule} from '../runtime/load';
 import {ObjectKind} from './object';
 import {checkText, type CheckResult} from './testing';

@@ -11,8 +11,6 @@ Clean-room Tea conversion of the current public source behind TradingView's [Mul
 - Enabling the published trailing option also cannot bootstrap its state: the source applies `max(na, candidate)` or `min(na, candidate)`, which remains `na`. Tea preserves this too.
 - The publication prose says the higher-timeframe request does not look ahead, while the current source explicitly uses `lookahead_on`. This example pins the source. Its results are therefore a deliberate lookahead-bias warning and runtime stress case, not deployable out-of-sample evidence.
 
-The source is genuinely two-sided. With the current dashboard event contract, a short opening sell appears as an exit marker and a short-cover buy appears as an entry marker; use the signed-position plot to interpret those fills.
-
 Execution and accounting use Tea's canonical `broker.new`, `portfolio.new`,
 and `trade.nextOpen` components. Fill-time percent sizing and ordered
 reversal continuation let the broker close the old side, apply that fill and

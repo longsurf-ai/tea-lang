@@ -120,9 +120,6 @@ remain outside this interface.
 - Cluster's page title still says v6 while the current page serves later v8
   logic; the Tea example pins the original v6 behavior. Cowabunga likewise
   follows the inspectable Pine source where it differs from surrounding prose.
-- The dashboard currently infers entry/exit from buy/sell. For two-sided
-  examples, a short-open sell and short-cover buy are visually reversed; signed
-  position and command IDs remain correct.
 
 `tests/strategy-catalog.test.ts` fail-closes the catalog: all twelve directories
 must exist, link their source page, compile, expose the common numeric report

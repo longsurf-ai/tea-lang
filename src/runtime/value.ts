@@ -1,10 +1,10 @@
-// Purpose: Runtime value domain and source-hidden aggregate/collection headers.
+// Purpose: Runtime value domain and source-hidden struct/collection carriers.
 
-import {isRef, type Ref} from './heap';
-import type {ArrayStorage} from './collections/array';
-import type {MapStorage} from './collections/map';
-import type {MatrixStorage} from './collections/matrix';
-import type {StructStorage} from './struct-storage';
+import {isRef, type Ref} from './js/heap';
+import type {ArrayStorage} from './js/collections/array';
+import type {MapStorage} from './js/collections/map';
+import type {MatrixStorage} from './js/collections/matrix';
+import type {StructStorage} from './js/struct-storage';
 import type {LayoutId} from './value-layout';
 
 export interface ResourceHandle {

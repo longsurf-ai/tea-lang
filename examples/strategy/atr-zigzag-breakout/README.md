@@ -28,10 +28,7 @@ Fixed quantity is one unit and commission is zero, matching the publication's
 declared profile; the example contains no private account, fill factory, or
 broker emulator.
 
-Every fill emits `broker.FillExecuted` with unambiguous command IDs. The current
-dashboard nevertheless labels every buy as entry and every sell as exit, so
-short-open and short-cover markers appear visually reversed even though signed
-cash/P&L accounting is correct.
+Every fill emits `broker.FillExecuted` with unambiguous command IDs.
 
 The 36-scenario JavaScript sweep varies ZigZag ATR length/multiple and bracket
 stop/reward multiples on the pinned BTCUSDT daily snapshot:

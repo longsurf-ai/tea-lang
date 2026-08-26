@@ -38,7 +38,7 @@ runtime semantics remain in their existing packages.
 - The `tea` tagged template is the deliberate synchronous exception: it only
   performs in-memory compile/load construction and throws `TeaCompileError`.
   Effects remain implementation details of `bind`/`to`/`dispose`.
-- Every Node owns one plain `Subject<StepResult>`. The first `.to(sink)` call
+- Every Node owns one plain `Subject<Datum>`. The first `.to(sink)` call
   runs internal setup Effects, subscribes the sink, creates one `JSRuntime`,
   recursively constructs child execution streams, folds their results into the
   parent through `sync()` in request-id order, and returns the Subscription.
@@ -47,6 +47,22 @@ runtime semantics remain in their existing packages.
   values/errors/completion. Node-owned connection teardown interrupts the
   current step Effect and whole child graph. `dispose()` is synchronous and
   idempotent. Current steps are final (`provisional: false`).
+- `JSRuntime` keeps physical `StepResult` values internal to Node.
+  `StepResult.toDatum()` is the single output projection: one column per output,
+  named multi-channel objects, one effects array, and provisional state. Node
+  publishes only that output Datum and never copies input Datum fields into it.
+- `DataStream` owns one Zod validation per emission plus optional Clock
+  metadata. Sources decode bytes only. `CSVSink` uses conventional `a`/`w`
+  modes with optional schemas; `StdoutSink` prints generic Datums immediately
+  without owning a completion Promise.
+- `Node.to()` accepts an ordinary RxJS Observer; there is no parallel Sink
+  interface. Each input Datum synchronously produces exactly one runtime step
+  through ordinary RxJS `map`. Do not add queue or capacity policy unless a
+  runtime step gains a real asynchronous boundary.
+- WebSocket source/sink adapters accept final JSON text datums only and require
+  caller-owned Zod schemas. They do not reconnect or invent provisional state.
+  Source subscription owns socket connection/teardown; sink completion waits
+  for its bounded send queue and `bufferedAmount` to drain.
 - Node execution supports numeric series, parameters, scalar `security`
   requests, and `security_lower_tf` arrays. Scalar requests consume one child
   result per parent datum. Collect requests select count-window,

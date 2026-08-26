@@ -8,6 +8,7 @@ use live data providers, while automated tests never reach the network.
 
 | Directory                  | Contents                                                                                                                                                                                                    |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`api/`](api/)             | Runnable TypeScript embedding examples using the public `tea` package export and local or live sources/sinks.                                                                                               |
 | [`strategy/`](strategy/)   | Runnable strategies, one directory per strategy. A strategy directory owns its Tea source and any execution configuration specific to it. The catalog README also records the clean-room TradingView audit. |
 | [`indicator/`](indicator/) | Indicator and data-request demonstrations that do not place orders.                                                                                                                                         |
 | [`language/`](language/)   | Focused demonstrations of Tea language semantics.                                                                                                                                                           |
@@ -15,6 +16,54 @@ use live data providers, while automated tests never reach the network.
 
 Code under `src/` and fixtures under `tests/fixtures/` must not depend on this
 directory. Add reusable test inputs to `tests/fixtures/`, not here.
+
+## JavaScript API examples
+
+`npm install` builds the JavaScript package entry automatically. After changing
+compiler or API source, refresh it with `npm run build:package` before invoking
+an example directly with Node.
+
+Start with the self-contained synchronous example. It compiles Tea, binds
+parameters and a finite in-memory stream, and subscribes stdout to execute and
+print every result:
+
+```sh
+node examples/api/simple-sync.ts
+```
+
+To see live stream processing, run the Subject-backed example. It pushes one
+datum per second after execution starts and publishes each result to stdout and
+`tea-stream-output.csv` from the same runtime:
+
+```sh
+node examples/api/simple-stream.ts
+```
+
+The remaining examples demonstrate concrete I/O adapters. Run deterministic
+local CSV examples through the built `tea` package:
+
+```sh
+node examples/api/csv-to-stdout.ts examples/data/demo/primary.csv
+node examples/api/csv-to-csv.ts examples/data/demo/primary.csv /tmp/tea-output.csv
+node examples/api/csv-request-to-csv.ts \
+  examples/data/demo/primary.csv examples/data/demo/primary.csv /tmp/tea-request.csv
+```
+
+The examples provide explicit numeric Zod schemas because CSV headers describe
+columns, not scalar types. Output rows are public Node Datums: one column per
+Tea output, plus `effects` and `provisional`.
+
+Final-datum JSON WebSocket examples are also available:
+
+```sh
+node examples/api/websocket-to-stdout.ts ws://localhost:8080/input
+node examples/api/websocket-to-websocket.ts \
+  ws://localhost:8080/input ws://localhost:8080/output
+```
+
+They require caller-owned Zod schemas, do not reconnect, and treat every JSON
+message as one final datum. Automated tests use fake sockets and never access
+the network.
 
 ## Strategy stress catalog
 
