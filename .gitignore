@@ -9,6 +9,5 @@ dist/
 .env
 .env.*
 !.env.example
-.codex/reference-docs/
 .obsidian/
 plans/
