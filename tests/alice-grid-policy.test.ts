@@ -7,20 +7,32 @@ import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
-import {paramSpecsOf} from '../src/codegen/params';
 import {compileToProgram} from '../src/compiler';
-import {
-  runProgram,
-  loadConfig,
-  resolveExecutionParameters,
-  type ExecutionConfig,
-} from '../src/execution';
-import {MemorySink} from '../src/providers/sinks/memory-sink';
+import {MemorySink} from '../src/sinks/memory-sink';
 import type {EffectValue} from '../src/runtime/abi';
+import {csvStream, executeTestProgram} from '../src/testing/batch';
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const SOURCE = join(ROOT, 'examples/strategy/alice-grid/strategy.tea');
-const SWEEP = join(ROOT, 'examples/strategy/alice-grid/sweep.yaml');
+const DATA = join(ROOT, 'examples/data/binance/btcusdt-15m.csv');
+const TIME_NOW = 1_786_579_200_000;
+const PARAMETERS = {
+  entry_reversal_mode: 0,
+  grid_step_percent: 1,
+  maximum_steps: 5,
+  maximum_open_trades: 100,
+  tp_reversal_mode: 0,
+  use_trailing: 0,
+  trailing_offset_percent: 1,
+  use_stop_loss: 1,
+  stop_loss_multiplier: 2,
+  use_date_filter: 0,
+  start_time: 1_704_067_200_000,
+  end_time: 1_893_456_000_000,
+  cash_per_order: 10,
+  initial_cash: 1000,
+  fee_rate: 0.00025,
+} as const;
 
 test('keeps Alice grid policy out of the portfolio facade', () => {
   const source = readFileSync(SOURCE, 'utf8');
@@ -48,13 +60,8 @@ test('keeps Alice grid policy out of the portfolio facade', () => {
 });
 
 test('preserves Alice binding 0 metrics and both normalized fill tapes', async () => {
-  const config = loadConfig(SWEEP);
-  if (config.execution.kind !== 'sweep') {
-    throw new Error('Alice policy fixture must remain a sweep');
-  }
-
   const errors = new Errors();
-  const program = compileToProgram([config.program.source], errors);
+  const program = compileToProgram([SOURCE], errors);
   if (program === null) {
     throw new Error(
       errors
@@ -65,26 +72,14 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
   }
   expect(errors.count).toBe(0);
 
-  const timeNow = config.execution.timeNow;
-  if (timeNow === undefined) {
-    throw new Error('Alice policy fixture must pin execution.timeNow');
-  }
-  const params = resolveExecutionParameters(
-    paramSpecsOf(program.params),
-    config.execution,
-  ).sets[0];
-  if (params === undefined) {
-    throw new Error('Alice policy fixture must contain binding 0');
-  }
-
   const sink = new MemorySink();
-  const result = await runProgram(
-    program,
-    singleRunConfig(config, params, timeNow),
-    {sinkForExecution: () => sink},
-  );
-  expect(result.summary.numericProfile).toBe('js-f64');
-  expect(result.summary.bindings[0]?.rows).toBe(20_000);
+  const result = await executeTestProgram(program, {
+    params: PARAMETERS,
+    stream: csvStream(readFileSync(DATA, 'utf8')),
+    sink,
+    timeNow: TIME_NOW,
+  });
+  expect(result.indices).toBe(20_000);
 
   expect(finalMetric(sink, 'position quantity')).toBe(0.00031367827436811684);
   expect(finalMetric(sink, 'open lots')).toBe(2);
@@ -116,12 +111,8 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
 }, 15_000);
 
 test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
-  const config = loadConfig(SWEEP);
-  if (config.execution.kind !== 'sweep') {
-    throw new Error('Alice policy fixture must remain a sweep');
-  }
   const errors = new Errors();
-  const program = compileToProgram([config.program.source], errors);
+  const program = compileToProgram([SOURCE], errors);
   if (program === null) {
     throw new Error(
       errors
@@ -130,37 +121,14 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
         .join('; '),
     );
   }
-  const timeNow = config.execution.timeNow;
-  if (timeNow === undefined) {
-    throw new Error('Alice policy fixture must pin execution.timeNow');
-  }
-  const params = resolveExecutionParameters(
-    paramSpecsOf(program.params),
-    config.execution,
-  ).sets[0];
-  if (params === undefined) {
-    throw new Error('Alice policy fixture must contain binding 0');
-  }
-  const selected = singleRunConfig(config, params, timeNow);
-  if (selected.execution.kind !== 'run') {
-    throw new Error('selected Alice binding must be a run');
-  }
-  const run = {
-    ...selected,
-    execution: {
-      ...selected.execution,
-      parameters: {
-        ...selected.execution.parameters,
-        use_trailing: 1,
-        use_stop_loss: 0,
-      },
-    },
-  };
   const sink = new MemorySink();
-  const result = await runProgram(program, run, {
-    sinkForExecution: () => sink,
+  const result = await executeTestProgram(program, {
+    params: {...PARAMETERS, use_trailing: 1, use_stop_loss: 0},
+    stream: csvStream(readFileSync(DATA, 'utf8')),
+    sink,
+    timeNow: TIME_NOW,
   });
-  expect(result.summary.bindings[0]?.rows).toBe(20_000);
+  expect(result.indices).toBe(20_000);
 
   const {fills, timeByRow} = fillTape(sink);
   expect(fills).toHaveLength(858);
@@ -192,22 +160,6 @@ function finalMetric(sink: MemorySink, title: string): number {
   return value;
 }
 
-function singleRunConfig(
-  config: ExecutionConfig,
-  parameters: ExecutionConfig['execution']['parameters'],
-  timeNow: number,
-): ExecutionConfig {
-  return {
-    ...config,
-    execution: {
-      kind: 'run',
-      provider: config.execution.provider,
-      parameters,
-      timeNow,
-    },
-  };
-}
-
 function fillFields(payload: EffectValue): readonly EffectValue[] {
   if (
     typeof payload !== 'object' ||
@@ -233,7 +185,7 @@ function fillTape(sink: MemorySink) {
     ),
   );
   const timeByRow = new Map(
-    sink.publications.map(publication => [publication.row, publication.time]),
+    sink.publications.map(publication => [publication.index, publication.time]),
   );
   const fills = sink.effectEmissions
     .filter(emission => fillEffectIds.has(emission.effectId))

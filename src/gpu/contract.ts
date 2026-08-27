@@ -2,7 +2,8 @@
 
 import type {EffectSpec, ParamSpec} from '../runtime/schema';
 
-export const GPU_ARTIFACT_ABI_VERSION = 3 as const;
+export const GPU_ARTIFACT_ABI_VERSION = 4 as const;
+export const GPU_WORKGROUP_SIZE_OVERRIDE = 'tea_workgroup_size';
 
 export const GPU_BUFFER_GROUP = 0;
 export const GPU_EXTERNAL_BUFFER_BINDINGS = Object.freeze({
@@ -218,8 +219,6 @@ export interface WgslCacheContract {
     readonly cacheWordsPerExecution: WgslOverrideSpec;
     readonly cacheAllocationWords: WgslOverrideSpec;
   };
-  // Runtime selects only a complete ranked prefix. Physical storage offsets
-  // may be discontiguous; scratch/init/history for one local move together.
   readonly segments: readonly WgslCacheSegment[];
 }
 

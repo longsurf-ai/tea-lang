@@ -11,9 +11,20 @@ if (inputURL === undefined || outputURL === undefined) {
 
 const inputSchema = z.object({close: z.number()});
 const outputSchema = z.object({
-  output_0: z.number().nullable(),
-  output_1: z.number().nullable(),
-  effects: z.array(z.unknown()),
+  index: z.number().int().nonnegative(),
+  time: z.number().int().nullable().optional(),
+  outputs: z.array(
+    z.object({
+      outputId: z.number().int().nonnegative(),
+      channels: z.array(z.unknown()).readonly(),
+    }),
+  ).readonly(),
+  effects: z.array(
+    z.object({
+      effectId: z.number().int().nonnegative(),
+      payload: z.unknown(),
+    }),
+  ).readonly(),
   provisional: z.boolean(),
 });
 const source = fromWS(inputURL, inputSchema);

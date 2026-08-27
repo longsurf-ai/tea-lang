@@ -1,6 +1,6 @@
 # Cross-cutting tests
 
-`tests/` owns suites that deliberately cross compiler, runtime, provider, or
+`tests/` owns suites that deliberately cross compiler, runtime, API, or
 example boundaries. Keep pass-local unit tests beside their owner under
 `src/**`; do not move them here merely to centralize tests.
 

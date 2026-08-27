@@ -8,8 +8,8 @@ Tea has two deliberately separate corpora:
   dropped statement groups and are not programs the checker or runtime promises
   to accept.
 - `tests/fixtures/execution/` is the fail-closed executable corpus. Every listed
-  source must pass the real `compile → load → bind → runAll` pipeline, and the
-  harness observes it through the real `TraceSink`.
+  source must pass the real `compile → load → finite DataStreams → Node.bind →
+Node.to` pipeline, and the harness observes it through the real `TraceSink`.
 
 `tests/fixtures/execution/manifest.json` is the corpus inventory. It names every
 source, CSV input, and JSON reference and pins each with SHA-256. The test fails
@@ -21,11 +21,11 @@ string containing `Infinity` is not mistaken for a non-finite number.
 
 An input-focused reference may add `bindings`. The first scenario supplies the
 parameters for the execution whose outputs and rows the reference records;
-later scenarios rebind the same compiled module without executing it. Every
-scenario is an exact snapshot of `FixedHistoryExecution.inputs`, including the complete
-manifest spec, bound value, and evaluated `active` flag. This makes UI metadata
-and parameter-dependent enablement part of the compile-through contract rather
-than incidental source that merely has to typecheck.
+later scenarios run independent Nodes to validate their bindings and value
+domain. Every scenario is an exact snapshot of the prepared inputs, including
+the complete manifest spec, bound value, and evaluated `active` flag. This makes
+UI metadata and parameter-dependent enablement part of the compile-through
+contract rather than incidental source that merely has to typecheck.
 
 The `aggregate-values` compile-through case is also the executable lock for
 struct-reference aliasing and rebinding, collection-header copying, historical
@@ -33,13 +33,13 @@ references, in-place mutable methods, shallow `const`, and transaction rollback.
 Its expected rows are Tea-owned contract values derived from
 [memory-model.md](memory-model.md), not copied runtime output.
 
-The `typed-execution-range` compile-through case locks the fixed-history
+The `typed-execution-range` compile-through case locks the finite Node path
 contract for `time`, `time_close`, `bar_index`, `last_bar_index`, `timenow`,
 and every `barstate.*` flag, including one-bar historical reads. The harness
 binds a deterministic `timenow` value of `1700000000000`. Its empty
-`request.security` symbol/timeframe pair inherits the CSV context, while
-`calc_bars_count = 2` restricts the child to the final two bars, restarts its
-bar indices at zero, and leaves the parent prefix typed-empty.
+`request.security` declaration is bound explicitly to a child DataStream over
+the final two CSV indices, as hinted by `calc_bars_count = 2`. The child restarts
+its bar indices at zero and leaves the parent prefix typed-empty.
 
 ## Reference ownership
 

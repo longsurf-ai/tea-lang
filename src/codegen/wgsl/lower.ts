@@ -14,6 +14,7 @@ import {
   GPU_JOB_DESCRIPTOR_OFFSETS,
   GPU_RESULT_CELL_BYTE_STRIDE,
   GPU_SERIES_SCALAR_BYTE_STRIDE,
+  GPU_WORKGROUP_SIZE_OVERRIDE,
   type CompiledWgslProgram,
   type WgslEffectSchema,
   type WgslModule,
@@ -85,7 +86,7 @@ import {
 const WORKGROUP_SIZE = 64;
 const STORAGE_ENTRY_POINT = 'tea_main_storage';
 const CACHED_ENTRY_POINT = 'tea_main_cached';
-const WORKGROUP_SIZE_OVERRIDE = 'tea_workgroup_size';
+const WORKGROUP_SIZE_OVERRIDE = GPU_WORKGROUP_SIZE_OVERRIDE;
 const CACHE_WORDS_OVERRIDE = 'tea_cache_words_per_execution';
 const CACHE_ALLOCATION_OVERRIDE = 'tea_cache_allocation_words';
 const JOB_DESCRIPTOR_BYTES = GPU_JOB_DESCRIPTOR_BYTE_STRIDE;

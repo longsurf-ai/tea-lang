@@ -2,7 +2,7 @@
   "version": 1,
   "oracle": {
     "kind": "tea-contract",
-    "description": "Hand-calculated fixed-history execution builtins over a five-row epoch-ms axis, with a deterministic 1700000000000 execution clock and a two-row request tail whose child indices restart at zero.",
+    "description": "Hand-calculated Batch Recipe builtins over a five-row epoch-ms axis, with a deterministic 1700000000000 execution clock and a two-row request tail whose child indices restart at zero.",
     "references": [
       "../../../../../docs/runtime.md",
       "../../../../../docs/requests.md"

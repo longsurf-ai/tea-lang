@@ -47,13 +47,13 @@ if strat.position_quantity() == 0.0
 	trailing_stop := missing_value
 
 current_sar = ta.sar(sar_start, sar_increment, sar_maximum)
-// The inspected v2.0 source explicitly uses lookahead_on, despite the page
-// describing a no-lookahead strategy.
+// The inspected v2.0 source makes the higher interval available from its
+// start, despite the page describing a strategy that waits for completion.
 higher_sar = request.security(
 	request_symbol,
 	higher_timeframe,
 	ta.sar(sar_start, sar_increment, sar_maximum),
-	lookahead = true
+	availability = "start"
 )
 
 higher_long = close > higher_sar

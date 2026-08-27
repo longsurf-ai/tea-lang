@@ -3,7 +3,8 @@ import {CSVSink, DataStream, StdoutSink, tea} from 'tea';
 import * as z from 'zod';
 
 const input = new Subject<unknown>();
-const source = new DataStream(z.object({close: z.number()}), input);
+const schema = z.object({close: z.number()});
+const source = new DataStream(schema, input);
 
 const node = tea`
   var float total = 0.0

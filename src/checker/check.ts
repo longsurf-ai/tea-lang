@@ -4909,13 +4909,28 @@ class Checker {
       );
     }
     for (const optionName of [
-      'gaps',
-      'lookahead',
+      'availability',
+      'fill',
       'ignore_invalid_symbol',
       'calc_bars_count',
     ]) {
       const index = native.params.findIndex(param => param.name === optionName);
       const option = index === -1 ? null : (args[index] ?? null);
+      if (option !== null) {
+        const value = this.info.types.get(option)?.value;
+        const allowed =
+          optionName === 'availability'
+            ? value === 'start' || value === 'end'
+            : optionName === 'fill'
+              ? value === 'carry' || value === 'sparse'
+              : true;
+        if (value !== null && value !== undefined && !allowed) {
+          this.error(
+            option.pos,
+            `request option '${optionName}' has invalid value ${JSON.stringify(value)}`,
+          );
+        }
+      }
       if (
         option !== null &&
         this.expressionCallsEffect(option, this.info, Effect.Emit)

@@ -1,5 +1,5 @@
 // Purpose: JSModule binding is an immutable, host-neutral Effect result;
-// concrete streams and providers remain outside the generated module.
+// concrete streams and application sources remain outside the generated module.
 
 import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
@@ -106,9 +106,7 @@ describe('JSModule binding', () => {
   });
 
   test('derives input.source series binding from its current parameter value', () => {
-    const initial = compileModule(
-      'source = input.source(close)\nplot(source)',
-    );
+    const initial = compileModule('source = input.source(close)\nplot(source)');
     const selected = Effect.runSync(
       bindModule(initial, [
         {kind: 'parameter', name: 'source', value: 'close'},
@@ -213,8 +211,8 @@ describe('JSModule binding', () => {
       {
         symbol: 'X',
         timeframe: 'D',
-        gaps: false,
-        lookahead: false,
+        fill: 'carry',
+        availability: 'end',
         ignoreInvalidSymbol: false,
         calcBarsCount: 0,
       },

@@ -523,7 +523,7 @@ prepared state.
 
 ```ts
 interface StorageTracer {
-  storage(ref: StorageRef<unknown>): void
+  storage(ref: StorageRef<unknown>): void;
 }
 ```
 
@@ -560,12 +560,12 @@ temporary can be the sole owner.
 
 The current JSRuntime protocol already provides the correct hook points:
 
-- `executeRow(..., true)` begins a Heap transaction and commits it immediately
+- `execute(..., true)` begins a Heap transaction and commits it immediately
   after successful provisional execution, before sink delivery;
 - error or `ContextSuspension` aborts the Heap transaction and restores its
   struct field journal;
 - final execution prepares Heap state, effects, and Ring candidates;
-- `commitRow()` commits prepared Heap state and Rings, then delivers the sink
+- `commit()` commits prepared Heap state and Rings, then delivers the sink
   publication;
 - sink failure is terminal and cannot roll back already committed Tea state.
 

@@ -18,28 +18,32 @@ describe('sync', () => {
       subscriber.next();
     });
 
-    source.pipe(sync(target)).subscribe(value =>
-      values.push(value as number),
-    );
+    source.pipe(sync(target)).subscribe(value => values.push(value as number));
 
     expect(order).toEqual(['source', 'target']);
     expect(values).toEqual([1]);
   });
 
-  test('an empty completed source finishes without subscribing the target', () => {
+  test('a custom projector can serve targets after an empty source completes', () => {
     const targetSubscribed = vi.fn();
-    const project = vi.fn(() => undefined);
+    const values: string[] = [];
+    const project = vi.fn((target: string) => [`${target}:empty`, 0] as const);
     const complete = vi.fn();
     const source = new Observable<number>(subscriber => subscriber.complete());
-    const target = new Observable<void>(() => {
+    const target = new Observable<string>(subscriber => {
       targetSubscribed();
+      subscriber.next('target');
+      subscriber.complete();
     });
 
-    source.pipe(sync(target, project)).subscribe({complete});
+    source
+      .pipe(sync(target, project, true))
+      .subscribe({next: value => values.push(value), complete});
 
+    expect(values).toEqual(['target:empty']);
     expect(complete).toHaveBeenCalledOnce();
-    expect(targetSubscribed).not.toHaveBeenCalled();
-    expect(project).not.toHaveBeenCalled();
+    expect(targetSubscribed).toHaveBeenCalledOnce();
+    expect(project).toHaveBeenCalledOnce();
   });
 
   test('serves targets from a buffered completed source', () => {
@@ -79,9 +83,7 @@ describe('sync', () => {
     source
       .pipe(
         sync(target, (_, buffered) =>
-          buffered.length < 2
-            ? undefined
-            : [buffered.slice(0, 2), 2],
+          buffered.length < 2 ? undefined : [buffered.slice(0, 2), 2],
         ),
       )
       .subscribe({next: value => values.push(value), complete});

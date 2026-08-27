@@ -15,7 +15,7 @@ configuration in `../website/` exists only for the packaged offline renderer.
 - `requests.md` is the sole detailed authority for public Node request-stream
   binding and synchronization: direct declaration names, clock/time units,
   policy precedence and windows, FIFO lifecycle, and the separation from
-  fixed-history sample merge. `ir.md` and `runtime.md` summarize and link to it
+  Pine Batch sample merge. `ir.md` and `runtime.md` summarize and link to it
   rather than restating those policies independently.
 - Reference pages are mechanical projections of compiler-owned language
   vocabulary, functions, and types. Human-facing descriptions and examples may

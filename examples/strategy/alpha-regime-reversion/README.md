@@ -26,16 +26,15 @@ not trading behavior.
 
 The primary Binance BTCUSDT daily series is checked in and SHA-pinned. The QQQ
 macro regime is intrinsic to this profile and is resolved through Tea's Yahoo
-provider at runtime, so this sweep requires network access. Yahoo's unofficial
+application at runtime, so reproducing the audit requires QQQ data. Yahoo's unofficial
 current history is not hash-pinned; exact results can change if that upstream
 history changes. The config supplies BTCUSDT's `0.01` tick size, so the
 published `slippage=1` setting is modeled as exactly one adverse tick. Applying
 a stock/ETF profile to BTC is intentional compiler/runtime stress, not a claim
 about the author's published market.
 
-```sh
-tea execute examples/strategy/alpha-regime-reversion/sweep.yaml
-```
+This request-backed profile runs from an embedding application that binds the
+primary and QQQ DataStreams explicitly.
 
 The 16-scenario JavaScript sweep processes 52,528 primary rows plus the QQQ
 request context. On the 2026-08-16 canonical-component migration run its

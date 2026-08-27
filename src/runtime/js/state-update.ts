@@ -6,19 +6,19 @@ import {Storage} from '../../ir/node';
 import type {EffectValueSchema} from '../../ir/program';
 import {fatal} from '../../base/print';
 import {unimplemented} from '../../base/unimplemented';
-import type {
-  CollectionEntries,
-  CollectionMutation,
-  CollectionMutationOperation,
-  CollectionOperation,
-  Frame,
-  JSModule,
-  RuntimeContext,
+import {
+  isHistoryOffset,
+  type CollectionEntries,
+  type CollectionMutation,
+  type CollectionMutationOperation,
+  type CollectionOperation,
+  type Frame,
+  type JSModule,
+  type RuntimeContext,
 } from '../module-abi';
 import type {EffectEmission, DenseEmission} from '../output';
 import {ExecutionError} from '../errors';
 import type {Heap, HeapTransaction, Ref} from './heap';
-import {isHistoryOffset} from '../history';
 import {CollectionRuntime} from './collections';
 import {StructStorageRuntime} from './struct-storage';
 import type {
@@ -220,7 +220,7 @@ class RuntimeOperations implements RuntimeContext {
       return fatal(`series ${sid} produced a non-number value`);
     }
     if (!Number.isFinite(value) && !Number.isNaN(value)) {
-      return fatal(`provider series ${sid} returned a non-finite value`);
+      return fatal(`input series ${sid} returned a non-finite value`);
     }
     return value;
   }

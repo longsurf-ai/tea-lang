@@ -18,13 +18,13 @@ const LEVEL_RANK: Readonly<Record<LogLevel, number>> = {
 export interface LogEvent {
   readonly time: number; // epoch ms
   readonly level: LogLevel;
-  readonly scope: string; // dot path: 'provider.yahoo', 'compile.check'
+  readonly scope: string; // dot path: 'source.yahoo', 'compile.check'
   readonly message: string;
   readonly fields: Readonly<Record<string, unknown>>;
 }
 
 // Where events go. Hosts swap this: the CLI writes stderr lines, tests
-// capture arrays, OpenChart can forward to its own telemetry.
+// capture arrays, and embedding hosts can forward to their own telemetry.
 export interface LogSink {
   emit(event: LogEvent): void;
 }
@@ -33,7 +33,7 @@ export interface LogConfig {
   // Events below this level are dropped (cheaply, before construction).
   readonly level: LogLevel;
   // Per-scope overrides; the longest matching dot-prefix wins
-  // ('provider.yahoo' beats 'provider' beats the root level).
+  // ('source.yahoo' beats 'source' beats the root level).
   readonly scopes: Readonly<Record<string, LogLevel>>;
   readonly sink: LogSink;
 }
@@ -71,7 +71,7 @@ export function captureSink(): {sink: LogSink; events: LogEvent[]} {
 }
 
 // The shared configuration box. Loggers hold a reference, so reconfiguring
-// at a host boundary (CLI flags, OpenChart settings, a test) takes effect
+// at a host boundary (CLI flags, embedding-host settings, a test) takes effect
 // everywhere immediately — scopes are cheap identities, config is the one
 // mutable point.
 const config: {current: LogConfig} = {
@@ -171,7 +171,7 @@ export class Logger {
 }
 
 // The package root logger; modules create scoped children at load:
-//   const logger = log.child('provider.yahoo');
+//   const logger = log.child('source.yahoo');
 export const log = Logger.root();
 
 // Parses a host-supplied level name ('TEA_LOG=debug'); null for anything

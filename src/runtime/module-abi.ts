@@ -7,14 +7,14 @@ import type {Ref} from './js/heap';
 import type {OutputSpec} from './output';
 import type {EffectSpec, ParamSpec} from './schema';
 import type {LayoutId, ValueLayout} from './value-layout';
-import type {
-  CollectionValue,
-  ExecutionResult,
-  ManifestValue,
-  Value,
-} from './value';
+import type {CollectionValue, ManifestValue, Value} from './value';
 
 export const RUNTIME_ABI_VERSION = 7 as const;
+
+/** True when a value can address or retain committed history. */
+export function isHistoryOffset(offset: number): boolean {
+  return Number.isSafeInteger(offset) && offset >= 0;
+}
 
 export type DepthSpec =
   | {readonly kind: 'none'} // no depth retention
@@ -63,8 +63,8 @@ export interface RequestSpec {
   readonly context?: {
     readonly symbol: string;
     readonly timeframe: string;
-    readonly gaps: boolean;
-    readonly lookahead: boolean;
+    readonly availability: 'start' | 'end';
+    readonly fill: 'carry' | 'sparse';
     readonly ignoreInvalidSymbol: boolean;
     readonly calcBarsCount: number;
   } | null;
@@ -131,7 +131,7 @@ export interface JSModule {
   readonly funcs: Readonly<
     Record<
       number,
-      (ctx: RuntimeContext, fr: Frame, ...args: Value[]) => ExecutionResult
+      (ctx: RuntimeContext, fr: Frame, ...args: Value[]) => Value | undefined
     >
   >;
   main(ctx: RuntimeContext, fr: Frame): void;
@@ -213,7 +213,7 @@ export type CollectionMutationOperation =
 
 export interface CollectionMutation {
   readonly replacement: CollectionValue;
-  readonly result: ExecutionResult;
+  readonly result: Value | undefined;
 }
 
 export type CollectionEntries =

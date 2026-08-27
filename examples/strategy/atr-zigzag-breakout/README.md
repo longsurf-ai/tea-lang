@@ -34,7 +34,8 @@ The 36-scenario JavaScript sweep varies ZigZag ATR length/multiple and bracket
 stop/reward multiples on the pinned BTCUSDT daily snapshot:
 
 ```sh
-tea execute examples/strategy/atr-zigzag-breakout/sweep.yaml
+tea run examples/strategy/atr-zigzag-breakout/strategy.tea \
+  -i examples/data/binance/btcusdt-1d.csv
 ```
 
 The strategy source is eligible for Tea's current WGSL lowering subset. The

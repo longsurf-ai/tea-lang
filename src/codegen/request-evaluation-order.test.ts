@@ -22,8 +22,8 @@ describe('request context evaluation order', () => {
     expect(module.manifest.requests[0].context).toEqual({
       symbol: 'SYMBOL_SENTINEL',
       timeframe: 'TIMEFRAME_SENTINEL',
-      gaps: false,
-      lookahead: false,
+      fill: 'carry',
+      availability: 'end',
       ignoreInvalidSymbol: false,
       calcBarsCount: 0,
     });
@@ -65,38 +65,41 @@ describe('request context evaluation order', () => {
     const program = mustBuild(
       [
         'count = input.int(7)',
-        'look = input.bool(true)',
+        'availability = input.string("start")',
         'ignore = input.bool(true)',
-        'gapsValue = input.bool(true)',
+        'fillValue = input.string("sparse")',
         'd = request.security(',
         '    calc_bars_count = count,',
         '    timeframe = "TIMEFRAME_SENTINEL",',
-        '    lookahead = look,',
+        '    availability = availability,',
         '    expression = close,',
         '    ignore_invalid_symbol = ignore,',
         '    symbol = "SYMBOL_SENTINEL",',
-        '    gaps = gapsValue)',
+        '    fill = fillValue)',
         'plot(d)',
       ].join('\n'),
     );
     const edge = program.requests[0];
-    expect(edge.optionArgumentEvaluationOrder).toEqual([3, 1, 2, 0]);
+    expect(edge.optionArgumentEvaluationOrder).toEqual([3, 0, 2, 1]);
     expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
 
     const js = generate(program);
     const concretize = js.slice(js.lastIndexOf('concretize(manifest'));
     const assignment = concretize.match(
-      /manifest\.requests\[0\]\.context = \{symbol: \((t\d+)\), timeframe: \((t\d+)\), gaps: \((t\d+)\), lookahead: \((t\d+)\), ignoreInvalidSymbol: \((t\d+)\), calcBarsCount: \((t\d+)\)\};/,
+      /manifest\.requests\[0\]\.context = \{symbol: \((t\d+)\), timeframe: \((t\d+)\), availability: \((t\d+)\), fill: \((t\d+)\), ignoreInvalidSymbol: \((t\d+)\), calcBarsCount: \((t\d+)\)\};/,
     );
     expect(assignment).not.toBeNull();
     if (assignment === null) {
       return;
     }
-    const [, , , gaps, lookahead, ignoreInvalidSymbol, calcBarsCount] =
+    const [, , , availability, fill, ignoreInvalidSymbol, calcBarsCount] =
       assignment;
-    const captures = [calcBarsCount, lookahead, ignoreInvalidSymbol, gaps].map(
-      temp => concretize.indexOf(`const ${temp} =`),
-    );
+    const captures = [
+      calcBarsCount,
+      availability,
+      ignoreInvalidSymbol,
+      fill,
+    ].map(temp => concretize.indexOf(`const ${temp} =`));
     expect(captures.every(index => index >= 0)).toBe(true);
     expect(captures).toEqual([...captures].sort((a, b) => a - b));
 
@@ -115,8 +118,8 @@ describe('request context evaluation order', () => {
   test('evaluates a root Simple alias before binding request options', () => {
     const program = mustBuild(
       [
-        'contextGap = syminfo.type == "stock"',
-        'd = request.security("X", "D", close, gaps = contextGap)',
+        'contextFill = syminfo.type == "stock" ? "sparse" : "carry"',
+        'd = request.security("X", "D", close, fill = contextFill)',
         'plot(d)',
       ].join('\n'),
     );

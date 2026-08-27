@@ -22,7 +22,7 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   both.
 - `builtin.ts` contains only closed runtime-bound builtin identifiers shared
   by checker, Program, and runtime. It must never acquire semantic objects,
-  Program nodes, provider state, or runtime context objects.
+  Program nodes, application source state, or runtime context objects.
 - One Program instance runs against exactly one context (one symbol ×
   timeframe axis) and owns its slots, bindings, and rollback. Requests
   compose by recursion — child Programs whose merged outputs are parent

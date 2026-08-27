@@ -18,9 +18,9 @@ spy = request.security("SPY", "D", ta.ema(close, len))
 spyStep = spy - spy[1]
 
 // Explicit prefix routing, weekly bars served natively by the driver,
-// gaps on — rows between weekly closes stay na instead of carrying
-// forward.
-qqqWeekly = request.security("YAHOO:QQQ", "W", close, gaps=true)
+// Sparse fill — positions between weekly closes stay na instead of carrying
+// the last weekly value forward.
+qqqWeekly = request.security("YAHOO:QQQ", "W", close, fill="sparse")
 
 // A bogus symbol under ignore_invalid_symbol: the column is na, never a
 // bind error.

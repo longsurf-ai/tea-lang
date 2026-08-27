@@ -17,6 +17,7 @@
     "src",
     "tests",
     "scripts",
+    "examples",
     "editors/vscode/scripts",
     "editors/vscode/test",
     "website/docusaurus.config.ts",

@@ -401,10 +401,6 @@ function buildVars(): NativeVar[] {
       domain: 'time',
       field: 'timenow',
     }),
-    constantVariable('barmerge.gaps_on', BoolType, true),
-    constantVariable('barmerge.gaps_off', BoolType, false),
-    constantVariable('barmerge.lookahead_on', BoolType, true),
-    constantVariable('barmerge.lookahead_off', BoolType, false),
     constantVariable('math.pi', FloatType, Math.PI),
     constantVariable('math.e', FloatType, Math.E),
     builtinVariable('syminfo.tickerid', StringType, Qualifier.Simple, {
@@ -1044,8 +1040,8 @@ function buildFuncs(): NativeFunc[] {
         req('symbol', StringType, Qualifier.Series, {acceptsNa: false}),
         req('timeframe', StringType, Qualifier.Series, {acceptsNa: false}),
         req('expression', TypeRef.Any, Qualifier.Series, {capture: true}),
-        opt('gaps', BoolType, Qualifier.Simple),
-        opt('lookahead', BoolType, Qualifier.Simple),
+        opt('availability', StringType, Qualifier.Simple, {acceptsNa: false}),
+        opt('fill', StringType, Qualifier.Simple, {acceptsNa: false}),
         opt('ignore_invalid_symbol', BoolType, Qualifier.Simple, {
           acceptsNa: false,
         }),

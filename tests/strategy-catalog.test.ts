@@ -6,10 +6,8 @@ import {existsSync, readFileSync, readdirSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
-import {paramSpecsOf} from '../src/codegen/params';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
 import {compileToProgram} from '../src/compiler';
-import {loadConfig, resolveExecutionParameters} from '../src/execution';
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const STRATEGY_ROOT = join(ROOT, 'examples/strategy');
@@ -191,7 +189,7 @@ describe('clean-room strategy catalog', () => {
         entry =>
           entry.isDirectory() &&
           existsSync(join(STRATEGY_ROOT, entry.name, 'README.md')) &&
-          existsSync(join(STRATEGY_ROOT, entry.name, 'sweep.yaml')),
+          existsSync(join(STRATEGY_ROOT, entry.name, 'strategy.tea')),
       )
       .map(entry => entry.name)
       .sort();
@@ -218,22 +216,16 @@ describe('clean-room strategy catalog', () => {
   }
 
   for (const name of expectedStrategies) {
-    test(`${name} compiles and resolves its declared grid`, () => {
+    test(`${name} compiles with its canonical report outputs`, () => {
       const directory = join(STRATEGY_ROOT, name);
       const readme = readFileSync(join(directory, 'README.md'), 'utf8');
       expect(readme).toContain('tradingview.com/script/');
 
-      const config = loadConfig(join(directory, 'sweep.yaml'));
-      expect(config.program.source).toBe(join(directory, 'strategy.tea'));
-      expect(config.runtime.kind).toBe('javascript');
-      expect(config.execution.kind).toBe('sweep');
-      if (config.execution.kind !== 'sweep') {
-        throw new Error('strategy catalog configs must be sweeps');
-      }
-      expect(config.execution.maxExecutions).toBeDefined();
-
       const errors = new Errors();
-      const program = compileToProgram([config.program.source], errors);
+      const program = compileToProgram(
+        [join(directory, 'strategy.tea')],
+        errors,
+      );
       if (program === null) {
         throw new Error(
           errors
@@ -243,18 +235,6 @@ describe('clean-room strategy catalog', () => {
         );
       }
       expect(errors.count).toBe(0);
-
-      const resolved = resolveExecutionParameters(
-        paramSpecsOf(program.params),
-        config.execution,
-      );
-      expect(resolved.ranges.length).toBeGreaterThan(0);
-      expect(new Set(resolved.ranges.map(range => range.name)).size).toBe(
-        resolved.ranges.length,
-      );
-      expect(resolved.sets.length).toBeLessThanOrEqual(
-        config.execution.maxExecutions!,
-      );
 
       const outputTitles = new Set(
         program.outputs.flatMap(output =>
@@ -274,15 +254,12 @@ describe('clean-room strategy catalog', () => {
     });
   }
 
-  test('Turtle publishes two CPU grids while WGSL fails closed on structs', () => {
+  test('Turtle remains canonical while WGSL fails closed on structs', () => {
     const directory = join(STRATEGY_ROOT, 'turtle-system');
-    const full = loadConfig(join(directory, 'sweep.yaml'));
-    const subset = loadConfig(join(directory, 'sweep-cpu.yaml'));
-    expect(full.runtime.kind).toBe('javascript');
-    expect(subset.runtime.kind).toBe('javascript');
 
     const errors = new Errors();
-    const program = compileToProgram([full.program.source], errors);
+    const sourcePath = join(directory, 'strategy.tea');
+    const program = compileToProgram([sourcePath], errors);
     if (program === null) {
       throw new Error(
         errors
@@ -292,28 +269,6 @@ describe('clean-room strategy catalog', () => {
       );
     }
     expect(errors.count).toBe(0);
-    if (full.execution.kind !== 'sweep' || subset.execution.kind !== 'sweep') {
-      throw new Error('Turtle configs must both be sweeps');
-    }
-    const specs = paramSpecsOf(program.params);
-    const fullParameters = resolveExecutionParameters(
-      specs,
-      full.execution,
-    ).sets;
-    const subsetParameters = resolveExecutionParameters(
-      specs,
-      subset.execution,
-    ).sets;
-    expect(fullParameters).toHaveLength(780);
-    expect(subsetParameters).toHaveLength(36);
-    const fullKeys = new Set(
-      fullParameters.map(parameters => JSON.stringify(parameters)),
-    );
-    expect(
-      subsetParameters.every(parameters =>
-        fullKeys.has(JSON.stringify(parameters)),
-      ),
-    ).toBe(true);
     const compiled = compileProgramToWgsl(program);
     expect(compiled.status).toBe('staged-unsupported');
     if (compiled.status === 'staged-unsupported') {
@@ -323,7 +278,7 @@ describe('clean-room strategy catalog', () => {
         message: 'GPU struct-reference lowering is deferred for OrderRejected',
       });
     }
-    const source = readFileSync(full.program.source, 'utf8');
+    const source = readFileSync(sourcePath, 'utf8');
     expect(source).toContain('trade.nextOpen(');
     expect(source).toContain('broker.new(');
     expect(source).toContain('portfolio.new(');

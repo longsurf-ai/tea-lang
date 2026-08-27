@@ -14,11 +14,8 @@ The strategy uses `trade.nextOpen` to coordinate Tea's canonical broker and port
 
 The configured `tick_size` is `0.01`, matching the BTCUSDT fixture. The published Pine v5 strategy has zero long margin, so `portfolio.new(..., marginLong = 0.0)` does not gate the fixed-size entry on available cash. This can make portfolio cash negative; it is a compatibility choice, not realistic risk management. The example targets the JavaScript runtime because `request.security` contexts are not supported by the current WebGPU runtime.
 
-Run the bounded 3 x 3 CPU sweep from the repository root:
-
-```sh
-node --import tsx src/main.ts execute examples/strategy/pair-spread-mean-reversion/sweep.yaml
-```
+Run this pair profile from an embedding application that binds the chart and
+comparison-symbol DataStreams explicitly.
 
 ## Observed reference run
 

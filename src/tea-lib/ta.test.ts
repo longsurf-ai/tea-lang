@@ -2,10 +2,9 @@
 // indicators that depend on it.
 
 import {describe, expect, test} from 'vitest';
-import {executeProgram} from '../execution/execute';
 import {mustBuild} from '../noder/testing';
-import {csvProvider} from '../providers/data/csv';
-import {MemorySink} from '../providers/sinks/memory-sink';
+import {MemorySink} from '../sinks/memory-sink';
+import {csvStream, executeTestProgram} from '../testing/batch';
 
 const DATA = [
   'time,open,high,low,close',
@@ -38,18 +37,11 @@ describe('ta Wilder indicators', () => {
       ].join('\n'),
     );
     const sink = new MemorySink();
-    await executeProgram(
-      program,
-      [
-        {
-          params: {},
-          provider: csvProvider(DATA),
-          sink,
-          timeNow: 1_800_000_000_000,
-        },
-      ],
-      {kind: 'cpu'},
-    );
+    await executeTestProgram(program, {
+      stream: csvStream(DATA),
+      sink,
+      timeNow: 1_800_000_000_000,
+    });
 
     const values = (outputId: number): number[] =>
       sink.emissions

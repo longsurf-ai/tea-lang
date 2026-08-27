@@ -52,7 +52,7 @@ The experiment must run from Node through Dawn, use a single compute dispatch,
 return every parameter result for analysis, preserve the kernel's sparse
 orders/fills, and produce inspectable full equity curves without retaining the
 entire result matrix in memory. It remains isolated from the Tea compiler and
-the OpenChart monorepo.
+any parent monorepo.
 
 ## 3. Implementation
 

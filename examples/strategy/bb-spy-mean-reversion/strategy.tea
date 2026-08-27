@@ -133,7 +133,7 @@ int missing_int = na
 
 // The CSV axis exposes each bar's close boundary. A transition in that
 // boundary identifies the month's final daily row, matching Pine's
-// lookahead-off higher-timeframe publication without provider resampling.
+// end-available higher-timeframe publication without implicit resampling.
 monthly_atr = monthly_atr_state.update(month_key(time), month_key(time_close), high, low, close, atr_length)
 
 // Resolve the one pending market-or-buy-stop command, then the atomic bracket.

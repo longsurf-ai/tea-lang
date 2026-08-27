@@ -4,7 +4,7 @@
 import {describe, expect, test} from 'vitest';
 import {Observable, of, Subject} from 'rxjs';
 import * as z from 'zod';
-import {d, m, ns, w, y, type Clock} from './clock';
+import {d, i, m, ns, w, y, type Clock} from './clock';
 import type {Datum} from './node';
 import {DataStream} from './stream';
 import {TeaCompileError, tea} from './tea';
@@ -117,7 +117,135 @@ describe('tea', () => {
     node.to(sink);
     await sink.completion;
 
-    expect(sink.values.map(result => result['output_0'])).toEqual([21, 22]);
+    expect(values(sink)).toEqual([21, 22]);
+  });
+
+  test('publishes lossless outputs with Node index and source time', async () => {
+    const node = tea`plot(close[1])`;
+    node.bind(
+      timedNumericSource({time: 100n, close: 10}, {time: 200n, close: 20}),
+    );
+    const sink = new StepSink();
+
+    node.to(sink);
+    await sink.completion;
+
+    expect(sink.values).toEqual([
+      {
+        index: 0,
+        time: 100,
+        outputs: [{outputId: 0, channels: [Number.NaN]}],
+        effects: [],
+        provisional: false,
+      },
+      {
+        index: 1,
+        time: 200,
+        outputs: [{outputId: 0, channels: [10]}],
+        effects: [],
+        provisional: false,
+      },
+    ]);
+    expect(Object.isFrozen(sink.values[0])).toBe(true);
+    expect(Object.isFrozen(sink.values[0]!.outputs)).toBe(true);
+    expect(Object.isFrozen(sink.values[0]!.outputs[0])).toBe(true);
+    expect(Object.isFrozen(sink.values[0]!.outputs[0]!.channels)).toBe(true);
+    expect(Object.isFrozen(sink.values[0]!.effects)).toBe(true);
+  });
+
+  test('rejects inexact event time before executing a step', async () => {
+    const node = tea`plot(close)`;
+    node.bind(timedNumericSource({time: 9_007_199_254_740_993n, close: 10}));
+    const sink = new StepSink();
+
+    node.to(sink);
+
+    await expect(sink.completion).rejects.toThrow(
+      'DataStream time must be an exact epoch-ms integer',
+    );
+    expect(sink.values).toEqual([]);
+  });
+
+  test('rejects interval close times that move backward', async () => {
+    const node = tea`plot(close)`;
+    node.bind(
+      intervalNumericSource(
+        {time: 0n, time_close: 3n, close: 10},
+        {time: 1n, time_close: 2n, close: 20},
+      ),
+    );
+    const sink = new StepSink();
+
+    node.to(sink);
+
+    await expect(sink.completion).rejects.toThrow(
+      'DataStream time_close must be nondecreasing',
+    );
+    expect(values(sink)).toEqual([10]);
+  });
+
+  test('validates a finite DataStream index count', async () => {
+    const shortNode = tea`plot(close)`;
+    shortNode.bind(
+      new DataStream(z.object({close: z.number()}), of({close: 1}), i, 2),
+    );
+    const shortSink = new StepSink();
+    shortNode.to(shortSink);
+    await expect(shortSink.completion).rejects.toThrow(
+      'DataStream emitted 1 values for 2 declared indices',
+    );
+
+    const longNode = tea`plot(close)`;
+    longNode.bind(
+      new DataStream(
+        z.object({close: z.number()}),
+        of({close: 1}, {close: 2}),
+        i,
+        1,
+      ),
+    );
+    const longSink = new StepSink();
+    longNode.to(longSink);
+    await expect(longSink.completion).rejects.toThrow(
+      'DataStream emitted more than its declared 1 indices',
+    );
+  });
+
+  test('fails shared execution when an observer throws during delivery', async () => {
+    let produced = 0;
+    let teardowns = 0;
+    const source = new DataStream(
+      z.object({close: z.number()}),
+      new Observable(subscriber => {
+        for (const close of [1, 2]) {
+          if (subscriber.closed) break;
+          produced += 1;
+          subscriber.next({close});
+        }
+        if (!subscriber.closed) subscriber.complete();
+        return () => {
+          teardowns += 1;
+        };
+      }),
+    );
+    const node = tea`plot(close)`;
+    node.bind(source);
+    const failure = new Error('delivery failed');
+    const errors: unknown[] = [];
+
+    const subscription = node.to({
+      next() {
+        throw failure;
+      },
+      error(error) {
+        errors.push(error);
+      },
+    });
+
+    expect(produced).toBe(1);
+    expect(teardowns).toBe(1);
+    expect(errors).toEqual([failure]);
+    expect(subscription.closed).toBe(true);
   });
 
   test('validates each DataStream emission exactly once', async () => {
@@ -135,6 +263,48 @@ describe('tea', () => {
 
     expect(parses).toBe(2);
     expect(values(sink)).toEqual([1, 2]);
+  });
+
+  test('does not treat Pine contextual builtins as a third binding kind', () => {
+    const node = tea`plot(bar_index)`;
+
+    expect(() => node.bind({bar_index: numericSource(0)})).toThrow(
+      "no bind-known root series or static request child matches 'bar_index'",
+    );
+  });
+
+  test('supplies root contextual builtins from Node construction', async () => {
+    const node = tea`
+      plot(bar_index)
+      plot(last_bar_index)
+      plot(barstate.islast ? 1 : 0)
+    `;
+    node.bind(numericSource(10, 20, 30));
+    const sink = new StepSink();
+
+    node.to(sink);
+    await sink.completion;
+
+    expect(outputValues(sink)).toEqual([
+      [0, 2, 0],
+      [1, 2, 0],
+      [2, 2, 1],
+    ]);
+  });
+
+  test('gives every request child its own contextual builtin index', async () => {
+    const node = tea`
+      requested = request.security("X", "D", bar_index)
+      plot(requested)
+    `;
+    node.bind(numericSource(10, 20, 30));
+    node.bind({requested: numericSource(1, 2, 3)});
+    const sink = new StepSink();
+
+    node.to(sink);
+    await sink.completion;
+
+    expect(values(sink)).toEqual([0, 1, 2]);
   });
 
   test('binds request streams by declaration name, not requested symbol', async () => {
@@ -292,6 +462,173 @@ describe('tea', () => {
     expect(values(sink)).toEqual([11, 22]);
   });
 
+  test.each([
+    {
+      availability: 'end',
+      fill: 'carry',
+      expected: [NaN, 100, 100, 200, 200, 300],
+    },
+    {
+      availability: 'start',
+      fill: 'carry',
+      expected: [100, 100, 200, 200, 300, 300],
+    },
+    {
+      availability: 'end',
+      fill: 'sparse',
+      expected: [NaN, 100, NaN, 200, NaN, 300],
+    },
+    {
+      availability: 'start',
+      fill: 'sparse',
+      expected: [100, NaN, 200, NaN, 300, NaN],
+    },
+  ] as const)(
+    'synchronizes timed scalar requests with $availability availability and $fill fill',
+    async ({availability, fill, expected}) => {
+      const node = tea`
+        requested = request.security(
+          "X",
+          "2",
+          close,
+          availability = "${availability}",
+          fill = "${fill}"
+        )
+        plot(requested)
+      `;
+      node.bind(
+        intervalNumericSource(
+          {time: 0n, time_close: 1n, close: 0},
+          {time: 1n, time_close: 2n, close: 0},
+          {time: 2n, time_close: 3n, close: 0},
+          {time: 3n, time_close: 4n, close: 0},
+          {time: 4n, time_close: 5n, close: 0},
+          {time: 5n, time_close: 6n, close: 0},
+        ),
+      );
+      node.bind({
+        requested: intervalNumericSource(
+          {time: 0n, time_close: 2n, close: 100},
+          {time: 2n, time_close: 4n, close: 200},
+          {time: 4n, time_close: 6n, close: 300},
+        ),
+      });
+      const sink = new StepSink();
+
+      node.to(sink);
+      await sink.completion;
+
+      expect(values(sink)).toEqual(expected);
+    },
+  );
+
+  test('falls back to positional scalar matching without complete interval times', async () => {
+    const execute = async (
+      main: DataStream<unknown>,
+      child: DataStream<unknown>,
+    ) => {
+      const node = tea`
+        requested = request.security("X", "2", close)
+        plot(requested)
+      `;
+      node.bind(main);
+      node.bind({requested: child});
+      const sink = new StepSink();
+      node.to(sink);
+      await sink.completion;
+      return values(sink);
+    };
+    const interval = () =>
+      intervalNumericSource(
+        {time: 0n, time_close: 1n, close: 1},
+        {time: 1n, time_close: 2n, close: 2},
+      );
+    const timed = () =>
+      timedNumericSource({time: 0n, close: 10}, {time: 1n, close: 20});
+    const closeOnly = () =>
+      new DataStream(
+        z.object({time_close: z.bigint(), close: z.number()}),
+        of({time_close: 1n, close: 10}, {time_close: 2n, close: 20}),
+      );
+
+    expect(await execute(interval(), timed())).toEqual([10, 20]);
+    expect(await execute(timed(), interval())).toEqual([1, 2]);
+    expect(await execute(timed(), timed())).toEqual([10, 20]);
+    expect(await execute(closeOnly(), closeOnly())).toEqual([10, 20]);
+  });
+
+  test('drops scalar child intervals that arrive after their parent boundary', async () => {
+    const mainRows = new Subject<IntervalNumericDatum>();
+    const childRows = new Subject<IntervalNumericDatum>();
+    const node = tea`
+      requested = request.security("X", "2", close)
+      plot(requested)
+    `;
+    node.bind(intervalNumericSubject(mainRows));
+    node.bind({requested: intervalNumericSubject(childRows)});
+    const sink = new StepSink();
+    node.to(sink);
+
+    mainRows.next({time: 0n, time_close: 10n, close: 0});
+    await sink.waitFor(1);
+    childRows.next({time: 0n, time_close: 5n, close: 100});
+    mainRows.next({time: 10n, time_close: 20n, close: 0});
+    await sink.waitFor(2);
+    childRows.complete();
+    mainRows.complete();
+    await sink.completion;
+
+    expect(values(sink)).toEqual([NaN, NaN]);
+  });
+
+  test('drops repeated late child intervals after retaining a current value', async () => {
+    const mainRows = new Subject<IntervalNumericDatum>();
+    const childRows = new Subject<IntervalNumericDatum>();
+    const node = tea`
+      requested = request.security("X", "2", close)
+      plot(requested)
+    `;
+    node.bind(intervalNumericSubject(mainRows));
+    node.bind({requested: intervalNumericSubject(childRows)});
+    const sink = new StepSink();
+    node.to(sink);
+
+    childRows.next({time: 0n, time_close: 5n, close: 100});
+    mainRows.next({time: 0n, time_close: 10n, close: 0});
+    await sink.waitFor(1);
+    childRows.next({time: 5n, time_close: 7n, close: 200});
+    childRows.next({time: 7n, time_close: 8n, close: 300});
+    mainRows.next({time: 10n, time_close: 20n, close: 0});
+    mainRows.next({time: 20n, time_close: 30n, close: 0});
+    await sink.waitFor(3);
+    childRows.complete();
+    mainRows.complete();
+    await sink.completion;
+
+    expect(values(sink)).toEqual([100, 100, 100]);
+  });
+
+  test('rejects an invalid input-bound request policy before execution', () => {
+    const node = tea`
+      policy = input.string("end")
+      requested = request.security("X", "2", close, availability=policy)
+      plot(requested)
+    `;
+
+    expect(() => node.bind({policy: 'middle'})).toThrow(
+      'request 0 has invalid concrete context',
+    );
+
+    const fillNode = tea`
+      policy = input.string("carry")
+      requested = request.security("X", "2", close, fill=policy)
+      plot(requested)
+    `;
+    expect(() => fillNode.bind({policy: 'forward'})).toThrow(
+      'request 0 has invalid concrete context',
+    );
+  });
+
   test('collects lower-timeframe values by regular clock count', async () => {
     const twoMinutes = (2n * m) as Clock;
     const node = tea`
@@ -313,6 +650,40 @@ describe('tea', () => {
     expect(outputValues(sink)).toEqual([
       [10, 2, 1, 2],
       [20, 2, 3, 4],
+    ]);
+  });
+
+  test('prefers exact interval containment over an unphased clock ratio', async () => {
+    const twoMinutes = (2n * m) as Clock;
+    const node = tea`
+      lower = request.security_lower_tf("X", "1", close)
+      plot(close)
+      plot(lower.size())
+      plot(lower.first())
+      plot(lower.last())
+    `;
+    node.bind({
+      close: clockedIntervalNumericSource(
+        twoMinutes,
+        {time: 0n, time_close: 120_000n, close: 1},
+        {time: 120_000n, time_close: 240_000n, close: 2},
+      ),
+      lower: clockedIntervalNumericSource(
+        m,
+        {time: 60_000n, time_close: 120_000n, close: 10},
+        {time: 120_000n, time_close: 180_000n, close: 20},
+        {time: 180_000n, time_close: 240_000n, close: 30},
+        {time: 240_000n, time_close: 300_000n, close: 40},
+      ),
+    });
+    const sink = new StepSink();
+
+    node.to(sink);
+    await sink.completion;
+
+    expect(outputValues(sink)).toEqual([
+      [1, 1, 10, 10],
+      [2, 2, 20, 30],
     ]);
   });
 
@@ -344,6 +715,28 @@ describe('tea', () => {
       [20, 0],
       [30, 1],
     ]);
+  });
+
+  test('uses typed empty for an explicitly empty timed request stream', async () => {
+    const node = tea`
+      requested = request.security("X", "D", 42)
+      plot(requested)
+    `;
+    node.bind(
+      intervalNumericSource(
+        {time: 0n, time_close: 1n, close: 1},
+        {time: 1n, time_close: 2n, close: 2},
+      ),
+    );
+    node.bind({
+      requested: new DataStream(intervalNumericSchema, of(), i, 0),
+    });
+    const sink = new StepSink();
+
+    node.to(sink);
+    await sink.completion;
+
+    expect(values(sink)).toEqual([NaN, NaN]);
   });
 
   test('drops lower-timeframe values that arrive after their window', async () => {
@@ -454,6 +847,7 @@ describe('tea', () => {
     expect(values(first)).toEqual([1, 2]);
     expect(values(second)).toEqual([1, 2]);
     expect(values(late)).toEqual([2]);
+    expect(first.values[0]).toBe(second.values[0]);
     expect(sourceSubscriptions).toBe(1);
     expect(firstSubscription.closed).toBe(true);
     expect(secondSubscription.closed).toBe(true);
@@ -505,15 +899,16 @@ describe('tea', () => {
 });
 
 function values(sink: StepSink): readonly unknown[] {
-  return sink.values.map(result => result['output_0']);
+  return sink.values.map(
+    result => result.outputs.find(output => output.outputId === 0)?.channels[0],
+  );
 }
 
 function outputValues(sink: StepSink): readonly (readonly unknown[])[] {
   return sink.values.map(result =>
-    Object.entries(result)
-      .filter(([name]) => name.startsWith('output_'))
-      .sort(([left], [right]) => Number(left.slice(7)) - Number(right.slice(7)))
-      .map(([, value]) => value),
+    [...result.outputs]
+      .sort((left, right) => left.outputId - right.outputId)
+      .map(output => output.channels[0]),
   );
 }
 
@@ -523,6 +918,8 @@ function numericSource(...values: readonly number[]): DataStream<{
   return new DataStream(
     z.object({close: z.number()}),
     of(...values.map(close => ({close}))),
+    i,
+    values.length,
   );
 }
 
@@ -534,6 +931,7 @@ function clockedNumericSource(
     z.object({close: z.number()}),
     of(...values.map(close => ({close}))),
     clock,
+    values.length,
   );
 }
 
@@ -542,18 +940,51 @@ interface TimedNumericDatum {
   readonly close: number;
 }
 
+type IntervalNumericDatum = TimedNumericDatum & {
+  readonly time_close: bigint;
+};
+
 const timedNumericSchema = z.object({time: z.bigint(), close: z.number()});
+const intervalNumericSchema = z.object({
+  time: z.bigint(),
+  time_close: z.bigint(),
+  close: z.number(),
+});
 
 function timedNumericSource(
   ...values: readonly TimedNumericDatum[]
 ): DataStream<TimedNumericDatum> {
-  return new DataStream(timedNumericSchema, of(...values));
+  return new DataStream(timedNumericSchema, of(...values), i, values.length);
 }
 
 function timedNumericSubject(
   source: Subject<TimedNumericDatum>,
 ): DataStream<TimedNumericDatum> {
   return new DataStream(timedNumericSchema, source);
+}
+
+function intervalNumericSource(
+  ...values: readonly IntervalNumericDatum[]
+): DataStream<IntervalNumericDatum> {
+  return new DataStream(intervalNumericSchema, of(...values), i, values.length);
+}
+
+function clockedIntervalNumericSource(
+  clock: Clock,
+  ...values: readonly IntervalNumericDatum[]
+): DataStream<IntervalNumericDatum> {
+  return new DataStream(
+    intervalNumericSchema,
+    of(...values),
+    clock,
+    values.length,
+  );
+}
+
+function intervalNumericSubject(
+  source: Subject<IntervalNumericDatum>,
+): DataStream<IntervalNumericDatum> {
+  return new DataStream(intervalNumericSchema, source);
 }
 
 class StepSink {

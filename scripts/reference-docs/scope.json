@@ -108,7 +108,7 @@
     {
       "id": "variables",
       "title": "Exhaustive built-in variable reference",
-      "objective": "Document every supported non-constant built-in variable, grouped by price and volume, bar and time, bar state, symbol information, and timeframe information. Explain qualified type, update cadence, na and history behavior, provider meaning, examples, and related entries.",
+      "objective": "Document every supported non-constant built-in variable, grouped by price and volume, bar and time, bar state, symbol information, and timeframe information. Explain qualified type, update cadence, na and history behavior, DataStream meaning, examples, and related entries.",
       "validate": [
         "npm test -- scripts/docs/generate-reference.test.ts",
         "npm run docs:check:generated"
@@ -156,7 +156,7 @@
       "title": "Request functions",
       "objective": "Document the supported request surface with exact context, merge, history, option, error, and example behavior. Omit staged arguments entirely and do not imply unsupported lower-timeframe or financial request APIs.",
       "validate": [
-        "npm test -- src/checker/check.test.ts src/runtime/js/fixed-history-run.test.ts src/runtime/js/fixed-history.test.ts src/runtime/js/fixed-history-integration.test.ts src/testing/aggregate-request-e2e.test.ts",
+        "npm test -- src/checker/check.test.ts src/api/tea.test.ts src/testing/aggregate-request-e2e.test.ts",
         "npm test -- scripts/docs/generate-reference.test.ts",
         "npm run docs:check:generated"
       ]

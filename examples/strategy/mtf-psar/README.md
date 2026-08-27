@@ -9,7 +9,7 @@ Clean-room Tea conversion of the current public source behind TradingView's [Mul
 - Source defaults are stop loss enabled at 1%, take profit disabled at 2%, and trailing stop disabled at 0.5%. Those exact enable settings are pinned in the sweep; the optional inputs and branches remain directly runnable.
 - The source calculates stop/target state before its entry blocks, but then resets all exit state to `na` on every true long or short condition — including redundant same-direction entries rejected by `pyramiding=0`. Under the default higher-only condition one side is normally true on every usable bar, so the nominally enabled stop is usually inert. This Tea code preserves that control-flow bug instead of silently repairing it.
 - Enabling the published trailing option also cannot bootstrap its state: the source applies `max(na, candidate)` or `min(na, candidate)`, which remains `na`. Tea preserves this too.
-- The publication prose says the higher-timeframe request does not look ahead, while the current source explicitly uses `lookahead_on`. This example pins the source. Its results are therefore a deliberate lookahead-bias warning and runtime stress case, not deployable out-of-sample evidence.
+- The publication prose says the higher-timeframe request waits for completion, while the current Pine source explicitly uses `lookahead_on`. Tea represents that choice as `availability="start"`. This example pins the source, so its results are a deliberate future-data warning and runtime stress case, not deployable out-of-sample evidence.
 
 Execution and accounting use Tea's canonical `broker.new`, `portfolio.new`,
 and `trade.nextOpen` components. Fill-time percent sizing and ordered
@@ -22,9 +22,8 @@ The primary instrument is the immutable Binance BTCUSDT daily snapshot. The runt
 
 ## Run
 
-```sh
-node --import tsx src/main.ts execute examples/strategy/mtf-psar/sweep.yaml
-```
+Run this request-backed profile from an embedding application that binds both
+the primary and higher-timeframe DataStreams by declaration name.
 
 ## Measured result
 
@@ -37,4 +36,4 @@ Revalidated on 2026-08-16 with the checked-in 3,283-row BTCUSDT daily snapshot a
 - Largest drawdown: 95.32% — the same worst-return binding above
 - Source-default condition/SAR binding (`condition_source_mode=0`, `sar_start=0.02`; with the sweep's weekly timeframe override): total return 633.3424, maximum drawdown 49.17%, 39 round trips
 
-The extreme higher/both-mode results are consistent with the explicitly preserved higher-timeframe lookahead and are not performance claims. A later run can also differ because the Yahoo request leg is live rather than part of the immutable CSV snapshot.
+The extreme higher/both-mode results are consistent with start availability for the higher-timeframe interval and are not performance claims. A later run can also differ because the Yahoo request leg is live rather than part of the immutable CSV snapshot.

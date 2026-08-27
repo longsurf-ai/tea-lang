@@ -43,7 +43,8 @@ Presentation lines and tables are omitted.
 ## Measured sweep
 
 ```sh
-tea execute examples/strategy/alice-grid/sweep.yaml
+tea run examples/strategy/alice-grid/strategy.tea \
+  -i examples/data/binance/btcusdt-15m.csv
 ```
 
 The 8-scenario JavaScript sweep processes 160,000 rows from the SHA-pinned

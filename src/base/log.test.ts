@@ -17,7 +17,7 @@ describe('levels and scopes', () => {
   test('events below the configured level are dropped', () => {
     const {sink, events} = captureSink();
     configureLog({level: 'warn', sink});
-    const logger = log.child('provider');
+    const logger = log.child('source');
     logger.debug('quiet');
     logger.info('quiet');
     logger.warn('loud');
@@ -29,16 +29,16 @@ describe('levels and scopes', () => {
     const {sink, events} = captureSink();
     configureLog({
       level: 'error',
-      scopes: {provider: 'warn', 'provider.yahoo': 'debug'},
+      scopes: {source: 'warn', 'source.yahoo': 'debug'},
       sink,
     });
-    log.child('provider').child('yahoo').debug('deep');
-    log.child('provider').child('fred').debug('dropped');
-    log.child('provider').child('fred').warn('kept');
+    log.child('source').child('yahoo').debug('deep');
+    log.child('source').child('fred').debug('dropped');
+    log.child('source').child('fred').warn('kept');
     log.child('runtime').warn('dropped');
     expect(events.map(e => `${e.scope}:${e.level}`)).toEqual([
-      'provider.yahoo:debug',
-      'provider.fred:warn',
+      'source.yahoo:debug',
+      'source.fred:warn',
     ]);
   });
 
@@ -68,12 +68,12 @@ describe('rendering and parsing', () => {
     sink.emit({
       time: 0,
       level: 'warn',
-      scope: 'provider.fred',
+      scope: 'source.fred',
       message: 'context unavailable',
       fields: {symbol: 'FRED:CPIAUCSL', error: 'unknownSource', rows: 60},
     });
     expect(lines).toEqual([
-      '[warn] provider.fred: context unavailable ' +
+      '[warn] source.fred: context unavailable ' +
         '(symbol=FRED:CPIAUCSL error=unknownSource rows=60)',
     ]);
   });

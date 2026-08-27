@@ -94,8 +94,8 @@ export function exprChildren(
     children.push(
       edge.symbol,
       edge.timeframe,
-      edge.merge.gaps,
-      edge.merge.lookahead,
+      edge.merge.availability,
+      edge.merge.fill,
       edge.merge.ignoreInvalidSymbol,
       edge.merge.calcBarsCount,
     );

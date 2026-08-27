@@ -11,7 +11,7 @@ description: "`close` is the closing price supplied for the current row in the a
 
 ## Description
 
-The primary data provider supplies `close` once for every execution row. Inside a requested context, it refers to that requested symbol and timeframe instead.
+The root DataStream supplies `close` once for every execution index. Inside a requested context, it comes from the DataStream bound to that request declaration.
 
 Because `close` is a series value, its value may differ on every row and its earlier values are available through the history operator.
 
@@ -29,9 +29,9 @@ plot(change)
 
 ## Remarks
 
-- `close` can be `na` when the provider has no close value for a row.
+- `close` can be `na` when the application emits a missing numeric value.
 - `close[1]` reads the previous committed row. It returns the float empty value when no such row is available.
-- The meaning of a row—bar, quote, trade, or another event shape—is determined by the provider contract used for that execution.
+- The meaning of an index—bar, quote, trade, or another event shape—is determined by the DataStream the application binds.
 
 ## See also
 

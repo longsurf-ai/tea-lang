@@ -161,47 +161,6 @@ describe('WGSL temporal call-site frames', () => {
     );
   });
 
-  test('uses a balanced address tree for many cache segments', () => {
-    const localCount = 32;
-    const artifact = compile(
-      [
-        'indicator("cache lookup tree")',
-        ...Array.from(
-          {length: localCount},
-          (_, index) => `value${index} = close + ${index}.0`,
-        ),
-        `plot(value${localCount - 1})`,
-      ].join('\n'),
-    );
-    const source = artifact.module.source;
-    const helper = source.slice(
-      source.indexOf('fn tea_state_cache_index'),
-      source.indexOf('fn tea_state_load'),
-    );
-    const addressBranches = [
-      ...helper.matchAll(/^(\s*)if \(tea_local_word < \d+u\) \{/gm),
-    ];
-    const segmentCount = artifact.cache.segments.length;
-
-    expect(helper).toContain(
-      'if (tea_cache_words_per_execution == 0u) { return 0xffffffffu; }',
-    );
-    expect(helper).not.toContain('tea_word >= tea_execution_state_base');
-    expect(addressBranches).toHaveLength(segmentCount - 1);
-    expect(
-      Math.max(...addressBranches.map(match => match[1]?.length ?? 0)) / 2,
-    ).toBeLessThanOrEqual(Math.ceil(Math.log2(segmentCount)));
-
-    for (const segment of artifact.cache.segments) {
-      expect(helper).toContain(
-        `if (tea_cache_words_per_execution >= ${segment.cacheEnd}u)`,
-      );
-      expect(helper).toContain(
-        `return tea_execution_cache_base + ${segment.cacheWordOffset}u + tea_local_word - ${segment.storageWordOffset}u;`,
-      );
-    }
-  });
-
   test('fails closed for wide nested struct state', () => {
     const result = compileProgramToWgsl(
       mustBuild(

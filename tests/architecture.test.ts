@@ -38,8 +38,6 @@ const repositoryTextExtensions = new Set([
   '.ts',
   '.tsx',
   '.txt',
-  '.yaml',
-  '.yml',
 ]);
 
 const ignoredRepositoryDirectories = new Set([

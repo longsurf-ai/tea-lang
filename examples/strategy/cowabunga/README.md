@@ -32,7 +32,8 @@ This is deliberately a runtime/language stress case, not an economically compara
 ## Run
 
 ```sh
-node --import tsx src/main.ts execute examples/strategy/cowabunga/sweep.yaml
+tea run examples/strategy/cowabunga/strategy.tea \
+  -i examples/data/binance/btcusdt-15m.csv
 ```
 
 ## Measured result

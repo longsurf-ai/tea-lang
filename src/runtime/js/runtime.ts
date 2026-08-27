@@ -5,121 +5,20 @@ import {Effect} from 'effect';
 import {fatal} from '../../base/print';
 import type {JSModule} from '../module-abi';
 import type {EffectEmission, DenseEmission} from '../output';
-import {ArenaHeap, isRef, type HeapLimits} from './heap';
+import {ArenaHeap} from './heap';
 import type {ExecutionError} from '../errors';
 import type {Intermediate, State, StepInput} from './state-machine';
 import {stateMachine, type TeaStateMachine} from './state-update';
-import {
-  isArrayValue,
-  isMapValue,
-  isMatrixValue,
-  isResourceHandle,
-  isTupleValue,
-  type EffectValue,
-  type Value,
-} from '../value';
+import type {Value} from '../value';
 import {type LayoutId, ValueLayoutRegistry} from '../value-layout';
-
-export interface JSRuntimeOptions {
-  readonly heapLimits?: Partial<HeapLimits>;
-  readonly maxCollectionElements?: number;
-}
 
 export type {StepInput} from './state-machine';
 
 /** The externally observable product of one completed runtime step. */
 export interface StepResult {
-  readonly output: readonly DenseEmission[];
+  readonly outputs: readonly DenseEmission[];
   readonly effects: readonly EffectEmission[];
   readonly provisional: boolean;
-  toDatum(): Readonly<Record<string, unknown>>;
-}
-
-function datumValue(value: Value | EffectValue): unknown {
-  if (typeof value === 'number') return Number.isNaN(value) ? null : value;
-  if (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'boolean'
-  ) {
-    return value;
-  }
-  if ('kind' in value && value.kind === 'struct') {
-    return Object.freeze({
-      kind: 'struct',
-      fields: Object.freeze(value.fields.map(datumValue)),
-    });
-  }
-  if (isTupleValue(value)) {
-    return Object.freeze(value.map(datumValue));
-  }
-  if (
-    isRef(value) ||
-    isArrayValue(value) ||
-    isMatrixValue(value) ||
-    isMapValue(value)
-  ) {
-    throw new TypeError(
-      'StepResult.toDatum cannot serialize Heap-backed values',
-    );
-  }
-  if (isResourceHandle(value)) return Object.freeze({...value});
-  return fatal('unknown StepResult datum value');
-}
-
-function createStepResult(
-  outputs: readonly DenseEmission[],
-  effects: readonly EffectEmission[],
-  provisional: boolean,
-  declarations: JSModule['manifest']['outputs'],
-): StepResult {
-  let datum: Readonly<Record<string, unknown>> | null = null;
-  return {
-    output: outputs,
-    effects,
-    provisional,
-    toDatum() {
-      if (datum !== null) return datum;
-      const emitted = new Map(outputs.map(output => [output.outputId, output]));
-      const columns: Record<string, unknown> = {};
-      declarations.forEach((declaration, outputId) => {
-        const channels = declaration.channels;
-        if (channels.length === 0) return;
-        const output = emitted.get(outputId);
-        if (output === undefined) {
-          columns[`output_${outputId}`] = null;
-          return;
-        }
-        if (output.channels.length !== channels.length) {
-          return fatal(
-            `output ${outputId} channel count disagrees with manifest`,
-          );
-        }
-        columns[`output_${outputId}`] =
-          channels.length === 1
-            ? datumValue(output.channels[0]!)
-            : Object.freeze(
-                Object.fromEntries(
-                  channels.map((channel, index) => [
-                    channel.name,
-                    datumValue(output.channels[index]!),
-                  ]),
-                ),
-              );
-      });
-      columns.effects = Object.freeze(
-        effects.map(effect =>
-          Object.freeze({
-            effectId: effect.effectId,
-            payload: datumValue(effect.payload),
-          }),
-        ),
-      );
-      columns.provisional = provisional;
-      datum = Object.freeze(columns);
-      return datum;
-    },
-  };
 }
 
 /**
@@ -136,21 +35,13 @@ export class JSRuntime {
   private rootValues: readonly Value[] | null = null;
   private disposed = false;
 
-  constructor(
-    private readonly module: JSModule,
-    options: JSRuntimeOptions = {},
-  ) {
+  constructor(private readonly module: JSModule) {
     if (!module.ready()) {
       fatal('JSRuntime requires a ready JSModule');
     }
     this.layouts = new ValueLayoutRegistry(module.layout);
-    this.heap = new ArenaHeap(options.heapLimits);
-    this.machine = stateMachine(
-      module,
-      this.layouts,
-      this.heap,
-      options.maxCollectionElements,
-    );
+    this.heap = new ArenaHeap();
+    this.machine = stateMachine(module, this.layouts, this.heap);
     this.state = this.machine.initialState;
     this.intermediate = this.machine.initialIntermediate;
   }
@@ -166,12 +57,11 @@ export class JSRuntime {
           if (!input.provisional) {
             this.state = result.state;
           }
-          return createStepResult(
-            result.output,
-            result.effects,
-            input.provisional,
-            this.module.manifest.outputs,
-          );
+          return {
+            outputs: result.output,
+            effects: result.effects,
+            provisional: input.provisional,
+          };
         },
       );
     });

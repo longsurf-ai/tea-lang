@@ -18,13 +18,13 @@ at the next bar's open with the configured adverse slippage and taker fee.
 `tight_stop_mode=1` enables the published tighter-initial-stop idea. The
 shorter lower channel is active until it reaches the actual entry fill price;
 the transition level is then latched and the wider lower channel trails without
-immediately widening the stop. The numeric `0`/`1` spelling is deliberate:
-Tea source supports booleans, but execution-config sweep axes are numeric.
+immediately widening the stop. The numeric `0`/`1` spelling is retained from
+the recorded parameter audit.
 
 The supported parameter domain is
 `tight_stop_length < lower_length <= upper_length`. The source emits
 `valid parameters = 0` and submits no orders for an invalid direct override.
-The checked-in sweep chooses bounds that make all Cartesian combinations valid.
+The recorded audit chose bounds that made all Cartesian combinations valid.
 
 ## Deliberate boundary
 
@@ -65,10 +65,11 @@ default start window excludes bars before 2019-01-01 06:00 UTC.
 From the repository root:
 
 ```sh
-tea execute examples/strategy/donchian-close/sweep.yaml
+tea run examples/strategy/donchian-close/strategy.tea \
+  -i examples/data/binance/btcusdt-1d.csv
 ```
 
-Measured on 2026-08-14 with the checked-in config and current JavaScript
+Measured on 2026-08-14 with the recorded audit inputs and JavaScript
 runtime (`js-f64`): 600 executions processed 1,969,800 rows. Lowering took
 11.18 ms, execution took 549,487.88 ms, reported total time was 549,499.06 ms,
 and end-to-end wall time was 549.64 seconds.

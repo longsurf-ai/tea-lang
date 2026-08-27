@@ -55,7 +55,7 @@ function run(target: JSRuntime, input: StepInput): StepResult {
 }
 
 function channels(result: StepResult): readonly Value[] {
-  return result.output[0]?.channels ?? [];
+  return result.outputs[0]?.channels ?? [];
 }
 
 function counter(ctx: RuntimeContext, frame: Frame): Value {
@@ -344,7 +344,7 @@ describe('JSRuntime core parity', () => {
     const target = runtime(module);
     expect(channels(run(target, input({provisional: true})))).toEqual([1]);
     invoke = false;
-    expect(run(target, input()).output).toEqual([]);
+    expect(run(target, input()).outputs).toEqual([]);
     invoke = true;
     expect(channels(run(target, input()))).toEqual([2]);
     target.dispose();

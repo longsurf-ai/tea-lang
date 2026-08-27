@@ -8,20 +8,17 @@ import {existsSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
-import {paramSpecsOf} from '../src/codegen/params';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
 import {compileToProgram} from '../src/compiler';
-import {executeProgram} from '../src/execution/execute';
-import {loadConfig, resolveExecutionParameters} from '../src/execution';
-import {csvProvider} from '../src/providers/data/csv';
-import {MemorySink} from '../src/providers/sinks/memory-sink';
+import {MemorySink} from '../src/sinks/memory-sink';
 import type {EffectValue} from '../src/runtime/abi';
+import {csvStream, executeTestProgram} from '../src/testing/batch';
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const SOURCE = join(ROOT, 'examples/strategy/ema-cross/strategy.tea');
-const BB_SWEEP = join(
+const BB_SOURCE = join(
   ROOT,
-  'examples/strategy/bb-spy-mean-reversion/sweep.yaml',
+  'examples/strategy/bb-spy-mean-reversion/strategy.tea',
 );
 const DATA = join(ROOT, 'examples/data/binance/btcusdt-1d.csv');
 const DATA_SOURCE = join(ROOT, 'examples/data/binance/btcusdt-1d.source.json');
@@ -65,21 +62,13 @@ describe('canonical EMA crossover example', () => {
     expect(createHash('sha256').update(csv).digest('hex')).toBe(source.sha256);
     validateMarketData(csv, source, 3_283, 86_400_000);
     const sink = new MemorySink();
-    const result = await executeProgram(
-      compileExample(),
-      [
-        {
-          params: {},
-          provider: csvProvider(csv),
-          sink,
-          timeNow: 1_800_000_000_000,
-        },
-      ],
-      {kind: 'cpu'},
-    );
+    const result = await executeTestProgram(compileExample(), {
+      stream: csvStream(csv),
+      sink,
+      timeNow: 1_800_000_000_000,
+    });
 
-    expect(result.numericProfile).toBe('js-f64');
-    expect(result.bindings[0]?.rows).toBe(3_283);
+    expect(result.indices).toBe(3_283);
     expect(sink.publications).toHaveLength(3_283);
     expect(sink.effectEmissions).toHaveLength(416);
 
@@ -136,13 +125,8 @@ describe('canonical EMA crossover example', () => {
 
 describe('canonical component migration regressions', () => {
   test('pins BB SPY binding 0 final metrics and normalized fill tape', async () => {
-    const config = loadConfig(BB_SWEEP);
-    if (config.execution.kind !== 'sweep') {
-      throw new Error('BB SPY migration fixture must remain a sweep');
-    }
-
     const errors = new Errors();
-    const program = compileToProgram([config.program.source], errors);
+    const program = compileToProgram([BB_SOURCE], errors);
     if (program === null) {
       throw new Error(
         errors
@@ -153,32 +137,50 @@ describe('canonical component migration regressions', () => {
     }
     expect(errors.count).toBe(0);
 
-    const params = resolveExecutionParameters(
-      paramSpecsOf(program.params),
-      config.execution,
-    ).sets[0];
-    if (params === undefined) {
-      throw new Error('BB SPY sweep must contain binding 0');
-    }
-    const timeNow = config.execution.timeNow;
-    if (timeNow === undefined) {
-      throw new Error('BB SPY migration fixture must pin execution.timeNow');
-    }
-    const providerHash = config.execution.provider.sha256;
-    if (providerHash === undefined) {
-      throw new Error('BB SPY migration fixture must pin the provider hash');
-    }
-    const csv = readFileSync(config.execution.provider.path, 'utf8');
-    expect(createHash('sha256').update(csv).digest('hex')).toBe(providerHash);
+    const params = {
+      bb_length: 12,
+      bb_multiplier: 1,
+      long_ema_length: 20,
+      short_ema_length: 10,
+      minimum_short_adx: 25,
+      use_adaptive_multiplier: 0,
+      use_adaptive_signals: 0,
+      vov_length: 20,
+      vov_gain: 0.6,
+      vov_scale_min: 0.5,
+      vov_scale_max: 2,
+      regime_mode: 0,
+      rank_length: 200,
+      trend_rank_minimum: 60,
+      slope_length: 10,
+      slope_threshold: 0.1,
+      atr_length: 14,
+      atr_stop_multiple: 1.5,
+      atr_target_multiple: 2.5,
+      break_even_r: 1,
+      use_time_exit: 0,
+      minimum_hold_bars: 30,
+      profit_extension_bars: 15,
+      time_profit_gate_r: 0.25,
+      allocation_percent: 5,
+      initial_cash: 25_000,
+      fee_rate: 0.0003,
+      tick_size: 0.01,
+      slippage_ticks: 3,
+    };
+    const csv = readFileSync(DATA, 'utf8');
+    expect(createHash('sha256').update(csv).digest('hex')).toBe(
+      'fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d',
+    );
 
     const sink = new MemorySink();
-    const result = await executeProgram(
-      program,
-      [{params, provider: csvProvider(csv), sink, timeNow}],
-      {kind: 'cpu'},
-    );
-    expect(result.numericProfile).toBe('js-f64');
-    expect(result.bindings[0]?.rows).toBe(3_283);
+    const result = await executeTestProgram(program, {
+      params,
+      stream: csvStream(csv),
+      sink,
+      timeNow: 1_786_579_200_000,
+    });
+    expect(result.indices).toBe(3_283);
 
     const finalMetrics = Object.fromEntries(
       [
@@ -210,7 +212,10 @@ describe('canonical component migration regressions', () => {
       ),
     );
     const timeByRow = new Map(
-      sink.publications.map(publication => [publication.row, publication.time]),
+      sink.publications.map(publication => [
+        publication.index,
+        publication.time,
+      ]),
     );
     const fills = sink.effectEmissions
       .filter(emission => fillEffectIds.has(emission.effectId))

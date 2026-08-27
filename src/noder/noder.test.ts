@@ -1062,22 +1062,22 @@ describe('requests', () => {
   test('request options remain bind expressions with one explicit schedule', () => {
     const program = mustBuild(
       [
-        'g = input.bool(true)',
+        'fill_policy = input.string("sparse")',
         'bars = input.int(25)',
         'd = request.security(',
         '    "AAPL", "D", close,',
-        '    calc_bars_count=bars, gaps=g)',
+        '    calc_bars_count=bars, fill=fill_policy)',
       ].join('\n'),
     );
     const edge = program.requests[0];
-    expect(edge.optionArgumentEvaluationOrder).toEqual([3, 0, 1, 2]);
-    expect(edge.merge.gaps).toMatchObject({
+    expect(edge.optionArgumentEvaluationOrder).toEqual([3, 1, 0, 2]);
+    expect(edge.merge.fill).toMatchObject({
       kind: IrKind.HistRead,
       place: {kind: PlaceKind.Param},
     });
-    expect(edge.merge.lookahead).toMatchObject({
+    expect(edge.merge.availability).toMatchObject({
       kind: IrKind.Const,
-      value: false,
+      value: 'end',
     });
     expect(edge.merge.ignoreInvalidSymbol).toMatchObject({
       kind: IrKind.Const,

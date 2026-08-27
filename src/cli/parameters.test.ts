@@ -1,11 +1,6 @@
 import {describe, expect, test} from 'vitest';
-import type {ParamSpec} from '../runtime/abi';
-import {
-  CliParameterError,
-  expandParameterSweep,
-  expandSweepParameters,
-  parseRunParameters,
-} from './parameters';
+import type {ParamSpec} from '../runtime/schema';
+import {CliParameterError, parseRunParameters} from './parameters';
 
 function spec(
   name: string,
@@ -77,119 +72,6 @@ describe('dynamic CLI parameters', () => {
     expect(() => parseRunParameters(specs, ['--length', '0'])).toThrow(
       "parameter 'length' below minval 1",
     );
-  });
-});
-
-describe('parameter sweeps', () => {
-  test('reports only syntactic numeric ranges as declaration-ordered ranges', () => {
-    expect(
-      expandParameterSweep(
-        specs,
-        [
-          '--factor',
-          '1:1.5:0.2',
-          '--enabled',
-          'false',
-          '--length',
-          '1:2:1',
-          '--mode',
-          'slow',
-        ],
-        {maxScenarios: 10},
-      ),
-    ).toEqual({
-      ranges: [
-        {name: 'length', values: [1, 2]},
-        {name: 'factor', values: [1, 1.2, 1.4]},
-      ],
-      sets: [
-        {length: 1, factor: 1, enabled: false, mode: 'slow'},
-        {length: 1, factor: 1.2, enabled: false, mode: 'slow'},
-        {length: 1, factor: 1.4, enabled: false, mode: 'slow'},
-        {length: 2, factor: 1, enabled: false, mode: 'slow'},
-        {length: 2, factor: 1.2, enabled: false, mode: 'slow'},
-        {length: 2, factor: 1.4, enabled: false, mode: 'slow'},
-      ],
-    });
-  });
-
-  test('does not report scalar numeric flags as ranges', () => {
-    expect(
-      expandParameterSweep(specs, ['--length', '3', '--factor', '1.5'], {
-        maxScenarios: 1,
-      }),
-    ).toEqual({
-      ranges: [],
-      sets: [{length: 3, factor: 1.5}],
-    });
-  });
-
-  test('keeps a one-value numeric range', () => {
-    expect(
-      expandParameterSweep(specs, ['--length', '3:3:1'], {maxScenarios: 1}),
-    ).toEqual({
-      ranges: [{name: 'length', values: [3]}],
-      sets: [{length: 3}],
-    });
-  });
-
-  test('expands inclusive decimal ranges in declaration order', () => {
-    expect(
-      expandSweepParameters(
-        specs,
-        ['--factor', '1:1.5:0.2', '--length', '1:2:1'],
-        {maxScenarios: 10},
-      ),
-    ).toEqual([
-      {length: 1, factor: 1},
-      {length: 1, factor: 1.2},
-      {length: 1, factor: 1.4},
-      {length: 2, factor: 1},
-      {length: 2, factor: 1.2},
-      {length: 2, factor: 1.4},
-    ]);
-  });
-
-  test('supports descending ranges and scalar ranges', () => {
-    expect(
-      expandSweepParameters(specs, ['--length', '3:1:-1', '--mode', 'slow'], {
-        maxScenarios: 3,
-      }),
-    ).toEqual([
-      {length: 3, mode: 'slow'},
-      {length: 2, mode: 'slow'},
-      {length: 1, mode: 'slow'},
-    ]);
-  });
-
-  test('keeps defaults implicit and enforces the scenario ceiling', () => {
-    expect(expandSweepParameters(specs, [], {maxScenarios: 1})).toEqual([{}]);
-    expect(() =>
-      expandSweepParameters(specs, [], {maxScenarios: 10_001}),
-    ).toThrow('maxExecutions must not exceed 10000');
-    expect(() =>
-      expandSweepParameters(specs, ['--length', '1:3:1'], {
-        maxScenarios: 2,
-      }),
-    ).toThrow('range has 3 values, exceeding the 2 scenario limit');
-    expect(() =>
-      expandSweepParameters(specs, ['--factor', '0:1000000:0.000001'], {
-        maxScenarios: 10,
-      }),
-    ).toThrow('range has 1000000000001 values');
-  });
-
-  test('rejects zero or misdirected range steps', () => {
-    expect(() =>
-      expandSweepParameters(specs, ['--factor', '1:2:0'], {
-        maxScenarios: 10,
-      }),
-    ).toThrow('range step must not be zero');
-    expect(() =>
-      expandSweepParameters(specs, ['--factor', '1:2:-0.1'], {
-        maxScenarios: 10,
-      }),
-    ).toThrow('range step points away from its stop');
   });
 
   test('exposes a typed error for host handling', () => {

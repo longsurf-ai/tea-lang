@@ -11,8 +11,6 @@ const sidebars: SidebarsConfig = {
       items: [
         'getting-started/Write your first indicator',
         'getting-started/backtest-your-strategy',
-        'getting-started/parameter-sweep-with-gpu',
-        'getting-started/instrument-sweep-with-gpu',
         'getting-started/live-scanner',
         'getting-started/live-trading',
       ],

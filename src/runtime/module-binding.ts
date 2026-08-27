@@ -3,20 +3,17 @@
 
 import {Storage} from '../ir/node';
 import {
+  isHistoryOffset,
   RUNTIME_ABI_VERSION,
-  type BuiltinSpec,
   type DepthSpec,
   type JSModule,
   type ModuleBinding,
   type ModuleManifest,
 } from './module-abi';
-import type {BindInputs, BoundInput} from './binding';
+import type {BoundInput} from './binding';
 import {BindError} from './errors';
-import {isHistoryOffset} from './history';
-import {assertMergeAxis} from './merge';
 import type {ExecutionDeclaration} from './output';
 import {resolveParamValues} from './params';
-import type {ProviderContext, SeriesData} from './provider';
 import type {ManifestValue, Value} from './value';
 import {ValueLayoutRegistry} from './value-layout';
 
@@ -90,6 +87,21 @@ export function moduleBindings(module: JSModule): readonly ModuleBinding[] {
       Object.freeze({kind: 'series' as const, name, supplied}),
     ),
   ]);
+}
+
+/** Return one source-series name per manifest sid, preserving duplicates. */
+export function moduleSeriesNames(module: JSModule): readonly string[] {
+  return Object.freeze(
+    module.manifest.series.map((_series, sid) => {
+      const name = seriesBindingName(module.manifest, sid);
+      if (name === null) {
+        throw new ModuleBindingEvaluationError(
+          `series slot ${sid} has no concrete binding name`,
+        );
+      }
+      return name;
+    }),
+  );
 }
 
 /** Missing host bindings in this module context. */
@@ -191,7 +203,6 @@ export function boundInputs(module: JSModule): readonly BoundInput[] {
 
 /** Host output declaration read directly from the concrete manifest. */
 export function moduleDeclaration(module: JSModule): ExecutionDeclaration {
-  requireConcreteModule(module);
   return deepFreeze({
     outputs: module.manifest.outputs.map(output => {
       const {boundArgs, ...spec} = output;
@@ -229,48 +240,20 @@ export function configureChildModule(
   return configure(code, paramValues, false, contextConstants);
 }
 
-/** Resolve provider-aware parameters and project GPU frame capacities. */
+/** Resolve concrete parameters and project GPU frame capacities by extent. */
 export function resolveGeneratedBindingLayout(
   code: JSModule,
-  inputs: BindInputs,
-  context: ProviderContext,
+  paramsInput: Readonly<Record<string, unknown>>,
+  indices: number,
 ): GeneratedBindingLayout {
   requireCurrentAbi(code);
-  bindTimeNow(inputs.timeNow);
-  optionalBindLimit(inputs.maxRequestContexts, 'maxRequestContexts');
-  optionalBindLimit(inputs.maxCollectionElements, 'maxCollectionElements');
-  optionalBindLimit(inputs.maxHeapStorageCells, 'maxHeapStorageCells');
-  optionalBindLimit(inputs.maxHeapLogicalBytes, 'maxHeapLogicalBytes');
-  optionalBindLimit(
-    inputs.maxHeapTransientStorageCells,
-    'maxHeapTransientStorageCells',
-  );
-  optionalBindLimit(
-    inputs.maxHeapTransientLogicalBytes,
-    'maxHeapTransientLogicalBytes',
-  );
-  optionalBindLimit(
-    inputs.maxFixedValueLogicalBytes,
-    'maxFixedValueLogicalBytes',
-  );
-  if (!Number.isSafeInteger(context.rows) || context.rows < 0) {
+  if (!Number.isSafeInteger(indices) || indices < 0) {
     throw new BindError(
-      `provider context row count must be a non-negative safe integer, got ${context.rows}`,
+      `GPU binding indices must be a non-negative safe integer, got ${indices}`,
     );
   }
-  validateContextIdentity(context);
-  const params = resolveParamValues(code.manifest.params, inputs.params);
-  const layouts = new ValueLayoutRegistry(code.layout);
-  const contextConstants = validateProviderBuiltins(code, context, layouts);
-  const series = providerSeries(code, params, context);
-  const configured = configureModule(code, params, contextConstants);
-  series.forEach((data, sid) => {
-    if (data.length !== context.rows) {
-      throw new BindError(
-        `series ${sid} has ${data.length} rows, context has ${context.rows}`,
-      );
-    }
-  });
+  const params = resolveParamValues(code.manifest.params, paramsInput);
+  const configured = configureModule(code, params);
   return Object.freeze({
     frameHistoryCapacities: Object.freeze(
       configured.manifest.frames.map((frame, fid) =>
@@ -278,7 +261,7 @@ export function resolveGeneratedBindingLayout(
           frame.locals.map((local, slot) => {
             let capacity = Math.min(
               depthBars(local.depth, `frame ${fid} slot ${slot}`),
-              context.rows,
+              indices,
             );
             if (
               local.storage === Storage.Var ||
@@ -608,8 +591,8 @@ function validateRequestContext(
     context == null ||
     typeof context.symbol !== 'string' ||
     typeof context.timeframe !== 'string' ||
-    typeof context.gaps !== 'boolean' ||
-    typeof context.lookahead !== 'boolean' ||
+    (context.availability !== 'start' && context.availability !== 'end') ||
+    (context.fill !== 'carry' && context.fill !== 'sparse') ||
     typeof context.ignoreInvalidSymbol !== 'boolean' ||
     !Number.isSafeInteger(context.calcBarsCount) ||
     context.calcBarsCount < 0
@@ -650,135 +633,6 @@ function isManifestValue(value: Value | undefined): value is ManifestValue {
     typeof value === 'string' ||
     typeof value === 'boolean'
   );
-}
-
-function optionalBindLimit(
-  value: number | undefined,
-  name: string,
-): number | undefined {
-  if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
-    throw new BindError(`${name} must be a non-negative safe integer`);
-  }
-  return value;
-}
-
-function bindTimeNow(value: number): number {
-  if (!Number.isSafeInteger(value)) {
-    throw new BindError('timeNow must be a finite safe epoch-ms integer');
-  }
-  return value;
-}
-
-function validateContextIdentity(context: ProviderContext): void {
-  const symbol = context.builtinValue({domain: 'syminfo', field: 'tickerid'});
-  const timeframe = context.builtinValue({
-    domain: 'timeframe',
-    field: 'period',
-  });
-  if (symbol !== undefined && symbol !== null && typeof symbol !== 'string') {
-    throw new BindError(
-      "provider builtin 'syminfo.tickerid' must be a string or typed empty",
-    );
-  }
-  if (
-    timeframe !== undefined &&
-    timeframe !== null &&
-    typeof timeframe !== 'string'
-  ) {
-    throw new BindError(
-      "provider builtin 'timeframe.period' must be a string or typed empty",
-    );
-  }
-}
-
-function providerSeries(
-  code: JSModule,
-  params: readonly Value[],
-  context: ProviderContext,
-): readonly SeriesData[] {
-  return code.manifest.series.map((spec, sid) => {
-    let id = spec.id;
-    if (id === null) {
-      const pid = code.manifest.params.findIndex(
-        param => param.seriesSid === sid,
-      );
-      const parameter = code.manifest.params[pid];
-      if (parameter === undefined) {
-        throw new ModuleBindingEvaluationError(
-          `series slot ${sid} has neither host id nor parameter`,
-        );
-      }
-      const value = params[pid];
-      if (typeof value !== 'string') {
-        throw new BindError(
-          `series parameter '${parameter.name}' is not a string`,
-        );
-      }
-      id = value;
-    }
-    const data = context.series(id);
-    if (data === null) {
-      throw new BindError(`series '${id}' is not provided by this context`);
-    }
-    return data;
-  });
-}
-
-function validateProviderBuiltins(
-  code: JSModule,
-  context: ProviderContext,
-  layouts: ValueLayoutRegistry,
-): ReadonlyMap<number, Value> {
-  let axisValidated = false;
-  const values = new Map<number, Value>();
-  code.manifest.builtin.forEach((spec, bid) => {
-    layouts.layout(spec.layout);
-    const source = spec.source;
-    if (source.domain === 'syminfo' || source.domain === 'timeframe') {
-      const value = context.builtinValue(source);
-      if (value === undefined) {
-        throw new BindError(
-          `builtin '${builtinSourceName(spec)}' is not provided by this context`,
-        );
-      }
-      layouts.assertValue(
-        spec.layout,
-        value,
-        `provider builtin '${builtinSourceName(spec)}'`,
-      );
-      values.set(bid, value);
-      return;
-    }
-    if (
-      source.domain === 'time' &&
-      (source.field === 'time' || source.field === 'time_close')
-    ) {
-      const axis = context.axis;
-      if (axis === null) {
-        throw new BindError(
-          `builtin '${source.field}' requires a time axis in this context`,
-        );
-      }
-      if (!axisValidated) {
-        assertMergeAxis(axis, context.rows, 'runtime context');
-        axisValidated = true;
-      }
-    }
-  });
-  return values;
-}
-
-function builtinSourceName(spec: BuiltinSpec): string {
-  const source = spec.source;
-  switch (source.domain) {
-    case 'time':
-    case 'bar':
-      return source.field;
-    case 'barstate':
-    case 'syminfo':
-    case 'timeframe':
-      return `${source.domain}.${source.field}`;
-  }
 }
 
 function deepFreeze<T>(value: T): T {

@@ -27,7 +27,6 @@
       "default": "./dist/loader/index.js"
     },
     "./codegen/wgsl": "./src/codegen/wgsl/index.ts",
-    "./execution": "./src/execution/index.ts",
     "./reporting": "./src/reporting/index.ts",
     "./runtime/gpu": "./src/runtime/gpu/index.ts",
     "./*": "./src/*.ts"
@@ -48,7 +47,7 @@
     "prepack": "npm run docs:build",
     "prepare": "npm run build:package",
     "reference-docs": "node --import tsx scripts/reference-docs/workflow.ts",
-    "test:gpu": "node --import tsx --test --test-concurrency=1 src/runtime/gpu/dawn.integration.ts tests/examples.gpu.integration.ts",
+    "test:gpu": "node --import tsx --test src/runtime/gpu/dawn.integration.ts && node --import tsx --test tests/examples.gpu.integration.ts",
     "test:package": "npm run build:package && node examples/api/simple-sync.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --no-file-parallelism"
@@ -61,7 +60,6 @@
     "open": "10.0.0",
     "rxjs": "^7.8.2",
     "tsx": "4.23.10",
-    "yaml": "2.9.0",
     "zod": "4.3.6"
   },
   "optionalDependencies": {

@@ -1,1099 +1,156 @@
-// Purpose: Real Dawn multi-execution, multi-chunk CPU/GPU differential for generic Tea Programs.
+// Purpose: Real Dawn parity for concrete GPU bindings and complete Datums.
 
 /// <reference types="@webgpu/types" />
 
 import assert from 'node:assert/strict';
-import {join} from 'node:path';
-import test from 'node:test';
+import test, {after} from 'node:test';
 import {create, globals} from 'webgpu';
-import {Errors} from '../../base/print';
 import {generate} from '../../codegen/codegen';
 import {compileProgramToWgsl} from '../../codegen/wgsl';
 import type {CompiledWgslProgram} from '../../gpu/contract';
-import {compileToProgram} from '../../compiler';
 import type {Program} from '../../ir/program';
-import {TypeKind} from '../../ir/type';
 import {mustBuild} from '../../noder/testing';
-import {MemorySink} from '../../providers/sinks/memory-sink';
-import type {
-  BindInputs,
-  DataProvider,
-  EffectValue,
-  OutputSink,
-  ProviderContext,
-  RowPublication,
-  SeriesData,
-  TimeAxis,
-  Value,
-} from '../abi';
-import {isEffectStructValue, isStructRef} from '../abi';
-import {executeFixedHistory} from '../js/fixed-history';
+import {MemorySink} from '../../sinks/memory-sink';
+import {arrayStream, executeTestModule} from '../../testing/batch';
 import {loadModule} from '../load';
-import {createGpuExecution} from './session';
+import {
+  createGpuExecution,
+  type GpuBinding,
+  type GpuRunSummary,
+} from './session';
 
-class FinalDenseSink implements OutputSink {
-  readonly capabilities = {denseRows: 'final'} as const;
-  readonly publications: RowPublication[] = [];
+let sharedDevice: Promise<GPUDevice> | null = null;
 
-  declare(): void {}
+after(async () => {
+  if (sharedDevice !== null) (await sharedDevice).destroy();
+});
 
-  publish(publication: RowPublication): void {
-    this.publications.push({
-      ...publication,
-      outputs: publication.outputs.map(output => ({
-        ...output,
-        channels: [...output.channels],
-      })),
-      effects: publication.effects.map(effect => ({...effect})),
+test('reference-struct strategies fail closed before Dawn execution', () => {
+  const result = compileProgramToWgsl(
+    mustBuild(
+      [
+        'strategy("GPU struct boundary")',
+        'import broker',
+        'import portfolio',
+        'import trade',
+        'var state = trade.nextOpen(broker.new(), portfolio.new())',
+        'state.begin_bar(close, bar_index)',
+      ].join('\n'),
+    ),
+  );
+  assert.equal(result.status, 'staged-unsupported');
+});
+
+test('Dawn consumes concrete bindings and preserves outputs and time', async () => {
+  const program = mustBuild('plot(close)');
+  const bindings = [
+    binding({close: [10, 20, 30, 40]}, {}, [100, 200, 300, 400]),
+  ];
+
+  const {summary, gpuSinks} = await assertParity(program, bindings);
+  assert.deepEqual(
+    gpuSinks[0]!.publications.map(datum => datum.time),
+    [100, 200, 300, 400],
+  );
+  assert.equal(gpuSinks[0]!.effectEmissions.length, 0);
+  assert.equal(summary.chunks, 1);
+  assert.equal(summary.dispatches, 1);
+});
+
+async function assertParity(
+  program: Program,
+  bindings: readonly GpuBinding[],
+): Promise<{
+  readonly summary: GpuRunSummary;
+  readonly cpuSinks: readonly MemorySink[];
+  readonly gpuSinks: readonly MemorySink[];
+}> {
+  const artifact = compiledArtifact(program);
+  const module = loadModule(generate(program));
+  const cpuSinks = bindings.map(() => new MemorySink());
+  for (const [index, input] of bindings.entries()) {
+    await executeTestModule(module, {
+      params: input.params,
+      stream: arrayStream(
+        input.series,
+        input.time?.map(value => {
+          if (value === null) throw new Error('CPU parity time is null');
+          return value;
+        }),
+      ),
+      sink: cpuSinks[index]!,
+      timeNow: 0,
     });
   }
-}
 
-class FinalDenseWithoutEffectsSink extends FinalDenseSink {
-  override readonly capabilities = {
-    denseRows: 'final',
-    effects: 'none',
-  } as const;
-}
-
-test('strategy-component structs fail closed before Dawn execution', () => {
-  assertStructReferenceUnsupported(
-    fixtureProgram(
-      join(
-        process.cwd(),
-        'tests/fixtures/execution/compile/strategy-components/source.tea',
-      ),
-    ),
-  );
-});
-
-test('canonical explicit-quantity structs fail closed before Dawn', async () => {
-  const program = mustBuild(
-    [
-      'strategy("canonical component policies")',
-      'import broker',
-      'import portfolio',
-      'import trade',
-      'var strat = trade.nextOpen(',
-      '    broker = broker.new(',
-      '        commission = broker.commissionCashPerContract(0.25),',
-      '        slippage = broker.slippageTicks(1.0, 0.5),',
-      '        processOrdersOnClose = true',
-      '    ),',
-      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 2, marginLong = 0.0, marginShort = 0.0)',
-      ')',
-      'strat.begin_bar(open, bar_index)',
-      'if bar_index == 0',
-      '    strat.entry("Long", trade.Direction.long, qty = 2.0)',
-      'if bar_index == 1',
-      '    strat.entry("Long", trade.Direction.long, qty = 3.0)',
-      'if bar_index == 2',
-      '    strat.close("All")',
-      'strat.end_bar(close, barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.position_avg_price())',
-      'plot(strat.snapshot().equity)',
-      'plot(strat.snapshot().realizedPnl)',
-    ].join('\n'),
-  );
-  const result = compileProgramToWgsl(program);
-  assertStructReferenceUnsupported(program);
-  if (result.status !== 'compiled') return;
-
-  const source = provider({open: [10, 20, 30], close: [10, 20, 30]});
-  const cpuSink = new MemorySink();
-  await executeFixedHistory(loadModule(generate(program)), [
-    binding(source, cpuSink),
-  ]);
-
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const gpuSink = new MemorySink();
-  const execution = await createGpuExecution(
-    device,
-    result.artifact,
-    [binding(source, gpuSink)],
-    {maxRowsPerChunk: 1},
-  );
-  try {
-    await execution.runAll();
-    assertSinkParity(cpuSink, gpuSink, result.artifact);
-  } finally {
-    execution.dispose();
-    device.destroy();
-  }
-});
-
-test('canonical percent-equity structs fail closed before Dawn', async () => {
-  const program = mustBuild(
-    [
-      'strategy("canonical scalar attached stop")',
-      'import broker',
-      'import portfolio',
-      'import trade',
-      'var strat = trade.ohlc(',
-      '    broker = broker.new(',
-      '        commission = broker.commissionPercent(0.1),',
-      '        slippage = broker.slippageTicks(1.0, 1.0),',
-      '        processOrdersOnClose = false',
-      '    ),',
-      '    portfolio = portfolio.new(initialCash = 1000.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
-      ')',
-      'strat.begin_bar(open, high, low, bar_index)',
-      'if bar_index == 0',
-      '    strat.entry("Long A", trade.Direction.long, sizing = trade.percentOfEquity(10.0))',
-      '    strat.exit("Stop A", fromEntry = "Long A", stop = 9.0, activateOnEntryBar = true)',
-      'if bar_index == 2',
-      '    strat.entry("Long B", trade.Direction.long, sizing = trade.percentOfEquity(10.0))',
-      '    strat.exit("Stop B", fromEntry = "Long B", stop = 9.0, activateOnEntryBar = true)',
-      'strat.end_bar(close, barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().equity)',
-      'plot(strat.snapshot().realizedPnl)',
-      'plot(strat.snapshot().totalFees)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().roundTripCount)',
-    ].join('\n'),
-  );
-  const result = compileProgramToWgsl(program);
-  assertStructReferenceUnsupported(program);
-  if (result.status !== 'compiled') return;
-
-  const source = provider({
-    open: [10, 10, 7, 10],
-    high: [10, 12, 8, 12],
-    low: [10, 10, 6, 8],
-    close: [10, 11, 7, 9],
-  });
-  const cpuSink = new MemorySink();
-  await executeFixedHistory(loadModule(generate(program)), [
-    binding(source, cpuSink),
-  ]);
-
-  const cpuEffectTimeline = cpuSink.publications.flatMap(publication =>
-    publication.effects.map(effect => {
-      const type = program.effects[effect.effectId]?.payloadType;
-      assert.equal(type?.kind, TypeKind.Struct);
-      if (type?.kind !== TypeKind.Struct) {
-        throw new Error(`effect ${effect.effectId} has no nominal payload`);
-      }
-      return [publication.row, type.name] as const;
-    }),
-  );
-  assert.deepEqual(cpuEffectTimeline, [
-    [0, 'OrderSubmitted'],
-    [0, 'OrderSubmitted'],
-    [1, 'FillExecuted'],
-    [2, 'FillExecuted'],
-    [2, 'OrderSubmitted'],
-    [2, 'OrderSubmitted'],
-    [3, 'FillExecuted'],
-    [3, 'FillExecuted'],
-  ]);
-
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const gpuSink = new MemorySink();
-  const execution = await createGpuExecution(
-    device,
-    result.artifact,
-    [binding(source, gpuSink)],
-    {maxRowsPerChunk: 1},
-  );
+  const gpuSinks = bindings.map(() => new MemorySink());
+  const concrete = bindings.map((input, index) => ({
+    ...input,
+    sink: gpuSinks[index]!,
+  }));
+  const gpu = await dawn();
+  const execution = await createGpuExecution(gpu.device, artifact, concrete);
   try {
     const summary = await execution.runAll();
-    assert.equal(summary.chunks, 4);
-    assert.equal(summary.dispatches, 4);
-    assertSinkParity(cpuSink, gpuSink, result.artifact);
-  } finally {
-    execution.dispose();
-    device.destroy();
-  }
-});
-
-test('resting cash-budget structs fail closed before Dawn', async () => {
-  const program = mustBuild(
-    [
-      'strategy("canonical resting bracket")',
-      'import broker',
-      'import portfolio',
-      'import trade',
-      'var strat = trade.ohlc(',
-      '    broker = broker.new(',
-      '        commission = broker.commissionPercent(0.1),',
-      '        slippage = broker.slippageTicks(1.0, 1.0),',
-      '        processOrdersOnClose = false',
-      '    ),',
-      '    portfolio = portfolio.new(initialCash = 1000.0, pyramiding = 1, marginLong = 100.0, marginShort = 100.0)',
-      ')',
-      'strat.begin_bar(open, high, low, bar_index)',
-      'if bar_index == 0',
-      '    strat.entry("Long", trade.Direction.long, sizing = trade.percentOfEquity(10.0, commissionIncluded = true), stop = 11.0)',
-      '    strat.exit("Bracket", fromEntry = "Long", stop = 8.0, target = 14.0)',
-      'strat.end_bar(close, barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().equity)',
-      'plot(strat.snapshot().totalFees)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().roundTripCount)',
-    ].join('\n'),
-  );
-  const result = compileProgramToWgsl(program);
-  assertStructReferenceUnsupported(program);
-  if (result.status !== 'compiled') return;
-
-  const source = provider({
-    open: [10, 10, 12],
-    high: [10, 12, 15],
-    low: [10, 9, 7],
-    close: [10, 11, 13],
-  });
-  const cpuSink = new MemorySink();
-  await executeFixedHistory(loadModule(generate(program)), [
-    binding(source, cpuSink),
-  ]);
-
-  const effectField = (
-    emissionIndex: number,
-    ...path: readonly string[]
-  ): EffectValue => {
-    const emission = cpuSink.effectEmissions[emissionIndex];
-    let type =
-      emission === undefined
-        ? undefined
-        : program.effects[emission.effectId]?.payloadType;
-    let value = emission?.payload;
-    for (const name of path) {
-      assert.equal(type?.kind, TypeKind.Struct);
-      assert.ok(value !== undefined && isEffectStructValue(value));
-      if (type?.kind !== TypeKind.Struct || !isEffectStructValue(value)) {
-        throw new Error(`effect ${emissionIndex} cannot select '${name}'`);
-      }
-      const fieldIndex = type.fields.findIndex(field => field.name === name);
-      assert.notEqual(fieldIndex, -1);
-      type = type.fields[fieldIndex]?.type;
-      value = value.fields[fieldIndex];
-    }
-    assert.notEqual(value, undefined);
-    return value!;
-  };
-  assert.deepEqual(
-    cpuSink.effectEmissions.map((emission, index) => {
-      const type = program.effects[emission.effectId]?.payloadType;
-      assert.equal(type?.kind, TypeKind.Struct);
-      if (type?.kind !== TypeKind.Struct) {
-        throw new Error(`effect ${emission.effectId} has no nominal payload`);
-      }
-      const payload = type.name === 'OrderSubmitted' ? 'order' : 'fill';
-      return [
-        emission.row,
-        type.name,
-        effectField(index, payload, 'commandId'),
-        effectField(index, payload, 'orderType'),
-      ];
-    }),
-    [
-      [0, 'OrderSubmitted', 'Long', 'stop'],
-      [0, 'OrderSubmitted', 'Bracket', 'bracket'],
-      [1, 'FillExecuted', 'Long', 'stop'],
-      [2, 'FillExecuted', 'Bracket', 'target'],
-    ],
-  );
-  assert.equal(effectField(0, 'order', 'cashBudget'), 100);
-  assert.equal(effectField(2, 'fill', 'referencePrice'), 11);
-  assert.equal(effectField(2, 'fill', 'price'), 12);
-  assert.equal(effectField(3, 'fill', 'referencePrice'), 14);
-  assert.equal(effectField(3, 'fill', 'price'), 13);
-  assert.deepEqual(
-    cpuSink.emissions
-      .filter(emission => emission.outputId === 5)
-      .map(emission => emission.channels[0]),
-    [0, 1, 2],
-  );
-  assert.deepEqual(
-    cpuSink.emissions
-      .filter(emission => emission.outputId === 6)
-      .map(emission => emission.channels[0]),
-    [0, 0, 1],
-  );
-
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const gpuSink = new MemorySink();
-  const execution = await createGpuExecution(
-    device,
-    result.artifact,
-    [binding(source, gpuSink)],
-    {maxRowsPerChunk: 1},
-  );
-  try {
-    const summary = await execution.runAll();
-    assert.equal(summary.chunks, 3);
-    assert.equal(summary.dispatches, 3);
-    assertSinkParity(cpuSink, gpuSink, result.artifact);
-  } finally {
-    execution.dispose();
-    device.destroy();
-  }
-});
-
-test('target-rebalance structs fail closed before Dawn', async () => {
-  const program = mustBuild(
-    [
-      'strategy("canonical signed scalar lifecycle")',
-      'import broker',
-      'import portfolio',
-      'import trade',
-      'var strat = trade.ohlc(',
-      '    broker = broker.new(',
-      '        commission = broker.commissionPercent(1.0),',
-      '        processOrdersOnClose = true',
-      '    ),',
-      '    portfolio = portfolio.new(initialCash = 100.0, pyramiding = 1, marginLong = 0.0, marginShort = 0.0)',
-      ')',
-      'strat.begin_bar(open, high, low, bar_index)',
-      'if bar_index == 0',
-      '    strat.rebalance("Allocation", trade.targetPercentOfEquity(50.0))',
-      'if bar_index == 1',
-      '    strat.entry("Short", trade.Direction.short, sizing = trade.percentOfEquityAtFill(100.0, commissionIncluded = true))',
-      '    strat.exit("Short bracket", fromEntry = "Short", stop = 30.0, target = 10.0)',
-      'strat.process_close(close)',
-      'strat.mark(close)',
-      'strat.finish(barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().realizedPnl)',
-      'plot(strat.snapshot().totalFees)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().roundTripCount)',
-      'plot(strat.snapshot().winRate)',
-      'plot(strat.snapshot().profitFactor)',
-    ].join('\n'),
-  );
-  const result = compileProgramToWgsl(program);
-  assertStructReferenceUnsupported(program);
-  if (result.status !== 'compiled') return;
-
-  const source = provider({
-    open: [10, 20, 15],
-    high: [10, 20, 16],
-    low: [10, 20, 9],
-    close: [10, 20, 12],
-  });
-  const cpuSink = new MemorySink();
-  await executeFixedHistory(loadModule(generate(program)), [
-    binding(source, cpuSink),
-  ]);
-
-  assert.deepEqual(
-    cpuSink.effectEmissions.map(emission => {
-      const type = program.effects[emission.effectId]?.payloadType;
-      assert.equal(type?.kind, TypeKind.Struct);
-      return [emission.row, type?.kind === TypeKind.Struct ? type.name : ''];
-    }),
-    [
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'FillExecuted'],
-      [2, 'FillExecuted'],
-    ],
-  );
-  assert.deepEqual(
-    cpuSink.emissions
-      .filter(emission => emission.outputId === 5)
-      .map(emission => emission.channels[0]),
-    [1, 3, 4],
-  );
-  assert.deepEqual(
-    cpuSink.emissions
-      .filter(emission => emission.outputId === 6)
-      .map(emission => emission.channels[0]),
-    [0, 1, 2],
-  );
-
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const gpuSink = new MemorySink();
-  const execution = await createGpuExecution(
-    device,
-    result.artifact,
-    [binding(source, gpuSink)],
-    {maxRowsPerChunk: 1},
-  );
-  try {
-    const summary = await execution.runAll();
-    assert.equal(summary.chunks, 3);
-    assert.equal(summary.dispatches, 3);
-    assertSinkParity(cpuSink, gpuSink, result.artifact);
-  } finally {
-    execution.dispose();
-    device.destroy();
-  }
-});
-
-test('Dawn validates a complete chunk before publishing its first dense row', async () => {
-  const program = mustBuild('indicator("late invalid result")\nplot(close)');
-  const result = compileProgramToWgsl(program);
-  assert.equal(result.status, 'compiled');
-  if (result.status !== 'compiled') return;
-  const corruptedSource = result.artifact.module.source.replace(
-    /(tea_results\[(t\d+)\] = TeaResultCell\([^\n]+\);)/,
-    '$1\n      if (tea_row == 1u) { tea_results[$2] = TeaResultCell(0u, 2u); }',
-  );
-  assert.notEqual(corruptedSource, result.artifact.module.source);
-  const corruptedArtifact: CompiledWgslProgram = {
-    ...result.artifact,
-    module: {...result.artifact.module, source: corruptedSource},
-  };
-
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const sink = new MemorySink();
-  const execution = await createGpuExecution(
-    device,
-    corruptedArtifact,
-    [binding(provider({close: [10, 11]}), sink)],
-    {maxRowsPerChunk: 2},
-  );
-  try {
-    await assert.rejects(execution.runChunk(), /invalid validity 2/);
-    assert.equal(sink.publications.length, 0);
-  } finally {
-    execution.dispose();
-    device.destroy();
-  }
-});
-
-test('Dawn validates every chunk timestamp before publishing its first row', async () => {
-  const program = mustBuild('indicator("timestamp transaction")\nplot(close)');
-  const result = compileProgramToWgsl(program);
-  assert.equal(result.status, 'compiled');
-  if (result.status !== 'compiled') return;
-
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  try {
-    const cases: readonly {axis: TimeAxis; error: RegExp}[] = [
-      {
-        axis: {
-          time(row) {
-            if (row === 1) throw new Error('timestamp projection failed');
-            return 1_000 + row;
-          },
-          closeTime: row => 1_001 + row,
-        },
-        error: /timestamp projection failed/,
-      },
-      {
-        axis: {
-          time: row => (row === 1 ? NaN : 1_000 + row),
-          closeTime: row => 1_001 + row,
-        },
-        error: /timestamp at row 1 is not a safe integer/,
-      },
-    ];
-    for (const item of cases) {
-      const sink = new MemorySink();
-      const execution = await createGpuExecution(
-        device,
-        result.artifact,
-        [binding(provider({close: [10, 11]}, item.axis), sink)],
-        {maxRowsPerChunk: 2},
-      );
-      try {
-        await assert.rejects(execution.runChunk(), item.error);
-        assert.equal(sink.publications.length, 0);
-      } finally {
-        execution.dispose();
-      }
-    }
-  } finally {
-    device.destroy();
-  }
-});
-
-test('parameter-sweep struct effects fail closed before Dawn', async () => {
-  const program = mustBuild(
-    [
-      'strategy("parameter sweep")',
-      'enum Mode',
-      '    fast = "Fast"',
-      '    slow = "Slow"',
-      'type SweepEvent',
-      '    float value',
-      'length = input.int(2, minval=1, maxval=5)',
-      'scale = input.float(1.5)',
-      'enabled = input.bool(true)',
-      'mode = input.enum(Mode.fast)',
-      'var float seed = length + scale',
-      'effect.emit(SweepEvent.new(close * scale))',
-      'plot(enabled and mode == Mode.fast ? close * length + seed : 0)',
-    ].join('\n'),
-  );
-  const result = compileProgramToWgsl(program);
-  assertStructReferenceUnsupported(program);
-  if (result.status !== 'compiled') return;
-
-  const values = [
-    {},
-    {length: 4, scale: 2.25, enabled: false, mode: 'slow'},
-  ] as const;
-  const cpuSinks = [new MemorySink(), new MemorySink()];
-  await executeFixedHistory(
-    loadModule(generate(program)),
-    values.map((params, index) => ({
-      ...binding(provider({close: [10, 20]}), cpuSinks[index]),
-      params,
-    })),
-  );
-
-  let resolutions = 0;
-  const sharedProvider: DataProvider = {
-    async resolveContext() {
-      resolutions += 1;
-      return providerContext({close: [10, 20]});
-    },
-  };
-  const gpuSinks = [new MemorySink(), new MemorySink()];
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const execution = await createGpuExecution(
-    device,
-    result.artifact,
-    values.map((params, index) => ({
-      ...binding(sharedProvider, gpuSinks[index]),
-      params,
-    })),
-  );
-  try {
-    const summary = await execution.runAll();
-    assert.equal(resolutions, 1);
-    assert.equal(summary.chunks, 1);
-    assert.equal(summary.dispatches, 1);
-    assert.deepEqual(
-      summary.bindings.map(item => item.inputs.map(input => input.value)),
-      [
-        [2, 1.5, true, 'fast'],
-        [4, 2.25, false, 'slow'],
-      ],
-    );
     cpuSinks.forEach((expected, index) =>
-      assertSinkParity(expected, gpuSinks[index], result.artifact),
+      assert.deepEqual(normalize(gpuSinks[index]!), normalize(expected)),
     );
+    return {summary, cpuSinks, gpuSinks};
   } finally {
     execution.dispose();
-    device.destroy();
   }
-});
-
-test('Dawn matches CPU for unrestricted numeric ranges and core math', async () => {
-  const program = mustBuild(
-    [
-      'indicator("range and math parity")',
-      'limit = input.int(511)',
-      'zero = input.int(0)',
-      'sum = 0',
-      'for i = 0 to limit',
-      '    sum += i',
-      'selected = for i = 0 to 10',
-      '    if i == 2',
-      '        continue',
-      '    if i == 5',
-      '        break',
-      '    i',
-      'descending = for i = 5 to 1 by -2',
-      '    i',
-      'mutatedCount = 0',
-      'for i = 0 to 10',
-      '    mutatedCount += 1',
-      '    if i == 1',
-      '        i := 8',
-      'empty = for i = 1 to 3 by zero',
-      '    i',
-      'float missing = na',
-      'plot(sum)',
-      'plot(selected)',
-      'plot(descending)',
-      'plot(mutatedCount)',
-      'plot(empty)',
-      'plot(math.abs(close))',
-      'plot(math.abs(bar_index - 2))',
-      'plot(math.max(bar_index, close, 2))',
-      'plot(math.min(close, bar_index, 2))',
-      'plot(math.floor(close))',
-      'plot(math.max(missing, close))',
-      'plot(math.min(close, missing))',
-    ].join('\n'),
-  );
-  const result = compileProgramToWgsl(program);
-  assert.equal(result.status, 'compiled');
-  if (result.status !== 'compiled') return;
-
-  const source = provider({close: [-1.25, 3.75, -4]});
-  const cpuSink = new MemorySink();
-  await executeFixedHistory(loadModule(generate(program)), [
-    binding(source, cpuSink),
-  ]);
-  assert.deepEqual(
-    cpuSink.emissions
-      .filter(emission => emission.outputId === 1)
-      .map(emission => emission.channels[0]),
-    [130816, 130816, 130816],
-  );
-
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const gpuSink = new MemorySink();
-  const execution = await createGpuExecution(
-    device,
-    result.artifact,
-    [binding(source, gpuSink)],
-    {maxRowsPerChunk: 1, maxCacheBytesPerWorkgroup: 0},
-  );
-  try {
-    await execution.runAll();
-    assertSinkParity(cpuSink, gpuSink, result.artifact);
-  } finally {
-    execution.dispose();
-    device.destroy();
-  }
-});
-
-test('transient struct fixture fails closed before Dawn execution', () => {
-  assertStructReferenceUnsupported(
-    fixtureProgram(
-      join(process.cwd(), 'tests/fixtures/gpu/transient/source.tea'),
-    ),
-  );
-});
-
-test('mutable struct-path fixture fails closed before Dawn execution', () => {
-  assertStructReferenceUnsupported(
-    fixtureProgram(
-      join(process.cwd(), 'tests/fixtures/gpu/path-rebase/source.tea'),
-    ),
-  );
-});
-
-test('Dawn preserves temporal frames and history across one-row chunks', async () => {
-  const program = mustBuild(
-    [
-      'indicator("EMA frame resume")',
-      'fastLength = input.int(3)',
-      'slowLength = input.int(5)',
-      'fast = ta.ema(close, fastLength)',
-      'slow = ta.ema(close, slowLength)',
-      'longSignal = ta.crossover(fast, slow)',
-      'closeSignal = ta.crossunder(fast, slow)',
-      'plot(fast)',
-      'plot(slow)',
-      'plotshape(longSignal)',
-      'plotshape(closeSignal)',
-    ].join('\n'),
-  );
-  const result = compileProgramToWgsl(program);
-  assert.equal(result.status, 'compiled');
-  if (result.status !== 'compiled') return;
-
-  const datasets = [
-    {close: [5, 4, 3, 4, 6, 5, 2]},
-    {close: [10, 9, 8, 10, 12]},
-  ] as const;
-  const params = [
-    {fastLength: 2, slowLength: 4},
-    {fastLength: 3, slowLength: 5},
-  ] as const;
-  const cpuSinks = datasets.map(() => new MemorySink());
-  await executeFixedHistory(
-    loadModule(generate(program)),
-    datasets.map((columns, index) => ({
-      ...binding(provider(columns), cpuSinks[index]),
-      params: params[index],
-    })),
-  );
-
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const gpuSinks = datasets.map(() => new MemorySink());
-  const execution = await createGpuExecution(
-    device,
-    result.artifact,
-    datasets.map((columns, index) => ({
-      ...binding(provider(columns), gpuSinks[index]),
-      params: params[index],
-    })),
-    {maxRowsPerChunk: 1},
-  );
-  try {
-    const summary = await execution.runAll();
-    assert.equal(summary.chunks, 7);
-    assert.equal(summary.dispatches, 7);
-    cpuSinks.forEach((expected, index) =>
-      assertSinkParity(expected, gpuSinks[index], result.artifact),
-    );
-  } finally {
-    execution.dispose();
-    device.destroy();
-  }
-});
-
-test('Dawn advances skipped active parameter history at row cadence', async () => {
-  const program = mustBuild(
-    [
-      'indicator("skipped frame")',
-      'previous(float source) => source[1]',
-      'float value = na',
-      'if bar_index >= 2 and bar_index != 3',
-      '    value := previous(close)',
-      'plot(value)',
-    ].join('\n'),
-  );
-  const result = compileProgramToWgsl(program);
-  assert.equal(result.status, 'compiled');
-  if (result.status !== 'compiled') return;
-
-  const cpuSink = new MemorySink();
-  const source = provider({close: [10, 11, 12, 13, 14]});
-  await executeFixedHistory(loadModule(generate(program)), [
-    binding(source, cpuSink),
-  ]);
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const gpuSink = new MemorySink();
-  const execution = await createGpuExecution(
-    device,
-    result.artifact,
-    [binding(source, gpuSink)],
-    {maxRowsPerChunk: 1},
-  );
-  try {
-    await execution.runAll();
-    assertSinkParity(cpuSink, gpuSink, result.artifact);
-    const values = gpuSink.emissions.map(emission => emission.channels[0]);
-    assert.ok(values.slice(0, 4).every(Number.isNaN));
-    assert.ok(Number.isNaN(values[4]));
-  } finally {
-    execution.dispose();
-    device.destroy();
-  }
-});
-
-test('final-dense struct effects fail closed before Dawn', async () => {
-  const program = mustBuild(
-    [
-      'indicator("final dense")',
-      'type Marker',
-      '    int row',
-      'if bar_index == 1',
-      '    effect.emit(Marker.new(bar_index))',
-      'plot(close)',
-    ].join('\n'),
-  );
-  const result = compileProgramToWgsl(program);
-  assertStructReferenceUnsupported(program);
-  if (result.status !== 'compiled') return;
-
-  const source = provider(
-    {close: [10, 11, 12, 13]},
-    {
-      time: row => 1_000 + row * 100,
-      closeTime: row => 1_100 + row * 100,
-    },
-  );
-  const cpuFullSink = new MemorySink();
-  const cpuSink = new FinalDenseSink();
-  await executeFixedHistory(loadModule(generate(program)), [
-    binding(source, cpuFullSink),
-    binding(source, cpuSink),
-  ]);
-
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const gpuFullSink = new MemorySink();
-  const gpuSink = new FinalDenseSink();
-  const execution = await createGpuExecution(
-    device,
-    result.artifact,
-    [binding(source, gpuFullSink), binding(source, gpuSink)],
-    {maxRowsPerChunk: 2},
-  );
-  try {
-    await execution.runAll();
-    assert.deepEqual(
-      cpuSink.publications.map(publication => ({
-        row: publication.row,
-        outputCount: publication.outputs.length,
-        effectCount: publication.effects.length,
-      })),
-      [
-        {row: 1, outputCount: 0, effectCount: 1},
-        {row: 3, outputCount: 1, effectCount: 0},
-      ],
-    );
-    assertSinkParity(cpuFullSink, gpuFullSink, result.artifact);
-    assertSinkParity(cpuSink, gpuSink, result.artifact);
-    assert.deepEqual(
-      gpuFullSink.publications.map(publication => publication.time),
-      [1_000, 1_100, 1_200, 1_300],
-    );
-  } finally {
-    execution.dispose();
-    device.destroy();
-  }
-});
-
-test('Dawn omits all effect transport while preserving final dense parity', async () => {
-  const program = mustBuild(
-    [
-      'indicator("effect opt-out")',
-      'effect.emit(close)',
-      'plot(close * 2)',
-    ].join('\n'),
-  );
-  const result = compileProgramToWgsl(program);
-  assert.equal(result.status, 'compiled');
-  if (result.status !== 'compiled') return;
-  const source = provider({close: [10, 11, 12]});
-  const cpuSink = new FinalDenseWithoutEffectsSink();
-  await executeFixedHistory(loadModule(generate(program)), [
-    binding(source, cpuSink),
-  ]);
-
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const gpuSink = new FinalDenseWithoutEffectsSink();
-  const execution = await createGpuExecution(
-    device,
-    result.artifact,
-    [binding(source, gpuSink)],
-    {maxRowsPerChunk: 1, effectRecordsPerExecution: 0},
-  );
-  try {
-    await execution.runAll();
-    assert.equal(cpuSink.publications.length, 1);
-    assert.deepEqual(cpuSink.publications[0]?.effects, []);
-    assertSinkParity(cpuSink, gpuSink, result.artifact);
-  } finally {
-    execution.dispose();
-    device.destroy();
-  }
-});
-
-test('Dawn storage, partial, and full cache placements are equivalent', async () => {
-  const program = mustBuild(
-    [
-      'indicator("cache equivalence")',
-      'length = input.int(3)',
-      'value = ta.ema(close, length)',
-      'plot(value)',
-      'plot(close[-1])',
-    ].join('\n'),
-  );
-  const result = compileProgramToWgsl(program);
-  assert.equal(result.status, 'compiled');
-  if (result.status !== 'compiled') return;
-  const source = provider({close: [5, 4, 6, 8, 3]});
-  const cpuSink = new MemorySink();
-  await executeFixedHistory(loadModule(generate(program)), [
-    binding(source, cpuSink),
-  ]);
-  Object.assign(globalThis, globals);
-  const gpu = create([]);
-  const adapter = await gpu.requestAdapter();
-  assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
-  const device = await adapter.requestDevice();
-  const first = result.artifact.cache.segments[0]!;
-  const budgets = [
-    0,
-    first.cacheEnd * 4,
-    result.artifact.state.fixedWordCount * 4,
-  ];
-  try {
-    for (const budget of budgets) {
-      const sink = new MemorySink();
-      const execution = await createGpuExecution(
-        device,
-        result.artifact,
-        [binding(source, sink)],
-        {maxRowsPerChunk: 1, maxCacheBytesPerWorkgroup: budget},
-      );
-      try {
-        const summary = await execution.runAll();
-        assert.equal(summary.cache.bytesPerWorkgroup <= budget, true);
-        assertSinkParity(cpuSink, sink, result.artifact);
-      } finally {
-        execution.dispose();
-      }
-    }
-  } finally {
-    device.destroy();
-  }
-});
-
-function binding(source: DataProvider, sink: OutputSink): BindInputs {
-  return {params: {}, provider: source, sink, timeNow: 0};
 }
 
-function provider(
-  columns: Readonly<Record<string, readonly number[]>>,
-  axis: TimeAxis | null = null,
-): DataProvider {
-  return {resolveContext: async () => providerContext(columns, axis)};
-}
-
-function providerContext(
-  columns: Readonly<Record<string, readonly number[]>>,
-  axis: TimeAxis | null = null,
-): ProviderContext {
-  const rows = Object.values(columns)[0]?.length ?? 0;
+function binding(
+  series: Readonly<Record<string, readonly number[]>>,
+  params: Readonly<Record<string, unknown>> = {},
+  time?: readonly number[],
+): GpuBinding {
   return {
-    rows,
-    axis,
-    series(id): SeriesData | null {
-      const values = columns[id];
-      return values === undefined
-        ? null
-        : {length: values.length, at: row => values[row] ?? NaN};
-    },
-    builtinValue: () => undefined,
+    params,
+    indices: Object.values(series)[0]?.length ?? time?.length ?? 0,
+    series,
+    ...(time === undefined ? {} : {time}),
+    sink: new MemorySink(),
   };
 }
 
-function fixtureProgram(filename: string): Program {
-  const errors = new Errors();
-  const program = compileToProgram([filename], errors);
-  if (program === null) {
-    throw new Error(
-      errors
-        .flushErrors()
-        .map(error => error.msg)
-        .join('\n'),
-    );
+function compiledArtifact(program: Program): CompiledWgslProgram {
+  const compiled = compileProgramToWgsl(program);
+  if (compiled.status !== 'compiled') {
+    throw new Error(JSON.stringify(compiled.eligibility.issues));
   }
-  return program;
+  return compiled.artifact;
 }
 
-function assertStructReferenceUnsupported(program: Program): void {
-  const result = compileProgramToWgsl(program);
-  assert.equal(result.status, 'staged-unsupported');
-  if (result.status !== 'staged-unsupported') return;
-  assert.equal(
-    result.eligibility.issues[0]?.code,
-    'struct-reference-lowering-unimplemented',
-  );
+async function dawn(): Promise<{readonly device: GPUDevice}> {
+  if (sharedDevice === null) {
+    Object.assign(globalThis, globals);
+    sharedDevice = (async () => {
+      const gpu = create([]);
+      const adapter = await gpu.requestAdapter();
+      assert.ok(adapter, 'Dawn did not expose a WebGPU adapter');
+      return adapter.requestDevice();
+    })();
+  }
+  return {device: await sharedDevice};
 }
 
-function assertSinkParity(
-  expected: {readonly publications: readonly RowPublication[]},
-  actual: {readonly publications: readonly RowPublication[]},
-  artifact: CompiledWgslProgram,
-): void {
-  assert.equal(actual.publications.length, expected.publications.length);
-  expected.publications.forEach((row, rowIndex) => {
-    const received = actual.publications[rowIndex];
-    assert.equal(received?.row, row.row);
-    assert.equal(received?.time, row.time);
-    assert.equal(received?.provisional, false);
-    assert.deepEqual(
-      received?.outputs.map(output => output.outputId),
-      row.outputs.map(output => output.outputId),
-    );
-    row.outputs.forEach((output, outputIndex) =>
-      output.channels.forEach((value, channelIndex) =>
-        assertValueParity(
-          value,
-          received?.outputs[outputIndex]?.channels[channelIndex],
-          artifact,
+function normalize(sink: MemorySink): unknown {
+  return {
+    outputs: sink.outputs,
+    effects: sink.effectSchemas,
+    publications: sink.publications.map(datum => ({
+      index: datum.index,
+      time: datum.time,
+      outputs: datum.outputs.map(output => ({
+        outputId: output.outputId,
+        channels: output.channels.map(value =>
+          typeof value === 'number' && Number.isNaN(value) ? 'na' : value,
         ),
-      ),
-    );
-    assert.deepEqual(
-      received?.effects.map(effect => effect.effectId),
-      row.effects.map(effect => effect.effectId),
-    );
-    row.effects.forEach((effect, effectIndex) =>
-      assertValueParity(
-        effect.payload,
-        received?.effects[effectIndex]?.payload,
-        artifact,
-      ),
-    );
-  });
-}
-
-function assertValueParity(
-  expected: Value | EffectValue,
-  actual: Value | EffectValue | undefined,
-  artifact: CompiledWgslProgram,
-): void {
-  if (typeof expected === 'number' && typeof actual === 'number') {
-    if (Number.isNaN(expected) && Number.isNaN(actual)) return;
-    const tolerance = Math.max(
-      artifact.numeric.cpuTolerance.absolute,
-      Math.abs(expected) * artifact.numeric.cpuTolerance.relative,
-    );
-    assert.ok(Math.abs(actual - expected) <= tolerance);
-    return;
-  }
-  if (
-    (isStructRef(expected as Value) ||
-      isEffectStructValue(expected as EffectValue)) &&
-    actual !== undefined &&
-    (isStructRef(actual as Value) || isEffectStructValue(actual as EffectValue))
-  ) {
-    const expectedUser = expected as {
-      readonly fields: readonly (Value | EffectValue)[];
-    };
-    const actualUser = actual as {
-      readonly fields: readonly (Value | EffectValue)[];
-    };
-    assert.equal(actualUser.fields.length, expectedUser.fields.length);
-    expectedUser.fields.forEach((field, index) =>
-      assertValueParity(field, actualUser.fields[index], artifact),
-    );
-    return;
-  }
-  assert.deepEqual(actual, expected);
+      })),
+      effects: datum.effects,
+      provisional: datum.provisional,
+    })),
+  };
 }

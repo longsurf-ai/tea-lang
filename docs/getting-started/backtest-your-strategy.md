@@ -1,281 +1,152 @@
 ---
-title: Backtest your strategy
+title: Backtest a strategy
+sidebarTitle: Backtest a strategy
 ---
 
-This walkthrough uses Tea's explicit broker, portfolio, and trade coordinator
-values. All execution and accounting policy is Tea source compiled into the
-same `Program` as the user's signals.
+A finite backtest is one Node bound to finite DataStreams and executed by a
+Batch Recipe. The embedding application owns data acquisition.
 
-## 1. Read the strategy
-
-The runnable source is `examples/strategy/cpu-gpu-next-open/strategy.tea`:
+## 1. Write the strategy
 
 ```tea
-//@version=1
-strategy("Next-open strategy", shorttitle="Next open", overlay=false)
+strategy("EMA crossover")
 
 import broker
 import portfolio
 import trade
 
-slippage = input.float(0.1, "Slippage", minval=0.0)
-fee = input.float(0.1, "Fee", minval=0.0)
-initial_cash = input.float(121.0, "Initial cash", minval=1.0)
+fast_length = input.int(20)
+slow_length = input.int(50)
 
-var strat = trade.nextOpen(
-    broker = broker.new(
-        commission = broker.commissionRate(fee),
-        slippage = broker.slippageRate(slippage),
-        processOrdersOnClose = false
-    ),
-    portfolio = portfolio.new(
-        initialCash = initial_cash,
-        pyramiding = 1,
-        marginLong = 100.0,
-        marginShort = 100.0
-    )
+fast = ta.ema(close, fast_length)
+slow = ta.ema(close, slow_length)
+
+var state = trade.nextOpen(
+    broker.new(),
+    portfolio.new(initialCash = 100000.0)
 )
 
-strat.begin_bar(open, bar_index)
+state.begin_bar(open, bar_index)
+if ta.crossover(fast, slow)
+    state.entry("Long", "Short cover", trade.Direction.long)
+if ta.crossunder(fast, slow)
+    state.entry("Short", "Long close", trade.Direction.short)
 
-if bar_index == 0
-    strat.entry("Long", trade.Direction.long)
-if bar_index == 1
-    strat.close("Long")
-if bar_index == 2
-    strat.entry("Long", trade.Direction.long)
-
-expired = strat.end_bar(close, barstate.islast)
-metrics = strat.snapshot()
-
-plot(metrics.cash, "cash")
-plot(metrics.positionQuantity, "position quantity")
+state.mark(close)
+metrics = state.snapshot()
 plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round-trip count")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(na(expired) or na(expired.pending) ? 0 : expired.pending.id, "expired order id")
 ```
 
-`strategy()` is the native first-statement declaration; it publishes script
-metadata and does not create an execution object. `import trade` binds the
-ordinary coordinator library. There is no `strategy` package. `broker`,
-`portfolio`, and `trade` are explicit because their policy is part of the
-program, not a platform setting.
+The strategy source owns trading policy. Broker, portfolio, and coordinator
+libraries own their concrete execution and accounting semantics.
 
-`broker.new` selects decimal commission and slippage rates and keeps fills at
-the next open. `portfolio.new` selects a signed net portfolio with a 100%
-capital requirement in either direction. This example only opens long and
-omits `qty`, so the broker uses its commission-aware all-available-cash sizing.
-`trade.nextOpen` stores those two concrete values directly and exposes only the
-next-open lifecycle; it does not wrap a universal strategy object.
+## 2. Prepare finite data
 
-## 2. Read the bars
-
-`examples/data/demo/strategy-bars.csv` contains:
+For the CLI, use a numeric CSV:
 
 ```csv
-open,close
-10,10
-10,11
-20,18
+time,open,high,low,close,volume
+1704067200000,100,103,99,102,1200
+1704153600000,102,104,100,103,980
 ```
 
-The entry submitted after row 0's `begin_bar` fills at row 1's open. The close
-submitted after row 1 fills at row 2's open. The final entry has no later open,
-so the last `end_bar` expires order id `3`.
+`time` is exact epoch milliseconds. The CLI derives `time_close` from the next
+open and gives the resulting DataStream an exact finite `indices` count.
 
-## 3. Run it
+Embedding applications can construct the same input directly:
 
-```sh
-tea run examples/strategy/cpu-gpu-next-open/strategy.tea \
-  --input examples/data/demo/strategy-bars.csv
+```ts
+const bars = new DataStream(
+  z.object({
+    time: z.bigint(),
+    time_close: z.bigint(),
+    open: z.number(),
+    high: z.number(),
+    low: z.number(),
+    close: z.number(),
+  }),
+  from(values),
+  d,
+  values.length,
+);
 ```
 
-`run` uses the JavaScript CPU backend by default. It prints system statistics,
-effective parameters, the complete dense table, and typed sparse effects.
-Source parameters become CLI options after compilation:
+The application decides whether values came from a file, broker, database, or
+network API. Tea receives only the DataStream.
 
-```sh
-tea run examples/strategy/cpu-gpu-next-open/strategy.tea \
-  --input examples/data/demo/strategy-bars.csv \
-  --slippage 0 --fee 0 --initial_cash 100
+## 3. Run one CLI Batch
+
+```bash
+tea run strategy.tea -i bars.csv \
+  --fast_length 20 \
+  --slow_length 50
 ```
 
-With 10% adverse slippage and a 10% taker fee, the fixture ends with two fills,
-one completed round trip, cash/equity `162`, realized PnL `41`, total fees `29`,
-and maximum drawdown `11 / 121`. Those values come from the Tea-authored
-packages, not from the host runner.
+`tea run` compiles once, binds the CSV DataStream and parameters, executes one
+Batch Recipe, and renders complete Datums. Use `--trace` for the stable machine
+trace format.
 
-## 4. Make an execution reproducible
+The CLI currently exposes one finite `run`. Parameter grids return with the
+future Sweep Recipe so sweep semantics have one real owner.
 
-The canonical durable command is:
+## 4. Use the public API
 
-```text
-tea execute <config> [--json]
+```ts
+const node = tea`
+length = input.int(20)
+plot(ta.ema(close, length))
+`;
+
+const sink = new StdoutSink<Datum>();
+const result = await batchRecipe(node, [{length: 10}, bars], sink).execute();
+
+console.log(result.indices);
 ```
 
-For example, the repository includes a real Binance Spot BTCUSDT daily sweep:
+The Recipe stores ordinary public bindings and an observer. It adds no executor
+or storage model; `execute()` calls `Node.bind()` and `Node.to()` and waits for
+completion.
 
-```sh
-tea execute examples/strategy/ema-cross/sweep.yaml
+## Request data
+
+For a strategy with requests, bind each child stream by declaration name:
+
+```tea
+daily = request.security("AAPL", "D", close)
+lower = request.security_lower_tf("AAPL", "15", close)
 ```
 
-The configuration is ordinary YAML (JSON is also accepted):
-
-```yaml
-schema: tea.execution/v1
-
-program:
-  source: ./strategy.tea
-
-runtime:
-  kind: javascript
-
-execution:
-  kind: sweep
-  provider:
-    kind: csv
-    path: ../../data/binance/btcusdt-1d.csv
-    sha256: fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d
-  parameters:
-    fast_length:
-      range: {start: 2, stop: 20, step: 2}
-    slow_length:
-      range: {start: 24, stop: 60, step: 4}
-    initial_cash: 100000
-    slippage: 0.0005
-    fee: 0.001
-  maxExecutions: 100
-  timeNow: 1786579200000
+```ts
+await batchRecipe(
+  node,
+  [rootBars, {daily: dailyBars, lower: fifteenMinuteBars}],
+  sink,
+).execute();
 ```
 
-This boundary deliberately remains three parts:
+The symbol and timeframe tell the application what data the child represents;
+Tea does not fetch or resample it. Node owns synchronization once the streams
+are bound. See [Requests](../requests.md).
 
-1. **Tea Core** compiles `program.source` once through the ordinary frontend to
-   the one target-independent `Program`.
-2. **The runtime** executes that Program on JavaScript or WebGPU; selecting a
-   runtime never creates another compiler path.
-3. **The execution context** resolves the provider, parameter selections,
-   inputs, bindings, fixed time, and run kind into ordered `BindInputs[]` for
-   that runtime.
+## Reproducibility
 
-The config is a durable execution-context specification, not a serialized
-Program or GPU plan. That same boundary can later describe scans and live
-execution without moving provider or deployment policy into Tea Core.
+Pin the source data and parameter values in the application or test that creates
+the Recipe. A deterministic finite run is identified by:
 
-### Configuration v1
+- the Tea source closure;
+- exact input values and event times;
+- parameter bindings;
+- request-child streams;
+- the Pine historical execution clock when `timenow` is used.
 
-The schema is closed: unknown or duplicate fields are errors at every level.
-The loader accepts exactly one UTF-8 YAML 1.2 document of at most 1 MiB and
-rejects anchors, aliases, merge keys, explicit tags, and directives. It never
-performs environment interpolation or executes config content. The configured
-Tea source and CSV must already be readable regular files.
+Tests should hash immutable data files when provenance matters. That is an
+application/test responsibility, not a runtime config schema.
 
-Both `program.source` and `execution.provider.path` resolve relative to the
-configuration file's directory, not the process working directory. An
-optional provider `sha256` is checked against the exact file bytes before
-strict UTF-8 decoding. This makes the example refer to the precise checked-in
-Binance snapshot recorded in `examples/data/binance/btcusdt-1d.source.json`.
+## GPU boundary
 
-`execution.parameters` accepts scalar numbers, strings, and booleans. Omitted
-parameters keep their Tea source defaults. A numeric sweep axis uses the
-explicit form `{range: {start, stop, step}}`; the stop boundary is inclusive
-when reached, and ranges expand in source parameter declaration order.
-`execution.timeNow` is an optional safe epoch-millisecond integer. If omitted,
-the host clock is captured once and shared by every binding in that execution.
+GPU execution is a separate target-specific API over a compiled WGSL artifact
+and concrete numeric arrays. It has no generic CPU/GPU backend wrapper and no
+caller memory/chunk/cache controls. See [GPU lowering](../advanced/gpu-lowering.md).
 
-The runtime fields are:
-
-| Field                       | Contract                                                                                      |
-| --------------------------- | --------------------------------------------------------------------------------------------- |
-| `kind`                      | Required: `javascript` or `webgpu`.                                                           |
-| `maxRowsPerChunk`           | Optional positive u32 WebGPU row ceiling; defaults to 65,536.                                 |
-| `effectRecordsPerExecution` | Optional nonnegative u32 WebGPU sparse-effect capacity; when omitted, the runtime derives it. |
-| `maxGpuBytes`               | Optional positive u32 WebGPU memory budget.                                                   |
-| `maxCacheBytesPerWorkgroup` | Optional nonnegative u32 WebGPU workgroup-cache budget; zero selects storage-only execution.  |
-
-The JavaScript runtime accepts only `kind`; WebGPU resource fields are physical
-ceilings rather than language semantics. See [GPU Lowering](../advanced/gpu-lowering.md)
-for their allocation behavior.
-
-`execution.kind: run` rejects ranges and `maxExecutions`, producing exactly one
-binding. `execution.kind: sweep` forms the Cartesian product of its ranges;
-`maxExecutions` defaults to and cannot exceed 10,000, and rejects an oversized
-product before it is materialized. A sweep with no ranges is valid and has one
-binding. `tea execute` accepts no runtime, parameter, or tracing overrides: the
-config is its single execution specification. `--json` changes only publication
-into the versioned structured result.
-
-### Direct source commands
-
-`tea run` and `tea sweep` are the source-and-dynamic-parameter entry points.
-They translate their flags into the same structured parameter selections,
-provider, runtime, and execution-context path used by `tea execute`:
-
-```sh
-tea run strategy.tea -i data.csv --length 10
-tea sweep strategy.tea -i data.csv --length 2:20:2
-```
-
-The direct `run` spelling defaults to JavaScript and accepts `--gpu`; direct
-`sweep` defaults to WebGPU and accepts `--cpu`. A source still has to fit the
-selected backend. Today, every canonical strategy reaches struct-backed trade
-state and therefore needs JavaScript. Their source and input paths resolve from
-the invocation working directory. `tea execute` instead takes its runtime and
-execution choices entirely from the config; v1 intentionally does not merge
-CLI parameter or runtime overrides into that file.
-
-## Lifecycle ownership
-
-The calls are ordinary Tea:
-
-1. `begin_bar(open, bar_index)` processes a previously pending order and
-   applies its fill.
-2. Signal logic calls `entry` or `close`.
-3. `end_bar(close, isLast)` optionally processes and applies an on-close fill
-   when `processOrdersOnClose=true`, then marks the portfolio.
-4. On the final bar, `end_bar` expires any command that remains pending.
-
-The compiler does not insert, reorder, count, or enforce these calls. A custom
-strategy can select `trade.ohlc`, `trade.path`, or `trade.lots` when it needs a
-different explicit lifecycle. Each family is a direct concrete coordinator
-constrained by compatible broker and portfolio interfaces; no host dispatches
-on the family name.
-
-## Parameter sweeps and the current GPU boundary
-
-`sweep` expands numeric `start:stop:step` axes in source declaration order. It
-selects WebGPU by default, but this strategy contains struct-backed broker,
-portfolio, and trade values. Run it with `--cpu`:
-
-```sh
-tea sweep examples/strategy/cpu-gpu-next-open/strategy.tea \
-  --input examples/data/demo/strategy-bars.csv \
-  --slippage 0:0.2:0.1 --fee 0 --initial_cash 100 --cpu
-```
-
-If you omit `--cpu`, Tea stops during WGSL eligibility checking with
-`struct-reference-lowering-unimplemented`. It does not run part of the
-strategy on the GPU and it does not silently switch runtimes. The existing
-WebGPU backend remains usable for scalar and numeric programs that do not
-reach struct values.
-
-Each binding has isolated runtime state and can eventually vary providers,
-symbols, or other inputs—not just parameters. The sweep reporter requests only
-final dense values and no effect payloads. The `tea` CLI runs under Node with
-the packaged `tsx` loader; GPU commands dynamically load the optional `webgpu`
-Dawn binding in that same process.
-No path introduces a strategy compiler or host-side matching/accounting.
-
-See [Strategy model](../strategy.md) for the normative source contract and
-[GPU Lowering](../advanced/gpu-lowering.md) for the backend boundary.
-
-For a fuller signal-driven example, `examples/strategy/ema-cross/strategy.tea`
-uses `ta.ema`, `ta.crossover`, and `ta.crossunder` directly and trades the
-signals with next-open execution. Its checked-in `tea execute` configuration
-selects JavaScript; `tea run` and `tea sweep --cpu` use the same source. The
-adjacent source record pins the Binance API, coverage dates, row count, and CSV
-SHA-256 for reproducibility.
+A future GPU Recipe may package that common use, just as Batch packages the
+public Node path. Until then, applications call `createGpuExecution()` directly.

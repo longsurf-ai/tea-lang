@@ -18,7 +18,7 @@ accounting compose Tea's canonical `broker.new`, `portfolio.new`, and
 
 ## Pinned runnable profile
 
-The checked-in sweep uses the monthly anchor on the pinned Binance BTCUSDT
+The recorded audit uses the monthly anchor on the pinned Binance BTCUSDT
 daily snapshot and runs the publication's two-sided order paths.
 `strategy_mode=0` selects trend following and `1` selects mean reversion;
 `entry_type=2` selects Band 2 Break for trend mode and Band Reclaim for
@@ -46,7 +46,8 @@ the same seed rule.
 Run from the repository root:
 
 ```sh
-tea execute examples/strategy/vwap-suite/sweep.yaml
+tea run examples/strategy/vwap-suite/strategy.tea \
+  -i examples/data/binance/btcusdt-1d.csv
 ```
 
 The 48-scenario JavaScript sweep processes 157,584 rows from 3,283 real daily

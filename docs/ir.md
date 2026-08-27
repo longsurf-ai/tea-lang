@@ -16,8 +16,8 @@ source ─ parse ─ check ─ buildProgram ─▶ Program ─┬─▶ JS modul
          syntax  typecheck   noder                └─▶ WGSL module + layouts
                                                        codegen
 
-JS module   + runtime inputs ─▶ JSRuntime instance ─▶ bar loop / CPU batch
-WGSL module + BindInputs[]   ─▶ physical GPU plan  ─▶ dispatch / readback
+JS module   + DataStreams  ─▶ Node / JSRuntime ─▶ Batch Recipe
+WGSL module + GpuBinding[] ─▶ GPU buffers       ─▶ dispatch / readback
 ```
 
 - **Noding** (`noder.buildProgram`) turns checked syntax into the Program.
@@ -145,7 +145,7 @@ places to its depth pass for annotation.
   default or metadata value may be `na`.
 - **numeric series inputs** (a projection, not a field): `open`, `high`,
   `low`, `close`, `volume`, and the derived price sources are numeric columns
-  supplied by the context's provider. The checker catalog binds them
+  supplied by application DataStreams. The checker catalog binds them
   explicitly as series; the noder interns one `SeriesInput` for each used
   builtin in each Program. `input.source` is restricted to this closed
   vocabulary. Neither noder nor runtime classifies a builtin by parsing its
@@ -153,7 +153,7 @@ places to its depth pass for annotation.
 - **typed builtins** (also a projection): `time`, `time_close`,
   `timenow`, `bar_index`, `last_bar_index`, `barstate.*`, `syminfo.*`, and
   `timeframe.*` are typed values supplied by the runtime context rather than
-  numeric provider columns. They project to `BuiltinInput`, which carries
+  numeric series columns. They project to `BuiltinInput`, which carries
   source, type, qualifier, and depth. Its source is a closed `{domain, field}`
   key. The domain is only the builtin namespace (`time`, `bar`, `barstate`,
   `syminfo`, or `timeframe`); it never implies a corresponding compiler or
@@ -210,9 +210,9 @@ places to its depth pass for annotation.
   `captureType`. `request.security` exposes the same `T` as `resultType` with
   Sample mode; `request.security_lower_tf` exposes `array<T>` as `resultType`
   with Collect mode. The edge retains four concrete bind-time option
-  expressions (`gaps`, `lookahead`, `ignore_invalid_symbol`, and
+  expressions (`availability`, `fill`, `ignore_invalid_symbol`, and
   `calc_bars_count`) plus their source evaluation order; omitted options
-  normalize to `false`, `false`, `false`, and `0`. Currency remains a
+  normalize to `"end"`, `"carry"`, `false`, and `0`. Currency remains a
   positional but staged source parameter and does not enter the Program until
   its FX/unit model exists. One Program ↔ one context; composition is by
   recursion, never by multi-context Programs. Context arguments must be known
@@ -224,7 +224,7 @@ places to its depth pass for annotation.
   kinds (financial/dividends/economic) map to edges whose child is a plain
   series-input projection; their extra context args ride the same static shape.
   [Requests](requests.md) owns the detailed Node synchronization and separate
-  fixed-history sample contracts.
+  Pine Batch sample contracts.
 - **funcs** (a projection, not a field): semantic function stencils are keyed
   only by `(FunctionObject, type + qualifier signature)`, not by a Program or
   request owner. They remain **real functions with runtime call dispatch**;
@@ -451,16 +451,13 @@ gives these values privileged nodes or ABI slots. Its fail-closed audit
 describes only which generic Program constructs its current target profile can
 represent.
 
-Concrete bindings are not Program properties. After codegen, the CPU runtime may
-bind one ordinary JS module repeatedly to isolated providers/parameters and
-capture committed emissions through an `OutputSink`. The bind-independent GPU
-artifact carries both WGSL and the ordinary generated JS module. For each
-ordered `BindInputs` element, the GPU runtime deep-copies its manifest, installs
-parameter values and series markers, runs the generated direct concretizer,
-and sizes physical history from the frozen concrete depths before packing and
-dispatching the shared shader. It does not revisit the Program or evaluate a
-second form of the bound expression. Those runtime contracts do not change the
-Program or reinterpret Tea matching/accounting semantics. See
+Concrete bindings are not Program properties. After codegen, Node binds
+application DataStreams and parameters to the ordinary JS module. The
+bind-independent GPU artifact carries both WGSL and the generated binding
+module; each ordered `GpuBinding` supplies concrete parameter values, extent,
+and numeric arrays. The GPU runtime sizes history from the frozen concrete
+depths before packing and dispatching the shared shader. Neither target revisits
+the Program or evaluates a second form of the bound expression. See
 [GPU Lowering](advanced/gpu-lowering.md).
 
 ## Open items
@@ -471,5 +468,5 @@ Program or reinterpret Tea matching/accounting semantics. See
 - General interval analysis can refine history demands for compound expressions
   over loop induction variables; exact direct-induction reads are already
   resolved.
-- Fixed-history collect merge for `request.security_lower_tf`; public Node
+- Batch collect merge for `request.security_lower_tf`; public Node
   collect synchronization is already defined in [Requests](requests.md).

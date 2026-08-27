@@ -181,18 +181,15 @@ function walkRootFrame(
       walkExpr(request.symbol);
       walkExpr(request.timeframe);
     }
-    walkExpr(request.merge.gaps);
-    walkExpr(request.merge.lookahead);
+    walkExpr(request.merge.availability);
+    walkExpr(request.merge.fill);
     walkExpr(request.merge.ignoreInvalidSymbol);
     walkExpr(request.merge.calcBarsCount);
     walkDepth(request.depth);
   });
 }
 
-function walkFrameStmt(
-  stmt: IrStmt,
-  visitExpr: (expr: IrExpr) => void,
-): void {
+function walkFrameStmt(stmt: IrStmt, visitExpr: (expr: IrExpr) => void): void {
   const activeRequests = new Set<RequestEdge>();
   walkIrStmt(stmt, {
     expr: expr => visitFrameExpr(expr, visitExpr, activeRequests),

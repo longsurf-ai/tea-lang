@@ -7,8 +7,9 @@ runtime consumes it.
 
 ## Invariants
 
-- This directory owns contracts only. It never lowers a Program, resolves a
-  provider, accepts a GPUDevice, allocates buffers, or decodes results.
+- This directory owns contracts only. It never lowers a Program, resolves an
+  application data source, accepts a GPUDevice, allocates buffers, or decodes
+  results.
 - `GPU_ARTIFACT_ABI_VERSION` is the sole physical ABI version source. Fixed
   bindings, offsets, and strides must not be duplicated in codegen or runtime.
 - Logical parameter/effect schemas come from `runtime/schema.ts`; physical

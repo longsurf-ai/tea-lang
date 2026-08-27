@@ -160,8 +160,8 @@ export function dumpProgram(program: Program): string {
     dumpDepthLine(`request[${i}] ${flags}`, edge.depth, '', out, labels);
     dumpExpr(edge.symbol, 'symbol: ', '  ', out, labels);
     dumpExpr(edge.timeframe, 'timeframe: ', '  ', out, labels);
-    dumpExpr(m.gaps, 'gaps: ', '  ', out, labels);
-    dumpExpr(m.lookahead, 'lookahead: ', '  ', out, labels);
+    dumpExpr(m.availability, 'availability: ', '  ', out, labels);
+    dumpExpr(m.fill, 'fill: ', '  ', out, labels);
     dumpExpr(
       m.ignoreInvalidSymbol,
       'ignore_invalid_symbol: ',

@@ -9,6 +9,7 @@ export function sync<S, T, U = S | readonly S[]>(
     target: T,
     buffered: readonly S[],
   ) => readonly [value: U, consume?: number] | undefined,
+  continueAfterSourceComplete = false,
 ): OperatorFunction<S, U> {
   return (source: Observable<S>) =>
     new Observable<U>(subscriber => {
@@ -79,7 +80,8 @@ export function sync<S, T, U = S | readonly S[]>(
         }
         if (
           sourceComplete &&
-          (buffered.length === 0 || (blocked && pending.length > 0))
+          ((!continueAfterSourceComplete && buffered.length === 0) ||
+            (blocked && pending.length > 0))
         ) {
           subscriber.complete();
           return;

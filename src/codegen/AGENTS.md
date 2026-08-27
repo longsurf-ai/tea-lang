@@ -29,7 +29,7 @@ owns both execution boundaries.
   values and their statically specialized methods are ordinary Program state
   and calls. Checker-only interfaces have no runtime representation.
 - Target lowering is pure and bind-independent. JS/WGSL generation receives no
-  provider, series payload, parameter sweep, job list, result capacity, GPU
+  external data source, series payload, parameter set, job list, result capacity, GPU
   device, or dispatch policy. CPU/GPU runtimes own those physical inputs after
   codegen.
 - Generated JavaScript uses Runtime ABI 7. Static depths, activity, output
@@ -93,7 +93,7 @@ owns both execution boundaries.
 - Typed builtins are a distinct runtime carrier: dense bids and exact
   `{source, layout, depth}` specs publish in `manifest.builtin`, reads lower
   to `ctx.builtin`, and bound history becomes concrete manifest depth.
-  Numeric provider series remain `ctx.series` only.
+  Numeric application series remain `ctx.series` only.
 - Struct construction and field access lower through `newStruct`,
   `structField`, and `storeStructField` using exact manifest layouts. A field
   store validates and captures its reference before the RHS. Collection

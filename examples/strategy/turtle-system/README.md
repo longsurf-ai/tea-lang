@@ -30,7 +30,7 @@ charges none.
 The implementation excludes chart drawings, alerts, and the published Pine
 script's backtest-date controls. Those controls are TradingView host UI for
 choosing an execution window, not Turtle trading rules, so they are
-intentionally omitted. The checked-in sweep runs the full provider range. If
+intentionally omitted. The recorded audit used the full source range. If
 Tea later adds bounded historical evaluation, that belongs in the Execution
 Context with explicit warmup and order-admission semantics, not as epoch
 literals repeated inside strategies. Turtle's Wilder ATR state is explicit in
@@ -38,14 +38,13 @@ the strategy so the selected historical contract remains locally auditable.
 
 The supported parameter domain requires positive risk/stop/pyramid values,
 System 1 entry shorter than System 2 entry, and System 1 exit shorter than
-System 2 exit. The default JavaScript config is a 780-scenario stress sweep
-that varies stop distance, risk fraction, pyramid spacing, and maximum units.
-`sweep-cpu.yaml` keeps the earlier, representative 36-scenario JS/f64 subset;
-every one of its bindings also appears in the larger grid.
+System 2 exit. The recorded audit included a 780-scenario stress grid varying
+stop distance, risk fraction, pyramid spacing, and maximum units, plus a
+representative 36-scenario JS/f64 subset.
 
 ```sh
-tea execute examples/strategy/turtle-system/sweep.yaml
-tea execute examples/strategy/turtle-system/sweep-cpu.yaml
+tea run examples/strategy/turtle-system/strategy.tea \
+  -i examples/data/binance/btcusdt-1d.csv
 ```
 
 The checked 36-binding JS/f64 subset executes 118,188 rows. Its total return

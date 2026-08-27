@@ -1,8 +1,8 @@
 # JavaScript runtime
 
 `runtime.ts` is the sole JavaScript semantic runtime. It owns State,
-same-row Intermediate, and one context-local Heap. `fixed-history.ts` is the
-finite provider/sink host adapter. `collections/`, `struct-storage.ts`,
+same-row Intermediate, and one context-local Heap. Public `Node` owns the CPU
+reactive graph and each runtime it creates. `collections/`, `struct-storage.ts`,
 `state-update.ts`, and `heap.ts` are execution mechanics, not shared ABI.
 
 ## Invariants
@@ -22,14 +22,13 @@ finite provider/sink host adapter. `collections/`, `struct-storage.ts`,
 - Every value and result slot carries exact layout identity. Layout validation,
   typed empties, shallow byte accounting, and storage-root tracing come only
   from the shared `ValueLayoutRegistry`.
-- `fixed-history.ts` resolves the main provider context and every static request
-  before row zero. Each request child owns an independent JSRuntime and Heap;
-  only copied scalar sample results enter the parent. Collect requests are a
-  public Node feature and are rejected here.
-- Fixed-history owns row chronology, deterministic `timeNow`, fixed-width state
-  accounting, sink publication, and request-context budgets. A sink exception
-  makes the execution terminal.
-- `executeFixedHistory()` is only ordered repetition of the ordinary bind,
-  `runAll()`, and dispose lifecycle. It is not a batch runtime or scheduler.
+- Each public request-child Node owns an independent JSRuntime and Heap. Only
+  validated copied request values enter the parent runtime; collect arrays are
+  materialized in the parent Heap.
+- Node owns index chronology and public result delivery. Finite source adapters
+  supply deterministic `timeNow`, extent, context metadata, and request data
+  before Recipe calls `Node.bind()`.
+- `JSRuntime` never iterates parameter bindings, acquires external data, or owns a
+  finite-job scheduler.
 - Generated `RuntimeContext` exposes Tea operations only. It never exposes
-  physical history arrays, Heap cells, provider objects, or host buffers.
+  physical history arrays, Heap cells, source objects, or host buffers.

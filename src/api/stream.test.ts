@@ -3,6 +3,7 @@
 import {firstValueFrom, of, toArray} from 'rxjs';
 import * as z from 'zod';
 import {expect, test} from 'vitest';
+import {i} from './clock';
 import {DataStream} from './stream';
 
 test('creates a schema-validating DataStream from an Observable', async () => {
@@ -14,4 +15,13 @@ test('creates a schema-validating DataStream from an Observable', async () => {
   await expect(
     firstValueFrom(stream.asObservable().pipe(toArray())),
   ).resolves.toEqual([{close: 1}, {close: 2}]);
+});
+
+test('retains an optional finite index count', () => {
+  const stream = new DataStream(z.number(), of(1, 2), i, 2);
+
+  expect(stream.indices).toBe(2);
+  expect(() => new DataStream(z.number(), of(), i, -1)).toThrow(
+    'DataStream indices must be a non-negative safe integer',
+  );
 });

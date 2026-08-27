@@ -1,18 +1,19 @@
 # Tea examples
 
 `examples/` is the human-facing runnable catalog. It is intentionally separate
-from the test corpus under [`tests/fixtures`](../tests/fixtures/): examples may
-use live data providers, while automated tests never reach the network.
+from the test corpus under [`tests/fixtures`](../tests/fixtures/): embedding
+examples may use live application sources, while automated tests never reach
+the network.
 
 ## Layout
 
-| Directory                  | Contents                                                                                                                                                                                                    |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`api/`](api/)             | Runnable TypeScript embedding examples using the public `tea` package export and local or live sources/sinks.                                                                                               |
-| [`strategy/`](strategy/)   | Runnable strategies, one directory per strategy. A strategy directory owns its Tea source and any execution configuration specific to it. The catalog README also records the clean-room TradingView audit. |
-| [`indicator/`](indicator/) | Indicator and data-request demonstrations that do not place orders.                                                                                                                                         |
-| [`language/`](language/)   | Focused demonstrations of Tea language semantics.                                                                                                                                                           |
-| [`data/`](data/)           | Inputs for the runnable examples. Venue snapshots live under a provider-specific directory with adjacent provenance; small synthetic inputs live under `data/demo/`.                                        |
+| Directory                  | Contents                                                                                                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`api/`](api/)             | Runnable TypeScript embedding examples using the public `tea` package export and local or live sources/sinks.                                                                   |
+| [`strategy/`](strategy/)   | Runnable strategies, one directory per strategy. Each directory owns Tea source, behavioral notes, and provenance. The catalog README records the clean-room TradingView audit. |
+| [`indicator/`](indicator/) | Indicator and data-request demonstrations that do not place orders.                                                                                                             |
+| [`language/`](language/)   | Focused demonstrations of Tea language semantics.                                                                                                                               |
+| [`data/`](data/)           | Inputs for the runnable examples. Venue snapshots live under venue-specific directories with adjacent provenance; small synthetic inputs live under `data/demo/`.               |
 
 Code under `src/` and fixtures under `tests/fixtures/` must not depend on this
 directory. Add reusable test inputs to `tests/fixtures/`, not here.
@@ -31,9 +32,22 @@ print every result:
 node examples/api/simple-sync.ts
 ```
 
+The Batch Recipe example performs the same public `bind()` and `to()` wiring,
+but keeps it as one reusable finite run and waits for completion:
+
+```sh
+node examples/api/simple-batch.ts
+```
+
 To see live stream processing, run the Subject-backed example. It pushes one
 datum per second after execution starts and publishes each result to stdout and
 `tea-stream-output.csv` from the same runtime:
+
+```sh
+node examples/api/simple-tail.ts
+```
+
+The descriptive `simple-stream.ts` name runs the same example:
 
 ```sh
 node examples/api/simple-stream.ts
@@ -50,8 +64,8 @@ node examples/api/csv-request-to-csv.ts \
 ```
 
 The examples provide explicit numeric Zod schemas because CSV headers describe
-columns, not scalar types. Output rows are public Node Datums: one column per
-Tea output, plus `effects` and `provisional`.
+columns, not scalar types. Each public Node Datum keeps its `index`, optional
+`time`, exact output and channel arrays, effects, and provisional state.
 
 Final-datum JSON WebSocket examples are also available:
 
@@ -70,9 +84,9 @@ the network.
 [`strategy/README.md`](strategy/README.md) audits twelve open-source
 TradingView strategies and links each clean-room Tea implementation. Together
 with the first-party `cpu-gpu-next-open` and `ema-cross` examples, the runnable
-strategy catalog contains fourteen sources. Every conversion owns an execution
-config, a documented historical profile, and measured results over real market
-data. The set deliberately exercises rolling statistics, requests, arrays,
+strategy catalog contains fourteen sources. Every conversion owns a documented
+historical profile and measured results over real market data. The set
+deliberately exercises rolling statistics, requests, arrays,
 nested loops, per-lot state, long/short accounting, target allocations,
 pyramiding, pending orders, cancel/replace, brackets, trailing exits, and
 deterministic same-bar OHLC matching.
@@ -82,23 +96,15 @@ Every source composes an explicit direct trade family: `trade.nextOpen`,
 broker and portfolio values directly; examples do not implement accounts,
 construct fills, or emit broker lifecycle effects.
 
-Compile every conversion and validate its exact Cartesian grid without making
-network requests:
+Compile every conversion without making network requests:
 
 ```sh
 npm test -- tests/strategy-catalog.test.ts
 ```
 
-Run a particular measured sweep through its checked-in config, for example:
-
-```sh
-tea execute examples/strategy/turtle-system/sweep.yaml
-tea execute examples/strategy/alice-grid/sweep.yaml
-```
-
 All fourteen strategies use struct-backed broker, portfolio, or trade state,
-so their checked-in configs select JavaScript. Selecting WebGPU for one of
-these complete programs fails with
+so current execution uses JavaScript. WGSL lowering of one of these complete
+programs fails with
 `struct-reference-lowering-unimplemented`; Tea does not silently fall back to
 CPU. Scalar and numeric programs that do not reach a struct can still use the
 current WGSL subset. Each strategy README records its public mode, deliberate
@@ -129,32 +135,12 @@ parameterized long-only EMA crossover over 3,283 Binance Spot BTCUSDT daily
 bars from 2017-08-17 through 2026-08-12 UTC. The CSV, immutable source record,
 and SHA-256 are under [`data/binance/`](data/binance/).
 
-Run the checked-in 100-scenario JavaScript sweep:
-
-```sh
-tea execute examples/strategy/ema-cross/sweep.yaml
-```
-
-Paths in the execution config are relative to the YAML file. Its fixed
-`timeNow` and pinned provider digest make the historical run independent of the
-working directory, host clock, and later data changes.
-
 Run one scenario on CPU:
 
 ```sh
 tea run examples/strategy/ema-cross/strategy.tea \
   -i examples/data/binance/btcusdt-1d.csv \
   --fast_length 10 --slow_length 32 --initial_cash 100000
-```
-
-The direct `sweep` command selects WebGPU by default, so add `--cpu` for this
-struct-backed strategy:
-
-```sh
-tea sweep examples/strategy/ema-cross/strategy.tea \
-  -i examples/data/binance/btcusdt-1d.csv \
-  --fast_length 2:20:2 --slow_length 24:60:4 \
-  --initial_cash 100000 --slippage 0.0005 --fee 0.001 --cpu
 ```
 
 The snapshot is a reproducible stress input, not a claim about future returns.
@@ -168,22 +154,15 @@ accounting to the shipped Tea-authored broker, portfolio, and trade libraries.
 ```sh
 tea run examples/strategy/cpu-gpu-next-open/strategy.tea \
   -i examples/data/demo/strategy-bars.csv
-
-tea sweep examples/strategy/cpu-gpu-next-open/strategy.tea \
-  -i examples/data/demo/strategy-bars.csv \
-  --slippage 0:0.2:0.1 --fee 0 --initial_cash 100 --cpu
 ```
 
 ## Indicators and language demonstrations
 
-The request examples use the local primary timeline but fetch requested series
-through the configured providers. They may therefore require network access or
-provider credentials.
+Request examples require the embedding application to bind each named child
+DataStream. [`api/csv-request-to-csv.ts`](api/csv-request-to-csv.ts) shows the
+complete two-stream public path.
 
 ```sh
-tea run examples/indicator/requests-tour.tea \
-  -i examples/data/demo/primary.csv
-
 tea run examples/language/struct-references.tea \
   -i examples/data/demo/primary.csv
 ```

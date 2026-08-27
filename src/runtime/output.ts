@@ -1,4 +1,4 @@
-// Purpose: Host-visible output declarations and atomic row publication seams.
+// Purpose: Host-visible output declarations and atomic indexed publication seams.
 
 import type {EffectSpec} from './schema';
 import type {EffectValue, ManifestValue, Value} from './value';
@@ -69,23 +69,24 @@ export interface EffectEmission {
   readonly payload: EffectValue;
 }
 
-export interface RowPublication {
-  readonly row: number;
-  // Epoch-ms bar-open time when the provider owns an explicit axis. Hosts may
-  // still publish row-only data, represented to consumers as null.
+/** One lossless result produced by a successful Node or GPU step. */
+export interface Datum extends Readonly<Record<string, unknown>> {
+  // Absolute execution index within the producing Node or GPU binding.
+  readonly index: number;
+  // Exact epoch-millisecond source time. A missing time means that the input
+  // stream has no event-time field.
   readonly time?: number | null;
+  // Every emitted output keeps its declaration id and ordered channel array.
+  // No entry for an output means it was not emitted; an entry containing NaN
+  // means Tea explicitly emitted its numeric missing value. Neither case is
+  // converted to null or flattened into named object fields.
   readonly outputs: readonly DenseEmission[];
+  // Sparse effects retain their declaration ids and exact typed payloads.
   readonly effects: readonly EffectEmission[];
   readonly provisional: boolean;
 }
 
-export interface OutputSinkCapabilities {
-  readonly denseRows?: 'all' | 'final';
-  readonly effects?: 'all' | 'none';
-}
-
 export interface OutputSink {
-  readonly capabilities?: OutputSinkCapabilities;
   declare(declaration: ExecutionDeclaration): void;
-  publish(publication: RowPublication): void;
+  publish(publication: Datum): void;
 }

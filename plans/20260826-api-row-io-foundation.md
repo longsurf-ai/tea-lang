@@ -1,6 +1,10 @@
 # Establish one Datum boundary for API row I/O
 
-Status: implemented and verified on 2026-08-26.
+Status: superseded on 2026-08-27. Public `Datum` is now the lossless
+indexed/time-stamped output/effect arrays; the flattened `StepResult.toDatum()`
+design below was removed.
+
+Previously implemented and verified on 2026-08-26.
 Final gates: 117 test files / 1,134 tests, documentation build, and 18 Dawn
 integration tests passed under Node 22.
 

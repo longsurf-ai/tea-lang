@@ -6,12 +6,11 @@ import {fileURLToPath} from 'node:url';
 import {describe, expect, test} from 'vitest';
 import {formatPos} from '../base/pos';
 import {compile} from '../compiler';
-import {csvProvider} from '../providers/data/csv';
-import {TraceSink} from '../providers/sinks/trace-sink';
+import {TraceSink} from '../sinks/trace-sink';
 import type {BoundInput, EffectValue, OutputSink, Value} from '../runtime/abi';
 import {isEffectStructValue} from '../runtime/abi';
-import {bindFixedHistory as bind} from '../runtime/js/fixed-history';
 import {loadModule} from '../runtime/load';
+import {csvStream, executeTestModule} from './batch';
 import {
   type CorpusCase,
   type ExpectedBinding,
@@ -70,7 +69,7 @@ class ConformanceSink implements OutputSink {
   publish(publication: Parameters<OutputSink['publish']>[0]): void {
     for (const output of publication.outputs) {
       this.emissions.push({
-        row: publication.row,
+        row: publication.index,
         oid: output.outputId,
         channels: [...output.channels],
         provisional: publication.provisional,
@@ -78,7 +77,7 @@ class ConformanceSink implements OutputSink {
     }
     for (const effect of publication.effects) {
       this.effects.push({
-        row: publication.row,
+        row: publication.index,
         effectId: effect.effectId,
         payload: effect.payload,
         provisional: publication.provisional,
@@ -234,24 +233,33 @@ async function runCase(entry: CorpusCase): Promise<{
   const module = loadModule(result.js);
   const sink = new ConformanceSink();
   const primary = reference.bindings[0];
-  const bound = await bind(module, {
+  const data = readFileSync(join(EXECUTION_ROOT, entry.data), 'utf8');
+  const requests = Object.fromEntries(
+    module.manifest.requests.map(request => [
+      request.name,
+      csvStream(data, request.context?.calcBarsCount || undefined),
+    ]),
+  );
+  const completed = await executeTestModule(module, {
     params: primary === undefined ? {} : Object.fromEntries(primary.params),
-    provider: csvProvider(
-      readFileSync(join(EXECUTION_ROOT, entry.data), 'utf8'),
-    ),
+    stream: csvStream(data),
+    requests,
     sink,
     timeNow: CONFORMANCE_TIME_NOW,
   });
   if (primary !== undefined) {
-    expectInputs(bound.inputs, primary.inputs, `${entry.id}.${primary.name}`);
+    expectInputs(
+      completed.inputs,
+      primary.inputs,
+      `${entry.id}.${primary.name}`,
+    );
   }
   for (const scenario of reference.bindings.slice(1)) {
     const scenarioSink = new ConformanceSink();
-    const rebound = await bind(module, {
+    const rebound = await executeTestModule(module, {
       params: Object.fromEntries(scenario.params),
-      provider: csvProvider(
-        readFileSync(join(EXECUTION_ROOT, entry.data), 'utf8'),
-      ),
+      stream: csvStream(data),
+      requests,
       sink: scenarioSink,
       timeNow: CONFORMANCE_TIME_NOW,
     });
@@ -262,9 +270,10 @@ async function runCase(entry: CorpusCase): Promise<{
     );
     expectSinkFiniteOrNa(scenarioSink, `${entry.id}.${scenario.name}`);
   }
-  await bound.runAll();
 
-  expect(bound.rows, `${entry.id} row count`).toBe(reference.rows.length);
+  expect(completed.indices, `${entry.id} index count`).toBe(
+    reference.rows.length,
+  );
   expect(sink.declared.length, `${entry.id} output count`).toBe(
     reference.outputs.length,
   );
@@ -296,7 +305,7 @@ async function runCase(entry: CorpusCase): Promise<{
   expect(
     reference.rows.map(row => row.row),
     `${entry.id} dense rows`,
-  ).toEqual(Array.from({length: bound.rows}, (_, row) => row));
+  ).toEqual(Array.from({length: completed.indices}, (_, row) => row));
   const expectedEmissions = reference.rows.flatMap(row =>
     row.emissions.map(emission => ({row: row.row, ...emission})),
   );

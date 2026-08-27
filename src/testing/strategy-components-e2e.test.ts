@@ -8,7 +8,6 @@ import {describe, expect, test} from 'vitest';
 import {newFileBase} from '../base/pos';
 import {Errors} from '../base/print';
 import {checkPackage} from '../checker/check';
-import {generate} from '../codegen/codegen';
 import type {Program} from '../ir/program';
 import {TypeKind} from '../ir/type';
 import {funcsOf} from '../ir/visit';
@@ -18,11 +17,9 @@ import {
   type Registry,
 } from '../loader/loader';
 import {buildProgram} from '../noder/noder';
-import {csvProvider} from '../providers/data/csv';
 import type {EffectValue, OutputSink, Value} from '../runtime/abi';
-import {bindFixedHistory as bind} from '../runtime/js/fixed-history';
-import {loadModule} from '../runtime/load';
 import {parse} from '../syntax/syntax';
+import {csvStream, executeTestProgram} from './batch';
 
 const LIBRARIES: Readonly<Record<string, string>> = {
   ta: readFileSync(
@@ -74,14 +71,14 @@ class Sink implements OutputSink {
   publish(publication: Parameters<OutputSink['publish']>[0]): void {
     for (const output of publication.outputs) {
       this.emissions.push({
-        row: publication.row,
+        row: publication.index,
         oid: output.outputId,
         channels: [...output.channels],
       });
     }
     for (const effect of publication.effects) {
       this.effects.push({
-        row: publication.row,
+        row: publication.index,
         effectId: effect.effectId,
         payload: effect.payload,
       });
@@ -89,10 +86,7 @@ class Sink implements OutputSink {
   }
 }
 
-function compileComponents(source: string): {
-  readonly program: Program;
-  readonly js: string;
-} {
+function compileComponents(source: string): Program {
   const errors = new Errors();
   const file = parse(
     newFileBase('strategy-components.tea'),
@@ -110,8 +104,7 @@ function compileComponents(source: string): {
 
   const program = buildProgram(checked, errors);
   failOnErrors(errors);
-  const js = generate(program);
-  return {program, js};
+  return program;
 }
 
 function failOnErrors(errors: Errors): void {
@@ -132,15 +125,12 @@ function failOnErrors(errors: Errors): void {
 async function execute(source: string, csv: string) {
   const compiled = compileComponents(source);
   const sink = new Sink();
-  const bound = await bind(loadModule(compiled.js), {
-    params: {},
-    provider: csvProvider(csv),
+  await executeTestProgram(compiled, {
+    stream: csvStream(csv),
     sink,
     timeNow: 0,
   });
-  await bound.runAll();
-  bound.dispose();
-  return {program: compiled.program, sink};
+  return {program: compiled, sink};
 }
 
 function valuesFor(sink: Sink, oid: number): readonly Value[] {

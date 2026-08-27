@@ -82,6 +82,14 @@ const int = (value: number): IrExpr => ({
   value,
 });
 
+const text = (value: string): IrExpr => ({
+  kind: IrKind.Const,
+  pos,
+  type: StringType,
+  qualifier: Qualifier.Const,
+  value,
+});
+
 const close: SeriesInput = {
   id: 'close',
   type: FloatType,
@@ -177,8 +185,8 @@ const edge: RequestEdge = {
   optionArgumentEvaluationOrder: [0, 1, 2, 3],
   merge: {
     mode: MergeMode.Sample,
-    gaps: bool(false),
-    lookahead: bool(false),
+    availability: text('end'),
+    fill: text('carry'),
     ignoreInvalidSymbol: bool(false),
     calcBarsCount: int(0),
   },

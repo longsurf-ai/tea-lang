@@ -37,7 +37,8 @@ it remains offline and reproducible; these numbers are therefore not a SPY or
 TradingView parity claim.
 
 ```sh
-tea execute examples/strategy/bb-spy-mean-reversion/sweep.yaml
+tea run examples/strategy/bb-spy-mean-reversion/strategy.tea \
+  -i examples/data/binance/btcusdt-1d.csv
 ```
 
 The 16-scenario JavaScript sweep processes 52,528 rows. On the 2026-08-16

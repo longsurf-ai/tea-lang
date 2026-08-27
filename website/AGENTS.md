@@ -8,7 +8,7 @@ navigation, and presentation.
 ## Invariants
 
 - The website must build from the standalone `tea-lang` package without any
-  `@openchart/*` dependency or path outside the package.
+  workspace-only dependency or path outside the package.
 - `website/package.json` is only the CommonJS build-tool boundary Docusaurus
   needs beneath Tea's ESM package; all dependency versions remain owned by the
   parent package manifest.

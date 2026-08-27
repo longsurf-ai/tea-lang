@@ -54,6 +54,7 @@ import {
   NA_VALUE,
   Qualifier,
   qualifierLE,
+  StringType,
   TypeKind,
   VoidType,
   joinQualifiers,
@@ -528,8 +529,8 @@ class Noder {
         if (request.dynamic) return;
         check(request.symbol);
         check(request.timeframe);
-        check(request.merge.gaps);
-        check(request.merge.lookahead);
+        check(request.merge.fill);
+        check(request.merge.availability);
         check(request.merge.ignoreInvalidSymbol);
         check(request.merge.calcBarsCount);
       });
@@ -1634,8 +1635,8 @@ class Noder {
       this.tvOf(timeframeExpr).type,
     );
     const optionNames = [
-      'gaps',
-      'lookahead',
+      'availability',
+      'fill',
       'ignore_invalid_symbol',
       'calc_bars_count',
     ] as const;
@@ -1675,14 +1676,14 @@ class Noder {
         resolved.native.name === 'request.security_lower_tf'
           ? MergeMode.Collect
           : MergeMode.Sample,
-      gaps: optionExpr('gaps', BoolType, false),
-      lookahead: optionExpr('lookahead', BoolType, false),
+      availability: optionExpr('availability', StringType, 'end'),
+      fill: optionExpr('fill', StringType, 'carry'),
       ignoreInvalidSymbol: optionExpr('ignore_invalid_symbol', BoolType, false),
       calcBarsCount: optionExpr('calc_bars_count', IntType, 0),
     };
     for (const [name, option] of [
-      ['gaps', merge.gaps],
-      ['lookahead', merge.lookahead],
+      ['availability', merge.availability],
+      ['fill', merge.fill],
       ['ignore_invalid_symbol', merge.ignoreInvalidSymbol],
       ['calc_bars_count', merge.calcBarsCount],
     ] as const) {

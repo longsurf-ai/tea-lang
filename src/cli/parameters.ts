@@ -1,16 +1,11 @@
-// Purpose: Parse source-declared parameter flags after Commander has parsed the fixed CLI surface.
+// Purpose: Parse source-declared parameter flags for one CLI Batch Recipe.
 
-import {
-  ExecutionParameterError,
-  resolveExecutionParameters,
-  type ParameterGrid,
-  type ParameterExecutionConfig,
-} from '../execution/parameters';
 import {OperationalError} from '../base/operational-error';
-import type {ParameterScalar, ParameterSelection} from '../execution/config';
-import type {ParamSpec} from '../runtime/abi';
+import {BindError} from '../runtime/errors';
+import type {ParamSpec} from '../runtime/schema';
+import {resolveParamValues} from '../runtime/params';
 
-export type CliParameterValue = ParameterScalar;
+export type CliParameterValue = number | string | boolean;
 
 export class CliParameterError extends OperationalError {
   constructor(message: string) {
@@ -19,103 +14,12 @@ export class CliParameterError extends OperationalError {
   }
 }
 
-export interface SweepParameterOptions {
-  readonly maxScenarios: number;
-  readonly reservedNames?: ReadonlySet<string>;
-}
-
-// Dynamic flags deliberately accept both conventional `--length` and the
-// Pine-friendly `-length` spelling. Commander owns fixed host flags first;
-// this parser sees only the tokens it did not recognize.
+/** Parses the dynamic parameter flags that follow one `tea run` command. */
 export function parseRunParameters(
   specs: readonly ParamSpec[],
   tokens: readonly string[],
   reservedNames: ReadonlySet<string> = new Set(),
 ): Readonly<Record<string, CliParameterValue>> {
-  const parameters = parseRunParameterSelections(specs, tokens, reservedNames);
-  const execution = {
-    kind: 'run',
-    parameters,
-  } as const;
-  const values = invokeResolver(specs, execution).sets[0]!;
-  return Object.fromEntries(
-    Object.keys(parameters).map(name => [name, values[name]!]),
-  );
-}
-
-export function parseRunParameterSelections(
-  specs: readonly ParamSpec[],
-  tokens: readonly string[],
-  reservedNames: ReadonlySet<string> = new Set(),
-): Readonly<Record<string, ParameterSelection>> {
-  return parseAssignments(specs, tokens, reservedNames, false);
-}
-
-export function parseSweepParameterSelections(
-  specs: readonly ParamSpec[],
-  tokens: readonly string[],
-  reservedNames: ReadonlySet<string> = new Set(),
-): Readonly<Record<string, ParameterSelection>> {
-  return parseAssignments(specs, tokens, reservedNames, true);
-}
-
-// Parameter sets are ordinary binding maps. Range provenance is kept separately
-// because a scalar flag is not a swept dimension, even though it participates
-// in every parameter set. Both follow source declaration order regardless of
-// CLI flag order; unspecified parameters remain absent so the runtime applies
-// their defaults.
-export function expandParameterSweep(
-  specs: readonly ParamSpec[],
-  tokens: readonly string[],
-  options: SweepParameterOptions,
-): ParameterGrid {
-  if (!Number.isSafeInteger(options.maxScenarios) || options.maxScenarios < 1) {
-    throw new CliParameterError(
-      'max scenarios must be a positive safe integer',
-    );
-  }
-  const parameters = parseSweepParameterSelections(
-    specs,
-    tokens,
-    options.reservedNames ?? new Set(),
-  );
-  const execution = {
-    kind: 'sweep',
-    parameters,
-    maxExecutions: options.maxScenarios,
-  } as const;
-  return invokeResolver(specs, execution);
-}
-
-// Compatibility surface for callers that only need execution parameter sets.
-export function expandSweepParameters(
-  specs: readonly ParamSpec[],
-  tokens: readonly string[],
-  options: SweepParameterOptions,
-): readonly Readonly<Record<string, CliParameterValue>>[] {
-  return expandParameterSweep(specs, tokens, options).sets;
-}
-
-function invokeResolver(
-  specs: readonly ParamSpec[],
-  execution: ParameterExecutionConfig,
-): ParameterGrid {
-  try {
-    return resolveExecutionParameters(specs, execution);
-  } catch (error) {
-    if (error instanceof ExecutionParameterError) {
-      throw new CliParameterError(error.message);
-    }
-    throw error;
-  }
-}
-
-function parseAssignments(
-  specs: readonly ParamSpec[],
-  tokens: readonly string[],
-  reservedNames: ReadonlySet<string>,
-  allowRanges: boolean,
-): Readonly<Record<string, ParameterSelection>> {
   const byName = new Map(specs.map(spec => [spec.name, spec]));
   for (const spec of specs) {
     if (reservedNames.has(spec.name)) {
@@ -125,7 +29,7 @@ function parseAssignments(
     }
   }
 
-  const parsed = Object.create(null) as Record<string, ParameterSelection>;
+  const parsed = Object.create(null) as Record<string, CliParameterValue>;
   const seen = new Set<string>();
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]!;
@@ -142,7 +46,7 @@ function parseAssignments(
 
     let raw = flag.value;
     if (raw === null) {
-      index++;
+      index += 1;
       raw = tokens[index] ?? null;
       if (raw === null) {
         throw new CliParameterError(
@@ -150,15 +54,22 @@ function parseAssignments(
         );
       }
     }
-
-    const numericRangeSyntax =
-      allowRanges && isNumericSpec(spec) && raw.split(':').length === 3;
-    parsed[spec.name] = numericRangeSyntax
-      ? parseNumericRange(spec, raw)
-      : coerceCliScalar(spec, raw);
+    parsed[spec.name] = coerceScalar(spec, raw);
     seen.add(spec.name);
   }
-  return parsed;
+
+  try {
+    const values = resolveParamValues(specs, parsed);
+    return Object.fromEntries(
+      specs.map((spec, index) => [
+        spec.name,
+        values[index] as CliParameterValue,
+      ]),
+    );
+  } catch (error) {
+    if (error instanceof BindError) throw new CliParameterError(error.message);
+    throw error;
+  }
 }
 
 function splitFlag(token: string): {
@@ -181,13 +92,7 @@ function splitFlag(token: string): {
   return {name, value};
 }
 
-function isNumericSpec(
-  spec: ParamSpec,
-): spec is ParamSpec & {readonly type: 'int' | 'float'} {
-  return spec.type === 'int' || spec.type === 'float';
-}
-
-function coerceCliScalar(spec: ParamSpec, raw: string): ParameterScalar {
+function coerceScalar(spec: ParamSpec, raw: string): CliParameterValue {
   switch (spec.type) {
     case 'int': {
       if (!/^[+-]?\d+$/.test(raw)) {
@@ -204,13 +109,8 @@ function coerceCliScalar(spec: ParamSpec, raw: string): ParameterScalar {
       return value;
     }
     case 'float': {
-      if (raw.trim() === '') {
-        throw new CliParameterError(
-          `parameter '${spec.name}' expects a number`,
-        );
-      }
       const value = Number(raw);
-      if (!Number.isFinite(value)) {
+      if (raw.trim() === '' || !Number.isFinite(value)) {
         throw new CliParameterError(
           `parameter '${spec.name}' expects a finite number`,
         );
@@ -227,55 +127,4 @@ function coerceCliScalar(spec: ParamSpec, raw: string): ParameterScalar {
     default:
       return raw;
   }
-}
-
-function parseNumericRange(
-  spec: ParamSpec & {readonly type: 'int' | 'float'},
-  raw: string,
-): ParameterSelection {
-  const parts = raw.split(':');
-  if (parts.length !== 3 || parts.some(part => part.length === 0)) {
-    throw new CliParameterError(
-      `parameter '${spec.name}' range must be start:stop:step`,
-    );
-  }
-  const [startText, stopText, stepText] = parts as [string, string, string];
-  const start = coerceCliScalar(spec, startText) as number;
-  const stop = coerceCliScalar(spec, stopText) as number;
-  const step = coerceCliScalar(spec, stepText) as number;
-  if (step === 0) {
-    throw new CliParameterError(
-      `parameter '${spec.name}' range step must not be zero`,
-    );
-  }
-  if ((stop > start && step < 0) || (stop < start && step > 0)) {
-    throw new CliParameterError(
-      `parameter '${spec.name}' range step points away from its stop`,
-    );
-  }
-  const precision = Math.max(
-    decimalPlaces(startText),
-    decimalPlaces(stopText),
-    decimalPlaces(stepText),
-  );
-  if (precision > 12) {
-    throw new CliParameterError(
-      `parameter '${spec.name}' range has more than 12 decimal places`,
-    );
-  }
-  return {
-    range: {
-      start,
-      stop,
-      step,
-    },
-  };
-}
-
-function decimalPlaces(raw: string): number {
-  const match = /^[+-]?(?:\d+(?:\.(\d*))?|\.(\d+))(?:e([+-]?\d+))?$/i.exec(raw);
-  if (match === null) return 0;
-  const fraction = match[1] ?? match[2] ?? '';
-  const exponent = Number(match[3] ?? 0);
-  return Math.max(0, fraction.length - exponent);
 }

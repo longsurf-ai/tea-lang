@@ -281,7 +281,7 @@ and child request results are restricted to scalars copied by value into the
 parent adapter. A `Ref` never crosses that boundary. For the Node-only
 `security_lower_tf` path, a frozen scalar batch enters the parent step and is
 materialized as an ordinary Tea array inside the parent Heap transaction;
-fixed-history collect remains unsupported. Detailed synchronization belongs to
+Batch collect remains unsupported. Detailed synchronization belongs to
 [Requests](requests.md).
 
 ## Empty values and errors

@@ -36,7 +36,7 @@ describe('generated manifest concretization', () => {
     expect(module.manifest.series[0]?.depth).toEqual({kind: 'bound'});
   });
 
-  test('preserves sparse provider builtin visibility', () => {
+  test('preserves sparse contextual builtin visibility', () => {
     const module = loadModule(
       generate(mustBuild('length = timeframe.multiplier\nplot(close[length])')),
     );
@@ -45,8 +45,7 @@ describe('generated manifest concretization', () => {
       "builtin 'timeframe.multiplier' is not bind-visible",
     );
     expect(
-      configureModule(module, [], new Map([[0, 7]])).manifest.series[0]
-        ?.depth,
+      configureModule(module, [], new Map([[0, 7]])).manifest.series[0]?.depth,
     ).toEqual({kind: 'const', bars: 7});
   });
 

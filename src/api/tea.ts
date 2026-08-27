@@ -7,9 +7,16 @@ import {compileToProgram} from '../compiler';
 import {generate} from '../codegen/codegen';
 import {loadModule} from '../runtime/load';
 import {moduleBindings, withModuleBindings} from '../runtime/module-binding';
+import {pineBuiltinSupplier} from '../extension/pine';
 import {createNode, type Node} from './node';
 
-export type {BindingInput, Datum, Node} from './node';
+export type {
+  BindingInput,
+  Datum,
+  DenseEmission,
+  EffectEmission,
+  Node,
+} from './node';
 
 const TEMPLATE_FILENAME = '<tea-template>';
 
@@ -22,7 +29,27 @@ export class TeaCompileError extends OperationalError {
   }
 }
 
-/** Compile Tea source synchronously; Node keeps lifecycle Effects internal. */
+function dedent(source: string): string {
+  const lines = source.split(/\r?\n/);
+  while (lines[0]?.trim() === '') lines.shift();
+  while (lines.at(-1)?.trim() === '') lines.pop();
+
+  const contentLines = lines.filter(line => line.trim() !== '');
+  let prefix = contentLines[0]?.match(/^[ \t]*/)?.[0] ?? '';
+  for (const line of contentLines.slice(1)) {
+    while (prefix !== '' && !line.startsWith(prefix)) {
+      prefix = prefix.slice(0, -1);
+    }
+  }
+  return lines.map(line => line.slice(prefix.length)).join('\n');
+}
+
+/**
+ * Top level tea API entrypoint to create a new Tea node.
+ * @param strings
+ * @param args
+ * @returns
+ */
 export function tea(
   strings: TemplateStringsArray,
   ...args: readonly unknown[]
@@ -45,20 +72,5 @@ export function tea(
 
   const loaded = loadModule(generate(program));
   const module = withModuleBindings(loaded, moduleBindings(loaded));
-  return createNode(module);
-}
-
-function dedent(source: string): string {
-  const lines = source.split(/\r?\n/);
-  while (lines[0]?.trim() === '') lines.shift();
-  while (lines.at(-1)?.trim() === '') lines.pop();
-
-  const contentLines = lines.filter(line => line.trim() !== '');
-  let prefix = contentLines[0]?.match(/^[ \t]*/)?.[0] ?? '';
-  for (const line of contentLines.slice(1)) {
-    while (prefix !== '' && !line.startsWith(prefix)) {
-      prefix = prefix.slice(0, -1);
-    }
-  }
-  return lines.map(line => line.slice(prefix.length)).join('\n');
+  return createNode(module, pineBuiltinSupplier());
 }

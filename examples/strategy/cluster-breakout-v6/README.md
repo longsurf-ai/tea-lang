@@ -33,7 +33,8 @@ The 36-scenario CPU sweep varies cluster length, ATR tightness, breakout buffer,
 and strong-close threshold over the SHA-256-pinned BTCUSDT daily snapshot:
 
 ```sh
-tea execute examples/strategy/cluster-breakout-v6/sweep.yaml
+tea run examples/strategy/cluster-breakout-v6/strategy.tea \
+  -i examples/data/binance/btcusdt-1d.csv
 ```
 
 Revalidated on 2026-08-16 with `js-f64`, the sweep executed 36 bindings and

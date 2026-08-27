@@ -2,14 +2,11 @@
 // policy-specific trade package.
 
 import {describe, expect, test} from 'vitest';
-import {generate} from '../codegen/codegen';
 import {funcsOf} from '../ir/visit';
 import {defaultRegistry} from '../loader/loader';
 import {mustBuild} from '../noder/testing';
-import {csvProvider} from '../providers/data/csv';
 import type {OutputSink, Value} from '../runtime/abi';
-import {bindFixedHistory as bind} from '../runtime/js/fixed-history';
-import {loadModule} from '../runtime/load';
+import {csvStream, executeTestProgram} from '../testing/batch';
 import {ObjectKind} from './object';
 import {checkText, type CheckResult} from './testing';
 
@@ -63,7 +60,7 @@ class Sink implements OutputSink {
   publish(publication: Parameters<OutputSink['publish']>[0]): void {
     for (const output of publication.outputs) {
       this.emissions.push({
-        row: publication.row,
+        row: publication.index,
         oid: output.outputId,
         channels: [...output.channels],
       });
@@ -203,15 +200,15 @@ describe('trade library', () => {
     );
     const messages = result.errors.map(error => error.msg);
 
-    expect(
-      messages.some(message => message.includes('close_trade')),
-    ).toBe(true);
-    expect(
-      messages.some(message => message.includes('continue_bar')),
-    ).toBe(true);
-    expect(
-      messages.some(message => message.includes('process_close')),
-    ).toBe(true);
+    expect(messages.some(message => message.includes('close_trade'))).toBe(
+      true,
+    );
+    expect(messages.some(message => message.includes('continue_bar'))).toBe(
+      true,
+    );
+    expect(messages.some(message => message.includes('process_close'))).toBe(
+      true,
+    );
     expect(messages.some(message => message.includes('cancel'))).toBe(true);
     expect(messages.some(message => message.includes('open_trade'))).toBe(true);
   });
@@ -265,15 +262,11 @@ describe('trade library', () => {
     ].join('\n');
     const program = mustBuild(source);
     const sink = new Sink();
-    const bound = await bind(loadModule(generate(program)), {
-      params: {},
-      provider: csvProvider(['close', '10', '12', ''].join('\n')),
+    await executeTestProgram(program, {
+      stream: csvStream(['close', '10', '12', ''].join('\n')),
       sink,
       timeNow: 0,
     });
-
-    await bound.runAll();
-    bound.dispose();
 
     expect(valuesFor(sink, 1)).toEqual([90, 102]);
     expect(valuesFor(sink, 2)).toEqual([1, 0]);

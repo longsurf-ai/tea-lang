@@ -1,338 +1,211 @@
-// Purpose: CLI host adapters for the three first-class execution entry points: run, sweep, and configured execute.
+// Purpose: Run one Tea file through the public finite Batch Recipe.
 
-import {resolve} from 'node:path';
-import type {ErrorMsg} from '../base/print';
+import {from, firstValueFrom, toArray} from 'rxjs';
+import * as z from 'zod';
+import {i} from '../api/clock';
+import {createNode} from '../api/node';
+import {CSVSource} from '../api/source';
+import {DataStream} from '../api/stream';
 import {Errors} from '../base/print';
-import {compileToProgram} from '../compiler';
+import {generate} from '../codegen/codegen';
 import {paramSpecsOf} from '../codegen/params';
-import type {ExecutionSummary} from '../execution/execute';
-import {type ExecutionConfig, ExecutionConfigError} from '../execution/config';
-import {runProgram, type RunResult} from '../execution/run';
-import {RunReportSink, SweepReportSink} from '../providers/sinks/report-sink';
+import {compileToProgram} from '../compiler';
+import {pineBuiltinSupplier} from '../extension/pine';
+import {RunReportSink} from '../sinks/report-sink';
+import {TraceSink} from '../sinks/trace-sink';
+import {batchRecipe} from '../recipe/batch';
 import {
-  TrajectoryArchive,
-  type TrajectoryArchiveSink,
-} from '../providers/sinks/trajectory-archive';
-import {TraceSink} from '../providers/sinks/trace-sink';
-import {
-  buildExecutionSystemResult,
-  buildSweepResult,
-  buildTrajectoryResult,
-  EXECUTION_RESULT_SCHEMA,
   parameterReportSection,
   renderReport,
-  sweepResultSection,
   systemReportSection,
-  type ReportSection,
-  type SweepResult,
-} from '../reporting';
-import type {OutputSink} from '../runtime/abi';
+} from '../reporting/report';
+import {loadModule} from '../runtime/load';
 import {
-  parseRunParameterSelections,
-  parseSweepParameterSelections,
-} from './parameters';
+  boundInputs,
+  moduleBindings,
+  moduleDeclaration,
+  withModuleBindings,
+} from '../runtime/module-binding';
+import type {OutputSink} from '../runtime/output';
+import {parseRunParameters} from './parameters';
 import type {CliResult} from './result';
-
-const JSON_RESULT_MAX_BYTES = 256 * 1024 * 1024;
 
 const RUN_RESERVED_PARAMETERS = new Set([
   'input',
   'i',
   'trace',
-  'gpu',
   'help',
   'h',
   'version',
   'V',
 ]);
 
-const SWEEP_RESERVED_PARAMETERS = new Set([
-  'input',
-  'i',
-  'cpu',
-  'max-scenarios',
-  'help',
-  'h',
-  'version',
-  'V',
-]);
-
-export interface CliExecutionHost {
-  readonly environment: NodeJS.ProcessEnv;
-  readonly fetchImpl: typeof fetch;
-  readonly now: () => number;
+export type CliExecutionHost = Readonly<{
+  now: () => number;
   print(line: string): void;
-}
+}>;
 
-export type ExecuteOutput = 'text' | 'json';
-
-export async function execute(
-  config: ExecutionConfig,
-  host: CliExecutionHost,
-  output: ExecuteOutput,
-): Promise<CliResult> {
-  const errors = new Errors();
-  const program = compileToProgram([config.program.source], errors);
-  if (program === null) {
-    return {
-      ok: false,
-      kind: 'diagnostics',
-      errors: errors.flushErrors(),
-    };
-  }
-  if (config.execution.kind === 'run') {
-    const sink = new RunReportSink();
-    const run = await runProgram(
-      program,
-      config,
-      executionDependencies(host, () => sink),
-    );
-    if (output === 'json') {
-      const binding = run.summary.bindings[0];
-      if (binding === undefined) {
-        throw new ExecutionConfigError('run execution produced no trajectory');
-      }
-      printJson(host, {
-        ...machineResultBase(config, run),
-        trajectory: buildTrajectoryResult(binding, sink.snapshot()),
-      });
-    } else {
-      renderRunExecution(host, run, sink);
-    }
-    return {ok: true};
-  }
-
-  if (output === 'text') {
-    const sinks: SweepReportSink[] = [];
-    const run = await runProgram(
-      program,
-      config,
-      executionDependencies(host, executionIndex => {
-        const sink = new SweepReportSink();
-        sinks[executionIndex] = sink;
-        return sink;
-      }),
-    );
-    renderSweepExecution(host, run, sinks);
-    return {ok: true};
-  }
-
-  const archive = new TrajectoryArchive({
-    maxBytes: JSON_RESULT_MAX_BYTES,
-    maxProjectionBytes: JSON_RESULT_MAX_BYTES,
-  });
-  const sinks: TrajectoryArchiveSink[] = [];
-  try {
-    const run = await runProgram(
-      program,
-      config,
-      executionDependencies(host, executionIndex => {
-        const sink = archive.createSink();
-        sinks[executionIndex] = sink;
-        return sink;
-      }),
-    );
-    printJson(host, {
-      ...machineResultBase(config, run),
-      sweep: sweepResultForExecution(run, sinks),
-      trajectories: archive.trajectories(run.summary.bindings),
-    });
-    return {ok: true};
-  } finally {
-    archive.reset();
-  }
-}
-
+/** Compiles and runs one finite CSV-backed Node through `batchRecipe()`. */
 export async function runCommand(
   file: string,
   input: string,
-  options: {readonly trace: boolean; readonly gpu: boolean},
+  options: {readonly trace: boolean},
   dynamicTokens: readonly string[],
   host: CliExecutionHost,
 ): Promise<CliResult> {
-  const errors = new Errors();
-  const program = compileToProgram([file], errors);
-  if (program === null) {
-    return {
-      ok: false,
-      kind: 'diagnostics',
-      errors: errors.flushErrors(),
-    };
+  let compilationMs = 0;
+  let program;
+  {
+    using _timer = elapsed(value => {
+      compilationMs = value;
+    });
+    const errors = new Errors();
+    program = compileToProgram([file], errors);
+    if (program === null) {
+      return {
+        ok: false,
+        kind: 'diagnostics',
+        errors: errors.flushErrors(),
+      };
+    }
   }
-  const parameters = parseRunParameterSelections(
+
+  const parameters = parseRunParameters(
     paramSpecsOf(program.params),
     dynamicTokens,
     RUN_RESERVED_PARAMETERS,
   );
-  const reportSink = options.trace ? null : new RunReportSink();
-  const sink: OutputSink =
-    reportSink ?? new TraceSink(line => host.print(line));
-  const execution = await runProgram(
-    program,
-    directConfig(
-      'run',
-      file,
-      input,
-      {kind: options.gpu ? 'webgpu' : 'javascript'},
-      parameters,
-    ),
-    executionDependencies(host, () => sink),
+  const loaded = loadModule(generate(program));
+  const node = createNode(
+    withModuleBindings(loaded, moduleBindings(loaded)),
+    pineBuiltinSupplier(host.now),
   );
-  renderRunExecution(host, execution, reportSink);
-  return {ok: true};
-}
+  if (Object.keys(parameters).length !== 0) node.bind(parameters);
 
-export async function sweepCommand(
-  file: string,
-  input: string,
-  options: {readonly cpu: boolean; readonly maxScenarios: number},
-  dynamicTokens: readonly string[],
-  host: CliExecutionHost,
-): Promise<CliResult> {
-  const errors = new Errors();
-  const program = compileToProgram([file], errors);
-  if (program === null) {
-    return {
-      ok: false,
-      kind: 'diagnostics',
-      errors: errors.flushErrors(),
-    };
+  const sink: OutputSink = options.trace
+    ? new TraceSink(line => host.print(line))
+    : new RunReportSink();
+  sink.declare(moduleDeclaration(node.module));
+  const stream = await csvBatchStream(input);
+
+  let executionMs = 0;
+  let result;
+  {
+    using _timer = elapsed(value => {
+      executionMs = value;
+    });
+    result = await batchRecipe(node, [stream], {
+      next: datum => sink.publish(datum),
+    }).execute();
   }
-  const parameters = parseSweepParameterSelections(
-    paramSpecsOf(program.params),
-    dynamicTokens,
-    SWEEP_RESERVED_PARAMETERS,
-  );
-  const config = directConfig(
-    'sweep',
-    file,
-    input,
-    {kind: options.cpu ? 'javascript' : 'webgpu'},
-    parameters,
-    options.maxScenarios,
-  );
-  const sinks: SweepReportSink[] = [];
-  const execution = await runProgram(
-    program,
-    config,
-    executionDependencies(host, executionIndex => {
-      const sink = new SweepReportSink();
-      sinks[executionIndex] = sink;
-      return sink;
-    }),
-  );
-  renderSweepExecution(host, execution, sinks);
-  return {ok: true};
-}
 
-function directConfig(
-  kind: 'run' | 'sweep',
-  source: string,
-  input: string,
-  runtime: ExecutionConfig['runtime'],
-  parameters: ExecutionConfig['execution']['parameters'],
-  maxExecutions?: number,
-): ExecutionConfig {
-  const provider = {kind: 'csv' as const, path: resolve(input)};
-  const execution =
-    kind === 'run'
-      ? ({kind, provider, parameters} as const)
-      : ({
-          kind,
-          provider,
-          parameters,
-          ...(maxExecutions === undefined ? {} : {maxExecutions}),
-        } as const);
-  return {
-    schema: 'tea.execution/v1',
-    program: {source: resolve(source)},
-    runtime,
-    execution,
-  };
-}
-
-function executionDependencies(
-  host: CliExecutionHost,
-  sinkForExecution: (executionIndex: number) => OutputSink,
-) {
-  return {
-    environment: host.environment,
-    fetchImpl: host.fetchImpl,
-    now: host.now,
-    sinkForExecution,
-  };
-}
-
-function reportSectionsForRun(
-  summary: ExecutionSummary,
-  sink: RunReportSink,
-  device?: string,
-): readonly ReportSection[] {
-  return [
-    systemReportSection(summary, {device}),
-    parameterReportSection(summary),
-    sink.denseSection(),
-    sink.effectsSection(),
-  ].filter(section => section.rows.length > 0);
-}
-
-function renderRunExecution(
-  host: CliExecutionHost,
-  execution: RunResult,
-  sink: RunReportSink | null,
-): void {
-  if (sink === null) return;
-  const rendered = renderReport(
-    reportSectionsForRun(execution.summary, sink, execution.device),
-  );
-  if (rendered.length > 0) host.print(rendered);
-}
-
-function renderSweepExecution(
-  host: CliExecutionHost,
-  execution: RunResult,
-  sinks: readonly SweepReportSink[],
-): void {
-  const result = sweepResultForExecution(execution, sinks);
-  const rendered = renderReport([
-    systemReportSection(execution.summary, {device: execution.device}),
-    sweepResultSection(result),
-  ]);
-  if (rendered.length > 0) host.print(rendered);
-}
-
-function sweepResultForExecution(
-  execution: RunResult,
-  sinks: readonly {
-    snapshot(bindingIndex: number): ReturnType<SweepReportSink['snapshot']>;
-  }[],
-): SweepResult {
-  return buildSweepResult(
-    execution.summary,
-    sinks.map((sink, index) =>
-      sink.snapshot(execution.summary.bindings[index]!.bindingIndex),
-    ),
-    execution.ranges,
-  );
-}
-
-function machineResultBase(config: ExecutionConfig, execution: RunResult) {
-  if (execution.providerHash === undefined) {
-    throw new ExecutionConfigError(
-      'machine execution did not capture provider bytes',
+  if (sink instanceof RunReportSink) {
+    const totalMs = compilationMs + executionMs;
+    const rendered = renderReport(
+      [
+        systemReportSection({
+          indices: result.indices,
+          timing: {compilationMs, executionMs, totalMs},
+        }),
+        parameterReportSection(boundInputs(node.module)),
+        sink.denseSection(),
+        sink.effectsSection(),
+      ].filter(section => section.rows.length > 0),
     );
+    if (rendered.length > 0) host.print(rendered);
   }
-  return {
-    schema: EXECUTION_RESULT_SCHEMA,
-    snapshot: {
-      programSource: config.program.source,
-      providerHash: execution.providerHash,
-      timeNow: execution.timeNow,
-    },
-    system: buildExecutionSystemResult(execution),
-  } as const;
+  return {ok: true};
 }
 
-function printJson(host: CliExecutionHost, value: unknown): void {
-  host.print(JSON.stringify(value));
+async function csvBatchStream(
+  path: string,
+): Promise<DataStream<Readonly<Record<string, unknown>>>> {
+  const discovered = await CSVSource.open(path);
+  const inputShape: Record<string, z.ZodType> = Object.fromEntries(
+    Object.keys(discovered.schema.shape).map(name => [
+      name,
+      name === 'time' || name === 'time_close'
+        ? z.coerce.bigint()
+        : z.coerce.number(),
+    ]),
+  );
+  const source = new CSVSource(
+    path,
+    z.strictObject(inputShape),
+    i,
+    discovered.indices,
+  );
+  const input = await firstValueFrom(
+    source.stream().asObservable().pipe(toArray()),
+  );
+  const rows = input.map((value, index) => {
+    const row = {...value} as Record<string, unknown>;
+    derivePrice(row, 'hl2', ['high', 'low'], values => divide(sum(values), 2));
+    derivePrice(row, 'hlc3', ['high', 'low', 'close'], values =>
+      divide(sum(values), 3),
+    );
+    derivePrice(row, 'ohlc4', ['open', 'high', 'low', 'close'], values =>
+      divide(sum(values), 4),
+    );
+    derivePrice(row, 'hlcc4', ['high', 'low', 'close'], values =>
+      divide(sum(values) + values[2]!, 4),
+    );
+    if (Object.hasOwn(row, 'time') && !Object.hasOwn(row, 'time_close')) {
+      const time = row.time as bigint;
+      const next = input[index + 1]?.time;
+      const previous = input[index - 1]?.time;
+      const span =
+        typeof next === 'bigint'
+          ? next - time
+          : typeof previous === 'bigint'
+            ? time - previous
+            : 0n;
+      row.time_close = time + span;
+    }
+    return Object.freeze(row);
+  });
+  const outputShape: Record<string, z.ZodType> = {...inputShape};
+  if ('time' in inputShape && !('time_close' in outputShape)) {
+    outputShape.time_close = z.bigint();
+  }
+  for (const name of ['hl2', 'hlc3', 'ohlc4', 'hlcc4']) {
+    if (rows.some(row => Object.hasOwn(row, name)))
+      outputShape[name] = z.number();
+  }
+  return new DataStream(
+    z.strictObject(outputShape),
+    from(rows),
+    i,
+    rows.length,
+  );
+}
+
+function derivePrice(
+  row: Record<string, unknown>,
+  output: string,
+  inputs: readonly string[],
+  calculate: (values: readonly number[]) => number,
+): void {
+  if (Object.hasOwn(row, output)) return;
+  const values = inputs.map(name => row[name]);
+  if (values.every(value => typeof value === 'number')) {
+    row[output] = calculate(values as number[]);
+  }
+}
+
+function sum(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
+}
+
+function divide(value: number, divisor: number): number {
+  return value / divisor;
+}
+
+function elapsed(set: (milliseconds: number) => void): Disposable {
+  const started = performance.now();
+  return {
+    [Symbol.dispose]() {
+      set(performance.now() - started);
+    },
+  };
 }

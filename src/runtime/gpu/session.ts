@@ -18,48 +18,31 @@ import {
   type WgslResultChannel,
   type WgslValueSchema,
 } from '../../gpu/contract';
-import type {BindInputs, BoundInput} from '../binding';
+import type {BoundInput} from '../binding';
 import {loadModule} from '../load';
 import {resolveGeneratedBindingLayout} from '../module-binding';
 import {RUNTIME_ABI_VERSION, type JSModule} from '../module-abi';
-import {
-  isContextError,
-  type ContextError,
-  type DataProvider,
-  type ProviderContext,
-  type SeriesData,
-} from '../provider';
 import type {
   DenseEmission,
   EffectEmission,
   ExecutionDeclaration,
-  RowPublication,
+  OutputSink,
+  Datum,
 } from '../output';
 import {resolveParamValues} from '../params';
 import type {EffectValue, Value} from '../value';
 
 const MAX_U32 = 0xffff_ffff;
 const MAX_I32 = 0x7fff_ffff;
-// Large historical executions otherwise spend most of their time in command
-// submission and readback. Resource planning remains exact and device limits
-// are checked before provider materialization.
-const DEFAULT_MAX_ROWS_PER_CHUNK = 65_536;
-const DEFAULT_MAX_CACHE_BYTES_PER_WORKGROUP = 16 * 1024;
-// The generated cache address lookup is a balanced segment tree. Beyond four
-// routing levels, or when a workgroup owns only one execution, the additional
-// copy and routing work outweighed storage access in the representative
-// historical sweep benchmark.
-const MAX_PROFITABLE_CACHE_SEGMENTS = 16;
 const MIN_WEBGPU_BUFFER_BYTES = 4;
 
-export interface GpuExecutionOptions {
-  readonly maxRowsPerChunk?: number;
-  readonly effectRecordsPerExecution?: number;
-  readonly maxGpuBytes?: number;
-  // Zero forces the storage-only entry point. Other values cap the selected
-  // whole-segment workgroup-cache prefix.
-  readonly maxCacheBytesPerWorkgroup?: number;
-}
+export type GpuBinding = Readonly<{
+  params: Readonly<Record<string, unknown>>;
+  indices: number;
+  series: Readonly<Record<string, readonly number[]>>;
+  time?: readonly (number | null)[];
+  sink: OutputSink;
+}>;
 
 export interface GpuChunkResult {
   readonly bindings: readonly GpuBindingProgress[];
@@ -70,7 +53,6 @@ export interface GpuRunSummary {
   readonly bindings: readonly GpuBindingSummary[];
   readonly chunks: number;
   readonly dispatches: number;
-  readonly cache: GpuCachePlacement;
   readonly timing: GpuRunTiming;
 }
 
@@ -85,21 +67,13 @@ export interface GpuRunTiming {
   readonly decodePublicationMs: number;
 }
 
-export interface GpuCachePlacement {
-  readonly mode: 'storage-only' | 'workgroup-prefix';
-  readonly entryPoint: string;
-  readonly workgroupSize: number;
-  readonly cachedWordsPerExecution: number;
-  readonly cachedBytesPerExecution: number;
-  readonly bytesPerWorkgroup: number;
-  readonly segmentIds: readonly string[];
-}
-
-export interface GpuCacheDeviceLimits {
-  readonly maxComputeInvocationsPerWorkgroup: number;
-  readonly maxComputeWorkgroupSizeX: number;
-  readonly maxComputeWorkgroupStorageSize: number;
-}
+type GpuPipelinePlan = Readonly<{
+  entryPoint: string;
+  workgroupSize: number;
+  cacheWordsPerExecution: number;
+  cacheAllocationWords: number;
+  bytesPerWorkgroup: number;
+}>;
 
 export interface GpuBindingProgress {
   readonly bindingIndex: number;
@@ -149,9 +123,11 @@ interface DenseDecoderPlan {
   readonly outputs: readonly DenseOutputDecoder[];
 }
 
-interface ContextSeries {
+interface BindingSeries {
   readonly bindingIndex: number;
-  readonly series: readonly SeriesData[];
+  readonly indices: number;
+  readonly offset: number;
+  readonly series: readonly (readonly number[])[];
 }
 
 interface GpuBufferDeviceLimits {
@@ -161,8 +137,7 @@ interface GpuBufferDeviceLimits {
 
 export interface PreparedGpuExecutionInstance {
   readonly bindingIndex: number;
-  readonly inputs: BindInputs;
-  readonly context: ProviderContext;
+  readonly binding: GpuBinding;
   readonly rows: number;
   readonly boundInputs: readonly BoundInput[];
   // Scalar-cell offset into `seriesPayload`; every required series occupies
@@ -179,12 +154,9 @@ export interface PreparedGpuExecutionInstance {
     readonly historyWordOffset: number;
     readonly capacity: number;
   }[];
-  // Result-cell range assigned to this execution. Final-dense sinks own one
-  // row of cells; complete sinks own the chunk-sized row stream.
-  readonly finalDenseOnly: boolean;
+  // Result-cell range assigned to this execution.
   readonly resultOffset: number;
   readonly resultCapacity: number;
-  readonly capturesEffects: boolean;
   readonly effectOffset: number;
   readonly effectCapacity: number;
 }
@@ -211,7 +183,7 @@ export interface PreparedGpuExecution {
   readonly paramPayload: Uint8Array;
   readonly statePayload: Uint8Array;
   readonly chunkRows: number;
-  readonly effectRecordsPerExecution: number;
+  readonly effectCapacity: number;
   readonly effectRecordCount: number;
   readonly resources: GpuResourceSizes;
 }
@@ -230,72 +202,43 @@ export class GpuExecutionError extends OperationalError {
   }
 }
 
-export function planGpuWorkgroupCache(
+function planPipeline(
   artifact: CompiledWgslProgram,
   executionCount: number,
-  limits: GpuCacheDeviceLimits,
-  options: Pick<GpuExecutionOptions, 'maxCacheBytesPerWorkgroup'> = {},
-): GpuCachePlacement {
-  validateArtifact(artifact);
+  limits: GPUSupportedLimits,
+): GpuPipelinePlan {
   requireU32(executionCount, 'GPU execution count');
-  const maxInvocations = deviceLimit(
-    limits.maxComputeInvocationsPerWorkgroup,
-    'maxComputeInvocationsPerWorkgroup',
+  const maximumSize = Math.min(
+    artifact.workgroupSize[0],
+    deviceLimit(
+      limits.maxComputeInvocationsPerWorkgroup,
+      'maxComputeInvocationsPerWorkgroup',
+    ),
+    deviceLimit(limits.maxComputeWorkgroupSizeX, 'maxComputeWorkgroupSizeX'),
   );
-  const maxSizeX = deviceLimit(
-    limits.maxComputeWorkgroupSizeX,
-    'maxComputeWorkgroupSizeX',
-  );
-  const maxStorageBytes = optionalDeviceLimit(
-    limits.maxComputeWorkgroupStorageSize,
-    'maxComputeWorkgroupStorageSize',
-  );
-  const requestedCacheBytes = optionalNonnegativeInteger(
-    options.maxCacheBytesPerWorkgroup,
-    'maxCacheBytesPerWorkgroup',
-  );
-  const defaultSize = artifact.cache.overrides.workgroupSize.defaultValue;
-  const maximumSize = Math.min(defaultSize, maxInvocations, maxSizeX);
   const desiredSize = Math.min(Math.max(1, executionCount), maximumSize);
   let workgroupSize = 1;
-  while (workgroupSize < desiredSize && workgroupSize * 2 <= maximumSize) {
-    workgroupSize *= 2;
-  }
-  const cacheIsProfitable =
-    workgroupSize > 1 &&
-    artifact.cache.segments.length <= MAX_PROFITABLE_CACHE_SEGMENTS;
-  const budget =
-    executionCount === 0 || !cacheIsProfitable
-      ? 0
-      : Math.min(
-          requestedCacheBytes ?? DEFAULT_MAX_CACHE_BYTES_PER_WORKGROUP,
-          maxStorageBytes,
-        );
-  let cachedWordsPerExecution = 0;
-  let segmentCount = 0;
+  while (workgroupSize * 2 <= desiredSize) workgroupSize *= 2;
+  const storageLimit = Number(limits.maxComputeWorkgroupStorageSize);
+  let cacheWordsPerExecution = 0;
   for (const segment of artifact.cache.segments) {
     const bytes =
       segment.cacheEnd * workgroupSize * Uint32Array.BYTES_PER_ELEMENT;
-    if (!Number.isSafeInteger(bytes) || bytes > budget) break;
-    cachedWordsPerExecution = segment.cacheEnd;
-    segmentCount += 1;
+    if (!Number.isSafeInteger(bytes) || bytes > storageLimit) break;
+    cacheWordsPerExecution = segment.cacheEnd;
   }
-  const cachedBytesPerExecution =
-    cachedWordsPerExecution * Uint32Array.BYTES_PER_ELEMENT;
-  const bytesPerWorkgroup = cachedBytesPerExecution * workgroupSize;
+  const cacheAllocationWords =
+    cacheWordsPerExecution === 0 ? 1 : cacheWordsPerExecution * workgroupSize;
   return {
-    mode: cachedWordsPerExecution === 0 ? 'storage-only' : 'workgroup-prefix',
     entryPoint:
-      cachedWordsPerExecution === 0
+      cacheWordsPerExecution === 0
         ? artifact.cache.storageEntryPoint
         : artifact.cache.cachedEntryPoint,
     workgroupSize,
-    cachedWordsPerExecution,
-    cachedBytesPerExecution,
-    bytesPerWorkgroup,
-    segmentIds: artifact.cache.segments
-      .slice(0, segmentCount)
-      .map(segment => segment.id),
+    cacheWordsPerExecution,
+    cacheAllocationWords,
+    bytesPerWorkgroup:
+      cacheWordsPerExecution * workgroupSize * Uint32Array.BYTES_PER_ELEMENT,
   };
 }
 
@@ -306,77 +249,28 @@ function deviceLimit(value: number, name: string): number {
   return value;
 }
 
-function optionalDeviceLimit(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_U32) {
-    throw new GpuExecutionError(`GPU device has invalid ${name} ${value}`);
-  }
-  return value;
-}
-
-function cachePipelineConstants(
-  artifact: CompiledWgslProgram,
-  cache: GpuCachePlacement,
-): Record<string, number> {
-  const selected = artifact.cache.segments.find(
-    segment => segment.cacheEnd === cache.cachedWordsPerExecution,
-  );
-  if (
-    (cache.cachedWordsPerExecution === 0 && cache.segmentIds.length !== 0) ||
-    (cache.cachedWordsPerExecution > 0 &&
-      (selected === undefined || selected.rank + 1 !== cache.segmentIds.length))
-  ) {
-    throw new GpuExecutionError(
-      'GPU cache placement does not end on a ranked segment boundary',
-    );
-  }
-  const allocationWords =
-    cache.cachedWordsPerExecution === 0
-      ? 1
-      : cache.cachedWordsPerExecution * cache.workgroupSize;
-  if (
-    !Number.isSafeInteger(allocationWords) ||
-    allocationWords <= 0 ||
-    (cache.cachedWordsPerExecution === 0
-      ? allocationWords !== 1
-      : allocationWords * Uint32Array.BYTES_PER_ELEMENT !==
-        cache.bytesPerWorkgroup)
-  ) {
-    throw new GpuExecutionError('GPU cache allocation constants disagree');
-  }
-  const overrides = artifact.cache.overrides;
-  return {
-    [String(overrides.workgroupSize.numericId)]: cache.workgroupSize,
-    [String(overrides.cacheWordsPerExecution.numericId)]:
-      cache.cachedWordsPerExecution,
-    [String(overrides.cacheAllocationWords.numericId)]: allocationWords,
-  };
-}
-
 export async function createGpuExecution(
   device: GPUDevice,
   artifact: CompiledWgslProgram,
-  bindings: readonly BindInputs[],
-  options: GpuExecutionOptions = {},
+  bindings: readonly GpuBinding[],
 ): Promise<GpuExecution> {
   const prepared = await prepareGpuExecutionInputsWithLimits(
     artifact,
     bindings,
-    options,
     device.limits,
   );
   const declaration = executionDeclaration(artifact);
-  const cache = planGpuWorkgroupCache(
+  const pipelinePlan = planPipeline(
     artifact,
     prepared.executions.length,
     device.limits,
-    options,
   );
   if (prepared.resources.total === 0) {
     declareBindings(prepared, declaration);
-    return new InertGpuExecution(prepared, cache);
+    return new InertGpuExecution(prepared);
   }
 
-  validateDeviceLimits(device, prepared, cache);
+  validateDeviceLimits(device, prepared, pipelinePlan);
   const module = device.createShaderModule({code: artifact.module.source});
   const compilation = await module.getCompilationInfo();
   const diagnostics = compilation.messages.filter(
@@ -469,8 +363,15 @@ export async function createGpuExecution(
       layout: 'auto',
       compute: {
         module,
-        entryPoint: cache.entryPoint,
-        constants: cachePipelineConstants(artifact, cache),
+        entryPoint: pipelinePlan.entryPoint,
+        constants: {
+          [String(artifact.cache.overrides.workgroupSize.numericId)]:
+            pipelinePlan.workgroupSize,
+          [String(artifact.cache.overrides.cacheWordsPerExecution.numericId)]:
+            pipelinePlan.cacheWordsPerExecution,
+          [String(artifact.cache.overrides.cacheAllocationWords.numericId)]:
+            pipelinePlan.cacheAllocationWords,
+        },
       },
     });
     const external = artifact.externalBuffers;
@@ -520,7 +421,7 @@ export async function createGpuExecution(
       pipeline,
       bindGroup,
       gpuBuffers,
-      cache,
+      pipelinePlan.workgroupSize,
     );
   } catch (error) {
     buffers.forEach(buffer => buffer.destroy());
@@ -530,10 +431,7 @@ export async function createGpuExecution(
 
 class InertGpuExecution implements GpuExecution {
   private disposed = false;
-  constructor(
-    private readonly prepared: PreparedGpuExecution,
-    private readonly cache: GpuCachePlacement,
-  ) {}
+  constructor(private readonly prepared: PreparedGpuExecution) {}
   get done(): boolean {
     return true;
   }
@@ -551,7 +449,6 @@ class InertGpuExecution implements GpuExecution {
       })),
       chunks: 0,
       dispatches: 0,
-      cache: this.cache,
       timing: emptyGpuRunTiming(),
     };
   }
@@ -578,7 +475,7 @@ class DeviceGpuExecution implements GpuExecution {
     private readonly pipeline: GPUComputePipeline,
     private readonly bindGroup: GPUBindGroup,
     private readonly buffers: GpuBuffers,
-    private readonly cache: GpuCachePlacement,
+    private readonly workgroupSize: number,
   ) {
     this.cursors = prepared.executions.map(() => 0);
     this.denseDecoder = planDenseDecoder(prepared.artifact);
@@ -621,7 +518,6 @@ class DeviceGpuExecution implements GpuExecution {
       })),
       chunks: this.chunks,
       dispatches: this.dispatches,
-      cache: this.cache,
       timing: {
         encodeSubmitMs: this.encodeSubmitMs,
         completionReadbackMs: this.completionReadbackMs,
@@ -667,7 +563,7 @@ class DeviceGpuExecution implements GpuExecution {
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.bindGroup);
     pass.dispatchWorkgroups(
-      Math.ceil(this.prepared.executions.length / this.cache.workgroupSize),
+      Math.ceil(this.prepared.executions.length / this.workgroupSize),
       1,
       1,
     );
@@ -772,7 +668,7 @@ function publishChunk(
   const timestampsByExecution: Array<Float64Array | null | undefined> = [];
 
   for (const [executionIndex, execution] of prepared.executions.entries()) {
-    if (!execution.capturesEffects) continue;
+    if (artifact.maxEffectsPerRow === 0) continue;
     if (statusView === null || recordView === null) {
       throw new GpuExecutionError('GPU effect capture lost its readback');
     }
@@ -850,28 +746,21 @@ function publishChunk(
       );
     }
     const timestamps =
-      execution.context.axis === null ? null : new Float64Array(item.rowCount);
+      execution.binding.time === undefined
+        ? null
+        : new Float64Array(item.rowCount);
     timestampsByExecution[executionIndex] = timestamps;
     for (let localRow = 0; localRow < item.rowCount; localRow += 1) {
       const row = item.rowStart + localRow;
-      const includeOutputs =
-        !execution.finalDenseOnly || row === execution.rows - 1;
-      const includeRow =
-        includeOutputs || effectsByExecution[executionIndex].has(row);
-      if (includeOutputs) {
-        validateDenseOutputs(
-          prepared,
-          denseDecoder,
-          resultView,
-          execution,
-          localRow,
-        );
-      }
-      if (includeRow && timestamps !== null) {
-        const timestamp = execution.context.axis!.time(row) as
-          | number
-          | null
-          | undefined;
+      validateDenseOutputs(
+        prepared,
+        denseDecoder,
+        resultView,
+        execution,
+        localRow,
+      );
+      if (timestamps !== null) {
+        const timestamp = execution.binding.time![row];
         if (
           timestamp !== undefined &&
           timestamp !== null &&
@@ -888,19 +777,16 @@ function publishChunk(
 
   // Nothing externally visible occurs until every execution's complete
   // readback has passed overflow, range, id, payload, and dense-cell
-  // validation. Publication is then synchronous and row-streaming.
+  // validation. Publication is then synchronous and index-streaming.
   for (const {executionIndex, progress: item} of active) {
     const execution = prepared.executions[executionIndex]!;
-    const sink = execution.inputs.sink;
+    const sink = execution.binding.sink;
     const timestamps = timestampsByExecution[executionIndex]!;
     for (let localRow = 0; localRow < item.rowCount; localRow += 1) {
       const row = item.rowStart + localRow;
       const effects = effectsByExecution[executionIndex].get(row) ?? [];
-      const includeOutputs =
-        !execution.finalDenseOnly || row === execution.rows - 1;
-      if (!includeOutputs && effects.length === 0) continue;
-      const publication: RowPublication = {
-        row,
+      const publication: Datum = {
+        index: row,
         ...(timestamps === null
           ? {}
           : {
@@ -908,15 +794,13 @@ function publishChunk(
                 ? null
                 : timestamps[localRow],
             }),
-        outputs: includeOutputs
-          ? decodeOutputs(
-              prepared,
-              denseDecoder,
-              resultView,
-              execution,
-              localRow,
-            )
-          : [],
+        outputs: decodeOutputs(
+          prepared,
+          denseDecoder,
+          resultView,
+          execution,
+          localRow,
+        ),
         effects,
         provisional: false,
       };
@@ -1009,8 +893,7 @@ function denseResultRowOffset(
   execution: PreparedGpuExecutionInstance,
   localRow: number,
 ): number {
-  const resultRow = execution.finalDenseOnly ? 0 : localRow;
-  const firstSlot = execution.resultOffset + resultRow * decoder.channelsPerRow;
+  const firstSlot = execution.resultOffset + localRow * decoder.channelsPerRow;
   const lastSlot = firstSlot + decoder.channelsPerRow;
   if (
     firstSlot < execution.resultOffset ||
@@ -1222,25 +1105,25 @@ function declareBindings(
   declaration: ExecutionDeclaration,
 ): void {
   prepared.executions.forEach(execution =>
-    execution.inputs.sink.declare(declaration),
+    execution.binding.sink.declare(declaration),
   );
 }
 
 function validateDeviceLimits(
   device: GPUDevice,
   prepared: PreparedGpuExecution,
-  cache: GpuCachePlacement,
+  pipeline: GpuPipelinePlan,
 ): void {
   validateDeviceBufferLimits(prepared.resources, device.limits);
   const workgroups = Math.ceil(
-    prepared.executions.length / cache.workgroupSize,
+    prepared.executions.length / pipeline.workgroupSize,
   );
   if (workgroups > device.limits.maxComputeWorkgroupsPerDimension) {
     throw new GpuExecutionError(
       `GPU dispatch requires ${workgroups} workgroups; device limit is ${device.limits.maxComputeWorkgroupsPerDimension}`,
     );
   }
-  const [x, y, z] = [cache.workgroupSize, 1, 1] as const;
+  const [x, y, z] = [pipeline.workgroupSize, 1, 1] as const;
   if (
     x > device.limits.maxComputeWorkgroupSizeX ||
     y > device.limits.maxComputeWorkgroupSizeY ||
@@ -1251,9 +1134,11 @@ function validateDeviceLimits(
       `GPU workgroup size ${x}x${y}x${z} exceeds device limits`,
     );
   }
-  if (cache.bytesPerWorkgroup > device.limits.maxComputeWorkgroupStorageSize) {
+  if (
+    pipeline.bytesPerWorkgroup > device.limits.maxComputeWorkgroupStorageSize
+  ) {
     throw new GpuExecutionError(
-      `GPU workgroup cache requires ${cache.bytesPerWorkgroup} bytes; device limit is ${device.limits.maxComputeWorkgroupStorageSize}`,
+      `GPU workgroup storage requires ${pipeline.bytesPerWorkgroup} bytes; device limit is ${device.limits.maxComputeWorkgroupStorageSize}`,
     );
   }
 }
@@ -1308,16 +1193,14 @@ function resourcesFitDeviceBufferLimits(
 // artifact and derives all bounded physical resources.
 export async function prepareGpuExecutionInputs(
   artifact: CompiledWgslProgram,
-  bindings: readonly BindInputs[],
-  options: GpuExecutionOptions = {},
+  bindings: readonly GpuBinding[],
 ): Promise<PreparedGpuExecution> {
-  return prepareGpuExecutionInputsWithLimits(artifact, bindings, options);
+  return prepareGpuExecutionInputsWithLimits(artifact, bindings);
 }
 
 async function prepareGpuExecutionInputsWithLimits(
   artifact: CompiledWgslProgram,
-  bindings: readonly BindInputs[],
-  options: GpuExecutionOptions,
+  bindings: readonly GpuBinding[],
   deviceLimits?: GpuBufferDeviceLimits,
 ): Promise<PreparedGpuExecution> {
   validateArtifact(artifact);
@@ -1330,155 +1213,101 @@ async function prepareGpuExecutionInputsWithLimits(
       `compiled WGSL has an invalid binding module: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  const requestedRows = positiveInteger(
-    options.maxRowsPerChunk ?? DEFAULT_MAX_ROWS_PER_CHUNK,
-    'maxRowsPerChunk',
-  );
-  const requestedEffectCapacity = optionalNonnegativeInteger(
-    options.effectRecordsPerExecution,
-    'effectRecordsPerExecution',
-  );
-  const maxGpuBytes = optionalPositiveInteger(
-    options.maxGpuBytes,
-    'maxGpuBytes',
-  );
-
-  // Provider resolution is a property of provider identity and context
-  // coordinates, not parameter values. Parameter-only sweep executions therefore
-  // share one resolution and one packed series span.
-  const contextCache = new Map<
-    DataProvider,
-    Map<string, Promise<ProviderContext | ContextError>>
-  >();
-  const bindingContexts = new Map<ProviderContext, ProviderContext>();
-  const resolved = await Promise.all(
-    bindings.map(async (inputs, bindingIndex) => {
-      let values: readonly Value[];
-      try {
-        values = resolveParamValues(artifact.params, inputs.params);
-      } catch (error) {
-        throw new GpuBindingError(
-          `GPU binding ${bindingIndex}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      const symbol = inputs.symbol ?? '';
-      const timeframe = inputs.timeframe ?? '';
-      let providerContexts = contextCache.get(inputs.provider);
-      if (providerContexts === undefined) {
-        providerContexts = new Map();
-        contextCache.set(inputs.provider, providerContexts);
-      }
-      const contextKey = JSON.stringify([symbol, timeframe]);
-      let pending = providerContexts.get(contextKey);
-      if (pending === undefined) {
-        pending = Promise.resolve(
-          inputs.provider.resolveContext(symbol, timeframe, {kind: 'full'}),
-        );
-        providerContexts.set(contextKey, pending);
-      }
-      const context = await pending;
-      if (isContextError(context)) {
-        throw new GpuBindingError(
-          `GPU binding ${bindingIndex} context failed (${context.error}): ${context.detail}`,
-        );
-      }
-      requireU32(context.rows, `GPU binding ${bindingIndex} row count`);
-      if (context.rows > MAX_I32) {
-        throw new GpuBindingError(
-          `GPU binding ${bindingIndex} row count exceeds the i32 bar_index target profile`,
-        );
-      }
-      let bindingContext = bindingContexts.get(context);
-      if (bindingContext === undefined) {
-        bindingContext = memoizedSeriesContext(context);
-        bindingContexts.set(context, bindingContext);
-      }
-      let bindingLayout;
-      try {
-        bindingLayout = resolveGeneratedBindingLayout(
-          bindingModule,
-          inputs,
-          bindingContext,
-        );
-      } catch (error) {
-        throw new GpuBindingError(
-          `GPU binding ${bindingIndex}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      const boundInputs = bindingLayout.inputs;
-      if (
-        boundInputs.length !== artifact.params.length ||
-        boundInputs.some(
-          (input, pid) =>
-            input.value !== values[pid] ||
-            input.active !== (artifact.paramActive[pid] ?? false),
-        )
-      ) {
-        throw new GpuBindingError(
-          `GPU binding ${bindingIndex} generated bind results disagree with the artifact parameter contract`,
-        );
-      }
-      return {
-        inputs,
-        bindingIndex,
-        context: bindingContext,
-        boundInputs,
-        frameHistoryCapacities: bindingLayout.frameHistoryCapacities,
-      };
-    }),
-  );
+  const resolved = bindings.map((binding, bindingIndex) => {
+    requireU32(binding.indices, `GPU binding ${bindingIndex} index count`);
+    if (binding.indices > MAX_I32) {
+      throw new GpuBindingError(
+        `GPU binding ${bindingIndex} index count exceeds the i32 bar_index target profile`,
+      );
+    }
+    if (binding.time !== undefined && binding.time.length !== binding.indices) {
+      throw new GpuBindingError(
+        `GPU binding ${bindingIndex} has ${binding.time.length} times for ${binding.indices} indices`,
+      );
+    }
+    let values: readonly Value[];
+    try {
+      values = resolveParamValues(artifact.params, binding.params);
+    } catch (error) {
+      throw new GpuBindingError(
+        `GPU binding ${bindingIndex}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    let bindingLayout;
+    try {
+      bindingLayout = resolveGeneratedBindingLayout(
+        bindingModule,
+        binding.params,
+        binding.indices,
+      );
+    } catch (error) {
+      throw new GpuBindingError(
+        `GPU binding ${bindingIndex}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const boundInputs = bindingLayout.inputs;
+    if (
+      boundInputs.length !== artifact.params.length ||
+      boundInputs.some(
+        (input, pid) =>
+          input.value !== values[pid] ||
+          input.active !== (artifact.paramActive[pid] ?? false),
+      )
+    ) {
+      throw new GpuBindingError(
+        `GPU binding ${bindingIndex} generated bind results disagree with the artifact parameter contract`,
+      );
+    }
+    return {
+      binding,
+      bindingIndex,
+      boundInputs,
+      frameHistoryCapacities: bindingLayout.frameHistoryCapacities,
+    };
+  });
 
   const executions: PreparedGpuExecutionInstance[] = [];
-  const contextSeriesOffsets = new Map<ProviderContext, number>();
-  const seriesByContext = new Map<ProviderContext, ContextSeries>();
+  const bindingSeries: BindingSeries[] = [];
   let scalarCount = 0;
   let nextStateWord = 0;
   for (const {
-    inputs,
+    binding,
     bindingIndex,
-    context,
     boundInputs,
     frameHistoryCapacities,
   } of resolved) {
-    let seriesOffset = contextSeriesOffsets.get(context);
-    if (seriesOffset === undefined) {
-      seriesOffset = scalarCount;
-      contextSeriesOffsets.set(context, seriesOffset);
-      const series = artifact.requiredSeries.map(required => {
-        const handle = context.series(required.id);
-        if (handle === null) {
-          throw new GpuBindingError(
-            `GPU binding ${bindingIndex} is missing required series '${required.id}'`,
-          );
-        }
-        if (handle.length !== context.rows) {
-          throw new GpuBindingError(
-            `GPU binding ${bindingIndex} series '${required.id}' has ${handle.length} rows; expected ${context.rows}`,
-          );
-        }
-        return handle;
-      });
-      seriesByContext.set(context, {bindingIndex, series});
-      const contextScalars = checkedProduct(
-        context.rows,
-        artifact.requiredSeries.length,
-        `GPU binding ${bindingIndex} series scalar count`,
-      );
-      scalarCount = checkedSum(
-        [scalarCount, contextScalars],
-        'GPU series scalar count',
-      );
-      const seriesBytes = checkedProduct(
-        scalarCount,
-        artifact.seriesScalarByteStride,
-        'GPU series bytes',
-      );
-      if (maxGpuBytes !== undefined && seriesBytes > maxGpuBytes) {
+    const seriesOffset = scalarCount;
+    const series = artifact.requiredSeries.map(required => {
+      const values = binding.series[required.id];
+      if (values === undefined) {
         throw new GpuBindingError(
-          `GPU series payload requires ${seriesBytes} bytes, above maxGpuBytes ${maxGpuBytes}`,
+          `GPU binding ${bindingIndex} is missing required series '${required.id}'`,
         );
       }
-    }
+      if (values.length !== binding.indices) {
+        throw new GpuBindingError(
+          `GPU binding ${bindingIndex} series '${required.id}' has ${values.length} values; expected ${binding.indices}`,
+        );
+      }
+      return values;
+    });
+    bindingSeries.push({
+      bindingIndex,
+      indices: binding.indices,
+      offset: seriesOffset,
+      series,
+    });
+    scalarCount = checkedSum(
+      [
+        scalarCount,
+        checkedProduct(
+          binding.indices,
+          artifact.requiredSeries.length,
+          `GPU binding ${bindingIndex} series scalar count`,
+        ),
+      ],
+      'GPU series scalar count',
+    );
     const state = planExecutionState(
       artifact,
       frameHistoryCapacities,
@@ -1491,21 +1320,16 @@ async function prepareGpuExecutionInputsWithLimits(
     requireU32(nextStateWord, 'GPU execution-state words');
     executions.push({
       bindingIndex,
-      inputs,
-      context,
-      rows: context.rows,
+      binding,
+      rows: binding.indices,
       boundInputs,
       seriesOffset,
       paramsOffset: bindingIndex * artifact.params.length,
       stateOffset: state.stateOffset,
       stateWords: state.stateWords,
       stateDescriptors: state.stateDescriptors,
-      finalDenseOnly: inputs.sink.capabilities?.denseRows === 'final',
       resultOffset: 0,
       resultCapacity: 0,
-      capturesEffects:
-        artifact.maxEffectsPerRow > 0 &&
-        inputs.sink.capabilities?.effects !== 'none',
       effectOffset: 0,
       effectCapacity: 0,
     });
@@ -1537,52 +1361,34 @@ async function prepareGpuExecutionInputsWithLimits(
   const plan = planResources(
     artifact,
     executions,
-    executions.filter(execution => execution.capturesEffects).length,
     seriesBytes,
     paramBytes,
     stateBytes,
     maximumRows,
-    requestedRows,
-    requestedEffectCapacity,
-    maxGpuBytes,
     deviceLimits,
   );
   if (deviceLimits !== undefined) {
     validateDeviceBufferLimits(plan.resources, deviceLimits);
   }
-  // Budget the complete minimum execution before touching provider cells.
-  // A caller-supplied resource ceiling must fail without materializing a
-  // dataset that cannot possibly execute.
-  const seriesPayload = packSeries(
-    artifact,
-    contextSeriesOffsets,
-    seriesByContext,
-    scalarCount,
-  );
+  const seriesPayload = packSeries(artifact, bindingSeries, scalarCount);
   let nextResultOffset = 0;
   let nextEffectOffset = 0;
   const plannedExecutions = executions.map(execution => {
-    const resultCapacity = resultCapacityForExecution(
-      artifact,
-      execution.finalDenseOnly,
-      plan.chunkRows,
-    );
+    const resultCapacity = resultCapacityForExecution(artifact, plan.chunkRows);
     const planned = {
       ...execution,
       resultOffset: nextResultOffset,
       resultCapacity,
-      effectOffset: execution.capturesEffects ? nextEffectOffset : 0,
-      effectCapacity: execution.capturesEffects
-        ? plan.effectRecordsPerExecution
-        : 0,
+      effectOffset: nextEffectOffset,
+      effectCapacity: plan.effectCapacity,
     };
     nextResultOffset = checkedSum(
       [nextResultOffset, resultCapacity],
       'GPU result cell count',
     );
-    if (execution.capturesEffects) {
+    if (artifact.maxEffectsPerRow > 0) {
       nextEffectOffset = checkedSum(
-        [nextEffectOffset, plan.effectRecordsPerExecution],
+        [nextEffectOffset, plan.effectCapacity],
         'GPU effect record count',
       );
     }
@@ -1612,7 +1418,7 @@ async function prepareGpuExecutionInputsWithLimits(
     paramPayload,
     statePayload,
     chunkRows: plan.chunkRows,
-    effectRecordsPerExecution: plan.effectRecordsPerExecution,
+    effectCapacity: plan.effectCapacity,
     effectRecordCount: plan.effectRecordCount,
     resources: plan.resources,
   };
@@ -1621,18 +1427,14 @@ async function prepareGpuExecutionInputsWithLimits(
 function planResources(
   artifact: CompiledWgslProgram,
   executions: readonly PreparedGpuExecutionInstance[],
-  effectExecutionCount: number,
   seriesBytes: number,
   paramBytes: number,
   stateBytes: number,
   maximumRows: number,
-  requestedRows: number,
-  requestedEffectCapacity: number | undefined,
-  maxGpuBytes: number | undefined,
   deviceLimits: GpuBufferDeviceLimits | undefined,
 ): {
   readonly chunkRows: number;
-  readonly effectRecordsPerExecution: number;
+  readonly effectCapacity: number;
   readonly effectRecordCount: number;
   readonly resultCellCount: number;
   readonly resources: GpuResourceSizes;
@@ -1652,59 +1454,37 @@ function planResources(
       readbackEffectRecords: 0,
       total: 0,
     };
-    enforceBudget(resources, maxGpuBytes);
     return {
       chunkRows: 0,
-      effectRecordsPerExecution: 0,
+      effectCapacity: 0,
       effectRecordCount: 0,
       resultCellCount: 0,
       resources,
     };
   }
 
-  let upperRows = Math.min(requestedRows, maximumRows);
-  if (
-    effectExecutionCount > 0 &&
-    artifact.maxEffectsPerRow > 0 &&
-    requestedEffectCapacity !== undefined
-  ) {
-    if (requestedEffectCapacity < artifact.maxEffectsPerRow) {
-      throw new GpuBindingError(
-        `effectRecordsPerExecution ${requestedEffectCapacity} cannot hold one row's maximum ${artifact.maxEffectsPerRow} effects`,
-      );
-    }
-    upperRows = Math.min(
-      upperRows,
-      Math.floor(requestedEffectCapacity / artifact.maxEffectsPerRow),
-    );
-  }
+  const effectExecutionCount =
+    artifact.maxEffectsPerRow === 0 ? 0 : executionCount;
+  const upperRows = maximumRows;
 
   const makePlan = (chunkRows: number) => {
-    const effectRecordsPerExecution =
+    const effectCapacity =
       effectExecutionCount === 0 || artifact.maxEffectsPerRow === 0
         ? 0
-        : (requestedEffectCapacity ??
-          checkedProduct(
+        : checkedProduct(
             chunkRows,
             artifact.maxEffectsPerRow,
             'GPU effect records per execution',
-          ));
+          );
     const effectRecordCount = checkedProduct(
       effectExecutionCount,
-      effectRecordsPerExecution,
+      effectCapacity,
       'GPU effect record count',
     );
     const resultCellCount = executions.reduce(
       (total, execution) =>
         checkedSum(
-          [
-            total,
-            resultCapacityForExecution(
-              artifact,
-              execution.finalDenseOnly,
-              chunkRows,
-            ),
-          ],
+          [total, resultCapacityForExecution(artifact, chunkRows)],
           'GPU result cell count',
         ),
       0,
@@ -1721,23 +1501,17 @@ function planResources(
     );
     return {
       chunkRows,
-      effectRecordsPerExecution,
+      effectCapacity,
       effectRecordCount,
       resultCellCount,
       resources,
     };
   };
 
-  // Establish that the irreducible resources plus one row fit before provider
-  // cells are materialized. Result and default effect transports then grow
-  // monotonically with chunkRows, so binary search can select the largest
-  // chunk admitted by both the caller budget and the concrete device.
+  // Establish that the irreducible resources plus one index fit. Result and
+  // effect transports grow monotonically, so binary search selects the largest
+  // chunk admitted by the concrete device.
   const minimum = makePlan(1);
-  if (maxGpuBytes !== undefined && minimum.resources.total > maxGpuBytes) {
-    throw new GpuBindingError(
-      `GPU execution cannot fit one row per active execution within maxGpuBytes ${maxGpuBytes}`,
-    );
-  }
   if (deviceLimits !== undefined) {
     validateDeviceBufferLimits(minimum.resources, deviceLimits);
   }
@@ -1755,12 +1529,10 @@ function planResources(
       high = chunkRows - 1;
       continue;
     }
-    const fitsBudget =
-      maxGpuBytes === undefined || candidate.resources.total <= maxGpuBytes;
     const fitsDevice =
       deviceLimits === undefined ||
       resourcesFitDeviceBufferLimits(candidate.resources, deviceLimits);
-    if (fitsBudget && fitsDevice) {
+    if (fitsDevice) {
       selected = candidate;
       low = chunkRows + 1;
     } else {
@@ -1772,15 +1544,15 @@ function planResources(
 
 function resultCapacityForExecution(
   artifact: CompiledWgslProgram,
-  finalDenseOnly: boolean,
   chunkRows: number,
 ): number {
   const channels = artifact.resultChannels.length;
   if (channels === 0 || chunkRows === 0) return 0;
-  // One result row is the descriptor-level final-only marker. A complete
-  // one-row stream reserves a second row so the marker remains unambiguous.
-  const resultRows = finalDenseOnly ? 1 : Math.max(chunkRows, 2);
-  return checkedProduct(resultRows, channels, 'GPU result cells per execution');
+  return checkedProduct(
+    Math.max(chunkRows, 2),
+    channels,
+    'GPU result cells per execution',
+  );
 }
 
 function resourceSizes(
@@ -1882,27 +1654,9 @@ function resourceSizes(
   };
 }
 
-function memoizedSeriesContext(context: ProviderContext): ProviderContext {
-  const series = new Map<string, SeriesData | null>();
-  return {
-    rows: context.rows,
-    axis: context.axis,
-    series(id) {
-      if (series.has(id)) {
-        return series.get(id) ?? null;
-      }
-      const data = context.series(id);
-      series.set(id, data);
-      return data;
-    },
-    builtinValue: source => context.builtinValue(source),
-  };
-}
-
 function packSeries(
   artifact: CompiledWgslProgram,
-  contextOffsets: ReadonlyMap<ProviderContext, number>,
-  seriesByContext: ReadonlyMap<ProviderContext, ContextSeries>,
+  bindings: readonly BindingSeries[],
   scalarCount: number,
 ): Uint8Array {
   const bytes = allocateBytes(
@@ -1914,11 +1668,7 @@ function packSeries(
     'GPU series payload',
   );
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  for (const [context, contextOffset] of contextOffsets) {
-    const resolved = seriesByContext.get(context);
-    if (resolved === undefined) {
-      throw new GpuBindingError('GPU series context lost its resolved series');
-    }
+  for (const resolved of bindings) {
     for (const [seriesIndex, required] of artifact.requiredSeries.entries()) {
       const series = resolved.series[seriesIndex];
       if (series === undefined) {
@@ -1926,10 +1676,10 @@ function packSeries(
           `GPU binding ${resolved.bindingIndex} lost required series '${required.id}'`,
         );
       }
-      const seriesOffset = contextOffset + seriesIndex * context.rows;
-      for (let row = 0; row < context.rows; row += 1) {
+      const seriesOffset = resolved.offset + seriesIndex * resolved.indices;
+      for (let row = 0; row < resolved.indices; row += 1) {
         const value = f32Input(
-          series.at(row),
+          series[row],
           resolved.bindingIndex,
           required.id,
           row,
@@ -2922,41 +2672,6 @@ function checkedSum(values: readonly number[], label: string): number {
 function requireU32(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value < 0 || value > MAX_U32) {
     throw new GpuBindingError(`${label} exceeds the u32 execution ABI`);
-  }
-}
-
-function positiveInteger(value: number, label: string): number {
-  requireU32(value, label);
-  if (value === 0) {
-    throw new GpuBindingError(`${label} must be positive`);
-  }
-  return value;
-}
-
-function optionalPositiveInteger(
-  value: number | undefined,
-  label: string,
-): number | undefined {
-  return value === undefined ? undefined : positiveInteger(value, label);
-}
-
-function optionalNonnegativeInteger(
-  value: number | undefined,
-  label: string,
-): number | undefined {
-  if (value === undefined) return undefined;
-  requireU32(value, label);
-  return value;
-}
-
-function enforceBudget(
-  resources: GpuResourceSizes,
-  maxGpuBytes: number | undefined,
-): void {
-  if (maxGpuBytes !== undefined && resources.total > maxGpuBytes) {
-    throw new GpuBindingError(
-      `GPU execution requires ${resources.total} bytes, above maxGpuBytes ${maxGpuBytes}`,
-    );
   }
 }
 

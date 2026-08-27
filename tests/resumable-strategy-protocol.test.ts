@@ -9,11 +9,10 @@ import {describe, expect, test} from 'vitest';
 import {Errors} from '../src/base/print';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
 import {compile, compileToProgram} from '../src/compiler';
-import {executeProgram} from '../src/execution/execute';
 import {TypeKind} from '../src/ir/type';
 import {funcsOf, namesOf} from '../src/ir/visit';
-import {csvProvider} from '../src/providers/data/csv';
-import {MemorySink} from '../src/providers/sinks/memory-sink';
+import {MemorySink} from '../src/sinks/memory-sink';
+import {csvStream, executeTestProgram} from '../src/testing/batch';
 
 const SOURCE = join(
   fileURLToPath(new URL('.', import.meta.url)),
@@ -99,22 +98,15 @@ describe('static resumable strategy protocol spike', () => {
     expect(result.ok).toBe(true);
 
     const sink = new MemorySink();
-    await executeProgram(
-      program(),
-      [
-        {
-          params: {},
-          provider: csvProvider(
-            ['time,open,high,low,close', '1,10,12,9,11', '2,11,14,10,13'].join(
-              '\n',
-            ),
-          ),
-          sink,
-          timeNow: 2,
-        },
-      ],
-      {kind: 'cpu'},
-    );
+    await executeTestProgram(program(), {
+      stream: csvStream(
+        ['time,open,high,low,close', '1,10,12,9,11', '2,11,14,10,13'].join(
+          '\n',
+        ),
+      ),
+      sink,
+      timeNow: 2,
+    });
 
     expect(finalValue(sink, outputId(sink, 'simple equity'))).toBe(1003);
     expect(finalValue(sink, outputId(sink, 'path-like equity'))).toBe(996);

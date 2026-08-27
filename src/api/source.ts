@@ -22,18 +22,21 @@ export class CSVSource<T extends z.ZodType> implements Source<T> {
     readonly path: string,
     readonly schema: T,
     readonly clock: Clock = i,
+    readonly indices: number | null = null,
   ) {}
 
-  /** Discover string-valued columns from the header when schema is omitted. */
+  /** Inspect the header and finite index count before creating a cold source. */
   static async open<T extends z.ZodType = CSVSchema>(
     path: string,
     schema?: T,
     clock: Clock = i,
   ): Promise<CSVSource<T>> {
+    const inspected = await inspectCSV(path);
     return new CSVSource(
       path,
-      (schema ?? (await discoverCSVSchema(path))) as T,
+      (schema ?? inspected.schema) as T,
       clock,
+      inspected.indices,
     );
   }
 
@@ -43,28 +46,42 @@ export class CSVSource<T extends z.ZodType> implements Source<T> {
       this.schema as z.ZodType<z.output<T>>,
       from(csvRows<z.output<T>>(this.path)),
       this.clock,
+      this.indices,
     );
   }
 }
 
 /** CSV headers identify columns but do not provide authoritative scalar types. */
 export async function discoverCSVSchema(path: string): Promise<CSVSchema> {
+  return (await inspectCSV(path)).schema;
+}
+
+async function inspectCSV(
+  path: string,
+): Promise<{readonly schema: CSVSchema; readonly indices: number}> {
   const parser = openCSV(path, {bom: true, skip_empty_lines: true});
   try {
+    let schema: CSVSchema | null = null;
+    let indices = 0;
     for await (const record of parser) {
-      if (
-        !Array.isArray(record) ||
-        record.length === 0 ||
-        record.some(header => typeof header !== 'string' || header === '') ||
-        new Set(record).size !== record.length
-      ) {
-        throw new Error(`CSV source '${path}' has an invalid header`);
+      if (schema === null) {
+        if (
+          !Array.isArray(record) ||
+          record.length === 0 ||
+          record.some(header => typeof header !== 'string' || header === '') ||
+          new Set(record).size !== record.length
+        ) {
+          throw new Error(`CSV source '${path}' has an invalid header`);
+        }
+        schema = z.strictObject(
+          Object.fromEntries(record.map(header => [header, z.string()])),
+        );
+      } else {
+        indices += 1;
       }
-      return z.strictObject(
-        Object.fromEntries(record.map(header => [header, z.string()])),
-      );
     }
-    throw new Error(`CSV source '${path}' has no header`);
+    if (schema === null) throw new Error(`CSV source '${path}' has no header`);
+    return {schema, indices};
   } finally {
     parser.destroy();
   }

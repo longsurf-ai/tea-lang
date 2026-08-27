@@ -63,8 +63,6 @@ export type Value =
   | CollectionValue
   | readonly Value[];
 
-export type ExecutionResult = Value | undefined;
-
 export function isTupleValue(value: Value): value is readonly Value[] {
   return Array.isArray(value);
 }

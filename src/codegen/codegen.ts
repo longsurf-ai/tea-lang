@@ -44,7 +44,7 @@ import {
   seriesInputsOf,
   walkIrExpr,
 } from '../ir/visit';
-import {RUNTIME_ABI_VERSION} from '../runtime/module-abi';
+import {isHistoryOffset, RUNTIME_ABI_VERSION} from '../runtime/module-abi';
 import type {
   BuiltinSpec,
   DepthSpec,
@@ -543,8 +543,8 @@ class Generator {
       if (staticRequestContext(edge) !== null) {
         captureArguments(
           [
-            edge.merge.gaps,
-            edge.merge.lookahead,
+            edge.merge.availability,
+            edge.merge.fill,
             edge.merge.ignoreInvalidSymbol,
             edge.merge.calcBarsCount,
           ],
@@ -562,11 +562,11 @@ class Generator {
         );
         return;
       }
-      const [gaps, lookahead, ignoreInvalidSymbol, calcBarsCount] =
+      const [availability, fill, ignoreInvalidSymbol, calcBarsCount] =
         captureArguments(
           [
-            edge.merge.gaps,
-            edge.merge.lookahead,
+            edge.merge.availability,
+            edge.merge.fill,
             edge.merge.ignoreInvalidSymbol,
             edge.merge.calcBarsCount,
           ],
@@ -583,7 +583,7 @@ class Generator {
         'request context',
       );
       lines.push(
-        `manifest.requests[${rid}].context = {symbol: (${symbol}), timeframe: (${timeframe}), gaps: (${gaps}), lookahead: (${lookahead}), ignoreInvalidSymbol: (${ignoreInvalidSymbol}), calcBarsCount: (${calcBarsCount})};`,
+        `manifest.requests[${rid}].context = {symbol: (${symbol}), timeframe: (${timeframe}), availability: (${availability}), fill: (${fill}), ignoreInvalidSymbol: (${ignoreInvalidSymbol}), calcBarsCount: (${calcBarsCount})};`,
       );
     });
     return lines;
@@ -615,8 +615,8 @@ class Generator {
     this.requests.forEach(edge => {
       if (staticRequestContext(edge) === null) {
         expressions.push(
-          edge.merge.gaps,
-          edge.merge.lookahead,
+          edge.merge.availability,
+          edge.merge.fill,
           edge.merge.ignoreInvalidSymbol,
           edge.merge.calcBarsCount,
           edge.symbol,
@@ -952,7 +952,7 @@ function depthSpec(depth: HistoryDepth): DepthSpec {
 }
 
 function historyDepth(value: number): number {
-  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  return isHistoryOffset(value) ? value : 0;
 }
 
 function staticBool(expr: IrExpr): boolean | null {
@@ -983,10 +983,12 @@ function staticOutputArgs(
   });
 }
 
-function staticRequestContext(edge: RequestEdge) {
+function staticRequestContext(
+  edge: RequestEdge,
+): NonNullable<RequestSpec['context']> | null {
   const expressions = [
-    edge.merge.gaps,
-    edge.merge.lookahead,
+    edge.merge.availability,
+    edge.merge.fill,
     edge.merge.ignoreInvalidSymbol,
     edge.merge.calcBarsCount,
     edge.symbol,
@@ -1000,16 +1002,16 @@ function staticRequestContext(edge: RequestEdge) {
     return constValue(expr.value);
   });
   const [
-    gaps,
-    lookahead,
+    availability,
+    fill,
     ignoreInvalidSymbol,
     calcBarsCount,
     symbol,
     timeframe,
   ] = values;
   if (
-    typeof gaps !== 'boolean' ||
-    typeof lookahead !== 'boolean' ||
+    (availability !== 'start' && availability !== 'end') ||
+    (fill !== 'carry' && fill !== 'sparse') ||
     typeof ignoreInvalidSymbol !== 'boolean' ||
     typeof calcBarsCount !== 'number' ||
     !Number.isSafeInteger(calcBarsCount) ||
@@ -1022,8 +1024,8 @@ function staticRequestContext(edge: RequestEdge) {
   return {
     symbol,
     timeframe,
-    gaps,
-    lookahead,
+    availability,
+    fill,
     ignoreInvalidSymbol,
     calcBarsCount,
   };

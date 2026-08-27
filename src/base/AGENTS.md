@@ -17,7 +17,7 @@ tabwriter); `base` imports nothing outside itself.
   stderr — stdout belongs to program output, so goldens and pipes never
   see log noise.
 - Scope names are dot paths owned by the emitting module
-  (`runtime.request`, `compile`, `provider.yahoo`); tests assert through
+  (`runtime.request`, `compile`, `source.yahoo`); tests assert through
   `captureSink`, never by scraping stderr.
 - `files.ts` owns domain-neutral regular-file, bounded-byte-read, path, and
   strict UTF-8 primitives. Callers translate `FileError` into their own typed

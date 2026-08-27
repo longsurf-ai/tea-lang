@@ -2,6 +2,7 @@
 // the ordinary JS ABI and publish as one ordered row unit.
 
 import {describe, expect, test} from 'vitest';
+import * as z from 'zod';
 import {IrKind} from '../ir/node';
 import type {Program} from '../ir/program';
 import {
@@ -11,9 +12,8 @@ import {
   TypeKind,
   type StructType,
 } from '../ir/type';
-import {MemorySink} from '../providers/sinks/memory-sink';
-import type {DataProvider, ProviderContext} from '../runtime/abi';
-import {bindFixedHistory as bind} from '../runtime/js/fixed-history';
+import {MemorySink} from '../sinks/memory-sink';
+import {finiteStream, executeTestModule} from '../testing/batch';
 import {loadModule} from '../runtime/load';
 import {mustBuild} from '../noder/testing';
 import {generate} from './codegen';
@@ -84,28 +84,17 @@ const program: Program = {
   ],
 };
 
-const context: ProviderContext = {
-  rows: 1,
-  axis: null,
-  series: () => null,
-  builtinValue: () => undefined,
-};
-const provider: DataProvider = {
-  resolveContext: () => Promise.resolve(context),
-};
+const oneIndex = () => finiteStream(z.object({}), [{}]);
 
 describe('generic sparse effect lowering', () => {
   test('publishes manifest-typed fixed struct payloads in source order', async () => {
     const module = loadModule(generate(program));
     const sink = new MemorySink();
-    const execution = await bind(module, {
-      params: {},
-      provider,
+    await executeTestModule(module, {
+      stream: oneIndex(),
       sink,
       timeNow: 0,
     });
-
-    await execution.runAll();
 
     expect(module.manifest.effects).toEqual([
       {layout: 0, declaration: {payload: eventSchema}},
@@ -142,7 +131,6 @@ describe('generic sparse effect lowering', () => {
         provisional: false,
       },
     ]);
-    execution.dispose();
   });
 
   test('rejects a same-shaped logical payload with a forged nominal id', async () => {
@@ -163,14 +151,12 @@ describe('generic sparse effect lowering', () => {
       },
     };
 
-    await expect(
-      bind(forged, {
-        params: {},
-        provider,
-        sink: new MemorySink(),
-        timeNow: 0,
-      }),
-    ).rejects.toThrow(
+    const execution = executeTestModule(forged, {
+      stream: oneIndex(),
+      sink: new MemorySink(),
+      timeNow: 0,
+    });
+    await expect(execution).rejects.toThrow(
       'effect payload layout 0 disagrees with logical struct schema',
     );
   });

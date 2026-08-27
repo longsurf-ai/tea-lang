@@ -20,6 +20,7 @@ describe('CSVSource', () => {
   test('discovers and freezes a strict string schema from the header', async () => {
     const source = await CSVSource.open(CLI_DATA);
 
+    expect(source.indices).toBe(2);
     expect(source.schema.safeParse({time: '100', close: '1'}).success).toBe(
       true,
     );
@@ -41,6 +42,8 @@ describe('CSVSource', () => {
       close: z.coerce.number(),
     });
     const stream = await fromCSV(CLI_DATA, schema);
+
+    expect(stream.indices).toBe(2);
 
     await expect(
       firstValueFrom(stream.asObservable().pipe(toArray())),

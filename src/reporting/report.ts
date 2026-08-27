@@ -1,7 +1,7 @@
 // Purpose: Backend-neutral report sections and deterministic terminal rendering.
 
 import {TabWriter} from '../base/tabwriter';
-import type {ExecutionSummary} from '../execution/execute';
+import type {BoundInput} from '../runtime/binding';
 import type {Value} from '../runtime/abi';
 
 export type ReportCell = string | number | boolean | null;
@@ -12,73 +12,41 @@ export interface ReportSection {
   readonly rows: readonly (readonly ReportCell[])[];
 }
 
-export interface SystemReportOptions {
-  readonly device?: string;
-}
-
-export function systemReportSection(
-  summary: ExecutionSummary,
-  options: SystemReportOptions = {},
-): ReportSection {
-  const rows = summary.bindings.reduce(
-    (total, binding) => total + binding.rows,
-    0,
-  );
+export function systemReportSection(summary: {
+  readonly indices: number;
+  readonly timing: {
+    readonly compilationMs: number;
+    readonly executionMs: number;
+    readonly totalMs: number;
+  };
+}): ReportSection {
   const seconds = summary.timing.executionMs / 1_000;
   const reportRows: ReportCell[][] = [
-    ['backend', summary.backend],
-    ['numeric profile', summary.numericProfile],
-    ...(options.device === undefined
-      ? []
-      : [['device', options.device] as ReportCell[]]),
-    ['bindings', summary.bindings.length],
-    ['rows', rows],
-    ['lowering', milliseconds(summary.timing.loweringMs)],
+    ['indices', summary.indices],
+    ['compilation', milliseconds(summary.timing.compilationMs)],
     ['execution', milliseconds(summary.timing.executionMs)],
     ['total', milliseconds(summary.timing.totalMs)],
     [
       'throughput',
-      seconds > 0 ? `${Math.round(rows / seconds)} rows/s` : 'n/a',
+      seconds > 0
+        ? `${Math.round(summary.indices / seconds)} indices/s`
+        : 'n/a',
     ],
   ];
-  if (summary.backend === 'gpu') {
-    reportRows.push(
-      ['chunks', summary.chunks],
-      ['dispatches', summary.dispatches],
-      ['gpu preparation', milliseconds(summary.timing.preparationMs)],
-      ['encode + submit', milliseconds(summary.timing.encodeSubmitMs)],
-      [
-        'completion + readback',
-        milliseconds(summary.timing.completionReadbackMs),
-      ],
-      [
-        'decode + publication',
-        milliseconds(summary.timing.decodePublicationMs),
-      ],
-      ['cache mode', summary.cache.mode],
-      ['workgroup size', summary.cache.workgroupSize],
-      ['cache / execution', bytes(summary.cache.cachedBytesPerExecution)],
-      ['cache / workgroup', bytes(summary.cache.bytesPerWorkgroup)],
-      ['cached segments', summary.cache.segmentIds.length],
-    );
-  }
   return {title: 'System', columns: ['stat', 'value'], rows: reportRows};
 }
 
 export function parameterReportSection(
-  summary: ExecutionSummary,
+  inputs: readonly BoundInput[],
 ): ReportSection {
   return {
     title: 'Parameters',
-    columns: ['binding', 'parameter', 'value', 'active'],
-    rows: summary.bindings.flatMap(binding =>
-      binding.inputs.map(input => [
-        binding.bindingIndex,
-        input.spec.name,
-        reportValue(input.value),
-        input.active,
-      ]),
-    ),
+    columns: ['parameter', 'value', 'active'],
+    rows: inputs.map(input => [
+      input.spec.name,
+      reportValue(input.value),
+      input.active,
+    ]),
   };
 }
 
@@ -101,10 +69,6 @@ export function reportValue(value: Value): ReportCell {
 
 function milliseconds(value: number): string {
   return `${value.toFixed(2)} ms`;
-}
-
-function bytes(value: number): string {
-  return `${value} B`;
 }
 
 function renderSection(section: ReportSection): string {

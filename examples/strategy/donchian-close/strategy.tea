@@ -11,7 +11,7 @@ import trade
 upper_length = input.int(20, "Upper channel length", minval=2, maxval=200)
 lower_length = input.int(10, "Lower channel length", minval=2, maxval=200)
 // Numeric 0/1 keeps the published boolean choice sweepable with the current
-// numeric-range execution config.
+// recorded numeric-range audit.
 tight_stop_mode = input.int(0, "Tight initial stop: 0 off, 1 on", minval=0, maxval=1)
 tight_stop_length = input.int(8, "Tight initial stop length", minval=2, maxval=200)
 start_time = input.time(1546322400000, "Backtest start")

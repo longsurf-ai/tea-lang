@@ -880,10 +880,10 @@ describe('calls', () => {
   test('request bind options accept simple expressions and reject invalid contracts', () => {
     const valid = checkText(
       [
-        'gaps = syminfo.type == "stock"',
+        'fill_policy = syminfo.type == "stock" ? "sparse" : "carry"',
         'ignore = input.bool(false)',
         'bars = input.int(25)',
-        'x = request.security("X", "D", close, gaps=gaps, ignore_invalid_symbol=ignore, calc_bars_count=bars)',
+        'x = request.security("X", "D", close, fill=fill_policy, ignore_invalid_symbol=ignore, calc_bars_count=bars)',
       ].join('\n'),
     );
     expect(valid.errors).toEqual([]);
@@ -898,9 +898,17 @@ describe('calls', () => {
         'cannot be na',
       ],
       [
+        'x = request.security("X", "D", close, availability="middle")',
+        'request option \'availability\' has invalid value "middle"',
+      ],
+      [
+        'x = request.security("X", "D", close, fill="forward")',
+        'request option \'fill\' has invalid value "forward"',
+      ],
+      [
         [
-          'fetch(bool gaps) => request.security("X", "D", close, gaps=gaps)',
-          'x = fetch(true)',
+          'fetch(string policy) => request.security("X", "D", close, fill=policy)',
+          'x = fetch("carry")',
         ].join('\n'),
         'request call must directly initialize one plain top-level variable',
       ],

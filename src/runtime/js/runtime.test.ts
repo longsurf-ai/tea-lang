@@ -311,8 +311,8 @@ const COLLECT_REQUEST_MODULE: JSModule = testModule({
         context: {
           symbol: 'X',
           timeframe: '1m',
-          gaps: false,
-          lookahead: false,
+          fill: 'carry',
+          availability: 'end',
           ignoreInvalidSymbol: false,
           calcBarsCount: 0,
         },
@@ -356,7 +356,7 @@ function collectInput(values: Value, provisional = false): StepInput {
 }
 
 function channels(result: StepResult) {
-  return result.output[0]?.channels;
+  return result.outputs[0]?.channels;
 }
 
 describe('JSRuntime', () => {
@@ -443,18 +443,6 @@ describe('JSRuntime', () => {
         },
       },
     ]);
-    expect(result.toDatum()).toEqual({
-      effects: [
-        {
-          effectId: 0,
-          payload: {
-            kind: 'struct',
-            fields: [{kind: 'struct', fields: [1]}],
-          },
-        },
-      ],
-      provisional: false,
-    });
     runtime.dispose();
   });
 
@@ -473,31 +461,25 @@ describe('JSRuntime', () => {
     runtime.dispose();
   });
 
-  test('accepts provider NaN but fails closed when a read sees infinity', () => {
+  test('accepts input NaN but fails closed when a read sees infinity', () => {
     const runtime = new JSRuntime(configureModule(PROVISIONAL_MODULE, []));
     const na = Effect.runSync(runtime.step(input(NaN, false)));
-    expect(Number.isNaN(na.output[0]?.channels[0] as number)).toBe(true);
+    expect(Number.isNaN(na.outputs[0]?.channels[0] as number)).toBe(true);
     expect(() => Effect.runSync(runtime.step(input(Infinity, false)))).toThrow(
-      'provider series 0 returned a non-finite value',
+      'input series 0 returned a non-finite value',
     );
     runtime.dispose();
   });
 
-  test('projects multi-channel output and na into one stable Datum column', () => {
+  test('preserves multi-channel output and numeric na', () => {
     const runtime = new JSRuntime(configureModule(PROVISIONAL_MODULE, []));
     const result = Effect.runSync(runtime.step(input(NaN, false)));
-    const datum = result.toDatum();
 
-    expect(datum).toEqual({
-      output_0: {var: null, varip: 1},
-      effects: [],
-      provisional: false,
-    });
-    expect(result.toDatum()).toBe(datum);
+    expect(result.outputs).toEqual([{outputId: 0, channels: [Number.NaN, 1]}]);
     runtime.dispose();
   });
 
-  test('projects a missing conditional output as null', () => {
+  test('preserves a missing conditional output as no emission', () => {
     const module = testModule({
       abi: RUNTIME_ABI_VERSION,
       layout: LAYOUTS,
@@ -530,11 +512,7 @@ describe('JSRuntime', () => {
       }),
     );
 
-    expect(result.toDatum()).toEqual({
-      output_0: null,
-      effects: [],
-      provisional: false,
-    });
+    expect(result.outputs).toEqual([]);
     runtime.dispose();
   });
 

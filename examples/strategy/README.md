@@ -1,8 +1,8 @@
 # Strategy catalog
 
 This directory contains runnable Tea strategies, one strategy per directory.
-Each example owns its Tea source, execution config, behavioral contract, data
-notes, and measured results. Shared immutable market data lives under
+Each example owns its Tea source, behavioral contract, data notes, and measured
+results. Shared immutable market data lives under
 [`../data`](../data/).
 
 ## TradingView strategy audit
@@ -13,26 +13,26 @@ no Pine source is copied into this repository. “Converted” means the named
 public historical profile is implemented and executed through Tea's ordinary
 frontend and runtime. It does not mean every presentation option, realtime
 tick behavior, or proprietary broker-emulator detail is reproduced. All
-published strategy grids currently use the JavaScript runtime because their
+measured strategy profiles use the JavaScript runtime because their
 broker, portfolio, and trade state contains struct references.
 
-| Published strategy                                                                                                           | Runnable Tea profile                                                                                            | Stress sweep |
-| ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -----------: |
-| [Turtle System](https://www.tradingview.com/script/cOv24513-Turtle-System/)                                                  | [Long-only System 1/2, skipped trades, risk units, pyramiding, same-close fills](./turtle-system/)              |           36 |
-| [Cluster Breakout Strategy](https://www.tradingview.com/script/DkDNMQsn-Cluster-Breakout-Strategy-v6-Robust/)                | [Pinned v6, two-sided, session/EOD filters disabled](./cluster-breakout-v6/)                                    |           36 |
-| [ATR ZigZag Breakout](https://www.tradingview.com/script/Hi0gI790-ATR-ZigZag-Breakout/)                                      | [Two-sided stop entries, cancellation, ATR brackets, deterministic OHLC path](./atr-zigzag-breakout/)           |           36 |
-| [Donchian Breakout Strategy](https://www.tradingview.com/script/hyYvFjux-Donchian-Breakout-Strategy/)                        | [Explicit Close mode, long-only, default-disabled request filters omitted](./donchian-close/)                   |          600 |
-| [VWAP Suite](https://www.tradingview.com/script/L7P3quUz-VWAP-Suite-Trend-Mean-Reversion-with-Adaptive-Filters/)             | [Monthly-anchor trend/mean-reversion profile with risk sizing and brackets](./vwap-suite/)                      |           48 |
-| [BB SPY Mean Reversion](https://www.tradingview.com/script/QJfC4zEj-BB-SPY-Mean-Reversion-Investment-Strategy/)              | [Default long-only profile, adaptive bands, bias/re-arm, monthly ATR exits](./bb-spy-mean-reversion/)           |           16 |
-| [Alpha Regime Reversion Pro](https://www.tradingview.com/script/JdCTLj7S-Alpha-Regime-Reversion-Pro-by-Saf/)                 | [Daily Swing Core + Dip, QQQ regime, target allocations, partial reductions](./alpha-regime-reversion/)         |           16 |
-| [AliceTears Grid](https://www.tradingview.com/script/6I0p6rPM-AliceTears-Grid/)                                              | [Two-sided intraday grids, per-level lots, pyramiding, reversal and per-lot exits](./alice-grid/)               |            8 |
-| [Statistical Arbitrage](https://www.tradingview.com/script/5JVPlEgr/)                                                        | [Accurately named pair-spread signal with fixed-contract chart-symbol execution](./pair-spread-mean-reversion/) |            9 |
-| [Multi-Timeframe Parabolic SAR](https://www.tradingview.com/script/iwI9JdEo-Multi-Timeframe-Parabolic-SAR-Strategy-ver-1-0/) | [Inspected v2.0, two-sided close/reverse, all condition-source modes](./mtf-psar/)                              |            9 |
-| [AI SuperTrend Strategy](https://www.tradingview.com/script/eaTIyEty-AI-SuperTrend-Strategy-presentTrading/)                 | [Published WMA + Long mode, raw-SuperTrend KNN and persistent stop](./ai-supertrend-knn/)                       |           18 |
-| [Cowabunga System](https://www.tradingview.com/script/FydaIIQ7-Cowabunga-System-from-babypips-com/)                          | [Inspected Pine v2, two-sided fixed-quantity reversals and brackets on 15m bars](./cowabunga/)                  |           18 |
+| Published strategy                                                                                                           | Runnable Tea profile                                                                                            | Audited scenarios |
+| ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------: |
+| [Turtle System](https://www.tradingview.com/script/cOv24513-Turtle-System/)                                                  | [Long-only System 1/2, skipped trades, risk units, pyramiding, same-close fills](./turtle-system/)              |                36 |
+| [Cluster Breakout Strategy](https://www.tradingview.com/script/DkDNMQsn-Cluster-Breakout-Strategy-v6-Robust/)                | [Pinned v6, two-sided, session/EOD filters disabled](./cluster-breakout-v6/)                                    |                36 |
+| [ATR ZigZag Breakout](https://www.tradingview.com/script/Hi0gI790-ATR-ZigZag-Breakout/)                                      | [Two-sided stop entries, cancellation, ATR brackets, deterministic OHLC path](./atr-zigzag-breakout/)           |                36 |
+| [Donchian Breakout Strategy](https://www.tradingview.com/script/hyYvFjux-Donchian-Breakout-Strategy/)                        | [Explicit Close mode, long-only, default-disabled request filters omitted](./donchian-close/)                   |               600 |
+| [VWAP Suite](https://www.tradingview.com/script/L7P3quUz-VWAP-Suite-Trend-Mean-Reversion-with-Adaptive-Filters/)             | [Monthly-anchor trend/mean-reversion profile with risk sizing and brackets](./vwap-suite/)                      |                48 |
+| [BB SPY Mean Reversion](https://www.tradingview.com/script/QJfC4zEj-BB-SPY-Mean-Reversion-Investment-Strategy/)              | [Default long-only profile, adaptive bands, bias/re-arm, monthly ATR exits](./bb-spy-mean-reversion/)           |                16 |
+| [Alpha Regime Reversion Pro](https://www.tradingview.com/script/JdCTLj7S-Alpha-Regime-Reversion-Pro-by-Saf/)                 | [Daily Swing Core + Dip, QQQ regime, target allocations, partial reductions](./alpha-regime-reversion/)         |                16 |
+| [AliceTears Grid](https://www.tradingview.com/script/6I0p6rPM-AliceTears-Grid/)                                              | [Two-sided intraday grids, per-level lots, pyramiding, reversal and per-lot exits](./alice-grid/)               |                 8 |
+| [Statistical Arbitrage](https://www.tradingview.com/script/5JVPlEgr/)                                                        | [Accurately named pair-spread signal with fixed-contract chart-symbol execution](./pair-spread-mean-reversion/) |                 9 |
+| [Multi-Timeframe Parabolic SAR](https://www.tradingview.com/script/iwI9JdEo-Multi-Timeframe-Parabolic-SAR-Strategy-ver-1-0/) | [Inspected v2.0, two-sided close/reverse, all condition-source modes](./mtf-psar/)                              |                 9 |
+| [AI SuperTrend Strategy](https://www.tradingview.com/script/eaTIyEty-AI-SuperTrend-Strategy-presentTrading/)                 | [Published WMA + Long mode, raw-SuperTrend KNN and persistent stop](./ai-supertrend-knn/)                       |                18 |
+| [Cowabunga System](https://www.tradingview.com/script/FydaIIQ7-Cowabunga-System-from-babypips-com/)                          | [Inspected Pine v2, two-sided fixed-quantity reversals and brackets on 15m bars](./cowabunga/)                  |                18 |
 
-Every checked-in grid has been run against real market data. The deliberately
-large Donchian config spans six dimensions and evaluates 600 scenarios over
+The recorded profiles were run against real market data. The deliberately
+large Donchian audit spans six dimensions and evaluates 600 scenarios over
 3,283 daily bars (1,969,800 strategy-rows). The individual READMEs report exact
 timings, extrema, fill counts, and important interpretation warnings. Results
 are runtime fixtures, not parameter recommendations or profitability claims.
@@ -114,9 +114,10 @@ remain outside this interface.
 - Pair spread, Alpha Regime Reversion, and MTF PSAR use live Yahoo request
   contexts. Their primary CSV is hash-pinned, but their full results can change
   with upstream history. Other measured profiles use only checked-in data.
-- MTF PSAR intentionally preserves the inspectable source's
-  higher-timeframe `lookahead_on`, despite contradictory publication prose.
-  Its extreme result is a lookahead warning, not evidence of performance.
+- MTF PSAR intentionally preserves the inspectable Pine source's
+  higher-timeframe `lookahead_on`, represented in Tea as
+  `availability="start"`, despite contradictory publication prose. Its extreme
+  result is a future-data warning, not evidence of performance.
 - Cluster's page title still says v6 while the current page serves later v8
   logic; the Tea example pins the original v6 behavior. Cowabunga likewise
   follows the inspectable Pine source where it differs from surrounding prose.

@@ -1,8 +1,7 @@
-// Purpose: Generic report sections render deterministically from backend-neutral execution summaries.
+// Purpose: Recipe run reports render deterministic timing and parameters.
 
 import {describe, expect, test} from 'vitest';
-import type {ExecutionSummary} from '../execution/execute';
-import type {ParamSpec} from '../runtime/abi';
+import type {ParamSpec} from '../runtime/schema';
 import {
   parameterReportSection,
   renderReport,
@@ -25,61 +24,22 @@ const LENGTH: ParamSpec = {
   seriesSid: null,
 };
 
-describe('generic terminal reports', () => {
-  test('prefaces results with backend statistics and effective parameters', () => {
-    const summary: ExecutionSummary = {
-      backend: 'gpu',
-      numericProfile: 'wgsl-f32-i32',
-      bindings: [
-        {
-          bindingIndex: 0,
-          rows: 200,
-          inputs: [{spec: LENGTH, value: 20, active: true}],
-        },
-      ],
-      timing: {
-        loweringMs: 1.25,
-        executionMs: 4,
-        totalMs: 5.25,
-        preparationMs: 0.5,
-        encodeSubmitMs: 0.25,
-        completionReadbackMs: 2.5,
-        decodePublicationMs: 0.25,
-      },
-      chunks: 2,
-      dispatches: 2,
-      cache: {
-        mode: 'workgroup-prefix',
-        entryPoint: 'tea_main_cached',
-        workgroupSize: 64,
-        cachedWordsPerExecution: 12,
-        cachedBytesPerExecution: 48,
-        bytesPerWorkgroup: 3_072,
-        segmentIds: ['root:header', 'root:locals'],
-      },
-    };
-
+describe('run reports', () => {
+  test('renders Recipe timing and effective parameters', () => {
     const rendered = renderReport([
-      systemReportSection(summary, {device: 'Dawn'}),
-      parameterReportSection(summary),
+      systemReportSection({
+        indices: 200,
+        timing: {compilationMs: 1.25, executionMs: 4, totalMs: 5.25},
+      }),
+      parameterReportSection([{spec: LENGTH, value: 20, active: true}]),
     ]);
 
     expect(rendered).toContain('# System');
-    expect(rendered).toContain('backend                gpu');
-    expect(rendered).toContain('numeric profile        wgsl-f32-i32');
-    expect(rendered).toContain('device                 Dawn');
-    expect(rendered).toContain('throughput             50000 rows/s');
-    expect(rendered).toContain('gpu preparation        0.50 ms');
-    expect(rendered).toContain('encode + submit        0.25 ms');
-    expect(rendered).toContain('completion + readback  2.50 ms');
-    expect(rendered).toContain('decode + publication   0.25 ms');
-    expect(rendered).toContain('cache mode             workgroup-prefix');
-    expect(rendered).toContain('workgroup size         64');
-    expect(rendered).toContain('cache / execution      48 B');
-    expect(rendered).toContain('cache / workgroup      3072 B');
-    expect(rendered).toContain('cached segments        2');
-    expect(rendered).not.toContain('root:header');
+    expect(rendered).toContain('indices      200');
+    expect(rendered).toContain('compilation  1.25 ms');
+    expect(rendered).toContain('execution    4.00 ms');
+    expect(rendered).toContain('throughput   50000 indices/s');
     expect(rendered).toContain('# Parameters');
-    expect(rendered).toContain('0        length     20     true');
+    expect(rendered).toContain('length     20     true');
   });
 });

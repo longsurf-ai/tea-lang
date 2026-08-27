@@ -8,7 +8,6 @@ import {describe, expect, test} from 'vitest';
 import {newFileBase} from '../base/pos';
 import {Errors} from '../base/print';
 import {checkPackage} from '../checker/check';
-import {generate} from '../codegen/codegen';
 import type {Program} from '../ir/program';
 import {TypeKind} from '../ir/type';
 import {
@@ -17,11 +16,9 @@ import {
   type Registry,
 } from '../loader/loader';
 import {buildProgram} from '../noder/noder';
-import {csvProvider} from '../providers/data/csv';
 import type {EffectValue, OutputSink, Value} from '../runtime/abi';
-import {bindFixedHistory as bind} from '../runtime/js/fixed-history';
-import {loadModule} from '../runtime/load';
 import {parse} from '../syntax/syntax';
+import {csvStream, executeTestProgram} from './batch';
 
 const LIBRARIES: Readonly<Record<string, string>> = {
   ta: readFileSync(
@@ -73,14 +70,14 @@ class Sink implements OutputSink {
   publish(publication: Parameters<OutputSink['publish']>[0]): void {
     for (const output of publication.outputs) {
       this.emissions.push({
-        row: publication.row,
+        row: publication.index,
         oid: output.outputId,
         channels: [...output.channels],
       });
     }
     for (const effect of publication.effects) {
       this.effects.push({
-        row: publication.row,
+        row: publication.index,
         effectId: effect.effectId,
         payload: effect.payload,
       });
@@ -118,14 +115,11 @@ async function execute(source: string, csv: string) {
   const program = buildProgram(checked, errors);
   failOnErrors(errors);
   const sink = new Sink();
-  const bound = await bind(loadModule(generate(program)), {
-    params: {},
-    provider: csvProvider(csv),
+  await executeTestProgram(program, {
+    stream: csvStream(csv),
     sink,
     timeNow: 0,
   });
-  await bound.runAll();
-  bound.dispose();
   return {program, sink};
 }
 
