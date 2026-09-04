@@ -7,20 +7,12 @@ import type {Program} from './ir/program';
 import {checkPackage} from './checker/check';
 import {loadPackage, resolveImports, type SourceInput} from './loader/loader';
 import {buildProgram} from './noder/noder';
-import type {File} from './syntax/nodes';
 
 // Compilation either emits JavaScript or fails with the flushed, ordered
 // error batch — never both, never a partial emit.
 export type CompileResult =
   | {readonly ok: true; readonly js: string}
   | {readonly ok: false; readonly errors: readonly ErrorMsg[]};
-
-// Syntax inspection stops after parsing and preserves the parser's recovered
-// File even when it queued errors. Full compilation enters through
-// compileToProgram below.
-export function parseFile(filename: string, errors: Errors): File {
-  return loadPackage([filename], errors)[0];
-}
 
 // Compiler performance events, one per phase (TEA_LOG=debug shows them).
 const perf = log.child('compile');

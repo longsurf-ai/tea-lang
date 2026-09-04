@@ -3,8 +3,9 @@
 import {readFileSync, writeFileSync} from 'node:fs';
 import {newFileBase} from '../base/pos';
 import {Errors} from '../base/print';
-import {compile, compileToProgram, parseFile} from '../compiler';
+import {compile, compileToProgram} from '../compiler';
 import {dumpProgram} from '../ir/dumper';
+import {loadPackage} from '../loader/loader';
 import {dumpFile, dumpTokens} from '../syntax/dumper';
 import {tokenize} from '../syntax/syntax';
 import type {CliResult} from './result';
@@ -40,7 +41,7 @@ export function parseCommand(
     );
     console.log(dumpTokens(tokens));
   }
-  if (wantAst) console.log(dumpFile(parseFile(file, errors)));
+  if (wantAst) console.log(dumpFile(loadPackage([file], errors)[0]));
   if (options.ir) {
     const program = compileToProgram([file], errors);
     if (program !== null) console.log(dumpProgram(program));
