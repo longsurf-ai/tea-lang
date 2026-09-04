@@ -11,14 +11,7 @@ import {generate} from '../codegen/codegen';
 import {paramSpecsOf} from '../codegen/params';
 import {compileToProgram} from '../compiler';
 import {pineBuiltinSupplier} from '../extension/pine';
-import {RunReportSink} from '../sinks/report-sink';
-import {TraceSink} from '../sinks/trace-sink';
 import {batchRecipe} from '../recipe/batch';
-import {
-  parameterReportSection,
-  renderReport,
-  systemReportSection,
-} from '../reporting/report';
 import {loadModule} from '../runtime/load';
 import {
   boundInputs,
@@ -26,7 +19,8 @@ import {
   moduleDeclaration,
   withModuleBindings,
 } from '../runtime/module-binding';
-import type {OutputSink} from '../runtime/output';
+import type {Datum} from '../runtime/output';
+import {renderRunReport, traceDatum, traceDeclaration} from './output';
 import {parseRunParameters} from './parameters';
 import type {CliResult} from './result';
 
@@ -82,10 +76,11 @@ export async function runCommand(
   );
   if (Object.keys(parameters).length !== 0) node.bind(parameters);
 
-  const sink: OutputSink = options.trace
-    ? new TraceSink(line => host.print(line))
-    : new RunReportSink();
-  sink.declare(moduleDeclaration(node.module));
+  const declaration = moduleDeclaration(node.module);
+  const publications: Datum[] = [];
+  if (options.trace) {
+    for (const line of traceDeclaration(declaration)) host.print(line);
+  }
   const stream = await csvBatchStream(input);
 
   let executionMs = 0;
@@ -95,24 +90,24 @@ export async function runCommand(
       executionMs = value;
     });
     result = await batchRecipe(node, [stream], {
-      next: datum => sink.publish(datum),
+      next: datum => {
+        if (options.trace) {
+          for (const line of traceDatum(datum)) host.print(line);
+        } else {
+          publications.push(datum);
+        }
+      },
     }).execute();
   }
 
-  if (sink instanceof RunReportSink) {
-    const totalMs = compilationMs + executionMs;
-    const rendered = renderReport(
-      [
-        systemReportSection({
-          indices: result.indices,
-          timing: {compilationMs, executionMs, totalMs},
-        }),
-        parameterReportSection(boundInputs(node.module)),
-        sink.denseSection(),
-        sink.effectsSection(),
-      ].filter(section => section.rows.length > 0),
+  if (!options.trace) {
+    host.print(
+      renderRunReport(declaration, publications, boundInputs(node.module), {
+        indices: result.indices,
+        compilationMs,
+        executionMs,
+      }),
     );
-    if (rendered.length > 0) host.print(rendered);
   }
   return {ok: true};
 }

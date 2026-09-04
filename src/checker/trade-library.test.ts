@@ -5,8 +5,9 @@ import {describe, expect, test} from 'vitest';
 import {funcsOf} from '../ir/visit';
 import {defaultRegistry} from '../loader/loader';
 import {mustBuild} from '../noder/testing';
-import type {OutputSink, Value} from '../runtime/abi';
+import type {Value} from '../runtime/abi';
 import {csvStream, executeTestProgram} from '../testing/batch';
+import {OutputCapture} from '../testing/output';
 import {ObjectKind} from './object';
 import {checkText, type CheckResult} from './testing';
 
@@ -46,28 +47,6 @@ const SPECIALIZATION_SOURCE = [
   'plot(lotState.snapshot().equity)',
 ].join('\n');
 
-interface Emission {
-  readonly row: number;
-  readonly oid: number;
-  readonly channels: readonly Value[];
-}
-
-class Sink implements OutputSink {
-  readonly emissions: Emission[] = [];
-
-  declare(): void {}
-
-  publish(publication: Parameters<OutputSink['publish']>[0]): void {
-    for (const output of publication.outputs) {
-      this.emissions.push({
-        row: publication.index,
-        oid: output.outputId,
-        channels: [...output.channels],
-      });
-    }
-  }
-}
-
 function tradePackage(result: CheckResult) {
   const pkg = result.checked.pkg.imports.find(
     candidate => candidate.path === 'trade',
@@ -78,9 +57,9 @@ function tradePackage(result: CheckResult) {
   return pkg;
 }
 
-function valuesFor(sink: Sink, oid: number): readonly Value[] {
+function valuesFor(sink: OutputCapture, oid: number): readonly Value[] {
   return sink.emissions
-    .filter(emission => emission.oid === oid)
+    .filter(emission => emission.outputId === oid)
     .sort((left, right) => left.row - right.row)
     .map(emission => emission.channels[0]);
 }
@@ -261,7 +240,7 @@ describe('trade library', () => {
       'plot(metrics.fillCount)',
     ].join('\n');
     const program = mustBuild(source);
-    const sink = new Sink();
+    const sink = new OutputCapture();
     await executeTestProgram(program, {
       stream: csvStream(['close', '10', '12', ''].join('\n')),
       sink,

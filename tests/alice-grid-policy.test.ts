@@ -8,7 +8,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
 import {compileToProgram} from '../src/compiler';
-import {MemorySink} from '../src/sinks/memory-sink';
+import {OutputCapture} from '../src/testing/output';
 import type {EffectValue} from '../src/runtime/abi';
 import {csvStream, executeTestProgram} from '../src/testing/batch';
 
@@ -72,7 +72,7 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
   }
   expect(errors.count).toBe(0);
 
-  const sink = new MemorySink();
+  const sink = new OutputCapture();
   const result = await executeTestProgram(program, {
     params: PARAMETERS,
     stream: csvStream(readFileSync(DATA, 'utf8')),
@@ -121,7 +121,7 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
         .join('; '),
     );
   }
-  const sink = new MemorySink();
+  const sink = new OutputCapture();
   const result = await executeTestProgram(program, {
     params: {...PARAMETERS, use_trailing: 1, use_stop_loss: 0},
     stream: csvStream(readFileSync(DATA, 'utf8')),
@@ -144,7 +144,7 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
   );
 }, 15_000);
 
-function finalMetric(sink: MemorySink, title: string): number {
+function finalMetric(sink: OutputCapture, title: string): number {
   const outputId = sink.outputs.findIndex(output =>
     output.spec.staticArgs.some(
       argument => argument.name === 'title' && argument.value === title,
@@ -175,7 +175,7 @@ function fillFields(payload: EffectValue): readonly EffectValue[] {
   return fill.fields;
 }
 
-function fillTape(sink: MemorySink) {
+function fillTape(sink: OutputCapture) {
   const fillEffectIds = new Set(
     sink.effectSchemas.flatMap((effect, effectId) =>
       effect.payload.kind === 'struct' &&
@@ -208,7 +208,7 @@ function fillTape(sink: MemorySink) {
 }
 
 function lifecycleTape(
-  sink: MemorySink,
+  sink: OutputCapture,
   timeByRow: ReadonlyMap<number, number | null | undefined>,
 ) {
   return sink.effectEmissions.map(emission => ({
@@ -223,7 +223,7 @@ function hash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-function lifecycleKind(sink: MemorySink, effectId: number): string {
+function lifecycleKind(sink: OutputCapture, effectId: number): string {
   const payload = sink.effectSchemas[effectId]?.payload;
   if (payload === undefined) return `unknown:${effectId}`;
   return payload.kind === 'struct' ? payload.typeId : payload.kind;

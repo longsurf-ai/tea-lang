@@ -3,8 +3,8 @@
 
 import {describe, expect, test} from 'vitest';
 import {mustBuild} from '../noder/testing';
-import {MemorySink} from '../sinks/memory-sink';
 import {csvStream, executeTestProgram} from '../testing/batch';
+import {OutputCapture} from '../testing/output';
 
 const DATA = [
   'time,open,high,low,close',
@@ -36,7 +36,7 @@ describe('ta Wilder indicators', () => {
         'plot(adx, "ADX")',
       ].join('\n'),
     );
-    const sink = new MemorySink();
+    const sink = new OutputCapture();
     await executeTestProgram(program, {
       stream: csvStream(DATA),
       sink,

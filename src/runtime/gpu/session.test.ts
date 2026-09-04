@@ -4,7 +4,7 @@ import {describe, expect, test} from 'vitest';
 import {compileProgramToWgsl} from '../../codegen/wgsl';
 import type {CompiledWgslProgram} from '../../gpu/contract';
 import {mustBuild} from '../../noder/testing';
-import {MemorySink} from '../../sinks/memory-sink';
+import {OutputCapture} from '../../testing/output';
 import {
   GpuBindingError,
   prepareGpuExecutionInputs,
@@ -60,7 +60,7 @@ function binding(
     params,
     indices: Object.values(series)[0]?.length ?? 0,
     series,
-    sink: new MemorySink(),
+    sink: new OutputCapture(),
   };
 }
 
@@ -130,7 +130,7 @@ describe('GPU execution preparation', () => {
   test('keeps zero-index executions allocation-free', async () => {
     const artifact = parameterArtifact();
     const prepared = await prepareGpuExecutionInputs(artifact, [
-      {params: {}, indices: 0, series: {close: []}, sink: new MemorySink()},
+      {params: {}, indices: 0, series: {close: []}, sink: new OutputCapture()},
     ]);
 
     expect(prepared.chunkRows).toBe(0);

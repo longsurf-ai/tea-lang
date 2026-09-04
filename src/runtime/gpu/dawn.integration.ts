@@ -10,8 +10,8 @@ import {compileProgramToWgsl} from '../../codegen/wgsl';
 import type {CompiledWgslProgram} from '../../gpu/contract';
 import type {Program} from '../../ir/program';
 import {mustBuild} from '../../noder/testing';
-import {MemorySink} from '../../sinks/memory-sink';
 import {arrayStream, executeTestModule} from '../../testing/batch';
+import {OutputCapture} from '../../testing/output';
 import {loadModule} from '../load';
 import {
   createGpuExecution,
@@ -62,12 +62,12 @@ async function assertParity(
   bindings: readonly GpuBinding[],
 ): Promise<{
   readonly summary: GpuRunSummary;
-  readonly cpuSinks: readonly MemorySink[];
-  readonly gpuSinks: readonly MemorySink[];
+  readonly cpuSinks: readonly OutputCapture[];
+  readonly gpuSinks: readonly OutputCapture[];
 }> {
   const artifact = compiledArtifact(program);
   const module = loadModule(generate(program));
-  const cpuSinks = bindings.map(() => new MemorySink());
+  const cpuSinks = bindings.map(() => new OutputCapture());
   for (const [index, input] of bindings.entries()) {
     await executeTestModule(module, {
       params: input.params,
@@ -83,7 +83,7 @@ async function assertParity(
     });
   }
 
-  const gpuSinks = bindings.map(() => new MemorySink());
+  const gpuSinks = bindings.map(() => new OutputCapture());
   const concrete = bindings.map((input, index) => ({
     ...input,
     sink: gpuSinks[index]!,
@@ -111,7 +111,7 @@ function binding(
     indices: Object.values(series)[0]?.length ?? time?.length ?? 0,
     series,
     ...(time === undefined ? {} : {time}),
-    sink: new MemorySink(),
+    sink: new OutputCapture(),
   };
 }
 
@@ -136,7 +136,7 @@ async function dawn(): Promise<{readonly device: GPUDevice}> {
   return {device: await sharedDevice};
 }
 
-function normalize(sink: MemorySink): unknown {
+function normalize(sink: OutputCapture): unknown {
   return {
     outputs: sink.outputs,
     effects: sink.effectSchemas,

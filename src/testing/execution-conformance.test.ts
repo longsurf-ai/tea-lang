@@ -1,12 +1,12 @@
-// Purpose: Fail-closed execution conformance harness — every committed case runs through compile, load, bind, runAll, and TraceSink against independently reviewed, hash-pinned references.
+// Purpose: Fail-closed execution conformance harness — every committed case runs through compile, load, bind, runAll, and the CLI trace formatter against independently reviewed, hash-pinned references.
 
 import {existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {describe, expect, test} from 'vitest';
 import {formatPos} from '../base/pos';
+import {traceDatum, traceDeclaration} from '../cli/output';
 import {compile} from '../compiler';
-import {TraceSink} from '../sinks/trace-sink';
 import type {BoundInput, EffectValue, OutputSink, Value} from '../runtime/abi';
 import {isEffectStructValue} from '../runtime/abi';
 import {loadModule} from '../runtime/load';
@@ -44,7 +44,6 @@ function allFiles(root: string): string[] {
 
 class ConformanceSink implements OutputSink {
   readonly traceLines: string[] = [];
-  readonly trace = new TraceSink(line => this.traceLines.push(line));
   declared: Parameters<OutputSink['declare']>[0]['outputs'] = [];
   declaredEffects: Parameters<OutputSink['declare']>[0]['effects'] = [];
   readonly emissions: {
@@ -63,7 +62,7 @@ class ConformanceSink implements OutputSink {
   declare(declaration: Parameters<OutputSink['declare']>[0]): void {
     this.declared = declaration.outputs;
     this.declaredEffects = declaration.effects;
-    this.trace.declare(declaration);
+    this.traceLines.push(...traceDeclaration(declaration));
   }
 
   publish(publication: Parameters<OutputSink['publish']>[0]): void {
@@ -83,7 +82,7 @@ class ConformanceSink implements OutputSink {
         provisional: publication.provisional,
       });
     }
-    this.trace.publish(publication);
+    this.traceLines.push(...traceDatum(publication));
   }
 }
 
@@ -353,7 +352,7 @@ async function runCase(entry: CorpusCase): Promise<{
     });
   });
 
-  expect(sink.traceLines.length, `${entry.id} TraceSink line count`).toBe(
+  expect(sink.traceLines.length, `${entry.id} trace line count`).toBe(
     reference.outputs.length +
       sink.declaredEffects.length +
       expectedEmissions.length +

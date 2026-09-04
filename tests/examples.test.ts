@@ -10,7 +10,7 @@ import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
 import {compileToProgram} from '../src/compiler';
-import {MemorySink} from '../src/sinks/memory-sink';
+import {OutputCapture} from '../src/testing/output';
 import type {EffectValue} from '../src/runtime/abi';
 import {csvStream, executeTestProgram} from '../src/testing/batch';
 
@@ -61,7 +61,7 @@ describe('canonical EMA crossover example', () => {
     expect(source.file).toBe('btcusdt-1d.csv');
     expect(createHash('sha256').update(csv).digest('hex')).toBe(source.sha256);
     validateMarketData(csv, source, 3_283, 86_400_000);
-    const sink = new MemorySink();
+    const sink = new OutputCapture();
     const result = await executeTestProgram(compileExample(), {
       stream: csvStream(csv),
       sink,
@@ -173,7 +173,7 @@ describe('canonical component migration regressions', () => {
       'fea088e4b139c8e99fe115e5ccdc5c85f2f1b25d6af38a7e71a29dfef1d0545d',
     );
 
-    const sink = new MemorySink();
+    const sink = new OutputCapture();
     const result = await executeTestProgram(program, {
       params,
       stream: csvStream(csv),
@@ -247,7 +247,7 @@ describe('canonical component migration regressions', () => {
   });
 });
 
-function outputWithTitle(sink: MemorySink, title: string): number {
+function outputWithTitle(sink: OutputCapture, title: string): number {
   const output = sink.outputs.findIndex(candidate =>
     candidate.spec.staticArgs.some(
       argument => argument.name === 'title' && argument.value === title,
@@ -257,7 +257,7 @@ function outputWithTitle(sink: MemorySink, title: string): number {
   return output;
 }
 
-function finalScalar(sink: MemorySink, outputId: number): number {
+function finalScalar(sink: OutputCapture, outputId: number): number {
   const value = sink.emissions.findLast(
     emission => emission.outputId === outputId,
   )?.channels[0];

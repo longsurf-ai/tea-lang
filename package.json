@@ -27,7 +27,6 @@
       "default": "./dist/loader/index.js"
     },
     "./codegen/wgsl": "./src/codegen/wgsl/index.ts",
-    "./reporting": "./src/reporting/index.ts",
     "./runtime/gpu": "./src/runtime/gpu/index.ts",
     "./*": "./src/*.ts"
   },

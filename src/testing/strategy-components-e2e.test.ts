@@ -17,9 +17,10 @@ import {
   type Registry,
 } from '../loader/loader';
 import {buildProgram} from '../noder/noder';
-import type {EffectValue, OutputSink, Value} from '../runtime/abi';
+import type {EffectValue, Value} from '../runtime/abi';
 import {parse} from '../syntax/syntax';
 import {csvStream, executeTestProgram} from './batch';
+import {OutputCapture} from './output';
 
 const LIBRARIES: Readonly<Record<string, string>> = {
   ta: readFileSync(
@@ -49,42 +50,6 @@ const REGISTRY: Registry = (path: string): PackageSource | null => {
     ? null
     : {filename: `tea-lib/${path}.tea`, source};
 };
-
-interface Emission {
-  readonly row: number;
-  readonly oid: number;
-  readonly channels: readonly Value[];
-}
-
-interface SparseEmission {
-  readonly row: number;
-  readonly effectId: number;
-  readonly payload: EffectValue;
-}
-
-class Sink implements OutputSink {
-  readonly emissions: Emission[] = [];
-  readonly effects: SparseEmission[] = [];
-
-  declare(): void {}
-
-  publish(publication: Parameters<OutputSink['publish']>[0]): void {
-    for (const output of publication.outputs) {
-      this.emissions.push({
-        row: publication.index,
-        oid: output.outputId,
-        channels: [...output.channels],
-      });
-    }
-    for (const effect of publication.effects) {
-      this.effects.push({
-        row: publication.index,
-        effectId: effect.effectId,
-        payload: effect.payload,
-      });
-    }
-  }
-}
 
 function compileComponents(source: string): Program {
   const errors = new Errors();
@@ -124,7 +89,7 @@ function failOnErrors(errors: Errors): void {
 
 async function execute(source: string, csv: string) {
   const compiled = compileComponents(source);
-  const sink = new Sink();
+  const sink = new OutputCapture();
   await executeTestProgram(compiled, {
     stream: csvStream(csv),
     sink,
@@ -133,18 +98,18 @@ async function execute(source: string, csv: string) {
   return {program: compiled, sink};
 }
 
-function valuesFor(sink: Sink, oid: number): readonly Value[] {
+function valuesFor(sink: OutputCapture, oid: number): readonly Value[] {
   return sink.emissions
-    .filter(emission => emission.oid === oid)
+    .filter(emission => emission.outputId === oid)
     .sort((left, right) => left.row - right.row)
     .map(emission => emission.channels[0]);
 }
 
 function effectTimeline(
   program: Program,
-  sink: Sink,
+  sink: OutputCapture,
 ): readonly (readonly [number, string])[] {
-  return sink.effects.map(emission => {
+  return sink.effectEmissions.map(emission => {
     const type = program.effects[emission.effectId]?.payloadType;
     if (type?.kind !== TypeKind.Struct) {
       throw new Error(`effect ${emission.effectId} has no nominal payload`);
@@ -155,11 +120,11 @@ function effectTimeline(
 
 function effectField(
   program: Program,
-  sink: Sink,
+  sink: OutputCapture,
   emissionIndex: number,
   ...path: readonly string[]
 ): EffectValue {
-  const emission = sink.effects[emissionIndex];
+  const emission = sink.effectEmissions[emissionIndex];
   let type =
     emission === undefined
       ? undefined

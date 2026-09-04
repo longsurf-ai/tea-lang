@@ -16,9 +16,10 @@ import {
   type Registry,
 } from '../loader/loader';
 import {buildProgram} from '../noder/noder';
-import type {EffectValue, OutputSink, Value} from '../runtime/abi';
+import type {EffectValue, Value} from '../runtime/abi';
 import {parse} from '../syntax/syntax';
 import {csvStream, executeTestProgram} from './batch';
+import {OutputCapture} from './output';
 
 const LIBRARIES: Readonly<Record<string, string>> = {
   ta: readFileSync(
@@ -49,41 +50,7 @@ const REGISTRY: Registry = (path: string): PackageSource | null => {
     : {filename: `tea-lib/${path}.tea`, source};
 };
 
-interface Emission {
-  readonly row: number;
-  readonly oid: number;
-  readonly channels: readonly Value[];
-}
-
-interface SparseEmission {
-  readonly row: number;
-  readonly effectId: number;
-  readonly payload: EffectValue;
-}
-
-class Sink implements OutputSink {
-  readonly emissions: Emission[] = [];
-  readonly effects: SparseEmission[] = [];
-
-  declare(): void {}
-
-  publish(publication: Parameters<OutputSink['publish']>[0]): void {
-    for (const output of publication.outputs) {
-      this.emissions.push({
-        row: publication.index,
-        oid: output.outputId,
-        channels: [...output.channels],
-      });
-    }
-    for (const effect of publication.effects) {
-      this.effects.push({
-        row: publication.index,
-        effectId: effect.effectId,
-        payload: effect.payload,
-      });
-    }
-  }
-}
+type SparseEmission = OutputCapture['effectEmissions'][number];
 
 function failOnErrors(errors: Errors): void {
   if (errors.count === 0) {
@@ -114,7 +81,7 @@ async function execute(source: string, csv: string) {
   failOnErrors(errors);
   const program = buildProgram(checked, errors);
   failOnErrors(errors);
-  const sink = new Sink();
+  const sink = new OutputCapture();
   await executeTestProgram(program, {
     stream: csvStream(csv),
     sink,
@@ -123,9 +90,9 @@ async function execute(source: string, csv: string) {
   return {program, sink};
 }
 
-function valuesFor(sink: Sink, oid: number): readonly Value[] {
+function valuesFor(sink: OutputCapture, oid: number): readonly Value[] {
   return sink.emissions
-    .filter(emission => emission.oid === oid)
+    .filter(emission => emission.outputId === oid)
     .sort((left, right) => left.row - right.row)
     .map(emission => emission.channels[0]);
 }
@@ -207,21 +174,21 @@ describe('canonical bounded lot trade components', () => {
     expect(valuesFor(sink, 1)).toEqual([1]);
     expect(valuesFor(sink, 2)).toEqual([1]);
     expect(valuesFor(sink, 3)).toEqual([1]);
-    expect(sink.effects.map(emission => effectName(program, emission))).toEqual(
-      [
-        'OrderSubmitted',
-        'FillExecuted',
-        'OrderSubmitted',
-        'FillExecuted',
-        'OrderRejected',
-        'OrderSubmitted',
-        'FillExecuted',
-        'OrderSubmitted',
-        'FillExecuted',
-      ],
-    );
+    expect(
+      sink.effectEmissions.map(emission => effectName(program, emission)),
+    ).toEqual([
+      'OrderSubmitted',
+      'FillExecuted',
+      'OrderSubmitted',
+      'FillExecuted',
+      'OrderRejected',
+      'OrderSubmitted',
+      'FillExecuted',
+      'OrderSubmitted',
+      'FillExecuted',
+    ]);
 
-    const submitted = sink.effects.filter(
+    const submitted = sink.effectEmissions.filter(
       emission => effectName(program, emission) === 'OrderSubmitted',
     );
     expect(
@@ -233,7 +200,7 @@ describe('canonical bounded lot trade components', () => {
       ),
     ).toEqual(['Long touch', 'Long gap', 'Short touch', 'Short gap']);
 
-    const fills = sink.effects.filter(
+    const fills = sink.effectEmissions.filter(
       emission => effectName(program, emission) === 'FillExecuted',
     );
     expect(
@@ -251,7 +218,7 @@ describe('canonical bounded lot trade components', () => {
       fills.map(emission => effectField(program, emission, 'fill', 'tradeId')),
     ).toEqual([101, 101, 202, 202]);
 
-    const rejection = sink.effects.find(
+    const rejection = sink.effectEmissions.find(
       emission => effectName(program, emission) === 'OrderRejected',
     );
     if (rejection === undefined)
@@ -321,12 +288,19 @@ describe('canonical bounded lot trade components', () => {
     expect(valuesFor(sink, 4)).toEqual([1, 1, 1, 0]);
     expect(valuesFor(sink, 5)).toEqual([1, 1, 1, 2]);
     expect(valuesFor(sink, 6)).toEqual([1, 1, 1, 0]);
-    expect(sink.effects.map(emission => emission.row)).toEqual([0, 0, 3, 3]);
-    expect(sink.effects.map(emission => effectName(program, emission))).toEqual(
-      ['OrderSubmitted', 'FillExecuted', 'OrderSubmitted', 'FillExecuted'],
-    );
+    expect(sink.effectEmissions.map(emission => emission.row)).toEqual([
+      0, 0, 3, 3,
+    ]);
     expect(
-      sink.effects
+      sink.effectEmissions.map(emission => effectName(program, emission)),
+    ).toEqual([
+      'OrderSubmitted',
+      'FillExecuted',
+      'OrderSubmitted',
+      'FillExecuted',
+    ]);
+    expect(
+      sink.effectEmissions
         .filter(emission => effectName(program, emission) === 'FillExecuted')
         .map(emission => effectField(program, emission, 'fill', 'commandId')),
     ).toEqual(['Trail entry', 'Trail close']);
@@ -361,21 +335,21 @@ describe('canonical bounded lot trade components', () => {
     expect(valuesFor(sink, 1)).toEqual([1, 0]);
     expect(valuesFor(sink, 2)).toEqual([1, 0]);
     expect(valuesFor(sink, 3)).toEqual([1, 2]);
-    expect(sink.effects.map(emission => effectName(program, emission))).toEqual(
-      [
-        'OrderSubmitted',
-        'FillExecuted',
-        'OrderRejected',
-        'OrderSubmitted',
-        'FillExecuted',
-      ],
-    );
     expect(
-      sink.effects
+      sink.effectEmissions.map(emission => effectName(program, emission)),
+    ).toEqual([
+      'OrderSubmitted',
+      'FillExecuted',
+      'OrderRejected',
+      'OrderSubmitted',
+      'FillExecuted',
+    ]);
+    expect(
+      sink.effectEmissions
         .filter(emission => effectName(program, emission) === 'OrderSubmitted')
         .map(emission => effectField(program, emission, 'order', 'id')),
     ).toEqual([1, 2]);
-    const rejection = sink.effects.find(
+    const rejection = sink.effectEmissions.find(
       emission => effectName(program, emission) === 'OrderRejected',
     );
     if (rejection === undefined)
@@ -440,7 +414,7 @@ describe('canonical bounded lot trade components', () => {
     expect(valuesFor(sink, 9)).toEqual([2, 2, 2]);
     expect(valuesFor(sink, 10)).toEqual([0, 0, 1]);
 
-    const fills = sink.effects.filter(
+    const fills = sink.effectEmissions.filter(
       emission => effectName(program, emission) === 'FillExecuted',
     );
     expect(
@@ -488,9 +462,9 @@ describe('canonical bounded lot trade components', () => {
 
     expect(valuesFor(sink, 1)).toEqual([1]);
     expect(valuesFor(sink, 2)).toEqual([1]);
-    expect(sink.effects.map(emission => effectName(program, emission))).toEqual(
-      ['OrderSubmitted', 'FillExecuted', 'OrderRejected'],
-    );
+    expect(
+      sink.effectEmissions.map(emission => effectName(program, emission)),
+    ).toEqual(['OrderSubmitted', 'FillExecuted', 'OrderRejected']);
   });
 
   test('rejects scheduled APIs for the immediate-only lot policy statically', async () => {
@@ -535,9 +509,9 @@ describe('canonical bounded lot trade components', () => {
     expect(valuesFor(sink, 1)).toEqual([0]);
     expect(valuesFor(sink, 2)).toEqual([0]);
     expect(valuesFor(sink, 3)).toEqual([0]);
-    expect(sink.effects.map(emission => effectName(program, emission))).toEqual(
-      ['OrderRejected'],
-    );
+    expect(
+      sink.effectEmissions.map(emission => effectName(program, emission)),
+    ).toEqual(['OrderRejected']);
   });
 
   test('does not liquidate before an invalid or failed immediate reversal', async () => {
@@ -572,9 +546,14 @@ describe('canonical bounded lot trade components', () => {
     expect(valuesFor(sink, 1)).toEqual([1, 1, 1]);
     expect(valuesFor(sink, 2)).toEqual([1, 1, 1]);
     expect(valuesFor(sink, 3)).toEqual([1, 1, 1]);
-    expect(sink.effects.map(emission => effectName(program, emission))).toEqual(
-      ['OrderSubmitted', 'FillExecuted', 'OrderRejected', 'OrderRejected'],
-    );
+    expect(
+      sink.effectEmissions.map(emission => effectName(program, emission)),
+    ).toEqual([
+      'OrderSubmitted',
+      'FillExecuted',
+      'OrderRejected',
+      'OrderRejected',
+    ]);
   });
 
   test('keeps strategy policy keyed by the returned stable trade id', async () => {

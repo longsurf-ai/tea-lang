@@ -12,8 +12,8 @@ import {
   TypeKind,
   type StructType,
 } from '../ir/type';
-import {MemorySink} from '../sinks/memory-sink';
 import {finiteStream, executeTestModule} from '../testing/batch';
+import {OutputCapture} from '../testing/output';
 import {loadModule} from '../runtime/load';
 import {mustBuild} from '../noder/testing';
 import {generate} from './codegen';
@@ -89,7 +89,7 @@ const oneIndex = () => finiteStream(z.object({}), [{}]);
 describe('generic sparse effect lowering', () => {
   test('publishes manifest-typed fixed struct payloads in source order', async () => {
     const module = loadModule(generate(program));
-    const sink = new MemorySink();
+    const sink = new OutputCapture();
     await executeTestModule(module, {
       stream: oneIndex(),
       sink,
@@ -153,7 +153,7 @@ describe('generic sparse effect lowering', () => {
 
     const execution = executeTestModule(forged, {
       stream: oneIndex(),
-      sink: new MemorySink(),
+      sink: new OutputCapture(),
       timeNow: 0,
     });
     await expect(execution).rejects.toThrow(

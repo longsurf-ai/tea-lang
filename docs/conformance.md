@@ -9,7 +9,7 @@ Tea has two deliberately separate corpora:
   to accept.
 - `tests/fixtures/execution/` is the fail-closed executable corpus. Every listed
   source must pass the real `compile → load → finite DataStreams → Node.bind →
-Node.to` pipeline, and the harness observes it through the real `TraceSink`.
+Node.to` pipeline, and the harness observes it through the CLI trace formatter.
 
 `tests/fixtures/execution/manifest.json` is the corpus inventory. It names every
 source, CSV input, and JSON reference and pins each with SHA-256. The test fails

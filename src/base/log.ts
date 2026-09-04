@@ -1,4 +1,4 @@
-// Purpose: Structured logging — scoped loggers emitting typed events over a pluggable sink; the package's single diagnostics surface (user-facing errors stay in print.ts, program output in sinks — this is neither).
+// Purpose: Structured logging — scoped loggers emitting typed events over a pluggable sink; the package's single diagnostics surface (user-facing errors stay in print.ts, program output is separate).
 
 // One severity ladder. Levels gate emission; they never change semantics —
 // logging reports, it must never swallow or replace a typed error path.
@@ -39,7 +39,7 @@ export interface LogConfig {
 }
 
 // The default sink: single-line text on stderr — stdout belongs to program
-// output (trace/table sinks), so logging never pollutes goldens or pipes.
+// output, so logging never pollutes goldens or pipes.
 export function stderrSink(write: (line: string) => void): LogSink {
   return {
     emit(event) {

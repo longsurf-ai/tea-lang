@@ -11,7 +11,7 @@ import {compileProgramToWgsl} from '../src/codegen/wgsl';
 import {compile, compileToProgram} from '../src/compiler';
 import {TypeKind} from '../src/ir/type';
 import {funcsOf, namesOf} from '../src/ir/visit';
-import {MemorySink} from '../src/sinks/memory-sink';
+import {OutputCapture} from '../src/testing/output';
 import {csvStream, executeTestProgram} from '../src/testing/batch';
 
 const SOURCE = join(
@@ -34,7 +34,7 @@ function program() {
   return result;
 }
 
-function outputId(sink: MemorySink, title: string): number {
+function outputId(sink: OutputCapture, title: string): number {
   const id = sink.outputs.findIndex(output =>
     output.spec.staticArgs.some(
       argument => argument.name === 'title' && argument.value === title,
@@ -44,7 +44,7 @@ function outputId(sink: MemorySink, title: string): number {
   return id;
 }
 
-function finalValue(sink: MemorySink, id: number): number {
+function finalValue(sink: OutputCapture, id: number): number {
   const emission = sink.emissions.findLast(entry => entry.outputId === id);
   const value = emission?.channels[0];
   if (typeof value !== 'number') {
@@ -97,7 +97,7 @@ describe('static resumable strategy protocol spike', () => {
     const result = compile([SOURCE]);
     expect(result.ok).toBe(true);
 
-    const sink = new MemorySink();
+    const sink = new OutputCapture();
     await executeTestProgram(program(), {
       stream: csvStream(
         ['time,open,high,low,close', '1,10,12,9,11', '2,11,14,10,13'].join(
