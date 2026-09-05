@@ -1,3 +1,4 @@
+import type {Module} from '../module-binding';
 // Purpose: Real Dawn parity for concrete GPU bindings and complete Datums.
 
 /// <reference types="@webgpu/types" />
@@ -13,7 +14,8 @@ import {mustBuild} from '../../noder/testing';
 import {arrayStream, executeTestModule} from '../../testing/batch';
 import {OutputCapture} from '../../testing/output';
 import {loadModule} from '../load';
-import {outputFields} from '../output';
+import {outputFields, type Datum} from '../output';
+
 import {
   createGpuExecution,
   type GpuBinding,
@@ -60,6 +62,45 @@ test('Dawn consumes concrete bindings and preserves outputs and time', async () 
   assert.equal(gpuSinks[0]!.effectEmissions.length, 0);
   assert.equal(summary.chunks, 1);
   assert.equal(summary.dispatches, 1);
+});
+
+test('empty GPU bindings declare outputs without delivering rows', async () => {
+  const artifact = compiledArtifact(mustBuild('plot(close)'));
+  const calls: string[] = [];
+  const {device} = await dawn();
+  const execution = await createGpuExecution(device, artifact, [
+    {
+      params: {},
+      indices: 0,
+      series: {close: []},
+      declare(outputs) {
+        assert.equal(outputFields(outputs.schema)[0]!.name, 'output0');
+        calls.push('declare');
+      },
+      next() {
+        calls.push('row');
+      },
+    },
+    {
+      params: {},
+      indices: 0,
+      series: {close: []},
+      next() {
+        calls.push('row');
+      },
+    },
+  ]);
+  try {
+    assert.deepEqual(calls, ['declare']);
+    const summary = await execution.runAll();
+    assert.deepEqual(
+      summary.bindings.map(binding => binding.rows),
+      [0, 0],
+    );
+    assert.deepEqual(calls, ['declare']);
+  } finally {
+    execution.dispose();
+  }
 });
 
 test('Dawn preserves Arrow enum payloads, missing values and global event order', async () => {
@@ -134,20 +175,24 @@ test('Dawn captures Arrow schema ownership before observer mutation', async () =
       params: {},
       indices: 1,
       series: {close: [1]},
-      sink: {
-        declare(declaration) {
-          first.declare(declaration);
-          outputFields(declaration.schema)
-            .find(field => field.name === 'effect0')!
-            .type.children[0]!.type.children[1]!.metadata.set(
-              'tea:members',
-              '[{"name":"wrong"}]',
-            );
-        },
-        publish: row => first.publish(row),
+      declare(declaration) {
+        first.declare(declaration);
+        outputFields(declaration.schema)
+          .find(field => field.name === 'effect0')!
+          .type.children[0]!.type.children[1]!.metadata.set(
+            'tea:members',
+            '[{"name":"wrong"}]',
+          );
       },
+      next: row => first.publish(row),
     },
-    {params: {}, indices: 1, series: {close: [1]}, sink: second},
+    {
+      params: {},
+      indices: 1,
+      series: {close: [1]},
+      declare: outputs => second.declare(outputs),
+      next: row => second.publish(row),
+    },
   ]);
   try {
     await execution.runAll();
@@ -193,7 +238,8 @@ async function assertParity(
   const gpuSinks = bindings.map(() => new OutputCapture());
   const concrete = bindings.map((input, index) => ({
     ...input,
-    sink: gpuSinks[index]!,
+    declare: (outputs: Module['outputs']) => gpuSinks[index]!.declare(outputs),
+    next: (row: Datum) => gpuSinks[index]!.publish(row),
   }));
   const gpu = await dawn();
   const execution = await createGpuExecution(gpu.device, artifact, concrete);
@@ -218,7 +264,7 @@ function binding(
     indices: Object.values(series)[0]?.length ?? time?.length ?? 0,
     series,
     ...(time === undefined ? {} : {time}),
-    sink: new OutputCapture(),
+    next() {},
   };
 }
 

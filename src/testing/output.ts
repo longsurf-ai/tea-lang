@@ -1,17 +1,13 @@
+import type {Module} from '../runtime/module-binding';
 // Purpose: Minimal structured output capture for tests.
 
 import {Schema, type Field} from 'apache-arrow';
-import {
-  outputFields,
-  type OutputSpec,
-  type OutputSink,
-  type Datum,
-} from '../runtime/output';
+import {outputFields, type Datum} from '../runtime/output';
 
-export class OutputCapture implements OutputSink {
+export class OutputCapture {
   schema = new Schema([]);
   fields: readonly Field[] = [];
-  declarations: readonly OutputSpec[] = [];
+  declarations: Module['outputs']['declarations'] = [];
   readonly publications: Datum[] = [];
   readonly emissions: {
     readonly row: number;
@@ -26,7 +22,7 @@ export class OutputCapture implements OutputSink {
     readonly provisional: boolean;
   }[] = [];
 
-  declare(declaration: Parameters<OutputSink['declare']>[0]): void {
+  declare(declaration: Module['outputs']): void {
     this.schema = declaration.schema;
     this.fields = outputFields(declaration.schema);
     this.declarations = declaration.declarations;

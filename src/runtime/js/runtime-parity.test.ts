@@ -1,23 +1,18 @@
+import type {Module} from '../module-binding';
 // Purpose: Core behavioral parity coverage for the state-owning step runtime:
 // call-site frames, typed history, provisional/final state, and collection
 // reference/value semantics.
 
-import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../../ir/node';
-import {type Value} from '../abi';
-import {JSRuntime, type StepInput, type StepResult} from './runtime';
+import type {Stored} from '../value';
+import {Context, type StepInput, type StepResult} from './context';
 
-import {
-  RUNTIME_ABI_VERSION,
-  type Frame,
-  type JSModule,
-  type RuntimeContext,
-} from '../module-abi';
+import {RUNTIME_ABI_VERSION} from '../module-abi';
 import {testModule, scalar, output} from '../testing';
-import {cloneModule} from '../module-binding';
-import {publicationSchema} from '../output';
-import type {ValueLayout} from '../value-layout';
+import {outputSchema} from '../output';
+import type {Step, WorkspaceFrame} from './state-update';
+import type {StorageType} from '../storage-types';
 
 const NUMBER = 0;
 const BOOLEAN = 1;
@@ -34,10 +29,10 @@ const LAYOUTS = [
     name: 'Holder',
     fields: [{name: 'values', layout: ARRAY}],
   },
-] as const satisfies readonly ValueLayout[];
+] as const satisfies readonly StorageType[];
 
-function runtime(module: JSModule): JSRuntime {
-  return new JSRuntime(cloneModule(module).bind());
+function runtime(module: Module): Context {
+  return new Context(module.clone().bind());
 }
 
 function input({
@@ -45,15 +40,15 @@ function input({
   builtins = [],
   provisional = false,
 }: {
-  readonly series?: readonly Value[];
-  readonly builtins?: readonly Value[];
+  readonly series?: readonly Stored[];
+  readonly builtins?: readonly Stored[];
   readonly provisional?: boolean;
 } = {}): StepInput {
   return {series, builtins, requests: [], provisional};
 }
 
-function run(target: JSRuntime, input: StepInput): StepResult {
-  return Effect.runSync(target.step(input));
+function run(target: Context, input: StepInput): StepResult {
+  return target.step(input);
 }
 
 function channels(result: StepResult): readonly unknown[] {
@@ -62,15 +57,14 @@ function channels(result: StepResult): readonly unknown[] {
     : Object.values(result.outputs[0] as Record<string, unknown>);
 }
 
-function counter(ctx: RuntimeContext, frame: Frame): Value {
+function counter(ctx: Step, frame: WorkspaceFrame): Stored {
   if (ctx.needsInit(frame, 0)) ctx.initialize(frame, 0, 0);
   ctx.write(frame, 0, Number(ctx.read(frame, 0, 0)) + 1);
   return ctx.read(frame, 0, 0);
 }
 
-const COUNTER_MODULE: JSModule = testModule({
+const COUNTER_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
-  funcs: {1: counter},
   main(ctx, root) {
     ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
     ctx.emit(0, 1, counter(ctx, ctx.frame(root, 1)));
@@ -88,16 +82,15 @@ const COUNTER_MODULE: JSModule = testModule({
     ],
   },
   outputs: {
-    schema: publicationSchema([
+    schema: outputSchema([
       output('output0', [scalar('a', 'int'), scalar('b', 'int')]),
     ]),
   },
   requests: [],
 });
 
-const TYPED_HISTORY_MODULE: JSModule = testModule({
+const TYPED_HISTORY_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
-  funcs: {},
   main(ctx, root) {
     ctx.write(root, 0, 7);
     ctx.write(root, 1, true);
@@ -134,7 +127,7 @@ const TYPED_HISTORY_MODULE: JSModule = testModule({
     ],
   },
   outputs: {
-    schema: publicationSchema([
+    schema: outputSchema([
       output('output0', [
         scalar('number', 'int'),
         scalar('boolean', 'bool'),
@@ -145,9 +138,8 @@ const TYPED_HISTORY_MODULE: JSModule = testModule({
   requests: [],
 });
 
-const TICK_MODULE: JSModule = testModule({
+const TICK_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
-  funcs: {},
   main(ctx, root) {
     if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
     if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, 0);
@@ -175,7 +167,7 @@ const TICK_MODULE: JSModule = testModule({
     ],
   },
   outputs: {
-    schema: publicationSchema([
+    schema: outputSchema([
       output('output0', [
         scalar('var', 'int'),
         scalar('varip', 'int'),
@@ -186,10 +178,9 @@ const TICK_MODULE: JSModule = testModule({
   requests: [],
 });
 
-function arrayStateModule(): JSModule {
+function arrayStateModule(): Module {
   return testModule({
     abi: RUNTIME_ABI_VERSION,
-    funcs: {},
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
         ctx.initialize(root, 0, ctx.callCollection('array.from', ARRAY, [0]));
@@ -227,7 +218,7 @@ function arrayStateModule(): JSModule {
       ],
     },
     outputs: {
-      schema: publicationSchema([
+      schema: outputSchema([
         output('output0', [scalar('var', 'int'), scalar('varip', 'int')]),
       ]),
     },
@@ -235,7 +226,7 @@ function arrayStateModule(): JSModule {
   });
 }
 
-describe('JSRuntime core parity', () => {
+describe('Context core parity', () => {
   test('written call sites own independent persistent state', () => {
     const target = runtime(COUNTER_MODULE);
     expect(channels(run(target, input()))).toEqual([1, 1]);
@@ -246,7 +237,7 @@ describe('JSRuntime core parity', () => {
 
   test('a failed first subframe activation disappears before retry', () => {
     let fail = true;
-    const module: JSModule = testModule({
+    const module: Module = testModule({
       ...COUNTER_MODULE,
       main(ctx, root) {
         if (fail) {
@@ -294,7 +285,7 @@ describe('JSRuntime core parity', () => {
 
   test('provisional subframe activation survives a final same-row skip', () => {
     let invoke = true;
-    const module: JSModule = testModule({
+    const module: Module = testModule({
       ...COUNTER_MODULE,
       main(ctx, root) {
         if (invoke) ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
@@ -312,9 +303,7 @@ describe('JSRuntime core parity', () => {
         ],
       },
       outputs: {
-        schema: publicationSchema([
-          output('output0', [scalar('value', 'int')]),
-        ]),
+        schema: outputSchema([output('output0', [scalar('value', 'int')])]),
       },
     });
     const target = runtime(module);
@@ -328,9 +317,8 @@ describe('JSRuntime core parity', () => {
 
   test('an active skipped subframe advances local history with typed empty', () => {
     let invoke = true;
-    const module: JSModule = testModule({
+    const module: Module = testModule({
       abi: RUNTIME_ABI_VERSION,
-      funcs: {},
       main(ctx, root) {
         if (!invoke) {
           ctx.emit(0, 0, NaN);
@@ -359,9 +347,7 @@ describe('JSRuntime core parity', () => {
         ],
       },
       outputs: {
-        schema: publicationSchema([
-          output('output0', [scalar('previous', 'int')]),
-        ]),
+        schema: outputSchema([output('output0', [scalar('previous', 'int')])]),
       },
       requests: [],
     });
@@ -382,9 +368,8 @@ describe('JSRuntime core parity', () => {
   });
 
   test('struct history keeps a live reference rather than a body snapshot', () => {
-    const module: JSModule = testModule({
+    const module: Module = testModule({
       abi: RUNTIME_ABI_VERSION,
-      funcs: {},
       main(ctx, root) {
         if (ctx.needsInit(root, 0)) {
           ctx.initialize(
@@ -438,7 +423,7 @@ describe('JSRuntime core parity', () => {
         ],
       },
       outputs: {
-        schema: publicationSchema([
+        schema: outputSchema([
           output('output0', [scalar('current', 'int'), scalar('prior', 'int')]),
         ]),
       },

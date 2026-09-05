@@ -3,7 +3,7 @@
 import {describe, expect, test} from 'vitest';
 import {ArenaHeap} from './heap';
 import {StructStorageRuntime} from './struct-storage';
-import {type ValueLayout, ValueLayoutRegistry} from '../value-layout';
+import {type StorageType, StorageTypes} from '../storage-types';
 
 const INT = 0;
 const BOOL = 1;
@@ -35,11 +35,11 @@ const LAYOUTS = [
     name: 'Node',
     fields: [{name: 'next', layout: NODE}],
   },
-] as const satisfies readonly ValueLayout[];
+] as const satisfies readonly StorageType[];
 
 function harness() {
   const heap = new ArenaHeap();
-  const layouts = new ValueLayoutRegistry(LAYOUTS);
+  const layouts = new StorageTypes(LAYOUTS);
   const structs = new StructStorageRuntime(heap, layouts);
   return {heap, layouts, structs};
 }

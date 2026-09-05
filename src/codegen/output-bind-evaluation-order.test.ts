@@ -1,10 +1,12 @@
+import type {Module} from '../runtime/module-binding';
 // Purpose: Output bind lowering preserves source evaluation order while assembling canonical host arguments.
 
 import {describe, expect, test} from 'vitest';
 import {buildText, mustBuild} from '../noder/testing';
 import {generate} from './codegen';
-import type {JSModule} from '../runtime/module-abi';
+
 import type {Scalar} from '../runtime/value';
+import {loadModule} from '../runtime/load';
 
 const SOURCE = [
   'indicator("output bind order")',
@@ -43,9 +45,16 @@ test('binding clears all late facts before a missing-context read or incomplete 
   );
   // The loader normally captures this callback and supplies its own mutable
   // copy. Exercise the raw artifact here to inspect a failed calculation.
-  const raw = new Function(source)() as JSModule;
-  const calculate = raw.bind as unknown as (
-    module: JSModule,
+  const raw = loadModule(source);
+  const calculate = (
+    raw as unknown as {
+      calculate: (
+        module: Module,
+        context?: ReadonlyMap<number, Scalar>,
+      ) => void;
+    }
+  ).calculate as (
+    module: Module,
     context?: ReadonlyMap<number, Scalar>,
   ) => void;
   const depths = () => [

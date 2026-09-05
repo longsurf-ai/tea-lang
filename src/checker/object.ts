@@ -4,7 +4,7 @@ import {formatType, Qualifier, typesEqual} from '../ir/type';
 import type {
   ConstValue,
   EnumType,
-  NameStorage,
+  Storage,
   Qualifier as QualifierName,
   Type,
   StructType,
@@ -41,7 +41,7 @@ export const ObjectKind = {
 export interface VariableObject {
   readonly kind: typeof ObjectKind.Variable;
   readonly name: string;
-  readonly storage: NameStorage;
+  readonly storage: Storage;
   readonly constDecl: boolean;
   // Non-null only for a library-root runtime global. Ordinary script globals
   // and function locals stay context-owned without package privileges.

@@ -55,8 +55,6 @@ export const NodeKind = {
   BadExpr: 'BadExpr',
 } as const;
 
-export type NodeKindName = (typeof NodeKind)[keyof typeof NodeKind];
-
 // Source declarations that public projections such as the language reference
 // must account for. This list describes the syntax tree, not documentation
 // sections: several member declarations can naturally be explained together.
@@ -75,8 +73,6 @@ export const SOURCE_DECLARATION_KINDS = [
   NodeKind.EnumMember,
   NodeKind.ImportStmt,
 ] as const;
-
-export type SourceDeclarationKind = (typeof SOURCE_DECLARATION_KINDS)[number];
 
 // @agent invariant: nodes record what was written, never what was inferred —
 // qualifiers, types, and effect calls are plain syntax here; classification

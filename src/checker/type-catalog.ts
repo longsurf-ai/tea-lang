@@ -15,14 +15,13 @@ import {
   TypeKind,
   VoidType,
   type Type,
-  type TypeKindName,
 } from '../ir/type';
 
 interface PublicTypeBase {
   readonly name: string;
   readonly forms: readonly string[];
   readonly summary: string;
-  readonly typeKind: TypeKindName;
+  readonly typeKind: TypeKind;
 }
 
 export interface AnnotationTypeDescriptor extends PublicTypeBase {
@@ -234,7 +233,7 @@ export const PUBLIC_TYPE_CATALOG: readonly PublicTypeDescriptor[] = [
   },
 ];
 
-export const INTERNAL_TYPE_KINDS: readonly TypeKindName[] = [
+export const INTERNAL_TYPE_KINDS: readonly TypeKind[] = [
   TypeKind.Invalid,
   TypeKind.Func,
 ];

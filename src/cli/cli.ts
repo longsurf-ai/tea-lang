@@ -90,11 +90,11 @@ function parseArgs(argv: readonly string[]): CliCommand | null {
 
   tea
     .command('build')
-    .description('Compile a Tea script and emit JavaScript')
+    .description('Compile a Tea script and emit TypeScript')
     .argument('<file>', 'Tea source file')
     .option(
       '-o, --out <file>',
-      'write emitted JavaScript here instead of stdout',
+      'write emitted TypeScript here instead of stdout',
     )
     .action((file: string, options: {out?: string}) => {
       selected = {

@@ -25,7 +25,7 @@ a DataStream.
 
 ## Child execution
 
-Each RequestEdge owns one recursive `JSModule` and one private child Node. The
+Each RequestEdge owns one recursive `Module` and one private child Node. The
 child uses the same parameter values and runtime rules as the root, but has no
 public outputs. After each successful child step, Node copies the requested
 scalar result into the synchronization buffer.

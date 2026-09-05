@@ -12,7 +12,6 @@ import {compileToProgram} from '../compiler';
 import {pineBuiltinSupplier} from '../extension/pine';
 import {batchRecipe} from '../recipe/batch';
 import {loadModule} from '../runtime/load';
-import {boundInputs} from '../runtime/module-binding';
 import type {Datum} from '../runtime/output';
 import {renderRunReport, traceDatum, traceDeclaration} from './output';
 import {parseRunParameters} from './parameters';
@@ -95,7 +94,7 @@ export async function runCommand(
 
   if (!options.trace) {
     host.print(
-      renderRunReport(declaration, publications, boundInputs(node.module), {
+      renderRunReport(declaration, publications, node.module.parameters, {
         indices: result.indices,
         compilationMs,
         executionMs,

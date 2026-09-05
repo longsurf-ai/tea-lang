@@ -10,9 +10,7 @@ export interface Ref<V = unknown> {
   readonly [refBrand]: V;
 }
 
-export type AnyRef = Ref<unknown>;
-
-export function isRef(value: unknown): value is AnyRef {
+export function isRef(value: unknown): value is Ref<unknown> {
   return (
     (typeof value === 'object' || typeof value === 'function') &&
     value !== null &&
@@ -20,13 +18,10 @@ export function isRef(value: unknown): value is AnyRef {
   );
 }
 
-export type TypeId = symbol;
-export type TransactionKey = string | number;
-
 /** Runtime policy for constructing, accounting, and tracing one payload type. */
 export interface TypeInfo<A, V> {
   /** Stable runtime identity used by cell and reference invariant checks. */
-  readonly id: TypeId;
+  readonly id: symbol;
   /** Human-readable name used only in diagnostics. */
   readonly name: string;
   /**
@@ -45,7 +40,7 @@ export interface TypeInfo<A, V> {
    * Visit every direct outgoing Ref in `value`. Heap owns recursive traversal,
    * sharing, and cycle detection.
    */
-  trace(value: Readonly<V>, visit: (ref: AnyRef) => void): void;
+  trace(value: Readonly<V>, visit: (ref: Ref<unknown>) => void): void;
 }
 
 export interface HeapLimits {
@@ -76,18 +71,18 @@ export interface HeapStats {
 }
 
 export interface Heap {
-  begin(key?: TransactionKey): HeapTransaction;
+  begin(key?: string | number): HeapTransaction;
   /** Read committed state. Transactional replacements are intentionally hidden. */
   read<V>(ref: Ref<V>): Readonly<V>;
   /** Replace the complete precise root snapshot at a collection safe point. */
-  replaceRoots(roots: Iterable<AnyRef>): void;
+  replaceRoots(roots: Iterable<Ref<unknown>>): void;
   /** Mark from the stored roots and privately reclaim every unmarked cell. */
   collect(): void;
   dispose(): void;
   stats(): HeapStats;
 }
 
-export interface HeapTransaction {
+export interface HeapTransaction extends Disposable {
   allocate<A, V>(info: TypeInfo<A, V>, args: A): Ref<V>;
   /** Read this transaction's replacement first, then committed state. */
   read<V>(ref: Ref<V>): Readonly<V>;
@@ -104,7 +99,7 @@ interface RefRecord {
   readonly arena: ArenaHeap;
   readonly slot: number;
   readonly version: number;
-  readonly type: TypeId;
+  readonly type: symbol;
 }
 
 interface Cell {
@@ -122,10 +117,10 @@ interface PendingWrite {
 }
 
 interface ErasedTypeInfo {
-  readonly id: TypeId;
+  readonly id: symbol;
   readonly name: string;
   bytesOf(value: unknown): number;
-  trace(value: unknown, visit: (ref: AnyRef) => void): void;
+  trace(value: unknown, visit: (ref: Ref<unknown>) => void): void;
 }
 
 const REFS = new WeakMap<object, RefRecord>();
@@ -151,7 +146,7 @@ export class ArenaHeap implements Heap {
   private readonly cells: (Cell | null)[] = [];
   private readonly versions: number[] = [];
   private readonly free: number[] = [];
-  private roots: readonly AnyRef[] = [];
+  private roots: readonly Ref<unknown>[] = [];
   private rootsFresh = true;
   private transaction: TransactionImpl | null = null;
   private nextTransactionId = 1;
@@ -182,7 +177,7 @@ export class ArenaHeap implements Heap {
     };
   }
 
-  begin(key: TransactionKey = 'transaction'): HeapTransaction {
+  begin(key: string | number = 'transaction'): HeapTransaction {
     this.assertLive();
     if (this.transaction !== null && !this.transaction.terminal) {
       return fatal(
@@ -204,7 +199,7 @@ export class ArenaHeap implements Heap {
     return cell.payload as Readonly<V>;
   }
 
-  replaceRoots(roots: Iterable<AnyRef>): void {
+  replaceRoots(roots: Iterable<Ref<unknown>>): void {
     this.assertLive();
     this.assertNoActiveTransaction('replace roots');
     const snapshot = [...new Set(roots)];
@@ -446,7 +441,10 @@ export class ArenaHeap implements Heap {
     info.trace(payload, child => this.assertPayloadRef(transaction, child));
   }
 
-  private assertPayloadRef(transaction: TransactionImpl, ref: AnyRef): void {
+  private assertPayloadRef(
+    transaction: TransactionImpl,
+    ref: Ref<unknown>,
+  ): void {
     const cell = this.cell(this.refRecord(ref));
     if (cell.state === 'committed') {
       return;
@@ -456,7 +454,7 @@ export class ArenaHeap implements Heap {
     }
   }
 
-  private traceClosure(roots: Iterable<AnyRef>): Set<number> {
+  private traceClosure(roots: Iterable<Ref<unknown>>): Set<number> {
     const marked = new Set<number>();
     const worklist = [...roots];
     while (worklist.length > 0) {
@@ -478,7 +476,7 @@ export class ArenaHeap implements Heap {
     return marked;
   }
 
-  private refRecord(ref: AnyRef): RefRecord {
+  private refRecord(ref: Ref<unknown>): RefRecord {
     if (
       (typeof ref !== 'object' && typeof ref !== 'function') ||
       ref === null
@@ -553,7 +551,7 @@ class TransactionImpl implements HeapTransaction {
   constructor(
     private readonly arena: ArenaHeap,
     readonly id: number,
-    readonly key: TransactionKey,
+    readonly key: string | number,
   ) {}
 
   get terminal(): boolean {
@@ -570,6 +568,10 @@ class TransactionImpl implements HeapTransaction {
 
   write<V>(ref: Ref<V>, value: V): void {
     this.arena.write(this, ref, value);
+  }
+
+  [Symbol.dispose](): void {
+    if (this.state === 'active') this.abort();
   }
 
   commit(): void {

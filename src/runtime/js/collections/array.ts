@@ -3,9 +3,9 @@
 import {fatal} from '../../../base/print';
 import {ExecutionError} from '../../errors';
 import type {CollectionMutation} from '../../module-abi';
-import {isArrayValue, type ArrayValue, type Value} from '../../value';
+import {isArrayValue, type ArrayValue, type Stored} from '../../value';
 import type {TypeInfo} from '../heap';
-import {visitRuntimeValueRefs, type LayoutId} from '../../value-layout';
+import {visitRuntimeValueRefs} from '../../storage-types';
 import {
   arrayValue,
   assertExactLayout,
@@ -20,16 +20,11 @@ import {
 } from './common';
 
 export interface ArrayStorage {
-  readonly values: readonly Value[];
+  readonly values: readonly Stored[];
   readonly logicalBytes: number;
 }
 
-interface ArrayStorageArgs {
-  readonly values: readonly Value[];
-  readonly logicalBytes: number;
-}
-
-export const ARRAY_STORAGE: TypeInfo<ArrayStorageArgs, ArrayStorage> = {
+export const ARRAY_STORAGE: TypeInfo<ArrayStorage, ArrayStorage> = {
   id: Symbol('tea.array.storage'),
   name: 'array storage',
   bytesFor(args) {
@@ -52,9 +47,9 @@ export const ARRAY_STORAGE: TypeInfo<ArrayStorageArgs, ArrayStorage> = {
 export function arrayCall(
   ctx: CollectionContext,
   operation: string,
-  resultLayout: LayoutId,
-  args: readonly Value[],
-): Value {
+  resultLayout: number,
+  args: readonly Stored[],
+): Stored {
   if (operation === 'array.new') {
     if (args.length === 0) {
       return createArray(ctx, resultLayout, []);
@@ -120,9 +115,9 @@ export function arrayCall(
 export function arrayMutate(
   ctx: CollectionContext,
   operation: string,
-  layoutId: LayoutId,
-  receiverValue: Value,
-  args: readonly Value[],
+  layoutId: number,
+  receiverValue: Stored,
+  args: readonly Stored[],
 ): CollectionMutation {
   const receiver = requireCollection(ctx, receiverValue, layoutId, 'array');
   const layout = collectionLayout(ctx.layouts, layoutId, 'array');
@@ -168,8 +163,8 @@ export function arrayMutate(
 
 export function createArray(
   ctx: CollectionContext,
-  layoutId: LayoutId,
-  elements: readonly Value[],
+  layoutId: number,
+  elements: readonly Stored[],
   capacity = elements.length,
 ): ArrayValue {
   const layout = collectionLayout(ctx.layouts, layoutId, 'array');
@@ -186,8 +181,8 @@ export function createArray(
 
 export function arraySnapshot(
   ctx: CollectionReadContext,
-  value: Value,
-): readonly Value[] {
+  value: Stored,
+): readonly Stored[] {
   if (!isArrayValue(value)) {
     throw new ExecutionError('NA_COLLECTION', 'array iteration on na');
   }
@@ -198,7 +193,7 @@ export function arraySnapshot(
 function replace(
   ctx: CollectionContext,
   receiver: ArrayValue,
-  elements: readonly Value[],
+  elements: readonly Stored[],
   capacity = receiver.capacity,
 ): ArrayValue {
   const layout = collectionLayout(ctx.layouts, receiver.layout, 'array');
@@ -209,7 +204,7 @@ function replace(
 function values(
   ctx: Pick<CollectionReadContext, 'transaction'>,
   receiver: ArrayValue,
-): readonly Value[] {
+): readonly Stored[] {
   const payload = ctx.transaction.read(receiver.storage);
   if (payload.values.length !== receiver.length) {
     return fatal(
@@ -221,8 +216,8 @@ function values(
 
 function allocateStorage(
   ctx: CollectionContext,
-  elementLayout: LayoutId,
-  elements: readonly Value[],
+  elementLayout: number,
+  elements: readonly Stored[],
 ): ArrayValue['storage'] {
   return ctx.transaction.allocate(ARRAY_STORAGE, {
     values: elements,
@@ -233,7 +228,7 @@ function allocateStorage(
 
 function requireArrayArg(
   ctx: CollectionContext,
-  args: readonly Value[],
+  args: readonly Stored[],
   operation: string,
 ): ArrayValue {
   if (args.length === 0) {
@@ -252,7 +247,7 @@ function requireArrayArg(
 
 function requireArgs(
   operation: string,
-  args: readonly Value[],
+  args: readonly Stored[],
   expected: number,
 ): void {
   if (args.length !== expected) {

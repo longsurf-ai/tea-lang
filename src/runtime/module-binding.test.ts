@@ -1,3 +1,4 @@
+import type {Module} from './module-binding';
 // Purpose: The sole module.bind method updates configuration atomically in place.
 
 import {describe, expect, test} from 'vitest';
@@ -14,8 +15,8 @@ import {generate} from '../codegen/codegen';
 import {mustBuild} from '../noder/testing';
 import {BindError} from './errors';
 import {loadModule} from './load';
-import {cloneModule, initializeModule} from './module-binding';
-import {JSRuntime} from './js/runtime';
+
+import {Context} from './js/context';
 
 describe('module binding', () => {
   test('rejects malformed binding containers through the one error contract', () => {
@@ -30,12 +31,12 @@ describe('module binding', () => {
     }
     expect(module.bind(Object.create(null)).parameters[0].value).toBe(2);
   });
-  test('loading copies request facts without freezing the caller context', () => {
-    const raw = new Function(
+  test('cloning copies request facts without freezing the caller context', () => {
+    const original = loadModule(
       generate(mustBuild('r = request.security("X", "D", close)\nplot(r)')),
-    )() as Parameters<typeof initializeModule>[0];
-    const context = raw.requests[0]!.context!;
-    const module = initializeModule(raw);
+    );
+    const context = original.requests[0]!.context!;
+    const module = original.clone();
     expect(module.requests[0]!.context).not.toBe(context);
     expect(Object.isFrozen(context)).toBe(false);
     Object.assign(context, {symbol: 'changed'});
@@ -78,7 +79,7 @@ describe('module binding', () => {
     expect(prepared).toBe(pending);
     expect(prepared.ready()).toBe(true);
     expect(prepared.inputs.series[0]!.depth).toEqual({kind: 'const', bars: 7});
-    expect(cloneModule(prepared).bind().inputs.builtins[0]!.value).toBe(7);
+    expect(prepared.clone().bind().inputs.builtins[0]!.value).toBe(7);
     expect(pending.inputs.builtins[0]!.value).toBe(7);
   });
 
@@ -154,13 +155,12 @@ describe('module binding', () => {
     const configured = loadModule(
       generate(mustBuild('length = input.int(3)\nplot(close[length])')),
     ).bind({length: 4});
-    const pending = {
-      ...configured,
+    const pending = Object.assign(configured.clone(), {
       parameters: configured.parameters.map(({value: _value, ...param}) => ({
         ...param,
         defaultValue: null,
       })),
-    }.bind();
+    }).bind();
     expect(pending.remaining()).toEqual(['length']);
     expect(pending.ready()).toBe(false);
     expect(pending.inputs.series[0]!.depth).toEqual({kind: 'bound'});
@@ -194,31 +194,34 @@ describe('module binding', () => {
     const module = loadModule(
       generate(mustBuild('length = input.int(2)\nplot(close[length])')),
     ).bind();
-    new JSRuntime(module);
+    new Context(module);
     expect(() => module.bind({length: 5})).toThrow('execution starts');
-    expect(cloneModule(module).bind({length: 5}).parameters[0]!.value).toBe(5);
+    expect(module.clone().bind({length: 5}).parameters[0]!.value).toBe(5);
     expect(module.parameters[0]!.value).toBe(2);
   });
 
   test.each(['parameter', 'builtin'])(
     'generated calculations cannot overwrite validated %s values',
     target => {
-      const raw = new Function(
+      const module = loadModule(
         generate(
           mustBuild(
             'length = input.int(2)\nplot(close[length] + timeframe.multiplier)',
           ),
         ),
-      )() as Parameters<typeof initializeModule>[0];
-      const calculate = raw.bind;
-      const module = initializeModule({
-        ...raw,
-        bind(module, context) {
-          calculate(module, context);
+      );
+      const calculate = Object.getOwnPropertyDescriptor(
+        module,
+        'calculate',
+      )!.value;
+      Object.defineProperty(module, 'calculate', {
+        value(...args: unknown[]) {
+          calculate(...args);
+          const data = args[0] as Module;
           Object.assign(
             target === 'parameter'
-              ? module.parameters[0]
-              : module.inputs.builtins[0],
+              ? data.parameters[0]
+              : data.inputs.builtins[0],
             {value: 99},
           );
         },
@@ -239,14 +242,18 @@ describe('module binding', () => {
       ),
     );
     expect(
-      () => new JSRuntime({...module, outputs: {...module.outputs, schema}}),
+      () =>
+        new Context(
+          Object.assign(module.clone(), {outputs: {...module.outputs, schema}}),
+        ),
     ).toThrow('requires a nullable record');
     expect(
       () =>
-        new JSRuntime({
-          ...module,
-          outputs: {...module.outputs, declarations: []},
-        }),
+        new Context(
+          Object.assign(module.clone(), {
+            outputs: {...module.outputs, declarations: []},
+          }),
+        ),
     ).toThrow('output fields and declarations disagree');
   });
 
@@ -271,7 +278,10 @@ describe('module binding', () => {
       }),
     );
     expect(
-      () => new JSRuntime({...module, outputs: {...module.outputs, schema}}),
+      () =>
+        new Context(
+          Object.assign(module.clone(), {outputs: {...module.outputs, schema}}),
+        ),
     ).toThrow('requires an ordinal/payload event list');
   });
 
@@ -283,7 +293,10 @@ describe('module binding', () => {
       ),
     );
     expect(
-      () => new JSRuntime({...module, outputs: {...module.outputs, schema}}),
+      () =>
+        new Context(
+          Object.assign(module.clone(), {outputs: {...module.outputs, schema}}),
+        ),
     ).toThrow('invalid output coordinates');
   });
 });

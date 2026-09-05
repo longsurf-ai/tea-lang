@@ -1,23 +1,73 @@
-// Purpose: Resolve raw host parameter values against one generated ParamSpec schema.
+// Parameter declarations and validation of host-supplied scalar values.
 
 import {fatal} from '../base/print';
 import {BindError} from './errors';
-import type {ParamSpec} from './schema';
-import type {Value} from './value';
+import type {ParamDisplay} from '../ir/program';
+import type {Scalar} from './value';
 
+/**
+ * One named parameter's input contract, independent of its bound value.
+ * Constraints and display metadata come from the checked Tea declaration.
+ * @example For `length = input.int(14, minval=1)`, name is length,
+ * defaultValue is 14 and constraints.minval is 1.
+ */
+export interface Parameter {
+  readonly name: string;
+  readonly title: string | null;
+  readonly type:
+    | 'int'
+    | 'float'
+    | 'bool'
+    | 'string'
+    | 'color'
+    | 'source'
+    | 'enum';
+  readonly control: string;
+  readonly defaultValue: Scalar;
+  readonly constraints:
+    | {
+        readonly kind: 'range';
+        readonly minval: number | null;
+        readonly maxval: number | null;
+        readonly step: number | null;
+      }
+    | {readonly kind: 'options'; readonly options: readonly Scalar[]}
+    | null;
+  readonly enumType: {
+    /** Nominal declaration identity, independent of member spellings or title. */
+    readonly typeId?: string;
+    readonly name: string;
+    readonly members: readonly {
+      readonly name: string;
+      readonly title: string;
+    }[];
+  } | null;
+  readonly group: string | null;
+  readonly inline: string | null;
+  readonly tooltip: string | null;
+  readonly confirm: boolean;
+  readonly display: ParamDisplay;
+  readonly seriesSid: number | null;
+}
+
+/**
+ * Validate named values and apply declaration defaults. No module or stream is
+ * mutated here; the module binder commits the returned scalars atomically.
+ * @example `resolveParamValues([length], {length: 20})` returns `[20]`.
+ */
 export function resolveParamValues(
-  specs: readonly ParamSpec[],
+  specs: readonly Parameter[],
   raw: Readonly<Record<string, unknown>>,
-): readonly Value[] {
+): readonly Scalar[] {
   const known = new Set(specs.map(spec => spec.name));
   for (const name of Object.keys(raw)) {
     if (!known.has(name)) throw new BindError(`unknown parameter '${name}'`);
   }
-  const values: Value[] = [];
+  const values: Scalar[] = [];
   for (const spec of specs) {
     const provided = raw[spec.name];
     const candidate = provided !== undefined ? provided : spec.defaultValue;
-    let value: Value;
+    let value: Scalar;
     if (spec.type === 'int' || spec.type === 'float') {
       if (typeof candidate !== 'number') {
         throw new BindError(`parameter '${spec.name}' expects a number`);

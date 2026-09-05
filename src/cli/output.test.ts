@@ -1,12 +1,13 @@
+import type {Module} from '../runtime/module-binding';
 // Purpose: CLI output keeps one deterministic human report and machine trace.
 
 import {Field, Float64, List, Struct, Utf8} from 'apache-arrow';
-import {publicationSchema} from '../runtime/output';
+import {outputSchema} from '../runtime/output';
 import {describe, expect, test} from 'vitest';
-import type {ExecutionDeclaration} from '../runtime/abi';
+
 import {renderRunReport, traceDatum, traceDeclaration} from './output';
 
-const declaration: ExecutionDeclaration = {
+const declaration: Module['outputs'] = {
   declarations: [
     {
       args: [
@@ -17,7 +18,7 @@ const declaration: ExecutionDeclaration = {
     },
     {args: [], layouts: [1]},
   ],
-  schema: publicationSchema([
+  schema: outputSchema([
     new Field(
       'output0',
       new Struct([new Field('series', new Float64())]),

@@ -5,7 +5,6 @@ import type {ArrayStorage} from './js/collections/array';
 import type {MapStorage} from './js/collections/map';
 import type {MatrixStorage} from './js/collections/matrix';
 import type {StructStorage} from './js/struct-storage';
-import type {LayoutId} from './value-layout';
 
 export interface ResourceHandle {
   readonly kind: 'resource';
@@ -13,34 +12,43 @@ export interface ResourceHandle {
   readonly id: number;
 }
 
-export type StructValue = Ref<StructStorage> | null;
+// Element and key domains are type-only; headers keep their existing storage shape.
+declare const element: unique symbol;
+declare const key: unique symbol;
 
-export interface ArrayValue {
+/** Immutable array header; a mutation returns a replacement over persistent backing. */
+export interface ArrayValue<T = unknown> {
+  readonly [element]?: T;
   readonly kind: 'array';
-  readonly layout: LayoutId;
+  readonly layout: number;
   readonly storage: Ref<ArrayStorage>;
   readonly length: number;
   readonly capacity: number;
 }
 
-export interface MatrixValue {
+/** Immutable row-major matrix header with a statically known element domain. */
+export interface MatrixValue<T = unknown> {
+  readonly [element]?: T;
   readonly kind: 'matrix';
-  readonly layout: LayoutId;
+  readonly layout: number;
   readonly storage: Ref<MatrixStorage>;
   readonly rows: number;
   readonly columns: number;
 }
 
-export interface MapValue {
+/** Immutable ordered-map header; key and item domains survive value copies. */
+export interface MapValue<K = unknown, V = unknown> {
+  readonly [key]?: K;
+  readonly [element]?: V;
   readonly kind: 'map';
-  readonly layout: LayoutId;
+  readonly layout: number;
   readonly storage: Ref<MapStorage>;
   readonly size: number;
 }
 
 export type CollectionValue = ArrayValue | MatrixValue | MapValue;
 
-export type Value =
+export type Stored =
   | number
   | string
   | boolean
@@ -48,14 +56,14 @@ export type Value =
   | ResourceHandle
   | Ref<unknown>
   | CollectionValue
-  | readonly Value[];
+  | readonly Stored[];
 
-export function isTupleValue(value: Value): value is readonly Value[] {
+export function isTupleValue(value: Stored): value is readonly Stored[] {
   return Array.isArray(value);
 }
 
 function isTaggedValue(
-  value: Value,
+  value: Stored,
 ): value is ResourceHandle | CollectionValue {
   return (
     typeof value === 'object' &&
@@ -65,23 +73,23 @@ function isTaggedValue(
   );
 }
 
-export function isStructRef(value: Value): value is Ref<StructStorage> {
+export function isStructRef(value: Stored): value is Ref<StructStorage> {
   return isRef(value);
 }
 
-export function isArrayValue(value: Value): value is ArrayValue {
+export function isArrayValue(value: Stored): value is ArrayValue {
   return isTaggedValue(value) && value.kind === 'array';
 }
 
-export function isMatrixValue(value: Value): value is MatrixValue {
+export function isMatrixValue(value: Stored): value is MatrixValue {
   return isTaggedValue(value) && value.kind === 'matrix';
 }
 
-export function isMapValue(value: Value): value is MapValue {
+export function isMapValue(value: Stored): value is MapValue {
   return isTaggedValue(value) && value.kind === 'map';
 }
 
-export function isResourceHandle(value: Value): value is ResourceHandle {
+export function isResourceHandle(value: Stored): value is ResourceHandle {
   return isTaggedValue(value) && value.kind === 'resource';
 }
 

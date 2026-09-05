@@ -1,3 +1,4 @@
+import type {Module} from '../runtime/module-binding';
 // Purpose: Test helpers execute explicit finite DataStreams through Batch Recipe.
 
 import {parse} from 'csv-parse/sync';
@@ -10,11 +11,10 @@ import {generate} from '../codegen/codegen';
 import {pineBuiltinSupplier} from '../extension/pine';
 import type {Program} from '../ir/program';
 import {batchRecipe} from '../recipe/batch';
-import type {BoundInput} from '../runtime/binding';
 import {loadModule} from '../runtime/load';
-import {boundInputs, cloneModule} from '../runtime/module-binding';
-import type {JSModule} from '../runtime/module-abi';
-import type {OutputSink} from '../runtime/output';
+import {requireConcreteModule} from '../runtime/module-binding';
+
+import type {OutputCapture} from './output';
 
 export async function executeTestProgram(
   program: Program,
@@ -22,25 +22,31 @@ export async function executeTestProgram(
     readonly stream: DataStream<unknown>;
     readonly requests?: Readonly<Record<string, DataStream<unknown>>>;
     readonly params?: Readonly<Record<string, unknown>>;
-    readonly sink: OutputSink;
+    readonly sink: OutputCapture;
     readonly timeNow?: number;
   },
-): Promise<{readonly indices: number; readonly inputs: readonly BoundInput[]}> {
+): Promise<{
+  readonly indices: number;
+  readonly inputs: Module['parameters'];
+}> {
   return executeTestModule(loadModule(generate(program)), options);
 }
 
 export async function executeTestModule(
-  module: JSModule,
+  module: Module,
   options: {
     readonly stream: DataStream<unknown>;
     readonly requests?: Readonly<Record<string, DataStream<unknown>>>;
     readonly params?: Readonly<Record<string, unknown>>;
-    readonly sink: OutputSink;
+    readonly sink: OutputCapture;
     readonly timeNow?: number;
   },
-): Promise<{readonly indices: number; readonly inputs: readonly BoundInput[]}> {
+): Promise<{
+  readonly indices: number;
+  readonly inputs: Module['parameters'];
+}> {
   const node = createNode(
-    cloneModule(module).bind(options.params ?? {}),
+    module.clone().bind(options.params ?? {}),
     pineBuiltinSupplier(() => options.timeNow ?? 0),
   );
   const bindings: BindingInput[] = [];
@@ -52,7 +58,7 @@ export async function executeTestModule(
   const result = await batchRecipe(node, bindings, {
     next: datum => options.sink.publish(datum),
   }).execute();
-  return {...result, inputs: boundInputs(node.module)};
+  return {...result, inputs: requireConcreteModule(node.module).parameters};
 }
 
 /**

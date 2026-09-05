@@ -9,7 +9,6 @@ import {DataStream} from '../api/stream';
 import {generate} from '../codegen/codegen';
 import {mustBuild} from '../noder/testing';
 import {loadModule} from '../runtime/load';
-import {cloneModule} from '../runtime/module-binding';
 import {pineBuiltinSupplier} from './pine';
 
 describe('Pine Extension', () => {
@@ -77,7 +76,7 @@ describe('Pine Extension', () => {
         ),
       ),
     ).bind({gain: 2}, new Map([[0, 7]]));
-    const rebound = cloneModule(module).bind({gain: 1});
+    const rebound = module.clone().bind({gain: 1});
     expect(rebound.inputs.builtins[0]!.value).toBe(7);
     const node = createNode(
       rebound,

@@ -11,7 +11,7 @@ import {
 
 /**
  * Encode a schema with Arrow's standard IPC writer, without any data rows.
- * Generated artifacts contain these bytes; execution never serializes each step.
+ * Use this at a serialization boundary; execution never serializes each step.
  *
  * @example `decodeSchema(encodeSchema(schema))` preserves fields and metadata.
  */

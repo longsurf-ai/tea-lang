@@ -25,11 +25,9 @@ export const SOURCE_QUALIFIERS = [
   Qualifier.Series,
 ] as const;
 
-export type SourceQualifier = (typeof SOURCE_QUALIFIERS)[number];
-
 const SOURCE_QUALIFIER_SET: ReadonlySet<string> = new Set(SOURCE_QUALIFIERS);
 
-export function isSourceQualifier(value: string): value is SourceQualifier {
+export function isSourceQualifier(value: string): value is Qualifier {
   return SOURCE_QUALIFIER_SET.has(value);
 }
 
@@ -42,7 +40,7 @@ export const Storage = {
   Varip: 'varip',
 } as const;
 
-export type NameStorage = (typeof Storage)[keyof typeof Storage];
+export type Storage = (typeof Storage)[keyof typeof Storage];
 
 const QUALIFIER_RANK: Record<Qualifier, number> = {
   const: 0,
@@ -108,7 +106,7 @@ export const TypeKind = {
   Func: 'Func',
 } as const;
 
-export type TypeKindName = (typeof TypeKind)[keyof typeof TypeKind];
+export type TypeKind = (typeof TypeKind)[keyof typeof TypeKind];
 
 export type PrimitiveKind =
   | typeof TypeKind.Int
@@ -193,15 +191,13 @@ export interface TupleType {
   readonly elems: readonly Type[];
 }
 
-export interface FuncParamType {
-  readonly name: string;
-  readonly type: Type;
-  readonly qualifierCap: Qualifier;
-}
-
 export interface FuncType {
   readonly kind: typeof TypeKind.Func;
-  readonly params: readonly FuncParamType[];
+  readonly params: readonly {
+    readonly name: string;
+    readonly type: Type;
+    readonly qualifierCap: Qualifier;
+  }[];
   readonly result: Type;
   readonly resultQualifier: Qualifier;
 }

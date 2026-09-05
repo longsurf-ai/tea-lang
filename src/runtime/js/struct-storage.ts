@@ -3,37 +3,21 @@
 import {fatal} from '../../base/print';
 import {ExecutionError} from '../errors';
 import type {Heap, HeapTransaction, Ref, TypeInfo} from './heap';
-import {isStructRef, isTupleValue, type Value} from '../value';
-import {
-  type LayoutId,
-  type StructLayoutId,
-  ValueLayoutRegistry,
-} from '../value-layout';
+import {isStructRef, isTupleValue, type Stored} from '../value';
+import {StorageTypes} from '../storage-types';
 
 export interface StructStorage {
-  readonly layout: StructLayoutId;
-  readonly fields: readonly Value[];
+  readonly layout: number;
+  readonly fields: readonly Stored[];
   readonly logicalBytes: number;
 }
-
-interface StructStorageArgs {
-  readonly layout: StructLayoutId;
-  readonly fields: readonly Value[];
-  readonly logicalBytes: number;
-}
-
-interface HeapReader {
-  read<V>(ref: Ref<V>): Readonly<V>;
-}
-
-export type StructRef = Ref<StructStorage>;
 
 export class StructStorageRuntime {
-  readonly typeInfo: TypeInfo<StructStorageArgs, StructStorage>;
+  readonly typeInfo: TypeInfo<StructStorage, StructStorage>;
 
   constructor(
     private readonly heap: Heap,
-    private readonly layouts: ValueLayoutRegistry,
+    private readonly layouts: StorageTypes,
   ) {
     this.typeInfo = {
       id: Symbol('tea.struct.storage'),
@@ -57,9 +41,9 @@ export class StructStorageRuntime {
 
   newStruct(
     transaction: HeapTransaction,
-    layoutId: LayoutId,
-    fields: readonly Value[],
-  ): StructRef {
+    layoutId: number,
+    fields: readonly Stored[],
+  ): Ref<StructStorage> {
     const layout = this.requireLayout(layoutId, 'constructor');
     if (fields.length !== layout.fields.length) {
       throw new ExecutionError(
@@ -88,10 +72,10 @@ export class StructStorageRuntime {
   }
 
   requireStruct(
-    value: Value,
-    ownerLayout: LayoutId,
-    reader: HeapReader = this.heap,
-  ): StructRef {
+    value: Stored,
+    ownerLayout: number,
+    reader: Pick<Heap, 'read'> = this.heap,
+  ): Ref<StructStorage> {
     const layout = this.requireLayout(ownerLayout, 'struct receiver');
     if (value === null) {
       throw new ExecutionError(
@@ -99,21 +83,20 @@ export class StructStorageRuntime {
         `cannot mutate na struct '${layout.name}'`,
       );
     }
-    this.assertRef(
+    return this.assertRef(
       value,
       ownerLayout,
       `struct receiver '${layout.name}'`,
       reader,
     );
-    return value as StructRef;
   }
 
   field(
-    value: Value,
-    ownerLayout: LayoutId,
+    value: Stored,
+    ownerLayout: number,
     index: number,
-    reader: HeapReader = this.heap,
-  ): Value {
+    reader: Pick<Heap, 'read'> = this.heap,
+  ): Stored {
     const layout = this.requireLayout(ownerLayout, 'field read owner');
     const field = this.requireField(layout, index);
     if (value === null) {
@@ -130,10 +113,10 @@ export class StructStorageRuntime {
 
   storeField(
     transaction: HeapTransaction,
-    value: Value,
-    ownerLayout: LayoutId,
+    value: Stored,
+    ownerLayout: number,
     index: number,
-    replacement: Value,
+    replacement: Stored,
   ): void {
     const ref = this.requireStruct(value, ownerLayout, transaction);
     const layout = this.requireLayout(ownerLayout, 'field store owner');
@@ -158,10 +141,10 @@ export class StructStorageRuntime {
   }
 
   assertValue(
-    id: LayoutId,
-    value: Value,
+    id: number,
+    value: Stored,
     where = 'runtime value',
-    reader: HeapReader = this.heap,
+    reader: Pick<Heap, 'read'> = this.heap,
   ): void {
     this.layouts.assertValue(id, value, where);
     if (value === null) {
@@ -183,18 +166,18 @@ export class StructStorageRuntime {
   }
 
   private assertRef(
-    value: Value,
-    layoutId: LayoutId,
+    value: Stored,
+    layoutId: number,
     where: string,
-    reader: HeapReader,
-  ): StructRef {
+    reader: Pick<Heap, 'read'>,
+  ): Ref<StructStorage> {
     if (!isStructRef(value)) {
       throw new ExecutionError(
         'VALUE_LAYOUT_MISMATCH',
         `${where} does not carry a struct reference`,
       );
     }
-    const payload = reader.read(value as StructRef);
+    const payload = reader.read(value);
     if (payload.layout !== layoutId) {
       const expected = this.requireLayout(layoutId, where);
       throw new ExecutionError(
@@ -202,13 +185,13 @@ export class StructStorageRuntime {
         `${where} references '${this.requireLayout(payload.layout, where).name}', expected '${expected.name}'`,
       );
     }
-    return value as StructRef;
+    return value;
   }
 
   private requireLayout(
-    id: LayoutId,
+    id: number,
     where: string,
-  ): Extract<ReturnType<ValueLayoutRegistry['layout']>, {kind: 'struct'}> {
+  ): Extract<ReturnType<StorageTypes['layout']>, {kind: 'struct'}> {
     const layout = this.layouts.layout(id);
     if (layout.kind !== 'struct') {
       return fatal(`${where} layout ${id} is ${layout.kind}, expected struct`);
@@ -218,7 +201,7 @@ export class StructStorageRuntime {
 
   private requireField(
     layout: Extract<
-      ReturnType<ValueLayoutRegistry['layout']>,
+      ReturnType<StorageTypes['layout']>,
       {kind: 'struct'}
     >,
     index: number,

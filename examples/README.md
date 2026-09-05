@@ -32,6 +32,14 @@ print every result:
 node examples/api/simple-sync.ts
 ```
 
+The handwritten TypeScript example uses `tea/runtime` directly, then runs through
+the same public Node/stream API. It shows parameter-bound history and two
+independent accumulator call frames without invoking the Tea frontend:
+
+```sh
+node examples/api/typed-runtime.ts
+```
+
 The Batch Recipe example performs the same public `bind()` and `to()` wiring,
 but keeps it as one reusable finite run and waits for completion:
 

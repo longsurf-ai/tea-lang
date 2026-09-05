@@ -1,7 +1,7 @@
-// Purpose: Execute one generated JSModule invocation as an Effect state
+import type {Module} from '../module-binding';
+// Purpose: Execute one generated Module invocation as an Effect state
 // transition over explicit committed State, Intermediate, and StepInput values.
 
-import {Effect} from 'effect';
 import {Storage} from '../../ir/node';
 import {DataType, type Field} from 'apache-arrow';
 import {fatal} from '../../base/print';
@@ -12,130 +12,76 @@ import {
   type CollectionMutation,
   type CollectionMutationOperation,
   type CollectionOperation,
-  type Frame,
-  type DepthSpec,
-  type JSModule,
-  type RuntimeContext,
+  type Depth,
 } from '../module-abi';
 import {outputFields} from '../output';
 import {ExecutionError} from '../errors';
 import type {Heap, HeapTransaction, Ref} from './heap';
 import {CollectionRuntime} from './collections';
 import {StructStorageRuntime} from './struct-storage';
-import type {
-  FrameState,
-  Intermediate,
-  IntermediateFrame,
-  IntermediateLocal,
-  LocalState,
-  HistoryState,
-  RootState,
-  State,
-  StateMachine,
-  StateUpdate,
-  StepInput,
-} from './state-machine';
-import type {ValueLayoutRegistry, LayoutId} from '../value-layout';
+import type {StorageTypes} from '../storage-types';
 import {
   isArrayValue,
   isMapValue,
   isMatrixValue,
   isStructRef,
   isTupleValue,
-  type Value,
+  type Stored,
 } from '../value';
 
 const DEFAULT_MAX_COLLECTION_ELEMENTS = 100_000;
 
-export type TeaStateUpdate = StateUpdate<
-  State,
-  Intermediate,
-  StepInput,
-  readonly unknown[],
-  ExecutionError
->;
-
-export type TeaStateMachine = StateMachine<
-  State,
-  Intermediate,
-  StepInput,
-  readonly unknown[],
-  ExecutionError
->;
-
-export function stateMachine(
-  module: JSModule,
-  layouts: ValueLayoutRegistry,
-  heap: Heap,
-  maxCollectionElements = DEFAULT_MAX_COLLECTION_ELEMENTS,
-): TeaStateMachine {
-  validateIoSchemas(module, layouts);
-  const structs = new StructStorageRuntime(heap, layouts);
-  const collections = new CollectionRuntime(
-    heap,
-    layouts,
-    maxCollectionElements,
-    structs,
-  );
-  return {
-    initialState: {
-      root: initialRoot(module),
-    },
-    initialIntermediate: {
-      root: initialIntermediateFrame(module, 0, true),
-    },
-    update: stateUpdate(module, layouts, heap, structs, collections),
-  };
+/** One synchronized external update passed to Context.step(). */
+export interface StepInput {
+  readonly series: readonly Stored[];
+  readonly builtins: readonly Stored[];
+  readonly requests: readonly Stored[];
+  readonly provisional: boolean;
 }
 
-function stateUpdate(
-  module: JSModule,
-  layouts: ValueLayoutRegistry,
-  heap: Heap,
-  structs: StructStorageRuntime,
-  collections: CollectionRuntime,
-): TeaStateUpdate {
-  return (state, intermediate, input) =>
-    Effect.suspend(() => {
-      try {
-        // Collection is legal only at the transition boundary, before a new
-        // transaction begins. The supplied State and Intermediate are the
-        // owner's actual retained values; a candidate produced by this update
-        // may still be rejected by a provisional step.
-        heap.replaceRoots(
-          discoverRoots(module, layouts, structs, state, intermediate),
-        );
-        heap.collect();
-        return Effect.succeed(
-          new RuntimeOperations(
-            module,
-            layouts,
-            heap,
-            state,
-            intermediate,
-            input,
-            structs,
-            collections,
-          ).run(),
-        );
-      } catch (error) {
-        if (error instanceof ExecutionError) {
-          return Effect.fail(error);
-        }
-        return Effect.die(error);
-      }
-    });
+// Committed Tea state. Every time-addressed binding owns explicit newest-first
+// history.
+
+export interface RootState extends FrameState {
+  readonly series: readonly (readonly Stored[])[];
+  readonly builtins: readonly (readonly Stored[])[];
+  readonly requests: readonly (readonly Stored[])[];
+}
+
+export interface FrameState {
+  readonly active: boolean;
+  readonly locals: readonly LocalState[];
+  readonly subs: readonly (FrameState | null)[];
+}
+
+export interface LocalState {
+  readonly history: readonly Stored[];
+  readonly initialized: boolean;
+}
+
+// State with exactly one live copy across provisional and committed updates.
+
+export interface IntermediateFrame {
+  readonly active: boolean;
+  readonly locals: readonly (IntermediateLocal | null)[];
+  readonly subs: readonly (IntermediateFrame | null)[];
+}
+
+export interface IntermediateLocal {
+  readonly value: Stored;
+  readonly initialized: boolean;
 }
 
 interface WorkspaceLocal {
   readonly state: LocalState;
   readonly intermediate: IntermediateLocal | null;
-  value: Value;
+  value: Stored;
   initialized: boolean;
-  initialization: Value | null;
+  // undefined means absent; null is a valid retained initializer.
+  initialization: Stored | undefined;
 }
 
-interface WorkspaceFrame extends Frame {
+export interface WorkspaceFrame {
   readonly kind: 'frame';
   readonly fid: number;
   readonly state: FrameState;
@@ -145,20 +91,20 @@ interface WorkspaceFrame extends Frame {
   active: boolean;
 }
 
-class RuntimeOperations implements RuntimeContext {
-  private readonly rootFrame: WorkspaceFrame;
+export class Step {
+  readonly rootFrame: WorkspaceFrame;
   private readonly fields: readonly Field[];
   private readonly outputs: unknown[];
   private ordinal = 0;
   private transaction: HeapTransaction | null = null;
-  private requestValues: readonly Value[] = [];
+  private requestValues: readonly Stored[] = [];
 
   constructor(
-    private readonly module: JSModule,
-    private readonly layouts: ValueLayoutRegistry,
+    private readonly module: Module,
+    private readonly layouts: StorageTypes,
     private readonly heap: Heap,
-    private readonly state: Readonly<State>,
-    private readonly intermediate: Readonly<Intermediate>,
+    private readonly state: Readonly<RootState>,
+    private readonly intermediate: Readonly<IntermediateFrame>,
     private readonly input: StepInput,
     private readonly structs: StructStorageRuntime,
     private readonly collections: CollectionRuntime,
@@ -177,13 +123,12 @@ class RuntimeOperations implements RuntimeContext {
       field.metadata.get('tea:write') === 'append' ? [] : null,
     );
     this.validateInput();
-    this.rootFrame = this.openFrame(0, state.root, intermediate.root, true);
+    this.rootFrame = this.openFrame(0, state, intermediate, true);
   }
 
-  run() {
-    const transaction = this.heap.begin('state-update');
+  run(main: () => void) {
+    using transaction = this.heap.begin('state-update');
     this.transaction = transaction;
-    let committed = false;
     try {
       this.requestValues = this.input.requests.map((value, rid) => {
         const spec = this.module.requests[rid]!;
@@ -193,15 +138,13 @@ class RuntimeOperations implements RuntimeContext {
               transaction,
               'array.from',
               spec.layout,
-              value as readonly Value[],
+              value as readonly Stored[],
             );
       });
-      this.module.main(this, this.rootFrame);
+      main();
       const result = {
-        state: {root: this.finishRoot()},
-        intermediate: {
-          root: this.finishIntermediateFrame(this.rootFrame),
-        },
+        state: this.finishRoot(),
+        intermediate: this.finishIntermediateFrame(this.rootFrame),
         rootValues: this.rootFrame.locals.map(local => local.value),
         output: Object.freeze(
           this.outputs.map(value =>
@@ -212,13 +155,10 @@ class RuntimeOperations implements RuntimeContext {
         ),
       };
       transaction.commit();
-      committed = true;
       this.transaction = null;
       return result;
-    } catch (error) {
-      if (!committed) transaction.abort();
+    } finally {
       this.transaction = null;
-      throw error;
     }
   }
 
@@ -239,7 +179,7 @@ class RuntimeOperations implements RuntimeContext {
     return value;
   }
 
-  builtin(bid: number, offset: number): Value {
+  builtin(bid: number, offset: number): Stored {
     const spec = this.module.inputs.builtins[bid];
     if (spec === undefined) return fatal(`unknown builtin ${bid}`);
     return this.inputValue(
@@ -251,7 +191,7 @@ class RuntimeOperations implements RuntimeContext {
     );
   }
 
-  request(rid: number, offset: number): Value {
+  request(rid: number, offset: number): Stored {
     const spec = this.module.requests[rid];
     if (spec === undefined) return fatal(`unknown request ${rid}`);
     return this.inputValue(
@@ -263,19 +203,19 @@ class RuntimeOperations implements RuntimeContext {
     );
   }
 
-  param(pid: number): Value {
+  param(pid: number): Stored {
     const parameter = this.module.parameters[pid];
     if (parameter === undefined || !Object.hasOwn(parameter, 'value')) {
       return fatal(`unknown parameter ${pid}`);
     }
-    return parameter.value as Value;
+    return parameter.value as Stored;
   }
 
-  root(): Frame {
+  root(): WorkspaceFrame {
     return this.rootFrame;
   }
 
-  frame(fr: Frame, slot: number): Frame {
+  frame(fr: WorkspaceFrame, slot: number): WorkspaceFrame {
     const parent = fr as WorkspaceFrame;
     const spec = this.frameLayout(parent.fid).subs[slot];
     if (spec === undefined) {
@@ -295,7 +235,7 @@ class RuntimeOperations implements RuntimeContext {
     return child;
   }
 
-  read(fr: Frame, slot: number, offset: number): Value {
+  read(fr: WorkspaceFrame, slot: number, offset: number): Stored {
     const frame = fr as WorkspaceFrame;
     const local = frame.locals[slot];
     const spec = this.frameLayout(frame.fid).locals[slot];
@@ -305,10 +245,10 @@ class RuntimeOperations implements RuntimeContext {
     const empty = this.layouts.empty(spec.layout);
     if (!isHistoryOffset(offset)) return empty;
     if (offset === 0) return local.value;
-    return local.state.history.values[offset - 1] ?? empty;
+    return local.state.history[offset - 1] ?? empty;
   }
 
-  write(fr: Frame, slot: number, value: Value): void {
+  write(fr: WorkspaceFrame, slot: number, value: Stored): void {
     const frame = fr as WorkspaceFrame;
     const local = frame.locals[slot];
     const spec = this.frameLayout(frame.fid).locals[slot];
@@ -324,7 +264,7 @@ class RuntimeOperations implements RuntimeContext {
     local.value = value;
   }
 
-  needsInit(fr: Frame, slot: number): boolean {
+  needsInit(fr: WorkspaceFrame, slot: number): boolean {
     const frame = fr as WorkspaceFrame;
     const local = frame.locals[slot];
     const spec = this.frameLayout(frame.fid).locals[slot];
@@ -340,7 +280,7 @@ class RuntimeOperations implements RuntimeContext {
     return !local.initialized;
   }
 
-  initialize(fr: Frame, slot: number, value: Value): void {
+  initialize(fr: WorkspaceFrame, slot: number, value: Stored): void {
     const frame = fr as WorkspaceFrame;
     const local = frame.locals[slot];
     const spec = this.frameLayout(frame.fid).locals[slot];
@@ -369,7 +309,7 @@ class RuntimeOperations implements RuntimeContext {
     }
   }
 
-  emit(output: number, channel: number, value: Value): void {
+  emit(output: number, channel: number, value: Stored): void {
     const field = this.fields[output];
     const spec = this.module.outputs.declarations[output];
     if (
@@ -394,7 +334,7 @@ class RuntimeOperations implements RuntimeContext {
     );
   }
 
-  append(output: number, payload: Value): void {
+  append(output: number, payload: Stored): void {
     const field = this.fields[output];
     const spec = this.module.outputs.declarations[output];
     if (field?.metadata.get('tea:write') !== 'append')
@@ -413,9 +353,9 @@ class RuntimeOperations implements RuntimeContext {
   // change an earlier event. Arrow fields describe the detached result while
   // runtime layouts locate the live values in the Heap.
   private snapshot(
-    layoutId: LayoutId,
+    layoutId: number,
     field: Field,
-    value: Value,
+    value: Stored,
     active?: Set<object>,
   ): unknown {
     const transaction = this.mustTransaction();
@@ -441,7 +381,7 @@ class RuntimeOperations implements RuntimeContext {
         'cyclic output payload',
       );
     active.add(value);
-    const copy = (id: LayoutId, child: Field, item: Value) =>
+    const copy = (id: number, child: Field, item: Stored) =>
       this.snapshot(id, child, item, active);
     let result: unknown;
     switch (layout.kind) {
@@ -524,15 +464,15 @@ class RuntimeOperations implements RuntimeContext {
     return result;
   }
 
-  newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown> {
+  newStruct(layout: number, fields: readonly Stored[]): Ref<unknown> {
     return this.structs.newStruct(this.mustTransaction(), layout, fields);
   }
 
-  requireStruct(value: Value, layout: LayoutId): Ref<unknown> {
+  requireStruct(value: Stored, layout: number): Ref<unknown> {
     return this.structs.requireStruct(value, layout, this.mustTransaction());
   }
 
-  structField(value: Value, ownerLayout: LayoutId, index: number): Value {
+  structField(value: Stored, ownerLayout: number, index: number): Stored {
     return this.structs.field(
       value,
       ownerLayout,
@@ -542,10 +482,10 @@ class RuntimeOperations implements RuntimeContext {
   }
 
   storeStructField(
-    value: Value,
-    ownerLayout: LayoutId,
+    value: Stored,
+    ownerLayout: number,
     index: number,
-    replacement: Value,
+    replacement: Stored,
   ): void {
     this.structs.storeField(
       this.mustTransaction(),
@@ -558,9 +498,9 @@ class RuntimeOperations implements RuntimeContext {
 
   callCollection(
     operation: CollectionOperation,
-    resultLayout: LayoutId,
-    args: readonly Value[],
-  ): Value {
+    resultLayout: number,
+    args: readonly Stored[],
+  ): Stored {
     return this.collections.call(
       this.mustTransaction(),
       operation,
@@ -571,9 +511,9 @@ class RuntimeOperations implements RuntimeContext {
 
   mutateCollection(
     operation: CollectionMutationOperation,
-    collectionLayout: LayoutId,
-    receiver: Value,
-    args: readonly Value[],
+    collectionLayout: number,
+    receiver: Stored,
+    args: readonly Stored[],
   ): CollectionMutation {
     return this.collections.mutate(
       this.mustTransaction(),
@@ -584,7 +524,7 @@ class RuntimeOperations implements RuntimeContext {
     );
   }
 
-  collectionEntries(value: Value): CollectionEntries {
+  collectionEntries(value: Stored): CollectionEntries {
     return this.collections.entries(value, this.mustTransaction());
   }
 
@@ -662,9 +602,9 @@ class RuntimeOperations implements RuntimeContext {
     field: 'series' | 'builtins' | 'requests',
     id: number,
     offset: number,
-    empty: Value,
+    empty: Stored,
     count: number,
-  ): Value {
+  ): Stored {
     if (!Number.isSafeInteger(id) || id < 0 || id >= count) {
       return fatal(`unknown ${field} input ${id}`);
     }
@@ -674,7 +614,7 @@ class RuntimeOperations implements RuntimeContext {
         field === 'requests' ? this.requestValues : this.input[field];
       return values[id] ?? empty;
     }
-    return this.state.root[field][id]?.values[offset - 1] ?? empty;
+    return this.state[field][id][offset - 1] ?? empty;
   }
 
   private openFrame(
@@ -710,7 +650,7 @@ class RuntimeOperations implements RuntimeContext {
             spec.storage === Storage.Varip && current !== null
               ? current.value
               : spec.storage === Storage.Var && local.initialized
-                ? (local.history.values[0] ?? this.layouts.empty(spec.layout))
+                ? (local.history[0] ?? this.layouts.empty(spec.layout))
                 : spec.storage === Storage.Var && current !== null
                   ? current.value
                   : this.layouts.empty(spec.layout),
@@ -718,8 +658,8 @@ class RuntimeOperations implements RuntimeContext {
             current?.initialized ?? (persistent && local.initialized),
           initialization:
             spec.storage === Storage.Var && !local.initialized
-              ? (current?.value ?? null)
-              : null,
+              ? current?.value
+              : undefined,
         };
       }),
       subs: layout.subs.map(() => null),
@@ -765,17 +705,17 @@ class RuntimeOperations implements RuntimeContext {
       ...frame,
       series: this.finishInputHistory(
         'series',
-        this.state.root.series,
+        this.state.series,
         this.module.inputs.series,
       ),
       builtins: this.finishInputHistory(
         'builtins',
-        this.state.root.builtins,
+        this.state.builtins,
         this.module.inputs.builtins,
       ),
       requests: this.finishInputHistory(
         'requests',
-        this.state.root.requests,
+        this.state.requests,
         this.module.requests,
       ),
     };
@@ -783,9 +723,9 @@ class RuntimeOperations implements RuntimeContext {
 
   private finishInputHistory(
     field: 'series' | 'builtins' | 'requests',
-    histories: readonly HistoryState[],
+    histories: readonly (readonly Stored[])[],
     specs: readonly {readonly depth: Parameters<typeof depthRetention>[0]}[],
-  ): readonly HistoryState[] {
+  ): readonly (readonly Stored[])[] {
     if (histories.length !== specs.length) {
       return fatal(`${field} history topology disagrees with the module`);
     }
@@ -808,7 +748,7 @@ class RuntimeOperations implements RuntimeContext {
           spec.storage === Storage.Varip ||
           (spec.storage === Storage.Var &&
             !local.state.initialized &&
-            local.initialization !== null)
+            local.initialization !== undefined)
         ) {
           return {
             value:
@@ -835,7 +775,7 @@ class RuntimeOperations implements RuntimeContext {
 }
 
 function initialFrame(
-  module: JSModule,
+  module: Module,
   fid: number,
   active: boolean,
 ): FrameState {
@@ -844,24 +784,24 @@ function initialFrame(
   return {
     active,
     locals: layout.locals.map(() => ({
-      history: {values: []},
+      history: [],
       initialized: false,
     })),
     subs: layout.subs.map(() => null),
   };
 }
 
-function initialRoot(module: JSModule): RootState {
+export function initialRoot(module: Module): RootState {
   return {
     ...initialFrame(module, 0, true),
-    series: module.inputs.series.map(() => ({values: []})),
-    builtins: module.inputs.builtins.map(() => ({values: []})),
-    requests: module.requests.map(() => ({values: []})),
+    series: module.inputs.series.map(() => []),
+    builtins: module.inputs.builtins.map(() => []),
+    requests: module.requests.map(() => []),
   };
 }
 
-function initialIntermediateFrame(
-  module: JSModule,
+export function initialIntermediateFrame(
+  module: Module,
   fid: number,
   active: boolean,
 ): IntermediateFrame {
@@ -885,16 +825,14 @@ function localRetention(
 }
 
 function commitHistory(
-  history: HistoryState,
-  value: Value,
+  history: readonly Stored[],
+  value: Stored,
   keep: number,
-): HistoryState {
-  return {
-    values: keep === 0 ? [] : [value, ...history.values].slice(0, keep),
-  };
+): readonly Stored[] {
+  return keep === 0 ? [] : [value, ...history].slice(0, keep);
 }
 
-function depthRetention(depth: DepthSpec) {
+function depthRetention(depth: Depth) {
   switch (depth.kind) {
     case 'none':
       return 0;
@@ -906,42 +844,42 @@ function depthRetention(depth: DepthSpec) {
   }
 }
 
-function discoverRoots(
-  module: JSModule,
-  layouts: ValueLayoutRegistry,
+export function discoverRoots(
+  module: Module,
+  layouts: StorageTypes,
   structs: StructStorageRuntime,
-  state: Readonly<State>,
-  intermediate: Readonly<Intermediate>,
+  state: Readonly<RootState>,
+  intermediate: Readonly<IntermediateFrame>,
 ): Ref<unknown>[] {
   const roots: Ref<unknown>[] = [];
-  const visit = (layout: LayoutId, value: Value) => {
+  const visit = (layout: number, value: Stored) => {
     structs.assertValue(layout, value, 'StateMachine retained value');
     layouts.visitRefs(layout, value, ref => roots.push(ref));
   };
 
-  state.root.builtins.forEach((ring, bid) => {
+  state.builtins.forEach((ring, bid) => {
     const spec = module.inputs.builtins[bid]!;
-    ring.values.forEach(value => visit(spec.layout, value));
+    ring.forEach(value => visit(spec.layout, value));
   });
-  state.root.requests.forEach((ring, rid) => {
+  state.requests.forEach((ring, rid) => {
     const spec = module.requests[rid]!;
-    ring.values.forEach(value => visit(spec.layout, value));
+    ring.forEach(value => visit(spec.layout, value));
   });
-  visitFrameState(module, state.root, 0, visit);
-  visitIntermediateFrame(module, intermediate.root, 0, visit);
+  visitFrameState(module, state, 0, visit);
+  visitIntermediateFrame(module, intermediate, 0, visit);
   return roots;
 }
 
 function visitFrameState(
-  module: JSModule,
+  module: Module,
   frame: Readonly<FrameState>,
   fid: number,
-  visit: (layout: LayoutId, value: Value) => void,
+  visit: (layout: number, value: Stored) => void,
 ): void {
   const layout = frameLayout(module, fid);
   frame.locals.forEach((local, slot) => {
     const spec = layout.locals[slot]!;
-    local.history.values.forEach(value => visit(spec.layout, value));
+    local.history.forEach(value => visit(spec.layout, value));
   });
   frame.subs.forEach((sub, slot) => {
     if (sub !== null) {
@@ -951,10 +889,10 @@ function visitFrameState(
 }
 
 function visitIntermediateFrame(
-  module: JSModule,
+  module: Module,
   frame: Readonly<IntermediateFrame>,
   fid: number,
-  visit: (layout: LayoutId, value: Value) => void,
+  visit: (layout: number, value: Stored) => void,
 ): void {
   const layout = frameLayout(module, fid);
   frame.locals.forEach((local, slot) => {
@@ -967,15 +905,12 @@ function visitIntermediateFrame(
   });
 }
 
-function frameLayout(module: JSModule, fid: number) {
+function frameLayout(module: Module, fid: number) {
   const layout = module.state.frames[fid];
   return layout === undefined ? fatal(`unknown frame layout ${fid}`) : layout;
 }
 
-function validateIoSchemas(
-  module: JSModule,
-  layouts: ValueLayoutRegistry,
-): void {
+export function validateIoSchemas(module: Module, layouts: StorageTypes): void {
   const active = new Set<number>();
   const validate = (id: number, field: Field): void => {
     if (id === -1 && field.metadata.get('tea:type') === 'output-ref') return;

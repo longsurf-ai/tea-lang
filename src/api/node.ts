@@ -1,6 +1,6 @@
+import type {Module} from '../runtime/module-binding';
 // Purpose: Public Node contract and private RxJS/Effect lifecycle implementation.
 
-import {Cause, Effect, Exit} from 'effect';
 import {
   defer,
   finalize,
@@ -15,17 +15,17 @@ import {
 } from 'rxjs';
 import {DataType, TimeUnit} from 'apache-arrow';
 import {fatal} from '../base/print';
-import {JSRuntime, type StepResult} from '../runtime/js/runtime';
+import {Context, type StepResult} from '../runtime/js/context';
 import {
   moduleSeriesNames,
   requireConcreteModule,
 } from '../runtime/module-binding';
 import {BindError} from '../runtime/errors';
 import {cloneSchema} from '../runtime/io';
-import type {JSModule, RequestSpec} from '../runtime/module-abi';
+import type {Request} from '../runtime/module-abi';
 import {createDatum, type Datum} from '../runtime/output';
-import {isTupleValue, type Value} from '../runtime/value';
-import {ValueLayoutRegistry} from '../runtime/value-layout';
+import {isTupleValue, type Stored} from '../runtime/value';
+import {StorageTypes} from '../runtime/storage-types';
 import {i, timeframeClock, type Clock} from './clock';
 import {DataStream} from './stream';
 import {sync} from './sync';
@@ -36,7 +36,7 @@ export type {Datum} from '../runtime/output';
 type InputDatum = Readonly<Record<string, unknown>>;
 
 /** One child input paired with the Tea value computed from it. */
-type RequestOutput = readonly [InputDatum, Value];
+type RequestOutput = readonly [InputDatum, Stored];
 
 /** Decides whether one main input has enough child results to move forward. */
 type RequestProjector = (
@@ -47,11 +47,11 @@ type RequestProjector = (
 /** Supplies the contextual builtin vector for one Node in the request tree. */
 type BuiltinSupplier = (
   path: readonly number[],
-  module: JSModule,
+  module: Module,
   index: number,
   indices: number | null,
   datum: InputDatum,
-) => readonly Value[];
+) => readonly Stored[];
 
 const noBuiltins: BuiltinSupplier = (path, module) => {
   if (module.inputs.builtins.length !== 0) {
@@ -86,7 +86,7 @@ export interface Node {
    * is 20. `node.module.ready()` may be true before `node.ready()`, which also
    * requires connected streams.
    */
-  readonly module: JSModule;
+  readonly module: Module;
 
   /**
    * Supplies a parameter patch or connects input streams without subscribing.
@@ -137,19 +137,19 @@ class TeaNode implements Node {
   private data: Observable<InputDatum> | null;
   private readonly connected = new Set<string>();
   private readonly requests: TeaNode[];
-  private publication: JSModule['outputs'] | null = null;
+  private publication: Module['outputs'] | null = null;
   private clock: Clock = i;
   private indices: number | null = null;
   private timed = false;
   private intervalTimed = false;
   private readonly results = new Subject<Datum>();
   private readonly deliveryFailure = new Subject<never>();
-  private runtime: JSRuntime | null = null;
+  private runtime: Context | null = null;
   private connection: Subscription | null = null;
   private committedIndices = 0;
   private started = false;
   private disposed = false;
-  private readonly layouts: ValueLayoutRegistry;
+  private readonly layouts: StorageTypes;
 
   /**
    * Creates one Node for this module and one child Node for every Tea request.
@@ -158,11 +158,11 @@ class TeaNode implements Node {
    * main TeaNode whose `requests[0]` executes the `daily` expression.
    */
   constructor(
-    readonly module: JSModule,
+    readonly module: Module,
     private readonly builtinSupplier: BuiltinSupplier,
     private readonly path: readonly number[] = [],
   ) {
-    this.layouts = new ValueLayoutRegistry(module.state.layout);
+    this.layouts = new StorageTypes(module.state.layout);
     this.data = null;
     this.requests = module.requests.map(
       (request, requestId) =>
@@ -301,7 +301,7 @@ class TeaNode implements Node {
   /** Adds Node-owned position and source time to one exact step result. */
   private datum(input: InputDatum, result: StepResult, index: number): Datum {
     return createDatum(
-      this.publication!,
+      this.publication!.schema,
       index,
       result,
       this.outputTime(input.time),
@@ -342,7 +342,7 @@ class TeaNode implements Node {
    * Releases this runtime and recursively releases every request-child runtime.
    *
    * @example Disposing a main program with one `daily` request releases both
-   * the main JSRuntime and the child JSRuntime.
+   * the main Context and the child Context.
    */
   private disposeRuntime(): void {
     this.runtime?.dispose();
@@ -352,7 +352,7 @@ class TeaNode implements Node {
 
   /**
    * Connect streams only after every name, schema, clock, and extent passes.
-   * Configuration stays in JSModule; this Node alone records connected series.
+   * Configuration stays in Module; this Node alone records connected series.
    *
    * @example `node.bind({close: prices, daily: dailyPrices})` connects the
    * root close field and the child declared as daily without subscribing either.
@@ -478,7 +478,7 @@ class TeaNode implements Node {
    * Request-child series are not included because their child Nodes report
    * their own names.
    *
-   * Duplicate names remain duplicated because `JSRuntime.step()` receives one
+   * Duplicate names remain duplicated because `Context.step()` receives one
    * value per sid even when two slots read the same source field.
    */
   private seriesNames(): readonly string[] {
@@ -663,7 +663,7 @@ class TeaNode implements Node {
   }
 
   /**
-   * Converts one input field into the numeric value accepted by JSRuntime.
+   * Converts one input field into the numeric value accepted by Context.
    *
    * A missing field becomes Tea's numeric missing value (`NaN`). Numbers pass
    * through unchanged, while strings and other host values are rejected.
@@ -684,7 +684,7 @@ class TeaNode implements Node {
    * The starting Observable is the main input assembled by `combineData()`.
    * Every request child is then executed and its result is added under the
    * request variable name. Once an input contains all main-series and request
-   * values, it is converted into one synchronous `JSRuntime.step()` call. The
+   * values, it is converted into one synchronous `Context.step()` call. The
    * returned pair keeps the input record beside the physical StepResult so a
    * request parent can read child results before public output conversion.
    * Unsubscribing disposes the runtime through `finalize()`.
@@ -707,7 +707,7 @@ class TeaNode implements Node {
       pending = this.synchronize(spec, child, pending);
     });
     return defer(() => {
-      const runtime = new JSRuntime(this.module);
+      const runtime = new Context(this.module);
       this.runtime = runtime;
       this.publication = {
         ...this.module.outputs,
@@ -720,30 +720,20 @@ class TeaNode implements Node {
             if (!Object.hasOwn(datum, spec.name)) {
               return fatal(`request '${spec.name}' was not synchronized`);
             }
-            return datum[spec.name] as Value;
+            return datum[spec.name] as Stored;
           });
-          const result = Exit.match(
-            Effect.runSyncExit(
-              runtime.step({
-                series: names.map(name => this.numericSeries(datum[name])),
-                builtins: this.builtinSupplier(
-                  this.path,
-                  this.module,
-                  index,
-                  this.indices,
-                  datum,
-                ),
-                requests,
-                provisional: false,
-              }),
+          const result = runtime.step({
+            series: names.map(name => this.numericSeries(datum[name])),
+            builtins: this.builtinSupplier(
+              this.path,
+              this.module,
+              index,
+              this.indices,
+              datum,
             ),
-            {
-              onFailure: cause => {
-                throw Cause.squash(cause);
-              },
-              onSuccess: value => value,
-            },
-          );
+            requests,
+            provisional: false,
+          });
           if (!result.provisional) this.committedIndices += 1;
           return [datum, result, index] as const;
         }),
@@ -774,7 +764,7 @@ class TeaNode implements Node {
    * @example If the child receives `{close: 9}` and its requested expression is
    * `close * 2`, this Observable emits `[{close: 9}, 18]`.
    */
-  private requestOutput(spec: RequestSpec): Observable<RequestOutput> {
+  private requestOutput(spec: Request): Observable<RequestOutput> {
     return this.steps().pipe(
       map(([datum]) => {
         const runtime = this.runtime;
@@ -799,7 +789,7 @@ class TeaNode implements Node {
   }
 
   /** Copies one scalar or tuple across a child runtime boundary. */
-  private copyRequestResult(layoutId: number, value: Value): Value {
+  private copyRequestResult(layoutId: number, value: Stored): Stored {
     this.layouts.assertValue(layoutId, value, 'request result transport');
     if (value === null) return null;
     const layout = this.layouts.layout(layoutId);
@@ -899,7 +889,7 @@ class TeaNode implements Node {
    * ```
    */
   private synchronize(
-    spec: RequestSpec,
+    spec: Request,
     child: TeaNode,
     target: Observable<InputDatum>,
   ): Observable<InputDatum> {
@@ -939,7 +929,7 @@ class TeaNode implements Node {
    * continue serving later parent inputs. Older child values are consumed once
    * a newer eligible child becomes current.
    */
-  private sample(spec: RequestSpec): RequestProjector {
+  private sample(spec: Request): RequestProjector {
     const context = spec.context;
     if (context === null || context === undefined) {
       return fatal(`request '${spec.name}' has no concrete context`);
@@ -1010,7 +1000,7 @@ class TeaNode implements Node {
   }
 
   /** Validates the requested clock and returns the child's effective clock. */
-  private requestClock(spec: RequestSpec, child: TeaNode): Clock {
+  private requestClock(spec: Request, child: TeaNode): Clock {
     const expected = timeframeClock(spec.context?.timeframe ?? '');
     if (expected !== i && child.clock !== i && expected !== child.clock) {
       throw new Error(
@@ -1035,7 +1025,7 @@ class TeaNode implements Node {
    * @example A five-minute main clock divided by a one-minute child clock
    * yields `5`; a five-minute clock and a two-minute clock have no exact count.
    */
-  private requestCount(spec: RequestSpec, childClock: Clock): number | null {
+  private requestCount(spec: Request, childClock: Clock): number | null {
     if (
       spec.mode !== 'collect' ||
       this.clock === i ||
@@ -1114,7 +1104,7 @@ class TeaNode implements Node {
     return (datum, buffered) => {
       const parentStart = this.intervalBoundary(datum, 'start', 'parent');
       const parentEnd = this.intervalBoundary(datum, 'end', 'parent');
-      const values: Value[] = [];
+      const values: Stored[] = [];
       let consume = 0;
       for (const [childDatum, value] of buffered) {
         const childStart = this.intervalBoundary(childDatum, 'start', 'child');
@@ -1161,7 +1151,7 @@ class TeaNode implements Node {
       ) {
         throw new Error('main DataStream time must be an increasing bigint');
       }
-      const values: Value[] = [];
+      const values: Stored[] = [];
       let consume = 0;
       for (const [childDatum, value] of buffered) {
         const childTime = childDatum.time;
@@ -1196,7 +1186,7 @@ class TeaNode implements Node {
  * `daily = request.security(...)` creates the main Node plus one private child.
  */
 export function createNode(
-  module: JSModule,
+  module: Module,
   builtinSupplier: BuiltinSupplier = noBuiltins,
 ): Node {
   return new TeaNode(module, builtinSupplier);

@@ -8,7 +8,10 @@ import {
   Map_ as ArrowMap,
   Struct,
   Utf8,
-  type DataType,
+  DataType,
+  Schema,
+  Precision,
+  TimeUnit,
 } from 'apache-arrow';
 import {fatal} from '../base/print';
 import {formatType, IntType, TypeKind, type Type} from '../ir/type';
@@ -146,4 +149,34 @@ export function fieldOf(
     return value;
   };
   return field(name, type);
+}
+
+/**
+ * Print compiler-owned Arrow objects as ordinary constructor expressions.
+ * This preserves the existing schema rather than projecting Tea types again.
+ * @example `schemaSource(new Schema([new Field('price', new Float64(), false)]))`
+ * produces a Schema containing the same non-nullable Float64 field.
+ */
+export function schemaSource(schema: Schema): string {
+  const metadata = (entries: ReadonlyMap<string, string>): string =>
+    entries.size === 0 ? '' : `, new Map(${JSON.stringify([...entries])})`;
+  const fields = (items: readonly Field[]): string =>
+    `[\n${items.map(field).join(',\n')}\n]`;
+  const type = (value: DataType): string => {
+    if (DataType.isFloat(value) && value.precision === Precision.DOUBLE)
+      return 'new Float64()';
+    if (DataType.isBool(value)) return 'new Bool()';
+    if (DataType.isUtf8(value)) return 'new Utf8()';
+    if (DataType.isList(value)) return `new List(${field(value.children[0])})`;
+    if (DataType.isStruct(value))
+      return `new Struct(${fields(value.children)})`;
+    if (DataType.isMap(value))
+      return `new Map_(${field(value.children[0])}, ${value.keysSorted})`;
+    if (DataType.isTimestamp(value) && value.unit === TimeUnit.MILLISECOND)
+      return `new TimestampMillisecond(${value.timezone == null ? '' : JSON.stringify(value.timezone)})`;
+    return fatal(`unsupported generated Arrow type ${value}`);
+  };
+  const field = (value: Field): string =>
+    `new Field(${JSON.stringify(value.name)}, ${type(value.type)}, ${value.nullable}${metadata(value.metadata)})`;
+  return `new Schema(${fields(schema.fields)}${metadata(schema.metadata)})`;
 }

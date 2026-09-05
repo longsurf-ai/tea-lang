@@ -3,13 +3,9 @@
 import {fatal} from '../../../base/print';
 import {ExecutionError} from '../../errors';
 import type {CollectionMutation} from '../../module-abi';
-import {isMapValue, type MapValue, type Value} from '../../value';
+import {isMapValue, type MapValue, type Stored} from '../../value';
 import type {TypeInfo} from '../heap';
-import {
-  visitRuntimeValueRefs,
-  type LayoutId,
-  type ValueLayout,
-} from '../../value-layout';
+import {visitRuntimeValueRefs, type StorageType} from '../../storage-types';
 import {createArray} from './array';
 import {
   assertLimit,
@@ -23,8 +19,8 @@ import {
 } from './common';
 
 export interface MapEntry {
-  readonly key: Value;
-  readonly value: Value;
+  readonly key: Stored;
+  readonly value: Stored;
 }
 
 export interface MapStorage {
@@ -32,12 +28,7 @@ export interface MapStorage {
   readonly logicalBytes: number;
 }
 
-interface MapStorageArgs {
-  readonly entries: readonly MapEntry[];
-  readonly logicalBytes: number;
-}
-
-export const MAP_STORAGE: TypeInfo<MapStorageArgs, MapStorage> = {
+export const MAP_STORAGE: TypeInfo<MapStorage, MapStorage> = {
   id: Symbol('tea.map.storage'),
   name: 'map storage',
   bytesFor(args) {
@@ -67,9 +58,9 @@ export const MAP_STORAGE: TypeInfo<MapStorageArgs, MapStorage> = {
 export function mapCall(
   ctx: CollectionContext,
   operation: string,
-  resultLayout: LayoutId,
-  args: readonly Value[],
-): Value {
+  resultLayout: number,
+  args: readonly Stored[],
+): Stored {
   if (operation === 'map.new') {
     if (args.length !== 0) {
       return fatal(`map.new received ${args.length} arguments`);
@@ -128,8 +119,8 @@ export function mapCall(
 
 function assertArrayElementLayout(
   ctx: CollectionContext,
-  resultLayout: LayoutId,
-  elementLayout: LayoutId,
+  resultLayout: number,
+  elementLayout: number,
   operation: string,
 ): void {
   const result = collectionLayout(ctx.layouts, resultLayout, 'array');
@@ -139,9 +130,9 @@ function assertArrayElementLayout(
 export function mapMutate(
   ctx: CollectionContext,
   operation: string,
-  layoutId: LayoutId,
-  receiverValue: Value,
-  args: readonly Value[],
+  layoutId: number,
+  receiverValue: Stored,
+  args: readonly Stored[],
 ): CollectionMutation {
   const receiver = requireCollection(ctx, receiverValue, layoutId, 'map');
   const layout = collectionLayout(ctx.layouts, layoutId, 'map');
@@ -195,8 +186,8 @@ export function mapMutate(
 
 export function mapSnapshot(
   ctx: CollectionReadContext,
-  value: Value,
-): readonly (readonly [Value, Value])[] {
+  value: Stored,
+): readonly (readonly [Stored, Stored])[] {
   if (!isMapValue(value)) {
     throw new ExecutionError('NA_COLLECTION', 'map iteration on na');
   }
@@ -210,7 +201,7 @@ export function mapSnapshot(
 
 function createMap(
   ctx: CollectionContext,
-  layoutId: LayoutId,
+  layoutId: number,
   items: readonly MapEntry[],
 ): MapValue {
   const layout = collectionLayout(ctx.layouts, layoutId, 'map');
@@ -249,8 +240,8 @@ function entries(
 
 function allocateStorage(
   ctx: CollectionContext,
-  keyLayout: LayoutId,
-  valueLayout: LayoutId,
+  keyLayout: number,
+  valueLayout: number,
   entries: readonly MapEntry[],
 ): MapValue['storage'] {
   const entryBytes =
@@ -263,9 +254,9 @@ function allocateStorage(
 
 function canonicalKey(
   ctx: CollectionContext,
-  layoutId: LayoutId,
-  value: Value,
-): Value {
+  layoutId: number,
+  value: Stored,
+): Stored {
   const layout = ctx.layouts.layout(layoutId);
   assertMapKeyLayout(layout);
   if (
@@ -292,7 +283,7 @@ function canonicalKey(
   return value;
 }
 
-function assertMapKeyLayout(layout: ValueLayout): void {
+function assertMapKeyLayout(layout: StorageType): void {
   if (
     layout.kind !== 'number' &&
     layout.kind !== 'boolean' &&
@@ -303,13 +294,13 @@ function assertMapKeyLayout(layout: ValueLayout): void {
   }
 }
 
-function find(entries: readonly MapEntry[], key: Value): number {
+function find(entries: readonly MapEntry[], key: Stored): number {
   return entries.findIndex(entry => entry.key === key);
 }
 
 function requireMapArg(
   ctx: CollectionContext,
-  args: readonly Value[],
+  args: readonly Stored[],
   operation: string,
 ): MapValue {
   if (args.length === 0) {
@@ -328,7 +319,7 @@ function requireMapArg(
 
 function requireArgs(
   operation: string,
-  args: readonly Value[],
+  args: readonly Stored[],
   expected: number,
 ): void {
   if (args.length !== expected) {

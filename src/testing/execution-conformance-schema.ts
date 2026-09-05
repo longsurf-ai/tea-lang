@@ -49,7 +49,7 @@ type ExpectedInputConstraint =
     }
   | {readonly kind: 'options'; readonly options: readonly JsonScalar[]};
 
-interface ExpectedInputSpec {
+interface ExpectedParameter {
   readonly name: string;
   readonly title: string | null;
   readonly type:
@@ -79,7 +79,7 @@ interface ExpectedInputSpec {
 }
 
 interface ExpectedInput {
-  readonly spec: ExpectedInputSpec;
+  readonly spec: ExpectedParameter;
   readonly value: JsonScalar;
   readonly active: boolean;
 }
@@ -336,7 +336,7 @@ function parseConstraint(
 function parseEnumType(
   raw: unknown,
   label: string,
-): ExpectedInputSpec['enumType'] {
+): ExpectedParameter['enumType'] {
   if (raw === null) {
     return null;
   }

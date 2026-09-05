@@ -1,13 +1,13 @@
-// Purpose: Code generator — lowers a Tea Program to a self-describing JS
-// module against the generated-code RuntimeContext ABI; docs/runtime.md owns
-// the module contract and dense ids published in its fields.
+// Purpose: Lower one Tea Program to ordinary typed TypeScript using tea/runtime.
+
+import type {Module} from '../runtime/module-binding';
 
 import {Field, Float64, List, Schema, Struct} from 'apache-arrow';
-import {publicationSchema} from '../runtime/output';
+import {outputSchema} from '../runtime/output';
 import {fatal} from '../base/print';
-import {encodeSchema} from '../runtime/io';
-import {fieldOf} from './schema';
-import {paramSpecsOf} from './params';
+import {fieldOf, schemaSource} from './schema';
+import ts from 'typescript';
+import {parametersOf} from './params';
 import {frameTopologyOf, type FrameTopology} from '../ir/frames';
 import {
   DepthKind,
@@ -49,28 +49,22 @@ import {
   walkIrExpr,
 } from '../ir/visit';
 import {isHistoryOffset, RUNTIME_ABI_VERSION} from '../runtime/module-abi';
-import type {
-  BuiltinSpec,
-  DepthSpec,
-  FrameLayout,
-  RequestSpec,
-  SeriesSpec,
-} from '../runtime/module-abi';
+import type {Builtin, Depth, FrameLayout, Request} from '../runtime/module-abi';
 import type {Scalar} from '../runtime/value';
-import type {LayoutId, ValueLayout} from '../runtime/value-layout';
+import type {StorageType} from '../runtime/storage-types';
 import {
-  HELPERS,
   captureArguments,
+  coerce,
+  property,
   indent,
   lowerExpr,
   lowerStmts,
-  type HelperName,
   type LowerCtx,
 } from './lower';
 
 /**
- * Lower one checked Program to a deterministic ES2015 function body. The
- * artifact contains Arrow IPC schemas and state requirements, but no stream,
+ * Lower one checked Program to a deterministic TypeScript module. The
+ * artifact contains Arrow constructors and state requirements, but no stream,
  * parameter assignment, or mutable execution state. Load it before binding.
  *
  * @example
@@ -90,37 +84,240 @@ import {
  */
 export function generate(program: Program): string {
   const emitter = new ModuleEmitter(program.nominalIds);
-  const rootBody = new Generator(program, 'M', emitter).moduleBody();
-  const out: string[] = ['"use strict";'];
-  for (const name of [...emitter.usedHelpers].sort()) {
-    out.push(`const ${name} = ${HELPERS[name]};`);
-  }
-  // Request children are sibling consts in dependency order (a nested
-  // child's const precedes its parent's), referenced from the requests
-  // entries — code is referenced beside its JSON request metadata.
-  out.push(
-    `const L = ${json(emitter.layouts satisfies readonly ValueLayout[])};`,
+  const root = new Generator(program, 'program', emitter).moduleBody();
+  const body = [
+    ...emitter.types.values(),
+    `const layouts = ${json(emitter.layouts)} as const;`,
+    ...emitter.factories.values(),
+    ...emitter.childDecls,
+    ...root,
+    'export default program;',
+    '',
+  ].join('\n');
+  const values = [
+    'Module',
+    'Value',
+    'int',
+    'float',
+    'bool',
+    'text',
+    'color',
+    'enumeration',
+    'struct',
+    'array',
+    'matrix',
+    'map',
+    'tuple',
+    'math',
+    'colors',
+    'str',
+    'na',
+    'nz',
+    'historyDepth',
+    'rangeNext',
+    'contextValue',
+    'Schema',
+    'Field',
+    'Float64',
+    'Bool',
+    'Utf8',
+    'List',
+    'Struct',
+    'Map_',
+    'TimestampMillisecond',
+  ];
+  const types = [
+    'Context',
+    'Frame',
+    'Input',
+    'Series',
+    'Ref',
+    'ArrayValue',
+    'MatrixValue',
+    'MapValue',
+    'ResourceHandle',
+  ];
+  const used = (name: string) => new RegExp(`\\b${name}\\b`).test(body);
+  const imports = [
+    ...values.filter(used),
+    ...types.filter(used).map(name => `type ${name}`),
+  ];
+  const source = ts.createSourceFile(
+    'generated.ts',
+    `import {${imports.join(', ')}} from "tea/runtime";\n${body}`,
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TS,
   );
-  out.push(...emitter.childDecls);
-  out.push('const M = {');
-  out.push(...indent(rootBody));
-  out.push('};');
-  out.push('return M;');
-  return `${out.join('\n')}\n`;
+  return ts
+    .createPrinter(
+      {newLine: ts.NewLineKind.LineFeed},
+      {
+        substituteNode: (_, node) =>
+          ts.isStringLiteral(node) &&
+          node.parent !== undefined &&
+          (ts.isPropertyAssignment(node.parent) ||
+            ts.isPropertySignature(node.parent)) &&
+          node.parent.name === node &&
+          /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(node.text)
+            ? ts.factory.createIdentifier(node.text)
+            : node,
+      },
+    )
+    .printFile(source);
 }
 
-// Shared across the module tree: helper usage, child-module declarations,
-// and the M1/M2… ref counter (depth-first, deterministic).
 class ModuleEmitter {
-  readonly usedHelpers = new Set<HelperName>();
   readonly childDecls: string[] = [];
-  readonly layouts: ValueLayout[] = [];
+  readonly layouts: StorageType[] = [];
+  readonly types = new Map<Type, string>();
+  readonly factories = new Map<number, string>();
   private readonly layoutTypes: Type[] = [];
   private childCounter = 0;
 
   constructor(private readonly nominalIds: ReadonlyMap<Type, string>) {}
 
-  layoutOf(type: Type): LayoutId {
+  kindOf(type: Type): string {
+    return type.kind === TypeKind.Enum || type.kind === TypeKind.Struct
+      ? (this.nominalIds.get(type) ?? type.name)
+      : [
+            TypeKind.Line,
+            TypeKind.Label,
+            TypeKind.Box,
+            TypeKind.Table,
+            TypeKind.Polyline,
+            TypeKind.Linefill,
+          ].some(kind => kind === type.kind)
+        ? type.kind
+        : type.kind.toLowerCase();
+  }
+
+  typeOf(type: Type, owner = 'Value'): string {
+    if (type.kind === TypeKind.Void) return 'void';
+    return `${owner}<${this.rawType(type)}, ${json(this.kindOf(type))}>`;
+  }
+
+  private rawType(type: Type): string {
+    switch (type.kind) {
+      case TypeKind.Int:
+      case TypeKind.Float:
+        return 'number';
+      case TypeKind.Bool:
+        return 'boolean';
+      case TypeKind.String:
+      case TypeKind.Color:
+        return 'string | null';
+      case TypeKind.Enum:
+        return `${type.members.map(member => json(member.name)).join(' | ')} | null`;
+      case TypeKind.Struct: {
+        const name = `${identifier(type.name)}Shape${this.layoutOf(type)}`;
+        if (!this.types.has(type)) {
+          this.types.set(type, '');
+          this.types.set(
+            type,
+            `type ${name} = {${type.fields.map(field => `readonly ${json(field.name)}: ${this.typeOf(field.type)}`).join('; ')}};`,
+          );
+        }
+        return `Ref<${name}> | null`;
+      }
+      case TypeKind.Array:
+        return `ArrayValue<${this.typeOf(type.elem)}> | null`;
+      case TypeKind.Matrix:
+        return `MatrixValue<${this.typeOf(type.elem)}> | null`;
+      case TypeKind.Map:
+        return `MapValue<${this.typeOf(type.key)}, ${this.typeOf(type.value)}> | null`;
+      case TypeKind.Tuple:
+        return `readonly [${type.elems.map(type => this.typeOf(type)).join(', ')}] | null`;
+      case TypeKind.Line:
+      case TypeKind.Label:
+      case TypeKind.Box:
+      case TypeKind.Table:
+      case TypeKind.Polyline:
+      case TypeKind.Linefill:
+        return 'ResourceHandle | null';
+      case TypeKind.Plot:
+      case TypeKind.Hline:
+        return 'number';
+      default:
+        return fatal(
+          `non-runtime type ${type.kind} reached TypeScript projection`,
+        );
+    }
+  }
+
+  valueOf(type: Type, raw: string): string {
+    switch (type.kind) {
+      case TypeKind.Int:
+        return `int(${raw})`;
+      case TypeKind.Float:
+        return `float(${raw})`;
+      case TypeKind.Bool:
+        return `bool(${raw})`;
+      case TypeKind.String:
+        return `text(${raw})`;
+      case TypeKind.Color:
+        return `color(${raw})`;
+      case TypeKind.Enum:
+        return `enumeration<${type.members.map(member => json(member.name)).join(' | ')}, ${json(this.kindOf(type))}>(${raw} as ${this.rawType(type)}, ${json(this.kindOf(type))})`;
+      case TypeKind.Plot:
+      case TypeKind.Hline:
+        return `int(${raw})`;
+      default:
+        return `new ${this.typeOf(type)}(${raw}, ${json(this.kindOf(type))})`;
+    }
+  }
+
+  emptyOf(type: Type): string {
+    switch (type.kind) {
+      case TypeKind.Void:
+        return 'undefined';
+      case TypeKind.Int:
+      case TypeKind.Float:
+        return this.valueOf(type, 'NaN');
+      case TypeKind.Bool:
+        return 'bool(false)';
+      case TypeKind.Struct:
+      case TypeKind.Array:
+      case TypeKind.Matrix:
+      case TypeKind.Map:
+      case TypeKind.Tuple:
+        return `${this.factoryOf(type)}.empty(ctx)`;
+      default:
+        return this.valueOf(type, 'null');
+    }
+  }
+
+  factoryOf(type: Type): string {
+    const id = this.layoutOf(type);
+    const name = `${type.kind === TypeKind.Struct ? identifier(type.name) : type.kind}Type${id}`;
+    if (!this.factories.has(id)) {
+      let expression: string;
+      switch (type.kind) {
+        case TypeKind.Struct:
+          this.rawType(type);
+          expression = `struct<${identifier(type.name)}Shape${id}, ${json(this.kindOf(type))}>(${id}, ${json(this.kindOf(type))})`;
+          break;
+        case TypeKind.Array:
+          expression = `array<${this.typeOf(type.elem)}>(${id})`;
+          break;
+        case TypeKind.Matrix:
+          expression = `matrix<${this.typeOf(type.elem)}>(${id})`;
+          break;
+        case TypeKind.Map:
+          expression = `map<${this.typeOf(type.key)}, ${this.typeOf(type.value)}>(${id})`;
+          break;
+        case TypeKind.Tuple:
+          expression = `tuple<readonly [${type.elems.map(type => this.typeOf(type)).join(', ')}]>(${id})`;
+          break;
+        default:
+          return fatal(`no aggregate factory for ${type.kind}`);
+      }
+      this.factories.set(id, `const ${name} = ${expression};`);
+    }
+    return name;
+  }
+
+  layoutOf(type: Type): number {
     const existing = this.layoutTypes.findIndex(candidate =>
       typesEqual(candidate, type),
     );
@@ -137,7 +334,7 @@ class ModuleEmitter {
     return id;
   }
 
-  private buildLayout(type: Type): ValueLayout {
+  private buildLayout(type: Type): StorageType {
     switch (type.kind) {
       case TypeKind.Int:
       case TypeKind.Float:
@@ -213,11 +410,11 @@ class ModuleEmitter {
     parent: Generator,
   ): {ref: string; resultSlot: number} {
     this.childCounter += 1;
-    const ref = `M${this.childCounter}`;
+    const ref = `request${this.childCounter}`;
     const generator = new Generator(child, ref, this, parent);
     const body = generator.moduleBody();
     const resultSlot = generator.programFrameSlot(resultName);
-    this.childDecls.push(`const ${ref} = {`, ...indent(body), '};');
+    this.childDecls.push(...body);
     return {ref, resultSlot};
   }
 }
@@ -230,7 +427,6 @@ class Generator {
   private readonly requests: readonly RequestEdge[];
   private readonly globalParams: readonly ParamInput[];
   private readonly root: boolean;
-  private readonly nameSlots = new Map<Name, {fid: number; slot: number}>();
   private readonly seriesIds = new Map<SeriesInput, number>();
   private readonly builtinIds = new Map<BuiltinInput, number>();
   private readonly paramIds = new Map<ParamInput, number>();
@@ -238,6 +434,9 @@ class Generator {
   private readonly outputIds = new Map<OutputDecl | EffectDecl, number>();
   private readonly funcIds = new Map<IrFunc, number>();
   private readonly requestIds = new Map<RequestEdge, number>();
+  private readonly localKeys = new Map<Name, string>();
+  private readonly callKeys = new Map<string, string>();
+  private readonly seriesKeys = new Map<SeriesInput | ParamInput, string>();
   private tempCounter = 0;
 
   constructor(
@@ -249,6 +448,19 @@ class Generator {
     this.globalParams = parent?.globalParams ?? program.params;
     this.root = parent === null;
     this.topology = frameTopologyOf(program);
+    for (const frame of this.topology.frames) {
+      const locals = new Set<string>();
+      frame.locals.forEach(name =>
+        this.localKeys.set(name, unique(name.name, locals)),
+      );
+      const calls = new Set<string>();
+      frame.children.forEach(child =>
+        this.callKeys.set(
+          `${frame.id}:${child.slot}`,
+          unique(child.callee.name, calls),
+        ),
+      );
+    }
     this.funcs = this.topology.frames.flatMap(frame =>
       frame.owner === null ? [] : [frame.owner],
     );
@@ -262,7 +474,11 @@ class Generator {
       this.requestIds.set(edge, rid);
     });
 
-    this.series.forEach((s, sid) => this.seriesIds.set(s, sid));
+    const inputNames = new Set<string>();
+    this.series.forEach((s, sid) => {
+      this.seriesIds.set(s, sid);
+      this.seriesKeys.set(s, unique(s.id, inputNames));
+    });
     this.builtins.forEach((builtin, bid) => this.builtinIds.set(builtin, bid));
     let nextSid = this.series.length;
     // Parameters are compilation-global. A request child inherits the root's
@@ -274,12 +490,14 @@ class Generator {
       }
       for (const [param, sid] of parent.paramSeriesIds) {
         this.paramSeriesIds.set(param, sid);
+        this.seriesKeys.set(param, parent.seriesKeys.get(param)!);
       }
     }
     program.params.forEach((param, pid) => {
       this.paramIds.set(param, pid);
       if (param.defaultValue?.kind === ParamDefaultKind.Series) {
         this.paramSeriesIds.set(param, nextSid);
+        this.seriesKeys.set(param, unique(param.name, inputNames));
         nextSid += 1;
       }
     });
@@ -290,9 +508,6 @@ class Generator {
     this.topology.frameByFunc.forEach((frame, func) => {
       this.funcIds.set(func, frame.id);
     });
-    this.topology.nameLocations.forEach((where, name) => {
-      this.nameSlots.set(name, {fid: where.frameId, slot: where.slot});
-    });
   }
 
   private ctxFor(
@@ -300,7 +515,7 @@ class Generator {
     directNames: ReadonlyMap<Name, string> = new Map(),
   ): LowerCtx {
     return {
-      nameSlots: this.nameSlots,
+      nameLocations: this.topology.nameLocations,
       directNames,
       seriesIds: this.seriesIds,
       builtinIds: this.builtinIds,
@@ -309,7 +524,6 @@ class Generator {
       outputIds: this.outputIds,
       funcIds: this.funcIds,
       requestIds: this.requestIds,
-      moduleRef: this.moduleRef,
       layoutOf: type => this.emitter.layoutOf(type),
       currentFid: fid,
       noteCallSite: (siteFid, slot, callee) => {
@@ -323,9 +537,16 @@ class Generator {
           );
         }
       },
-      useHelper: name => {
-        this.emitter.usedHelpers.add(name);
-      },
+      typeOf: type => this.emitter.typeOf(type),
+      valueOf: (type, raw) => this.emitter.valueOf(type, raw),
+      emptyOf: type => this.emitter.emptyOf(type),
+      factoryOf: type => this.emitter.factoryOf(type),
+      localKey: name => this.localKeys.get(name) ?? fatal('unmapped local'),
+      callKey: (frame, slot) =>
+        this.callKeys.get(`${frame}:${slot}`) ?? fatal('unmapped call'),
+      functionRef: func => this.functionRef(func),
+      seriesKey: series =>
+        this.seriesKeys.get(series) ?? fatal('unmapped source'),
       fresh: () => `t${this.tempCounter++}`,
     };
   }
@@ -333,15 +554,15 @@ class Generator {
   // The slot of a name in THIS module's program frame \u2014 how a parent learns
   // its child's result slot.
   programFrameSlot(name: Name): number {
-    const where = this.nameSlots.get(name);
-    if (where === undefined || where.fid !== 0) {
+    const where = this.topology.nameLocations.get(name);
+    if (where === undefined || where.frameId !== 0) {
       return fatal(`'${name.name}' is not a program-frame name`);
     }
     return where.slot;
   }
 
   // The module object's body lines (between the braces). Every node is a
-  // complete JSModule; the request tree shares the one emitted layout table.
+  // complete Module; the request tree shares the one emitted layout table.
   moduleBody(): string[] {
     // Frame ownership and call sites already come from frameTopologyOf().
     // Lower code first to collect its helpers and physical value layouts,
@@ -356,28 +577,91 @@ class Generator {
     );
     const data = this.moduleFields(children);
 
-    const out: string[] = [];
-    out.push(`abi: ${RUNTIME_ABI_VERSION},`);
-    out.push(`inputs: ${json(data.inputs)},`);
-    out.push(`parameters: ${json(data.parameters)},`);
-    out.push(`state: {layout: L, frames: ${json(data.frames)}},`);
-    out.push(`outputs: ${json(data.outputs)},`);
+    const context = this.contextName();
+    const out = this.declarations();
+    for (const lines of funcBodies.values()) out.push(...lines);
     out.push(
-      `requests: [${data.requests
-        .map(
-          (request, id) =>
-            `${json(request).slice(0, -1)}, "module": ${children[id].ref}}`,
-        )
-        .join(', ')}],`,
+      `function ${this.moduleRef}_main(ctx: ${context}): void {`,
+      ...indent(mainLines),
+      '}',
     );
-    out.push('bind(module, contextConstants) {', ...indent(bindLines), '},');
-    out.push('funcs: {');
-    for (const [fid, lines] of funcBodies) {
-      out.push(`  ${fid}: ${lines[0]}`);
-      out.push(...indent(lines.slice(1)));
-    }
-    out.push('},');
-    out.push('main(ctx, fr) {', ...indent(mainLines), '},');
+    out.push(
+      `const ${this.moduleRef}: Module<${context}> = new Module<${context}>({`,
+    );
+    out.push(`  abi: ${RUNTIME_ABI_VERSION},`);
+    out.push(
+      `  inputs: {\n    schema: ${schemaSource(data.inputs.schema)},\n    series: ${json(data.inputs.series)},\n    builtins: ${json(data.inputs.builtins)},\n  },`,
+    );
+    out.push(`  parameters: ${json(data.parameters)},`);
+    out.push(
+      `  state: {\n    layout: layouts,\n    frames: ${json(data.frames)},\n  },`,
+    );
+    out.push(
+      `  outputs: {\n    schema: ${schemaSource(data.outputs.schema)},\n    declarations: ${json(data.outputs.declarations)},\n  },`,
+    );
+    out.push(
+      `  requests: [${data.requests.map((request, id) => `${json(request).slice(0, -1)}, "module": ${children[id].ref}}`).join(', ')}],`,
+    );
+    out.push(
+      `}, ${this.moduleRef}_main, (module, contextConstants) => {`,
+      ...indent(bindLines),
+      '});',
+    );
+    return out;
+  }
+
+  private contextName(): string {
+    return this.root ? 'ProgramContext' : `${title(this.moduleRef)}Context`;
+  }
+
+  private frameName(fid: number): string {
+    const frame = this.topology.frames[fid];
+    return `${title(this.moduleRef)}${frame.owner === null ? 'State' : `${title(frame.owner.name)}State${fid}`}`;
+  }
+
+  private functionRef(func: IrFunc): string {
+    return `${this.moduleRef}_${identifier(func.name)}${this.funcIds.get(func)}`;
+  }
+
+  private declarations(): string[] {
+    const out = this.topology.frames.map(
+      frame =>
+        `type ${this.frameName(frame.id)} = Frame<{${frame.locals.map(name => `readonly ${json(this.localKeys.get(name))}: ${this.emitter.typeOf(name.type, 'Series')}`).join('; ')}}, {${frame.children.map(child => `readonly ${json(this.callKeys.get(`${frame.id}:${child.slot}`))}: ${this.frameName(child.frameId)}`).join('; ')}}>;`,
+    );
+    const params = this.globalParams.map(
+      param =>
+        `readonly ${json(param.name)}: ${param.defaultValue?.kind === ParamDefaultKind.Series ? `Value<string | null, "string">` : this.emitter.typeOf(param.type)}`,
+    );
+    const series = this.series.map(
+      input =>
+        `readonly ${json(this.seriesKeys.get(input))}: ${this.emitter.typeOf(input.type, 'Input')}`,
+    );
+    if (this.root)
+      for (const [param] of this.paramSeriesIds)
+        series.push(
+          `readonly ${json(this.seriesKeys.get(param))}: ${this.emitter.typeOf(param.type, 'Input')}`,
+        );
+    const builtins = this.builtins.map(
+      input =>
+        `readonly ${json(`${input.source.domain}.${input.source.field}`)}: ${this.emitter.typeOf(input.type, 'Input')}`,
+    );
+    const children = this.requests.map(
+      request =>
+        `readonly ${json(request.name)}: ${this.emitter.typeOf(request.resultType, 'Input')}`,
+    );
+    const outputs = [
+      ...this.program.outputs.map(
+        (output, id) =>
+          `readonly output${id}: {set(value: {${output.channels.map(channel => `readonly ${json(channel.name)}: ${this.emitter.typeOf(channel.type)}`).join('; ')}}): void}`,
+      ),
+      ...this.program.effects.map(
+        (effect, id) =>
+          `readonly effect${id}: {append(value: ${this.emitter.typeOf(effect.payloadType)}): void}`,
+      ),
+    ];
+    out.push(
+      `export type ${this.contextName()} = Context<{${params.join('; ')}}, {readonly series: {${series.join('; ')}}; readonly builtins: {${builtins.join('; ')}}; readonly children: {${children.join('; ')}}}, ${this.frameName(0)}, {${outputs.join('; ')}}>;`,
+    );
     return out;
   }
 
@@ -395,9 +679,9 @@ class Generator {
     const dependencies = this.bindingDependencies(roots);
     const rootNames = new Map<Name, string>();
     for (const name of dependencies.names) {
-      const where = this.nameSlots.get(name);
+      const where = this.topology.nameLocations.get(name);
       if (
-        where?.fid === 0 &&
+        where?.frameId === 0 &&
         name.storage === Storage.PerBar &&
         qualifierLE(name.qualifier, Qualifier.Simple)
       ) {
@@ -419,8 +703,8 @@ class Generator {
 
     const resets: string[] = [];
     const lines: string[] = [];
-    for (const local of rootNames.values()) {
-      lines.push(`let ${local};`);
+    for (const [name, local] of rootNames) {
+      lines.push(`let ${local}!: ${this.emitter.typeOf(name.type)};`);
     }
     for (const func of funcs) {
       lines.push(...this.lowerBindFunc(func, rootNames, funcRefs));
@@ -441,14 +725,13 @@ class Generator {
     lowerStmts(prelude, lines, ctx);
 
     const writeDepth = (target: string, depth: HistoryDepth): void => {
-      if (depth.kind !== DepthKind.Bound || depthSpec(depth).kind !== 'bound') {
+      if (depth.kind !== DepthKind.Bound || depthOf(depth).kind !== 'bound') {
         return;
       }
       resets.push(`${target} = {kind: "bound"};`);
       const expr = lowerExpr(depth.expr, lines, ctx);
-      this.emitter.usedHelpers.add('$historyDepth');
       lines.push(
-        `${target} = {kind: "const", bars: $historyDepth((${expr}))};`,
+        `${target} = {kind: "const", bars: historyDepth(${expr}).value};`,
       );
     };
     this.series.forEach((series, sid) =>
@@ -465,9 +748,9 @@ class Generator {
     this.requests.forEach((request, rid) =>
       writeDepth(`module.requests[${rid}].depth`, request.depth),
     );
-    for (const [name, where] of this.nameSlots) {
+    for (const [name, where] of this.topology.nameLocations) {
       writeDepth(
-        `module.state.frames[${where.fid}].locals[${where.slot}].depth`,
+        `module.state.frames[${where.frameId}].locals[${where.slot}].depth`,
         name.depth,
       );
     }
@@ -479,7 +762,7 @@ class Generator {
         if (pid === undefined) return fatal(`unmapped param '${param.name}'`);
         resets.push(`module.parameters[${pid}].active = null;`);
         const active = lowerExpr(param.active, lines, ctx);
-        lines.push(`module.parameters[${pid}].active = (${active});`);
+        lines.push(`module.parameters[${pid}].active = (${active}).value;`);
       });
     }
     this.program.outputs.forEach((output, oid) => {
@@ -507,7 +790,7 @@ class Generator {
         ),
         ...output.bindArgs.map(
           (arg, index) =>
-            `{name: ${JSON.stringify(arg.name)}, value: (${args[index]})}`,
+            `{name: ${JSON.stringify(arg.name)}, value: (${args[index]}).value}`,
         ),
       ];
       lines.push(
@@ -559,7 +842,7 @@ class Generator {
         'request context',
       );
       lines.push(
-        `module.requests[${rid}].context = {symbol: (${symbol}), timeframe: (${timeframe}), availability: (${availability}), fill: (${fill}), ignoreInvalidSymbol: (${ignoreInvalidSymbol}), calcBarsCount: (${calcBarsCount})};`,
+        `module.requests[${rid}].context = {symbol: (${symbol}).value!, timeframe: (${timeframe}).value!, availability: (${availability}).value as "start" | "end", fill: (${fill}).value as "carry" | "sparse", ignoreInvalidSymbol: (${ignoreInvalidSymbol}).value, calcBarsCount: (${calcBarsCount}).value};`,
       );
     });
     const missing = this.globalParams.map(
@@ -575,7 +858,7 @@ class Generator {
   private bindingExpressions(): IrExpr[] {
     const expressions: IrExpr[] = [];
     const noteDepth = (depth: HistoryDepth): void => {
-      if (depth.kind === DepthKind.Bound && depthSpec(depth).kind === 'bound') {
+      if (depth.kind === DepthKind.Bound && depthOf(depth).kind === 'bound') {
         expressions.push(depth.expr);
       }
     };
@@ -584,7 +867,7 @@ class Generator {
     if (this.root) {
       for (const [param] of this.paramSeriesIds) noteDepth(param.depth);
     }
-    for (const [name] of this.nameSlots) noteDepth(name.depth);
+    for (const [name] of this.topology.nameLocations) noteDepth(name.depth);
     if (this.root) {
       this.program.params.forEach(param => {
         if (staticBool(param.active) === null) expressions.push(param.active);
@@ -674,7 +957,7 @@ class Generator {
     }
     const receiver = func.callMode === 'free' ? [] : [func.receiver];
     const parameters = [...receiver, ...func.params];
-    const parameterNames = parameters.map((_, index) => `p${index}`);
+    const parameterNames = argumentNames(parameters);
     const directNames = new Map(rootNames);
     parameters.forEach((param, index) =>
       directNames.set(param, parameterNames[index]),
@@ -687,7 +970,7 @@ class Generator {
       }
       const local = `b${fid}_${slot}`;
       directNames.set(name, local);
-      declarations.push(`let ${local};`);
+      declarations.push(`let ${local}!: ${this.emitter.typeOf(name.type)};`);
     });
     const ctx = {
       ...this.ctxFor(fid, directNames),
@@ -697,9 +980,13 @@ class Generator {
     const body: string[] = [];
     const value = lowerExpr(func.body, body, ctx);
     return [
-      `const ${ref} = (${parameterNames.join(', ')}) => {`,
-      ...indent([...declarations, ...body, `return (${value});`]),
-      '};',
+      `function ${ref}(${parameterNames.map((name, i) => `${name}: ${this.emitter.typeOf(parameters[i].type)}`).join(', ')}): ${this.emitter.typeOf(func.resultType)} {`,
+      ...indent([
+        ...declarations,
+        ...body,
+        `return (${coerce(value, func.body.type, func.resultType)});`,
+      ]),
+      '}',
     ];
   }
 
@@ -714,7 +1001,7 @@ class Generator {
       // Program.params remains source-visible explicit parameters only.
       const receiver = func.callMode === 'free' ? [] : [func.receiver];
       const parameters = [...receiver, ...func.params];
-      const params = parameters.map((_, i) => `p${i}`);
+      const params = argumentNames(parameters);
       const directNames = new Map<Name, string>();
       parameters.forEach((param, index) => {
         if (
@@ -726,24 +1013,28 @@ class Generator {
       });
       const ctx = this.ctxFor(fid, directNames);
       const lines: string[] = [
-        `(ctx, fr${params.map(p => `, ${p}`).join('')}) => {`,
+        `function ${this.functionRef(func)}(ctx: ${this.contextName()}, frame: ${this.frameName(fid)}${params.map((p, i) => `, ${p}: ${this.emitter.typeOf(parameters[i].type)}`).join('')}): ${this.emitter.typeOf(func.resultType)} {`,
       ];
       // Arguments land in the frame so param history works like any name.
       parameters.forEach((param, i) => {
         if (directNames.has(param)) {
           return;
         }
-        const where = this.nameSlots.get(param);
+        const where = this.topology.nameLocations.get(param);
         if (where === undefined) {
           return fatal(`unmapped param '${param.name}'`);
         }
-        lines.push(`  ctx.write(fr, ${where.slot}, p${i});`);
+        lines.push(
+          `  ${property('frame.locals', this.localKeys.get(param)!)}.set(${params[i]});`,
+        );
       });
       const bodyLines: string[] = [];
       const value = lowerExpr(func.body, bodyLines, ctx);
       lines.push(...indent(bodyLines));
-      lines.push(`  return (${value});`);
-      lines.push('},');
+      lines.push(
+        `  return (${coerce(value, func.body.type, func.resultType)});`,
+      );
+      lines.push('}');
       bodies.set(fid, lines);
     });
     return bodies;
@@ -753,35 +1044,43 @@ class Generator {
 
   /**
    * Describe inputs, parameters, state templates, and outputs independently of
-   * any host binding. Arrow schemas are IPC bytes here; loading restores their
-   * classes before callers inspect or prepare the module.
+   * any host binding. Arrow schemas are constructed from the existing projection
+   * and printed as readable standard constructors in the artifact.
    *
    * @example `plot(close[3])` declares `close` and depth 3 under `inputs`,
    * plus one plot declaration under `outputs`; it allocates no live history.
    */
   private moduleFields(children: readonly {readonly resultSlot: number}[]) {
-    const series: SeriesSpec[] = this.series.map(s => ({
+    const series: Module['inputs']['series'][number][] = this.series.map(s => ({
       id: s.id,
-      depth: depthSpec(s.depth),
+      name: this.seriesKeys.get(s)!,
+      depth: depthOf(s.depth),
     }));
     if (this.root) {
       for (const [param] of this.paramSeriesIds) {
-        series.push({id: null, depth: depthSpec(param.depth)});
+        series.push({
+          id: null,
+          name: this.seriesKeys.get(param)!,
+          depth: depthOf(param.depth),
+        });
       }
     }
 
-    const builtins: BuiltinSpec[] = this.builtins.map(input => ({
+    const builtins: Builtin[] = this.builtins.map(input => ({
       source: input.source,
       constant: qualifierLE(input.qualifier, Qualifier.Simple),
       layout: this.emitter.layoutOf(input.type),
-      depth: depthSpec(input.depth),
+      depth: depthOf(input.depth),
     }));
 
-    const parameters = paramSpecsOf(this.globalParams).map((spec, pid) => {
+    const parameters = parametersOf(
+      this.globalParams,
+      this.program.nominalIds,
+    ).map((parameter, pid) => {
       const param = this.globalParams[pid];
       if (param === undefined) return fatal(`missing global parameter ${pid}`);
       return {
-        ...spec,
+        ...parameter,
         seriesSid: this.root ? (this.paramSeriesIds.get(param) ?? null) : null,
         active: this.root ? staticBool(param.active) : true,
       };
@@ -851,7 +1150,7 @@ class Generator {
         frame.children.length === 0
           ? 0
           : Math.max(...frame.children.map(child => child.slot)) + 1;
-      const subs: {fid: number}[] = [];
+      const subs: {fid: number; name: string}[] = [];
       for (let slot = 0; slot < slotCount; slot += 1) {
         const child = frame.children.find(candidate => candidate.slot === slot);
         if (child === undefined) {
@@ -859,12 +1158,16 @@ class Generator {
             `frame ${frame.id} call-site slot ${slot} is not a frame`,
           );
         }
-        subs.push({fid: child.frameId});
+        subs.push({
+          fid: child.frameId,
+          name: this.callKeys.get(`${frame.id}:${slot}`)!,
+        });
       }
       return {
         locals: frame.locals.map(name => ({
+          name: this.localKeys.get(name)!,
           storage: name.storage,
-          depth: depthSpec(name.depth),
+          depth: depthOf(name.depth),
           layout: this.emitter.layoutOf(name.type),
         })),
         subs,
@@ -875,7 +1178,7 @@ class Generator {
       return {
         name: edge.name,
         mode: edge.merge.mode,
-        depth: depthSpec(edge.depth),
+        depth: depthOf(edge.depth),
         resultSlot: children[rid].resultSlot,
         resultLayout: this.emitter.layoutOf(edge.captureType),
         layout: this.emitter.layoutOf(edge.resultType),
@@ -883,34 +1186,32 @@ class Generator {
       };
     });
 
-    const schema = encodeSchema(
-      new Schema(
-        [
-          ...new Set(
-            series
-              .map(input => input.id)
-              .filter((id): id is string => id !== null),
-          ),
-        ].map(name => fieldOf(name, FloatType, this.program.nominalIds)),
-      ),
+    const schema = new Schema(
+      [
+        ...new Set(
+          series
+            .map(input => input.id)
+            .filter((id): id is string => id !== null),
+        ),
+      ].map(name => fieldOf(name, FloatType, this.program.nominalIds)),
     );
     return {
       inputs: {schema, series, builtins},
       parameters,
       frames: state,
-      outputs: {schema: encodeSchema(publicationSchema(fields)), declarations},
+      outputs: {schema: outputSchema(fields), declarations},
       requests,
     };
   }
 }
 
 function json(value: unknown): string {
-  return JSON.stringify(value)
+  return JSON.stringify(value, null, 2)
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
 }
 
-function depthSpec(depth: HistoryDepth): DepthSpec {
+function depthOf(depth: HistoryDepth): Depth {
   switch (depth.kind) {
     case DepthKind.None:
       return {kind: 'none'};
@@ -968,7 +1269,7 @@ function staticOutputArgs(
 
 function staticRequestContext(
   edge: RequestEdge,
-): NonNullable<RequestSpec['context']> | null {
+): NonNullable<Request['context']> | null {
   const expressions = [
     edge.merge.availability,
     edge.merge.fill,
@@ -1030,4 +1331,31 @@ function constValue(v: ConstValue): Scalar {
     return fatal('non-finite constant reached module construction');
   }
   return v;
+}
+
+function identifier(name: string): string {
+  const safe = name.replace(/[^A-Za-z0-9_$]/g, '_');
+  return /^[A-Za-z_$]/.test(safe) ? safe : `_${safe}`;
+}
+
+function unique(name: string, used: Set<string>): string {
+  let candidate = name;
+  for (let index = 1; used.has(candidate); index += 1)
+    candidate = `${name}_${index}`;
+  used.add(candidate);
+  return candidate;
+}
+
+function title(name: string): string {
+  const value = identifier(name);
+  return value[0].toUpperCase() + value.slice(1);
+}
+
+function argumentNames(parameters: readonly Name[]): string[] {
+  const used = new Set(
+    'ctx frame this super return function const let var new class for while switch if else break continue import export default await yield delete void typeof in instanceof true false null'.split(
+      ' ',
+    ),
+  );
+  return parameters.map(parameter => unique(identifier(parameter.name), used));
 }

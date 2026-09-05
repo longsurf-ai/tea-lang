@@ -5,3 +5,5 @@ export * from './source';
 export * from './sink';
 export * from './sync';
 export {BindError} from '../runtime/errors';
+
+export {createNode} from './node';

@@ -6,13 +6,19 @@ import {
   ParamDefaultKind,
   type ParamInput,
 } from '../ir/program';
-import {isNaValue, TypeKind, type ConstValue} from '../ir/type';
-import type {ParamSpec} from '../runtime/schema';
+import {isNaValue, TypeKind, type ConstValue, type Type} from '../ir/type';
+import type {Parameter} from '../runtime/params';
 import type {Scalar} from '../runtime/value';
 
-export function paramSpecsOf(
+/**
+ * Preserve parameter constraints and enum identity in either backend.
+ * @example `parametersOf(program.params, program.nominalIds)[0].defaultValue`
+ * reads the checked default without binding a run.
+ */
+export function parametersOf(
   params: readonly ParamInput[],
-): readonly ParamSpec[] {
+  nominalIds: ReadonlyMap<Type, string>,
+): readonly Parameter[] {
   return params.map(param => ({
     name: param.name,
     title: param.title,
@@ -29,6 +35,9 @@ export function paramSpecsOf(
       param.type.kind === TypeKind.Enum
         ? {
             name: param.type.name,
+            ...(nominalIds.has(param.type)
+              ? {typeId: nominalIds.get(param.type)}
+              : {}),
             members: param.type.members.map(member => ({...member})),
           }
         : null,
@@ -36,7 +45,7 @@ export function paramSpecsOf(
   }));
 }
 
-function paramType(param: ParamInput): ParamSpec['type'] {
+function paramType(param: ParamInput): Parameter['type'] {
   if (param.defaultValue?.kind === ParamDefaultKind.Series) return 'source';
   switch (param.type.kind) {
     case TypeKind.Int:
@@ -56,7 +65,7 @@ function paramType(param: ParamInput): ParamSpec['type'] {
   }
 }
 
-function paramDefault(param: ParamInput): ParamSpec['defaultValue'] {
+function paramDefault(param: ParamInput): Parameter['defaultValue'] {
   if (param.defaultValue === null) return null;
   if (param.defaultValue.kind === ParamDefaultKind.Series) {
     return param.defaultValue.series.id;
@@ -83,7 +92,7 @@ function numericOrNull(value: ConstValue | null): number | null {
       );
 }
 
-function paramConstraints(param: ParamInput): ParamSpec['constraints'] {
+function paramConstraints(param: ParamInput): Parameter['constraints'] {
   const constraints = param.constraints;
   if (constraints === null) return null;
   switch (constraints.kind) {

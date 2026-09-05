@@ -4,7 +4,9 @@ sidebarTitle: Runtime
 ---
 
 Tea has one Program, one public CPU graph, and one target-specific GPU session.
-The public Node/Recipe path is the only CPU orchestration path.
+The public Node/Recipe path owns CPU stream orchestration. The standalone
+`tea/runtime` library also runs typed programs directly when a host already owns
+synchronized steps. It imports neither the Tea frontend nor the Node API.
 
 ## Architecture
 
@@ -13,8 +15,8 @@ Tea source
     │ compileToProgram()
     ▼
  Program
-    ├─ generate JS ─▶ Node.bind(DataStream) ─▶ Batch Recipe ─▶ Datum observer
-    └─ lower WGSL ─▶ createGpuExecution(GpuBinding[]) ─▶ Datum sink
+    ├─ generate TypeScript ─▶ tea/runtime ─▶ Node ─▶ Datum observer
+    └─ lower WGSL ─▶ createGpuExecution(GpuBinding[]) ─▶ Datum callback
 ```
 
 Applications own data acquisition. CSV files, WebSockets, arrays, databases,
@@ -24,12 +26,12 @@ numeric arrays.
 
 ## Public Node execution
 
-`tea` creates one mutable Node owning one recursive `JSModule` tree.
+`tea` creates one mutable Node owning one recursive `Module` tree.
 Node owns:
 
 - the RxJS input graph;
 - one child Node per static request;
-- one `JSRuntime` per Node context;
+- one typed `Context` per Node;
 - synchronization and copied request buffers;
 - committed index progression;
 - Pine contextual builtin delivery;
@@ -54,7 +56,7 @@ node.bind(prices);
 node.to(observer);
 ```
 
-Each synchronized input produces one synchronous `JSRuntime.step()`. A thrown
+Each synchronized input produces one synchronous `Context.step()`. A thrown
 observer `next()` callback fails the shared graph and reaches every observer
 through `error()`.
 
@@ -115,7 +117,7 @@ typed empty value. Contextual builtins never become another `Node.bind()` form.
 
 ## Compiled modules and binding
 
-Runtime ABI 10 exposes one compiled module with mutable configuration. There is
+Runtime ABI 11 exposes one `Module<Context>` with mutable configuration. There is
 no public manifest or separate preparation operation:
 
 ```text
@@ -132,11 +134,13 @@ module
     declarations       prepared arguments and runtime snapshot descriptors
   requests[]           each context/policy beside its child module
   bind                 the one parameter-binding operation
-  main / funcs         generated execution code
+  main                 ordinary typed entry function
+  clone                an independent configuration using the same code
 ```
 
-`loadModule()` restores Arrow schemas from standard IPC bytes and captures the
-generated binding calculations privately. `module.bind()` validates a named patch,
+`loadModule()` transpiles the generated TypeScript and constructs its `Module`.
+The module constructor copies the ordinary Arrow schemas and keeps the binding
+calculation function private. `module.bind()` validates a named patch,
 preserves existing values, fills usable defaults only for still-unset parameters,
 and recomputes dependent depths, output arguments and request contexts. It updates
 the existing module and returns that same object. Request-child module identities
@@ -187,28 +191,136 @@ Errors in supplied values or calculated request policies fail binding immediatel
 request tree. Configuration closes when execution starts: further `bind()` calls
 fail. The runtime captures the configuration and Arrow metadata needed by that
 execution once, so changing a caller-held metadata Map cannot change a running
-program. Separate executions need independent modules; `cloneModule()` provides
-that explicit copy when an internal caller needs to reuse compiled code.
+program. Use `module.clone()` to configure an independent run while reusing the
+compiled functions. The clone starts with the same parameter values; its next
+`bind()` patch changes only that clone.
 
-## JSRuntime state and transactions
+## Typed programs and captured values
 
-`JSRuntime` owns one committed State, one same-index Intermediate, and one Heap.
+The compiler emits ordinary TypeScript importing `tea/runtime`. Each program
+supplies the four exact type arguments to `Context`: parameters, inputs, root
+state and outputs. Functions are lexical TypeScript functions; written call sites
+have named state under `frame.calls`.
+
+These library types have separate responsibilities:
+
+| Type                                      | Responsibility                                                                    |
+| ----------------------------------------- | --------------------------------------------------------------------------------- |
+| `Value<T, K>`                             | Captured value and Tea arithmetic; `K` preserves numeric kind or nominal identity |
+| `Input<T, K>`                             | Read-only history through `.hist(offset)`                                         |
+| `Series<T, K>`                            | One state binding, adding staged `.set()` and lazy `.init()`                      |
+| `Frame<Locals, Calls>`                    | Named local series and independent written call sites                             |
+| `Context<Params, Inputs, State, Outputs>` | One execution's values, storage and transaction lifecycle                         |
+| `Module<Context>`                         | Schemas, storage requirements, binding calculations and `main()`                  |
+
+A read captures the value before later assignments:
+
+```ts
+const before = ctx.state.locals.total.hist(0);
+ctx.state.locals.total.set(before.add(float(1)));
+// before still contains the previous number.
+```
+
+Arithmetic creates temporary values without history buffers. `int(7).div(int(2))`
+contains 3; `int(7).div(float(2))` contains 3.5. Division by zero and numeric overflow
+produce numeric NA. Boolean control flow remains ordinary TypeScript control flow,
+so a skipped branch does not evaluate its operands.
+
+Passing a captured value to a function preserves Tea value semantics. A parameter
+that reads its own history is copied into a local Series belonging to that written
+call site. It does not borrow the caller's history. A history-free parameter stays
+an ordinary TypeScript local:
+
+```ts
+import {float, type Frame, type Series, type Value} from 'tea/runtime';
+
+type Sum = Frame<{total: Series<number, 'float'>}>;
+
+function accumulate(frame: Sum, value: Value<number, 'float'>) {
+  const total = frame.locals.total;
+  total.init(() => float(0));
+  total.set(total.hist(0).add(value));
+  return total.hist(0);
+}
+```
+
+The calls `accumulate(ctx.state.calls.close, close)` and
+`accumulate(ctx.state.calls.open, open)` use separate `total` bindings. Their state
+survives steps. Repeated execution of one written call inside a loop reuses that
+call's state.
+
+Struct captures keep their managed reference identity. Reading a field captures
+its current value. A write captures and validates its receiver before evaluating
+the right-hand side:
+
+```ts
+const field = point.require().field('x');
+const replacement = calculate();
+field.set(replacement);
+```
+
+`point.field('x').get()` on an NA struct returns the field's typed empty; `require()`
+rejects an NA write before `calculate()` runs. Array, matrix and map mutators return
+`{replacement, result}`. The caller stores that replacement in its Series or field;
+a previously captured collection still has its old immutable header.
+
+## Builds and handwritten TypeScript
+
+`tea build indicator.tea -o indicator.ts` checks the emitted TypeScript before
+writing it. The generated module contains its exact Context types, readable Arrow
+schema constructors, storage requirements, binding calculations and ordinary functions.
+Execution JavaScript comes from transpiling that same source; there is no second
+semantic emitter. Tagged `tea` templates use synchronous transpilation without
+running the TypeScript checker on each template construction. Build and CI checks
+cover emitted positive and negative typing cases.
+
+The `examples/api/typed-runtime.ts` example shows a complete handwritten Module with parameter-bound history and two independent
+accumulators. Run it from a checkout with:
+
+```sh
+npm run build:package
+node examples/api/typed-runtime.ts
+```
+
+Its rows are derived from `close = 10, 20, 30` and `open = 1, 2, 3`:
+
+| Index | Close sum | Open sum | Previous close (`lag = 1`) |
+| ----- | --------: | -------: | -------------------------: |
+| 0     |        10 |        1 |                        NaN |
+| 1     |        30 |        3 |                         10 |
+| 2     |        60 |        6 |                         20 |
+
+The example uses `createNode(program.bind(...))`, `DataStream` and `.to(observer)`;
+it adds no host loop. Handwritten code declares its retention and schemas explicitly.
+TypeScript does not infer history requirements from a function body. Request-bearing
+programs still use Node's child synchronization described in [Requests](requests.md).
+Handwritten TypeScript is a CPU entry path; WGSL continues to consume the Tea Program.
+
+## Context and transactions
+
+`Context` owns committed state, same-index values, and one Heap.
 The module's frame and history depths determine fixed runtime arrays directly.
 No workspace preflight, state-storage lease, or duplicated fixed-byte budget is
 needed.
 
 One step is transactional:
 
-1. read committed State and current Intermediate;
-2. evaluate generated code against tentative frame and Heap changes;
-3. snapshot outputs and effects;
-4. commit State and Heap together on success;
-5. discard every tentative change on failure.
+1. read committed history and same-index values;
+2. call `main(context)` against tentative frame and Heap changes;
+3. capture output values at each `.set()` or `.append()`;
+4. validate and commit after `main()` returns normally;
+5. abort state, Heap changes and buffered outputs if execution throws.
 
-Provisional success replaces Intermediate and commits its Heap transaction; it does
-not advance committed binding/input history. Final success replaces State and
-Intermediate. A failed step changes neither and aborts the Heap transaction. Detailed assignment, reference, collection, and history
-semantics live in [Memory model](memory-model.md).
+The wrapper owns the transaction, so an early return from `main()` is a successful
+step. Its `using` scope aborts any uncommitted Heap transaction on exit. Functions
+called by `main()` participate in the same step; they do not commit independently.
+`step()` returns a `StepResult` directly and throws on failure.
+
+Provisional success replaces same-index values and commits its Heap transaction;
+it does not advance committed binding/input history. Final success advances
+history too. A failed step changes neither. Public Node remains final-only;
+direct `Context.step()` preserves the runtime provisional, `var` and `varip`
+semantics described in [Memory model](memory-model.md).
 
 Heap allocation safeguards remain internal implementation checks. They are not
 execution inputs or user configuration.
@@ -339,7 +451,8 @@ type GpuBinding = Readonly<{
   indices: number;
   series: Readonly<Record<string, readonly number[]>>;
   time?: readonly (number | null)[];
-  sink: OutputSink;
+  declare?(outputs: Module['outputs']): void;
+  next(datum: Datum): void;
 }>;
 ```
 
@@ -365,7 +478,7 @@ failure is an operational error, not a configurable policy.
 
 `runChunk()` advances device-resident state; `runAll()` repeats it until every
 binding completes. Decoding validates the entire current chunk before its first
-Datum is published. A decode or sink failure makes the session terminal.
+Datum is delivered. A decode or callback failure makes the session terminal.
 `dispose()` releases only session-created GPU resources; the injected device
 remains application-owned.
 

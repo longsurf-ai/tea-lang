@@ -117,10 +117,58 @@ describe('aggregate layout projection', () => {
     const module = loadModule(source);
 
     expect(module.abi).toBe(RUNTIME_ABI_VERSION);
+    // Factory setup may discover a descriptor before its enclosing struct.
+    // Compare the complete graph in root-first order, preserving distinct ids.
+    const order: number[] = [];
+    const visit = (id: number): void => {
+      if (order.includes(id)) return;
+      order.push(id);
+      const layout = module.state.layout[id];
+      if (layout.kind === 'struct')
+        layout.fields.forEach(field => visit(field.layout));
+      else if (layout.kind === 'array') visit(layout.element);
+      else if (layout.kind === 'matrix') visit(layout.element);
+      else if (layout.kind === 'map') {
+        visit(layout.key);
+        visit(layout.value);
+      }
+    };
+    const rootLayout = module.state.frames[0].locals[0].layout;
+    visit(rootLayout);
+    const layouts = order.map(id => {
+      const layout = module.state.layout[id];
+      switch (layout.kind) {
+        case 'struct':
+          return {
+            ...layout,
+            fields: layout.fields.map(field => ({
+              ...field,
+              layout: order.indexOf(field.layout),
+            })),
+          };
+        case 'array':
+        case 'matrix':
+          return {...layout, element: order.indexOf(layout.element)};
+        case 'map':
+          return {
+            ...layout,
+            key: order.indexOf(layout.key),
+            value: order.indexOf(layout.value),
+          };
+        default:
+          return layout;
+      }
+    });
+    expect(order).toHaveLength(module.state.layout.length);
     expect(module.state.frames[0].locals).toEqual([
-      {storage: Storage.PerBar, depth: {kind: 'none'}, layout: 0},
+      {
+        name: 'root',
+        storage: Storage.PerBar,
+        depth: {kind: 'none'},
+        layout: rootLayout,
+      },
     ]);
-    expect(module.state.layout).toEqual([
+    expect(layouts).toEqual([
       {
         kind: 'struct',
         name: 'Envelope',

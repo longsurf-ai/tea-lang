@@ -1,4 +1,4 @@
-// Purpose: CLI-only parse, inspection, and JavaScript artifact commands.
+// Purpose: CLI-only parse, inspection, and TypeScript artifact commands.
 
 import {readFileSync, writeFileSync} from 'node:fs';
 import {newFileBase} from '../base/pos';
@@ -16,9 +16,9 @@ export function buildCommand(file: string, out?: string): CliResult {
     return {ok: false, kind: 'diagnostics', errors: result.errors};
   }
   if (out === undefined) {
-    console.log(result.js);
+    console.log(result.source);
   } else {
-    writeFileSync(out, result.js);
+    writeFileSync(out, result.source);
   }
   return {ok: true};
 }

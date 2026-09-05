@@ -404,7 +404,7 @@ class Noder {
     visit(program.requests);
   }
 
-  // Module binding runs without RuntimeContext, frame state, or
+  // Module binding runs without execution Context, frame state, or
   // Heap storage. Reject expressions that would require those owners before a
   // valid Program reaches target lowering.
   private checkBindingSupport(program: Program): void {

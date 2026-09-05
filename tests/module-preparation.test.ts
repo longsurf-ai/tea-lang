@@ -1,3 +1,4 @@
+import type {Module} from '../src/runtime/module-binding';
 // Purpose: Mutable binding and explicit independent runs; TEA_STRESS=1 expands sizes.
 
 import assert from 'node:assert/strict';
@@ -9,11 +10,9 @@ import {IrKind, PlaceKind} from '../src/ir/node';
 import type {Program} from '../src/ir/program';
 import {mustBuild} from '../src/noder/testing';
 import {loadModule} from '../src/runtime/load';
-import {cloneModule, initializeModule} from '../src/runtime/module-binding';
-import type {JSModule} from '../src/runtime/module-abi';
+
 import {outputFields} from '../src/runtime/output';
 
-type Raw = Parameters<typeof initializeModule>[0];
 const stress = process.env.TEA_STRESS === '1';
 const source = [
   'length = input.int(2, minval=0)',
@@ -23,33 +22,30 @@ const source = [
   'hline(float(length))',
 ].join('\n');
 
-function tree(module: JSModule): JSModule[] {
+function tree(module: Module): Module[] {
   return [module, ...module.requests.flatMap(request => tree(request.module))];
 }
 
-// Count actual generated calculations before the loader hides them behind bind.
-function counted(raw: Raw, calls: number[]): Raw {
-  const index = calls.push(0) - 1;
-  return {
-    ...raw,
-    requests: raw.requests.map(request => ({
-      ...request,
-      module: counted(request.module, calls),
-    })),
-    bind(module, context) {
-      calls[index] += 1;
-      raw.bind(module, context);
-    },
-  };
+// Observe generated calculations through the test's loaded Module instances.
+function instrument(program: Program, calls: number[]): Module {
+  const module = loadModule(generate(program));
+  for (const current of tree(module)) {
+    const index = calls.push(0) - 1;
+    const calculate = Object.getOwnPropertyDescriptor(
+      current,
+      'calculate',
+    )!.value;
+    Object.defineProperty(current, 'calculate', {
+      value(...args: unknown[]) {
+        calls[index] += 1;
+        calculate(...args);
+      },
+    });
+  }
+  return module;
 }
 
-function instrument(program: Program, calls: number[]): JSModule {
-  return initializeModule(
-    counted(new Function(generate(program))() as Raw, calls),
-  );
-}
-
-function same(left: JSModule, right: JSModule): void {
+function same(left: Module, right: Module): void {
   assert.deepStrictEqual(left.inputs, right.inputs);
   assert.deepStrictEqual(left.parameters, right.parameters);
   assert.deepStrictEqual(left.state, right.state);
@@ -152,13 +148,13 @@ test('independent copies bind history, activity and display values without leaks
   const count = stress ? 1_000 : 24;
   const calls: number[] = [];
   const original = instrument(mustBuild(source), calls);
-  let prior: JSModule | undefined;
+  let prior: Module | undefined;
   for (let index = 0; index < count; index += 1) {
     const length = index % 16;
     const enabled = index % 2 === 0;
     const weight = (index % 4) + 1;
     calls.fill(0);
-    const prepared = cloneModule(original).bind({length, enabled, weight});
+    const prepared = original.clone().bind({length, enabled, weight});
     assert.deepStrictEqual(calls, [1]);
     assert.equal(prepared.ready(), true);
     assert.deepStrictEqual(prepared.inputs.series[0].depth, {
@@ -213,13 +209,13 @@ test('wide requests calculate each module once and independent binding orders ag
     ),
     calls,
   );
-  const prepared = cloneModule(module).bind({length: 7, symbol: 'NASDAQ:XYZ'});
+  const prepared = module.clone().bind({length: 7, symbol: 'NASDAQ:XYZ'});
   assert.deepStrictEqual(calls, Array(width + 1).fill(1));
   const forward = tree(
-    cloneModule(module).bind({length: 7}).bind({symbol: 'NASDAQ:XYZ'}),
+    module.clone().bind({length: 7}).bind({symbol: 'NASDAQ:XYZ'}),
   );
   const backward = tree(
-    cloneModule(module).bind({symbol: 'NASDAQ:XYZ'}).bind({length: 7}),
+    module.clone().bind({symbol: 'NASDAQ:XYZ'}).bind({length: 7}),
   );
   for (const [index, current] of tree(prepared).entries()) {
     same(current, forward[index]);
@@ -264,10 +260,10 @@ test('deep artifacts retain global parameters, child requirements and schema own
   const calls: number[] = [];
   const module = instrument(program, calls);
   assert.equal(generate(program), generate(program));
-  const prepared = cloneModule(module).bind({length: 5, symbol: 'DEEP'});
+  const prepared = module.clone().bind({length: 5, symbol: 'DEEP'});
   assert.deepStrictEqual(calls, Array(depth + 1).fill(1));
   const reversed = tree(
-    cloneModule(module).bind({symbol: 'DEEP'}).bind({length: 5}),
+    module.clone().bind({symbol: 'DEEP'}).bind({length: 5}),
   );
   const modules = tree(prepared);
   assert.equal(modules.length, depth + 1);
@@ -286,7 +282,8 @@ test('deep artifacts retain global parameters, child requirements and schema own
   const leaf = modules.at(-1)!;
   assert.deepStrictEqual(leaf.inputs.series[0].depth, {kind: 'const', bars: 5});
   assert.equal(leaf.inputs.schema.fields[0].name, 'close');
-  cloneModule(leaf)
+  leaf
+    .clone()
     .bind()
     .inputs.schema.fields[0].metadata.set('test:external', 'changed');
   assert.equal(

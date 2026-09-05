@@ -1,7 +1,7 @@
 // Purpose: Parse source-declared parameter flags for one CLI Batch Recipe.
 
 import {OperationalError} from '../base/operational-error';
-import type {ParamSpec} from '../runtime/schema';
+import type {Parameter} from '../runtime/params';
 
 export type CliParameterValue = number | string | boolean;
 
@@ -14,14 +14,14 @@ export class CliParameterError extends OperationalError {
 
 /**
  * Decode only the supplied CLI flags into a parameter patch. Usable defaults,
- * ranges, enum membership, and color normalization belong to JSModule.bind().
+ * ranges, enum membership, and color normalization belong to Module.bind().
  * Unknown/reserved names, duplicate flags, and unsafe scalar syntax fail here.
  *
  * @example With an integer length declaration, `parseRunParameters(specs,
  * ['--length', '20'])` returns `{length: 20}`; no flags returns `{}`.
  */
 export function parseRunParameters(
-  specs: readonly ParamSpec[],
+  specs: readonly Parameter[],
   tokens: readonly string[],
   reservedNames: ReadonlySet<string> = new Set(),
 ): Readonly<Record<string, CliParameterValue>> {
@@ -86,7 +86,7 @@ function splitFlag(token: string): {
   return {name, value};
 }
 
-function coerceScalar(spec: ParamSpec, raw: string): CliParameterValue {
+function coerceScalar(spec: Parameter, raw: string): CliParameterValue {
   switch (spec.type) {
     case 'int': {
       if (!/^[+-]?\d+$/.test(raw)) {

@@ -1,4 +1,4 @@
-// Purpose: ABI value-layout registry — validates shallow runtime carriers, owns typed empties, and walks values to their Heap storage roots.
+// Purpose: Physical storage types — validates shallow runtime carriers, owns typed empties, and walks values to their Heap storage roots.
 
 import {fatal} from '../base/print';
 import {
@@ -9,16 +9,13 @@ import {
   isStructRef,
   isTupleValue,
   ValueClass,
-  type Value,
+  type Stored,
   type ValueClass as ValueClassType,
 } from './value';
 import {ExecutionError} from './errors';
 import type {Ref} from './js/heap';
 
-export type LayoutId = number;
-export type StructLayoutId = LayoutId;
-
-export type ValueLayout =
+export type StorageType =
   | {readonly kind: 'number'; readonly numeric: 'int' | 'float'}
   | {readonly kind: 'boolean'}
   | {
@@ -42,17 +39,17 @@ export type ValueLayout =
       readonly typeId?: string;
       readonly fields: readonly {
         readonly name: string;
-        readonly layout: LayoutId;
+        readonly layout: number;
       }[];
     }
-  | {readonly kind: 'array'; readonly element: LayoutId}
-  | {readonly kind: 'matrix'; readonly element: LayoutId}
+  | {readonly kind: 'array'; readonly element: number}
+  | {readonly kind: 'matrix'; readonly element: number}
   | {
       readonly kind: 'map';
-      readonly key: LayoutId;
-      readonly value: LayoutId;
+      readonly key: number;
+      readonly value: number;
     }
-  | {readonly kind: 'tuple'; readonly elements: readonly LayoutId[]};
+  | {readonly kind: 'tuple'; readonly elements: readonly number[]};
 
 function layoutId(id: number, length: number, where: string): void {
   if (!Number.isSafeInteger(id) || id < 0 || id >= length) {
@@ -60,7 +57,7 @@ function layoutId(id: number, length: number, where: string): void {
   }
 }
 
-function sealLayout(layout: ValueLayout): ValueLayout {
+function sealLayout(layout: StorageType): StorageType {
   switch (layout.kind) {
     case 'number':
       return Object.freeze({kind: 'number', numeric: layout.numeric});
@@ -106,11 +103,11 @@ function sealLayout(layout: ValueLayout): ValueLayout {
   }
 }
 
-export class ValueLayoutRegistry {
-  private readonly layouts: readonly ValueLayout[];
-  private readonly shallowByteCache = new Map<LayoutId, number>();
+export class StorageTypes {
+  private readonly layouts: readonly StorageType[];
+  private readonly shallowByteCache = new Map<number, number>();
 
-  constructor(layouts: readonly ValueLayout[]) {
+  constructor(layouts: readonly StorageType[]) {
     if (!Array.isArray(layouts)) {
       fatal('invalid value layout table');
     }
@@ -124,7 +121,7 @@ export class ValueLayoutRegistry {
     return this.layouts.length;
   }
 
-  layout(id: LayoutId): ValueLayout {
+  layout(id: number): StorageType {
     const layout = this.layouts[id];
     if (layout === undefined || !Number.isSafeInteger(id) || id < 0) {
       return fatal(`unknown runtime value layout ${id}`);
@@ -132,15 +129,15 @@ export class ValueLayoutRegistry {
     return layout;
   }
 
-  empty(id: LayoutId): Value {
+  empty(id: number): Stored {
     return emptyValue(this.layout(id));
   }
 
-  valueClass(id: LayoutId): ValueClassType {
+  valueClass(id: number): ValueClassType {
     return valueClassOfLayout(this.layout(id));
   }
 
-  assertValue(id: LayoutId, value: Value, where = 'runtime value'): void {
+  assertValue(id: number, value: Stored, where = 'runtime value'): void {
     const layout = this.layout(id);
     if (value === null) {
       if (layout.kind !== 'number' && layout.kind !== 'boolean') {
@@ -236,8 +233,8 @@ export class ValueLayoutRegistry {
   }
 
   visitRefs(
-    id: LayoutId,
-    value: Value,
+    id: number,
+    value: Stored,
     visit: (ref: Ref<unknown>) => void,
   ): void {
     this.assertValue(id, value);
@@ -290,7 +287,7 @@ export class ValueLayoutRegistry {
     }
   }
 
-  shallowBytes(id: LayoutId): number {
+  shallowBytes(id: number): number {
     const cached = this.shallowByteCache.get(id);
     if (cached !== undefined) {
       return cached;
@@ -380,9 +377,9 @@ export class ValueLayoutRegistry {
 
   private rejectInlineLayoutCycles(): void {
     const layouts = this.layouts;
-    const complete = new Set<LayoutId>();
-    const active = new Set<LayoutId>();
-    const visit = (id: LayoutId): void => {
+    const complete = new Set<number>();
+    const active = new Set<number>();
+    const visit = (id: number): void => {
       if (complete.has(id)) {
         return;
       }
@@ -410,7 +407,7 @@ export class ValueLayoutRegistry {
   }
 }
 
-export function emptyValue(layout: ValueLayout): Value {
+export function emptyValue(layout: StorageType): Stored {
   switch (layout.kind) {
     case 'number':
       return NaN;
@@ -428,7 +425,7 @@ export function emptyValue(layout: ValueLayout): Value {
   }
 }
 
-export function valueClassOfLayout(layout: ValueLayout): ValueClassType {
+export function valueClassOfLayout(layout: StorageType): ValueClassType {
   switch (layout.kind) {
     case 'number':
       return ValueClass.Numeric;
@@ -447,7 +444,7 @@ export function valueClassOfLayout(layout: ValueLayout): ValueClassType {
 }
 
 export function visitRuntimeValueRefs(
-  value: Value,
+  value: Stored,
   visit: (ref: Ref<unknown>) => void,
 ): void {
   if (value === null || typeof value !== 'object') {

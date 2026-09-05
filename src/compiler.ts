@@ -3,15 +3,16 @@
 import {log} from './base/log';
 import {Errors, type ErrorMsg} from './base/print';
 import {generate} from './codegen/codegen';
+import {checkGenerated} from './codegen/check';
 import type {Program} from './ir/program';
 import {checkPackage} from './checker/check';
 import {loadPackage, resolveImports, type SourceInput} from './loader/loader';
 import {buildProgram} from './noder/noder';
 
-// Compilation either emits JavaScript or fails with the flushed, ordered
+// Compilation either emits TypeScript or fails with the flushed, ordered
 // error batch — never both, never a partial emit.
 export type CompileResult =
-  | {readonly ok: true; readonly js: string}
+  | {readonly ok: true; readonly source: string}
   | {readonly ok: false; readonly errors: readonly ErrorMsg[]};
 
 // Compiler performance events, one per phase (TEA_LOG=debug shows them).
@@ -52,7 +53,8 @@ export function compile(filenames: readonly string[]): CompileResult {
     return {ok: false, errors: errors.flushErrors()};
   }
   const generateDone = perf.startTimer('generate');
-  const js = generate(program);
-  generateDone({bytes: js.length});
-  return {ok: true, js};
+  const source = generate(program);
+  generateDone({bytes: source.length});
+  checkGenerated(source);
+  return {ok: true, source};
 }

@@ -2,17 +2,16 @@ import {Field, Struct} from 'apache-arrow';
 // Purpose: Ownership, provisional/final, rollback, and GC-safe-point coverage
 // for the state-owning JavaScript runtime.
 
-import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../../ir/node';
-import {JSRuntime, type StepInput, type StepResult} from './runtime';
+import {Context, type StepInput, type StepResult} from './context';
 
-import {RUNTIME_ABI_VERSION, type JSModule} from '../module-abi';
-import {cloneModule} from '../module-binding';
+import {RUNTIME_ABI_VERSION} from '../module-abi';
+import {Module} from '../module-binding';
 import {testModule, scalar, output} from '../testing';
-import {publicationSchema} from '../output';
-import type {Value} from '../value';
-import type {ValueLayout} from '../value-layout';
+import {outputSchema} from '../output';
+import type {Stored} from '../value';
+import type {StorageType} from '../storage-types';
 
 const NUMBER = 0;
 const ARRAY = 1;
@@ -35,15 +34,14 @@ const LAYOUTS = [
     fields: [{name: 'counter', layout: COUNTER}],
   },
   {kind: 'boolean'},
-] as const satisfies readonly ValueLayout[];
+] as const satisfies readonly StorageType[];
 
 function input(value: number, provisional: boolean): StepInput {
   return {series: [value], builtins: [], requests: [], provisional};
 }
 
-const PROVISIONAL_MODULE: JSModule = testModule({
+const PROVISIONAL_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
-  funcs: {},
   main(ctx, root) {
     if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
     if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, 0);
@@ -67,17 +65,16 @@ const PROVISIONAL_MODULE: JSModule = testModule({
     ],
   },
   outputs: {
-    schema: publicationSchema([
+    schema: outputSchema([
       output('output0', [scalar('var', 'int'), scalar('varip', 'int')]),
     ]),
   },
   requests: [],
 });
 
-function structModule(shouldFail: () => boolean): JSModule {
+function structModule(shouldFail: () => boolean): Module {
   return testModule({
     abi: RUNTIME_ABI_VERSION,
-    funcs: {},
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
         ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
@@ -102,16 +99,15 @@ function structModule(shouldFail: () => boolean): JSModule {
       ],
     },
     outputs: {
-      schema: publicationSchema([output('output0', [scalar('value', 'int')])]),
+      schema: outputSchema([output('output0', [scalar('value', 'int')])]),
     },
     requests: [],
   });
 }
 
-function structEffectModule(shouldFail: () => boolean): JSModule {
+function structEffectModule(shouldFail: () => boolean): Module {
   return testModule({
     abi: RUNTIME_ABI_VERSION,
-    funcs: {},
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
         ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
@@ -138,7 +134,7 @@ function structEffectModule(shouldFail: () => boolean): JSModule {
       ],
     },
     outputs: {
-      schema: publicationSchema([
+      schema: outputSchema([
         output(
           'effect0',
           [
@@ -172,9 +168,8 @@ function structEffectModule(shouldFail: () => boolean): JSModule {
   });
 }
 
-const WRONG_NOMINAL_MODULE: JSModule = testModule({
+const WRONG_NOMINAL_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
-  funcs: {},
   main(ctx, root) {
     if (ctx.needsInit(root, 0)) {
       ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
@@ -193,13 +188,12 @@ const WRONG_NOMINAL_MODULE: JSModule = testModule({
       },
     ],
   },
-  outputs: {schema: publicationSchema([])},
+  outputs: {schema: outputSchema([])},
   requests: [],
 });
 
-const GC_MODULE: JSModule = testModule({
+const GC_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
-  funcs: {},
   main(ctx, root) {
     const close = ctx.series(0, 0);
     ctx.write(root, 0, ctx.callCollection('array.from', ARRAY, [close]));
@@ -229,14 +223,13 @@ const GC_MODULE: JSModule = testModule({
     ],
   },
   outputs: {
-    schema: publicationSchema([output('output0', [scalar('old-size', 'int')])]),
+    schema: outputSchema([output('output0', [scalar('old-size', 'int')])]),
   },
   requests: [],
 });
 
-const COLLECT_CHILD_MODULE: JSModule = testModule({
+const COLLECT_CHILD_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
-  funcs: {},
   main(ctx, root) {
     ctx.write(root, 0, 0);
   },
@@ -253,13 +246,12 @@ const COLLECT_CHILD_MODULE: JSModule = testModule({
       },
     ],
   },
-  outputs: {schema: publicationSchema([])},
+  outputs: {schema: outputSchema([])},
   requests: [],
 });
 
-const COLLECT_REQUEST_MODULE: JSModule = testModule({
+const COLLECT_REQUEST_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
-  funcs: {},
   main(ctx) {
     const current = ctx.request(0, 0);
     const prior = ctx.request(0, 1);
@@ -291,7 +283,7 @@ const COLLECT_REQUEST_MODULE: JSModule = testModule({
   parameters: [],
   state: {layout: LAYOUTS, frames: [{locals: [], subs: []}]},
   outputs: {
-    schema: publicationSchema([
+    schema: outputSchema([
       output('output0', [
         scalar('size', 'int'),
         scalar('empty', 'bool'),
@@ -323,7 +315,7 @@ const COLLECT_REQUEST_MODULE: JSModule = testModule({
   ],
 });
 
-function collectInput(values: Value, provisional = false): StepInput {
+function collectInput(values: Stored, provisional = false): StepInput {
   return {series: [], builtins: [], requests: [values], provisional};
 }
 
@@ -333,71 +325,51 @@ function channels(result: StepResult) {
     : Object.values(result.outputs[0] as Record<string, unknown>);
 }
 
-describe('JSRuntime', () => {
+describe('Context', () => {
   test('owns State and Intermediate across provisional and final steps', () => {
-    const runtime = new JSRuntime(cloneModule(PROVISIONAL_MODULE).bind());
+    const runtime = new Context(PROVISIONAL_MODULE.clone().bind());
 
-    expect(channels(Effect.runSync(runtime.step(input(10, true))))).toEqual([
-      10, 1,
-    ]);
-    expect(channels(Effect.runSync(runtime.step(input(11, true))))).toEqual([
-      11, 2,
-    ]);
-    expect(channels(Effect.runSync(runtime.step(input(12, false))))).toEqual([
-      12, 3,
-    ]);
-    expect(channels(Effect.runSync(runtime.step(input(5, false))))).toEqual([
-      17, 4,
-    ]);
+    expect(channels(runtime.step(input(10, true)))).toEqual([10, 1]);
+    expect(channels(runtime.step(input(11, true)))).toEqual([11, 2]);
+    expect(channels(runtime.step(input(12, false)))).toEqual([12, 3]);
+    expect(channels(runtime.step(input(5, false)))).toEqual([17, 4]);
 
     runtime.dispose();
-    expect(() => Effect.runSync(runtime.step(input(1, false)))).toThrow(
-      'state-machine runtime is disposed',
-    );
+    expect(() => runtime.step(input(1, false))).toThrow('Context is disposed');
   });
 
   test('does not advance owned state or Heap writes after a failed step', () => {
     let fail = false;
-    const runtime = new JSRuntime(structModule(() => fail).bind());
+    const runtime = new Context(structModule(() => fail).bind());
 
-    expect(channels(Effect.runSync(runtime.step(input(0, false))))).toEqual([
-      1,
-    ]);
+    expect(channels(runtime.step(input(0, false)))).toEqual([1]);
     fail = true;
-    expect(() => Effect.runSync(runtime.step(input(0, false)))).toThrow(
-      'step failed',
-    );
+    expect(() => runtime.step(input(0, false))).toThrow('step failed');
     fail = false;
-    expect(channels(Effect.runSync(runtime.step(input(0, false))))).toEqual([
-      2,
-    ]);
+    expect(channels(runtime.step(input(0, false)))).toEqual([2]);
     runtime.dispose();
   });
 
   test('snapshots nested struct effects at emit time and drops failed emissions', () => {
     let fail = true;
-    const runtime = new JSRuntime(structEffectModule(() => fail).bind());
+    const runtime = new Context(structEffectModule(() => fail).bind());
 
     expect(() =>
-      Effect.runSync(
-        runtime.step({
-          series: [],
-          builtins: [],
-          requests: [],
-          provisional: false,
-        }),
-      ),
-    ).toThrow('effect step failed');
-
-    fail = false;
-    const result = Effect.runSync(
       runtime.step({
         series: [],
         builtins: [],
         requests: [],
         provisional: false,
       }),
-    );
+    ).toThrow('effect step failed');
+
+    fail = false;
+    const result = runtime.step({
+      series: [],
+      builtins: [],
+      requests: [],
+      provisional: false,
+    });
     expect(result.outputs[0]).toEqual([
       {
         ordinal: 0,
@@ -408,35 +380,33 @@ describe('JSRuntime', () => {
   });
 
   test('rejects nominally wrong struct values at State initialization', () => {
-    const runtime = new JSRuntime(cloneModule(WRONG_NOMINAL_MODULE).bind());
+    const runtime = new Context(WRONG_NOMINAL_MODULE.clone().bind());
     expect(() =>
-      Effect.runSync(
-        runtime.step({
-          series: [],
-          builtins: [],
-          requests: [],
-          provisional: false,
-        }),
-      ),
+      runtime.step({
+        series: [],
+        builtins: [],
+        requests: [],
+        provisional: false,
+      }),
     ).toThrow("references 'Counter', expected 'Envelope'");
     runtime.dispose();
   });
 
   test('accepts input NaN but fails closed when a read sees infinity', () => {
-    const runtime = new JSRuntime(cloneModule(PROVISIONAL_MODULE).bind());
-    const na = Effect.runSync(runtime.step(input(NaN, false)));
+    const runtime = new Context(PROVISIONAL_MODULE.clone().bind());
+    const na = runtime.step(input(NaN, false));
     expect(
       Number.isNaN((na.outputs[0] as Record<string, unknown>).var as number),
     ).toBe(true);
-    expect(() => Effect.runSync(runtime.step(input(Infinity, false)))).toThrow(
+    expect(() => runtime.step(input(Infinity, false))).toThrow(
       'input series 0 returned a non-finite value',
     );
     runtime.dispose();
   });
 
   test('preserves multi-channel output and numeric na', () => {
-    const runtime = new JSRuntime(cloneModule(PROVISIONAL_MODULE).bind());
-    const result = Effect.runSync(runtime.step(input(NaN, false)));
+    const runtime = new Context(PROVISIONAL_MODULE.clone().bind());
+    const result = runtime.step(input(NaN, false));
 
     expect(result.outputs).toEqual([{var: Number.NaN, varip: 1}]);
     runtime.dispose();
@@ -445,46 +415,41 @@ describe('JSRuntime', () => {
   test('preserves a missing conditional output as no emission', () => {
     const module = testModule({
       abi: RUNTIME_ABI_VERSION,
-      funcs: {},
       main() {},
       inputs: {series: [], builtins: []},
       parameters: [],
       state: {layout: LAYOUTS, frames: [{locals: [], subs: []}]},
       outputs: {
-        schema: publicationSchema([
-          output('output0', [scalar('value', 'int')]),
-        ]),
+        schema: outputSchema([output('output0', [scalar('value', 'int')])]),
       },
       requests: [],
     });
-    const runtime = new JSRuntime(module);
-    const result = Effect.runSync(
-      runtime.step({
-        series: [],
-        builtins: [],
-        requests: [],
-        provisional: false,
-      }),
-    );
+    const runtime = new Context(module);
+    const result = runtime.step({
+      series: [],
+      builtins: [],
+      requests: [],
+      provisional: false,
+    });
 
     expect(result.outputs).toEqual([null]);
     runtime.dispose();
   });
 
   test('collects from retained owner state rather than a provisional candidate', () => {
-    const runtime = new JSRuntime(cloneModule(GC_MODULE).bind());
+    const runtime = new Context(GC_MODULE.clone().bind());
 
-    Effect.runSync(runtime.step(input(1, false)));
-    Effect.runSync(runtime.step(input(2, false)));
-    expect(channels(Effect.runSync(runtime.step(input(3, true))))).toEqual([1]);
-    expect(channels(Effect.runSync(runtime.step(input(4, true))))).toEqual([1]);
+    runtime.step(input(1, false));
+    runtime.step(input(2, false));
+    expect(channels(runtime.step(input(3, true)))).toEqual([1]);
+    expect(channels(runtime.step(input(4, true)))).toEqual([1]);
     runtime.dispose();
   });
 
   test('materializes empty, single, and multiple request batches as Tea arrays with history', () => {
-    const runtime = new JSRuntime(cloneModule(COLLECT_REQUEST_MODULE).bind());
+    const runtime = new Context(COLLECT_REQUEST_MODULE.clone().bind());
 
-    expect(channels(Effect.runSync(runtime.step(collectInput([]))))).toEqual([
+    expect(channels(runtime.step(collectInput([])))).toEqual([
       0,
       true,
       -1,
@@ -492,7 +457,7 @@ describe('JSRuntime', () => {
       -1,
       -1,
     ]);
-    expect(channels(Effect.runSync(runtime.step(collectInput([7]))))).toEqual([
+    expect(channels(runtime.step(collectInput([7])))).toEqual([
       1,
       false,
       7,
@@ -500,23 +465,28 @@ describe('JSRuntime', () => {
       0,
       -1,
     ]);
-    expect(
-      channels(Effect.runSync(runtime.step(collectInput([10, 20, 30])))),
-    ).toEqual([3, false, 10, 30, 1, 7]);
+    expect(channels(runtime.step(collectInput([10, 20, 30])))).toEqual([
+      3,
+      false,
+      10,
+      30,
+      1,
+      7,
+    ]);
 
     runtime.dispose();
   });
 
   test('rejects non-batch and invalid collect request elements without poisoning state', () => {
-    const runtime = new JSRuntime(cloneModule(COLLECT_REQUEST_MODULE).bind());
+    const runtime = new Context(COLLECT_REQUEST_MODULE.clone().bind());
 
-    expect(() => Effect.runSync(runtime.step(collectInput(7)))).toThrow(
+    expect(() => runtime.step(collectInput(7))).toThrow(
       'request 0 collect input is not an array',
     );
-    expect(() =>
-      Effect.runSync(runtime.step(collectInput([1, 'bad']))),
-    ).toThrow('request 0 element 1 does not match number layout 0');
-    expect(channels(Effect.runSync(runtime.step(collectInput([5]))))).toEqual([
+    expect(() => runtime.step(collectInput([1, 'bad']))).toThrow(
+      'request 0 element 1 does not match number layout 0',
+    );
+    expect(channels(runtime.step(collectInput([5])))).toEqual([
       1,
       false,
       5,
@@ -530,20 +500,15 @@ describe('JSRuntime', () => {
 
   test('aborts a materialized request array and its history when main fails', () => {
     let fail = true;
-    const module = testModule({
-      ...COLLECT_REQUEST_MODULE,
-      main(ctx, root) {
-        COLLECT_REQUEST_MODULE.main(ctx, root);
-        if (fail) throw new Error('parent failed');
-      },
+    const module = new Module(COLLECT_REQUEST_MODULE, ctx => {
+      COLLECT_REQUEST_MODULE.main(ctx);
+      if (fail) throw new Error('parent failed');
     });
-    const runtime = new JSRuntime(module.bind());
+    const runtime = new Context(module.bind());
 
-    expect(() => Effect.runSync(runtime.step(collectInput([1, 2])))).toThrow(
-      'parent failed',
-    );
+    expect(() => runtime.step(collectInput([1, 2]))).toThrow('parent failed');
     fail = false;
-    expect(channels(Effect.runSync(runtime.step(collectInput([3]))))).toEqual([
+    expect(channels(runtime.step(collectInput([3])))).toEqual([
       1,
       false,
       3,
@@ -556,8 +521,7 @@ describe('JSRuntime', () => {
   });
 
   test('rejects a collect request whose parent layout is not its Tea array layout', () => {
-    const mismatched = testModule({
-      ...COLLECT_REQUEST_MODULE,
+    const mismatched = Object.assign(COLLECT_REQUEST_MODULE.clone(), {
       inputs: {...COLLECT_REQUEST_MODULE.inputs},
       requests: [
         {
@@ -567,7 +531,7 @@ describe('JSRuntime', () => {
         },
       ],
     });
-    expect(() => new JSRuntime(mismatched.bind())).toThrow(
+    expect(() => new Context(mismatched.bind())).toThrow(
       'request 0 has inconsistent collect layouts',
     );
   });

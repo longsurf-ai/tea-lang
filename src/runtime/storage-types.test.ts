@@ -2,10 +2,10 @@
 // empties, fixed-width struct carriers, and finite recursive declarations.
 
 import {describe, expect, test} from 'vitest';
-import {ValueClass} from './abi';
-import {type ValueLayout, ValueLayoutRegistry} from './value-layout';
+import {ValueClass} from './value';
+import {type StorageType, StorageTypes} from './storage-types';
 
-describe('ValueLayoutRegistry', () => {
+describe('StorageTypes', () => {
   test('owns a deeply frozen copy of the generated layout table', () => {
     const enumLayout = {
       kind: 'enum',
@@ -21,8 +21,8 @@ describe('ValueLayoutRegistry', () => {
       {kind: 'number', numeric: 'int'},
       enumLayout,
       structLayout,
-    ] as unknown as readonly ValueLayout[];
-    const layouts = new ValueLayoutRegistry(source);
+    ] as unknown as readonly StorageType[];
+    const layouts = new StorageTypes(source);
 
     enumLayout.name = 'Changed';
     enumLayout.members.push('other');
@@ -47,7 +47,7 @@ describe('ValueLayoutRegistry', () => {
   });
 
   test('derives exact typed empties and nominal value classes', () => {
-    const layouts = new ValueLayoutRegistry([
+    const layouts = new StorageTypes([
       {kind: 'number', numeric: 'float'},
       {kind: 'boolean'},
       {kind: 'nullable-scalar', scalar: 'string'},
@@ -64,7 +64,7 @@ describe('ValueLayoutRegistry', () => {
   });
 
   test('accepts direct and collection-mediated struct recursion', () => {
-    const layouts = new ValueLayoutRegistry([
+    const layouts = new StorageTypes([
       {
         kind: 'struct',
         name: 'Node',
@@ -79,7 +79,7 @@ describe('ValueLayoutRegistry', () => {
   });
 
   test('struct shallow size is one fixed-width reference', () => {
-    const layouts = new ValueLayoutRegistry([
+    const layouts = new StorageTypes([
       {kind: 'number', numeric: 'int'},
       {
         kind: 'struct',
@@ -106,7 +106,7 @@ describe('ValueLayoutRegistry', () => {
   });
 
   test('guards enum membership and concrete resource kind', () => {
-    const layouts = new ValueLayoutRegistry([
+    const layouts = new StorageTypes([
       {kind: 'enum', name: 'Side', members: ['buy', 'sell']},
       {kind: 'resource', handle: 'label'},
     ]);

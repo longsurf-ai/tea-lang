@@ -3,14 +3,13 @@
 import {DataType, Field, Struct, Utf8} from 'apache-arrow';
 import {encodeSchema} from '../io';
 import {loadModule} from '../load';
-import {outputFields, publicationSchema} from '../output';
+import {outputFields, outputSchema} from '../output';
 import {RUNTIME_ABI_VERSION} from '../module-abi';
 import {GPU_ARTIFACT_ABI_VERSION} from '../../gpu/contract';
 import {describe, expect, test} from 'vitest';
 import {compileProgramToWgsl} from '../../codegen/wgsl';
 import type {CompiledWgslProgram} from '../../gpu/contract';
 import {mustBuild} from '../../noder/testing';
-import {OutputCapture} from '../../testing/output';
 import {
   GpuBindingError,
   prepareGpuExecutionInputs,
@@ -66,7 +65,7 @@ function binding(
     params,
     indices: Object.values(series)[0]?.length ?? 0,
     series,
-    sink: new OutputCapture(),
+    next() {},
   };
 }
 
@@ -106,7 +105,7 @@ describe('GPU execution preparation', () => {
     );
     const output = fields[1]!;
     const channel = output.type.children[0]!;
-    const schema = publicationSchema(
+    const schema = outputSchema(
       fields.map((field, id) =>
         id === 1
           ? output.clone({
@@ -119,7 +118,10 @@ describe('GPU execution preparation', () => {
       ...artifact,
       bindingModule: {
         ...artifact.bindingModule,
-        source: `const module = (function(){${artifact.bindingModule.source}})(); module.outputs.schema = ${JSON.stringify(encodeSchema(schema))}; return module;`,
+        source: `import {decodeSchema as decodeForgedSchema} from 'tea/runtime';
+${artifact.bindingModule.source.replace('export default', 'const subject =')}
+subject.outputs.schema = decodeForgedSchema(${JSON.stringify(encodeSchema(schema))});
+export default subject;`,
       },
     };
     await expect(prepareGpuExecutionInputs(broken, [])).rejects.toThrow(
@@ -155,7 +157,7 @@ describe('GPU execution preparation', () => {
     ]);
 
     expect(
-      prepared.executions[0]?.boundInputs.map(input => input.value),
+      prepared.executions[0]?.parameters.map(input => input.value),
     ).toEqual([4, 2.25, false, 'slow']);
   });
 
@@ -176,7 +178,9 @@ describe('GPU execution preparation', () => {
       ),
       bindingModule: {
         ...artifact.bindingModule,
-        source: `const module = (function(){${artifact.bindingModule.source}})(); module.parameters[0].defaultValue = 0; return module;`,
+        source: `${artifact.bindingModule.source.replace('export default', 'const subject =')}
+subject.parameters[0].defaultValue = 0;
+export default subject;`,
       },
     };
     await expect(prepareGpuExecutionInputs(broken, [])).rejects.toThrow(
@@ -291,7 +295,7 @@ describe('GPU execution preparation', () => {
   test('keeps zero-index executions allocation-free', async () => {
     const artifact = parameterArtifact();
     const prepared = await prepareGpuExecutionInputs(artifact, [
-      {params: {}, indices: 0, series: {close: []}, sink: new OutputCapture()},
+      {params: {}, indices: 0, series: {close: []}, next() {}},
     ]);
 
     expect(prepared.chunkRows).toBe(0);

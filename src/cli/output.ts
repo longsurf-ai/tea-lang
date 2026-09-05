@@ -1,17 +1,18 @@
+import type {Module} from '../runtime/module-binding';
 // Purpose: Concrete terminal rendering for `tea run` reports and traces.
 
 import type {Field} from 'apache-arrow';
-import {outputFields, type OutputSpec} from '../runtime/output';
+import {outputFields} from '../runtime/output';
 import {TabWriter} from '../base/tabwriter';
-import type {BoundInput, Datum, ExecutionDeclaration} from '../runtime/abi';
+import type {Datum} from '../runtime/output';
 
 type Cell = string | number | boolean | null;
 
 /** Formats declarations using presentation metadata and Arrow payload fields.
- * @example traceDeclaration({declarations: [], schema: publicationSchema([])})
+ * @example traceDeclaration({declarations: [], schema: outputSchema([])})
  * // []
  */
-export function traceDeclaration(declaration: ExecutionDeclaration): string[] {
+export function traceDeclaration(declaration: Module['outputs']): string[] {
   return outputFields(declaration.schema).map((field, outputId) => {
     if (field.metadata.get('tea:write') === 'append') {
       return `# effect[${field.name.slice(6)}] type=${fieldLabel(field.type.children[0]!.type.children[1]!)}`;
@@ -47,16 +48,16 @@ export function traceDatum(datum: Datum): string[] {
 /** Renders final publications and timing; provisional updates are excluded.
  * @example
  * ```ts
- * const declaration = {declarations: [], schema: publicationSchema([])};
+ * const declaration = {declarations: [], schema: outputSchema([])};
  * renderRunReport(declaration, [], [], {
  *   indices: 0, compilationMs: 1, executionMs: 0,
  * }); // A System table reporting zero indices and 1.00 ms compilation.
  * ```
  */
 export function renderRunReport(
-  declaration: ExecutionDeclaration,
+  declaration: Module['outputs'],
   publications: readonly Datum[],
-  inputs: readonly BoundInput[],
+  inputs: Module['parameters'],
   summary: Readonly<{
     indices: number;
     compilationMs: number;
@@ -84,11 +85,7 @@ export function renderRunReport(
     renderSection(
       'Parameters',
       ['parameter', 'value', 'active'],
-      inputs.map(input => [
-        input.spec.name,
-        reportValue(input.value),
-        input.active,
-      ]),
+      inputs.map(input => [input.name, reportValue(input.value), input.active]),
     ),
     renderOutputs(declaration, publications),
     renderEffects(declaration, publications),
@@ -98,7 +95,7 @@ export function renderRunReport(
 }
 
 function renderOutputs(
-  declaration: ExecutionDeclaration,
+  declaration: Module['outputs'],
   publications: readonly Datum[],
 ): string {
   const columns = outputFields(declaration.schema).flatMap((field, id) =>
@@ -136,7 +133,7 @@ function renderOutputs(
 }
 
 function renderEffects(
-  declaration: ExecutionDeclaration,
+  declaration: Module['outputs'],
   publications: readonly Datum[],
 ): string {
   const fields = new Map(
@@ -159,7 +156,7 @@ function renderEffects(
 
 function outputChannelLabel(
   field: Field,
-  output: OutputSpec,
+  output: Module['outputs']['declarations'][number],
   channelIndex: number,
 ): string {
   const title = output.args?.find(arg => arg.name === 'title')?.value;

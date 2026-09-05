@@ -12,11 +12,11 @@ publication — is owned by [runtime.md](runtime.md).
 
 ```text
 Compilation                                  Bind-independent lowering
-source ─ parse ─ check ─ buildProgram ─▶ Program ─┬─▶ JS module
+source ─ parse ─ check ─ buildProgram ─▶ Program ─┬─▶ TypeScript module
          syntax  typecheck   noder                └─▶ WGSL module + layouts
                                                        codegen
 
-JS module   + DataStreams  ─▶ Node / JSRuntime ─▶ Batch Recipe
+TypeScript  + DataStreams  ─▶ Node / Context ─▶ Batch Recipe
 WGSL module + GpuBinding[] ─▶ GPU buffers       ─▶ dispatch / readback
 ```
 
@@ -239,13 +239,15 @@ places to its depth pass for annotation.
   indices therefore never expose the receiver. State is a **frame tree**: an
   IrFunc's frame layout is its hidden receiver (for methods), explicit params,
   and local Names plus one sub-frame per stateful call site (selected by that
-  site's `SlotId`); frames nest along the static call graph (acyclic —
+  site's numeric slot); frames nest along the static call graph (acyclic —
   recursion is rejected). `src/ir/frames.ts` is the single target-neutral
   projection of that Name ownership and `(parent frame, call-site slot)`
   topology. JS and WGSL consume it and add only target-specific physical
   layout; the JS runtime may still materialize subframes lazily. Physical
   presence is distinct from transactional activation. Two `ma(close, 10)` call sites share one compiled body
-  but own two frames — and two `ema` sub-frames within. `ta.*` rides this exact
+  but own two frames — and two `ema` sub-frames within. Generated TypeScript
+  expresses these as separate named entries under `frame.calls`; the slot remains
+  a physical address in setup metadata. `ta.*` rides this exact
   path as prelude code; nothing is specialized for technical-analysis
   builtins.
 - **init** vs **body**: const/input/simple work hoisted out of the loop vs
@@ -452,7 +454,9 @@ describes only which generic Program constructs its current target profile can
 represent.
 
 Concrete bindings are not Program properties. After codegen, Node binds
-application DataStreams and parameters to the ordinary JS module. The
+application DataStreams and parameters to the runtime Module. The CPU backend
+emits ordinary TypeScript with named frame state and lexical functions; its
+program-specific Context and Arrow schemas come from this same Program. The
 bind-independent GPU artifact carries both WGSL and the generated binding
 module; each ordered `GpuBinding` supplies concrete parameter values, extent,
 and numeric arrays. The GPU runtime sizes history from the frozen concrete
@@ -464,7 +468,6 @@ the Program or evaluates a second form of the bound expression. See
 
 - Function _templates_ (untyped params) are a checker representation, not a
   `FuncType`; the type domain holds concrete signatures only.
-- Id branding (`SlotId` etc.) hardens when the noder becomes the only mint.
 - General interval analysis can refine history demands for compound expressions
   over loop induction variables; exact direct-induction reads are already
   resolved.

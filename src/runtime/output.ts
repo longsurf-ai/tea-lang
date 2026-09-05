@@ -1,25 +1,6 @@
 // Arrow fields own output names, shapes and write modes; declarations own only execution facts.
 
 import {Bool, Field, Float64, Schema, TimestampMillisecond} from 'apache-arrow';
-import type {JSModule} from './module-abi';
-import type {Scalar} from './value';
-
-/**
- * Configuration for the output field at the same position in outputFields().
- * Arrow owns its name, shape, kind and write mode. Layout IDs only locate live
- * values during snapshotting; args are null until binding resolves them.
- * @example A plot's declaration contains its chosen linewidth in args and the
- * runtime descriptor for its series in layouts[0].
- */
-export interface OutputSpec {
-  readonly args:
-    | readonly {readonly name: string; readonly value: Scalar}[]
-    | null;
-  readonly layouts: readonly number[];
-}
-
-/** The compiled module's output contract, shared unchanged with observers. */
-export type ExecutionDeclaration = JSModule['outputs'];
 
 /**
  * A detached row matching the module's Arrow output schema. Assignment fields
@@ -33,17 +14,12 @@ export interface Datum extends Readonly<Record<string, unknown>> {
   readonly timed: boolean;
 }
 
-export interface OutputSink {
-  declare(declaration: ExecutionDeclaration): void;
-  publish(publication: Datum): void;
-}
-
 /**
  * Add Node-owned coordinates to the program's Arrow fields. Each call owns its
  * coordinate fields; callers cannot change another schema's metadata.
- * @example `publicationSchema([price]).fields[0].name` is `index`.
+ * @example `outputSchema([price]).fields[0].name` is `index`.
  */
-export function publicationSchema(fields: readonly Field[]): Schema {
+export function outputSchema(fields: readonly Field[]): Schema {
   return new Schema([
     new Field('index', new Float64(), false),
     new Field('time', new TimestampMillisecond(), true),
@@ -70,7 +46,7 @@ export function outputFields(schema: Schema): readonly Field[] {
  * of the corresponding effect0 field in the published row.
  */
 export function createDatum(
-  declaration: ExecutionDeclaration,
+  schema: Schema,
   index: number,
   result: {readonly outputs: readonly unknown[]; readonly provisional: boolean},
   time?: number | null,
@@ -81,10 +57,7 @@ export function createDatum(
     timed: time !== undefined,
     provisional: result.provisional,
     ...Object.fromEntries(
-      outputFields(declaration.schema).map((field, i) => [
-        field.name,
-        result.outputs[i],
-      ]),
+      outputFields(schema).map((field, i) => [field.name, result.outputs[i]]),
     ),
   });
 }

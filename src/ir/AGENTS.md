@@ -50,7 +50,7 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
 - Functions are called, never force-inlined: semantic `FunctionInstance`s are
   keyed by `(FunctionObject, type + qualifier signature)`, never by Program
   ownership. The noder projects an instance to a distinct `IrFunc` and name
-  graph in each Program context. Each stateful call site's `SlotId` selects a
+  graph in each Program context. Each stateful call site's slot selects a
   sub-frame in the caller's frame; the frame tree is statically enumerable
   from the call graph. Backends choose its physical representation: JS may
   materialize child frames lazily, while WGSL uses a fixed frame prefix plus

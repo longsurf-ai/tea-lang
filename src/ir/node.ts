@@ -1,13 +1,7 @@
 // Purpose: Tea IR nodes — the noder's typed, resolved body vocabulary; every expression carries its type and qualifier, and every use references its declaration object directly.
 
 import type {Pos} from '../base/pos';
-import type {
-  ConstValue,
-  NameStorage,
-  Qualifier,
-  StructType,
-  Type,
-} from './type';
+import type {ConstValue, Storage, Qualifier, StructType, Type} from './type';
 import type {
   ConstMethodIrFunc,
   EffectDecl,
@@ -20,13 +14,6 @@ import type {
   SeriesInput,
 } from './program';
 export {Storage} from './type';
-export type {DataSeriesId} from './builtin';
-export type {NameStorage} from './type';
-
-// Minted per stateful call site: the slot selects that call site's
-// sub-frame within the caller's frame. Frames nest along the static call
-// graph, so the runtime pre-allocates the whole frame tree at bind time.
-export type SlotId = number;
 
 // How deep a place's history must reach, resolvable no later than bind time:
 // None = never read historically (no buffer materializes); Const = known
@@ -54,7 +41,7 @@ export type HistoryDepth =
 // that needs them.
 export interface Name {
   readonly name: string;
-  readonly storage: NameStorage;
+  readonly storage: Storage;
   // Type/qualifier copy from semantic facts; depth is annotated by the
   // noder's depth pass. These working fields are read-only afterward.
   type: Type;
@@ -93,8 +80,6 @@ export const IrKind = {
   Break: 'Break',
   Continue: 'Continue',
 } as const;
-
-export type IrKindName = (typeof IrKind)[keyof typeof IrKind];
 
 // The IR's operation vocabulary: semantic operations, never surface lexemes.
 // The noder maps tokens to ops — '-' becomes Sub or Neg by arity, and unary
@@ -264,7 +249,7 @@ export interface CondExpr extends IrExprBase {
 export interface CallFuncExpr extends IrExprBase {
   readonly kind: typeof IrKind.CallFunc;
   readonly func: FreeIrFunc;
-  readonly slot: SlotId;
+  readonly slot: number;
   readonly args: readonly IrExpr[];
   readonly argumentEvaluationOrder: readonly number[];
 }
@@ -275,7 +260,7 @@ export interface CallConstMethodExpr extends IrExprBase {
   readonly kind: typeof IrKind.CallConstMethod;
   readonly func: ConstMethodIrFunc;
   readonly receiver: IrExpr;
-  readonly slot: SlotId;
+  readonly slot: number;
   readonly args: readonly IrExpr[];
   readonly argumentEvaluationOrder: readonly number[];
 }
@@ -287,7 +272,7 @@ export interface CallMutableMethodExpr extends IrExprBase {
   readonly kind: typeof IrKind.CallMutableMethod;
   readonly func: MutableMethodIrFunc;
   readonly receiver: IrExpr;
-  readonly slot: SlotId;
+  readonly slot: number;
   readonly args: readonly IrExpr[];
   readonly argumentEvaluationOrder: readonly number[];
 }
@@ -297,7 +282,7 @@ export interface CallMutableMethodExpr extends IrExprBase {
 export interface CallNativeExpr extends IrExprBase {
   readonly kind: typeof IrKind.CallNative;
   readonly native: string;
-  readonly slot: SlotId | null;
+  readonly slot: number | null;
   readonly args: readonly IrExpr[];
   readonly argumentEvaluationOrder: readonly number[];
 }

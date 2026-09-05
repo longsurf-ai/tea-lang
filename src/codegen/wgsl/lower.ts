@@ -3,7 +3,7 @@
 import type {Pos} from '../../base/pos';
 import {formatPos} from '../../base/pos';
 import {fatal} from '../../base/print';
-import {paramSpecsOf} from '../params';
+import {parametersOf} from '../params';
 import {generate} from '../codegen';
 import {
   GPU_ARTIFACT_ABI_VERSION,
@@ -391,7 +391,7 @@ class WgslEmitter {
       numeric: WGSL_F32_NUMERIC_CONTRACT,
       module,
       bindingModule: {
-        language: 'javascript-es2015-function-body',
+        language: 'typescript-esm',
         source: generate(this.program),
       },
       layouts: this.layouts,
@@ -427,7 +427,7 @@ class WgslEmitter {
       effectPayloadWordCapacity: Math.max(1, this.maxEffectPayloadWords),
       maxEffectsPerRow: this.effectAnalysis.maxEffectsPerRow,
       literalStrings: this.literalStrings,
-      params: paramSpecsOf(this.program.params),
+      params: parametersOf(this.program.params, this.program.nominalIds),
       paramActive: this.program.params.map(param =>
         param.active.kind === IrKind.Const &&
         typeof param.active.value === 'boolean'

@@ -1,7 +1,7 @@
-// Purpose: Expression and statement lowering — Time-Machine operations call
-// the generated RuntimeContext variable `ctx`; everything else expands inline.
+// Purpose: Lower Tea expressions and statements to typed values and named runtime state.
 
 import {fatal} from '../base/print';
+import type {FrameTopology} from '../ir/frames';
 import {unimplemented} from '../base/unimplemented';
 import {
   CollectionLocationKind,
@@ -30,16 +30,13 @@ import {
   typesEqual,
   type Type,
 } from '../ir/type';
-import {ValueClass, type ValueClass as ValueClassType} from '../runtime/value';
 
 // Compiler bookkeeping for addressing Program objects as dense IDs. The
 // driver builds it from the existing frame topology; noteCallSite verifies
 // that emitted calls agree with it rather than discovering another topology.
 export interface LowerCtx {
-  readonly nameSlots: Map<Name, {fid: number; slot: number}>;
-  // History-free function receivers and parameters are ordinary generated-JS
-  // locals. They never cross the Time-Machine ABI unless a later operation
-  // writes their value into real state; history-bearing formals remain stateful.
+  readonly nameLocations: FrameTopology['nameLocations'];
+  // Parameters without history remain ordinary captured-value locals.
   readonly directNames: ReadonlyMap<Name, string>;
   readonly seriesIds: Map<SeriesInput, number>;
   readonly builtinIds: Map<BuiltinInput, number>;
@@ -49,144 +46,62 @@ export interface LowerCtx {
   readonly outputIds: Map<OutputDecl | EffectDecl, number>;
   readonly funcIds: Map<IrFunc, number>;
   readonly requestIds: Map<RequestEdge, number>;
-  // During module binding, params/context constants and input-only
-  // function calls lower to ordinary generated-JS values rather than the
-  // execution RuntimeContext.
+  // Binding reads fixed parameter/context values without execution state.
   readonly binding?: boolean;
   readonly bindFuncRefs?: ReadonlyMap<IrFunc, string>;
-  // The generated const this module's own code refers to itself by ('M'
-  // for the root, 'M1'… for request children) — funcs-table dispatch must
-  // name the module that owns the func.
-  readonly moduleRef: string;
   // Root ModuleEmitter-owned projection. Request children share the same
   // layout namespace; no semantic Type is ever mutated with a backend id.
   layoutOf(type: Type): number;
-  // The frame whose handle is in scope as `fr` while lowering.
+  // Which typed frame owns the currently lowered function.
   currentFid: number;
   noteCallSite(fid: number, slot: number, callee: IrFunc): void;
-  useHelper(name: HelperName): void;
+  typeOf(type: Type): string;
+  valueOf(type: Type, raw: string): string;
+  emptyOf(type: Type): string;
+  factoryOf(type: Type): string;
+  localKey(name: Name): string;
+  callKey(frame: number, slot: number): string;
+  functionRef(func: IrFunc): string;
+  seriesKey(series: SeriesInput | ParamInput): string;
   fresh(): string;
 }
 
-// Pure helper functions emitted once at the top of the module when used.
-// Division/modulo by zero is na per Pine, unlike JS Infinity.
-export const HELPERS = {
-  $div: '(a, b) => (b === 0 ? NaN : a / b)',
-  $mod: '(a, b) => (b === 0 ? NaN : a % b)',
-  $num: '(x) => (Number.isFinite(x) ? x : NaN)',
-  $historyDepth:
-    '(x) => (Number.isFinite(x) && Math.floor(x) === x && x >= 0 && x <= 9007199254740991 ? x : 0)',
-  $contextValue:
-    '(values, id, name) => { if (values === undefined || !values.has(id)) { throw new Error("builtin \'" + name + "\' is not bind-visible"); } return values.get(id); }',
-  $rangeNext:
-    '(x, step) => { const next = Number.isFinite(x + step) ? x + step : NaN; return (step > 0 && next > x) || (step < 0 && next < x) ? next : NaN; }',
-  $eq: '(a, b) => (a === null || b === null || Number.isNaN(a) || Number.isNaN(b) ? false : a === b)',
-  $ne: '(a, b) => (a === null || b === null || Number.isNaN(a) || Number.isNaN(b) ? false : a !== b)',
-  $concat: '(a, b) => (a === null || b === null ? null : a + b)',
-  $naBool: '(_) => false',
-  $round2:
-    '(x, p) => { const m = Math.pow(10, p); return Math.round(x * m) / m; }',
-  $nzNum: '(x, r) => (Number.isNaN(x) ? r : x)',
-  $nzRef: '(x, r) => (x === null ? r : x)',
-  $toString: "(x) => (x === null || Number.isNaN(x) ? 'NaN' : String(x))",
-  $enumToString:
-    "(x, pairs) => { if (x === null) { return 'NaN'; } for (let i = 0; i < pairs.length; i += 1) { if (pairs[i][0] === x) { return pairs[i][1]; } } return String(x); }",
-  // Mirror base/color.ts (parity-locked by test): canonical hex, clamped
-  // domains, na/non-finite numeric input → na out, per Pine.
-  $colorNew:
-    "(c, t) => { if (c === null || !Number.isFinite(t)) { return null; } const tc = Math.max(0, Math.min(100, t)); const base = c.slice(0, 7); if (tc === 0) { return base; } const a = Math.round((100 - tc) * 2.55).toString(16).toUpperCase(); return base + (a.length < 2 ? '0' + a : a); }",
-  $colorRgb:
-    "(r, g, b, t) => { if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b) || (t !== null && !Number.isFinite(t))) { return null; } const h = x => { const c = Math.max(0, Math.min(255, Math.round(x))).toString(16).toUpperCase(); return c.length < 2 ? '0' + c : c; }; const base = '#' + h(r) + h(g) + h(b); const tc = t === null ? 0 : Math.max(0, Math.min(100, t)); if (tc === 0) { return base; } const a = Math.round((100 - tc) * 2.55).toString(16).toUpperCase(); return base + (a.length < 2 ? '0' + a : a); }",
-} as const;
-
-export type HelperName = keyof typeof HELPERS;
-
-// The generated backend's one projection from semantic types to the three
-// runtime empty-value families. Module construction consumes the same
-// projection so frames and lowered expressions cannot disagree.
-export function valueClassOf(t: Type): ValueClassType {
-  switch (t.kind) {
-    case TypeKind.Int:
-    case TypeKind.Float:
-      return ValueClass.Numeric;
-    case TypeKind.Bool:
-      return ValueClass.Boolean;
-    case TypeKind.String:
-    case TypeKind.Color:
-    case TypeKind.Line:
-    case TypeKind.Label:
-    case TypeKind.Box:
-    case TypeKind.Table:
-    case TypeKind.Polyline:
-    case TypeKind.Linefill:
-    case TypeKind.Array:
-    case TypeKind.Matrix:
-    case TypeKind.Map:
-    case TypeKind.Struct:
-    case TypeKind.Enum:
-    case TypeKind.Tuple:
-      return ValueClass.Nullable;
-    case TypeKind.Na:
-      return fatal('uncontextualized na type reached lowering');
-    case TypeKind.Invalid:
-    case TypeKind.Void:
-    case TypeKind.Plot:
-    case TypeKind.Hline:
-    case TypeKind.Func:
-      return fatal(`non-runtime type ${t.kind} reached value lowering`);
-  }
+export function property(owner: string, name: string): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)
+    ? `${owner}.${name}`
+    : `${owner}[${JSON.stringify(name)}]`;
 }
 
-function emptyLiteral(t: Type): string {
-  if (t.kind === TypeKind.Void) {
-    return 'undefined';
-  }
-  switch (valueClassOf(t)) {
-    case ValueClass.Numeric:
-      return 'NaN';
-    case ValueClass.Nullable:
-      return 'null';
-    case ValueClass.Boolean:
-      return 'false';
-  }
-}
-
-function naLiteral(t: Type): string {
-  const valueClass = valueClassOf(t);
-  if (valueClass === ValueClass.Boolean) {
-    return fatal('bool na reached lowering');
-  }
-  return valueClass === ValueClass.Nullable ? 'null' : 'NaN';
+export function coerce(value: string, from: Type, to: Type): string {
+  return from.kind === TypeKind.Int && to.kind === TypeKind.Float
+    ? `float((${value}).value)`
+    : value;
 }
 
 // The frame handle expression for a name: the current frame, or the program
 // frame — the one legal cross-frame access (functions read globals through
-// ctx.root(), never other frames).
+// ctx.state, never another function's frame).
 function frameRef(ctx: LowerCtx, name: Name): string {
-  const entry = ctx.nameSlots.get(name);
+  const entry = ctx.nameLocations.get(name);
   if (entry === undefined) {
     return fatal(`lowering reached an unmapped name '${name.name}'`);
   }
-  if (entry.fid === ctx.currentFid) {
-    return 'fr';
+  if (entry.frameId === ctx.currentFid) {
+    return ctx.currentFid === 0 ? 'ctx.state' : 'frame';
   }
   if (ctx.binding === true) {
     return fatal(`module binding reached stateful name '${name.name}'`);
   }
-  if (entry.fid === 0) {
-    return 'ctx.root()';
+  if (entry.frameId === 0) {
+    return 'ctx.state';
   }
   return fatal(
-    `name '${name.name}' of frame ${entry.fid} referenced from frame ${ctx.currentFid}`,
+    `name '${name.name}' of frame ${entry.frameId} referenced from frame ${ctx.currentFid}`,
   );
 }
 
-function slotOf(ctx: LowerCtx, name: Name): number {
-  const entry = ctx.nameSlots.get(name);
-  if (entry === undefined) {
-    return fatal(`lowering reached an unmapped name '${name.name}'`);
-  }
-  return entry.slot;
+function localRef(ctx: LowerCtx, name: Name): string {
+  return property(`${frameRef(ctx, name)}.locals`, ctx.localKey(name));
 }
 
 function directName(ctx: LowerCtx, name: Name): string | undefined {
@@ -206,7 +121,7 @@ function readName(
   if (ctx.binding === true) {
     return fatal(`module binding requires history for '${name.name}'`);
   }
-  return `ctx.read(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, ${offset})`;
+  return `${localRef(ctx, name)}.hist(${offset})`;
 }
 
 function writeNameExpr(ctx: LowerCtx, name: Name, value: string): string {
@@ -216,7 +131,7 @@ function writeNameExpr(ctx: LowerCtx, name: Name, value: string): string {
   }
   return direct !== undefined
     ? `${direct} = (${value})`
-    : `ctx.write(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, (${value}))`;
+    : `${localRef(ctx, name)}.set(${value})`;
 }
 
 function structFieldType(
@@ -265,15 +180,14 @@ function captureCollectionLocation(
   const object = capture(location.object, out, ctx);
   const target = ctx.fresh();
   const value = ctx.fresh();
-  const layout = ctx.layoutOf(location.owner);
+  const field = location.owner.fields[location.fieldIndex].name;
   out.push(
-    `const ${target} = ctx.requireStruct((${object}), ${layout});`,
-    `const ${value} = ctx.structField((${target}), ${layout}, ${location.fieldIndex});`,
+    `const ${target} = (${object}).require().field(${JSON.stringify(field)});`,
+    `const ${value} = ${target}.get();`,
   );
   return {
     value,
-    store: replacement =>
-      `ctx.storeStructField((${target}), ${layout}, ${location.fieldIndex}, (${replacement}));`,
+    store: replacement => `${target}.set(${replacement});`,
   };
 }
 
@@ -315,16 +229,6 @@ export function captureArguments(
   return captured;
 }
 
-const BINARY_JS: Partial<Record<IrBinaryOp, string>> = {
-  [IrOp.Add]: '+',
-  [IrOp.Sub]: '-',
-  [IrOp.Mul]: '*',
-  [IrOp.Lt]: '<',
-  [IrOp.Le]: '<=',
-  [IrOp.Gt]: '>',
-  [IrOp.Ge]: '>=',
-};
-
 // ---- expressions ------------------------------------------------------------
 
 // Lowers `e` to a JS expression string; statement-shaped constructs emit
@@ -332,21 +236,23 @@ const BINARY_JS: Partial<Record<IrBinaryOp, string>> = {
 // by materializing earlier operands into temps whenever a later operand
 // needs statements.
 export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
+  if (e.type.kind === TypeKind.Na)
+    return fatal('uncontextualized na type reached lowering');
   switch (e.kind) {
     case IrKind.Const: {
       const v = e.value;
       if (isNaValue(v)) {
-        return naLiteral(e.type);
+        return ctx.emptyOf(e.type);
       }
       if (typeof v === 'number') {
         return Number.isFinite(v)
-          ? String(v)
+          ? ctx.valueOf(e.type, String(v))
           : fatal('non-finite constant reached lowering');
       }
       if (typeof v === 'boolean') {
-        return String(v);
+        return ctx.valueOf(e.type, String(v));
       }
-      return JSON.stringify(v);
+      return ctx.valueOf(e.type, JSON.stringify(v));
     }
     case IrKind.OutputRef: {
       // Output references cross the ABI as their oid (fill's plot args).
@@ -354,10 +260,11 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       if (oid === undefined) {
         return fatal('lowering reached an unmapped output reference');
       }
-      return String(oid);
+      return `int(${oid})`;
     }
     case IrKind.HistRead: {
-      const off = e.offset === null ? '0' : capture(e.offset, out, ctx);
+      const off =
+        e.offset === null ? '0' : `(${capture(e.offset, out, ctx)}).value`;
       switch (e.place.kind) {
         case PlaceKind.Name: {
           const current =
@@ -375,7 +282,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           if (sid === undefined) {
             return fatal(`unmapped series '${e.place.series.id}'`);
           }
-          return `ctx.series(${sid}, ${off})`;
+          return `${property('ctx.inputs.series', ctx.seriesKey(e.place.series))}.hist(${off})`;
         }
         case PlaceKind.Builtin: {
           const bid = ctx.builtinIds.get(e.place.builtin);
@@ -388,11 +295,13 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
             if (e.offset !== null) {
               return fatal('module binding cannot read builtin history');
             }
-            ctx.useHelper('$contextValue');
             const name = `${e.place.builtin.source.domain}.${e.place.builtin.source.field}`;
-            return `$contextValue(contextConstants, ${bid}, ${JSON.stringify(name)})`;
+            return ctx.valueOf(
+              e.type,
+              `contextValue(contextConstants, ${bid}, ${JSON.stringify(name)}) as ${scalarType(e.type)}`,
+            );
           }
-          return `ctx.builtin(${bid}, ${off})`;
+          return `${property('ctx.inputs.builtins', `${e.place.builtin.source.domain}.${e.place.builtin.source.field}`)}.hist(${off})`;
         }
         case PlaceKind.Param: {
           const sid = ctx.paramSeriesIds.get(e.place.param);
@@ -402,17 +311,20 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
                 `module binding cannot read source parameter '${e.place.param.name}'`,
               );
             }
-            return `ctx.series(${sid}, ${off})`;
+            return `${property('ctx.inputs.series', ctx.seriesKey(e.place.param))}.hist(${off})`;
           }
           const pid = ctx.paramIds.get(e.place.param);
           if (pid === undefined) {
             return fatal(`unmapped param '${e.place.param.name}'`);
           }
           if (ctx.binding === true) {
-            return `module.parameters[${pid}].value`;
+            return ctx.valueOf(
+              e.type,
+              `module.parameters[${pid}].value as ${scalarType(e.type)}`,
+            );
           }
           // Scalar params are constant over rows; history is the value.
-          return `ctx.param(${pid})`;
+          return property('ctx.params', e.place.param.name);
         }
         case PlaceKind.Request: {
           if (ctx.binding === true) {
@@ -423,7 +335,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           if (rid === undefined) {
             return fatal('lowering reached an unmapped request edge');
           }
-          return `ctx.request(${rid}, ${off})`;
+          return `${property('ctx.inputs.children', edge.name)}.hist(${off})`;
         }
         default:
           return fatal('unhandled place kind');
@@ -434,17 +346,16 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
     case IrKind.Unary: {
       const x = lowerExpr(e.x, out, ctx);
       if (e.op !== IrOp.Neg) {
-        return `(!(${x}))`;
+        return `(${x}).not()`;
       }
-      ctx.useHelper('$num');
-      return `$num(-(${x}))`;
+      return `(${x}).neg()`;
     }
     case IrKind.Cond: {
       // Pine evaluates all three operands eagerly.
       const c = capture(e.cond, out, ctx);
       const t = capture(e.then, out, ctx);
       const f = capture(e.else, out, ctx);
-      return `((${c}) ? (${t}) : (${f}))`;
+      return `((${c}).value ? (${coerce(t, e.then.type, e.type)}) : (${coerce(f, e.else.type, e.type)}))`;
     }
     case IrKind.CallFunc: {
       const fid = ctx.funcIds.get(e.func);
@@ -466,9 +377,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
             `module binding reached unavailable function '${e.func.name}'`,
           );
         }
-        return `${bindRef}(${args.map(arg => `(${arg})`).join(', ')})`;
+        return `${bindRef}(${args.map((arg, i) => coerce(arg, e.args[i].type, e.func.params[i].type)).join(', ')})`;
       }
-      return `${ctx.moduleRef}.funcs[${fid}](ctx, ctx.frame(fr, ${e.slot})${args.map(arg => `, ${arg}`).join('')})`;
+      return `${ctx.functionRef(e.func)}(ctx, ${property(`${ctx.currentFid === 0 ? 'ctx.state' : 'frame'}.calls`, ctx.callKey(ctx.currentFid, e.slot))}${args.map((arg, i) => `, ${coerce(arg, e.args[i].type, e.func.params[i].type)}`).join('')})`;
     }
     case IrKind.CallConstMethod: {
       if (!typesEqual(e.func.receiver.type, e.receiver.type)) {
@@ -506,9 +417,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
             `module binding reached unavailable method '${e.func.name}'`,
           );
         }
-        return `${bindRef}((${receiver})${args.map(arg => `, (${arg})`).join('')})`;
+        return `${bindRef}(${receiver}${args.map((arg, i) => `, ${coerce(arg, e.args[i].type, e.func.params[i].type)}`).join('')})`;
       }
-      return `${ctx.moduleRef}.funcs[${fid}](ctx, ctx.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')})`;
+      return `${ctx.functionRef(e.func)}(ctx, ${property(`${ctx.currentFid === 0 ? 'ctx.state' : 'frame'}.calls`, ctx.callKey(ctx.currentFid, e.slot))}, ${receiver}${args.map((arg, i) => `, ${coerce(arg, e.args[i].type, e.func.params[i].type)}`).join('')})`;
     }
     case IrKind.CallMutableMethod: {
       if (ctx.binding === true) {
@@ -543,9 +454,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       ctx.noteCallSite(ctx.currentFid, e.slot, e.func);
       const candidate = capture(e.receiver, out, ctx);
       const receiver = ctx.fresh();
-      out.push(
-        `const ${receiver} = ctx.requireStruct((${candidate}), ${ctx.layoutOf(e.receiver.type)});`,
-      );
+      out.push(`const ${receiver} = (${candidate}).require();`);
       const args = captureArguments(
         e.args,
         e.argumentEvaluationOrder,
@@ -553,7 +462,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `mutable method call '${e.func.name}'`,
       );
-      return `${ctx.moduleRef}.funcs[${fid}](ctx, ctx.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')})`;
+      return `${ctx.functionRef(e.func)}(ctx, ${property(`${ctx.currentFid === 0 ? 'ctx.state' : 'frame'}.calls`, ctx.callKey(ctx.currentFid, e.slot))}, ${receiver}${args.map((arg, i) => `, ${coerce(arg, e.args[i].type, e.func.params[i].type)}`).join('')})`;
     }
     case IrKind.CallNative:
       return lowerNative(
@@ -594,9 +503,29 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `collection mutation '${e.operation}'`,
       );
+      const method = e.operation.split('.')[1];
+      const expected =
+        locationType.kind === TypeKind.Map
+          ? method === 'put'
+            ? [locationType.key, locationType.value]
+            : [locationType.key]
+          : locationType.kind === TypeKind.Array
+            ? method === 'set'
+              ? [e.args[0]?.type, locationType.elem]
+              : [locationType.elem]
+            : locationType.kind === TypeKind.Matrix
+              ? method === 'set'
+                ? [e.args[0]?.type, e.args[1]?.type, locationType.elem]
+                : [locationType.elem]
+              : [];
+      const values = args.map((arg, index) =>
+        expected[index] === undefined
+          ? arg
+          : coerce(arg, e.args[index].type, expected[index]),
+      );
       const result = ctx.fresh();
       out.push(
-        `const ${result} = ctx.mutateCollection(${JSON.stringify(e.operation)}, ${ctx.layoutOf(locationType)}, ${location.value}, [${args.join(', ')}]);`,
+        `const ${result} = ${location.value}.${method}(${values.join(', ')});`,
         location.store(`${result}.replacement`),
       );
       return `${result}.result`;
@@ -606,14 +535,14 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         return fatal('module binding cannot allocate a tuple');
       }
       const elems = e.elems.map(el => capture(el, out, ctx));
-      return `[${elems.map(x => `(${x})`).join(', ')}]`;
+      return `${ctx.factoryOf(e.type)}.create(ctx, [${elems.join(', ')}])`;
     }
     case IrKind.TupleGet: {
       if (ctx.binding === true) {
         return fatal('module binding cannot read a tuple');
       }
       const tuple = capture(e.x, out, ctx);
-      return `((${tuple}) === null ? ${emptyLiteral(e.type)} : (${tuple})[${e.index}])`;
+      return `${tuple}.get(${e.index})`;
     }
     case IrKind.NewStruct: {
       if (ctx.binding === true) {
@@ -646,7 +575,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `constructor '${e.structType.name}.new'`,
       );
-      return `ctx.newStruct(${ctx.layoutOf(e.structType)}, [${args.join(', ')}])`;
+      return `${ctx.factoryOf(e.structType)}.create(ctx, {${args.map((arg, i) => `${JSON.stringify(e.structType.fields[i].name)}: ${coerce(arg, e.args[i].type, e.structType.fields[i].type)}`).join(', ')}})`;
     }
     case IrKind.FieldGet: {
       if (ctx.binding === true) {
@@ -667,23 +596,25 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         );
       }
       const value = lowerExpr(e.x, out, ctx);
-      return `ctx.structField((${value}), ${ctx.layoutOf(e.x.type)}, ${e.fieldIndex})`;
+      return `(${value}).field(${JSON.stringify(selected.name)}).get()`;
     }
     case IrKind.IfExpr: {
       const temp = ctx.fresh();
-      out.push(`let ${temp} = ${emptyLiteral(e.type)};`);
+      out.push(`let ${temp} = ${ctx.emptyOf(e.type)};`);
       const c = lowerExpr(e.cond, out, ctx);
       const thenLines: string[] = [];
       const thenVal = lowerBlockInto(e.then, thenLines, ctx);
       if (thenVal !== null) {
-        thenLines.push(`${temp} = (${thenVal});`);
+        thenLines.push(`${temp} = (${coerce(thenVal, e.then.type, e.type)});`);
       }
-      out.push(`if (${c}) {`, ...indent(thenLines));
+      out.push(`if ((${c}).value) {`, ...indent(thenLines));
       if (e.else !== null) {
         const elseLines: string[] = [];
         const elseVal = lowerBlockInto(e.else, elseLines, ctx);
         if (elseVal !== null) {
-          elseLines.push(`${temp} = (${elseVal});`);
+          elseLines.push(
+            `${temp} = (${coerce(elseVal, e.else.type, e.type)});`,
+          );
         }
         out.push('} else {', ...indent(elseLines));
       }
@@ -694,7 +625,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       const temp = ctx.fresh();
       const matched = ctx.fresh();
       out.push(
-        `let ${temp} = ${emptyLiteral(e.type)};`,
+        `let ${temp} = ${ctx.emptyOf(e.type)};`,
         `let ${matched} = false;`,
       );
       const subject = e.subject !== null ? capture(e.subject, out, ctx) : null;
@@ -702,7 +633,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         const armLines: string[] = [];
         const val = lowerBlockInto(arm.body, armLines, ctx);
         if (val !== null) {
-          armLines.push(`${temp} = (${val});`);
+          armLines.push(`${temp} = (${coerce(val, arm.body.type, e.type)});`);
         }
         if (arm.pattern === null) {
           out.push(
@@ -714,10 +645,8 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         }
         const patternLines: string[] = [];
         const p = lowerExpr(arm.pattern, patternLines, ctx);
-        if (subject !== null) {
-          ctx.useHelper('$eq');
-        }
-        const test = subject !== null ? `$eq((${subject}), (${p}))` : `(${p})`;
+        const test =
+          subject !== null ? `${subject}.eq(${p}).value` : `(${p}).value`;
         out.push(
           `if (!(${matched})) {`,
           ...indent([
@@ -733,21 +662,19 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
     }
     case IrKind.ForExpr: {
       const temp = ctx.fresh();
-      out.push(`let ${temp} = ${emptyLiteral(e.type)};`);
+      out.push(`let ${temp} = ${ctx.emptyOf(e.type)};`);
       const fromT = capture(e.from, out, ctx);
       const toT = capture(e.to, out, ctx);
-      const stepT = e.step !== null ? capture(e.step, out, ctx) : '1';
-      const frRef = frameRef(ctx, e.index);
-      const slot = slotOf(ctx, e.index);
-      const idx = `ctx.read(${frRef}, ${slot}, 0)`;
+      const stepT = e.step !== null ? capture(e.step, out, ctx) : 'int(1)';
+      const index = localRef(ctx, e.index);
+      const idx = `${index}.hist(0)`;
       const bodyLines: string[] = [];
       const val = lowerBlockInto(e.body, bodyLines, ctx);
       if (val !== null) {
-        bodyLines.push(`${temp} = (${val});`);
+        bodyLines.push(`${temp} = (${coerce(val, e.body.type, e.type)});`);
       }
-      ctx.useHelper('$rangeNext');
       out.push(
-        `for (ctx.write(${frRef}, ${slot}, ${fromT}); (${stepT}) > 0 ? (${idx}) <= (${toT}) : (${stepT}) < 0 ? (${idx}) >= (${toT}) : false; ctx.write(${frRef}, ${slot}, $rangeNext((${idx}), (${stepT})))) {`,
+        `for (${index}.set(${fromT}); (${stepT}).value > 0 ? (${idx}).le(${toT}).value : (${stepT}).value < 0 ? (${idx}).ge(${toT}).value : false; ${index}.set(rangeNext(${idx}, ${stepT}))) {`,
         ...indent(bodyLines),
         '}',
       );
@@ -755,16 +682,20 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
     }
     case IrKind.WhileExpr: {
       const temp = ctx.fresh();
-      out.push(`let ${temp} = ${emptyLiteral(e.type)};`, 'for (;;) {');
+      out.push(`let ${temp} = ${ctx.emptyOf(e.type)};`, 'for (;;) {');
       const condLines: string[] = [];
       const c = lowerExpr(e.cond, condLines, ctx);
       const bodyLines: string[] = [];
       const val = lowerBlockInto(e.body, bodyLines, ctx);
       if (val !== null) {
-        bodyLines.push(`${temp} = (${val});`);
+        bodyLines.push(`${temp} = (${coerce(val, e.body.type, e.type)});`);
       }
       out.push(
-        ...indent([...condLines, `if (!(${c})) { break; }`, ...bodyLines]),
+        ...indent([
+          ...condLines,
+          `if (!((${c}).value)) { break; }`,
+          ...bodyLines,
+        ]),
         '}',
       );
       return temp;
@@ -778,19 +709,19 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       const entries = ctx.fresh();
       const index = ctx.fresh();
       out.push(
-        `let ${result} = ${emptyLiteral(e.type)};`,
-        `const ${entries} = ctx.collectionEntries(${collection});`,
+        `let ${result} = ${ctx.emptyOf(e.type)};`,
+        `const ${entries} = ${collection}.entries();`,
       );
       const body: string[] = [];
       if (e.x.type.kind === TypeKind.Array) {
         if (e.targets.length === 1) {
           body.push(
-            `ctx.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${entries}[${index}]);`,
+            `${writeNameExpr(ctx, e.targets[0], `${entries}[${index}]`)};`,
           );
         } else if (e.targets.length === 2) {
           body.push(
-            `ctx.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${index});`,
-            `ctx.write(${frameRef(ctx, e.targets[1])}, ${slotOf(ctx, e.targets[1])}, ${entries}[${index}]);`,
+            `${writeNameExpr(ctx, e.targets[0], `int(${index})`)};`,
+            `${writeNameExpr(ctx, e.targets[1], `${entries}[${index}]`)};`,
           );
         } else {
           return fatal('array iteration requires one or two targets');
@@ -800,15 +731,15 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           return fatal('map iteration requires key and value targets');
         }
         body.push(
-          `ctx.write(${frameRef(ctx, e.targets[0])}, ${slotOf(ctx, e.targets[0])}, ${entries}[${index}][0]);`,
-          `ctx.write(${frameRef(ctx, e.targets[1])}, ${slotOf(ctx, e.targets[1])}, ${entries}[${index}][1]);`,
+          `${writeNameExpr(ctx, e.targets[0], `${entries}[${index}][0]`)};`,
+          `${writeNameExpr(ctx, e.targets[1], `${entries}[${index}][1]`)};`,
         );
       } else {
         return fatal(`unsupported collection iteration over ${e.x.type.kind}`);
       }
       const value = lowerBlockInto(e.body, body, ctx);
       if (value !== null) {
-        body.push(`${result} = (${value});`);
+        body.push(`${result} = (${coerce(value, e.body.type, e.type)});`);
       }
       out.push(
         `for (let ${index} = 0; ${index} < ${entries}.length; ${index} += 1) {`,
@@ -839,86 +770,37 @@ function lowerBinary(
     const yLines: string[] = [];
     const y = lowerExpr(ye, yLines, ctx);
     if (yLines.length === 0) {
-      return op === IrOp.And ? `((${x}) && (${y}))` : `((${x}) || (${y}))`;
+      return `bool((${x}).value ${op === IrOp.And ? '&&' : '||'} (${y}).value)`;
     }
     const temp = ctx.fresh();
     out.push(`let ${temp} = (${x});`);
-    const guard = op === IrOp.And ? `if (${temp}) {` : `if (!(${temp})) {`;
+    const guard =
+      op === IrOp.And ? `if (${temp}.value) {` : `if (!${temp}.value) {`;
     out.push(guard, ...indent([...yLines, `${temp} = (${y});`]), '}');
     return temp;
   }
-
   const x = capture(xe, out, ctx);
   const y = capture(ye, out, ctx);
-  if (op === IrOp.Eq || op === IrOp.Ne) {
-    const helper = op === IrOp.Eq ? '$eq' : '$ne';
-    ctx.useHelper(helper);
-    return `${helper}((${x}), (${y}))`;
-  }
-  if (op === IrOp.Add && type.kind === TypeKind.String) {
-    ctx.useHelper('$concat');
-    return `$concat((${x}), (${y}))`;
-  }
-  if (op === IrOp.Div) {
-    ctx.useHelper('$div');
-    ctx.useHelper('$num');
-    const div = `$div((${x}), (${y}))`;
-    return type.kind === TypeKind.Int
-      ? `$num(Math.trunc(${div}))`
-      : `$num(${div})`;
-  }
-  if (op === IrOp.Mod) {
-    ctx.useHelper('$mod');
-    ctx.useHelper('$num');
-    return `$num($mod((${x}), (${y})))`;
-  }
-  const js = BINARY_JS[op];
-  if (js === undefined) {
-    return fatal(`unmapped binary operation ${op}`);
-  }
-  const expr = `((${x}) ${js} (${y}))`;
-  if (op === IrOp.Add || op === IrOp.Sub || op === IrOp.Mul) {
-    ctx.useHelper('$num');
-    return `$num(${expr})`;
-  }
-  return expr;
+  const method =
+    op === IrOp.Add && type.kind === TypeKind.String
+      ? 'concat'
+      : op.toLowerCase();
+  return `${x}.${method}(${y})`;
 }
 
 // ---- natives ----------------------------------------------------------------
 
-type NativeRule = (args: string[], ctx: LowerCtx) => string;
-
-const NATIVE_RULES: Record<string, NativeRule> = {
-  'math.abs': a => `Math.abs(${a[0]})`,
-  'math.sign': a => `Math.sign(${a[0]})`,
-  'math.floor': a => `Math.floor(${a[0]})`,
-  'math.ceil': a => `Math.ceil(${a[0]})`,
-  'math.sqrt': a => `Math.sqrt(${a[0]})`,
-  'math.pow': a => `Math.pow(${a[0]}, ${a[1]})`,
-  'math.log': a => `Math.log(${a[0]})`,
-  'math.log10': a => `Math.log10(${a[0]})`,
-  'math.exp': a => `Math.exp(${a[0]})`,
-  'math.max': a => `Math.max(${a.join(', ')})`,
-  'math.min': a => `Math.min(${a.join(', ')})`,
-  'math.avg': a => `((${a.join(' + ')}) / ${a.length})`,
-  'math.round': (a, ctx) => {
-    if (a.length === 1) {
-      return `Math.round(${a[0]})`;
-    }
-    ctx.useHelper('$round2');
-    return `$round2(${a[0]}, ${a[1]})`;
-  },
-  int: a => `Math.trunc(${a[0]})`,
-  float: a => `(${a[0]})`,
-  'color.new': (a, ctx) => {
-    ctx.useHelper('$colorNew');
-    return `$colorNew(${a[0]}, ${a[1]})`;
-  },
-  'color.rgb': (a, ctx) => {
-    ctx.useHelper('$colorRgb');
-    return `$colorRgb(${a[0]}, ${a[1]}, ${a[2]}, ${a.length > 3 ? a[3] : 'null'})`;
-  },
-};
+function scalarType(type: Type): string {
+  switch (type.kind) {
+    case TypeKind.Bool:
+      return 'boolean';
+    case TypeKind.Int:
+    case TypeKind.Float:
+      return 'number';
+    default:
+      return 'string | null';
+  }
+}
 
 function lowerNative(
   native: string,
@@ -935,96 +817,58 @@ function lowerNative(
     ctx,
     `native call '${native}'`,
   );
-  // Internal depth-pass primitive: each component is normalized before a
-  // synthesized maximum so one invalid offset cannot erase valid demands.
-  if (native === '$historyDepth') {
-    if (ctx.binding === true) {
-      ctx.useHelper('$historyDepth');
-      return `$historyDepth((${args[0]}))`;
-    }
-    return `ctx.historyDepth((${args[0]}))`;
-  }
-  if (
-    native.startsWith('array.') ||
-    native.startsWith('matrix.') ||
-    native.startsWith('map.')
-  ) {
-    if (ctx.binding === true) {
+  if (native === '$historyDepth') return `historyDepth(${args[0]})`;
+  if (/^(array|matrix|map)\./.test(native)) {
+    ctx.layoutOf(resultType);
+    if (ctx.binding === true)
       return fatal(`module binding cannot call aggregate native '${native}'`);
+    const method = native
+      .split('.')[1]
+      .replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
+    if (method === 'new' || method === 'from') {
+      const initial =
+        resultType.kind === TypeKind.Array ||
+        resultType.kind === TypeKind.Matrix
+          ? resultType.elem
+          : null;
+      const values = args.map((arg, index) =>
+        initial !== null &&
+        (method === 'from' ||
+          index === (resultType.kind === TypeKind.Matrix ? 2 : 1))
+          ? coerce(arg, argExprs[index].type, initial)
+          : arg,
+      );
+      return `${ctx.factoryOf(resultType)}.${method}(ctx${values.map(arg => `, ${arg}`).join('')})`;
     }
-    return `ctx.callCollection(${JSON.stringify(native)}, ${ctx.layoutOf(resultType)}, [${args.join(', ')}])`;
+    const receiver = argExprs[0].type;
+    const values = args
+      .slice(1)
+      .map((arg, index) =>
+        receiver.kind === TypeKind.Map && index === 0
+          ? coerce(arg, argExprs[index + 1].type, receiver.key)
+          : arg,
+      );
+    return `${args[0]}.${method}(${values.join(', ')})`;
   }
-  // na/nz inspect their argument's type for the na representation.
-  if (native === 'na') {
-    const arg = argExprs[0];
-    if (arg.type.kind === TypeKind.Na) {
-      return 'true';
-    }
-    const x = args[0];
-    switch (valueClassOf(arg.type)) {
-      case ValueClass.Numeric:
-        return `Number.isNaN((${x}))`;
-      case ValueClass.Nullable:
-        return `((${x}) === null)`;
-      case ValueClass.Boolean:
-        ctx.useHelper('$naBool');
-        return `$naBool((${x}))`;
-    }
-  }
-  if (native === 'nz') {
-    const arg = argExprs[0];
-    const valueClass = valueClassOf(arg.type);
-    if (valueClass === ValueClass.Boolean) {
-      return fatal('bool nz reached lowering');
-    }
-    const helper = valueClass === ValueClass.Numeric ? '$nzNum' : '$nzRef';
-    ctx.useHelper(helper);
-    const x = args[0];
-    let replacement: string;
-    if (argExprs.length > 1) {
-      replacement = args[1];
-    } else if (valueClass === ValueClass.Numeric) {
-      replacement = '0';
-    } else if (arg.type.kind === TypeKind.Color) {
-      replacement = JSON.stringify('#00000000');
-    } else if (arg.type.kind === TypeKind.String) {
-      replacement = JSON.stringify('');
-    } else {
-      return fatal(`nz has no default for ${arg.type.kind}`);
-    }
-    return `${helper}((${x}), (${replacement}))`;
-  }
+  if (native === 'int') return `int(Math.trunc(${args[0]}.value))`;
+  if (native === 'float') return `float(${args[0]}.value)`;
+  if (native === 'na') return `na(${args[0]})`;
+  if (native === 'nz') return `nz(${args.join(', ')})`;
   if (native === 'str.tostring') {
-    const arg = argExprs[0];
-    if (arg.type.kind === TypeKind.Na) {
-      return JSON.stringify('NaN');
-    }
-    if (arg.type.kind === TypeKind.Enum) {
-      ctx.useHelper('$enumToString');
-      const x = args[0];
-      const members = arg.type.members.map(member => [
-        member.name,
-        member.title,
-      ]);
-      return `$enumToString((${x}), ${JSON.stringify(members)})`;
-    }
-    ctx.useHelper('$toString');
-    const x = args[0];
-    return `$toString((${x}))`;
+    const type = argExprs[0].type;
+    const titles =
+      type.kind === TypeKind.Enum
+        ? `, ${JSON.stringify(type.members.map(member => [member.name, member.title]))}`
+        : '';
+    return `str.tostring(${args[0]}${titles})`;
   }
-  const rule = NATIVE_RULES[native];
-  if (rule === undefined) {
-    return unimplemented(`codegen: native '${native}'`);
+  if (native === 'color.new' || native === 'color.rgb')
+    return `colors.${native.slice(6)}(${args.join(', ')})`;
+  if (native.startsWith('math.')) {
+    const value = `${native}(${args.join(', ')})`;
+    return ctx.valueOf(resultType, `${value}.value`);
   }
-  const expr = rule(
-    args.map(arg => `(${arg})`),
-    ctx,
-  );
-  if (native === 'color.new' || native === 'color.rgb') {
-    return expr;
-  }
-  ctx.useHelper('$num');
-  return `$num(${expr})`;
+  return unimplemented(`codegen: native '${native}'`);
 }
 
 // ---- statements -------------------------------------------------------------
@@ -1057,19 +901,22 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
         out.push('}');
         return;
       }
-      const frame = frameRef(ctx, stmt.name);
-      const slot = slotOf(ctx, stmt.name);
+      const local = localRef(ctx, stmt.name);
       const body: string[] = [];
       const value = lowerExpr(stmt.value, body, ctx);
-      out.push(`if (ctx.needsInit(${frame}, ${slot})) {`);
-      out.push(...indent(body));
-      out.push(`  ctx.initialize(${frame}, ${slot}, (${value}));`);
-      out.push('}');
+      out.push(
+        `${local}.init(() => {`,
+        ...indent(body),
+        `  return ${coerce(value, stmt.value.type, stmt.name.type)};`,
+        '});',
+      );
       return;
     }
     case IrKind.WriteName: {
       const v = lowerExpr(stmt.value, out, ctx);
-      out.push(`${writeNameExpr(ctx, stmt.name, v)};`);
+      out.push(
+        `${writeNameExpr(ctx, stmt.name, coerce(v, stmt.value.type, stmt.name.type))};`,
+      );
       return;
     }
     case IrKind.StoreField: {
@@ -1087,11 +934,12 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       }
       const object = capture(stmt.object, out, ctx);
       const target = ctx.fresh();
-      const layout = ctx.layoutOf(stmt.owner);
-      out.push(`const ${target} = ctx.requireStruct((${object}), ${layout});`);
+      out.push(
+        `const ${target} = (${object}).require().field(${JSON.stringify(stmt.owner.fields[stmt.fieldIndex].name)});`,
+      );
       const value = lowerExpr(stmt.value, out, ctx);
       out.push(
-        `ctx.storeStructField((${target}), ${layout}, ${stmt.fieldIndex}, (${value}));`,
+        ` ${target}.set(${coerce(value, stmt.value.type, targetType)});`,
       );
       return;
     }
@@ -1110,9 +958,10 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
         ctx,
         `output '${stmt.output.effect}'`,
       );
-      args.forEach((arg, channel) => {
-        out.push(`ctx.emit(${oid}, ${channel}, (${arg}));`);
-      });
+      if (args.length === 0) return;
+      out.push(
+        `${property('ctx.outputs', `output${oid}`)}.set({${args.map((arg, channel) => `${JSON.stringify(stmt.output.channels[channel].name)}: ${arg}`).join(', ')}});`,
+      );
       return;
     }
     case IrKind.EmitEffect: {
@@ -1124,7 +973,9 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
         return fatal('lowering reached an unmapped effect');
       }
       const payload = lowerExpr(stmt.payload, out, ctx);
-      out.push(`ctx.append(${outputId}, (${payload}));`);
+      out.push(
+        `${property('ctx.outputs', `effect${outputId - [...ctx.outputIds.keys()].filter(output => 'channels' in output).length}`)}.append(${payload});`,
+      );
       return;
     }
     case IrKind.Break:

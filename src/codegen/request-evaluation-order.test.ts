@@ -84,9 +84,9 @@ describe('request context evaluation order', () => {
     expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
 
     const js = generate(program);
-    const binding = js.slice(js.lastIndexOf('bind(module'));
+    const binding = js.slice(js.lastIndexOf('(module, contextConstants) =>'));
     const assignment = binding.match(
-      /module\.requests\[0\]\.context = \{symbol: \((t\d+)\), timeframe: \((t\d+)\), availability: \((t\d+)\), fill: \((t\d+)\), ignoreInvalidSymbol: \((t\d+)\), calcBarsCount: \((t\d+)\)\};/,
+      /module\.requests\[0\]\.context = \{\s*symbol: \((t\d+)\)\.value!, timeframe: \((t\d+)\)\.value!, availability: \((t\d+)\)\.value as "start" \| "end", fill: \((t\d+)\)\.value as "carry" \| "sparse", ignoreInvalidSymbol: \((t\d+)\)\.value, calcBarsCount: \((t\d+)\)\.value\s*\};/,
     );
     expect(assignment).not.toBeNull();
     if (assignment === null) {
@@ -123,10 +123,10 @@ describe('request context evaluation order', () => {
     );
 
     const js = generate(program);
-    const rootBind = js.lastIndexOf('bind(module');
-    const bind = js.slice(rootBind, js.indexOf('funcs:', rootBind));
+    const rootBind = js.lastIndexOf('(module, contextConstants) =>');
+    const bind = js.slice(rootBind);
     const executionRead = bind.indexOf(
-      '$contextValue(contextConstants, 0, "syminfo.type")',
+      'contextValue(contextConstants, 0, "syminfo.type")',
     );
     const optionCall = bind.indexOf('module.requests[0].context = {');
     expect(executionRead).toBeGreaterThanOrEqual(0);

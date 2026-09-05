@@ -1,7 +1,7 @@
 // Purpose: Variable binding prepass — creates canonical semantic VariableObjects and resolves whole-context reassignment facts by lexical identity before checking.
 
 import {fatal} from '../base/print';
-import {Storage, type NameStorage, InvalidType, Qualifier} from '../ir/type';
+import {Storage, InvalidType, Qualifier} from '../ir/type';
 import {Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
 import {ObjectKind, type Object, type VariableObject} from './object';
@@ -269,7 +269,7 @@ class NameBinder {
 
   private declare(
     node: syntax.Name,
-    storage: NameStorage,
+    storage: Storage,
     constDecl: boolean,
   ): void {
     if (this.tables.defs.has(node)) {
@@ -309,7 +309,7 @@ function unwrapParens(expr: syntax.Expr): syntax.Expr {
   return current;
 }
 
-function declarationStorage(mode: syntax.DeclMode): NameStorage {
+function declarationStorage(mode: syntax.DeclMode): Storage {
   if (mode === Mode.Var) {
     return Storage.Var;
   }

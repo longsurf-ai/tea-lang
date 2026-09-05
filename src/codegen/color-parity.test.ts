@@ -1,19 +1,24 @@
-// Purpose: Parity lock — the emitted $colorNew/$colorRgb helper strings must agree with base/color.ts on every probed value; the formulas are deliberately duplicated (generated code cannot import TS) and this test is the invariant.
+// Purpose: Runtime color operations preserve the canonical color helpers used by the frontend.
 
 import {describe, expect, test} from 'vitest';
 import {applyTransparency, rgbColor} from '../base/color';
-import {HELPERS} from './lower';
+import {colors} from '../runtime/native';
+import {color, float} from '../runtime/js/value';
 
-const emittedNew = new Function(`return ${HELPERS.$colorNew}`)() as (
-  c: string,
-  t: number,
-) => string;
-const emittedRgb = new Function(`return ${HELPERS.$colorRgb}`)() as (
+const emittedNew = (value: string, transparency: number) =>
+  colors.new(color(value), float(transparency)).value;
+const emittedRgb = (
   r: number,
   g: number,
   b: number,
-  t: number | null,
-) => string;
+  transparency: number | null,
+) =>
+  colors.rgb(
+    float(r),
+    float(g),
+    float(b),
+    ...(transparency === null ? [] : [float(transparency)]),
+  ).value;
 
 describe('color helper parity', () => {
   test('$colorNew mirrors applyTransparency', () => {

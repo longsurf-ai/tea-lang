@@ -3816,7 +3816,7 @@ class Checker {
   // A call to a user or prelude template: align arguments, memoize one
   // instantiation per concrete signature, and type the call from the
   // instance. Instantiations are real functions sharing one checked body per
-  // signature; call-site state separates later via SlotIds.
+  // signature; call-site state separates later via slots.
   private checkUserCall(
     c: syntax.CallExpr,
     template: FunctionObject,

@@ -13,7 +13,7 @@ there is no base class, registry, loader, or generic factory.
   commit, inputs, and disposal are concrete Recipe details, not part of that
   interface.
 - Production Recipe code composes `Node`, `BindingInput`, `DataStream`, and
-  ordinary RxJS observers from `src/api/`. It does not import `JSRuntime`,
+  ordinary RxJS observers from `src/api/`. It does not import `Context`,
   runtime module binding, request merge, layout, state, Heap, or runtime output
   contracts. Missing public behavior is added to Node before Recipe uses it.
 - `batch/index.ts` is the complete production Batch implementation. It accepts

@@ -28,7 +28,6 @@ import {compileToProgram} from '../src/compiler';
 import {validateRecord} from '../src/runtime/io';
 import {isRef, type HeapStats} from '../src/runtime/js/heap';
 import {loadModule} from '../src/runtime/load';
-import {cloneModule} from '../src/runtime/module-binding';
 import {outputFields, type Datum} from '../src/runtime/output';
 
 const stress = process.env.TEA_STRESS === '1';
@@ -271,7 +270,7 @@ test('independent bindings preserve source schemas and parameter-derived history
   const rows = Array.from({length: 8}, (_, close) => ({close}));
   for (let index = 0; index < count; index += 1) {
     const lag = index % 8;
-    const copy = cloneModule(module);
+    const copy = module.clone();
     const node = createNode(copy).bind({lag});
     assert.equal(node.module, copy);
     const source = new Subject<{close: number}>();

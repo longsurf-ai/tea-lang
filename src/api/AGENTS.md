@@ -1,6 +1,6 @@
 # api
 
-The JavaScript embedding surface over generated `JSModule` values. This
+The JavaScript embedding surface over generated `Module` values. This
 directory owns host binding validation and Observable composition; compiler and
 runtime semantics remain in their existing packages.
 
@@ -9,7 +9,7 @@ runtime semantics remain in their existing packages.
 
 ## Invariants
 
-- `JSModule.bind(values, context?)` is the sole synchronous parameter-binding operation. It mutates and returns the same module; Node keeps that stable module tree and owns stream connections in its own state. Module readiness covers configuration; Node readiness adds root and child streams.
+- `Module.bind(values, context?)` is the sole synchronous parameter-binding operation. It mutates and returns the same module; Node keeps that stable module tree and owns stream connections in its own state. Module readiness covers configuration; Node readiness adds root and child streams.
 - Modules contain real Arrow schemas, parameter/context values and execution descriptions, never Observables or supplied flags. Each request entry carries its child module. Node exposes its existing module directly. Failed binding leaves the tree unchanged; execution start closes binding.
 - Default preparation uses loadModule(...).bind(); late calculations remain private. Missing fixed context leaves explicit unresolved facts. Rebinding cannot preserve stale facts or silently alter another context.
 - Public `Node` is an interface; file-private `TeaNode` owns one module context,
@@ -21,20 +21,19 @@ runtime semantics remain in their existing packages.
   ambiguous. All keys validate before mutation. Root and child module identities
   remain stable through binding and inspection. Public methods remain
   synchronous and mutable. The compiler `Program` is consumed during lowering
-  and is retained by neither the Node nor JSModule.
+  and is retained by neither the Node nor Module.
 - The `tea` tagged template is the deliberate synchronous exception: it only
   performs in-memory compile/load construction and throws `TeaCompileError`.
-  Effects remain implementation details of `bind`/`to`/`dispose`.
+  Binding and stepping are synchronous; RxJS owns stream delivery and teardown.
 - Every Node owns one plain `Subject<Datum>`. The first `.to(sink)` call
-  subscribes the sink, creates one `JSRuntime`,
+  subscribes the sink, creates one `Context`,
   recursively constructs child execution streams, folds their results into the
   parent through `sync()` in request-id order, and returns the Subscription.
   That Subscription controls only its sink; later `.to()` calls add sinks for
   future values without reconnecting execution. RxJS owns ongoing
-  values/errors/completion. Node-owned connection teardown interrupts the
-  current step Effect and whole child graph. `dispose()` is synchronous and
+  values/errors/completion. Node-owned connection teardown stops the complete child graph between synchronous steps. `dispose()` is synchronous and
   idempotent. Current steps are final (`provisional: false`).
-- `JSRuntime` keeps `StepResult` internal to Node. Node adds its successful-step
+- `Context` keeps `StepResult` internal to Node. Node adds its successful-step
   index and exact source time, then publishes one lossless Arrow-schema row:
   assignment-style `outputN` fields contain named channels, append-style
   `effectN` fields contain ordered `{ordinal, payload}` events, numeric `NaN`

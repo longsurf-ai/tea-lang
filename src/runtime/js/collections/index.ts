@@ -8,19 +8,24 @@ import {
   type CollectionMutationOperation,
   type CollectionOperation,
 } from '../../module-abi';
-import {isArrayValue, isMapValue, isMatrixValue, type Value} from '../../value';
+import {
+  isArrayValue,
+  isMapValue,
+  isMatrixValue,
+  type Stored,
+} from '../../value';
 import type {Heap, HeapTransaction} from '../heap';
 import {StructStorageRuntime} from '../struct-storage';
-import {type LayoutId, ValueLayoutRegistry} from '../../value-layout';
+import {StorageTypes} from '../../storage-types';
 import {arrayCall, arrayMutate, arraySnapshot} from './array';
-import type {CollectionContext, CollectionReader} from './common';
+import type {CollectionContext} from './common';
 import {mapCall, mapMutate, mapSnapshot} from './map';
 import {matrixCall, matrixMutate} from './matrix';
 
 export class CollectionRuntime {
   constructor(
     private readonly heap: Heap,
-    private readonly layouts: ValueLayoutRegistry,
+    private readonly layouts: StorageTypes,
     private readonly maxElements: number,
     private readonly structs: StructStorageRuntime = new StructStorageRuntime(
       heap,
@@ -35,9 +40,9 @@ export class CollectionRuntime {
   call(
     transaction: HeapTransaction,
     operation: CollectionOperation,
-    resultLayout: LayoutId,
-    args: readonly Value[],
-  ): Value {
+    resultLayout: number,
+    args: readonly Stored[],
+  ): Stored {
     const ctx = this.context(transaction);
     const result = operation.startsWith('array.')
       ? arrayCall(ctx, operation, resultLayout, args)
@@ -56,9 +61,9 @@ export class CollectionRuntime {
   mutate(
     transaction: HeapTransaction,
     operation: CollectionMutationOperation,
-    collectionLayout: LayoutId,
-    receiver: Value,
-    args: readonly Value[],
+    collectionLayout: number,
+    receiver: Stored,
+    args: readonly Stored[],
   ): CollectionMutation {
     const ctx = this.context(transaction);
     const result = operation.startsWith('array.')
@@ -76,13 +81,13 @@ export class CollectionRuntime {
   }
 
   entries(
-    value: Value,
-    reader: CollectionReader = this.heap,
+    value: Stored,
+    reader: Pick<Heap, 'read'> = this.heap,
   ): CollectionEntries {
     const ctx = {
       transaction: reader,
       layouts: this.layouts,
-      assertValue: (layout: LayoutId, item: Value, where: string) =>
+      assertValue: (layout: number, item: Stored, where: string) =>
         this.structs.assertValue(layout, item, where, reader),
     };
     if (value === null) {

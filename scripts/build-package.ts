@@ -5,12 +5,17 @@ import {build} from 'esbuild';
 
 rmSync('dist', {force: true, recursive: true});
 await build({
-  entryPoints: ['src/index.ts'],
-  outfile: 'dist/loader/index.js',
+  entryPoints: {
+    'loader/index': 'src/index.ts',
+    'runtime/index': 'src/runtime/index.ts',
+  },
+  outdir: 'dist',
+  splitting: true,
   bundle: true,
   format: 'esm',
   packages: 'external',
   platform: 'node',
+  target: 'node20.19',
 });
 
 mkdirSync('dist/tea-lib', {recursive: true});

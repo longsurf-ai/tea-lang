@@ -1,8 +1,9 @@
+import type {Module} from '../module-binding';
 // Purpose: Prepare generic runtime bindings and bounded resources for a resumable WGSL execution session.
 
 /// <reference types="@webgpu/types" />
 
-import {DataType, Precision, type Field} from 'apache-arrow';
+import {DataType, Precision, type Field, type Schema} from 'apache-arrow';
 import {cloneSchema} from '../io';
 import {createDatum, outputFields} from '../output';
 import {OperationalError} from '../../base/operational-error';
@@ -21,12 +22,11 @@ import {
   type WgslResultChannel,
   type WgslCodec,
 } from '../../gpu/contract';
-import type {BoundInput} from '../binding';
 import {loadModule} from '../load';
-import {boundInputs, cloneModule, depthBars} from '../module-binding';
-import {RUNTIME_ABI_VERSION, type JSModule} from '../module-abi';
-import type {ExecutionDeclaration, OutputSink} from '../output';
-import type {Value} from '../value';
+import {depthBars, requireConcreteModule} from '../module-binding';
+import {RUNTIME_ABI_VERSION} from '../module-abi';
+import type {Datum} from '../output';
+import type {Stored} from '../value';
 
 const MAX_U32 = 0xffff_ffff;
 const MAX_I32 = 0x7fff_ffff;
@@ -37,7 +37,10 @@ export type GpuBinding = Readonly<{
   indices: number;
   series: Readonly<Record<string, readonly number[]>>;
   time?: readonly (number | null)[];
-  sink: OutputSink;
+  /** Called before any rows, including an empty run; schema metadata is private. */
+  declare?(outputs: Module['outputs']): void;
+  /** Receives a detached row after the complete readback chunk passes validation. */
+  next(datum: Datum): void;
 }>;
 
 export interface GpuChunkResult {
@@ -59,7 +62,7 @@ export interface GpuRunTiming {
   // Waiting for submitted GPU work to complete plus copying and mapping its
   // readback buffers. WebGPU exposes these together through mapAsync here.
   readonly completionReadbackMs: number;
-  // Validation, decoding, and synchronous OutputSink publication on the host.
+  // Validation, decoding, and synchronous row delivery on the host.
   readonly decodePublicationMs: number;
 }
 
@@ -81,7 +84,7 @@ export interface GpuBindingProgress {
 export interface GpuBindingSummary {
   readonly bindingIndex: number;
   readonly rows: number;
-  readonly inputs: readonly BoundInput[];
+  readonly inputs: Module['parameters'];
 }
 
 export interface GpuExecution {
@@ -133,13 +136,13 @@ interface GpuBufferDeviceLimits {
   readonly maxStorageBufferBindingSize: number;
 }
 
-export interface PreparedGpuExecutionInstance {
+interface PreparedGpuExecutionInstance {
   readonly bindingIndex: number;
   readonly binding: GpuBinding;
   readonly rows: number;
-  readonly boundInputs: readonly BoundInput[];
+  readonly parameters: Module['parameters'];
   /** Output contract from this binding's prepared JavaScript module. */
-  readonly declaration: ExecutionDeclaration;
+  readonly declaration: Module['outputs'];
   // Scalar-cell offset into `seriesPayload`; every required series occupies
   // one complete, contiguous row span in artifact order.
   readonly seriesOffset: number;
@@ -161,7 +164,7 @@ export interface PreparedGpuExecutionInstance {
   readonly effectCapacity: number;
 }
 
-export interface GpuResourceSizes {
+interface GpuResourceSizes {
   readonly jobs: number;
   readonly series: number;
   readonly executionStates: number;
@@ -175,7 +178,7 @@ export interface GpuResourceSizes {
   readonly total: number;
 }
 
-export interface PreparedGpuExecution {
+interface PreparedGpuExecution {
   readonly artifact: CompiledWgslProgram;
   readonly executions: readonly PreparedGpuExecutionInstance[];
   readonly seriesPayload: Uint8Array;
@@ -251,15 +254,16 @@ function deviceLimit(value: number, name: string): number {
 
 /**
  * Own device buffers for caller-ordered bindings and publish schema-named rows.
- * Each sink receives an independent Arrow declaration. Readback is validated
- * for the entire chunk before any row reaches a sink; disposing releases only
+ * Each declaration callback receives an independent Arrow schema. Readback is
+ * validated for the entire chunk before any row is delivered; disposal releases only
  * buffers created by this session.
  *
  * @example
  * ```ts
  * const execution = await createGpuExecution(device, artifact, [{
  *   params: {}, indices: 2, series: {close: [10, 12]},
- *   sink: {declare: d => console.log(d.schema), publish: row => console.log(row.output0)},
+ *   declare: d => console.log(d.schema),
+ *   next: row => console.log(row.output0),
  * }]);
  * try { await execution.runAll(); } finally { execution.dispose(); }
  * // A compiled plot(close) publishes {series: 10}, then {series: 12}.
@@ -460,7 +464,7 @@ class InertGpuExecution implements GpuExecution {
       bindings: this.prepared.executions.map(execution => ({
         bindingIndex: execution.bindingIndex,
         rows: execution.rows,
-        inputs: execution.boundInputs,
+        inputs: execution.parameters,
       })),
       chunks: 0,
       dispatches: 0,
@@ -495,7 +499,7 @@ class DeviceGpuExecution implements GpuExecution {
     this.cursors = prepared.executions.map(() => 0);
     this.denseDecoder = planDenseDecoder(
       prepared.artifact,
-      prepared.executions[0]!.declaration,
+      prepared.executions[0]!.declaration.schema,
     );
   }
 
@@ -532,7 +536,7 @@ class DeviceGpuExecution implements GpuExecution {
       bindings: this.prepared.executions.map(execution => ({
         bindingIndex: execution.bindingIndex,
         rows: execution.rows,
-        inputs: execution.boundInputs,
+        inputs: execution.parameters,
       })),
       chunks: this.chunks,
       dispatches: this.dispatches,
@@ -760,9 +764,9 @@ function publishChunk(
     }
   }
 
-  // Validate every dense cell before the first sink call. This preserves the
+  // Validate every dense cell before the first row callback. This preserves the
   // chunk transaction without retaining a second, object-heavy copy of all
-  // rows while the sinks themselves capture the requested output.
+  // rows while callbacks capture the requested output.
   for (const {executionIndex, progress: item} of active) {
     const execution = prepared.executions[executionIndex];
     if (execution === undefined) {
@@ -805,7 +809,6 @@ function publishChunk(
   // validation. Publication is then synchronous and index-streaming.
   for (const {executionIndex, progress: item} of active) {
     const execution = prepared.executions[executionIndex]!;
-    const sink = execution.binding.sink;
     const timestamps = timestampsByExecution[executionIndex]!;
     for (let localRow = 0; localRow < item.rowCount; localRow += 1) {
       const row = item.rowStart + localRow;
@@ -827,7 +830,7 @@ function publishChunk(
         if (Array.isArray(value)) Object.freeze(value);
       });
       const publication = createDatum(
-        execution.declaration,
+        execution.declaration.schema,
         row,
         {outputs, provisional: false},
         timestamps === null
@@ -836,16 +839,16 @@ function publishChunk(
             ? null
             : timestamps[localRow],
       );
-      sink.publish(publication);
+      execution.binding.next(publication);
     }
   }
 }
 
 function planDenseDecoder(
   artifact: CompiledWgslProgram,
-  declaration: ExecutionDeclaration,
+  schema: Schema,
 ): DenseDecoderPlan {
-  const fields = outputFields(declaration.schema);
+  const fields = outputFields(schema);
   return {
     fields,
     channelsPerRow: artifact.resultChannels.length,
@@ -944,7 +947,7 @@ function decodeResult(
   field: Field,
   view: DataView,
   offset: number,
-): Value {
+): Stored {
   const bits = readU32(view, offset, 'result bits');
   const validWord = readU32(view, offset + 4, 'result validity');
   if (validWord !== 0 && validWord !== 1) {
@@ -1099,7 +1102,7 @@ function u32AsI32(value: number): number {
 
 function declareBindings(prepared: PreparedGpuExecution): void {
   prepared.executions.forEach(execution =>
-    execution.binding.sink.declare({
+    execution.binding.declare?.({
       ...execution.declaration,
       schema: cloneSchema(execution.declaration.schema),
     }),
@@ -1195,7 +1198,7 @@ function resourcesFitDeviceBufferLimits(
  * ```ts
  * const prepared = await prepareGpuExecutionInputs(artifact, [{
  *   params: {}, indices: 2, series: {close: [10, 12]},
- *   sink: {declare() {}, publish() {}},
+ *   next() {},
  * }]);
  * prepared.chunkRows; // 2 for a compiled plot(close) with this extent.
  * ```
@@ -1213,7 +1216,7 @@ async function prepareGpuExecutionInputsWithLimits(
   deviceLimits?: GpuBufferDeviceLimits,
 ): Promise<PreparedGpuExecution> {
   validateArtifact(artifact);
-  let bindingModule: JSModule;
+  let bindingModule: Module;
   try {
     bindingModule = loadModule(artifact.bindingModule.source);
     validateBindingModule(artifact, bindingModule);
@@ -1236,8 +1239,8 @@ async function prepareGpuExecutionInputsWithLimits(
       );
     }
     try {
-      const configured = cloneModule(bindingModule).bind(binding.params);
-      const inputs = boundInputs(configured);
+      const configured = bindingModule.clone().bind(binding.params);
+      const inputs = requireConcreteModule(configured).parameters;
       if (
         inputs.length !== artifact.params.length ||
         inputs.some(
@@ -1251,7 +1254,7 @@ async function prepareGpuExecutionInputsWithLimits(
       return {
         binding,
         bindingIndex,
-        boundInputs: inputs,
+        parameters: inputs,
         frames: configured.state.frames,
         declaration: configured.outputs,
       };
@@ -1269,7 +1272,7 @@ async function prepareGpuExecutionInputsWithLimits(
   for (const {
     binding,
     bindingIndex,
-    boundInputs,
+    parameters,
     frames,
     declaration,
   } of resolved) {
@@ -1320,7 +1323,7 @@ async function prepareGpuExecutionInputsWithLimits(
       bindingIndex,
       binding,
       rows: binding.indices,
-      boundInputs,
+      parameters,
       declaration,
       seriesOffset,
       paramsOffset: bindingIndex * artifact.params.length,
@@ -1714,10 +1717,10 @@ function packParams(
   );
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   executions.forEach(execution => {
-    execution.boundInputs.forEach((input, pid) => {
+    execution.parameters.forEach((input, pid) => {
       const offset =
         (execution.paramsOffset + pid) * artifact.parameterByteStride;
-      switch (input.spec.type) {
+      switch (input.type) {
         case 'int': {
           const value = input.value;
           if (
@@ -1727,7 +1730,7 @@ function packParams(
             value > 0x7fff_ffff
           ) {
             throw new GpuBindingError(
-              `GPU binding ${execution.bindingIndex} parameter '${input.spec.name}' is outside the i32 target profile`,
+              `GPU binding ${execution.bindingIndex} parameter '${input.name}' is outside the i32 target profile`,
             );
           }
           view.setInt32(offset, value, true);
@@ -1737,13 +1740,13 @@ function packParams(
           const value = input.value;
           if (typeof value !== 'number') {
             throw new GpuBindingError(
-              `GPU binding ${execution.bindingIndex} parameter '${input.spec.name}' is not numeric`,
+              `GPU binding ${execution.bindingIndex} parameter '${input.name}' is not numeric`,
             );
           }
           const rounded = Math.fround(value);
           if (!Number.isFinite(rounded)) {
             throw new GpuBindingError(
-              `GPU binding ${execution.bindingIndex} parameter '${input.spec.name}' is outside the finite f32 target profile`,
+              `GPU binding ${execution.bindingIndex} parameter '${input.name}' is outside the finite f32 target profile`,
             );
           }
           view.setFloat32(offset, rounded, true);
@@ -1753,12 +1756,12 @@ function packParams(
           view.setUint32(offset, input.value === true ? 1 : 0, true);
           break;
         case 'enum': {
-          const ordinal = input.spec.enumType?.members.findIndex(
+          const ordinal = input.enumType?.members.findIndex(
             member => member.name === input.value,
           );
           if (ordinal === undefined || ordinal < 0) {
             throw new GpuBindingError(
-              `GPU binding ${execution.bindingIndex} parameter '${input.spec.name}' has no physical enum ordinal`,
+              `GPU binding ${execution.bindingIndex} parameter '${input.name}' has no physical enum ordinal`,
             );
           }
           view.setUint32(offset, ordinal, true);
@@ -1766,7 +1769,7 @@ function packParams(
         }
         default:
           throw new GpuBindingError(
-            `GPU parameter '${input.spec.name}' of type ${input.spec.type} has no fixed-width encoding`,
+            `GPU parameter '${input.name}' of type ${input.type} has no fixed-width encoding`,
           );
       }
     });
@@ -1782,7 +1785,7 @@ function fatalGpuParamValue(name: string): never {
 
 function validateBindingModule(
   artifact: CompiledWgslProgram,
-  module: JSModule,
+  module: Module,
 ): void {
   const parameterSchema = module.parameters.map(
     ({value: _value, active: _active, ...spec}) => spec,
@@ -1879,7 +1882,7 @@ function validateBindingModule(
 
 function planExecutionState(
   artifact: CompiledWgslProgram,
-  frames: JSModule['state']['frames'],
+  frames: Module['state']['frames'],
   indices: number,
   stateOffset: number,
 ): Pick<
@@ -2064,7 +2067,7 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
     artifact.target !== 'webgpu-wgsl' ||
     artifact.module.language !== 'wgsl' ||
     artifact.module.entryPoint.length === 0 ||
-    artifact.bindingModule.language !== 'javascript-es2015-function-body' ||
+    artifact.bindingModule.language !== 'typescript-esm' ||
     artifact.bindingModule.source.length === 0 ||
     artifact.externalBuffers.group !== GPU_BUFFER_GROUP ||
     bindings.some(value => !Number.isSafeInteger(value) || value < 0) ||

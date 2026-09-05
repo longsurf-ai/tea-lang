@@ -1,3 +1,4 @@
+import type {Module} from '../runtime/module-binding';
 // Purpose: Mutable module configuration stays separate from Node stream ownership.
 
 import {DataType, Schema} from 'apache-arrow';
@@ -6,15 +7,11 @@ import {generate} from '../codegen/codegen';
 import {mustBuild} from '../noder/testing';
 import {BindError} from '../runtime/errors';
 import {loadModule} from '../runtime/load';
-import {
-  boundInputs,
-  cloneModule,
-  moduleSeriesNames,
-} from '../runtime/module-binding';
-import type {JSModule} from '../runtime/module-abi';
+import {moduleSeriesNames} from '../runtime/module-binding';
+
 import {createNode} from './node';
 
-describe('JSModule.bind', () => {
+describe('Module.bind', () => {
   test('fills defaults and recomputes derived facts without requiring streams', () => {
     const raw = compileModule(
       'length = input.int(14)\nplot(close[length] + open)',
@@ -42,10 +39,9 @@ describe('JSModule.bind', () => {
 
   test('leaves a parameter without a usable default unresolved until supplied', () => {
     const raw = compileModule('length = input.int(14)\nplot(close[length])');
-    const pending = {
-      ...raw,
+    const pending = Object.assign(raw.clone(), {
       parameters: raw.parameters.map(param => ({...param, defaultValue: null})),
-    }.bind();
+    }).bind();
     expect(pending.remaining()).toEqual(['length']);
     expect(pending.ready()).toBe(false);
     expect(pending.inputs.series[0]!.depth).toEqual({kind: 'bound'});
@@ -71,12 +67,12 @@ describe('JSModule.bind', () => {
     ).bind();
     original.inputs.schema.metadata.set('feed', 'prices');
     original.inputs.schema.fields[0]!.metadata.set('unit', 'USD');
-    const bound = cloneModule(original).bind({length: 2});
-    const rebound = cloneModule(original).bind({length: 3});
+    const bound = original.clone().bind({length: 2});
+    const rebound = original.clone().bind({length: 3});
     original.inputs.schema.metadata.set('feed', 'changed');
     original.inputs.schema.fields[0]!.metadata.set('unit', 'changed');
     bound.outputs.schema.metadata.set('owner', 'changed');
-    const copy = cloneModule(rebound);
+    const copy = rebound.clone();
     copy.inputs.schema.fields[0]!.metadata.set('unit', 'reader');
     expect(rebound.inputs.schema).toBeInstanceOf(Schema);
     expect(DataType.isFloat(rebound.inputs.schema.fields[0]!.type)).toBe(true);
@@ -95,7 +91,7 @@ describe('JSModule.bind', () => {
       'owner',
       'original',
     );
-    const rebound = cloneModule(original).bind({length: 6});
+    const rebound = original.clone().bind({length: 6});
     original.requests[0]!.module.inputs.schema.fields[0]!.metadata.set(
       'owner',
       'changed',
@@ -136,7 +132,7 @@ describe('JSModule.bind', () => {
       'enabled = input.bool(true)\nwidth = input.int(2, active=enabled)\nvalue = close * 2\nplot(value[width], linewidth=width)',
     ).bind({enabled: false, width: 4});
     expect(
-      boundInputs(module).map(({value, active}) => ({value, active})),
+      module.parameters.map(({value, active}) => ({value, active})),
     ).toEqual([
       {value: false, active: true},
       {value: 4, active: false},
@@ -181,6 +177,6 @@ describe('JSModule.bind', () => {
   });
 });
 
-function compileModule(source: string): JSModule {
+function compileModule(source: string): Module {
   return loadModule(generate(mustBuild(source)));
 }

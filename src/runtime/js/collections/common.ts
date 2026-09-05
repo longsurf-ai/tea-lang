@@ -10,23 +10,15 @@ import {
   type CollectionValue,
   type MapValue,
   type MatrixValue,
-  type Value,
+  type Stored,
 } from '../../value';
-import type {HeapTransaction, Ref} from '../heap';
-import {
-  type LayoutId,
-  type ValueLayout,
-  ValueLayoutRegistry,
-} from '../../value-layout';
-
-export interface CollectionReader {
-  read<V>(ref: Ref<V>): Readonly<V>;
-}
+import type {Heap, HeapTransaction} from '../heap';
+import {type StorageType, StorageTypes} from '../../storage-types';
 
 export interface CollectionReadContext {
-  readonly transaction: CollectionReader;
-  readonly layouts: ValueLayoutRegistry;
-  readonly assertValue: (layout: LayoutId, value: Value, where: string) => void;
+  readonly transaction: Pick<Heap, 'read'>;
+  readonly layouts: StorageTypes;
+  readonly assertValue: (layout: number, value: Stored, where: string) => void;
 }
 
 export interface CollectionContext extends CollectionReadContext {
@@ -34,14 +26,14 @@ export interface CollectionContext extends CollectionReadContext {
   readonly maxElements: number;
 }
 
-export function count(value: Value, what: string): number {
+export function count(value: Stored, what: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
     throw new ExecutionError('INVALID_SHAPE', `${what} must be a safe integer`);
   }
   return value;
 }
 
-export function shape(value: Value, what: string): number {
+export function shape(value: Stored, what: string): number {
   const size = count(value, what);
   if (size < 0) {
     throw new ExecutionError('INVALID_SHAPE', `${what} must be non-negative`);
@@ -49,7 +41,7 @@ export function shape(value: Value, what: string): number {
   return size;
 }
 
-export function index(value: Value, size: number, what = 'index'): number {
+export function index(value: Stored, size: number, what = 'index'): number {
   const result = count(value, what);
   if (result < 0 || result >= size) {
     throw new ExecutionError(
@@ -70,8 +62,8 @@ export function assertLimit(size: number, max: number): void {
 }
 
 export function assertExactLayout(
-  actual: LayoutId,
-  expected: LayoutId,
+  actual: number,
+  expected: number,
   what: string,
 ): void {
   if (actual !== expected) {
@@ -80,8 +72,8 @@ export function assertExactLayout(
 }
 
 export function assertScalarResultLayout(
-  layouts: ValueLayoutRegistry,
-  id: LayoutId,
+  layouts: StorageTypes,
+  id: number,
   expected: 'int' | 'boolean',
   what: string,
 ): void {
@@ -98,25 +90,25 @@ export function assertScalarResultLayout(
 }
 
 export function collectionLayout(
-  layouts: ValueLayoutRegistry,
-  id: LayoutId,
+  layouts: StorageTypes,
+  id: number,
   kind: 'array',
-): Extract<ValueLayout, {kind: 'array'}>;
+): Extract<StorageType, {kind: 'array'}>;
 export function collectionLayout(
-  layouts: ValueLayoutRegistry,
-  id: LayoutId,
+  layouts: StorageTypes,
+  id: number,
   kind: 'matrix',
-): Extract<ValueLayout, {kind: 'matrix'}>;
+): Extract<StorageType, {kind: 'matrix'}>;
 export function collectionLayout(
-  layouts: ValueLayoutRegistry,
-  id: LayoutId,
+  layouts: StorageTypes,
+  id: number,
   kind: 'map',
-): Extract<ValueLayout, {kind: 'map'}>;
+): Extract<StorageType, {kind: 'map'}>;
 export function collectionLayout(
-  layouts: ValueLayoutRegistry,
-  id: LayoutId,
+  layouts: StorageTypes,
+  id: number,
   kind: 'array' | 'matrix' | 'map',
-): Extract<ValueLayout, {kind: 'array' | 'matrix' | 'map'}> {
+): Extract<StorageType, {kind: 'array' | 'matrix' | 'map'}> {
   const layout = layouts.layout(id);
   if (layout.kind !== kind) {
     return fatal(`layout ${id} is ${layout.kind}, expected ${kind}`);
@@ -126,8 +118,8 @@ export function collectionLayout(
 
 export function requireCollection<C extends CollectionValue['kind']>(
   ctx: Pick<CollectionContext, 'layouts' | 'assertValue'>,
-  value: Value,
-  id: LayoutId,
+  value: Stored,
+  id: number,
   kind: C,
 ): Extract<CollectionValue, {kind: C}> {
   if (value === null) {
@@ -145,7 +137,7 @@ export function requireCollection<C extends CollectionValue['kind']>(
 }
 
 export function arrayValue(
-  layout: LayoutId,
+  layout: number,
   storage: ArrayValue['storage'],
   length: number,
   capacity: number,
@@ -154,7 +146,7 @@ export function arrayValue(
 }
 
 export function matrixValue(
-  layout: LayoutId,
+  layout: number,
   storage: MatrixValue['storage'],
   rows: number,
   columns: number,
@@ -163,7 +155,7 @@ export function matrixValue(
 }
 
 export function mapValue(
-  layout: LayoutId,
+  layout: number,
   storage: MapValue['storage'],
   size: number,
 ): MapValue {

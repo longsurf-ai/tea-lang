@@ -193,7 +193,9 @@ describe('generic sparse effect lowering', () => {
     const schema = cloneSchema(module.outputs.schema);
     const payload = outputFields(schema)[0].type.children[0].type.children[1];
     payload.metadata.set('tea:typeId', 'forged.Other');
-    const forged = {...module, outputs: {...module.outputs, schema}};
+    const forged = Object.assign(module.clone(), {
+      outputs: {...module.outputs, schema},
+    });
 
     const execution = executeTestModule(forged, {
       stream: oneIndex(),

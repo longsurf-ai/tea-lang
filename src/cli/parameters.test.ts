@@ -3,15 +3,15 @@ import {generate} from '../codegen/codegen';
 import {mustBuild} from '../noder/testing';
 import {loadModule} from '../runtime/load';
 import {BindError} from '../runtime/errors';
-import type {ParamSpec} from '../runtime/schema';
+import type {Parameter} from '../runtime/params';
 import {CliParameterError, parseRunParameters} from './parameters';
 
 function spec(
   name: string,
-  type: ParamSpec['type'],
-  defaultValue: ParamSpec['defaultValue'],
-  constraints: ParamSpec['constraints'] = null,
-): ParamSpec {
+  type: Parameter['type'],
+  defaultValue: Parameter['defaultValue'],
+  constraints: Parameter['constraints'] = null,
+): Parameter {
   return {
     name,
     title: null,

@@ -9,7 +9,7 @@ tabwriter); `base` imports nothing outside itself.
   (message + fields) through scoped child loggers over one pluggable sink.
   Logging REPORTS, it never replaces a typed path — user-facing compile
   errors stay in `print.ts` (`Errors`), typed results (`ContextError`,
-  `BindError`) stay typed, and program output flows through OutputSinks.
+  `BindError`) stay typed, and program output flows through ordinary output callbacks/observers.
   No `console.*` outside `main.ts` and sink constructors.
 - Configuration is host-boundary-only (`configureLog` from `main.ts`,
   embedding hosts, or tests): level, per-scope overrides (longest dot

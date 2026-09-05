@@ -1,8 +1,8 @@
 // Purpose: Versioned, bind-independent physical contract shared by WGSL codegen and the WebGPU runtime.
 
-import type {ParamSpec} from '../runtime/schema';
+import type {Parameter} from '../runtime/params';
 
-export const GPU_ARTIFACT_ABI_VERSION = 6 as const;
+export const GPU_ARTIFACT_ABI_VERSION = 7 as const;
 export const GPU_WORKGROUP_SIZE_OVERRIDE = 'tea_workgroup_size';
 
 export const GPU_BUFFER_GROUP = 0;
@@ -72,19 +72,10 @@ export interface WgslModule {
   readonly entryPoint: string;
 }
 
-export interface WgslBindingModule {
-  readonly language: 'javascript-es2015-function-body';
-  // The ordinary generated JSModule. GPU preparation loads it and calls the
-  // same bind() method available to CPU hosts.
-  readonly source: string;
-}
-
-export type WgslResultScalar = 'float' | 'int' | 'bool' | 'enum';
-
 export interface WgslResultChannel {
   /** Index in the embedded module's one output declaration list. */
   readonly outputId: number;
-  readonly scalar: WgslResultScalar;
+  readonly scalar: 'float' | 'int' | 'bool' | 'enum';
   readonly rowCell: number;
 }
 
@@ -158,7 +149,7 @@ export interface WgslStateFrameLayout {
   }[];
 }
 
-export interface WgslOverrideSpec {
+export interface WgslOverride {
   readonly numericId: number;
   readonly id: string;
   readonly defaultValue: number;
@@ -181,9 +172,9 @@ export interface WgslCacheContract {
   readonly storageEntryPoint: string;
   readonly cachedEntryPoint: string;
   readonly overrides: {
-    readonly workgroupSize: WgslOverrideSpec;
-    readonly cacheWordsPerExecution: WgslOverrideSpec;
-    readonly cacheAllocationWords: WgslOverrideSpec;
+    readonly workgroupSize: WgslOverride;
+    readonly cacheWordsPerExecution: WgslOverride;
+    readonly cacheAllocationWords: WgslOverride;
   };
   readonly segments: readonly WgslCacheSegment[];
 }
@@ -193,7 +184,11 @@ export interface CompiledWgslProgram {
   readonly target: 'webgpu-wgsl';
   readonly numeric: WgslNumericContract;
   readonly module: WgslModule;
-  readonly bindingModule: WgslBindingModule;
+  readonly bindingModule: {
+    readonly language: 'typescript-esm';
+    /** Ordinary generated module, loaded and bound through the CPU binder. */
+    readonly source: string;
+  };
   readonly layouts: readonly WgslPhysicalLayout[];
   readonly workgroupSize: readonly [number, number, number];
   readonly externalBuffers: {
@@ -208,18 +203,7 @@ export interface CompiledWgslProgram {
   };
   readonly jobDescriptorLayout: number;
   readonly jobDescriptorByteStride: number;
-  readonly jobDescriptorOffsets: {
-    readonly seriesOffset: number;
-    readonly rowCount: number;
-    readonly resultOffset: number;
-    readonly resultCount: number;
-    readonly effectOffset: number;
-    readonly effectCapacity: number;
-    readonly chunkRows: number;
-    readonly paramsOffset: number;
-    readonly stateOffset: number;
-    readonly stateWords: number;
-  };
+  readonly jobDescriptorOffsets: typeof GPU_JOB_DESCRIPTOR_OFFSETS;
   readonly parameterLayout: number;
   readonly parameterByteStride: number;
   readonly seriesScalarLayout: number;
@@ -245,7 +229,7 @@ export interface CompiledWgslProgram {
   readonly effectPayloadWordCapacity: number;
   readonly maxEffectsPerRow: number;
   readonly literalStrings: readonly string[];
-  readonly params: readonly ParamSpec[];
+  readonly params: readonly Parameter[];
   readonly paramActive: readonly boolean[];
   readonly requiredSeries: readonly {readonly id: string}[];
   readonly resultChannels: readonly WgslResultChannel[];

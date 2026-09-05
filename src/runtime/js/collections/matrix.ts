@@ -3,9 +3,9 @@
 import {fatal} from '../../../base/print';
 import {ExecutionError} from '../../errors';
 import type {CollectionMutation} from '../../module-abi';
-import {isMatrixValue, type MatrixValue, type Value} from '../../value';
+import {isMatrixValue, type MatrixValue, type Stored} from '../../value';
 import type {TypeInfo} from '../heap';
-import {visitRuntimeValueRefs, type LayoutId} from '../../value-layout';
+import {visitRuntimeValueRefs} from '../../storage-types';
 import {createArray} from './array';
 import {
   assertLimit,
@@ -21,16 +21,11 @@ import {
 } from './common';
 
 export interface MatrixStorage {
-  readonly values: readonly Value[];
+  readonly values: readonly Stored[];
   readonly logicalBytes: number;
 }
 
-interface MatrixStorageArgs {
-  readonly values: readonly Value[];
-  readonly logicalBytes: number;
-}
-
-export const MATRIX_STORAGE: TypeInfo<MatrixStorageArgs, MatrixStorage> = {
+export const MATRIX_STORAGE: TypeInfo<MatrixStorage, MatrixStorage> = {
   id: Symbol('tea.matrix.storage'),
   name: 'matrix storage',
   bytesFor(args) {
@@ -53,9 +48,9 @@ export const MATRIX_STORAGE: TypeInfo<MatrixStorageArgs, MatrixStorage> = {
 export function matrixCall(
   ctx: CollectionContext,
   operation: string,
-  resultLayout: LayoutId,
-  args: readonly Value[],
-): Value {
+  resultLayout: number,
+  args: readonly Stored[],
+): Stored {
   if (operation === 'matrix.new') {
     if (args.length === 0) {
       return createMatrix(ctx, resultLayout, 0, 0, []);
@@ -114,7 +109,7 @@ export function matrixCall(
       assertProjectionLayout(ctx, resultLayout, layout.element, operation);
       const column = index(args[1], receiver.columns, 'column');
       const storage = values(ctx, receiver);
-      const result: Value[] = [];
+      const result: Stored[] = [];
       for (let row = 0; row < receiver.rows; row += 1) {
         result.push(storage[row * receiver.columns + column]);
       }
@@ -136,8 +131,8 @@ export function matrixCall(
 
 function assertProjectionLayout(
   ctx: CollectionContext,
-  resultLayout: LayoutId,
-  elementLayout: LayoutId,
+  resultLayout: number,
+  elementLayout: number,
   operation: string,
 ): void {
   const result = collectionLayout(ctx.layouts, resultLayout, 'array');
@@ -147,9 +142,9 @@ function assertProjectionLayout(
 export function matrixMutate(
   ctx: CollectionContext,
   operation: string,
-  layoutId: LayoutId,
-  receiverValue: Value,
-  args: readonly Value[],
+  layoutId: number,
+  receiverValue: Stored,
+  args: readonly Stored[],
 ): CollectionMutation {
   const receiver = requireCollection(ctx, receiverValue, layoutId, 'matrix');
   const layout = collectionLayout(ctx.layouts, layoutId, 'matrix');
@@ -183,10 +178,10 @@ export function matrixMutate(
 
 function createMatrix(
   ctx: CollectionContext,
-  layoutId: LayoutId,
+  layoutId: number,
   rows: number,
   columns: number,
-  elements: readonly Value[],
+  elements: readonly Stored[],
 ): MatrixValue {
   const layout = collectionLayout(ctx.layouts, layoutId, 'matrix');
   const size = matrixSize(rows, columns, ctx.maxElements);
@@ -205,7 +200,7 @@ function createMatrix(
 function replace(
   ctx: CollectionContext,
   receiver: MatrixValue,
-  elements: readonly Value[],
+  elements: readonly Stored[],
 ): MatrixValue {
   const layout = collectionLayout(ctx.layouts, receiver.layout, 'matrix');
   const storage = allocateStorage(ctx, layout.element, elements);
@@ -215,7 +210,7 @@ function replace(
 function values(
   ctx: Pick<CollectionReadContext, 'transaction'>,
   receiver: MatrixValue,
-): readonly Value[] {
+): readonly Stored[] {
   const payload = ctx.transaction.read(receiver.storage);
   const size = receiver.rows * receiver.columns;
   if (payload.values.length !== size) {
@@ -228,8 +223,8 @@ function values(
 
 function allocateStorage(
   ctx: CollectionContext,
-  elementLayout: LayoutId,
-  elements: readonly Value[],
+  elementLayout: number,
+  elements: readonly Stored[],
 ): MatrixValue['storage'] {
   return ctx.transaction.allocate(MATRIX_STORAGE, {
     values: elements,
@@ -249,7 +244,7 @@ function matrixSize(rows: number, columns: number, max: number): number {
 
 function requireMatrixArg(
   ctx: CollectionContext,
-  args: readonly Value[],
+  args: readonly Stored[],
   operation: string,
 ): MatrixValue {
   if (args.length === 0) {
@@ -259,7 +254,7 @@ function requireMatrixArg(
   return requireCollection(ctx, value, valueLayout(value), 'matrix');
 }
 
-function valueLayout(value: Value): LayoutId {
+function valueLayout(value: Stored): number {
   if (!isMatrixValue(value)) {
     if (value === null) {
       // The caller lacks a static layout here only because non-mutating calls
@@ -273,7 +268,7 @@ function valueLayout(value: Value): LayoutId {
 
 function requireArgs(
   operation: string,
-  args: readonly Value[],
+  args: readonly Stored[],
   expected: number,
 ): void {
   if (args.length !== expected) {

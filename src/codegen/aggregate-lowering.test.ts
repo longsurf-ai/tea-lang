@@ -1,3 +1,4 @@
+import type {Module} from '../runtime/module-binding';
 // Purpose: Aggregate codegen contract tests — layouts, reference field stores, and collection locations preserve exact types and evaluation order.
 
 import {describe, expect, test} from 'vitest';
@@ -33,8 +34,10 @@ import {
   type StructField,
   type StructType,
 } from '../ir/type';
-import type {JSModule} from '../runtime/module-abi';
+
 import {loadModule} from '../runtime/load';
+import {capture, unwrap, type Value} from '../runtime/js/value';
+import {StorageTypes} from '../runtime/storage-types';
 import {generate} from './codegen';
 
 const pos = {base: {filename: 'aggregate-lowering.test.tea'}, line: 1, col: 1};
@@ -133,11 +136,11 @@ function program(body: readonly IrStmt[]): Program {
   };
 }
 
-function compile(ir: Program): JSModule & {
+function compile(ir: Program): Module & {
   readonly abi: number;
 } {
   const js = generate(ir);
-  return loadModule(js) as JSModule & {
+  return loadModule(js) as Module & {
     readonly abi: number;
   };
 }
@@ -164,6 +167,7 @@ interface TestFrame {
 }
 
 function executionRuntime(
+  module: Module,
   root: TestFrame,
   events: string[],
 ): Record<string, unknown> {
@@ -178,7 +182,7 @@ function executionRuntime(
     }
     return value;
   };
-  return {
+  const storage = {
     root: () => root,
     read: (frame: TestFrame, slot: number, offset: number) => {
       expect(offset).toBe(0);
@@ -252,6 +256,41 @@ function executionRuntime(
       };
     },
   };
+  const context = {
+    storage,
+    layouts: new StorageTypes(module.state.layout),
+    capture: (raw: unknown, layout: number): Value<unknown> =>
+      capture(context as never, raw as never, layout),
+    state: {} as unknown,
+  };
+  const frameOf = (frame: TestFrame, id: number): unknown => ({
+    locals: Object.fromEntries(
+      module.state.frames[id].locals.map((local, slot) => [
+        local.name,
+        {
+          hist: (offset: number) =>
+            context.capture(storage.read(frame, slot, offset), local.layout),
+          set: (value: Value<unknown>) =>
+            storage.write(frame, slot, unwrap(value)),
+          init: (value: () => Value<unknown>) => {
+            if (frame.values[slot] === undefined)
+              storage.write(frame, slot, unwrap(value()));
+          },
+        },
+      ]),
+    ),
+    calls: Object.defineProperties(
+      {},
+      Object.fromEntries(
+        module.state.frames[id].subs.map((child, slot) => [
+          child.name!,
+          {get: () => frameOf(storage.frame(frame, slot), child.fid)},
+        ]),
+      ),
+    ),
+  });
+  context.state = frameOf(root, 0);
+  return context;
 }
 
 describe('aggregate expression and reference-store lowering', () => {
@@ -273,7 +312,7 @@ describe('aggregate expression and reference-store lowering', () => {
       ]),
     );
     const frame: TestFrame = {values: [], subs: new Map()};
-    module.main(executionRuntime(frame, []) as never, frame as never);
+    module.main(executionRuntime(module, frame, []) as never);
 
     expect(frame.values[0]).toBeNull();
     expect(Number.isNaN(frame.values[1] as number)).toBe(true);
@@ -310,7 +349,7 @@ describe('aggregate expression and reference-store lowering', () => {
       ]),
     );
     const frame: TestFrame = {values: [], subs: new Map()};
-    module.main(executionRuntime(frame, []) as never, frame as never);
+    module.main(executionRuntime(module, frame, []) as never);
 
     expect((frame.values[0] as TestStructValue).fields).toEqual([5, 9]);
     expect(frame.values[1]).toBe(9);
@@ -383,7 +422,7 @@ describe('aggregate expression and reference-store lowering', () => {
     );
     const frame: TestFrame = {values: [], subs: new Map()};
     const events: string[] = [];
-    module.main(executionRuntime(frame, events) as never, frame as never);
+    module.main(executionRuntime(module, frame, events) as never);
 
     const result = frame.values[0] as TestStructValue;
     expect((result.fields[0] as TestCollectionValue).values).toEqual([1, 2]);
@@ -467,7 +506,7 @@ describe('aggregate expression and reference-store lowering', () => {
     const module = compile(ir);
     const frame: TestFrame = {values: [], subs: new Map()};
     const events: string[] = [];
-    module.main(executionRuntime(frame, events) as never, frame as never);
+    module.main(executionRuntime(module, frame, events) as never);
 
     expect(frame.values[1]).toBe(6);
     const result = frame.values[0] as TestStructValue;
@@ -547,7 +586,7 @@ describe('aggregate expression and reference-store lowering', () => {
     const module = compile(ir);
     const frame: TestFrame = {values: [], subs: new Map()};
     const events: string[] = [];
-    module.main(executionRuntime(frame, events) as never, frame as never);
+    module.main(executionRuntime(module, frame, events) as never);
 
     const result = frame.values[0] as TestStructValue;
     expect((result.fields[0] as TestStructValue).fields[0]).toBe(5);
@@ -618,14 +657,14 @@ describe('aggregate expression and reference-store lowering', () => {
     const js = generate(ir);
     const module = compile(ir);
     const frame: TestFrame = {values: [], subs: new Map()};
-    module.main(executionRuntime(frame, []) as never, frame as never);
+    module.main(executionRuntime(module, frame, []) as never);
 
     expect((frame.values[0] as TestStructValue).fields).toEqual([5]);
     expect(frame.values[1]).toBe(5);
     expect(js).not.toMatch(/ctx\.write\(fr, \d+, p\d+\)/);
-    expect(js).toContain('p1 = (');
-    expect(js).toMatch(/ctx\.requireStruct\(\(t\d+\), 0\)/);
-    expect(js).toContain('ctx.storeStructField((');
+    expect(js).toContain('amount = (');
+    expect(js).toContain('.require()');
+    expect(js).toContain('.field("x")');
     expect(js).not.toContain('return {receiver:');
   });
 
@@ -657,8 +696,8 @@ describe('aggregate expression and reference-store lowering', () => {
       ]),
     );
 
-    expect(js).toContain('ctx.write(fr, 0, p0);');
-    expect(js).toContain('ctx.read(fr, 0, t0)');
+    expect(js).toContain('frame.locals.source.set(source);');
+    expect(js).toContain('frame.locals.source.hist((t0).value)');
   });
 
   test('shares a nested mutable method receiver through the outer receiver', () => {
@@ -738,10 +777,10 @@ describe('aggregate expression and reference-store lowering', () => {
     const js = generate(ir);
     const module = compile(ir);
     const frame: TestFrame = {values: [], subs: new Map()};
-    module.main(executionRuntime(frame, []) as never, frame as never);
+    module.main(executionRuntime(module, frame, []) as never);
 
     expect(js).not.toContain('rebuild');
-    expect(js).toContain('ctx.storeStructField((');
+    expect(js).toContain('.field("x")');
     const result = frame.values[0] as TestStructValue;
     expect((result.fields[0] as TestStructValue).fields).toEqual([5]);
     expect(frame.values[1]).toBe(5);
@@ -829,7 +868,7 @@ describe('aggregate expression and reference-store lowering', () => {
     );
     const frame: TestFrame = {values: [], subs: new Map()};
     expect(() =>
-      module.main(executionRuntime(frame, []) as never, frame as never),
+      module.main(executionRuntime(module, frame, []) as never),
     ).toThrow('unexpected mutation array.set');
     // This minimal ABI mock has no HeapTransaction. Generated code performs
     // the in-place store before the later throw; the real StructStorageRuntime

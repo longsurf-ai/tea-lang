@@ -32,7 +32,7 @@ device resources, dispatch, readback, decoding, and publication.
   artifact and device limit; disposing a session releases only session-created
   GPU resources.
 
-- The module schema decodes from standard Arrow IPC. Each sink receives its
-  own declaration; publication uses named `outputN` records and `effectN` lists
+- The embedded TypeScript constructs ordinary Arrow schemas. Each declaration
+  callback receives its own schema copy; publication uses named `outputN` records and `effectN` lists
   with global ordinals through shared `createDatum()`. GPU supports its existing
   scalar subset only; Arrow lists and structs do not imply GPU execution support.

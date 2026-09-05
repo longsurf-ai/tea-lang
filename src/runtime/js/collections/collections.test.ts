@@ -1,14 +1,15 @@
 // Purpose: Observable array, matrix, ordered-map, nesting, struct-reference, snapshot, and eager-copy-model conformance tests.
 
 import {describe, expect, test} from 'vitest';
-import {ExecutionError, type CollectionValue, type Value} from '../../abi';
+import {ExecutionError} from '../../errors';
+import type {CollectionValue, Stored} from '../../value';
 import {ArenaHeap, type HeapTransaction, type Ref} from '../heap';
-import {StructStorageRuntime, type StructRef} from '../struct-storage';
+import {StructStorageRuntime, type StructStorage} from '../struct-storage';
 import {
-  ValueLayoutRegistry,
+  StorageTypes,
   visitRuntimeValueRefs,
-  type ValueLayout,
-} from '../../value-layout';
+  type StorageType,
+} from '../../storage-types';
 import {CollectionRuntime} from './index';
 
 const INT = 0;
@@ -48,18 +49,18 @@ const MANIFEST = [
     name: 'Holder',
     fields: [{name: 'values', layout: INTS}],
   },
-] as const satisfies readonly ValueLayout[];
+] as const satisfies readonly StorageType[];
 
 interface Harness {
   readonly heap: ArenaHeap;
-  readonly layouts: ValueLayoutRegistry;
+  readonly layouts: StorageTypes;
   readonly collections: CollectionRuntime;
   readonly structs: StructStorageRuntime;
 }
 
 function harness(maxElements = 100): Harness {
   const heap = new ArenaHeap();
-  const layouts = new ValueLayoutRegistry(MANIFEST);
+  const layouts = new StorageTypes(MANIFEST);
   const structs = new StructStorageRuntime(heap, layouts);
   return {
     heap,
@@ -72,15 +73,15 @@ function harness(maxElements = 100): Harness {
 function constructStruct(
   h: Harness,
   layout: number,
-  fields: readonly Value[],
-): StructRef {
+  fields: readonly Stored[],
+): Ref<StructStorage> {
   const transaction = h.heap.begin(`struct:${layout}`);
   const value = h.structs.newStruct(transaction, layout, fields);
   commit(transaction, [value]);
   return value;
 }
 
-function roots(values: readonly Value[]): Ref[] {
+function roots(values: readonly Stored[]): Ref[] {
   const result: Ref[] = [];
   values.forEach(value =>
     visitRuntimeValueRefs(value, ref => result.push(ref)),
@@ -88,7 +89,7 @@ function roots(values: readonly Value[]): Ref[] {
   return result;
 }
 
-function commit(transaction: HeapTransaction, values: readonly Value[]): void {
+function commit(transaction: HeapTransaction, values: readonly Stored[]): void {
   void values;
   transaction.commit();
 }
@@ -97,7 +98,7 @@ function construct(
   h: Harness,
   operation: 'array.from' | 'array.new' | 'matrix.new' | 'map.new',
   layout: number,
-  args: readonly Value[],
+  args: readonly Stored[],
 ): CollectionValue {
   const transaction = h.heap.begin(operation);
   const value = h.collections.call(transaction, operation, layout, args);
@@ -116,8 +117,8 @@ function read(
     | 'map.keys'
     | 'map.values',
   layout: number,
-  args: readonly Value[],
-): Value {
+  args: readonly Stored[],
+): Stored {
   const transaction = h.heap.begin(operation);
   const value = h.collections.call(transaction, operation, layout, args);
   transaction.abort();

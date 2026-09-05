@@ -5,7 +5,6 @@ import {ExecutionError} from '../errors';
 import {
   ArenaHeap,
   isRef,
-  type AnyRef,
   type HeapTransaction,
   type Ref,
   type TypeInfo,
@@ -13,12 +12,12 @@ import {
 
 interface NodeValue {
   readonly value: number;
-  readonly children: readonly AnyRef[];
+  readonly children: readonly Ref<unknown>[];
 }
 
 interface NodeArgs {
   readonly value: number;
-  readonly children?: readonly AnyRef[];
+  readonly children?: readonly Ref<unknown>[];
 }
 
 const NODE: TypeInfo<NodeArgs, NodeValue> = {
@@ -60,7 +59,7 @@ const BOX: TypeInfo<BoxValue, BoxValue> = {
 function commit(
   heap: ArenaHeap,
   transaction: HeapTransaction,
-  roots: Iterable<AnyRef>,
+  roots: Iterable<Ref<unknown>>,
 ): void {
   transaction.commit();
   heap.replaceRoots(roots);

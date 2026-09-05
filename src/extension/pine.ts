@@ -1,9 +1,10 @@
+import type {Module} from '../runtime/module-binding';
 // Purpose: Concrete Pine contextual values derived from public Node inputs.
 
 import {BindError} from '../runtime/errors';
-import type {BuiltinSpec, JSModule} from '../runtime/module-abi';
-import type {Value} from '../runtime/value';
-import {ValueLayoutRegistry} from '../runtime/value-layout';
+import type {Builtin} from '../runtime/module-abi';
+import type {Stored} from '../runtime/value';
+import {StorageTypes} from '../runtime/storage-types';
 
 /**
  * Supply per-step Pine values from the Node's position, extent, and source time.
@@ -14,14 +15,14 @@ import {ValueLayoutRegistry} from '../runtime/value-layout';
  */
 export function pineBuiltinSupplier(now: () => number = Date.now) {
   let timeNow: number | null = null;
-  const layouts = new WeakMap<object, ValueLayoutRegistry>();
+  const layouts = new WeakMap<object, StorageTypes>();
   return (
     _path: readonly number[],
-    module: JSModule,
+    module: Module,
     index: number,
     indices: number | null,
     datum: Readonly<Record<string, unknown>>,
-  ): readonly Value[] => {
+  ): readonly Stored[] => {
     if (timeNow === null) {
       timeNow = now();
       if (!Number.isSafeInteger(timeNow)) {
@@ -30,7 +31,7 @@ export function pineBuiltinSupplier(now: () => number = Date.now) {
     }
     let registry = layouts.get(module.state.layout);
     if (registry === undefined) {
-      registry = new ValueLayoutRegistry(module.state.layout);
+      registry = new StorageTypes(module.state.layout);
       layouts.set(module.state.layout, registry);
     }
     return module.inputs.builtins.map(spec =>
@@ -40,16 +41,16 @@ export function pineBuiltinSupplier(now: () => number = Date.now) {
 }
 
 function builtinValue(
-  spec: BuiltinSpec,
+  spec: Builtin,
   index: number,
   indices: number | null,
   datum: Readonly<Record<string, unknown>>,
   timeNow: number,
-  layouts: ValueLayoutRegistry,
-): Value {
+  layouts: StorageTypes,
+): Stored {
   layouts.layout(spec.layout);
   const source = spec.source;
-  let value: Value;
+  let value: Stored;
   switch (source.domain) {
     case 'time':
       switch (source.field) {
@@ -124,7 +125,7 @@ function finiteIndices(indices: number | null, builtin: string): number {
   return indices;
 }
 
-function builtinName(spec: BuiltinSpec): string {
+function builtinName(spec: Builtin): string {
   const source = spec.source;
   switch (source.domain) {
     case 'time':

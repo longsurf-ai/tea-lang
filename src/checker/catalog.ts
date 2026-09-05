@@ -1,6 +1,6 @@
 // Purpose: Native catalog — the single declaration surface for host primitives: signatures, qualifier caps, const-literal requirements, effect classes. A builtin is listed here only if it is inexpressible in Tea; all of ta.* is prelude code, never catalog.
 
-import type {DataSeriesId, BuiltinSource} from '../ir/builtin';
+import type {BuiltinSource} from '../ir/builtin';
 import {
   BoolType,
   ColorType,
@@ -126,7 +126,7 @@ export interface NativeFunc {
   readonly result: NativeResult;
   readonly resultQualifier: ResultQualifier;
   readonly effect: NativeEffect;
-  // Mints a per-call-site SlotId (a sub-frame in the caller's frame). None of
+  // Mints a per-call-site slot (a sub-frame in the caller's frame). None of
   // the seed natives carry slot state; ta.* is prelude and gets its state
   // from ordinary function semantics.
   readonly stateful: boolean;
@@ -138,7 +138,7 @@ export interface NativeFunc {
 // The catalog classifies every non-const builtin explicitly. No downstream
 // pass may infer its runtime carrier by parsing the source spelling.
 export type BuiltinBinding =
-  | {readonly kind: 'series'; readonly id: DataSeriesId}
+  | {readonly kind: 'series'; readonly id: string}
   | {readonly kind: 'builtin'; readonly source: BuiltinSource};
 
 interface NativeVarBase {

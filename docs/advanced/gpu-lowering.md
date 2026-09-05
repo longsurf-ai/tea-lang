@@ -3,7 +3,7 @@ title: GPU lowering and execution
 sidebarTitle: GPU lowering
 ---
 
-Tea's WGSL backend consumes the same checked Program as JavaScript. It either
+Tea's WGSL backend consumes the same checked Program as the TypeScript backend. It either
 emits one complete `CompiledWgslProgram` or returns a precise eligibility
 ledger. It never emits a partial shader and never falls back silently.
 
@@ -12,16 +12,19 @@ ledger. It never emits a partial shader and never falls back silently.
 The artifact contains:
 
 - WGSL source and entry points;
-- the generated JavaScript binding module;
+- the generated TypeScript Module used for parameter binding;
 - required numeric-series ids;
-- parameter and output layouts;
+- parameter contracts and physical output layouts;
 - fixed job-descriptor offsets and scalar strides;
 - persistent frame/history state layout;
-- result channels and effect schemas;
+- result channels and append-output codecs;
 - the compiler-proved maximum effects per row.
 
-It contains no device, dataset, parameter scenario, buffer, or application
-source object. One artifact can execute many concrete bindings.
+Arrow schemas live once in the embedded Module. Result channels and append
+codecs describe only GPU buffer locations; they do not repeat logical schemas.
+
+The artifact contains no device, dataset, parameter scenario, buffer, or
+application source object. One artifact can execute many concrete bindings.
 
 ## Concrete GPU bindings
 
@@ -34,7 +37,12 @@ const execution = await createGpuExecution(device, artifact, [
     indices: close.length,
     series: {close},
     time,
-    sink,
+    declare(outputs) {
+      console.log(outputs.schema.fields.map(field => field.name));
+    },
+    next(datum) {
+      console.log(datum.index, datum.output0);
+    },
   },
 ]);
 
@@ -42,8 +50,9 @@ await execution.runAll();
 execution.dispose();
 ```
 
-The application passes these values directly to `createGpuExecution()`; there
-is no backend union or generic job-plan layer.
+The declaration callback runs before any rows, including for an empty binding.
+The returned Promise owns completion and failure. The runtime clones and binds
+the embedded Module independently for each parameter set.
 
 Preparation validates:
 
@@ -102,7 +111,7 @@ After dispatch, the runtime:
 3. constructs complete lossless Datums;
 4. publishes only after the whole chunk passes validation.
 
-An overflow, decode error, or sink exception makes the session terminal. Prior
+An overflow, decode error, or callback exception makes the session terminal. Prior
 successful chunks are never retried. `dispose()` destroys only buffers and
 pipelines created by the session; the application retains its GPUDevice.
 
@@ -112,7 +121,7 @@ The GPU supports deterministic numeric programs with:
 
 - fixed numeric series;
 - fixed-width int, float, bool, and enum parameters;
-- bounded loops and history;
+- numeric loops and retained history;
 - scalar dense outputs;
 - supported scalar and enum effect payloads;
 - `bar_index` and final-index state derived by the backend.
@@ -125,5 +134,5 @@ that the backend cannot derive exactly.
 
 Unit tests validate parameters, history layout, result/effect capacity, and
 resource planning without a device. The Dawn gate executes real WebGPU work
-using one concrete binding and checks dense output transport, source-time
-preservation, and fail-closed strategy struct boundaries.
+and checks output transport, source-time preservation, binding isolation,
+and fail-closed strategy struct boundaries.

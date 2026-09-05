@@ -1,3 +1,4 @@
+import type {Module} from '../runtime/module-binding';
 // Purpose: Fail-closed execution conformance harness — every committed case runs through compile, load, bind, runAll, and the CLI trace formatter against independently reviewed, hash-pinned references.
 
 import {existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
@@ -8,7 +9,9 @@ import {describe, expect, test} from 'vitest';
 import {formatPos} from '../base/pos';
 import {traceDatum, traceDeclaration} from '../cli/output';
 import {compile} from '../compiler';
-import type {BoundInput, OutputSink, Value} from '../runtime/abi';
+import type {Datum} from '../runtime/output';
+import type {Stored} from '../runtime/value';
+
 import {OutputCapture} from './output';
 import {loadModule} from '../runtime/load';
 import {csvStream, executeTestModule} from './batch';
@@ -46,12 +49,12 @@ function allFiles(root: string): string[] {
 class ConformanceSink extends OutputCapture {
   readonly traceLines: string[] = [];
 
-  override declare(declaration: Parameters<OutputSink['declare']>[0]): void {
+  override declare(declaration: Module['outputs']): void {
     super.declare(declaration);
     this.traceLines.push(...traceDeclaration(declaration));
   }
 
-  override publish(publication: Parameters<OutputSink['publish']>[0]): void {
+  override publish(publication: Datum): void {
     super.publish(publication);
     this.traceLines.push(...traceDatum(publication));
   }
@@ -95,14 +98,30 @@ function expectSinkFiniteOrNa(sink: ConformanceSink, label: string): void {
 }
 
 function expectInputs(
-  actual: readonly BoundInput[],
+  actual: Module['parameters'],
   expected: ExpectedBinding['inputs'],
   label: string,
 ): void {
   actual.forEach((input, i) =>
     expectFiniteOrNa(input.value, `${label}.inputs[${i}].value`),
   );
-  expect(actual, `${label}.inputs`).toEqual(expected);
+  expect(
+    actual.map(({value, active, enumType, ...spec}) => ({
+      spec: {
+        ...spec,
+        enumType:
+          enumType === null
+            ? null
+            : {
+                name: enumType.name,
+                members: enumType.members,
+              },
+      },
+      value,
+      active,
+    })),
+    `${label}.inputs`,
+  ).toEqual(expected);
 }
 
 function expectValue(
@@ -135,7 +154,7 @@ function expectValue(
 }
 
 function expectArgs(
-  actual: readonly {readonly name: string; readonly value: Value}[],
+  actual: readonly {readonly name: string; readonly value: Stored}[],
   expected: readonly (readonly [string, JsonScalar])[],
   label: string,
 ): void {
@@ -198,7 +217,7 @@ async function runCase(entry: CorpusCase): Promise<{
         .join('\n')}`,
     );
   }
-  const module = loadModule(result.js);
+  const module = loadModule(result.source);
   const sink = new ConformanceSink();
   const primary = reference.bindings[0];
   const data = readFileSync(join(EXECUTION_ROOT, entry.data), 'utf8');

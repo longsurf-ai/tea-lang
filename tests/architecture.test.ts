@@ -136,7 +136,7 @@ test('GPU artifact contract is neutral and shared by producer and consumer', () 
   const codegen = resolve(SOURCE_ROOT, 'codegen');
   const runtime = resolve(SOURCE_ROOT, 'runtime');
   const contract = resolve(SOURCE_ROOT, 'gpu/contract');
-  const schema = resolve(runtime, 'schema');
+  const parameters = resolve(runtime, 'params');
   const contractSource = `${contract}.ts`;
 
   const contractTargets = localTargets(contractSource);
@@ -144,7 +144,7 @@ test('GPU artifact contract is neutral and shared by producer and consumer', () 
     contractTargets.filter(
       target =>
         isWithin(target, codegen) ||
-        (isWithin(target, runtime) && target !== schema),
+        (isWithin(target, runtime) && target !== parameters),
     ),
   ).toEqual([]);
   expect(

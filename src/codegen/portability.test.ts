@@ -1,9 +1,10 @@
-// Purpose: Portability gate — generated modules must stay strict-mode ES2015 FunctionBody with whitelisted globals only, so any ES2015 engine executes them; parse-enforced so the ceiling cannot drift.
+// Purpose: Generated artifacts are ordinary TypeScript modules with only deterministic runtime imports.
 
 import {describe, expect, test} from 'vitest';
-import {parse} from 'acorn';
+import ts from 'typescript';
 import {mustBuild} from '../noder/testing';
 import {generate} from './codegen';
+import {checkGenerated} from './check';
 
 const SOURCES = [
   // Exercises funcs, loops, switch dispatch, tuples, and bind-time args.
@@ -31,20 +32,16 @@ const SOURCES = [
   ].join(String.fromCharCode(10)),
 ];
 
-// Syntax past ES2015 or impure globals that must never appear.
+// Host I/O and obsolete artifact machinery never belong in generated programs.
 const DENY = [
   /\bpadStart\b/,
   /\bpadEnd\b/,
   /\*\*/,
-  /\?\./,
-  /\?\?/,
   /\basync\b/,
   /\bawait\b/,
   /\bDate\b/,
   /Math\.random/,
-  /\brequire\b/,
-  /\bimport\b/,
-  /\bexport\b/,
+  /(?<!\.)\brequire\(/,
   /\bevaluateBinding\b/,
   /\$evaluate\b/,
   /\$module\b/,
@@ -52,18 +49,36 @@ const DENY = [
 
 describe('generated-module portability', () => {
   for (const [i, src] of SOURCES.entries()) {
-    test(`module ${i} parses as strict ES2015 and avoids denied tokens`, () => {
-      const js = generate(mustBuild(src));
-      // The artifact is a FunctionBody; parse it in function context.
-      expect(() =>
-        parse(`(function () {${String.fromCharCode(10)}${js}})`, {
-          ecmaVersion: 2015,
-          sourceType: 'script',
-        }),
-      ).not.toThrow();
-      for (const pattern of DENY) {
-        expect(js).not.toMatch(pattern);
-      }
+    test(`module ${i} parses as TypeScript and imports only the runtime`, () => {
+      const source = generate(mustBuild(src));
+      expect(() => checkGenerated(source)).not.toThrow();
+      const parsed = ts.createSourceFile(
+        'program.ts',
+        source,
+        ts.ScriptTarget.ESNext,
+        true,
+        ts.ScriptKind.TS,
+      );
+      const transpiled = ts.transpileModule(source, {
+        compilerOptions: {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.ESNext,
+        },
+        reportDiagnostics: true,
+      });
+      expect(transpiled.diagnostics).toEqual([]);
+      const imports = parsed.statements.filter(ts.isImportDeclaration);
+      expect(
+        imports.map(
+          declaration => (declaration.moduleSpecifier as ts.StringLiteral).text,
+        ),
+      ).toEqual(['tea/runtime']);
+      expect(parsed.statements.some(ts.isExportAssignment)).toBe(true);
+      expect(source).not.toMatch(
+        /ctx\.(read|write|frame|series|builtin|param|emit|append)\(/,
+      );
+      expect(source).not.toContain('funcs:');
+      for (const pattern of DENY) expect(source).not.toMatch(pattern);
     });
   }
 });

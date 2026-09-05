@@ -263,11 +263,10 @@ typed `Ref<V>` and Heap framework. Collection backing and struct field storage
 have different `TypeInfo<A, V>` policies over the same reference, transaction,
 version guard, limits, reachability graph, and garbage collector.
 
-In `JSRuntime`, the Heap is an owned execution resource, not part of
-the `Intermediate` value. `Intermediate` contains only same-row frame state;
-`JSRuntime` owns and disposes the Heap and injects it into the state
-transition. A transition result can therefore replace State/Intermediate
-without transferring storage ownership to its caller.
+In `Context`, the Heap is an owned execution resource, separate from committed
+history and same-index values. `Context` owns and disposes the Heap and supplies
+the active transaction to value operations. A successful step replaces its
+state without transferring storage ownership to the caller.
 
 Collection operations allocate persistent replacement backing. A struct field
 write stages a complete replacement body for the existing `Ref`; transactional

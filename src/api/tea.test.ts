@@ -23,7 +23,7 @@ import {TeaCompileError, tea} from './tea';
 const numericSchema = new Schema([new Field('close', new Float64(), false)]);
 
 describe('tea', () => {
-  test('compiles an indented template into a generated JSModule', () => {
+  test('compiles an indented template into a generated Module', () => {
     const fastWindow = 14;
     const node = tea`
       //@version=1

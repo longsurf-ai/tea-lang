@@ -235,10 +235,10 @@ test('one Arrow schema owns set and append declarations and their unified IDs', 
     ['args', 'layouts'],
     ['args', 'layouts'],
   ]);
-  expect(source).toContain('ctx.append(1,');
-  expect(source).toContain('ctx.emit(0, 0,');
-  expect(source.indexOf('ctx.append(1,')).toBeLessThan(
-    source.indexOf('ctx.emit(0, 0,'),
+  expect(source).toContain('ctx.outputs.effect0.append(');
+  expect(source).toContain('ctx.outputs.output0.set(');
+  expect(source.indexOf('ctx.outputs.effect0.append(')).toBeLessThan(
+    source.indexOf('ctx.outputs.output0.set('),
   );
   expect(module).not.toHaveProperty('manifest');
   expect(module).not.toHaveProperty('concretize');

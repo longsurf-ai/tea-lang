@@ -26,6 +26,11 @@
       "development": "./src/index.ts",
       "default": "./dist/loader/index.js"
     },
+    "./runtime": {
+      "types": "./src/runtime/index.ts",
+      "development": "./src/runtime/index.ts",
+      "default": "./dist/runtime/index.js"
+    },
     "./codegen/wgsl": "./src/codegen/wgsl/index.ts",
     "./runtime/gpu": "./src/runtime/gpu/index.ts",
     "./*": "./src/*.ts"
@@ -46,7 +51,7 @@
     "prepack": "npm run docs:build",
     "prepare": "npm run build:package",
     "test:gpu": "node --import tsx --test src/runtime/gpu/dawn.integration.ts && node --import tsx --test tests/examples.gpu.integration.ts",
-    "test:package": "npm run build:package && node examples/api/simple-sync.ts",
+    "test:package": "npm run build:package && node examples/api/simple-sync.ts && node --import tsx scripts/test-package.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --no-file-parallelism"
   },
@@ -56,9 +61,11 @@
     "csv-parse": "7.0.2",
     "csv-stringify": "6.8.3",
     "effect": "3.22.1",
+    "esbuild": "0.28.2",
     "open": "10.0.0",
     "rxjs": "^7.8.2",
     "tsx": "4.23.10",
+    "typescript": "5.8.3",
     "zod": "4.3.6"
   },
   "optionalDependencies": {
@@ -77,12 +84,10 @@
     "@types/react-dom": "19.2.3",
     "@webgpu/types": "0.1.71",
     "acorn": "8.18.0",
-    "esbuild": "0.28.2",
     "prettier": "3.8.1",
     "prism-react-renderer": "2.4.1",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "typescript": "5.8.3",
     "vitest": "4.1.11",
     "vscode-oniguruma": "2.0.1",
     "vscode-textmate": "9.3.2"

@@ -1,7 +1,7 @@
 // Purpose: Tea Program contract — the compiler's complete static description of a script; the runtime implements the Time Machine (buffers, copy-on-write, rollback) from this description.
 
 import type {Pos} from '../base/pos';
-import type {DataSeriesId, BuiltinSource} from './builtin';
+import type {BuiltinSource} from './builtin';
 import type {HistoryDepth, IrExpr, IrStmt, Name} from './node';
 import type {ConstValue, Qualifier, Type} from './type';
 
@@ -72,7 +72,7 @@ export interface ParamInput {
 // bound by host id (close, volume, hl2, ...). Typed builtins live in
 // BuiltinInput instead of widening this numeric data plane.
 export interface SeriesInput {
-  readonly id: DataSeriesId;
+  readonly id: string;
   readonly type: Type;
   readonly qualifier: Qualifier;
   // History demanded on this input by the body (close[500]); the runtime
@@ -134,10 +134,10 @@ export const MergeMode = {
   Collect: 'collect', // lower-timeframe array-per-bar
 } as const;
 
-export type MergeModeName = (typeof MergeMode)[keyof typeof MergeMode];
+export type MergeMode = (typeof MergeMode)[keyof typeof MergeMode];
 
 export interface MergePolicy {
-  readonly mode: MergeModeName;
+  readonly mode: MergeMode;
   // When a child interval becomes eligible for a parent interval.
   readonly availability: IrExpr;
   // Whether an eligible child value carries forward between child updates.

@@ -1,7 +1,7 @@
 // Purpose: Deterministic collection traces compare immutable runtime headers with independent eager-copy reference models.
 
 import {describe, expect, test} from 'vitest';
-import {type CollectionValue, type Value} from '../../abi';
+import {type CollectionValue, type Stored} from '../../value';
 import {ArenaHeap, type HeapTransaction, type Ref} from '../heap';
 import type {
   CollectionMutation,
@@ -10,10 +10,10 @@ import type {
 } from '../../module-abi';
 import {StructStorageRuntime} from '../struct-storage';
 import {
-  type ValueLayout,
-  ValueLayoutRegistry,
+  type StorageType,
+  StorageTypes,
   visitRuntimeValueRefs,
-} from '../../value-layout';
+} from '../../storage-types';
 import {CollectionRuntime} from './index';
 
 const INT = 0;
@@ -58,11 +58,11 @@ const LAYOUTS = [
   {kind: 'array', element: FLOAT},
   {kind: 'array', element: STRING},
   {kind: 'boolean'},
-] as const satisfies readonly ValueLayout[];
+] as const satisfies readonly StorageType[];
 
 interface Harness {
   readonly heap: ArenaHeap;
-  readonly layouts: ValueLayoutRegistry;
+  readonly layouts: StorageTypes;
   readonly collections: CollectionRuntime;
   readonly structs: StructStorageRuntime;
   transaction: number;
@@ -70,7 +70,7 @@ interface Harness {
 
 function harness(maxElements = 10_000): Harness {
   const heap = new ArenaHeap();
-  const layouts = new ValueLayoutRegistry(LAYOUTS);
+  const layouts = new StorageTypes(LAYOUTS);
   const structs = new StructStorageRuntime(heap, layouts);
   return {
     heap,
@@ -81,7 +81,7 @@ function harness(maxElements = 10_000): Harness {
   };
 }
 
-function roots(values: readonly Value[]): Ref[] {
+function roots(values: readonly Stored[]): Ref[] {
   const result: Ref[] = [];
   values.forEach(value =>
     visitRuntimeValueRefs(value, ref => result.push(ref)),
@@ -89,7 +89,7 @@ function roots(values: readonly Value[]): Ref[] {
   return result;
 }
 
-function commit(transaction: HeapTransaction, values: readonly Value[]): void {
+function commit(transaction: HeapTransaction, values: readonly Stored[]): void {
   void values;
   transaction.commit();
 }
@@ -98,8 +98,8 @@ function call(
   h: Harness,
   operation: CollectionOperation,
   layout: number,
-  args: readonly Value[],
-): Value {
+  args: readonly Stored[],
+): Stored {
   const transaction = h.heap.begin(`call-${h.transaction++}-${operation}`);
   const result = h.collections.call(transaction, operation, layout, args);
   commit(transaction, [result]);
@@ -110,8 +110,8 @@ function mutate(
   h: Harness,
   operation: CollectionMutationOperation,
   layout: number,
-  receiver: Value,
-  args: readonly Value[],
+  receiver: Stored,
+  args: readonly Stored[],
 ): CollectionMutation {
   const transaction = h.heap.begin(`mutate-${h.transaction++}-${operation}`);
   const result = h.collections.mutate(
@@ -154,8 +154,8 @@ function hash(value: unknown): number {
   return result >>> 0;
 }
 
-function arrayValues(h: Harness, value: Value): readonly Value[] {
-  return h.collections.entries(value) as readonly Value[];
+function arrayValues(h: Harness, value: Stored): readonly Stored[] {
+  return h.collections.entries(value) as readonly Stored[];
 }
 
 interface MatrixModel {
@@ -164,7 +164,7 @@ interface MatrixModel {
   readonly values: readonly number[];
 }
 
-function matrixValues(h: Harness, value: Value): MatrixModel {
+function matrixValues(h: Harness, value: Stored): MatrixModel {
   const transaction = h.heap.begin(`matrix-read-${h.transaction++}`);
   const rows = h.collections.call(transaction, 'matrix.rows', INT, [
     value,
@@ -194,9 +194,9 @@ function matrixValues(h: Harness, value: Value): MatrixModel {
 
 function mapValues(
   h: Harness,
-  value: Value,
-): readonly (readonly [Value, Value])[] {
-  return h.collections.entries(value) as readonly (readonly [Value, Value])[];
+  value: Stored,
+): readonly (readonly [Stored, Stored])[] {
+  return h.collections.entries(value) as readonly (readonly [Stored, Stored])[];
 }
 
 describe('collection property traces', () => {
@@ -205,7 +205,7 @@ describe('collection property traces', () => {
     const next = random(0xa221_17f3);
     let value = call(h, 'array.from', INTS, []) as CollectionValue;
     let model: number[] = [];
-    const versions: {value: Value; model: readonly number[]}[] = [];
+    const versions: {value: Stored; model: readonly number[]}[] = [];
 
     for (let step = 0; step < 96; step += 1) {
       versions.push({value, model: [...model]});
@@ -248,7 +248,7 @@ describe('collection property traces', () => {
     const next = random(0x4d41_5458);
     let value = call(h, 'matrix.new', INT_MATRIX, [3, 4, 0]);
     let model: MatrixModel = {rows: 3, columns: 4, values: Array(12).fill(0)};
-    const versions: {value: Value; model: MatrixModel}[] = [];
+    const versions: {value: Stored; model: MatrixModel}[] = [];
 
     for (let step = 0; step < 48; step += 1) {
       versions.push({
@@ -310,7 +310,7 @@ describe('collection property traces', () => {
     let model: (readonly [number, number])[] = [[0, 2]];
     expect(mapValues(h, value)).toEqual(model);
     const versions: {
-      value: Value;
+      value: Stored;
       model: readonly (readonly [number, number])[];
     }[] = [];
 
@@ -390,7 +390,7 @@ describe('collection property traces', () => {
     commit(allocation, [box]);
     const value = call(h, 'array.from', BOXES, [box, box]);
     const historicalHeader = value;
-    const snapshot = (candidate: Value) =>
+    const snapshot = (candidate: Stored) =>
       arrayValues(h, candidate).map(item => {
         const storedPoint = h.structs.field(item, BOX, 0);
         return {
@@ -479,7 +479,7 @@ describe('collection failure contracts', () => {
     expect(
       arrayValues(
         h,
-        call(h, 'map.keys', STRINGS, [removed.replacement]) as Value,
+        call(h, 'map.keys', STRINGS, [removed.replacement]) as Stored,
       ),
     ).toHaveLength(0);
   });
