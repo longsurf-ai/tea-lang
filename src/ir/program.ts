@@ -119,32 +119,8 @@ export interface OutputDecl {
 // payload record, and repeated executions preserve source execution order.
 export interface EffectDecl {
   readonly payloadType: Type;
-  readonly payloadSchema: EffectValueSchema;
   readonly sourcePosition: Pos;
 }
-
-// Backend-neutral sparse-effect payload description. Nominal ids come from
-// checker package/object identity; display names are presentation only.
-export type EffectValueSchema =
-  | {readonly kind: 'int' | 'float' | 'bool' | 'string' | 'color'}
-  | {
-      readonly kind: 'enum';
-      readonly typeId: string;
-      readonly displayName: string;
-      readonly members: readonly {
-        readonly name: string;
-        readonly title: string;
-      }[];
-    }
-  | {
-      readonly kind: 'struct';
-      readonly typeId: string;
-      readonly displayName: string;
-      readonly fields: readonly {
-        readonly name: string;
-        readonly value: EffectValueSchema;
-      }[];
-    };
 
 // How a child Program's bars project onto the parent axis.
 export const MergeMode = {
@@ -268,6 +244,14 @@ export type IrFunc = FreeIrFunc | ConstMethodIrFunc | MutableMethodIrFunc;
 export interface Program {
   // Declared Tea language version.
   readonly version: number;
+  /**
+   * Canonical declaration identities retained from checking. Arrow projection
+   * uses these identities as metadata; structural fields still come from Type.
+   *
+   * @example `nominalIds.get(eventType)` returns `"@entry.Event"`, even when
+   * another package also declares a type named `Event`.
+   */
+  readonly nominalIds: ReadonlyMap<Type, string>;
   readonly params: readonly ParamInput[];
   readonly requests: readonly RequestEdge[];
   readonly outputs: readonly OutputDecl[];

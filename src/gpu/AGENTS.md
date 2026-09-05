@@ -12,12 +12,18 @@ runtime consumes it.
   results.
 - `GPU_ARTIFACT_ABI_VERSION` is the sole physical ABI version source. Fixed
   bindings, offsets, and strides must not be duplicated in codegen or runtime.
-- Logical parameter/effect schemas come from `runtime/schema.ts`; physical
-  WGSL layouts remain explicit fields of the artifact.
+- Logical input/output/effect types use Arrow. Output and effect schemas are
+  standard Arrow IPC byte arrays; parameters retain `runtime/schema.ts` binding
+  semantics. Physical WGSL layouts and result codecs remain explicit artifact
+  fields, never another structural I/O schema.
 - Reference structs have no GPU lowering yet. The WGSL producer must return a
   stable staged-unsupported issue before emitting an artifact containing a
-  struct value or effect schema.
-- The ABI also carries the ordinary generated Runtime-ABI-7 `JSModule`, fixed
+  struct value or physical effect codec.
+- ABI 5 replaces channel transport tags and effect payload type trees with
+  Arrow IPC schemas. `rowCells` maps fields to physical result cells;
+  `WgslCodec` describes only scalar offsets/encodings. Existing buffer offsets
+  and supported scalar operations remain unchanged, and older ABIs are rejected.
+- The ABI also carries the ordinary generated Runtime-ABI-8 `JSModule`, fixed
   state prefix, per-local history descriptors, and per-job state offset/word
   count. GPU preparation installs each binding into a deep-copied manifest,
   calls the module's direct `concretize()` method, and consumes its concrete

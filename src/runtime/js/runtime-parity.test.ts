@@ -14,7 +14,7 @@ import {
   type JSModule,
   type RuntimeContext,
 } from '../module-abi';
-import {testModule} from '../testing';
+import {testModule, scalar} from '../testing';
 import type {ValueLayout} from '../value-layout';
 
 const NUMBER = 0;
@@ -54,7 +54,7 @@ function run(target: JSRuntime, input: StepInput): StepResult {
   return Effect.runSync(target.step(input));
 }
 
-function channels(result: StepResult): readonly Value[] {
+function channels(result: StepResult): readonly unknown[] {
   return result.outputs[0]?.channels ?? [];
 }
 
@@ -75,10 +75,7 @@ const COUNTER_MODULE: JSModule = testModule({
       {
         effect: 'probe',
         staticArgs: [],
-        channels: [
-          {name: 'a', type: 'int', transport: {kind: 'int'}},
-          {name: 'b', type: 'int', transport: {kind: 'int'}},
-        ],
+        channels: [scalar('a', 'int'), scalar('b', 'int')],
       },
     ],
     effects: [],
@@ -111,9 +108,9 @@ const TYPED_HISTORY_MODULE: JSModule = testModule({
         effect: 'probe',
         staticArgs: [],
         channels: [
-          {name: 'number', type: 'int', transport: {kind: 'int'}},
-          {name: 'boolean', type: 'bool', transport: {kind: 'bool'}},
-          {name: 'string', type: 'string', transport: {kind: 'string'}},
+          scalar('number', 'int'),
+          scalar('boolean', 'bool'),
+          scalar('string', 'string'),
         ],
       },
     ],
@@ -166,9 +163,9 @@ const TICK_MODULE: JSModule = testModule({
         effect: 'probe',
         staticArgs: [],
         channels: [
-          {name: 'var', type: 'int', transport: {kind: 'int'}},
-          {name: 'varip', type: 'int', transport: {kind: 'int'}},
-          {name: 'per-bar', type: 'int', transport: {kind: 'int'}},
+          scalar('var', 'int'),
+          scalar('varip', 'int'),
+          scalar('per-bar', 'int'),
         ],
       },
     ],
@@ -212,10 +209,7 @@ function arrayStateModule(): JSModule {
         {
           effect: 'probe',
           staticArgs: [],
-          channels: [
-            {name: 'var', type: 'int', transport: {kind: 'int'}},
-            {name: 'varip', type: 'int', transport: {kind: 'int'}},
-          ],
+          channels: [scalar('var', 'int'), scalar('varip', 'int')],
         },
       ],
       effects: [],
@@ -324,7 +318,7 @@ describe('JSRuntime core parity', () => {
           {
             effect: 'probe',
             staticArgs: [],
-            channels: [{name: 'value', type: 'int', transport: {kind: 'int'}}],
+            channels: [scalar('value', 'int')],
           },
         ],
         frames: [
@@ -363,9 +357,7 @@ describe('JSRuntime core parity', () => {
           {
             effect: 'probe',
             staticArgs: [],
-            channels: [
-              {name: 'previous', type: 'int', transport: {kind: 'int'}},
-            ],
+            channels: [scalar('previous', 'int')],
           },
         ],
         effects: [],
@@ -430,10 +422,7 @@ describe('JSRuntime core parity', () => {
           {
             effect: 'probe',
             staticArgs: [],
-            channels: [
-              {name: 'current', type: 'int', transport: {kind: 'int'}},
-              {name: 'prior', type: 'int', transport: {kind: 'int'}},
-            ],
+            channels: [scalar('current', 'int'), scalar('prior', 'int')],
           },
         ],
         effects: [],

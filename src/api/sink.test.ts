@@ -11,7 +11,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {of} from 'rxjs';
 import {afterEach, describe, expect, test} from 'vitest';
-import * as z from 'zod';
+import {Field, Float64, Schema, Utf8} from 'apache-arrow';
 import {CSVSink, StdoutSink} from './sink';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -29,11 +29,11 @@ function outputPath(): string {
   return join(directory, 'output.csv');
 }
 
-const schema = z.object({
-  symbol: z.string(),
-  note: z.string(),
-  close: z.number(),
-});
+const schema = new Schema([
+  new Field('symbol', new Utf8(), false),
+  new Field('note', new Utf8(), false),
+  new Field('close', new Float64(), false),
+]);
 
 describe('CSVSink', () => {
   test('subscribes as an Observer and writes quoted rows in schema order', async () => {
@@ -68,13 +68,28 @@ describe('CSVSink', () => {
     expect(readFileSync(path, 'utf8')).toBe('symbol,note,close\n');
   });
 
+  test('writes empty cells for absent nullable Arrow fields', async () => {
+    const path = outputPath();
+    const sink = new CSVSink(
+      path,
+      new Schema([
+        new Field('close', new Float64(), false),
+        new Field('note', new Utf8(), true),
+      ]),
+    );
+    sink.next({close: 12.5});
+    sink.complete();
+    await sink.completion;
+    expect(readFileSync(path, 'utf8')).toBe('close,note\n12.5,\n');
+  });
+
   test('rejects completion when a row fails schema validation', async () => {
     const path = outputPath();
     const sink = new CSVSink(path, schema);
 
     sink.write({symbol: 'AAPL', note: 'bad', close: 'not a number'} as never);
 
-    await expect(sink.completion).rejects.toBeInstanceOf(z.ZodError);
+    await expect(sink.completion).rejects.toBeInstanceOf(TypeError);
     expect(existsSync(path)).toBe(false);
   });
 

@@ -13,7 +13,8 @@ import {once} from 'node:events';
 import type {Observer} from 'rxjs';
 import {parse as parseCSV} from 'csv-parse/sync';
 import {stringify, type Stringifier} from 'csv-stringify';
-import * as z from 'zod';
+import {Schema} from 'apache-arrow';
+import {cloneSchema, validateRecord} from '../runtime/io';
 
 export type OverflowMode = 'error' | 'drop-oldest' | 'drop-newest' | 'latest';
 
@@ -21,13 +22,26 @@ export type CSVMode = 'a' | 'w';
 
 const MAX_HEADER_BYTES = 64 * 1024;
 
-export class CSVSink<T extends z.ZodObject = z.ZodObject> implements Observer<
-  z.output<T>
-> {
+/**
+ * Write validated rows in Arrow field order, or infer columns from the first
+ * row when no schema is supplied. Completion waits for the file to finish;
+ * errors reject `completion`. Construction alone never opens the file.
+ *
+ * @example
+ * ```ts
+ * import {Field, Float64, Schema} from 'apache-arrow';
+ * const schema = new Schema([new Field('close', new Float64(), false)]);
+ * const sink = new CSVSink('prices.csv', schema);
+ * sink.next({close: 12.5});
+ * sink.complete();
+ * await sink.completion; // File contains "close\n12.5\n".
+ * ```
+ */
+export class CSVSink<T = Record<string, unknown>> implements Observer<T> {
   readonly completion: Promise<void>;
   private readonly resolve: () => void;
   private readonly reject: (error: unknown) => void;
-  private readonly schema: T | undefined;
+  private readonly schema: Schema | undefined;
   private readonly mode: CSVMode;
   private readonly appendExisting: boolean;
   private columns: string[] | null;
@@ -37,13 +51,14 @@ export class CSVSink<T extends z.ZodObject = z.ZodObject> implements Observer<
   private settled = false;
 
   constructor(path: string, mode?: CSVMode);
-  constructor(path: string, schema: T, mode?: CSVMode);
+  constructor(path: string, schema: Schema, mode?: CSVMode);
   constructor(
     readonly path: string,
-    schemaOrMode: T | CSVMode = 'w',
+    schemaOrMode: Schema | CSVMode = 'w',
     mode: CSVMode = 'w',
   ) {
-    this.schema = typeof schemaOrMode === 'string' ? undefined : schemaOrMode;
+    this.schema =
+      typeof schemaOrMode === 'string' ? undefined : cloneSchema(schemaOrMode);
     this.mode = typeof schemaOrMode === 'string' ? schemaOrMode : mode;
     if (this.mode !== 'a' && this.mode !== 'w') {
       throw new TypeError(`unsupported CSV mode '${String(this.mode)}'`);
@@ -54,9 +69,12 @@ export class CSVSink<T extends z.ZodObject = z.ZodObject> implements Observer<
       ? readCSVHeader(path)
       : this.schema === undefined
         ? null
-        : Object.keys(this.schema.shape);
+        : this.schema.fields.map(field => field.name);
     if (this.appendExisting && this.schema !== undefined) {
-      assertColumns(this.columns!, Object.keys(this.schema.shape));
+      assertColumns(
+        this.columns!,
+        this.schema.fields.map(field => field.name),
+      );
     }
 
     let resolve!: () => void;
@@ -69,18 +87,27 @@ export class CSVSink<T extends z.ZodObject = z.ZodObject> implements Observer<
     this.reject = reject;
   }
 
-  next(value: z.output<T>): void {
+  /**
+   * Accept one Observer value, rejecting `completion` if validation or writing fails.
+   * @example `sink.next({close: 12.5})` appends one CSV row.
+   */
+  next(value: T): void {
     this.write(value);
   }
 
-  write(value: z.output<T>): void | Promise<void> {
+  /**
+   * Write a row; await the returned Promise when the file applies backpressure.
+   * @example `await sink.write({close: 12.5})` waits when the writer needs to drain.
+   */
+  write(value: T): void | Promise<void> {
     if (this.stopped) return;
     try {
-      const row = this.schema?.parse(value) ?? value;
+      const row =
+        this.schema === undefined ? value : validateRecord(this.schema, value);
       if (!isRecord(row)) throw new TypeError('CSV row must be an object');
       const keys = Object.keys(row);
       if (this.columns === null) this.columns = keys;
-      assertColumns(this.columns, keys);
+      if (this.schema === undefined) assertColumns(this.columns, keys);
       const csv = this.open();
       const accepted = csv.write(
         Object.fromEntries(
@@ -93,10 +120,18 @@ export class CSVSink<T extends z.ZodObject = z.ZodObject> implements Observer<
     }
   }
 
+  /**
+   * Stop writing and reject completion with the upstream error.
+   * @example `sink.error(new Error('feed failed'))` rejects `sink.completion`.
+   */
   error(error: unknown): void {
     this.fail(error);
   }
 
+  /**
+   * Finish the file, including a header-only file for an empty declared schema.
+   * @example `sink.complete(); await sink.completion` waits for all bytes to flush.
+   */
   complete(): void {
     if (this.stopped) return;
     this.stopped = true;
@@ -194,9 +229,24 @@ export class StdoutSink<T> implements Observer<T> {
   }
 }
 
-export class WebSocketSink<T extends z.ZodType> implements Observer<
-  z.output<T>
-> {
+/**
+ * Validate rows with Arrow and send JSON text through one bounded socket queue.
+ * `completion` resolves after queued messages and the socket buffer drain.
+ * JSON's limitations still apply: binary/BigInt/NaN need an appropriate wire
+ * codec if their exact representation matters; Arrow IPC is a separate format.
+ *
+ * @example
+ * ```ts
+ * import {Field, Float64, Schema} from 'apache-arrow';
+ * const schema = new Schema([new Field('close', new Float64(), false)]);
+ * const sink = new WebSocketSink('ws://localhost:8080', schema);
+ * sink.next({close: 12.5}); // Sends '{"close":12.5}' after the socket opens.
+ * sink.complete();
+ * await sink.completion;
+ * ```
+ */
+export class WebSocketSink<T = Record<string, unknown>> implements Observer<T> {
+  private readonly shape: Schema;
   readonly completion: Promise<void>;
   private readonly resolve: () => void;
   private readonly reject: (error: unknown) => void;
@@ -208,12 +258,13 @@ export class WebSocketSink<T extends z.ZodType> implements Observer<
 
   constructor(
     private readonly url: string,
-    readonly schema: T,
+    schema: Schema,
     readonly capacity = 1024,
     readonly overflow: OverflowMode = 'error',
     private readonly highWaterMark = 1024 * 1024,
     private readonly Socket: typeof WebSocket = globalThis.WebSocket,
   ) {
+    this.shape = cloneSchema(schema);
     if (!Number.isSafeInteger(capacity) || capacity <= 0) {
       throw new RangeError(
         'WebSocketSink capacity must be a positive safe integer',
@@ -241,14 +292,30 @@ export class WebSocketSink<T extends z.ZodType> implements Observer<
     this.socket.addEventListener('close', this.onClose);
   }
 
-  next(value: z.output<T>): void {
+  /**
+   * Return an independent Arrow schema; caller mutations do not affect sends.
+   * @example `sink.schema.fields[0].name` is `'close'` in the example above.
+   */
+  get schema(): Schema {
+    return cloneSchema(this.shape);
+  }
+
+  /**
+   * Accept one Observer row for validated JSON delivery.
+   * @example `sink.next({close: 12.5})` sends or queues one JSON text frame.
+   */
+  next(value: T): void {
     this.write(value);
   }
 
-  write(value: z.output<T>): void {
+  /**
+   * Send immediately when possible, otherwise apply the configured queue policy.
+   * @example `sink.write({close: 12.5})` queues the row while the socket opens.
+   */
+  write(value: T): void {
     if (this.stopped || this.ending) return;
     try {
-      const encoded = JSON.stringify(this.schema.parse(value));
+      const encoded = JSON.stringify(validateRecord(this.shape, value));
       if (encoded === undefined)
         throw new TypeError('WebSocket datum is not JSON-serializable');
       if (
@@ -266,10 +333,18 @@ export class WebSocketSink<T extends z.ZodType> implements Observer<
     }
   }
 
+  /**
+   * Close the socket and reject completion with the supplied error.
+   * @example `sink.error(new Error('feed failed'))` rejects `sink.completion`.
+   */
   error(error: unknown): void {
     this.fail(error);
   }
 
+  /**
+   * Drain queued messages, close the socket, and then resolve completion.
+   * @example `sink.complete(); await sink.completion` waits for the queue to drain.
+   */
   complete(): void {
     if (this.stopped || this.ending) return;
     this.ending = true;

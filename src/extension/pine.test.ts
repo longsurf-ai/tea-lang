@@ -2,7 +2,7 @@
 
 import {of} from 'rxjs';
 import {describe, expect, test} from 'vitest';
-import * as z from 'zod';
+import {Field, Schema, TimestampMillisecond} from 'apache-arrow';
 import {createNode, type Datum} from '../api/node';
 import {i} from '../api/clock';
 import {DataStream} from '../api/stream';
@@ -28,7 +28,10 @@ describe('Pine Extension', () => {
     );
     node.bind(
       new DataStream(
-        z.object({time: z.bigint(), time_close: z.bigint()}),
+        new Schema([
+          new Field('time', new TimestampMillisecond(), false),
+          new Field('time_close', new TimestampMillisecond(), false),
+        ]),
         of(
           {time: 100n, time_close: 110n},
           {time: 110n, time_close: 120n},
@@ -57,7 +60,7 @@ describe('Pine Extension', () => {
       ),
       0,
     );
-    node.bind(new DataStream(z.object({}), of({}), i, 1));
+    node.bind(new DataStream(new Schema([]), of({}), i, 1));
     const sink = new DatumSink();
 
     node.to(sink);
@@ -68,7 +71,7 @@ describe('Pine Extension', () => {
 
   test('requires finite indices only for extent-dependent builtins', async () => {
     const node = pineNode('plot(last_bar_index)', 0);
-    node.bind(new DataStream(z.object({}), of({})));
+    node.bind(new DataStream(new Schema([]), of({})));
     const sink = new DatumSink();
 
     node.to(sink);
@@ -80,7 +83,7 @@ describe('Pine Extension', () => {
 
   test('requires exact bigint event time when time is demanded', async () => {
     const node = pineNode('plot(time)', 0);
-    node.bind(new DataStream(z.object({}), of({}), i, 1));
+    node.bind(new DataStream(new Schema([]), of({}), i, 1));
     const sink = new DatumSink();
 
     node.to(sink);
@@ -101,9 +104,10 @@ function pineNode(source: string, timeNow: number) {
 
 function values(sink: DatumSink): readonly (readonly unknown[])[] {
   return sink.values.map(datum =>
-    [...datum.outputs]
-      .sort((left, right) => left.outputId - right.outputId)
-      .map(output => output.channels[0]),
+    Object.entries(datum)
+      .filter(([key, value]) => /^output\d+$/.test(key) && value !== null)
+      .sort(([a], [b]) => Number(a.slice(6)) - Number(b.slice(6)))
+      .map(([, value]) => (value as {series: unknown}).series),
   );
 }
 

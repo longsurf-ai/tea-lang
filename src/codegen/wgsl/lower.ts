@@ -1,5 +1,8 @@
 // Purpose: Compile a generic Tea Program into one reusable, bind-independent WGSL artifact.
 
+import {Schema} from 'apache-arrow';
+import {encodeSchema} from '../../runtime/io';
+import {fieldOf} from '../schema';
 import type {Pos} from '../../base/pos';
 import {formatPos} from '../../base/pos';
 import {fatal} from '../../base/print';
@@ -23,7 +26,7 @@ import {
   type WgslPhysicalField,
   type WgslPhysicalLayout,
   type WgslResultChannel,
-  type WgslValueSchema,
+  type WgslCodec,
 } from '../../gpu/contract';
 import {
   IrKind,
@@ -36,7 +39,6 @@ import {
 } from '../../ir/node';
 import type {
   EffectDecl,
-  EffectValueSchema,
   BuiltinInput,
   IrFunc,
   OutputDecl,
@@ -143,6 +145,25 @@ class UnsupportedGpuSubsetError extends Error {
   }
 }
 
+/**
+ * Lower a checked Program into a portable GPU artifact without binding data or
+ * allocating a device. Logical fields use standard Arrow IPC schemas; physical
+ * layouts retain WGSL offsets and scalar encodings. Unsupported Tea operations
+ * return diagnostics rather than a partial shader.
+ *
+ * @example
+ * ```ts
+ * const errors = new Errors();
+ * const program = compileToProgram([{filename: 'demo.tea', source: 'plot(close)'}], errors);
+ * if (program) {
+ *   const result = compileProgramToWgsl(program);
+ *   if (result.status === 'compiled') {
+ *     decodeSchema(result.artifact.outputSchemas[0].schema).fields[0].name;
+ *     // "series"
+ *   }
+ * }
+ * ```
+ */
 export function compileProgramToWgsl(program: Program): WgslCompilationResult {
   const inventory = inventoryOf(program);
   try {
@@ -2789,20 +2810,24 @@ class WgslEmitter {
           name: arg.name,
           value: manifestValue(arg.value),
         })),
-        channels: output.channels.map(channel => {
-          if (!isGpuResultType(channel.type)) {
-            this.unsupported(
-              'result-transport-lowering-unimplemented',
-              `output ${outputId} channel has unsupported type ${formatType(channel.type)}`,
-            );
-          }
-          return {
-            name: channel.name,
-            type: formatType(channel.type),
-            transport: outputTransport(channel.type),
-            rowCell,
-          };
-        }),
+        schema: encodeSchema(
+          new Schema(
+            output.channels.map(channel => {
+              if (!isGpuResultType(channel.type)) {
+                this.unsupported(
+                  'result-transport-lowering-unimplemented',
+                  `output ${outputId} channel has unsupported type ${formatType(channel.type)}`,
+                );
+              }
+              return fieldOf(
+                channel.name,
+                channel.type,
+                this.program.nominalIds,
+              );
+            }),
+          ),
+        ),
+        rowCells: output.channels.map(() => rowCell),
       };
     });
   }
@@ -2813,29 +2838,21 @@ class WgslEmitter {
       payloadLayout: this.physicalLayoutOf(effect.payloadType),
       payloadWordCount:
         this.layouts[this.physicalLayoutOf(effect.payloadType)].byteSize / 4,
-      payload: this.valueSchema(effect.payloadType, effect.payloadSchema),
-      declaration: {payload: effect.payloadSchema},
+      payload: this.codec(effect.payloadType),
+      schema: encodeSchema(
+        new Schema([
+          fieldOf('payload', effect.payloadType, this.program.nominalIds),
+        ]),
+      ),
     }));
   }
 
-  private valueSchema(type: Type, logical: EffectValueSchema): WgslValueSchema {
+  private codec(type: Type): WgslCodec {
     const physicalLayout = this.physicalLayoutOf(type);
-    const requireLogical = <K extends EffectValueSchema['kind']>(
-      kind: K,
-    ): Extract<EffectValueSchema, {readonly kind: K}> => {
-      if (logical.kind !== kind) {
-        return fatal(
-          `effect logical schema '${logical.kind}' disagrees with physical type '${formatType(type)}'`,
-        );
-      }
-      return logical as Extract<EffectValueSchema, {readonly kind: K}>;
-    };
     switch (type.kind) {
       case TypeKind.Bool:
-        requireLogical('bool');
         return {kind: 'bool', physicalLayout, valueByteOffset: 0};
       case TypeKind.Int:
-        requireLogical('int');
         return {
           kind: 'int',
           physicalLayout,
@@ -2843,7 +2860,6 @@ class WgslEmitter {
           valueByteOffset: 4,
         };
       case TypeKind.Float:
-        requireLogical('float');
         return {
           kind: 'float',
           physicalLayout,
@@ -2851,7 +2867,6 @@ class WgslEmitter {
           valueByteOffset: 4,
         };
       case TypeKind.String:
-        requireLogical('string');
         return {
           kind: 'string',
           physicalLayout,
@@ -2859,7 +2874,6 @@ class WgslEmitter {
           valueByteOffset: 4,
         };
       case TypeKind.Color:
-        requireLogical('color');
         return {
           kind: 'color',
           physicalLayout,
@@ -2867,46 +2881,12 @@ class WgslEmitter {
           valueByteOffset: 4,
         };
       case TypeKind.Enum:
-        const enumLogical = requireLogical('enum');
         return {
           kind: 'enum',
           physicalLayout,
           validByteOffset: 0,
           ordinalByteOffset: 4,
-          name: type.name,
-          typeId: enumLogical.typeId,
-          members: type.members.map(member => member.name),
         };
-      case TypeKind.Struct: {
-        const userLogical = requireLogical('struct');
-        const layout = this.layouts[physicalLayout];
-        let byteOffset = 4;
-        return {
-          kind: 'struct',
-          physicalLayout,
-          validByteOffset: 0,
-          name: type.name,
-          typeId: userLogical.typeId,
-          fields: type.fields.map(field => {
-            const logicalField = userLogical.fields.find(
-              candidate => candidate.name === field.name,
-            );
-            if (logicalField === undefined) {
-              return fatal(
-                `effect logical schema '${userLogical.typeId}' has no field '${field.name}'`,
-              );
-            }
-            const nested = this.layouts[this.physicalLayoutOf(field.type)];
-            const schema = {
-              name: field.name,
-              byteOffset,
-              value: this.valueSchema(field.type, logicalField.value),
-            };
-            byteOffset += nested.byteSize;
-            return schema;
-          }),
-        };
-      }
       default:
         return this.unsupported(
           'effect-transport-lowering-unimplemented',
@@ -2978,27 +2958,6 @@ function resultScalar(type: Type): WgslResultChannel['scalar'] {
       return 'enum';
     default:
       return fatal(`non-scalar GPU result ${formatType(type)}`);
-  }
-}
-
-function outputTransport(
-  type: Type,
-): WgslOutputSchema['channels'][number]['transport'] {
-  switch (type.kind) {
-    case TypeKind.Int:
-      return {kind: 'int'};
-    case TypeKind.Float:
-      return {kind: 'float'};
-    case TypeKind.Bool:
-      return {kind: 'bool'};
-    case TypeKind.Enum:
-      return {
-        kind: 'enum',
-        name: type.name,
-        members: type.members.map(member => member.name),
-      };
-    default:
-      return fatal(`unsupported WGSL output transport ${formatType(type)}`);
   }
 }
 

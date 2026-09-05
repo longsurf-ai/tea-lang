@@ -32,3 +32,5 @@ reactive graph and each runtime it creates. `collections/`, `struct-storage.ts`,
   finite-job scheduler.
 - Generated `RuntimeContext` exposes Tea operations only. It never exposes
   physical history arrays, Heap cells, source objects, or host buffers.
+
+- Ordinary outputs and events share Arrow-directed detached snapshots taken at emission. Public values use named records, Lists and Maps; mutable Heap identity remains internal. Successful provisional Heap behavior is unchanged.

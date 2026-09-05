@@ -1,36 +1,44 @@
 // Purpose: CLI output keeps one deterministic human report and machine trace.
 
+import {Field, Float64, Schema, Struct, Utf8} from 'apache-arrow';
+import {outputSchema} from '../runtime/output';
 import {describe, expect, test} from 'vitest';
-import type {EffectValue, ExecutionDeclaration} from '../runtime/abi';
+import type {ExecutionDeclaration} from '../runtime/abi';
 import {renderRunReport, traceDatum, traceDeclaration} from './output';
 
 const declaration: ExecutionDeclaration = {
+  get schema(): Schema {
+    return outputSchema(
+      this.outputs.map(output => output.spec),
+      this.effects,
+    );
+  },
   outputs: [
     {
       spec: {
         effect: 'plot',
         staticArgs: [{name: 'title', value: 'Equity'}],
-        channels: [{name: 'series', type: 'float', transport: {kind: 'float'}}],
+        channels: [new Field('series', new Float64(), true)],
       },
       boundArgs: [{name: 'display', value: 'all'}],
     },
   ],
   effects: [
     {
-      payload: {
-        kind: 'struct',
-        typeId: 'broker.FillExecuted',
-        displayName: 'FillExecuted',
-        fields: [
-          {name: 'id', value: {kind: 'int'}},
-          {name: 'side', value: {kind: 'string'}},
-        ],
-      },
+      payload: new Field(
+        'payload',
+        new Struct([
+          new Field('id', new Float64()),
+          new Field('side', new Utf8()),
+        ]),
+        true,
+        new Map([['tea:typeId', 'broker.FillExecuted']]),
+      ),
     },
   ],
 };
 
-const payload: EffectValue = {kind: 'struct', fields: [7, 'buy']};
+const payload = {id: 7, side: 'buy'};
 
 describe('CLI output', () => {
   test('renders the stable machine trace', () => {
@@ -41,13 +49,29 @@ describe('CLI output', () => {
     expect(
       traceDatum({
         index: 1,
-        outputs: [{outputId: 0, channels: [NaN]}],
-        effects: [{effectId: 0, payload}],
+        timed: false,
+        output0: {series: NaN},
+        effect0: [{ordinal: 0, payload}],
         provisional: true,
       }),
+    ).toEqual(['1 0 ? na', '1 effect[0] ? {"id":7,"side":"buy"}']);
+  });
+
+  test('preserves cross-declaration order, absent outputs and nested Arrow values', () => {
+    expect(
+      traceDatum({
+        index: 3,
+        timed: false,
+        provisional: false,
+        output0: null,
+        output1: {values: [null, NaN], binary: new Uint8Array([0, 255])},
+        effect0: [{ordinal: 1, payload: {value: NaN}}],
+        effect1: [{ordinal: 0, payload: new Map([['x', 2]])}],
+      }),
     ).toEqual([
-      '1 0 ? na',
-      '1 effect[0] ? {"kind":"struct","fields":[7,"buy"]}',
+      '3 1 [null,"na"] [0,255]',
+      '3 effect[1] [["x",2]]',
+      '3 effect[0] {"value":"na"}',
     ]);
   });
 
@@ -57,14 +81,16 @@ describe('CLI output', () => {
       [
         {
           index: 0,
-          outputs: [{outputId: 0, channels: [10]}],
-          effects: [{effectId: 0, payload}],
+          timed: false,
+          output0: {series: 10},
+          effect0: [{ordinal: 0, payload}],
           provisional: true,
         },
         {
           index: 0,
-          outputs: [{outputId: 0, channels: [11]}],
-          effects: [{effectId: 0, payload}],
+          timed: false,
+          output0: {series: 11},
+          effect0: [{ordinal: 0, payload}],
           provisional: false,
         },
       ],

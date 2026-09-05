@@ -1,8 +1,8 @@
 // Purpose: Versioned, bind-independent physical contract shared by WGSL codegen and the WebGPU runtime.
 
-import type {EffectSpec, ParamSpec} from '../runtime/schema';
+import type {ParamSpec} from '../runtime/schema';
 
-export const GPU_ARTIFACT_ABI_VERSION = 4 as const;
+export const GPU_ARTIFACT_ABI_VERSION = 5 as const;
 export const GPU_WORKGROUP_SIZE_OVERRIDE = 'tea_workgroup_size';
 
 export const GPU_BUFFER_GROUP = 0;
@@ -91,19 +91,13 @@ export interface WgslResultChannel {
   readonly rowCell: number;
 }
 
-export interface WgslOutputChannelSchema {
-  readonly name: string;
-  readonly type: string;
-  readonly transport:
-    | {readonly kind: 'int' | 'float' | 'bool'}
-    | {
-        readonly kind: 'enum';
-        readonly name: string;
-        readonly members: readonly string[];
-      };
-  readonly rowCell: number | null;
-}
-
+/**
+ * Presentation and Arrow channel fields for one output, with a separate mapping
+ * into the GPU result buffer. The IPC schema remains valid after JSON transport.
+ *
+ * @example `decodeSchema(output.schema).fields[0].name` is "series" for plot(close);
+ * `output.rowCells[0]` identifies that channel's physical result cell.
+ */
 export interface WgslOutputSchema {
   readonly outputId: number;
   readonly effect: string;
@@ -111,12 +105,21 @@ export interface WgslOutputSchema {
     readonly name: string;
     readonly value: WgslManifestValue;
   }[];
-  readonly channels: readonly WgslOutputChannelSchema[];
+  /** Standard Arrow IPC schema bytes for the named output channels. */
+  readonly schema: readonly number[];
+  /** Physical result cells in Arrow field order; null means declaration only. */
+  readonly rowCells: readonly (number | null)[];
 }
 
-// Recursive logical shape paired with exact physical layout ids and offsets.
-// The runtime decodes effect payloads without reproducing WGSL layout rules.
-export type WgslValueSchema =
+/**
+ * Physical scalar decoding instructions. Logical types and enum identities live
+ * only in the Arrow schema; this codec says where WGSL wrote the value and its
+ * validity flag. Reference structs remain unsupported by this backend.
+ *
+ * @example A float codec reads validity at byte 0 and f32 payload bits at byte 4;
+ * the corresponding Arrow field is Float64 because Tea publishes JS numbers.
+ */
+export type WgslCodec =
   | {
       readonly kind: 'bool';
       readonly physicalLayout: number;
@@ -133,32 +136,22 @@ export type WgslValueSchema =
       readonly physicalLayout: number;
       readonly validByteOffset: number;
       readonly ordinalByteOffset: number;
-      readonly name: string;
-      readonly typeId: string;
-      readonly members: readonly string[];
-    }
-  // Reserved for the later reference-struct GPU plan. The current WGSL
-  // producer fails closed on every reachable StructType and does not emit
-  // this schema variant.
-  | {
-      readonly kind: 'struct';
-      readonly physicalLayout: number;
-      readonly validByteOffset: number;
-      readonly name: string;
-      readonly typeId: string;
-      readonly fields: readonly {
-        readonly name: string;
-        readonly byteOffset: number;
-        readonly value: WgslValueSchema;
-      }[];
     };
 
+/**
+ * An event's Arrow payload field and physical GPU record codec. GPU records
+ * remain ordered by emission; publication adds their global row ordinals.
+ *
+ * @example `decodeSchema(effect.schema).fields[0].type.toString()` is "Float64"
+ * for effect.emit(close), while `effect.payload.kind` selects f32 readback.
+ */
 export interface WgslEffectSchema {
   readonly effectId: number;
   readonly payloadLayout: number;
   readonly payloadWordCount: number;
-  readonly payload: WgslValueSchema;
-  readonly declaration: EffectSpec;
+  readonly payload: WgslCodec;
+  /** Standard Arrow IPC schema bytes containing the payload field. */
+  readonly schema: readonly number[];
 }
 
 export interface WgslStateLocalLayout {

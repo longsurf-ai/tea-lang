@@ -1,9 +1,9 @@
 import {Subject} from 'rxjs';
 import {CSVSink, DataStream, StdoutSink, tea} from 'tea';
-import * as z from 'zod';
+import {Field, Float64, Schema} from 'apache-arrow';
 
 const input = new Subject<unknown>();
-const schema = z.object({close: z.number()});
+const schema = new Schema([new Field('close', new Float64(), false)]);
 const source = new DataStream(schema, input);
 
 const node = tea`

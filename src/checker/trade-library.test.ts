@@ -5,7 +5,6 @@ import {describe, expect, test} from 'vitest';
 import {funcsOf} from '../ir/visit';
 import {defaultRegistry} from '../loader/loader';
 import {mustBuild} from '../noder/testing';
-import type {Value} from '../runtime/abi';
 import {csvStream, executeTestProgram} from '../testing/batch';
 import {OutputCapture} from '../testing/output';
 import {ObjectKind} from './object';
@@ -57,7 +56,7 @@ function tradePackage(result: CheckResult) {
   return pkg;
 }
 
-function valuesFor(sink: OutputCapture, oid: number): readonly Value[] {
+function valuesFor(sink: OutputCapture, oid: number): readonly unknown[] {
   return sink.emissions
     .filter(emission => emission.outputId === oid)
     .sort((left, right) => left.row - right.row)

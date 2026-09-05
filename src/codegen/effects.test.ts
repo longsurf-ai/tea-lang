@@ -2,7 +2,8 @@
 // the ordinary JS ABI and publish as one ordered row unit.
 
 import {describe, expect, test} from 'vitest';
-import * as z from 'zod';
+import {Schema} from 'apache-arrow';
+import {fieldOf} from './schema';
 import {IrKind} from '../ir/node';
 import type {Program} from '../ir/program';
 import {
@@ -30,18 +31,10 @@ const EVENT: StructType = {
   ],
 };
 
-const eventSchema = {
-  kind: 'struct' as const,
-  typeId: 'effects.test.OrderSubmitted',
-  displayName: 'OrderSubmitted',
-  fields: [
-    {name: 'commandId', value: {kind: 'string' as const}},
-    {name: 'barIndex', value: {kind: 'int' as const}},
-  ],
-};
+const nominalIds = new Map([[EVENT, 'effects.test.OrderSubmitted']]);
+const eventSchema = fieldOf('payload', EVENT, nominalIds);
 const effect = {
   payloadType: EVENT,
-  payloadSchema: eventSchema,
   sourcePosition: pos,
 };
 const payload = {
@@ -71,6 +64,7 @@ const payload = {
 
 const program: Program = {
   version: 1,
+  nominalIds,
   params: [],
   requests: [],
   outputs: [],
@@ -84,7 +78,7 @@ const program: Program = {
   ],
 };
 
-const oneIndex = () => finiteStream(z.object({}), [{}]);
+const oneIndex = () => finiteStream(new Schema([]), [{}]);
 
 describe('generic sparse effect lowering', () => {
   test('publishes manifest-typed fixed struct payloads in source order', async () => {
@@ -110,14 +104,14 @@ describe('generic sparse effect lowering', () => {
       ],
     });
     expect(sink.publications).toHaveLength(1);
-    expect(sink.publications[0].outputs).toEqual([]);
+    expect(sink.emissions).toEqual([]);
     expect(sink.effectEmissions).toEqual([
       {
         row: 0,
         effectId: 0,
         payload: {
-          kind: 'struct',
-          fields: ['entry-1', 7],
+          commandId: 'entry-1',
+          barIndex: 7,
         },
         provisional: false,
       },
@@ -125,12 +119,71 @@ describe('generic sparse effect lowering', () => {
         row: 0,
         effectId: 0,
         payload: {
-          kind: 'struct',
-          fields: ['entry-1', 7],
+          commandId: 'entry-1',
+          barIndex: 7,
         },
         provisional: false,
       },
     ]);
+  });
+
+  test('snapshots the same nested Arrow values for outputs and ordered effects', async () => {
+    const module = loadModule(
+      generate(
+        mustBuild(
+          [
+            'type Event',
+            '    array<float> samples',
+            '    matrix<float> grid',
+            '    map<string, float> values',
+            'samples = array.from(float(bar_index), float(na))',
+            'grid = matrix.new<float>(0, 4, na)',
+            'values = map.new<string, float>()',
+            'values.put("first", 7.0)',
+            'event = Event.new(samples, grid, values)',
+            'output(event, kind="snapshot", args={})',
+            'effect.emit([event, values])',
+            'event.samples.push(99.0)',
+            'event.values.put("second", 8.0)',
+            'effect.emit(event)',
+          ].join('\n'),
+        ),
+      ),
+    );
+    const sink = new OutputCapture();
+    await executeTestModule(module, {
+      stream: finiteStream(new Schema([]), [{}, {}]),
+      sink,
+      timeNow: 0,
+    });
+    const before = (index: number) => ({
+      samples: [index, NaN],
+      grid: {rows: 0, columns: 4, values: []},
+      values: new Map([['first', 7]]),
+    });
+    expect(sink.emissions.map(emission => emission.channels[0])).toEqual([
+      before(0),
+      before(1),
+    ]);
+    expect(
+      sink.publications.map(datum =>
+        sink.effectEmissions
+          .filter(effect => effect.row === datum.index)
+          .map(effect => effect.payload),
+      ),
+    ).toEqual(
+      [0, 1].map(index => [
+        {_0: before(index), _1: new Map([['first', 7]])},
+        {
+          ...before(index),
+          samples: [index, NaN, 99],
+          values: new Map([
+            ['first', 7],
+            ['second', 8],
+          ]),
+        },
+      ]),
+    );
   });
 
   test('rejects a same-shaped logical payload with a forged nominal id', async () => {
@@ -144,7 +197,12 @@ describe('generic sparse effect lowering', () => {
           {
             ...original,
             declaration: {
-              payload: {...eventSchema, typeId: 'forged.Other'},
+              payload: eventSchema.clone({
+                metadata: new Map([
+                  ...eventSchema.metadata,
+                  ['tea:typeId', 'forged.Other'],
+                ]),
+              }),
             },
           },
         ],
@@ -156,9 +214,7 @@ describe('generic sparse effect lowering', () => {
       sink: new OutputCapture(),
       timeNow: 0,
     });
-    await expect(execution).rejects.toThrow(
-      'effect payload layout 0 disagrees with logical struct schema',
-    );
+    await expect(execution).rejects.toThrow(/schema|layout|identity/);
   });
 
   test('WGSL fails closed for struct effect payloads', () => {

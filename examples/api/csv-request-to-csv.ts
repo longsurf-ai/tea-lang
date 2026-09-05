@@ -1,5 +1,5 @@
 import {CSVSink, fromCSV, tea} from 'tea';
-import * as z from 'zod';
+import {Field, Float64, Schema} from 'apache-arrow';
 
 const mainPath = process.argv[2];
 const requestPath = process.argv[3];
@@ -14,7 +14,7 @@ if (
   );
 }
 
-const schema = z.object({close: z.coerce.number()});
+const schema = new Schema([new Field('close', new Float64(), false)]);
 const main = await fromCSV(mainPath, schema);
 const requested = await fromCSV(requestPath, schema);
 

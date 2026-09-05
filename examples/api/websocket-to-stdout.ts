@@ -1,12 +1,12 @@
 import {fromWS, StdoutSink, tea} from 'tea';
-import * as z from 'zod';
+import {Field, Float64, Schema} from 'apache-arrow';
 
 const url = process.argv[2];
 if (url === undefined) {
   throw new Error('usage: node examples/api/websocket-to-stdout.ts URL');
 }
 
-const schema = z.object({close: z.number()});
+const schema = new Schema([new Field('close', new Float64(), false)]);
 const source = fromWS(url, schema);
 
 const node = tea`

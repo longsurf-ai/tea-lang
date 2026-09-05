@@ -3,10 +3,8 @@
 import type {
   DeclaredOutput,
   EffectSpec,
-  EffectValue,
   OutputSink,
   Datum,
-  Value,
 } from '../runtime/abi';
 
 export class OutputCapture implements OutputSink {
@@ -16,13 +14,13 @@ export class OutputCapture implements OutputSink {
   readonly emissions: {
     readonly row: number;
     readonly outputId: number;
-    readonly channels: readonly Value[];
+    readonly channels: readonly unknown[];
     readonly provisional: boolean;
   }[] = [];
   readonly effectEmissions: {
     readonly row: number;
     readonly effectId: number;
-    readonly payload: EffectValue;
+    readonly payload: unknown;
     readonly provisional: boolean;
   }[] = [];
 
@@ -33,19 +31,34 @@ export class OutputCapture implements OutputSink {
 
   publish(datum: Datum): void {
     this.publications.push(datum);
-    for (const output of datum.outputs) {
+    this.outputs.forEach((output, outputId) => {
+      const value = datum[`output${outputId}`] as Record<
+        string,
+        unknown
+      > | null;
+      if (value === null || value === undefined) return;
       this.emissions.push({
         row: datum.index,
-        outputId: output.outputId,
-        channels: output.channels,
+        outputId,
+        channels: output.spec.channels.map(field => value[field.name]),
         provisional: datum.provisional,
       });
-    }
-    for (const effect of datum.effects) {
+    });
+    const events = this.effectSchemas
+      .flatMap((_, effectId) =>
+        (
+          datum[`effect${effectId}`] as readonly {
+            ordinal: number;
+            payload: unknown;
+          }[]
+        ).map(event => ({effectId, ...event})),
+      )
+      .sort((a, b) => a.ordinal - b.ordinal);
+    for (const event of events) {
       this.effectEmissions.push({
         row: datum.index,
-        effectId: effect.effectId,
-        payload: effect.payload,
+        effectId: event.effectId,
+        payload: event.payload,
         provisional: datum.provisional,
       });
     }

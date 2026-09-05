@@ -15,19 +15,6 @@ export interface ResourceHandle {
 
 export type StructValue = Ref<StructStorage> | null;
 
-export interface EffectStructValue {
-  readonly kind: 'struct';
-  readonly fields: readonly EffectValue[];
-}
-
-export type EffectValue = number | string | boolean | null | EffectStructValue;
-
-export function isEffectStructValue(
-  value: EffectValue,
-): value is EffectStructValue {
-  return typeof value === 'object' && value !== null && value.kind === 'struct';
-}
-
 export interface ArrayValue {
   readonly kind: 'array';
   readonly layout: LayoutId;

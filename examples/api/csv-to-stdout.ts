@@ -1,12 +1,12 @@
 import {fromCSV, StdoutSink, tea} from 'tea';
-import * as z from 'zod';
+import {Field, Float64, Schema} from 'apache-arrow';
 
 const inputPath = process.argv[2];
 if (inputPath === undefined) {
   throw new Error('usage: node examples/api/csv-to-stdout.ts INPUT');
 }
 
-const schema = z.object({close: z.coerce.number()});
+const schema = new Schema([new Field('close', new Float64(), false)]);
 const source = await fromCSV(inputPath, schema);
 
 const node = tea`

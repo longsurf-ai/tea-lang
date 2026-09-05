@@ -9,7 +9,6 @@ import {fileURLToPath} from 'node:url';
 import {Errors} from '../src/base/print';
 import {compileToProgram} from '../src/compiler';
 import {OutputCapture} from '../src/testing/output';
-import type {EffectValue} from '../src/runtime/abi';
 import {csvStream, executeTestProgram} from '../src/testing/batch';
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
@@ -104,9 +103,12 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
     '385f0e707ebdc95121563b74c984611fcaa6b3214e545765f1367f17269ba64c',
   );
 
+  // Schema migration oracle: execute pre-Arrow commit 5a369670093b82c6d363f988b2971e7bf46d5894,
+  // verify its original lifecycle hashes, then replace positional struct fields
+  // with names from that baseline's declarations. Economic fill hashes stay unchanged.
   const lifecycle = lifecycleTape(sink, timeByRow);
   expect(hash(lifecycle)).toBe(
-    '8c51ee3f5a0794df55613d410db6ef8775c57c5bcee3289b578b5481743a88d7',
+    '9b0dea8882b64345cb1314fe6e9622848562f10090a1499df51157b3582b66a4',
   );
 }, 15_000);
 
@@ -140,7 +142,7 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
     'ceb1eaf1a12b2967d554396e292dec3f43274304241d34095f07dba7eb99a48f',
   );
   expect(hash(lifecycleTape(sink, timeByRow))).toBe(
-    'cf407d72c659372c18745aacbf90c91e328b6e261982d4afec5e70cfd866e946',
+    '30a8a4e8ca734e433ad7f76106479f6a8b8cfe4b50c858919d855803b7bdf3ef',
   );
 }, 15_000);
 
@@ -160,26 +162,23 @@ function finalMetric(sink: OutputCapture, title: string): number {
   return value;
 }
 
-function fillFields(payload: EffectValue): readonly EffectValue[] {
+function fillFields(payload: unknown): Record<string, unknown> {
   if (
     typeof payload !== 'object' ||
     payload === null ||
-    payload.kind !== 'struct'
+    !('fill' in payload) ||
+    typeof payload.fill !== 'object' ||
+    payload.fill === null
   ) {
-    throw new Error('FillExecuted payload is not a struct value');
+    throw new Error('FillExecuted.fill is not a record');
   }
-  const fill = payload.fields[0];
-  if (typeof fill !== 'object' || fill === null || fill.kind !== 'struct') {
-    throw new Error('FillExecuted.fill is not a struct value');
-  }
-  return fill.fields;
+  return payload.fill as Record<string, unknown>;
 }
 
 function fillTape(sink: OutputCapture) {
   const fillEffectIds = new Set(
     sink.effectSchemas.flatMap((effect, effectId) =>
-      effect.payload.kind === 'struct' &&
-      effect.payload.typeId === 'broker.FillExecuted'
+      effect.payload.metadata.get('tea:typeId') === 'broker.FillExecuted'
         ? [effectId]
         : [],
     ),
@@ -194,14 +193,14 @@ function fillTape(sink: OutputCapture) {
       return {
         row: emission.row,
         time: timeByRow.get(emission.row),
-        commandId: fields[2],
-        side: fields[3],
-        barIndex: fields[4],
-        referencePrice: fields[5],
-        price: fields[6],
-        quantity: fields[7],
-        notional: fields[8],
-        fee: fields[9],
+        commandId: fields.commandId,
+        side: fields.side,
+        barIndex: fields.barIndex,
+        referencePrice: fields.referencePrice,
+        price: fields.price,
+        quantity: fields.quantity,
+        notional: fields.notional,
+        fee: fields.fee,
       };
     });
   return {fills, timeByRow};
@@ -226,5 +225,9 @@ function hash(value: unknown): string {
 function lifecycleKind(sink: OutputCapture, effectId: number): string {
   const payload = sink.effectSchemas[effectId]?.payload;
   if (payload === undefined) return `unknown:${effectId}`;
-  return payload.kind === 'struct' ? payload.typeId : payload.kind;
+  return (
+    payload.metadata.get('tea:typeId') ??
+    payload.metadata.get('tea:type') ??
+    payload.type.toString()
+  );
 }

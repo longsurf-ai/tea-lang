@@ -10,7 +10,7 @@ validation, loading, and history validation.
 ## Invariants
 
 - `RUNTIME_ABI_VERSION` is the only generated JavaScript ABI version source and
-  is currently `7`. Do not add compatibility paths for older ABIs.
+  is currently `8`. Do not add compatibility paths for older ABIs.
 - A `JSModule` is code plus one recursive concrete manifest. Parameter values,
   series-supplied markers, depths, output arguments, and request contexts live
   only there; do not copy them into another binding object.
@@ -34,3 +34,6 @@ validation, loading, and history validation.
   second axis-merge implementation at the runtime root.
 - Bind failures are host-actionable `BindError`s. Generated/runtime invariant
   violations use `fatal()` and never enter compiler diagnostics.
+
+- Arrow fields are the only logical I/O value schema. Standard Arrow IPC carries schemas in raw artifacts; loaded modules contain real Arrow classes. Copy Arrow schemas with Arrow APIs, never structuredClone. Node/runtime capture private schema copies; exposed copies cannot mutate running state.
+- Physical output layout IDs stay in the manifest, outside public declaration schemas. One snapshot path materializes ordinary and event outputs at emission; no Heap reference or collection header reaches a public row.

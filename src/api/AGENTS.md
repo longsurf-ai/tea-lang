@@ -48,13 +48,17 @@ runtime semantics remain in their existing packages.
   current step Effect and whole child graph. `dispose()` is synchronous and
   idempotent. Current steps are final (`provisional: false`).
 - `JSRuntime` keeps `StepResult` internal to Node. Node adds its successful-step
-  index and exact source time, then publishes one lossless `Datum`: outputs stay
-  an array of `{outputId, channels}`, effects retain their ids and payloads,
-  numeric `NaN` remains `NaN`, and provisional state is explicit. A thrown
+  index and exact source time, then publishes one lossless Arrow-schema row:
+  assignment-style `outputN` fields contain named channels, append-style
+  `effectN` fields contain ordered `{ordinal, payload}` events, numeric `NaN`
+  remains `NaN`, and provisional state is explicit. A thrown
   observer `next()` callback terminates the shared execution and reaches every
   observer through `error()`.
-- `DataStream` owns one Zod validation per emission plus optional Clock
-  metadata. Sources decode bytes only. `CSVSink` uses conventional `a`/`w`
+- `DataStream` owns one Arrow schema validation per emission plus optional
+  Clock metadata. Schemas are genuine Arrow `Schema` objects, copied at
+  construction and exposed through defensive copies. Sources decode bytes and
+  perform format-specific scalar coercion; domain refinements use ordinary RxJS
+  composition. A one-field schema may validate scalar emissions directly. `CSVSink` uses conventional `a`/`w`
   modes with optional schemas; `StdoutSink` prints generic Datums immediately
   without owning a completion Promise. JSON/CSV conversion belongs to those
   sinks and never rewrites the in-memory Datum.
@@ -63,7 +67,7 @@ runtime semantics remain in their existing packages.
   through ordinary RxJS `map`. Do not add queue or capacity policy unless a
   runtime step gains a real asynchronous boundary.
 - WebSocket source/sink adapters accept final JSON text datums only and require
-  caller-owned Zod schemas. They do not reconnect or invent provisional state.
+  caller-supplied Arrow schemas. They do not reconnect or invent provisional state.
   Source subscription owns socket connection/teardown; sink completion waits
   for its bounded send queue and `bufferedAmount` to drain.
 - Node execution supports numeric series, parameters, scalar `security`

@@ -2,7 +2,7 @@
 
 import {of} from 'rxjs';
 import {describe, expect, test} from 'vitest';
-import * as z from 'zod';
+import {Field, Float64, Schema} from 'apache-arrow';
 import {i} from '../../api/clock';
 import type {Datum} from '../../api/node';
 import {DataStream} from '../../api/stream';
@@ -25,7 +25,7 @@ describe('batch Recipe composition', () => {
       `;
       const values: number[] = [];
       const stream = new DataStream(
-        z.object({close: z.number()}),
+        new Schema([new Field('close', new Float64(), false)]),
         of(...execution.close.map(close => ({close}))),
         i,
         execution.close.length,
@@ -48,7 +48,7 @@ describe('batch Recipe composition', () => {
     const failure = new Error('delivery failed');
     const node = tea`plot(close)`;
     const stream = new DataStream(
-      z.object({close: z.number()}),
+      new Schema([new Field('close', new Float64(), false)]),
       of({close: 1}, {close: 2}),
       i,
       2,
@@ -70,7 +70,7 @@ describe('batch Recipe composition', () => {
     });
     const node = tea`plot(close)`;
     const stream = new DataStream(
-      z.object({close: z.number()}),
+      new Schema([new Field('close', new Float64(), false)]),
       of({close: 1}, {close: 2}),
       i,
       2,
@@ -87,5 +87,5 @@ describe('batch Recipe composition', () => {
 });
 
 function output(datum: Datum): number {
-  return datum.outputs[0]?.channels[0] as number;
+  return (datum.output0 as {series: number}).series;
 }

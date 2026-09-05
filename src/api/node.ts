@@ -12,7 +12,7 @@ import {
   takeUntil,
   tap,
 } from 'rxjs';
-import * as z from 'zod';
+import {DataType, TimeUnit} from 'apache-arrow';
 import {fatal} from '../base/print';
 import {JSRuntime, type StepResult} from '../runtime/js/runtime';
 import {
@@ -20,9 +20,15 @@ import {
   moduleSeriesNames,
   requireConcreteModule,
   withRequestModule,
+  initializeModuleTree,
+  moduleDeclaration,
 } from '../runtime/module-binding';
 import type {JSModule, RequestSpec} from '../runtime/module-abi';
-import type {Datum} from '../runtime/output';
+import {
+  createDatum,
+  type Datum,
+  type ExecutionDeclaration,
+} from '../runtime/output';
 import {isTupleValue, type Value} from '../runtime/value';
 import {ValueLayoutRegistry} from '../runtime/value-layout';
 import {bindModule} from './binding';
@@ -138,6 +144,7 @@ class TeaNode implements Node {
   private readonly results = new Subject<Datum>();
   private readonly deliveryFailure = new Subject<never>();
   private runtime: JSRuntime | null = null;
+  private declaration: ExecutionDeclaration | null = null;
   private connection: Subscription | null = null;
   private committedIndices = 0;
   private started = false;
@@ -155,6 +162,7 @@ class TeaNode implements Node {
     private readonly builtinSupplier: BuiltinSupplier,
     private readonly path: readonly number[] = [],
   ) {
+    module = initializeModuleTree(module);
     this.layouts = new ValueLayoutRegistry(module.layout);
     this.data = null;
     this.requests = module.requests.map(
@@ -178,7 +186,7 @@ class TeaNode implements Node {
    * the newly bound child module under `module.requests[0]`.
    */
   get module(): JSModule {
-    return this.snapshot();
+    return initializeModuleTree(this.snapshot());
   }
 
   /**
@@ -291,25 +299,12 @@ class TeaNode implements Node {
 
   /** Adds Node-owned position and source time to one exact step result. */
   private datum(input: InputDatum, result: StepResult, index: number): Datum {
-    const time = this.outputTime(input.time);
-    const outputs = Object.freeze(
-      result.outputs.map(output =>
-        Object.freeze({
-          outputId: output.outputId,
-          channels: Object.freeze([...output.channels]),
-        }),
-      ),
-    );
-    const effects = Object.freeze(
-      result.effects.map(effect => Object.freeze({...effect})),
-    );
-    return Object.freeze({
+    return createDatum(
+      (this.declaration ??= moduleDeclaration(this._module)),
       index,
-      ...(time === undefined ? {} : {time}),
-      outputs,
-      effects,
-      provisional: result.provisional,
-    });
+      result,
+      this.outputTime(input.time),
+    );
   }
 
   /** Converts the public bigint clock to exact epoch milliseconds. */
@@ -427,6 +422,10 @@ class TeaNode implements Node {
     ): Effect.Effect<void, Error> =>
       Effect.gen(function* () {
         if (bindings.length === 0) return;
+        for (const [names, stream] of bindings) {
+          const error = self.streamError(names, stream);
+          if (error !== undefined) return yield* Effect.fail(error);
+        }
         const streams = bindings.map(([, stream]) => stream);
         const clocks = [
           self.clock,
@@ -522,9 +521,50 @@ class TeaNode implements Node {
       }
 
       const root = yield* rootBindings(input);
+      for (let id = 0; id < self.requests.length; id++) {
+        const child = self.requests[id];
+        const stream = input[self._module.manifest.requests[id].name];
+        if (stream === undefined) continue;
+        const names = child._module
+          .remaining()
+          .filter(binding => binding.kind === 'series')
+          .map(binding => binding.name);
+        const error = child.streamError(names, stream);
+        if (error !== undefined) return yield* Effect.fail(error);
+      }
       yield* bindRoot(root);
       yield* self.bindRequestStreams(input);
     });
+  }
+
+  /**
+   * Check a stream before changing any binding in the graph.
+   * @example A Utf8 `close` field fails here, before another request is bound.
+   */
+  private streamError(
+    names: readonly string[],
+    stream: DataStream<unknown>,
+  ): Error | undefined {
+    if (this.clock !== i && stream.clock !== i && this.clock !== stream.clock)
+      return new Error('bound DataStream clocks disagree');
+    if (
+      this.indices !== null &&
+      stream.indices !== null &&
+      this.indices !== stream.indices
+    )
+      return new Error('bound DataStream indices disagree');
+    const fields = stream.schema.fields;
+    for (const name of names) {
+      const field = fields.find(field => field.name === name);
+      if (field === undefined)
+        return new Error(`source schema does not provide series '${name}'`);
+      if (
+        field.nullable ||
+        (!DataType.isFloat(field.type) &&
+          !(DataType.isInt(field.type) && field.type.bitWidth < 64))
+      )
+        return new Error(`series '${name}' requires a numeric Arrow field`);
+    }
   }
 
   /**
@@ -658,7 +698,7 @@ class TeaNode implements Node {
             }
             return [name, parsed[name]] as const;
           });
-          if (timed) {
+          if (timed && parsed.time != null) {
             const time = this.inputTime(parsed.time, 'time');
             if (previousTime !== null && time < previousTime) {
               throw new Error('DataStream time must be a nondecreasing bigint');
@@ -678,6 +718,8 @@ class TeaNode implements Node {
               previousClose = close;
               entries.push(['time_close', close]);
             }
+          } else if (timed && Object.hasOwn(parsed, 'time')) {
+            entries.push(['time', null]);
           }
           return Object.freeze(Object.fromEntries(entries));
         }
@@ -698,14 +740,17 @@ class TeaNode implements Node {
 
   /** Validates one exact epoch-millisecond input time before execution. */
   private inputTime(value: unknown, field: 'time' | 'time_close'): bigint {
-    if (typeof value !== 'bigint') {
-      throw new Error(`DataStream ${field} must be a bigint`);
-    }
-    const number = Number(value);
-    if (!Number.isSafeInteger(number) || BigInt(number) !== value) {
+    if (typeof value !== 'bigint' && typeof value !== 'number') {
       throw new Error(`DataStream ${field} must be an exact epoch-ms integer`);
     }
-    return value;
+    const number = Number(value);
+    if (
+      !Number.isSafeInteger(number) ||
+      (typeof value === 'bigint' && BigInt(number) !== value)
+    ) {
+      throw new Error(`DataStream ${field} must be an exact epoch-ms integer`);
+    }
+    return BigInt(number);
   }
 
   /**
@@ -755,21 +800,27 @@ class TeaNode implements Node {
   /**
    * Reports whether the DataStream schema declares an event-time field.
    *
-   * @example `z.object({time: z.bigint(), close: z.number()})` returns `true`;
-   * a schema containing only `close` returns `false`.
+   * @example A Schema with a TimestampMillisecond `time` field returns `true`;
+   * a schema containing only Float64 `close` returns `false`.
    */
   private hasTime(stream: DataStream<unknown>): boolean {
+    const type = stream.schema.fields.find(
+      field => field.name === 'time',
+    )?.type;
     return (
-      stream.schema instanceof z.ZodObject &&
-      stream.schema.shape.time instanceof z.ZodBigInt
+      (DataType.isTimestamp(type) && type.unit === TimeUnit.MILLISECOND) ||
+      (DataType.isInt(type) && type.bitWidth === 64)
     );
   }
 
   /** Reports whether a DataStream schema declares interval close time. */
   private hasTimeClose(stream: DataStream<unknown>): boolean {
+    const type = stream.schema.fields.find(
+      field => field.name === 'time_close',
+    )?.type;
     return (
-      stream.schema instanceof z.ZodObject &&
-      stream.schema.shape.time_close instanceof z.ZodBigInt
+      (DataType.isTimestamp(type) && type.unit === TimeUnit.MILLISECOND) ||
+      (DataType.isInt(type) && type.bitWidth === 64)
     );
   }
 

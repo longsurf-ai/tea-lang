@@ -51,6 +51,7 @@
     "test": "vitest run --no-file-parallelism"
   },
   "dependencies": {
+    "apache-arrow": "^21.2.0",
     "commander": "14.0.2",
     "csv-parse": "7.0.2",
     "csv-stringify": "6.8.3",

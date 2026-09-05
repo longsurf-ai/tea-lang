@@ -1,13 +1,26 @@
 // Purpose: Tagged-template API — proves embedded source, interpolation,
 // implicit Tea libraries, diagnostics, and the canonical Program projection.
 
-import {describe, expect, test} from 'vitest';
+import {describe, expect, test, vi} from 'vitest';
 import {Observable, of, Subject} from 'rxjs';
-import * as z from 'zod';
+import {
+  DataType,
+  Field,
+  Float64,
+  Int32,
+  Int64,
+  List,
+  Schema,
+  TimestampMillisecond,
+  Utf8,
+} from 'apache-arrow';
+import * as io from '../runtime/io';
 import {d, i, m, ns, w, y, type Clock} from './clock';
-import type {Datum} from './node';
+import {createNode, type Datum} from './node';
 import {DataStream} from './stream';
 import {TeaCompileError, tea} from './tea';
+
+const numericSchema = new Schema([new Field('close', new Float64(), false)]);
 
 describe('tea', () => {
   test('compiles an indented template into a generated JSModule', () => {
@@ -68,10 +81,7 @@ describe('tea', () => {
       length = input.int(14)
       plot(close + length)
     `;
-    const source = new DataStream(
-      z.object({close: z.number()}),
-      of({close: 1}),
-    );
+    const source = new DataStream(numericSchema, of({close: 1}));
 
     const initial = node.module;
     expect(node.bind(source)).toBe(node);
@@ -102,10 +112,7 @@ describe('tea', () => {
   });
 
   test('drives one state-owning runtime from the bound source Observable', async () => {
-    const source = new DataStream(
-      z.object({close: z.number()}),
-      of({close: 1}, {close: 2}),
-    );
+    const source = new DataStream(numericSchema, of({close: 1}, {close: 2}));
     const node = tea`
       length = input.int(14)
       plot(close + length)
@@ -134,23 +141,20 @@ describe('tea', () => {
       {
         index: 0,
         time: 100,
-        outputs: [{outputId: 0, channels: [Number.NaN]}],
-        effects: [],
+        output0: {series: Number.NaN},
+        timed: true,
         provisional: false,
       },
       {
         index: 1,
         time: 200,
-        outputs: [{outputId: 0, channels: [10]}],
-        effects: [],
+        output0: {series: 10},
+        timed: true,
         provisional: false,
       },
     ]);
     expect(Object.isFrozen(sink.values[0])).toBe(true);
-    expect(Object.isFrozen(sink.values[0]!.outputs)).toBe(true);
-    expect(Object.isFrozen(sink.values[0]!.outputs[0])).toBe(true);
-    expect(Object.isFrozen(sink.values[0]!.outputs[0]!.channels)).toBe(true);
-    expect(Object.isFrozen(sink.values[0]!.effects)).toBe(true);
+    expect(Object.isFrozen(sink.values[0]!.output0)).toBe(true);
   });
 
   test('rejects inexact event time before executing a step', async () => {
@@ -186,9 +190,7 @@ describe('tea', () => {
 
   test('validates a finite DataStream index count', async () => {
     const shortNode = tea`plot(close)`;
-    shortNode.bind(
-      new DataStream(z.object({close: z.number()}), of({close: 1}), i, 2),
-    );
+    shortNode.bind(new DataStream(numericSchema, of({close: 1}), i, 2));
     const shortSink = new StepSink();
     shortNode.to(shortSink);
     await expect(shortSink.completion).rejects.toThrow(
@@ -197,12 +199,7 @@ describe('tea', () => {
 
     const longNode = tea`plot(close)`;
     longNode.bind(
-      new DataStream(
-        z.object({close: z.number()}),
-        of({close: 1}, {close: 2}),
-        i,
-        1,
-      ),
+      new DataStream(numericSchema, of({close: 1}, {close: 2}), i, 1),
     );
     const longSink = new StepSink();
     longNode.to(longSink);
@@ -215,7 +212,7 @@ describe('tea', () => {
     let produced = 0;
     let teardowns = 0;
     const source = new DataStream(
-      z.object({close: z.number()}),
+      numericSchema,
       new Observable(subscriber => {
         for (const close of [1, 2]) {
           if (subscriber.closed) break;
@@ -249,20 +246,141 @@ describe('tea', () => {
   });
 
   test('validates each DataStream emission exactly once', async () => {
-    let parses = 0;
-    const schema = z.object({close: z.number()}).transform(value => {
-      parses += 1;
-      return value;
-    });
+    const validate = vi.spyOn(io, 'validateRecord');
+    const schema = new Schema(
+      numericSchema.fields,
+      new Map([['test:source', 'once']]),
+    );
     const node = tea`plot(close)`;
     node.bind(new DataStream(schema, of({close: 1}, {close: 2})));
     const sink = new StepSink();
+    try {
+      node.to(sink);
+      await sink.completion;
+      expect(
+        validate.mock.calls.filter(
+          ([schema]) => schema.metadata.get('test:source') === 'once',
+        ),
+      ).toHaveLength(2);
+      expect(values(sink)).toEqual([1, 2]);
+    } finally {
+      validate.mockRestore();
+    }
+  });
 
+  test('checks demanded Arrow input fields before subscribing or binding', () => {
+    const subscribe = vi.fn();
+    const cases = [
+      new Schema([new Field('open', new Float64(), false)]),
+      new Schema([new Field('close', new Utf8(), false)]),
+      new Schema([new Field('close', new Float64(), true)]),
+      new Schema([
+        new Field(
+          'close',
+          new List(new Field('item', new Float64(), false)),
+          false,
+        ),
+      ]),
+    ];
+    for (const schema of cases) {
+      const node = tea`plot(close)`;
+      const before = node.module.remaining();
+      const stream = new DataStream(
+        schema,
+        new Observable(subscriber => {
+          subscribe();
+          subscriber.complete();
+        }),
+      );
+      expect(() => node.bind(stream)).toThrow(/close/);
+      expect(node.module.remaining()).toEqual(before);
+    }
+    expect(subscribe).not.toHaveBeenCalled();
+  });
+
+  test('accepts compatible Arrow numeric fields and millisecond timestamps', async () => {
+    const node = tea`plot(close)`;
+    const schema = new Schema([
+      new Field('time', new TimestampMillisecond(), false),
+      new Field('close', new Int32(), false),
+    ]);
+    node.bind(
+      new DataStream(
+        schema,
+        of(
+          {time: -1, close: 10},
+          {time: 0n, close: 20},
+          {time: Number.MAX_SAFE_INTEGER, close: 30},
+        ),
+      ),
+    );
+    const sink = new StepSink();
     node.to(sink);
     await sink.completion;
+    expect(values(sink)).toEqual([10, 20, 30]);
+    expect(sink.values.map(value => value.time)).toEqual([
+      -1,
+      0,
+      Number.MAX_SAFE_INTEGER,
+    ]);
+  });
 
-    expect(parses).toBe(2);
-    expect(values(sink)).toEqual([1, 2]);
+  test('preserves absent and present-null source time in Arrow rows', async () => {
+    const node = tea`plot(close)`;
+    const schema = new Schema([
+      new Field('time', new TimestampMillisecond(), true),
+      ...numericSchema.fields,
+    ]);
+    node.bind(new DataStream(schema, of({close: 1}, {time: null, close: 2})));
+    const sink = new StepSink();
+    node.to(sink);
+    await sink.completion;
+    expect(Object.hasOwn(sink.values[0]!, 'time')).toBe(false);
+    expect(sink.values[0]!.timed).toBe(false);
+    expect(sink.values[1]!.time).toBe(null);
+    expect(sink.values[1]!.timed).toBe(true);
+  });
+
+  test('isolates supplied and exposed module schemas throughout hot execution', async () => {
+    const supplied = tea`plot(close)`.module;
+    supplied.manifest.inputs.fields[0]!.metadata.set('test:owner', 'original');
+    supplied.manifest.outputs[0]!.channels[0]!.metadata.set(
+      'test:owner',
+      'original',
+    );
+    const node = createNode(supplied);
+    const rows = new Subject<{close: number}>();
+    node.bind(new DataStream(numericSchema, rows));
+    supplied.manifest.inputs.fields[0]!.metadata.set('test:owner', 'caller');
+    supplied.manifest.outputs[0]!.channels[0]!.metadata.set(
+      'test:owner',
+      'caller',
+    );
+    const sink = new StepSink();
+    node.to(sink);
+    rows.next({close: 10});
+    const exposed = node.module;
+    exposed.manifest.inputs.fields[0]!.metadata.set('test:owner', 'reader');
+    exposed.manifest.outputs[0]!.channels[0]!.metadata.set(
+      'test:owner',
+      'reader',
+    );
+    exposed.inputs.fields.splice(0);
+    exposed.outputs.fields.splice(0);
+    rows.next({close: 20});
+    rows.complete();
+    await sink.completion;
+    expect(values(sink)).toEqual([10, 20]);
+    expect(node.module.inputs.fields[0]!.metadata.get('test:owner')).toBe(
+      'original',
+    );
+    const output = node.module.outputs.fields.find(
+      field => field.name === 'output0',
+    )!;
+    expect(DataType.isStruct(output.type)).toBe(true);
+    expect(output.type.children[0]!.metadata.get('test:owner')).toBe(
+      'original',
+    );
   });
 
   test('does not treat Pine contextual builtins as a third binding kind', () => {
@@ -344,7 +462,7 @@ describe('tea', () => {
     `;
     node.bind({
       requested: new DataStream(
-        z.object({close: z.number()}),
+        numericSchema,
         new Observable(subscriber => {
           subscriptions += 1;
           return of({close: 1}).subscribe(subscriber);
@@ -364,10 +482,18 @@ describe('tea', () => {
     expect(() =>
       node.bind({
         close: clockedNumericSource(d, 1),
-        open: clockedNumericSource(w, 1),
+        open: new DataStream(
+          new Schema([new Field('open', new Float64(), false)]),
+          of(1),
+          w,
+          1,
+        ),
       }),
     ).toThrow('bound DataStream clocks disagree');
-    expect(node.module).toBe(initial);
+    expect(node.module.manifest).toEqual(initial.manifest);
+    expect(node.module.requests.map(request => request.manifest)).toEqual(
+      initial.requests.map(request => request.manifest),
+    );
   });
 
   test('rejects a count-window ratio outside JavaScript safe integers', () => {
@@ -547,7 +673,10 @@ describe('tea', () => {
       timedNumericSource({time: 0n, close: 10}, {time: 1n, close: 20});
     const closeOnly = () =>
       new DataStream(
-        z.object({time_close: z.bigint(), close: z.number()}),
+        new Schema([
+          new Field('time_close', new Int64(), false),
+          ...numericSchema.fields,
+        ]),
         of({time_close: 1n, close: 10}, {time_close: 2n, close: 20}),
       );
 
@@ -808,17 +937,38 @@ describe('tea', () => {
     expect(() => node.bind({x: source, missing: source})).toThrow(
       "no bind-known root series or static request child matches 'missing'",
     );
-    expect(node.module).toBe(initial);
+    expect(node.module.manifest).toEqual(initial.manifest);
+    expect(node.module.requests.map(request => request.manifest)).toEqual(
+      initial.requests.map(request => request.manifest),
+    );
     expect(node.ready()).toBe(false);
     expect(node.bind({x: source, y: source})).toBe(node);
     expect(node.ready()).toBe(true);
+  });
+
+  test('keeps request bindings atomic when a later child schema is invalid', () => {
+    const node = tea`
+      x = request.security("X", "D", close)
+      y = request.security("Y", "D", close)
+      plot(x + y)
+    `;
+    const initial = node.module;
+    const invalid = new DataStream(
+      new Schema([new Field('close', new Utf8(), false)]),
+      of({close: 'bad'}),
+    );
+    expect(() => node.bind({x: numericSource(1), y: invalid})).toThrow(/close/);
+    expect(node.module.requests.map(request => request.manifest)).toEqual(
+      initial.requests.map(request => request.manifest),
+    );
+    expect(node.ready()).toBe(false);
   });
 
   test('fans out one execution and gives late sinks only future results', async () => {
     const rows = new Subject<{close: number}>();
     let sourceSubscriptions = 0;
     const source = new DataStream(
-      z.object({close: z.number()}),
+      numericSchema,
       new Observable(subscriber => {
         sourceSubscriptions += 1;
         return rows.subscribe(subscriber);
@@ -856,7 +1006,7 @@ describe('tea', () => {
 
   test('rejects binding after execution starts', async () => {
     const rows = new Subject<{close: number}>();
-    const source = new DataStream(z.object({close: z.number()}), rows);
+    const source = new DataStream(numericSchema, rows);
     const node = tea`plot(close)`;
     node.bind(source);
     const sink = new StepSink();
@@ -873,7 +1023,7 @@ describe('tea', () => {
     const rows = new Subject<{close: number}>();
     let teardowns = 0;
     const source = new DataStream(
-      z.object({close: z.number()}),
+      numericSchema,
       new Observable(subscriber => {
         const subscription = rows.subscribe(subscriber);
         return () => {
@@ -900,15 +1050,16 @@ describe('tea', () => {
 
 function values(sink: StepSink): readonly unknown[] {
   return sink.values.map(
-    result => result.outputs.find(output => output.outputId === 0)?.channels[0],
+    result => (result.output0 as {series: unknown} | null)?.series,
   );
 }
 
 function outputValues(sink: StepSink): readonly (readonly unknown[])[] {
   return sink.values.map(result =>
-    [...result.outputs]
-      .sort((left, right) => left.outputId - right.outputId)
-      .map(output => output.channels[0]),
+    Object.keys(result)
+      .filter(name => /^output\d+$/.test(name))
+      .sort((left, right) => Number(left.slice(6)) - Number(right.slice(6)))
+      .map(name => (result[name] as {series: unknown} | null)?.series),
   );
 }
 
@@ -916,7 +1067,7 @@ function numericSource(...values: readonly number[]): DataStream<{
   close: number;
 }> {
   return new DataStream(
-    z.object({close: z.number()}),
+    numericSchema,
     of(...values.map(close => ({close}))),
     i,
     values.length,
@@ -928,7 +1079,7 @@ function clockedNumericSource(
   ...values: readonly number[]
 ): DataStream<{close: number}> {
   return new DataStream(
-    z.object({close: z.number()}),
+    numericSchema,
     of(...values.map(close => ({close}))),
     clock,
     values.length,
@@ -944,12 +1095,14 @@ type IntervalNumericDatum = TimedNumericDatum & {
   readonly time_close: bigint;
 };
 
-const timedNumericSchema = z.object({time: z.bigint(), close: z.number()});
-const intervalNumericSchema = z.object({
-  time: z.bigint(),
-  time_close: z.bigint(),
-  close: z.number(),
-});
+const timedNumericSchema = new Schema([
+  new Field('time', new Int64(), false),
+  ...numericSchema.fields,
+]);
+const intervalNumericSchema = new Schema([
+  ...timedNumericSchema.fields,
+  new Field('time_close', new Int64(), false),
+]);
 
 function timedNumericSource(
   ...values: readonly TimedNumericDatum[]

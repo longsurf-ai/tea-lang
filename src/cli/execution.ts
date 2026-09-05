@@ -1,7 +1,7 @@
 // Purpose: Run one Tea file through the public finite Batch Recipe.
 
 import {from, firstValueFrom, toArray} from 'rxjs';
-import * as z from 'zod';
+import {Field, Float64, Int64, Schema} from 'apache-arrow';
 import {i} from '../api/clock';
 import {createNode} from '../api/node';
 import {CSVSource} from '../api/source';
@@ -116,20 +116,15 @@ async function csvBatchStream(
   path: string,
 ): Promise<DataStream<Readonly<Record<string, unknown>>>> {
   const discovered = await CSVSource.open(path);
-  const inputShape: Record<string, z.ZodType> = Object.fromEntries(
-    Object.keys(discovered.schema.shape).map(name => [
-      name,
-      name === 'time' || name === 'time_close'
-        ? z.coerce.bigint()
-        : z.coerce.number(),
-    ]),
+  const fields = discovered.schema.fields.map(
+    ({name}) =>
+      new Field(
+        name,
+        name === 'time' || name === 'time_close' ? new Int64() : new Float64(),
+        false,
+      ),
   );
-  const source = new CSVSource(
-    path,
-    z.strictObject(inputShape),
-    i,
-    discovered.indices,
-  );
+  const source = new CSVSource(path, new Schema(fields), i, discovered.indices);
   const input = await firstValueFrom(
     source.stream().asObservable().pipe(toArray()),
   );
@@ -159,20 +154,21 @@ async function csvBatchStream(
     }
     return Object.freeze(row);
   });
-  const outputShape: Record<string, z.ZodType> = {...inputShape};
-  if ('time' in inputShape && !('time_close' in outputShape)) {
-    outputShape.time_close = z.bigint();
+  if (
+    fields.some(field => field.name === 'time') &&
+    !fields.some(field => field.name === 'time_close')
+  ) {
+    fields.push(new Field('time_close', new Int64(), false));
   }
   for (const name of ['hl2', 'hlc3', 'ohlc4', 'hlcc4']) {
-    if (rows.some(row => Object.hasOwn(row, name)))
-      outputShape[name] = z.number();
+    if (
+      !fields.some(field => field.name === name) &&
+      rows.some(row => Object.hasOwn(row, name))
+    ) {
+      fields.push(new Field(name, new Float64(), false));
+    }
   }
-  return new DataStream(
-    z.strictObject(outputShape),
-    from(rows),
-    i,
-    rows.length,
-  );
+  return new DataStream(new Schema(fields), from(rows), i, rows.length);
 }
 
 function derivePrice(

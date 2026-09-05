@@ -1,5 +1,5 @@
 // Purpose: `effect.emit` is a generic checker-owned sparse-effect intrinsic
-// with fixed-payload and execution-context contracts, not strategy policy.
+// with value and execution-context contracts, not strategy policy.
 
 import {describe, expect, test} from 'vitest';
 import {CallKind} from './info';
@@ -11,7 +11,7 @@ function messages(source: string): string[] {
 }
 
 describe('effect.emit semantic contract', () => {
-  test('accepts scalars, enums, and recursively fixed struct snapshots', () => {
+  test('accepts scalars, enums, and struct snapshots', () => {
     const result = checkText(
       [
         'enum Kind',
@@ -37,28 +37,19 @@ describe('effect.emit semantic contract', () => {
     expect(emits[0].argTypes[0].kind).toBe('Struct');
   });
 
-  test('rejects collections, tuples, resources, and untyped na', () => {
-    const result = messages(
-      [
-        'values = array.from(1, 2)',
-        'effect.emit(values)',
-        'effect.emit([1, 2])',
-        'line handle = na',
-        'effect.emit(handle)',
-        'effect.emit(na)',
-      ].join('\n'),
-    );
-
-    expect(result).toContain(
-      "array<int> does not satisfy effect-payload constraint for 'T'",
-    );
-    expect(result).toContain(
-      "[int, int] does not satisfy effect-payload constraint for 'T'",
-    );
-    expect(result).toContain(
-      "line does not satisfy effect-payload constraint for 'T'",
-    );
-    expect(result).toContain(
+  test('accepts collections, tuples and resource values; rejects untyped na', () => {
+    expect(
+      messages(
+        [
+          'values = array.from(1, 2)',
+          'effect.emit(values)',
+          'effect.emit([1, 2])',
+          'line handle = na',
+          'effect.emit(handle)',
+        ].join('\n'),
+      ),
+    ).toEqual([]);
+    expect(messages('effect.emit(na)')).toContain(
       "cannot infer type argument 'T' for 'effect.emit'; provide it explicitly",
     );
   });

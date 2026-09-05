@@ -3,7 +3,7 @@
 
 import {Effect} from 'effect';
 import {Storage} from '../../ir/node';
-import type {EffectValueSchema} from '../../ir/program';
+import {DataType, type Field} from 'apache-arrow';
 import {fatal} from '../../base/print';
 import {unimplemented} from '../../base/unimplemented';
 import {
@@ -41,7 +41,6 @@ import {
   isMatrixValue,
   isStructRef,
   isTupleValue,
-  type EffectValue,
   type Value,
 } from '../value';
 
@@ -71,7 +70,7 @@ export function stateMachine(
   heap: Heap,
   maxCollectionElements = DEFAULT_MAX_COLLECTION_ELEMENTS,
 ): TeaStateMachine {
-  validateEffectSchemas(module, layouts);
+  validateIoSchemas(module, layouts);
   const structs = new StructStorageRuntime(heap, layouts);
   const collections = new CollectionRuntime(
     heap,
@@ -149,7 +148,7 @@ interface WorkspaceFrame extends Frame {
 
 class RuntimeOperations implements RuntimeContext {
   private readonly rootFrame: WorkspaceFrame;
-  private readonly outputs = new Map<number, Value[]>();
+  private readonly outputs = new Map<number, unknown[]>();
   private readonly effects: EffectEmission[] = [];
   private transaction: HeapTransaction | null = null;
   private requestValues: readonly Value[] = [];
@@ -360,23 +359,18 @@ class RuntimeOperations implements RuntimeContext {
     if (spec === undefined || spec.channels[channel] === undefined) {
       return fatal(`emit to unknown output ${oid} channel ${channel}`);
     }
-    if (
-      isStructRef(value) ||
-      isArrayValue(value) ||
-      isMatrixValue(value) ||
-      isMapValue(value) ||
-      isTupleValue(value)
-    ) {
-      return fatal(
-        'struct and collection values cannot cross an output channel in V1',
-      );
-    }
     let channels = this.outputs.get(oid);
     if (channels === undefined) {
-      channels = new Array<Value>(spec.channels.length).fill(NaN);
+      channels = spec.channels.map(field =>
+        field.nullable ? null : DataType.isBool(field.type) ? false : NaN,
+      );
       this.outputs.set(oid, channels);
     }
-    channels[channel] = value;
+    channels[channel] = this.snapshot(
+      spec.layouts[channel],
+      spec.channels[channel],
+      value,
+    );
   }
 
   emitEffect(effectId: number, payload: Value): void {
@@ -393,49 +387,123 @@ class RuntimeOperations implements RuntimeContext {
     );
     this.effects.push({
       effectId,
-      payload: this.effectValue(
-        spec.layout,
-        spec.declaration.payload,
-        payload,
-        transaction,
-      ),
+      payload: this.snapshot(spec.layout, spec.declaration.payload, payload),
     });
   }
 
-  private effectValue(
+  // Copy at the emission, not at the end of the step: later mutation must not
+  // change an earlier event. Arrow fields describe the detached result while
+  // runtime layouts locate the live values in the Heap.
+  private snapshot(
     layoutId: LayoutId,
-    schema: EffectValueSchema,
+    field: Field,
     value: Value,
-    transaction: HeapTransaction,
-  ): EffectValue {
-    if (schema.kind !== 'struct' || value === null) {
-      if (
-        typeof value === 'number' ||
-        typeof value === 'string' ||
-        typeof value === 'boolean' ||
-        value === null
-      ) {
-        return value;
-      }
-      return fatal(`non-scalar value reached logical ${schema.kind} effect`);
+    active?: Set<object>,
+  ): unknown {
+    const transaction = this.mustTransaction();
+    if (layoutId === -1)
+      return value === null
+        ? null
+        : Object.freeze({kind: field.metadata.get('tea:name'), id: value});
+    this.structs.assertValue(layoutId, value, 'output payload', transaction);
+    if (value === null) {
+      if (!field.nullable)
+        throw new ExecutionError(
+          'VALUE_LAYOUT_MISMATCH',
+          'null output in a required Arrow field',
+        );
+      return null;
     }
     const layout = this.layouts.layout(layoutId);
-    if (!isStructRef(value) || layout.kind !== 'struct') {
-      return fatal(`non-struct value reached logical ${schema.typeId} effect`);
-    }
-    return Object.freeze({
-      kind: 'struct' as const,
-      fields: Object.freeze(
-        schema.fields.map((field, index) =>
-          this.effectValue(
-            layout.fields[index]!.layout,
-            field.value,
-            this.structs.field(value, layoutId, index, transaction),
-            transaction,
+    if (typeof value !== 'object') return value;
+    active ??= new Set<object>();
+    if (active.has(value))
+      throw new ExecutionError(
+        'VALUE_LAYOUT_MISMATCH',
+        'cyclic output payload',
+      );
+    active.add(value);
+    const copy = (id: LayoutId, child: Field, item: Value) =>
+      this.snapshot(id, child, item, active);
+    let result: unknown;
+    switch (layout.kind) {
+      case 'struct':
+        result = Object.freeze(
+          Object.fromEntries(
+            layout.fields.map((member, i) => [
+              member.name,
+              copy(
+                member.layout,
+                field.type.children[i],
+                this.structs.field(value, layoutId, i, transaction),
+              ),
+            ]),
           ),
-        ),
-      ),
-    });
+        );
+        break;
+      case 'tuple':
+        if (!isTupleValue(value)) return fatal('invalid output tuple');
+        result = Object.freeze(
+          Object.fromEntries(
+            layout.elements.map((id, i) => [
+              field.type.children[i].name,
+              copy(id, field.type.children[i], value[i]),
+            ]),
+          ),
+        );
+        break;
+      case 'array':
+        if (!isArrayValue(value)) return fatal('invalid output array');
+        result = Object.freeze(
+          transaction
+            .read(value.storage)
+            .values.map(item =>
+              copy(layout.element, field.type.children[0], item),
+            ),
+        );
+        break;
+      case 'matrix':
+        if (!isMatrixValue(value)) return fatal('invalid output matrix');
+        result = Object.freeze({
+          rows: value.rows,
+          columns: value.columns,
+          values: Object.freeze(
+            transaction
+              .read(value.storage)
+              .values.map(item =>
+                copy(
+                  layout.element,
+                  field.type.children[2].type.children[0],
+                  item,
+                ),
+              ),
+          ),
+        });
+        break;
+      case 'map': {
+        if (!isMapValue(value)) return fatal('invalid output map');
+        const [key, item] = field.type.children[0].type.children;
+        result = new Map(
+          transaction
+            .read(value.storage)
+            .entries.map(entry => [
+              copy(layout.key, key, entry.key),
+              copy(layout.value, item, entry.value),
+            ]),
+        );
+        break;
+      }
+      case 'resource':
+        result = Object.freeze({
+          kind: layout.handle,
+          id: (value as {id: number}).id,
+        });
+        break;
+      default:
+        return fatal('invalid output carrier');
+    }
+    active.delete(value);
+    return result;
   }
 
   newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown> {
@@ -888,87 +956,109 @@ function frameLayout(module: JSModule, fid: number) {
   return layout === undefined ? fatal(`unknown frame layout ${fid}`) : layout;
 }
 
-function validateEffectSchemas(
+function validateIoSchemas(
   module: JSModule,
   layouts: ValueLayoutRegistry,
 ): void {
-  const active = new Set<LayoutId>();
-  const validate = (layoutId: LayoutId, schema: EffectValueSchema): void => {
-    if (active.has(layoutId)) {
-      return fatal(`effect payload layout ${layoutId} is recursively sized`);
-    }
-    active.add(layoutId);
-    const layout = layouts.layout(layoutId);
+  const active = new Set<number>();
+  const validate = (id: number, field: Field): void => {
+    if (id === -1 && field.metadata.get('tea:type') === 'output-ref') return;
+    if (active.has(id)) return fatal('recursive output schema');
+    active.add(id);
+    const layout = layouts.layout(id);
+    const type = field.type;
+    const kind = field.metadata.get('tea:type');
+    const bad = () =>
+      fatal(`output layout ${id} disagrees with Arrow field '${field.name}'`);
     switch (layout.kind) {
       case 'number':
-        if (schema.kind !== layout.numeric) {
-          return fatal(
-            `effect payload layout ${layoutId} disagrees with logical ${schema.kind} schema`,
-          );
-        }
+        if (
+          !DataType.isFloat(type) ||
+          (kind !== undefined && kind !== layout.numeric)
+        )
+          bad();
         break;
       case 'boolean':
-        if (schema.kind !== 'bool') {
-          return fatal(
-            `effect payload layout ${layoutId} disagrees with logical ${schema.kind} schema`,
-          );
-        }
+        if (!DataType.isBool(type)) bad();
         break;
       case 'nullable-scalar':
-        if (schema.kind !== layout.scalar) {
-          return fatal(
-            `effect payload layout ${layoutId} disagrees with logical ${schema.kind} schema`,
-          );
-        }
+        if (
+          !DataType.isUtf8(type) ||
+          (kind !== undefined && kind !== layout.scalar)
+        )
+          bad();
         break;
       case 'enum':
         if (
-          schema.kind !== 'enum' ||
-          schema.typeId !== layout.typeId ||
-          schema.displayName !== layout.name ||
-          schema.members.length !== layout.members.length ||
-          schema.members.some(
-            (member, index) => member.name !== layout.members[index],
-          )
-        ) {
-          return fatal(
-            `effect payload layout ${layoutId} disagrees with logical enum schema`,
-          );
-        }
+          !DataType.isUtf8(type) ||
+          field.metadata.get('tea:typeId') !== layout.typeId ||
+          field.metadata.get('tea:name') !== layout.name ||
+          JSON.stringify(
+            (
+              JSON.parse(field.metadata.get('tea:members') ?? '[]') as {
+                name: string;
+              }[]
+            ).map(member => member.name),
+          ) !== JSON.stringify(layout.members)
+        )
+          bad();
         break;
       case 'struct':
         if (
-          schema.kind !== 'struct' ||
-          schema.typeId !== layout.typeId ||
-          schema.displayName !== layout.name ||
-          schema.fields.length !== layout.fields.length
-        ) {
-          return fatal(
-            `effect payload layout ${layoutId} disagrees with logical struct schema`,
-          );
-        }
-        layout.fields.forEach((field, index) => {
-          const logical = schema.fields[index];
-          if (logical === undefined || logical.name !== field.name) {
-            return fatal(
-              `effect payload layout ${layoutId} disagrees at field ${index}`,
-            );
-          }
-          validate(field.layout, logical.value);
+          !DataType.isStruct(type) ||
+          type.children.length !== layout.fields.length ||
+          field.metadata.get('tea:typeId') !== layout.typeId ||
+          field.metadata.get('tea:name') !== layout.name
+        )
+          bad();
+        layout.fields.forEach((member, i) => {
+          if (type.children[i]?.name !== member.name) bad();
+          validate(member.layout, type.children[i]);
         });
         break;
-      case 'resource':
-      case 'array':
-      case 'matrix':
-      case 'map':
       case 'tuple':
-        return fatal(
-          `effect payload layout ${layoutId} has unsupported ${layout.kind} transport`,
+        if (
+          !DataType.isStruct(type) ||
+          type.children.length !== layout.elements.length
+        )
+          bad();
+        layout.elements.forEach((child, i) =>
+          validate(child, type.children[i]),
         );
+        break;
+      case 'array':
+        if (!DataType.isList(type)) bad();
+        validate(layout.element, type.children[0]);
+        break;
+      case 'matrix':
+        if (
+          !DataType.isStruct(type) ||
+          type.children.length !== 3 ||
+          !DataType.isList(type.children[2].type)
+        )
+          bad();
+        validate(layout.element, type.children[2].type.children[0]);
+        break;
+      case 'map':
+        if (!DataType.isMap(type)) bad();
+        validate(layout.key, type.children[0].type.children[0]);
+        validate(layout.value, type.children[0].type.children[1]);
+        break;
+      case 'resource':
+        if (
+          !DataType.isStruct(type) ||
+          field.metadata.get('tea:name') !== layout.handle
+        )
+          bad();
+        break;
     }
-    active.delete(layoutId);
+    active.delete(id);
   };
-
+  module.manifest.outputs.forEach(output => {
+    if (output.layouts.length !== output.channels.length)
+      fatal('output descriptor count disagrees with Arrow schema');
+    output.channels.forEach((field, i) => validate(output.layouts[i], field));
+  });
   module.manifest.effects.forEach(effect =>
     validate(effect.layout, effect.declaration.payload),
   );

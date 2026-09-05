@@ -1,67 +1,107 @@
 // Purpose: External data sources for the RxJS-backed public runtime API.
 
 import {createReadStream} from 'node:fs';
-import {from, Observable} from 'rxjs';
+import {defer, from, Observable} from 'rxjs';
 import {parse, type Options, type Parser} from 'csv-parse';
-import * as z from 'zod';
+import {DataType, Field, Schema, Utf8} from 'apache-arrow';
+import {cloneSchema} from '../runtime/io';
 import {i, type Clock} from './clock';
 import {DataStream} from './stream';
 
-export interface Source<T extends z.ZodType> {
-  readonly schema: T;
-  stream(): DataStream<z.output<T>>;
+/**
+ * A source owns decoding and an Arrow schema; its DataStream owns validation.
+ * @example `(await CSVSource.open('prices.csv')).stream()` opens the file on subscription.
+ */
+export interface Source<T = Record<string, unknown>> {
+  readonly schema: Schema;
+  stream(): DataStream<T>;
 }
 
 /* CSV Source */
 
 export type CSVRow = Readonly<Record<string, string>>;
-export type CSVSchema = z.ZodObject<Record<string, z.ZodString>>;
 
-export class CSVSource<T extends z.ZodType> implements Source<T> {
+/**
+ * A cold CSV source with declared Arrow fields. CSV text is converted to each
+ * field's scalar type before validation; undeclared CSV columns are ignored.
+ * No file is opened by the constructor. `open()` additionally inspects extent.
+ *
+ * @example
+ * ```ts
+ * import {Field, Float64, Schema} from 'apache-arrow';
+ * const schema = new Schema([new Field('close', new Float64(), false)]);
+ * const source = await CSVSource.open('prices.csv', schema);
+ * // A CSV row `12.5` is emitted as {close: 12.5}, not {close: '12.5'}.
+ * ```
+ */
+export class CSVSource<T = Record<string, unknown>> implements Source<T> {
+  private readonly shape: Schema;
   constructor(
     readonly path: string,
-    readonly schema: T,
+    schema: Schema,
     readonly clock: Clock = i,
     readonly indices: number | null = null,
-  ) {}
+  ) {
+    this.shape = cloneSchema(schema);
+  }
 
-  /** Inspect the header and finite index count before creating a cold source. */
-  static async open<T extends z.ZodType = CSVSchema>(
+  /**
+   * Return a defensive schema copy; modifying it never changes future reads.
+   * @example `source.schema.fields[0].name` is `'close'` for the example above.
+   */
+  get schema(): Schema {
+    return cloneSchema(this.shape);
+  }
+
+  /**
+   * Inspect the header and row count, then return a cold source. Without an
+   * explicit schema every discovered field is non-nullable Arrow Utf8.
+   * @example `(await CSVSource.open('prices.csv')).indices` is 2 for a two-row file.
+   */
+  static async open<T = Record<string, unknown>>(
     path: string,
-    schema?: T,
+    schema?: Schema,
     clock: Clock = i,
   ): Promise<CSVSource<T>> {
     const inspected = await inspectCSV(path);
-    return new CSVSource(
+    return new CSVSource<T>(
       path,
-      (schema ?? inspected.schema) as T,
+      schema ?? inspected.schema,
       clock,
       inspected.indices,
     );
   }
 
-  /** Return a cold stream; every subscription opens its own file reader. */
-  stream(): DataStream<z.output<T>> {
-    return new DataStream<z.output<T>>(
-      this.schema as z.ZodType<z.output<T>>,
-      from(csvRows<z.output<T>>(this.path)),
+  /**
+   * Return a cold stream; every subscription opens its own file reader and
+   * cancellation closes that reader.
+   * @example `source.stream().subscribe({next: row => console.log(row)})` prints decoded rows.
+   */
+  stream(): DataStream<T> {
+    return new DataStream<T>(
+      this.shape,
+      defer(() => from(csvRows<T>(this.path, this.shape))),
       this.clock,
       this.indices,
     );
   }
 }
 
-/** CSV headers identify columns but do not provide authoritative scalar types. */
-export async function discoverCSVSchema(path: string): Promise<CSVSchema> {
+/**
+ * Read CSV column names as non-nullable Arrow Utf8 fields. Headers establish
+ * names, not numeric types; supply an explicit schema to request conversion.
+ * @example `(await discoverCSVSchema('prices.csv')).fields[0].type` is a Utf8 instance.
+ */
+export async function discoverCSVSchema(path: string): Promise<Schema> {
   return (await inspectCSV(path)).schema;
 }
 
 async function inspectCSV(
   path: string,
-): Promise<{readonly schema: CSVSchema; readonly indices: number}> {
+): Promise<{readonly schema: Schema; readonly indices: number}> {
   const parser = openCSV(path, {bom: true, skip_empty_lines: true});
   try {
-    let schema: CSVSchema | null = null;
+    let schema: Schema | null = null;
     let indices = 0;
     for await (const record of parser) {
       if (schema === null) {
@@ -73,8 +113,8 @@ async function inspectCSV(
         ) {
           throw new Error(`CSV source '${path}' has an invalid header`);
         }
-        schema = z.strictObject(
-          Object.fromEntries(record.map(header => [header, z.string()])),
+        schema = new Schema(
+          record.map(header => new Field(header, new Utf8(), false)),
         );
       } else {
         indices += 1;
@@ -87,15 +127,26 @@ async function inspectCSV(
   }
 }
 
-export async function fromCSV<T extends z.ZodType = CSVSchema>(
+/**
+ * Inspect a CSV file and create its finite, cold DataStream.
+ * @example
+ * ```ts
+ * import {Field, Float64, Schema} from 'apache-arrow';
+ * const prices = await fromCSV('prices.csv', new Schema([
+ *   new Field('close', new Float64(), false),
+ * ]));
+ * prices.subscribe({next: row => console.log(row.close)}); // CSV '12.5' becomes 12.5.
+ * ```
+ */
+export async function fromCSV<T = Record<string, unknown>>(
   path: string,
-  schema?: T,
+  schema?: Schema,
   clock: Clock = i,
-): Promise<DataStream<z.output<T>>> {
-  return (await CSVSource.open(path, schema, clock)).stream();
+): Promise<DataStream<T>> {
+  return (await CSVSource.open<T>(path, schema, clock)).stream();
 }
 
-async function* csvRows<T>(path: string): AsyncGenerator<T> {
+async function* csvRows<T>(path: string, schema: Schema): AsyncGenerator<T> {
   const parser = openCSV(path, {
     bom: true,
     columns: true,
@@ -104,11 +155,41 @@ async function* csvRows<T>(path: string): AsyncGenerator<T> {
   });
   try {
     for await (const record of parser) {
-      yield record as T;
+      yield Object.fromEntries(
+        schema.fields.map(field => [
+          field.name,
+          csvCell(field, record[field.name]),
+        ]),
+      ) as T;
     }
   } finally {
     parser.destroy();
   }
+}
+
+function csvCell(field: Field, value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  if (field.nullable && value === '') return null;
+  const type = field.type;
+  if (DataType.isUtf8(type) || DataType.isLargeUtf8(type)) return value;
+  if (DataType.isInt(type) && type.bitWidth === 64) return BigInt(value);
+  if (
+    DataType.isFloat(type) ||
+    DataType.isInt(type) ||
+    DataType.isTimestamp(type)
+  ) {
+    const number = Number(value);
+    if (!Number.isFinite(number) && value.trim() !== 'NaN') {
+      throw new TypeError(`CSV field '${field.name}' must be numeric`);
+    }
+    return number;
+  }
+  if (DataType.isBool(type)) {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    throw new TypeError(`CSV field '${field.name}' must be true or false`);
+  }
+  return JSON.parse(value);
 }
 
 function openCSV(path: string, options: Options): Parser {
@@ -121,18 +202,46 @@ function openCSV(path: string, options: Options): Parser {
 
 /* WebSocket Source */
 
-export class WebSocketSource<T extends z.ZodType> implements Source<T> {
+/**
+ * A cold JSON text source. Each subscription owns one socket and closes it on
+ * completion, error, or cancellation. JSON values must already match the Arrow
+ * schema; domain conversions belong in the producer or an RxJS map.
+ *
+ * @example
+ * ```ts
+ * import {Field, Float64, Schema} from 'apache-arrow';
+ * const schema = new Schema([new Field('close', new Float64(), false)]);
+ * new WebSocketSource('ws://localhost:8080', schema).stream()
+ *   .subscribe({next: row => console.log(row)}); // {close: 12.5}
+ * ```
+ */
+export class WebSocketSource<T = Record<string, unknown>> implements Source<T> {
+  private readonly shape: Schema;
   constructor(
     private readonly url: string,
-    readonly schema: T,
+    schema: Schema,
     readonly clock: Clock = i,
     private readonly Socket: typeof WebSocket = globalThis.WebSocket,
-  ) {}
+  ) {
+    this.shape = cloneSchema(schema);
+  }
 
-  stream(): DataStream<z.output<T>> {
-    return new DataStream<z.output<T>>(
-      this.schema as z.ZodType<z.output<T>>,
-      new Observable(subscriber => {
+  /**
+   * Return an independent Arrow schema without changing socket validation.
+   * @example `source.schema.fields[0].name` is `'close'` for the example above.
+   */
+  get schema(): Schema {
+    return cloneSchema(this.shape);
+  }
+
+  /**
+   * Create a stream without opening a connection; subscribing opens the socket.
+   * @example `source.stream().subscribe({next: row => console.log(row)})` receives parsed JSON rows.
+   */
+  stream(): DataStream<T> {
+    return new DataStream<T>(
+      this.shape,
+      new Observable<T>(subscriber => {
         if (typeof this.Socket !== 'function') {
           subscriber.error(
             new Error('this host provides no WebSocket implementation'),
@@ -170,8 +279,8 @@ export class WebSocketSource<T extends z.ZodType> implements Source<T> {
           socket.removeEventListener('error', error);
           socket.removeEventListener('close', close);
           if (
-            socket.readyState === WebSocket.CONNECTING ||
-            socket.readyState === WebSocket.OPEN
+            socket.readyState === this.Socket.CONNECTING ||
+            socket.readyState === this.Socket.OPEN
           ) {
             socket.close();
           }
@@ -182,10 +291,21 @@ export class WebSocketSource<T extends z.ZodType> implements Source<T> {
   }
 }
 
-export function fromWS<T extends z.ZodType>(
+/**
+ * Create a cold JSON WebSocket stream validated against an Arrow schema.
+ * @example
+ * ```ts
+ * import {Field, Float64, Schema} from 'apache-arrow';
+ * const prices = fromWS('ws://localhost:8080', new Schema([
+ *   new Field('close', new Float64(), false),
+ * ]));
+ * prices.subscribe({next: row => console.log(row.close)}); // {"close":12.5} emits 12.5.
+ * ```
+ */
+export function fromWS<T = Record<string, unknown>>(
   url: string,
-  schema: T,
+  schema: Schema,
   clock: Clock = i,
-): DataStream<z.output<T>> {
-  return new WebSocketSource(url, schema, clock).stream();
+): DataStream<T> {
+  return new WebSocketSource<T>(url, schema, clock).stream();
 }

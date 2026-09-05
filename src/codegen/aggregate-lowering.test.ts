@@ -122,6 +122,7 @@ function storeField(
 function program(body: readonly IrStmt[]): Program {
   return {
     version: 1,
+    nominalIds: new Map(),
     params: [],
     requests: [],
     outputs: [],

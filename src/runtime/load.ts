@@ -4,7 +4,11 @@
 import type {JSModule} from './module-abi';
 import {initializeModuleTree} from './module-binding';
 
-// Generated source is a strict-mode function body ending in `return M`.
+/**
+ * Evaluate a generated function body and restore its Arrow schemas. The result
+ * owns its manifest; Node captures another copy before beginning execution.
+ * @example `loadModule(generate(program)).outputs.fields` are real Arrow Fields.
+ */
 export function loadModule(js: string): JSModule {
   const factory = new Function(js) as () => JSModule;
   return initializeModuleTree(factory());

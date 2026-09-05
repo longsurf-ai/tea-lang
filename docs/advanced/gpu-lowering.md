@@ -114,7 +114,7 @@ The GPU supports deterministic numeric programs with:
 - fixed-width int, float, bool, and enum parameters;
 - bounded loops and history;
 - scalar dense outputs;
-- supported scalar/enum/struct-snapshot effect payloads;
+- supported scalar and enum effect payloads;
 - `bar_index` and final-index state derived by the backend.
 
 It fails closed for unsupported references, collections, resources, strings,

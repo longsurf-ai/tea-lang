@@ -1,6 +1,7 @@
 // Purpose: Versioned recursive JSModule, pure binding data, and the generated
 // execution RuntimeContext contract.
 
+import type {Schema} from 'apache-arrow';
 import type {BuiltinSource} from '../ir/builtin';
 import type {NameStorage} from '../ir/node';
 import type {Ref} from './js/heap';
@@ -9,7 +10,7 @@ import type {EffectSpec, ParamSpec} from './schema';
 import type {LayoutId, ValueLayout} from './value-layout';
 import type {CollectionValue, ManifestValue, Value} from './value';
 
-export const RUNTIME_ABI_VERSION = 7 as const;
+export const RUNTIME_ABI_VERSION = 8 as const;
 
 /** True when a value can address or retain committed history. */
 export function isHistoryOffset(offset: number): boolean {
@@ -71,6 +72,7 @@ export interface RequestSpec {
 }
 
 export interface ModuleManifest {
+  readonly inputs: Schema;
   readonly series: readonly SeriesSpec[];
   readonly builtin: readonly BuiltinSpec[];
   readonly params: readonly (ParamSpec & {
@@ -82,6 +84,8 @@ export interface ModuleManifest {
     readonly active?: boolean | null;
   })[];
   readonly outputs: readonly (OutputSpec & {
+    /** Runtime storage descriptors, separate from Arrow's logical fields. */
+    readonly layouts: readonly number[];
     /** Concrete declaration arguments, or null until concretization. */
     readonly boundArgs?:
       | readonly {
@@ -114,6 +118,17 @@ export type ModuleBinding =
 
 /** One self-describing generated JavaScript module in the request tree. */
 export interface JSModule {
+  /**
+   * Required named inputs, including currently selected source parameters.
+   * @example `module.inputs.fields[0].name` is `close` for `plot(close)`.
+   */
+  readonly inputs: Schema;
+  /**
+   * An independent Arrow schema for published step records.
+   * @example `module.outputs.fields.find(field => field.name === 'output0')`
+   * describes the first output declaration's record.
+   */
+  readonly outputs: Schema;
   readonly abi: typeof RUNTIME_ABI_VERSION;
   /** Shared value-layout table for every module in one generated request tree. */
   readonly layout: readonly ValueLayout[];

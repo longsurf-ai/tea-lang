@@ -7,8 +7,8 @@ import {describe, expect, test} from 'vitest';
 import {formatPos} from '../base/pos';
 import {traceDatum, traceDeclaration} from '../cli/output';
 import {compile} from '../compiler';
-import type {BoundInput, EffectValue, OutputSink, Value} from '../runtime/abi';
-import {isEffectStructValue} from '../runtime/abi';
+import type {BoundInput, OutputSink, Value} from '../runtime/abi';
+import {OutputCapture} from './output';
 import {loadModule} from '../runtime/load';
 import {csvStream, executeTestModule} from './batch';
 import {
@@ -42,51 +42,21 @@ function allFiles(root: string): string[] {
   return found.sort();
 }
 
-class ConformanceSink implements OutputSink {
+class ConformanceSink extends OutputCapture {
   readonly traceLines: string[] = [];
-  declared: Parameters<OutputSink['declare']>[0]['outputs'] = [];
-  declaredEffects: Parameters<OutputSink['declare']>[0]['effects'] = [];
-  readonly emissions: {
-    readonly row: number;
-    readonly oid: number;
-    readonly channels: readonly Value[];
-    readonly provisional: boolean;
-  }[] = [];
-  readonly effects: {
-    readonly row: number;
-    readonly effectId: number;
-    readonly payload: EffectValue;
-    readonly provisional: boolean;
-  }[] = [];
 
-  declare(declaration: Parameters<OutputSink['declare']>[0]): void {
-    this.declared = declaration.outputs;
-    this.declaredEffects = declaration.effects;
+  override declare(declaration: Parameters<OutputSink['declare']>[0]): void {
+    super.declare(declaration);
     this.traceLines.push(...traceDeclaration(declaration));
   }
 
-  publish(publication: Parameters<OutputSink['publish']>[0]): void {
-    for (const output of publication.outputs) {
-      this.emissions.push({
-        row: publication.index,
-        oid: output.outputId,
-        channels: [...output.channels],
-        provisional: publication.provisional,
-      });
-    }
-    for (const effect of publication.effects) {
-      this.effects.push({
-        row: publication.index,
-        effectId: effect.effectId,
-        payload: effect.payload,
-        provisional: publication.provisional,
-      });
-    }
+  override publish(publication: Parameters<OutputSink['publish']>[0]): void {
+    super.publish(publication);
     this.traceLines.push(...traceDatum(publication));
   }
 }
 
-function expectFiniteOrNa(value: Value | EffectValue, label: string): void {
+function expectFiniteOrNa(value: unknown, label: string): void {
   if (typeof value === 'number') {
     expect(
       Number.isFinite(value) || Number.isNaN(value),
@@ -98,16 +68,17 @@ function expectFiniteOrNa(value: Value | EffectValue, label: string): void {
     value.forEach((entry, i) => expectFiniteOrNa(entry, `${label}[${i}]`));
     return;
   }
-  const effectValue = value as EffectValue;
-  if (isEffectStructValue(effectValue)) {
-    effectValue.fields.forEach((entry, i) =>
-      expectFiniteOrNa(entry, `${label}.fields[${i}]`),
+  if (value instanceof Map) {
+    [...value].forEach((entry, i) => expectFiniteOrNa(entry, `${label}[${i}]`));
+  } else if (value !== null && typeof value === 'object') {
+    Object.entries(value).forEach(([name, entry]) =>
+      expectFiniteOrNa(entry, `${label}.${name}`),
     );
   }
 }
 
 function expectSinkFiniteOrNa(sink: ConformanceSink, label: string): void {
-  sink.declared.forEach((output, oid) => {
+  sink.outputs.forEach((output, oid) => {
     output.spec.staticArgs.forEach((arg, i) =>
       expectFiniteOrNa(arg.value, `${label}.outputs[${oid}].staticArgs[${i}]`),
     );
@@ -120,7 +91,7 @@ function expectSinkFiniteOrNa(sink: ConformanceSink, label: string): void {
       expectFiniteOrNa(value, `${label}.emissions[${i}].channels[${channel}]`),
     );
   });
-  sink.effects.forEach((effect, i) =>
+  sink.effectEmissions.forEach((effect, i) =>
     expectFiniteOrNa(effect.payload, `${label}.effects[${i}].payload`),
   );
 }
@@ -137,7 +108,7 @@ function expectInputs(
 }
 
 function expectValue(
-  actual: Value,
+  actual: unknown,
   expected: JsonScalar,
   channelType: string,
   tolerance: ExpectedReference['tolerance'],
@@ -273,12 +244,12 @@ async function runCase(entry: CorpusCase): Promise<{
   expect(completed.indices, `${entry.id} index count`).toBe(
     reference.rows.length,
   );
-  expect(sink.declared.length, `${entry.id} output count`).toBe(
+  expect(sink.outputs.length, `${entry.id} output count`).toBe(
     reference.outputs.length,
   );
   reference.outputs.forEach((expected, oid) => {
     expect(expected.oid, `${entry.id} dense oid`).toBe(oid);
-    const actual = sink.declared[oid];
+    const actual = sink.outputs[oid];
     if (actual === undefined) {
       throw new Error(`${entry.id} output ${oid} is missing`);
     }
@@ -296,7 +267,10 @@ async function runCase(entry: CorpusCase): Promise<{
       `${entry.id} output ${oid} boundArgs`,
     );
     expect(
-      actual.spec.channels.map(channel => [channel.name, channel.type]),
+      actual.spec.channels.map(channel => [
+        channel.name,
+        channel.metadata.get('tea:type'),
+      ]),
       `${entry.id} output ${oid} channels`,
     ).toEqual(expected.channels.map(([name, type]) => [name, type]));
   });
@@ -317,7 +291,7 @@ async function runCase(entry: CorpusCase): Promise<{
       throw new Error(`${entry.id} emission ${i} is missing`);
     }
     expect(
-      {row: actual.row, oid: actual.oid, provisional: actual.provisional},
+      {row: actual.row, oid: actual.outputId, provisional: actual.provisional},
       `${entry.id} emission ${i} identity`,
     ).toEqual({
       row: expected.row,
@@ -329,8 +303,9 @@ async function runCase(entry: CorpusCase): Promise<{
       `${entry.id} emission ${i} channel count`,
     ).toBe(expected.channels.length);
     expected.channels.forEach((value, channel) => {
-      const output = sink.declared[expected.oid];
-      const channelType = output?.spec.channels[channel]?.type;
+      const output = sink.outputs[expected.oid];
+      const channelType =
+        output?.spec.channels[channel]?.metadata.get('tea:type');
       if (channelType === undefined) {
         throw new Error(
           `${entry.id} emission ${i} refers to a missing channel`,
@@ -354,9 +329,9 @@ async function runCase(entry: CorpusCase): Promise<{
 
   expect(sink.traceLines.length, `${entry.id} trace line count`).toBe(
     reference.outputs.length +
-      sink.declaredEffects.length +
+      sink.effectSchemas.length +
       expectedEmissions.length +
-      sink.effects.length,
+      sink.effectEmissions.length,
   );
   expectSinkFiniteOrNa(sink, entry.id);
   return {reference, sink};

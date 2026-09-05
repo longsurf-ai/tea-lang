@@ -6062,49 +6062,13 @@ function isSourcePackageName(name: string): boolean {
   );
 }
 
-// Sparse effects cross an immutable, fixed-layout transport boundary. Keep
-// this semantic admission rule narrower than general storable values:
-// collections and resource identity need separate lifetime protocols.
-function isEffectPayloadType(type: Type, active = new Set<Type>()): boolean {
-  switch (type.kind) {
-    case TypeKind.Int:
-    case TypeKind.Float:
-    case TypeKind.Bool:
-    case TypeKind.String:
-    case TypeKind.Color:
-    case TypeKind.Enum:
-      return true;
-    case TypeKind.Struct:
-      if (active.has(type)) {
-        return false;
-      }
-      active.add(type);
-      for (const field of type.fields) {
-        if (!isEffectPayloadType(field.type, active)) {
-          active.delete(type);
-          return false;
-        }
-      }
-      active.delete(type);
-      return true;
-    case TypeKind.Invalid:
-    case TypeKind.Void:
-    case TypeKind.Na:
-    case TypeKind.Line:
-    case TypeKind.Label:
-    case TypeKind.Box:
-    case TypeKind.Table:
-    case TypeKind.Polyline:
-    case TypeKind.Linefill:
-    case TypeKind.Plot:
-    case TypeKind.Hline:
-    case TypeKind.Array:
-    case TypeKind.Matrix:
-    case TypeKind.Map:
-    case TypeKind.Tuple:
-    case TypeKind.Func:
-      return false;
-  }
+// Emission accepts ordinary values. The noder separately rejects recursive
+// exports because finite Arrow schemas cannot encode reference cycles.
+function isEffectPayloadType(type: Type): boolean {
+  return (
+    isStorableType(type) ||
+    (type.kind === TypeKind.Tuple && type.elems.every(isEffectPayloadType))
+  );
 }
 
 interface InferredNativeType {

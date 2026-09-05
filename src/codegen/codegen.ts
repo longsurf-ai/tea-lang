@@ -2,7 +2,10 @@
 // module against the generated-code RuntimeContext ABI; docs/runtime.md owns
 // the module contract and dense ids published in its manifest.
 
+import {Schema} from 'apache-arrow';
 import {fatal} from '../base/print';
+import {encodeSchema} from '../runtime/io';
+import {fieldOf} from './schema';
 import {paramSpecsOf} from './params';
 import {frameTopologyOf, type FrameTopology} from '../ir/frames';
 import {
@@ -19,7 +22,6 @@ import {
   MergeMode,
   ParamDefaultKind,
   type EffectDecl,
-  type EffectValueSchema,
   type IrFunc,
   type BuiltinInput,
   type OutputDecl,
@@ -29,6 +31,7 @@ import {
   type SeriesInput,
 } from '../ir/program';
 import {
+  FloatType,
   formatType,
   isNaValue,
   Qualifier,
@@ -49,11 +52,9 @@ import type {
   BuiltinSpec,
   DepthSpec,
   FrameLayout,
-  ModuleManifest,
   RequestSpec,
   SeriesSpec,
 } from '../runtime/module-abi';
-import type {OutputChannelTransport, OutputSpec} from '../runtime/output';
 import type {ManifestValue} from '../runtime/value';
 import type {LayoutId, ValueLayout} from '../runtime/value-layout';
 import {
@@ -66,8 +67,28 @@ import {
   type LowerCtx,
 } from './lower';
 
+/**
+ * Lower one checked Program to a deterministic ES2015 function body. The
+ * artifact contains Arrow IPC schemas and state requirements, but no stream,
+ * parameter assignment, or mutable execution state. Load it before binding.
+ *
+ * @example
+ * ```ts
+ * import {Errors} from '../base/print';
+ * import {compileToProgram} from '../compiler';
+ * import {loadModule} from '../runtime/load';
+ *
+ * const program = compileToProgram(
+ *   [{filename: 'demo.tea', source: 'plot(close)'}], new Errors(),
+ * );
+ * if (program !== null) {
+ *   const module = loadModule(generate(program));
+ *   module.manifest.inputs.fields[0].name; // "close"
+ * }
+ * ```
+ */
 export function generate(program: Program): string {
-  const emitter = new ModuleEmitter();
+  const emitter = new ModuleEmitter(program.nominalIds);
   const rootBody = new Generator(program, 'M', emitter).moduleBody();
   const out: string[] = ['"use strict";'];
   for (const name of [...emitter.usedHelpers].sort()) {
@@ -87,27 +108,6 @@ export function generate(program: Program): string {
   return `${out.join('\n')}\n`;
 }
 
-function effectScalarMatches(
-  type: Type,
-  schema: Exclude<
-    EffectValueSchema,
-    {readonly kind: 'enum' | 'struct'}
-  >['kind'],
-): boolean {
-  switch (schema) {
-    case 'int':
-      return type.kind === TypeKind.Int;
-    case 'float':
-      return type.kind === TypeKind.Float;
-    case 'bool':
-      return type.kind === TypeKind.Bool;
-    case 'string':
-      return type.kind === TypeKind.String;
-    case 'color':
-      return type.kind === TypeKind.Color;
-  }
-}
-
 // Shared across the module tree: helper usage, child-module declarations,
 // and the M1/M2… ref counter (depth-first, deterministic).
 class ModuleEmitter {
@@ -116,6 +116,8 @@ class ModuleEmitter {
   readonly layouts: ValueLayout[] = [];
   private readonly layoutTypes: Type[] = [];
   private childCounter = 0;
+
+  constructor(private readonly nominalIds: ReadonlyMap<Type, string>) {}
 
   layoutOf(type: Type): LayoutId {
     const existing = this.layoutTypes.findIndex(candidate =>
@@ -132,61 +134,6 @@ class ModuleEmitter {
     this.layouts.push({kind: 'boolean'});
     this.layouts[id] = this.buildLayout(type);
     return id;
-  }
-
-  // Effect declarations expose canonical nominal identity to hosts. Mirror
-  // that identity onto the independently consumed physical JS layout so the
-  // runtime can reject a manifest whose logical declaration was forged while
-  // retaining the same field shape.
-  registerEffectSchema(type: Type, schema: EffectValueSchema): void {
-    const layoutId = this.layoutOf(type);
-    const layout = this.layouts[layoutId];
-    switch (schema.kind) {
-      case 'enum':
-        if (type.kind !== TypeKind.Enum || layout?.kind !== 'enum') {
-          return fatal('enum effect schema disagrees with its IR type');
-        }
-        this.layouts[layoutId] = {
-          ...layout,
-          typeId: this.sameNominalId(layout.typeId, schema.typeId),
-        };
-        return;
-      case 'struct':
-        if (
-          type.kind !== TypeKind.Struct ||
-          layout?.kind !== 'struct' ||
-          type.fields.length !== schema.fields.length
-        ) {
-          return fatal('struct effect schema disagrees with its IR type');
-        }
-        this.layouts[layoutId] = {
-          ...layout,
-          typeId: this.sameNominalId(layout.typeId, schema.typeId),
-        };
-        type.fields.forEach((field, index) => {
-          const logical = schema.fields[index];
-          if (logical === undefined || logical.name !== field.name) {
-            return fatal(`struct effect schema disagrees at field ${index}`);
-          }
-          this.registerEffectSchema(field.type, logical.value);
-        });
-        return;
-      default:
-        if (!effectScalarMatches(type, schema.kind)) {
-          return fatal(
-            `${schema.kind} effect schema disagrees with its IR type`,
-          );
-        }
-    }
-  }
-
-  private sameNominalId(existing: string | undefined, next: string): string {
-    if (existing !== undefined && existing !== next) {
-      return fatal(
-        `one physical layout cannot represent nominal effects '${existing}' and '${next}'`,
-      );
-    }
-    return next;
   }
 
   private buildLayout(type: Type): ValueLayout {
@@ -209,6 +156,9 @@ class ModuleEmitter {
         return {
           kind: 'enum',
           name: type.name,
+          ...(this.nominalIds.has(type)
+            ? {typeId: this.nominalIds.get(type)}
+            : {}),
           members: type.members.map(member => member.name),
         };
       case TypeKind.Line:
@@ -222,6 +172,9 @@ class ModuleEmitter {
         return {
           kind: 'struct',
           name: type.name,
+          ...(this.nominalIds.has(type)
+            ? {typeId: this.nominalIds.get(type)}
+            : {}),
           fields: type.fields.map(field => ({
             name: field.name,
             layout: this.layoutOf(field.type),
@@ -769,9 +722,7 @@ class Generator {
 
   // ---- manifest ---------------------------------------------------------------
 
-  private buildManifest(
-    children: readonly {readonly resultSlot: number}[],
-  ): ModuleManifest {
+  private buildManifest(children: readonly {readonly resultSlot: number}[]) {
     const series: SeriesSpec[] = this.series.map(s => ({
       id: s.id,
       depth: depthSpec(s.depth),
@@ -800,30 +751,37 @@ class Generator {
       };
     });
 
-    const outputs: OutputSpec[] = this.program.outputs.map(output => ({
+    const outputs = this.program.outputs.map(output => ({
       effect: output.effect,
       staticArgs: output.staticArgs.map(a => ({
         name: a.name,
         value: constValue(a.value),
       })),
-      channels: output.channels.map(ch => ({
-        name: ch.name,
-        type: formatType(ch.type),
-        transport: outputChannelTransport(ch.type),
-      })),
+      channels: encodeSchema(
+        new Schema(
+          output.channels.map(ch =>
+            fieldOf(ch.name, ch.type, this.program.nominalIds),
+          ),
+        ),
+      ),
+      layouts: output.channels.map(ch =>
+        ch.type.kind === TypeKind.Plot || ch.type.kind === TypeKind.Hline
+          ? -1
+          : this.emitter.layoutOf(ch.type),
+      ),
       boundArgs: staticOutputArgs(output),
     }));
 
-    const effects = this.program.effects.map(effect => {
-      this.emitter.registerEffectSchema(
-        effect.payloadType,
-        effect.payloadSchema,
-      );
-      return {
-        layout: this.emitter.layoutOf(effect.payloadType),
-        declaration: {payload: effect.payloadSchema},
-      };
-    });
+    const effects = this.program.effects.map(effect => ({
+      layout: this.emitter.layoutOf(effect.payloadType),
+      declaration: {
+        payload: encodeSchema(
+          new Schema([
+            fieldOf('payload', effect.payloadType, this.program.nominalIds),
+          ]),
+        ),
+      },
+    }));
 
     const frames: FrameLayout[] = this.topology.frames.map(frame => {
       const slotCount =
@@ -865,61 +823,27 @@ class Generator {
       };
     });
 
-    return {series, builtin, params, outputs, effects, frames, requests};
-  }
-}
-
-function outputChannelTransport(type: Type): OutputChannelTransport {
-  switch (type.kind) {
-    case TypeKind.Int:
-      return {kind: 'int'};
-    case TypeKind.Float:
-      return {kind: 'float'};
-    case TypeKind.Bool:
-      return {kind: 'bool'};
-    case TypeKind.String:
-      return {kind: 'string'};
-    case TypeKind.Color:
-      return {kind: 'color'};
-    case TypeKind.Enum:
-      return {
-        kind: 'enum',
-        name: type.name,
-        members: type.members.map(member => member.name),
-      };
-    case TypeKind.Line:
-      return {kind: 'resource', handle: 'line'};
-    case TypeKind.Label:
-      return {kind: 'resource', handle: 'label'};
-    case TypeKind.Box:
-      return {kind: 'resource', handle: 'box'};
-    case TypeKind.Table:
-      return {kind: 'resource', handle: 'table'};
-    case TypeKind.Polyline:
-      return {kind: 'resource', handle: 'polyline'};
-    case TypeKind.Linefill:
-      return {kind: 'resource', handle: 'linefill'};
-    case TypeKind.Plot:
-      return {kind: 'output-ref', output: 'plot'};
-    case TypeKind.Hline:
-      return {kind: 'output-ref', output: 'hline'};
-    case TypeKind.Struct:
-      return {kind: 'struct', name: type.name};
-    case TypeKind.Array:
-      return {kind: 'array'};
-    case TypeKind.Matrix:
-      return {kind: 'matrix'};
-    case TypeKind.Map:
-      return {kind: 'map'};
-    case TypeKind.Tuple:
-      return {kind: 'tuple'};
-    case TypeKind.Invalid:
-    case TypeKind.Void:
-    case TypeKind.Na:
-    case TypeKind.Func:
-      return fatal(
-        `non-value output channel type ${formatType(type)} reached manifest projection`,
-      );
+    const inputs = encodeSchema(
+      new Schema(
+        [
+          ...new Set(
+            series
+              .map(input => input.id)
+              .filter((id): id is string => id !== null),
+          ),
+        ].map(name => fieldOf(name, FloatType, this.program.nominalIds)),
+      ),
+    );
+    return {
+      inputs,
+      series,
+      builtin,
+      params,
+      outputs,
+      effects,
+      frames,
+      requests,
+    };
   }
 }
 

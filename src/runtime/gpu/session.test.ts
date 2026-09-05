@@ -1,5 +1,8 @@
 // Purpose: GPU preparation consumes concrete arrays and derives physical resources.
 
+import {DataType, Field, Schema, Utf8} from 'apache-arrow';
+import {decodeSchema, encodeSchema} from '../io';
+import {GPU_ARTIFACT_ABI_VERSION} from '../../gpu/contract';
 import {describe, expect, test} from 'vitest';
 import {compileProgramToWgsl} from '../../codegen/wgsl';
 import type {CompiledWgslProgram} from '../../gpu/contract';
@@ -65,6 +68,59 @@ function binding(
 }
 
 describe('GPU execution preparation', () => {
+  test('retains real Arrow schemas across JSON artifact transport', async () => {
+    const artifact: CompiledWgslProgram = JSON.parse(
+      JSON.stringify(strategyArtifact()),
+    );
+    const field = decodeSchema(artifact.outputSchemas[1]!.schema).fields[0]!;
+    expect(artifact.abi).toBe(GPU_ARTIFACT_ABI_VERSION);
+    expect(field).toBeInstanceOf(Field);
+    expect(DataType.isFloat(field.type)).toBe(true);
+    expect(field.type.toString()).toBe('Float64');
+    expect(field.metadata.get('tea:type')).toBe('float');
+    expect(
+      decodeSchema(artifact.effectSchemas[0]!.schema).fields[0]!.name,
+    ).toBe('payload');
+    await expect(
+      prepareGpuExecutionInputs(artifact, [binding({open: [1], close: [2]})]),
+    ).resolves.toMatchObject({chunkRows: 1});
+  });
+
+  test('rejects stale artifacts and logical types that disagree with physical codecs', async () => {
+    const artifact = strategyArtifact();
+    await expect(
+      prepareGpuExecutionInputs(
+        {...artifact, abi: 4} as unknown as CompiledWgslProgram,
+        [],
+      ),
+    ).rejects.toThrow(/ABI|abi/);
+    const output = artifact.outputSchemas[1]!;
+    const field = decodeSchema(output.schema).fields[0]!;
+    const broken = {
+      ...artifact,
+      outputSchemas: artifact.outputSchemas.map((value, id) =>
+        id === 1
+          ? {
+              ...value,
+              schema: encodeSchema(
+                new Schema([
+                  new Field(
+                    field.name,
+                    new Utf8(),
+                    field.nullable,
+                    field.metadata,
+                  ),
+                ]),
+              ),
+            }
+          : value,
+      ),
+    };
+    await expect(prepareGpuExecutionInputs(broken, [])).rejects.toThrow(
+      'disagrees with result cell',
+    );
+  });
+
   test('packs concrete series in binding and artifact order', async () => {
     const artifact = strategyArtifact();
     const first = binding({open: [10, 11, 12], close: [20, 21, 22]});

@@ -1,13 +1,13 @@
 import {from} from 'rxjs';
 import {batchRecipe, DataStream, StdoutSink, tea, type Datum} from 'tea';
-import * as z from 'zod';
+import {Field, Float64, Schema} from 'apache-arrow';
 
 const node = tea`
 gain = input.float(2.0)
 plot(close * gain)
 `;
 const prices = new DataStream(
-  z.object({close: z.number()}),
+  new Schema([new Field('close', new Float64(), false)]),
   from([{close: 10}, {close: 12}, {close: 15}]),
 );
 const output = new StdoutSink<Datum>();

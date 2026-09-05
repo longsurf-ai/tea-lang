@@ -1369,15 +1369,9 @@ describe('sparse effects', () => {
     if (program.effects[0].payloadType.kind === TypeKind.Struct) {
       expect(program.effects[0].payloadType.name).toBe('Event');
     }
-    expect(program.effects[0].payloadSchema).toEqual({
-      kind: 'struct',
-      typeId: 'events.Event',
-      displayName: 'Event',
-      fields: [
-        {name: 'commandId', value: {kind: 'string'}},
-        {name: 'barIndex', value: {kind: 'int'}},
-      ],
-    });
+    expect(program.nominalIds.get(program.effects[0].payloadType)).toBe(
+      'events.Event',
+    );
     const publish = funcsOf(program).find(
       func => func.name === 'Event.publish',
     );
@@ -1388,7 +1382,7 @@ describe('sparse effects', () => {
     }
   });
 
-  test('generic effect schemas recursively use canonical type argument identities', () => {
+  test('generic effect types retain canonical type argument identities', () => {
     const program = mustBuild(
       [
         'interface Identified',
@@ -1403,22 +1397,15 @@ describe('sparse effects', () => {
       ].join('\n'),
     );
 
-    expect(program.effects[0].payloadSchema).toEqual({
-      kind: 'struct',
-      typeId: '@entry.Envelope<@entry.Order>',
-      displayName: 'Envelope<Order>',
-      fields: [
-        {
-          name: 'value',
-          value: {
-            kind: 'struct',
-            typeId: '@entry.Order',
-            displayName: 'Order',
-            fields: [{name: 'value', value: {kind: 'int'}}],
-          },
-        },
-      ],
-    });
+    const payload = program.effects[0].payloadType;
+    expect(program.nominalIds.get(payload)).toBe(
+      '@entry.Envelope<@entry.Order>',
+    );
+    if (payload.kind === TypeKind.Struct) {
+      expect(program.nominalIds.get(payload.fields[0].type)).toBe(
+        '@entry.Order',
+      );
+    }
   });
 
   test('entry nominal ids do not depend on caller file-path spelling', () => {
@@ -1431,29 +1418,32 @@ describe('sparse effects', () => {
       filename => {
         const result = buildText(source, filename);
         expect(result.errors).toEqual([]);
-        return result.program?.effects[0]?.payloadSchema;
+        const program = result.program;
+        return (
+          program && program.nominalIds.get(program.effects[0].payloadType)
+        );
       },
     );
 
-    expect(ids).toEqual([
-      {
-        kind: 'struct',
-        typeId: '@entry.Event',
-        displayName: 'Event',
-        fields: [{name: 'id', value: {kind: 'int'}}],
-      },
-      {
-        kind: 'struct',
-        typeId: '@entry.Event',
-        displayName: 'Event',
-        fields: [{name: 'id', value: {kind: 'int'}}],
-      },
-      {
-        kind: 'struct',
-        typeId: '@entry.Event',
-        displayName: 'Event',
-        fields: [{name: 'id', value: {kind: 'int'}}],
-      },
-    ]);
+    expect(ids).toEqual(['@entry.Event', '@entry.Event', '@entry.Event']);
+  });
+});
+
+describe('Arrow export boundaries', () => {
+  test('rejects recursive exports while retaining recursive internal values', () => {
+    const source = [
+      'type Branch',
+      '    array<Branch> children',
+      'branch = Branch.new(array.new<Branch>())',
+    ].join('\n');
+    expect(buildText(source).errors).toEqual([]);
+    for (const emission of [
+      'effect.emit(branch)',
+      'output(branch, kind="tree", args={})',
+    ]) {
+      expect(
+        buildText(`${source}\n${emission}`).errors.map(error => error.msg),
+      ).toEqual(['recursive value types cannot be exported as Arrow schemas']);
+    }
   });
 });

@@ -25,3 +25,8 @@ device resources, dispatch, readback, decoding, and publication.
   effect, staging, or memory knobs. Workgroup staging derives only from the
   artifact and device limit; disposing a session releases only session-created
   GPU resources.
+
+- Output/effect schemas decode from standard Arrow IPC. Each sink receives its
+  own declaration; publication uses named `outputN` records and `effectN` lists
+  with global ordinals through shared `createDatum()`. GPU supports its existing
+  scalar subset only; Arrow lists and structs do not imply GPU execution support.

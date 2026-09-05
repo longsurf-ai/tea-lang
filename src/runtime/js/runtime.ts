@@ -3,6 +3,7 @@
 
 import {Effect} from 'effect';
 import {fatal} from '../../base/print';
+import {initializeModuleTree} from '../module-binding';
 import type {JSModule} from '../module-abi';
 import type {EffectEmission, DenseEmission} from '../output';
 import {ArenaHeap} from './heap';
@@ -25,6 +26,9 @@ export interface StepResult {
  * Owns all mutable resources and current state for step-based Tea execution.
  * Callers provide only synchronized inputs; State, Intermediate, and Heap
  * never cross this boundary.
+ *
+ * @example `new JSRuntime(readyModule)` captures its own schemas; changing the
+ * caller's module metadata afterwards cannot alter this execution.
  */
 export class JSRuntime {
   private readonly heap: ArenaHeap;
@@ -36,6 +40,8 @@ export class JSRuntime {
   private disposed = false;
 
   constructor(private readonly module: JSModule) {
+    module = initializeModuleTree(module);
+    this.module = module;
     if (!module.ready()) {
       fatal('JSRuntime requires a ready JSModule');
     }
@@ -46,6 +52,15 @@ export class JSRuntime {
     this.intermediate = this.machine.initialIntermediate;
   }
 
+  /**
+   * Evaluate one update and return detached emissions. Failure keeps the last
+   * successful state; successful provisional updates retain the existing Tea
+   * same-index and Heap semantics without advancing committed history.
+   *
+   * @example For a ready `plot(close)` module, running
+   * `step({series: [10], builtins: [], requests: [], provisional: false})`
+   * with Effect.runSync produces a channel value of 10.
+   */
   step(input: StepInput): Effect.Effect<StepResult, ExecutionError> {
     return Effect.suspend(() => {
       this.assertLive();

@@ -41,7 +41,7 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   auxiliary map.
 - Direct and mutual struct field cycles are legal because fields carry
   nullable references rather than inline bodies. Cycle rejection belongs only
-  to bounded transports such as effect snapshots, not nominal declaration
+  to finite Arrow export schemas in the noder, not nominal declaration
   layout.
 - Struct field mutation and collection-header replacement are distinct facts.
   `StructFieldStore` captures one evaluated struct-reference expression plus

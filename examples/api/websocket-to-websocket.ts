@@ -1,5 +1,5 @@
 import {fromWS, tea, WebSocketSink} from 'tea';
-import * as z from 'zod';
+import {Field, Float64, Schema} from 'apache-arrow';
 
 const inputURL = process.argv[2];
 const outputURL = process.argv[3];
@@ -9,24 +9,7 @@ if (inputURL === undefined || outputURL === undefined) {
   );
 }
 
-const inputSchema = z.object({close: z.number()});
-const outputSchema = z.object({
-  index: z.number().int().nonnegative(),
-  time: z.number().int().nullable().optional(),
-  outputs: z.array(
-    z.object({
-      outputId: z.number().int().nonnegative(),
-      channels: z.array(z.unknown()).readonly(),
-    }),
-  ).readonly(),
-  effects: z.array(
-    z.object({
-      effectId: z.number().int().nonnegative(),
-      payload: z.unknown(),
-    }),
-  ).readonly(),
-  provisional: z.boolean(),
-});
+const inputSchema = new Schema([new Field('close', new Float64(), false)]);
 const source = fromWS(inputURL, inputSchema);
 
 const node = tea`
@@ -40,7 +23,7 @@ const node = tea`
 
 node.bind(source);
 
-const websocket = new WebSocketSink(outputURL, outputSchema);
+const websocket = new WebSocketSink(outputURL, node.module.outputs);
 node.to(websocket);
 
 await websocket.completion;

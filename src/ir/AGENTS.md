@@ -14,6 +14,9 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   `Program.outputs` facts. Do not introduce an execution-mode wrapper,
   strategy-specific Program, copied result schema, or paired compiler artifact;
   JS and WGSL codegen consume the same Program directly.
+- `Program.nominalIds` carries checker-owned declaration identities for Arrow
+  metadata. Effects retain their payload Type and source position; Program
+  never duplicates the recursive payload structure as a transport schema.
 - One type system. Checker, IR, and Program all share `type.ts`; no parallel
   spec-vs-backend type representations. Qualifiers
   (`const < input < simple < series`) are an orthogonal axis; combining values

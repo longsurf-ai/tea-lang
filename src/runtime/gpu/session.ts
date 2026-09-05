@@ -2,6 +2,9 @@
 
 /// <reference types="@webgpu/types" />
 
+import {DataType, Precision, type Field} from 'apache-arrow';
+import {decodeSchema} from '../io';
+import {createDatum, outputSchema} from '../output';
 import {OperationalError} from '../../base/operational-error';
 import {
   GPU_ARTIFACT_ABI_VERSION,
@@ -16,7 +19,7 @@ import {
   GPU_SERIES_SCALAR_BYTE_STRIDE,
   type CompiledWgslProgram,
   type WgslResultChannel,
-  type WgslValueSchema,
+  type WgslCodec,
 } from '../../gpu/contract';
 import type {BoundInput} from '../binding';
 import {loadModule} from '../load';
@@ -27,10 +30,9 @@ import type {
   EffectEmission,
   ExecutionDeclaration,
   OutputSink,
-  Datum,
 } from '../output';
 import {resolveParamValues} from '../params';
-import type {EffectValue, Value} from '../value';
+import type {Value} from '../value';
 
 const MAX_U32 = 0xffff_ffff;
 const MAX_I32 = 0x7fff_ffff;
@@ -249,6 +251,22 @@ function deviceLimit(value: number, name: string): number {
   return value;
 }
 
+/**
+ * Own device buffers for caller-ordered bindings and publish schema-named rows.
+ * Each sink receives an independent Arrow declaration. Readback is validated
+ * for the entire chunk before any row reaches a sink; disposing releases only
+ * buffers created by this session.
+ *
+ * @example
+ * ```ts
+ * const execution = await createGpuExecution(device, artifact, [{
+ *   params: {}, indices: 2, series: {close: [10, 12]},
+ *   sink: {declare: d => console.log(d.schema), publish: row => console.log(row.output0)},
+ * }]);
+ * try { await execution.runAll(); } finally { execution.dispose(); }
+ * // A compiled plot(close) publishes {series: 10}, then {series: 12}.
+ * ```
+ */
 export async function createGpuExecution(
   device: GPUDevice,
   artifact: CompiledWgslProgram,
@@ -259,14 +277,13 @@ export async function createGpuExecution(
     bindings,
     device.limits,
   );
-  const declaration = executionDeclaration(artifact);
   const pipelinePlan = planPipeline(
     artifact,
     prepared.executions.length,
     device.limits,
   );
   if (prepared.resources.total === 0) {
-    declareBindings(prepared, declaration);
+    declareBindings(prepared);
     return new InertGpuExecution(prepared);
   }
 
@@ -414,7 +431,7 @@ export async function createGpuExecution(
       layout: pipeline.getBindGroupLayout(external.group),
       entries,
     });
-    declareBindings(prepared, declaration);
+    declareBindings(prepared);
     return new DeviceGpuExecution(
       device,
       prepared,
@@ -460,6 +477,7 @@ class InertGpuExecution implements GpuExecution {
 class DeviceGpuExecution implements GpuExecution {
   private readonly cursors: number[];
   private readonly denseDecoder: DenseDecoderPlan;
+  private readonly declaration: ExecutionDeclaration;
   private disposed = false;
   private failed = false;
   private running = false;
@@ -479,6 +497,7 @@ class DeviceGpuExecution implements GpuExecution {
   ) {
     this.cursors = prepared.executions.map(() => 0);
     this.denseDecoder = planDenseDecoder(prepared.artifact);
+    this.declaration = executionDeclaration(prepared.artifact);
   }
 
   get done(): boolean {
@@ -609,6 +628,7 @@ class DeviceGpuExecution implements GpuExecution {
     publishChunk(
       this.prepared,
       this.denseDecoder,
+      this.declaration,
       active,
       results,
       effectStatus,
@@ -645,6 +665,7 @@ async function readback(buffer: GPUBuffer): Promise<Uint8Array> {
 function publishChunk(
   prepared: PreparedGpuExecution,
   denseDecoder: DenseDecoderPlan,
+  declaration: ExecutionDeclaration,
   active: readonly ActiveGpuExecutionInstance[],
   results: Uint8Array,
   effectStatus: Uint8Array,
@@ -722,6 +743,7 @@ function publishChunk(
         effectId,
         payload: decodeValue(
           schema.payload,
+          declaration.effects[effectId]!.payload,
           recordView,
           recordBase + 8,
           recordBase + 8 + schema.payloadWordCount * 4,
@@ -785,25 +807,26 @@ function publishChunk(
     for (let localRow = 0; localRow < item.rowCount; localRow += 1) {
       const row = item.rowStart + localRow;
       const effects = effectsByExecution[executionIndex].get(row) ?? [];
-      const publication: Datum = {
-        index: row,
-        ...(timestamps === null
-          ? {}
-          : {
-              time: Number.isNaN(timestamps[localRow])
-                ? null
-                : timestamps[localRow],
-            }),
-        outputs: decodeOutputs(
-          prepared,
-          denseDecoder,
-          resultView,
-          execution,
-          localRow,
-        ),
-        effects,
-        provisional: false,
-      };
+      const publication = createDatum(
+        declaration,
+        row,
+        {
+          outputs: decodeOutputs(
+            prepared,
+            denseDecoder,
+            resultView,
+            execution,
+            localRow,
+          ),
+          effects,
+          provisional: false,
+        },
+        timestamps === null
+          ? undefined
+          : Number.isNaN(timestamps[localRow])
+            ? null
+            : timestamps[localRow],
+      );
       sink.publish(publication);
     }
   }
@@ -815,7 +838,7 @@ function planDenseDecoder(artifact: CompiledWgslProgram): DenseDecoderPlan {
   );
   const outputs: DenseOutputDecoder[] = [];
   for (const output of artifact.outputSchemas) {
-    const cells = output.channels.map(channel => channel.rowCell);
+    const cells = output.rowCells;
     if (cells.every(cell => cell === null)) continue;
     if (cells.some(cell => cell === null)) {
       throw new GpuExecutionError(
@@ -956,13 +979,14 @@ function decodeResult(
 }
 
 function decodeValue(
-  schema: WgslValueSchema,
+  codec: WgslCodec,
+  field: Field,
   view: DataView,
   base: number,
   end: number,
   literalStrings: readonly string[],
   owner: string,
-): EffectValue {
+): unknown {
   const word = (offset: number, label: string): number => {
     const absolute = base + offset;
     if (offset < 0 || offset % 4 !== 0 || absolute + 4 > end) {
@@ -979,29 +1003,29 @@ function decodeValue(
     }
     return value === 1;
   };
-  switch (schema.kind) {
+  switch (codec.kind) {
     case 'bool': {
-      const value = word(schema.valueByteOffset, 'bool');
+      const value = word(codec.valueByteOffset, 'bool');
       if (value !== 0 && value !== 1) {
         throw new GpuExecutionError(`GPU ${owner} has invalid bool ${value}`);
       }
       return value === 1;
     }
     case 'int':
-      return valid(schema.validByteOffset)
-        ? u32AsI32(word(schema.valueByteOffset, 'int'))
+      return valid(codec.validByteOffset)
+        ? u32AsI32(word(codec.valueByteOffset, 'int'))
         : NaN;
     case 'float': {
-      if (!valid(schema.validByteOffset)) return NaN;
-      const value = u32AsF32(word(schema.valueByteOffset, 'float'));
+      if (!valid(codec.validByteOffset)) return NaN;
+      const value = u32AsF32(word(codec.valueByteOffset, 'float'));
       if (!Number.isFinite(value)) {
         throw new GpuExecutionError(`GPU ${owner} has non-finite valid f32`);
       }
       return value;
     }
     case 'string': {
-      if (!valid(schema.validByteOffset)) return null;
-      const id = word(schema.valueByteOffset, 'string id');
+      if (!valid(codec.validByteOffset)) return null;
+      const id = word(codec.valueByteOffset, 'string id');
       const value = literalStrings[id];
       if (value === undefined) {
         throw new GpuExecutionError(
@@ -1011,37 +1035,19 @@ function decodeValue(
       return value;
     }
     case 'color':
-      return valid(schema.validByteOffset)
-        ? decodeColor(word(schema.valueByteOffset, 'color'))
+      return valid(codec.validByteOffset)
+        ? decodeColor(word(codec.valueByteOffset, 'color'))
         : null;
     case 'enum': {
-      if (!valid(schema.validByteOffset)) return null;
-      const ordinal = word(schema.ordinalByteOffset, 'enum ordinal');
-      const member = schema.members[ordinal];
+      if (!valid(codec.validByteOffset)) return null;
+      const ordinal = word(codec.ordinalByteOffset, 'enum ordinal');
+      const member = enumMembers(field)[ordinal];
       if (member === undefined) {
         throw new GpuExecutionError(
-          `GPU ${owner} enum '${schema.name}' has invalid ordinal ${ordinal}`,
+          `GPU ${owner} enum '${field.metadata.get('tea:name')}' has invalid ordinal ${ordinal}`,
         );
       }
       return member;
-    }
-    case 'struct': {
-      if (!valid(schema.validByteOffset)) return null;
-      return Object.freeze({
-        kind: 'struct' as const,
-        fields: Object.freeze(
-          schema.fields.map(field =>
-            decodeValue(
-              field.value,
-              view,
-              base + field.byteOffset,
-              end,
-              literalStrings,
-              `${owner}.${field.name}`,
-            ),
-          ),
-        ),
-      });
     }
   }
 }
@@ -1083,29 +1089,32 @@ function u32AsI32(value: number): number {
 function executionDeclaration(
   artifact: CompiledWgslProgram,
 ): ExecutionDeclaration {
+  const outputs = artifact.outputSchemas.map(schema => ({
+    spec: {
+      effect: schema.effect,
+      staticArgs: schema.staticArgs.map(arg => ({...arg})),
+      channels: decodeSchema(schema.schema).fields,
+    },
+    boundArgs: [],
+  }));
+  const effects = artifact.effectSchemas.map(schema => ({
+    payload: decodeSchema(schema.schema).fields[0]!,
+  }));
   return {
-    outputs: artifact.outputSchemas.map(schema => ({
-      spec: {
-        effect: schema.effect,
-        staticArgs: schema.staticArgs.map(arg => ({...arg})),
-        channels: schema.channels.map(channel => ({
-          name: channel.name,
-          type: channel.type,
-          transport: channel.transport,
-        })),
-      },
-      boundArgs: [],
-    })),
-    effects: artifact.effectSchemas.map(schema => schema.declaration),
+    outputs,
+    effects,
+    get schema() {
+      return outputSchema(
+        outputs.map(output => output.spec),
+        effects,
+      );
+    },
   };
 }
 
-function declareBindings(
-  prepared: PreparedGpuExecution,
-  declaration: ExecutionDeclaration,
-): void {
+function declareBindings(prepared: PreparedGpuExecution): void {
   prepared.executions.forEach(execution =>
-    execution.binding.sink.declare(declaration),
+    execution.binding.sink.declare(executionDeclaration(prepared.artifact)),
   );
 }
 
@@ -1188,9 +1197,20 @@ function resourcesFitDeviceBufferLimits(
   return true;
 }
 
-// This is intentionally target-runtime preparation, not compilation: it
-// resolves concrete jobs against an already complete, bind-independent WGSL
-// artifact and derives all bounded physical resources.
+/**
+ * Validate and pack finite bindings without allocating a GPU device. Arrow
+ * field types must agree with the artifact's physical scalar codecs; binding
+ * values resolve history capacities through the ordinary generated module.
+ *
+ * @example
+ * ```ts
+ * const prepared = await prepareGpuExecutionInputs(artifact, [{
+ *   params: {}, indices: 2, series: {close: [10, 12]},
+ *   sink: {declare() {}, publish() {}},
+ * }]);
+ * prepared.chunkRows; // 2 for a compiled plot(close) with this extent.
+ * ```
+ */
 export async function prepareGpuExecutionInputs(
   artifact: CompiledWgslProgram,
   bindings: readonly GpuBinding[],
@@ -2240,7 +2260,16 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
         `compiled WGSL has invalid output schema ${outputId}`,
       );
     }
-    const rowCells = output.channels.map(channel => channel.rowCell);
+    const fields = decodeSchema(output.schema).fields;
+    const rowCells = output.rowCells;
+    if (
+      fields.length !== rowCells.length ||
+      new Set(fields.map(field => field.name)).size !== fields.length
+    ) {
+      throw new GpuBindingError(
+        `compiled WGSL output ${outputId} has invalid Arrow fields`,
+      );
+    }
     if (
       rowCells.some(cell => cell === null) &&
       rowCells.some(cell => cell !== null)
@@ -2249,18 +2278,19 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
         `compiled WGSL output ${outputId} mixes declaration and row channels`,
       );
     }
-    output.channels.forEach(channel => {
-      if (channel.rowCell === null) return;
-      const result = artifact.resultChannels[channel.rowCell];
+    fields.forEach((field, index) => {
+      const rowCell = rowCells[index];
+      if (rowCell === null) return;
+      const result = artifact.resultChannels[rowCell];
       if (
         result === undefined ||
         result.outputId !== outputId ||
         result.effect !== output.effect ||
-        result.channelName !== channel.name ||
-        !transportMatchesResult(channel.transport, result)
+        result.channelName !== field.name ||
+        !fieldMatchesResult(field, result)
       ) {
         throw new GpuBindingError(
-          `compiled WGSL output ${outputId} disagrees with result cell ${channel.rowCell}`,
+          `compiled WGSL output ${outputId} disagrees with result cell ${rowCell}`,
         );
       }
     });
@@ -2285,9 +2315,12 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
         `compiled WGSL effect schema ${index} disagrees with its payload layout`,
       );
     }
-    validateValueSchema(artifact, schema.payload, `effect schema ${index}`);
+    validateCodec(artifact, schema.payload, `effect schema ${index}`);
+    const fields = decodeSchema(schema.schema).fields;
     if (
-      !logicalSchemaMatchesPhysical(schema.declaration.payload, schema.payload)
+      fields.length !== 1 ||
+      fields[0]!.name !== 'payload' ||
+      !fieldMatchesCodec(fields[0]!, schema.payload.kind)
     ) {
       throw new GpuBindingError(
         `compiled WGSL effect schema ${index} logical declaration disagrees with its physical payload`,
@@ -2514,107 +2547,78 @@ function validateCacheContract(artifact: CompiledWgslProgram): void {
   }
 }
 
-function logicalSchemaMatchesPhysical(
-  logical: import('../../ir/program').EffectValueSchema,
-  physical: WgslValueSchema,
-): boolean {
-  if (logical.kind !== physical.kind) return false;
-  if (logical.kind === 'enum' && physical.kind === 'enum') {
-    return (
-      logical.typeId === physical.typeId &&
-      logical.displayName === physical.name &&
-      logical.members.length === physical.members.length &&
-      logical.members.every(
-        (member, index) => member.name === physical.members[index],
-      )
+function enumMembers(field: Field): readonly string[] {
+  const members: unknown = JSON.parse(
+    field.metadata.get('tea:members') ?? 'null',
+  );
+  if (
+    !Array.isArray(members) ||
+    members.some(member => typeof member?.name !== 'string')
+  ) {
+    throw new GpuBindingError(
+      `compiled WGSL enum '${field.name}' has invalid Arrow member metadata`,
     );
   }
-  if (logical.kind === 'struct' && physical.kind === 'struct') {
-    return (
-      logical.typeId === physical.typeId &&
-      logical.displayName === physical.name &&
-      logical.fields.length === physical.fields.length &&
-      logical.fields.every(
-        (field, index) =>
-          field.name === physical.fields[index]?.name &&
-          logicalSchemaMatchesPhysical(
-            field.value,
-            physical.fields[index]!.value,
-          ),
-      )
-    );
-  }
-  return true;
+  return members.map(member => member.name as string);
 }
 
-function transportMatchesResult(
-  transport: CompiledWgslProgram['outputSchemas'][number]['channels'][number]['transport'],
-  result: WgslResultChannel,
-): boolean {
-  if (transport.kind !== result.scalar) return false;
+function fieldMatchesCodec(field: Field, kind: WgslCodec['kind']): boolean {
+  if (field.metadata.get('tea:type') !== kind) return false;
+  switch (kind) {
+    case 'bool':
+      return DataType.isBool(field.type);
+    case 'float':
+    case 'int':
+      return (
+        DataType.isFloat(field.type) &&
+        field.type.precision === Precision.DOUBLE
+      );
+    case 'enum': {
+      const members = enumMembers(field);
+      return (
+        DataType.isUtf8(field.type) && members.length === new Set(members).size
+      );
+    }
+    case 'string':
+    case 'color':
+      return DataType.isUtf8(field.type);
+  }
+}
+
+function fieldMatchesResult(field: Field, result: WgslResultChannel): boolean {
+  if (!fieldMatchesCodec(field, result.scalar)) return false;
+  if (result.scalar !== 'enum') return true;
+  const members = enumMembers(field);
   return (
-    transport.kind !== 'enum' ||
-    (result.enumMembers !== null &&
-      transport.members.length === result.enumMembers.length &&
-      transport.members.every(
-        (member, index) => member === result.enumMembers?.[index],
-      ))
+    result.enumMembers !== null &&
+    members.length === result.enumMembers.length &&
+    members.every((member, index) => member === result.enumMembers![index])
   );
 }
 
-function validateValueSchema(
+function validateCodec(
   artifact: CompiledWgslProgram,
-  schema: WgslValueSchema,
+  codec: WgslCodec,
   owner: string,
 ): void {
-  const layout = artifact.layouts[schema.physicalLayout];
+  const layout = artifact.layouts[codec.physicalLayout];
   if (layout === undefined) {
     throw new GpuBindingError(`${owner} has an invalid value layout`);
   }
   const offsets: number[] = [];
-  switch (schema.kind) {
+  switch (codec.kind) {
     case 'bool':
-      offsets.push(schema.valueByteOffset);
+      offsets.push(codec.valueByteOffset);
       break;
     case 'int':
     case 'float':
     case 'string':
     case 'color':
-      offsets.push(schema.validByteOffset, schema.valueByteOffset);
+      offsets.push(codec.validByteOffset, codec.valueByteOffset);
       break;
     case 'enum':
-      offsets.push(schema.validByteOffset, schema.ordinalByteOffset);
-      if (new Set(schema.members).size !== schema.members.length) {
-        throw new GpuBindingError(`${owner} has duplicate enum members`);
-      }
+      offsets.push(codec.validByteOffset, codec.ordinalByteOffset);
       break;
-    case 'struct': {
-      offsets.push(schema.validByteOffset);
-      const intervals: Array<readonly [number, number]> = [];
-      schema.fields.forEach(field => {
-        const nested = artifact.layouts[field.value.physicalLayout];
-        if (
-          nested === undefined ||
-          !Number.isSafeInteger(field.byteOffset) ||
-          field.byteOffset < 0 ||
-          field.byteOffset % 4 !== 0 ||
-          field.byteOffset + nested.byteSize > layout.byteSize
-        ) {
-          throw new GpuBindingError(
-            `${owner}.${field.name} has an invalid offset`,
-          );
-        }
-        intervals.push([field.byteOffset, field.byteOffset + nested.byteSize]);
-        validateValueSchema(artifact, field.value, `${owner}.${field.name}`);
-      });
-      intervals.sort((left, right) => left[0] - right[0]);
-      for (let index = 1; index < intervals.length; index += 1) {
-        if (intervals[index][0] < intervals[index - 1][1]) {
-          throw new GpuBindingError(`${owner} has overlapping fields`);
-        }
-      }
-      break;
-    }
   }
   if (
     offsets.some(

@@ -2,6 +2,8 @@
 // execution hosts.
 
 import {Storage} from '../ir/node';
+import {Field, Float64, Schema} from 'apache-arrow';
+import {cloneSchema, decodeSchema} from './io';
 import {
   isHistoryOffset,
   RUNTIME_ABI_VERSION,
@@ -12,7 +14,7 @@ import {
 } from './module-abi';
 import type {BoundInput} from './binding';
 import {BindError} from './errors';
-import type {ExecutionDeclaration} from './output';
+import {outputSchema, type ExecutionDeclaration} from './output';
 import {resolveParamValues} from './params';
 import type {ManifestValue, Value} from './value';
 import {ValueLayoutRegistry} from './value-layout';
@@ -41,9 +43,36 @@ export function createGeneratedModule(code: GeneratedModule): JSModule {
   return initializeModuleTree(code);
 }
 
-/** Deep-copy the data-only manifest before applying an immutable update. */
+/**
+ * Copy binding facts and Arrow schemas without losing their classes or sharing
+ * mutable metadata. Raw IPC fields are decoded during initial loading.
+ * @example Changing a copied field's metadata leaves the old manifest unchanged.
+ */
 export function cloneModuleManifest(manifest: ModuleManifest): ModuleManifest {
-  return structuredClone(manifest);
+  const {inputs, outputs, effects, ...data} = manifest;
+  return {
+    ...structuredClone(data),
+    inputs:
+      inputs instanceof Schema
+        ? cloneSchema(inputs)
+        : decodeSchema(inputs as unknown as number[]),
+    outputs: outputs.map(({channels, ...output}) => ({
+      ...structuredClone(output),
+      channels: channels.every(field => field instanceof Field)
+        ? cloneSchema(new Schema([...channels])).fields
+        : decodeSchema(channels as unknown as number[]).fields,
+    })),
+    effects: effects.map(({declaration, ...effect}) => ({
+      ...structuredClone(effect),
+      declaration: {
+        payload:
+          declaration.payload instanceof Field
+            ? cloneSchema(new Schema([declaration.payload])).fields[0]
+            : decodeSchema(declaration.payload as unknown as number[])
+                .fields[0],
+      },
+    })),
+  };
 }
 
 function initialManifest(manifest: ModuleManifest): ModuleManifest {
@@ -201,11 +230,15 @@ export function boundInputs(module: JSModule): readonly BoundInput[] {
   );
 }
 
-/** Host output declaration read directly from the concrete manifest. */
+/**
+ * Project host declarations while keeping physical storage IDs private.
+ * @example `moduleDeclaration(module).schema` describes the rows Node publishes.
+ */
 export function moduleDeclaration(module: JSModule): ExecutionDeclaration {
   return deepFreeze({
+    schema: module.outputs,
     outputs: module.manifest.outputs.map(output => {
-      const {boundArgs, ...spec} = output;
+      const {boundArgs, layouts: _layouts, ...spec} = output;
       if (boundArgs == null) {
         throw new ModuleBindingEvaluationError(
           `output '${output.effect}' has no concrete declaration arguments`,
@@ -471,8 +504,34 @@ function moduleSnapshot(
   requests: readonly JSModule[],
 ): JSModule {
   let module!: JSModule;
+  const {abi, layout, concretize, funcs, main} = code;
   module = {
-    ...code,
+    abi,
+    layout,
+    concretize,
+    funcs,
+    main,
+    get inputs() {
+      const fields = new Map(
+        manifest.inputs.fields.map(field => [field.name, field]),
+      );
+      manifest.series.forEach((_, sid) => {
+        const name = seriesBindingName(manifest, sid);
+        if (name !== null && !fields.has(name))
+          fields.set(name, new Field(name, new Float64(), false));
+      });
+      return cloneSchema(
+        new Schema([...fields.values()], manifest.inputs.metadata),
+      );
+    },
+    get outputs() {
+      return cloneSchema(
+        outputSchema(
+          manifest.outputs,
+          manifest.effects.map(effect => effect.declaration),
+        ),
+      );
+    },
     manifest: deepFreeze(manifest),
     requests: Object.freeze([...requests]),
     ready: () => moduleReady(module),
@@ -643,6 +702,10 @@ function deepFreeze<T>(value: T): T {
   ) {
     return value;
   }
-  for (const child of Object.values(value)) deepFreeze(child);
+  for (const property of Object.values(
+    Object.getOwnPropertyDescriptors(value),
+  )) {
+    if (property.enumerable && 'value' in property) deepFreeze(property.value);
+  }
   return Object.freeze(value);
 }

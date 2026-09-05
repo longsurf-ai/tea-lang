@@ -11,7 +11,6 @@ import {Errors} from '../src/base/print';
 import {compileProgramToWgsl} from '../src/codegen/wgsl';
 import {compileToProgram} from '../src/compiler';
 import {OutputCapture} from '../src/testing/output';
-import type {EffectValue} from '../src/runtime/abi';
 import {csvStream, executeTestProgram} from '../src/testing/batch';
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
@@ -205,8 +204,7 @@ describe('canonical component migration regressions', () => {
 
     const fillEffectIds = new Set(
       sink.effectSchemas.flatMap((effect, effectId) =>
-        effect.payload.kind === 'struct' &&
-        effect.payload.typeId === 'broker.FillExecuted'
+        effect.payload.metadata.get('tea:typeId') === 'broker.FillExecuted'
           ? [effectId]
           : [],
       ),
@@ -220,9 +218,9 @@ describe('canonical component migration regressions', () => {
     const fills = sink.effectEmissions
       .filter(emission => fillEffectIds.has(emission.effectId))
       .map(emission => {
-        const [fill] = effectFields(emission.payload, 'broker.FillExecuted');
+        const {fill} = effectFields(emission.payload, 'broker.FillExecuted');
         const fields = effectFields(fill, 'broker.FillExecuted.fill');
-        const side = effectString(fields[3], 'fill.side');
+        const side = effectString(fields.side, 'fill.side');
         const time = timeByRow.get(emission.row);
         if (typeof time !== 'number') {
           throw new Error(`fill row ${emission.row} has no root time`);
@@ -232,12 +230,15 @@ describe('canonical component migration regressions', () => {
           time,
           role: side === 'buy' ? 'entry' : 'bracket-exit',
           side,
-          barIndex: effectNumber(fields[4], 'fill.barIndex'),
-          referencePrice: effectNumber(fields[5], 'fill.referencePrice'),
-          price: effectNumber(fields[6], 'fill.price'),
-          quantity: effectNumber(fields[7], 'fill.quantity'),
-          notional: effectNumber(fields[8], 'fill.notional'),
-          fee: effectNumber(fields[9], 'fill.fee'),
+          barIndex: effectNumber(fields.barIndex, 'fill.barIndex'),
+          referencePrice: effectNumber(
+            fields.referencePrice,
+            'fill.referencePrice',
+          ),
+          price: effectNumber(fields.price, 'fill.price'),
+          quantity: effectNumber(fields.quantity, 'fill.quantity'),
+          notional: effectNumber(fields.notional, 'fill.notional'),
+          fee: effectNumber(fields.fee, 'fill.fee'),
         };
       });
     expect(fills).toHaveLength(36);
@@ -265,24 +266,21 @@ function finalScalar(sink: OutputCapture, outputId: number): number {
   return value as number;
 }
 
-function effectFields(
-  value: EffectValue,
-  label: string,
-): readonly EffectValue[] {
-  if (typeof value !== 'object' || value === null || value.kind !== 'struct') {
+function effectFields(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`${label} must be a struct effect value`);
   }
-  return value.fields;
+  return value as Record<string, unknown>;
 }
 
-function effectNumber(value: EffectValue | undefined, label: string): number {
+function effectNumber(value: unknown, label: string): number {
   if (typeof value !== 'number') {
     throw new Error(`${label} must be numeric`);
   }
   return value;
 }
 
-function effectString(value: EffectValue | undefined, label: string): string {
+function effectString(value: unknown, label: string): string {
   if (typeof value !== 'string') {
     throw new Error(`${label} must be a string`);
   }

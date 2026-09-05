@@ -1,6 +1,7 @@
 // Purpose: Target-neutral parameter and effect declarations shared by generated artifacts and hosts.
 
-import type {EffectValueSchema, ParamDisplay} from '../ir/program';
+import type {Field} from 'apache-arrow';
+import type {ParamDisplay} from '../ir/program';
 import type {ManifestValue} from './value';
 
 export type ParamConstraintSpec =
@@ -44,6 +45,10 @@ export interface ParamSpec {
   readonly seriesSid: number | null;
 }
 
+/**
+ * An event declaration whose payload structure is an ordinary Arrow field.
+ * @example A struct event uses a `payload` Field with a Struct DataType.
+ */
 export interface EffectSpec {
-  readonly payload: EffectValueSchema;
+  readonly payload: Field;
 }

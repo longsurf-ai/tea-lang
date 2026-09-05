@@ -16,7 +16,6 @@ import {
   type Registry,
 } from '../loader/loader';
 import {buildProgram} from '../noder/noder';
-import type {EffectValue, Value} from '../runtime/abi';
 import {parse} from '../syntax/syntax';
 import {csvStream, executeTestProgram} from './batch';
 import {OutputCapture} from './output';
@@ -90,7 +89,7 @@ async function execute(source: string, csv: string) {
   return {program, sink};
 }
 
-function valuesFor(sink: OutputCapture, oid: number): readonly Value[] {
+function valuesFor(sink: OutputCapture, oid: number): readonly unknown[] {
   return sink.emissions
     .filter(emission => emission.outputId === oid)
     .sort((left, right) => left.row - right.row)
@@ -98,7 +97,7 @@ function valuesFor(sink: OutputCapture, oid: number): readonly Value[] {
 }
 
 function expectNumbersClose(
-  actual: readonly Value[],
+  actual: readonly unknown[],
   expected: readonly number[],
 ): void {
   expect(actual).toHaveLength(expected.length);
@@ -116,25 +115,19 @@ function effectName(program: Program, emission: SparseEmission): string {
 }
 
 function effectField(
-  program: Program,
   emission: SparseEmission,
   ...path: readonly string[]
-): EffectValue {
-  let type = program.effects[emission.effectId]?.payloadType;
-  let value: EffectValue | undefined = emission.payload;
+): unknown {
+  let value: unknown = emission.payload;
   for (const name of path) {
     if (
-      type?.kind !== TypeKind.Struct ||
-      value === undefined ||
-      typeof value !== 'object' ||
       value === null ||
-      value.kind !== 'struct'
+      typeof value !== 'object' ||
+      !Object.hasOwn(value, name)
     ) {
-      throw new Error(`effect ${emission.effectId} cannot select '${name}'`);
+      throw new Error(`effect payload cannot select '${name}'`);
     }
-    const fieldIndex = type.fields.findIndex(field => field.name === name);
-    type = type.fields[fieldIndex]?.type;
-    value = value.fields[fieldIndex];
+    value = (value as Record<string, unknown>)[name];
   }
   if (value === undefined) {
     throw new Error(`effect ${emission.effectId} has no payload`);
@@ -192,30 +185,26 @@ describe('canonical bounded lot trade components', () => {
       emission => effectName(program, emission) === 'OrderSubmitted',
     );
     expect(
-      submitted.map(emission => effectField(program, emission, 'order', 'id')),
+      submitted.map(emission => effectField(emission, 'order', 'id')),
     ).toEqual([1, 2, 3, 4]);
     expect(
-      submitted.map(emission =>
-        effectField(program, emission, 'order', 'commandId'),
-      ),
+      submitted.map(emission => effectField(emission, 'order', 'commandId')),
     ).toEqual(['Long touch', 'Long gap', 'Short touch', 'Short gap']);
 
     const fills = sink.effectEmissions.filter(
       emission => effectName(program, emission) === 'FillExecuted',
     );
+    expect(fills.map(emission => effectField(emission, 'fill', 'id'))).toEqual([
+      1, 2, 3, 4,
+    ]);
     expect(
-      fills.map(emission => effectField(program, emission, 'fill', 'id')),
+      fills.map(emission => effectField(emission, 'fill', 'orderId')),
     ).toEqual([1, 2, 3, 4]);
     expect(
-      fills.map(emission => effectField(program, emission, 'fill', 'orderId')),
-    ).toEqual([1, 2, 3, 4]);
-    expect(
-      fills.map(emission =>
-        effectField(program, emission, 'fill', 'referencePrice'),
-      ),
+      fills.map(emission => effectField(emission, 'fill', 'referencePrice')),
     ).toEqual([9, 8, 11, 12]);
     expect(
-      fills.map(emission => effectField(program, emission, 'fill', 'tradeId')),
+      fills.map(emission => effectField(emission, 'fill', 'tradeId')),
     ).toEqual([101, 101, 202, 202]);
 
     const rejection = sink.effectEmissions.find(
@@ -223,10 +212,8 @@ describe('canonical bounded lot trade components', () => {
     );
     if (rejection === undefined)
       throw new Error('missing invalid-stop rejection');
-    expect(effectField(program, rejection, 'commandId')).toBe(
-      'Invalid touched stop',
-    );
-    expect(effectField(program, rejection, 'reason')).toBe('invalidPrice');
+    expect(effectField(rejection, 'commandId')).toBe('Invalid touched stop');
+    expect(effectField(rejection, 'reason')).toBe('invalidPrice');
   });
 
   test('keeps trailing policy through activation and a miss before a gap fill', async () => {
@@ -302,7 +289,7 @@ describe('canonical bounded lot trade components', () => {
     expect(
       sink.effectEmissions
         .filter(emission => effectName(program, emission) === 'FillExecuted')
-        .map(emission => effectField(program, emission, 'fill', 'commandId')),
+        .map(emission => effectField(emission, 'fill', 'commandId')),
     ).toEqual(['Trail entry', 'Trail close']);
   });
 
@@ -347,19 +334,15 @@ describe('canonical bounded lot trade components', () => {
     expect(
       sink.effectEmissions
         .filter(emission => effectName(program, emission) === 'OrderSubmitted')
-        .map(emission => effectField(program, emission, 'order', 'id')),
+        .map(emission => effectField(emission, 'order', 'id')),
     ).toEqual([1, 2]);
     const rejection = sink.effectEmissions.find(
       emission => effectName(program, emission) === 'OrderRejected',
     );
     if (rejection === undefined)
       throw new Error('missing side-mismatch rejection');
-    expect(effectField(program, rejection, 'commandId')).toBe(
-      'Wrong short intent',
-    );
-    expect(effectField(program, rejection, 'reason')).toBe(
-      'invalidAccountState',
-    );
+    expect(effectField(rejection, 'commandId')).toBe('Wrong short intent');
+    expect(effectField(rejection, 'reason')).toBe('invalidAccountState');
   });
 
   test('closes exact lots newest-first before an immediate reversal', async () => {
@@ -418,9 +401,7 @@ describe('canonical bounded lot trade components', () => {
       emission => effectName(program, emission) === 'FillExecuted',
     );
     expect(
-      fills.map(emission =>
-        effectField(program, emission, 'fill', 'commandId'),
-      ),
+      fills.map(emission => effectField(emission, 'fill', 'commandId')),
     ).toEqual([
       'Long A',
       'Long B',
@@ -433,7 +414,7 @@ describe('canonical bounded lot trade components', () => {
     expect(
       fills
         .slice(4, 6)
-        .map(emission => effectField(program, emission, 'fill', 'quantity')),
+        .map(emission => effectField(emission, 'fill', 'quantity')),
     ).toEqual([10 / 12, 1]);
   });
 

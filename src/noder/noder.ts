@@ -34,7 +34,6 @@ import {
   ParamDefaultKind,
   type BuiltinInput,
   type EffectDecl,
-  type EffectValueSchema,
   type IrFunc,
   type MergePolicy,
   type OutputDecl,
@@ -206,6 +205,7 @@ class Noder {
     const packageGlobals: IrName[] = [];
     const program: Program = {
       version: this.version,
+      nominalIds: this.checked.nominalTypeIds,
       params: this.params,
       requests: this.program.requests,
       outputs: this.outputs,
@@ -1733,6 +1733,7 @@ class Noder {
     ];
     const child: Program = {
       version: this.version,
+      nominalIds: this.checked.nominalTypeIds,
       // Bind-time params are compilation-global: a child references the
       // parent's ParamInput objects directly and declares none of its own.
       params: [],
@@ -2065,6 +2066,7 @@ class Noder {
 
   private nodeOutput(c: syntax.CallExpr, resolved: OutputCall): OutputRefExpr {
     const primary = this.outputOperand(resolved.value);
+    this.checkExport(primary.tv.type, c.pos);
     const staticArgs: {name: string; value: ConstValue}[] = [];
     const bindArgs: {name: string; expr: IrExpr}[] = [];
     const channels: {name: string; type: Type}[] = [];
@@ -2093,6 +2095,7 @@ class Noder {
     resolved.args.forEach((arg, index) => {
       const operand = index + 1;
       const value = this.outputOperand(arg.value);
+      this.checkExport(value.tv.type, c.pos);
       const tv = value.tv;
       if (tv.value !== null) {
         staticArgs.push({name: arg.name, value: tv.value});
@@ -2266,9 +2269,9 @@ class Noder {
       if (payloadType === undefined) {
         return fatal('effect.emit lacks its checked payload type');
       }
+      this.checkExport(payloadType, c.pos);
       effect = {
         payloadType,
-        payloadSchema: this.effectValueSchema(payloadType),
         sourcePosition: c.pos,
       };
       this.program.effectsByCall.set(resolved, effect);
@@ -2290,48 +2293,39 @@ class Noder {
     };
   }
 
-  private effectValueSchema(type: Type): EffectValueSchema {
-    switch (type.kind) {
-      case TypeKind.Int:
-        return {kind: 'int'};
-      case TypeKind.Float:
-        return {kind: 'float'};
-      case TypeKind.Bool:
-        return {kind: 'bool'};
-      case TypeKind.String:
-        return {kind: 'string'};
-      case TypeKind.Color:
-        return {kind: 'color'};
-      case TypeKind.Enum:
-        return {
-          kind: 'enum',
-          typeId: this.nominalTypeId(type),
-          displayName: type.name,
-          members: type.members.map(member => ({...member})),
-        };
-      case TypeKind.Struct:
-        return {
-          kind: 'struct',
-          typeId: this.nominalTypeId(type),
-          displayName: type.name,
-          fields: type.fields.map(field => ({
-            name: field.name,
-            value: this.effectValueSchema(field.type),
-          })),
-        };
-      default:
-        return fatal(
-          `non-fixed type '${type.kind}' reached effect schema projection`,
-        );
+  // Arrow schemas are finite trees. Recursive references remain valid inside
+  // the program, but exporting one must fail before a backend is selected.
+  private checkExport(type: Type, pos: Pos): void {
+    const active = new Set<Type>();
+    const finite = (type: Type): boolean => {
+      if (active.has(type)) return false;
+      active.add(type);
+      let children: readonly Type[] = [];
+      switch (type.kind) {
+        case TypeKind.Struct:
+          children = type.fields.map(field => field.type);
+          break;
+        case TypeKind.Array:
+        case TypeKind.Matrix:
+          children = [type.elem];
+          break;
+        case TypeKind.Map:
+          children = [type.key, type.value];
+          break;
+        case TypeKind.Tuple:
+          children = type.elems;
+          break;
+      }
+      const result = children.every(finite);
+      active.delete(type);
+      return result;
+    };
+    if (!finite(type)) {
+      this.errors.errorAt(
+        pos,
+        'recursive value types cannot be exported as Arrow schemas',
+      );
     }
-  }
-
-  private nominalTypeId(type: Type): string {
-    if (type.kind !== TypeKind.Struct && type.kind !== TypeKind.Enum) {
-      return fatal(`non-nominal type '${type.kind}' has no nominal identity`);
-    }
-    const id = this.checked.nominalTypeIds.get(type);
-    return id ?? fatal(`nominal type '${type.name}' has no checker identity`);
   }
 
   // Split a declarative call's provided args into the three buckets:
@@ -2358,6 +2352,7 @@ class Noder {
       const param =
         resolved.native.params[Math.min(i, resolved.native.params.length - 1)];
       const tv = this.tvOf(arg);
+      this.checkExport(tv.type, arg.pos);
       if (tv.value !== null) {
         staticArgs.push({name: param.name, value: tv.value});
         return;

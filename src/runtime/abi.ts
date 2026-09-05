@@ -8,5 +8,4 @@ export * from './value';
 
 export type {BuiltinSource} from '../ir/builtin';
 export type {HistoryDepth} from '../ir/node';
-export type {EffectValueSchema} from '../ir/program';
 export type {LayoutId} from './value-layout';

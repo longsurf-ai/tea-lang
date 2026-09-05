@@ -2,6 +2,7 @@
 // concrete streams and application sources remain outside the generated module.
 
 import {Effect} from 'effect';
+import {DataType, Schema} from 'apache-arrow';
 import {describe, expect, test} from 'vitest';
 import {generate} from '../codegen/codegen';
 import {mustBuild} from '../noder/testing';
@@ -91,6 +92,63 @@ describe('JSModule binding', () => {
     );
     expect(once.manifest.params[0]?.value).toBe(10);
     expect(twice.manifest.params[0]?.value).toBe(20);
+  });
+
+  test('keeps real Arrow schemas isolated across binding and rebinding', () => {
+    const original = compileModule(
+      'length = input.int(1)\nplot(close + length)',
+    );
+    original.manifest.inputs.fields[0]!.metadata.set('test:owner', 'original');
+    original.manifest.outputs[0]!.channels[0]!.metadata.set(
+      'test:owner',
+      'original',
+    );
+    const bound = Effect.runSync(
+      bindModule(original, [
+        {kind: 'parameter', name: 'length', value: 2},
+        {kind: 'series', name: 'close'},
+      ]),
+    );
+    const rebound = Effect.runSync(
+      bindModule(bound, [{kind: 'parameter', name: 'length', value: 3}]),
+    );
+    original.manifest.inputs.fields[0]!.metadata.set('test:owner', 'changed');
+    bound.manifest.outputs[0]!.channels[0]!.metadata.set(
+      'test:owner',
+      'changed',
+    );
+    const inspected = rebound.inputs;
+    inspected.fields[0]!.metadata.set('test:owner', 'reader');
+    inspected.fields.splice(0);
+    expect(rebound.inputs).toBeInstanceOf(Schema);
+    expect(DataType.isFloat(rebound.inputs.fields[0]!.type)).toBe(true);
+    expect(rebound.inputs.fields[0]!.metadata.get('test:owner')).toBe(
+      'original',
+    );
+    expect(
+      rebound.manifest.outputs[0]!.channels[0]!.metadata.get('test:owner'),
+    ).toBe('original');
+    expect(bound.manifest.params[0]!.value).toBe(2);
+    expect(rebound.manifest.params[0]!.value).toBe(3);
+  });
+
+  test('retains independent Arrow schemas throughout request module trees', () => {
+    const original = compileModule(
+      'r = request.security("X", "D", close)\nplot(r)',
+    );
+    original.requests[0]!.manifest.inputs.fields[0]!.metadata.set(
+      'test:child',
+      'original',
+    );
+    const bound = Effect.runSync(bindModule(original, []));
+    original.requests[0]!.manifest.inputs.fields[0]!.metadata.set(
+      'test:child',
+      'changed',
+    );
+    expect(
+      bound.requests[0]!.inputs.fields[0]!.metadata.get('test:child'),
+    ).toBe('original');
+    expect(bound.requests[0]!.outputs).toBeInstanceOf(Schema);
   });
 
   test('stores only a supplied marker for a series', () => {

@@ -1,3 +1,4 @@
+import {Field, Struct} from 'apache-arrow';
 // Purpose: Ownership, provisional/final, rollback, and GC-safe-point coverage
 // for the state-owning JavaScript runtime.
 
@@ -7,7 +8,7 @@ import {Storage} from '../../ir/node';
 import {JSRuntime, type StepInput, type StepResult} from './runtime';
 import {configureModule} from '../module-binding';
 import {RUNTIME_ABI_VERSION, type JSModule} from '../module-abi';
-import {testModule} from '../testing';
+import {testModule, scalar} from '../testing';
 import type {Value} from '../value';
 import type {ValueLayout} from '../value-layout';
 
@@ -49,10 +50,7 @@ const PROVISIONAL_MODULE: JSModule = testModule({
       {
         effect: 'probe',
         staticArgs: [],
-        channels: [
-          {name: 'var', type: 'int', transport: {kind: 'int'}},
-          {name: 'varip', type: 'int', transport: {kind: 'int'}},
-        ],
+        channels: [scalar('var', 'int'), scalar('varip', 'int')],
       },
     ],
     effects: [],
@@ -91,7 +89,7 @@ function structModule(shouldFail: () => boolean): JSModule {
         {
           effect: 'probe',
           staticArgs: [],
-          channels: [{name: 'value', type: 'int', transport: {kind: 'int'}}],
+          channels: [scalar('value', 'int')],
         },
       ],
       effects: [],
@@ -133,22 +131,27 @@ function structEffectModule(shouldFail: () => boolean): JSModule {
         {
           layout: ENVELOPE,
           declaration: {
-            payload: {
-              kind: 'struct',
-              typeId: 'test.Envelope',
-              displayName: 'Envelope',
-              fields: [
-                {
-                  name: 'counter',
-                  value: {
-                    kind: 'struct',
-                    typeId: 'test.Counter',
-                    displayName: 'Counter',
-                    fields: [{name: 'value', value: {kind: 'int'}}],
-                  },
-                },
-              ],
-            },
+            payload: new Field(
+              'payload',
+              new Struct([
+                new Field(
+                  'counter',
+                  new Struct([scalar('value', 'int')]),
+                  true,
+                  new Map([
+                    ['tea:type', 'struct'],
+                    ['tea:typeId', 'test.Counter'],
+                    ['tea:name', 'Counter'],
+                  ]),
+                ),
+              ]),
+              true,
+              new Map([
+                ['tea:type', 'struct'],
+                ['tea:typeId', 'test.Envelope'],
+                ['tea:name', 'Envelope'],
+              ]),
+            ),
           },
         },
       ],
@@ -218,7 +221,7 @@ const GC_MODULE: JSModule = testModule({
       {
         effect: 'probe',
         staticArgs: [],
-        channels: [{name: 'old-size', type: 'int', transport: {kind: 'int'}}],
+        channels: [scalar('old-size', 'int')],
       },
     ],
     effects: [],
@@ -289,12 +292,12 @@ const COLLECT_REQUEST_MODULE: JSModule = testModule({
         effect: 'probe',
         staticArgs: [],
         channels: [
-          {name: 'size', type: 'int', transport: {kind: 'int'}},
-          {name: 'empty', type: 'bool', transport: {kind: 'bool'}},
-          {name: 'first', type: 'int', transport: {kind: 'int'}},
-          {name: 'last', type: 'int', transport: {kind: 'int'}},
-          {name: 'prior-size', type: 'int', transport: {kind: 'int'}},
-          {name: 'prior-first', type: 'int', transport: {kind: 'int'}},
+          scalar('size', 'int'),
+          scalar('empty', 'bool'),
+          scalar('first', 'int'),
+          scalar('last', 'int'),
+          scalar('prior-size', 'int'),
+          scalar('prior-first', 'int'),
         ],
       },
     ],
@@ -437,10 +440,7 @@ describe('JSRuntime', () => {
     expect(result.effects).toEqual([
       {
         effectId: 0,
-        payload: {
-          kind: 'struct',
-          fields: [{kind: 'struct', fields: [1]}],
-        },
+        payload: {counter: {value: 1}},
       },
     ]);
     runtime.dispose();
@@ -491,7 +491,7 @@ describe('JSRuntime', () => {
           {
             effect: 'probe',
             staticArgs: [],
-            channels: [{name: 'value', type: 'int', transport: {kind: 'int'}}],
+            channels: [scalar('value', 'int')],
           },
         ],
         effects: [],

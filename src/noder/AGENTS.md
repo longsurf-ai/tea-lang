@@ -54,6 +54,10 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   concrete group/inline/tooltip/confirm/display metadata, nominal enum type, and
   input-qualified `active` expression are copied into that ParamInput after
   the checker rejects invalid metadata.
+- Exported values must have finite Arrow schemas. The noder reports recursive
+  output or effect payload types through the compilation's Errors; recursive
+  structs used only inside execution remain valid. Nominal declaration ids
+  pass directly from the checked package into Program.nominalIds.
 - Output args partition by when they are known: folded constants →
   `staticArgs`; output refs and at-most-input exprs → `bindArgs` (module.bind);
   simple/series exprs → `channels` + one per-bar `Emit` after the statement.

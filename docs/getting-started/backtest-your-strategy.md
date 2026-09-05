@@ -56,15 +56,36 @@ open and gives the resulting DataStream an exact finite `indices` count.
 Embedding applications can construct the same input directly:
 
 ```ts
+import {Field, Float64, Schema, TimestampMillisecond} from 'apache-arrow';
+import {from} from 'rxjs';
+import {DataStream, d} from 'tea';
+
+const values = [
+  {
+    time: 1704067200000n,
+    time_close: 1704153600000n,
+    open: 100,
+    high: 103,
+    low: 99,
+    close: 102,
+  },
+  {
+    time: 1704153600000n,
+    time_close: 1704240000000n,
+    open: 102,
+    high: 104,
+    low: 100,
+    close: 103,
+  },
+];
 const bars = new DataStream(
-  z.object({
-    time: z.bigint(),
-    time_close: z.bigint(),
-    open: z.number(),
-    high: z.number(),
-    low: z.number(),
-    close: z.number(),
-  }),
+  new Schema([
+    new Field('time', new TimestampMillisecond(), false),
+    new Field('time_close', new TimestampMillisecond(), false),
+    ...['open', 'high', 'low', 'close'].map(
+      name => new Field(name, new Float64(), false),
+    ),
+  ]),
   from(values),
   d,
   values.length,

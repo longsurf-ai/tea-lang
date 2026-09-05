@@ -1,18 +1,20 @@
 // Purpose: Concrete terminal rendering for `tea run` reports and traces.
 
+import type {Field} from 'apache-arrow';
 import {TabWriter} from '../base/tabwriter';
 import type {
   BoundInput,
   DeclaredOutput,
   Datum,
-  EffectValue,
-  EffectValueSchema,
   ExecutionDeclaration,
-  Value,
 } from '../runtime/abi';
 
 type Cell = string | number | boolean | null;
 
+/** Formats declarations using presentation metadata and Arrow payload fields.
+ * @example traceDeclaration({outputs: [], effects: [], schema: new Schema([])})
+ * // []
+ */
 export function traceDeclaration(declaration: ExecutionDeclaration): string[] {
   return [
     ...declaration.outputs.map((output, outputId) => {
@@ -28,33 +30,43 @@ export function traceDeclaration(declaration: ExecutionDeclaration): string[] {
         (bounds.length > 0 ? ` bound{${bounds}}` : '')
       );
     }),
-    ...declaration.effects.map((effect, effectId) => {
-      const payload = effect.payload;
-      const name =
-        payload.kind === 'enum' || payload.kind === 'struct'
-          ? payload.typeId
-          : payload.kind;
-      return `# effect[${effectId}] type=${name}`;
-    }),
+    ...declaration.effects.map(
+      (effect, effectId) =>
+        `# effect[${effectId}] type=${fieldLabel(effect.payload)}`,
+    ),
   ];
 }
 
+/** Formats a schema-named publication, restoring global event order.
+ * @example traceDatum({index: 2, timed: false, provisional: false, output0: {series: 7}})
+ * // ['2 0 7']
+ */
 export function traceDatum(datum: Datum): string[] {
   const provisional = datum.provisional ? ' ?' : '';
   return [
-    ...datum.outputs.map(
-      output =>
-        `${datum.index} ${output.outputId}${provisional} ${output.channels
-          .map(traceValue)
-          .join(' ')}`,
+    ...Object.entries(datum).flatMap(([name, value]) =>
+      /^output\d+$/.test(name) && value !== null && typeof value === 'object'
+        ? [
+            `${datum.index} ${name.slice(6)}${provisional} ${Object.values(value).map(traceValue).join(' ')}`,
+          ]
+        : [],
     ),
-    ...datum.effects.map(
-      effect =>
-        `${datum.index} effect[${effect.effectId}]${provisional} ${traceEffectValue(effect.payload)}`,
+    ...events(datum).map(
+      ({id, payload}) =>
+        `${datum.index} effect[${id}]${provisional} ${traceValue(payload)}`,
     ),
   ];
 }
 
+/** Renders final publications and timing; provisional updates are excluded.
+ * @example
+ * ```ts
+ * const declaration = {outputs: [], effects: [], schema: new Schema([])};
+ * renderRunReport(declaration, [], [], {
+ *   indices: 0, compilationMs: 1, executionMs: 0,
+ * }); // A System table reporting zero indices and 1.00 ms compilation.
+ * ```
+ */
 export function renderRunReport(
   declaration: ExecutionDeclaration,
   publications: readonly Datum[],
@@ -110,17 +122,10 @@ function renderOutputs(
       label: outputChannelLabel(output, outputId, channel),
     })),
   );
-  const byIndex = new Map<number, Map<number, readonly Value[]>>();
+  if (columns.length === 0) return '';
+  const byIndex = new Map<number, Datum>();
   for (const datum of publications) {
-    if (datum.provisional) continue;
-    for (const output of datum.outputs) {
-      let values = byIndex.get(datum.index);
-      if (values === undefined) {
-        values = new Map();
-        byIndex.set(datum.index, values);
-      }
-      values.set(output.outputId, output.channels);
-    }
+    if (!datum.provisional) byIndex.set(datum.index, datum);
   }
   return renderSection(
     'Outputs',
@@ -130,7 +135,15 @@ function renderOutputs(
       .map(([index, outputs]) => [
         index,
         ...columns.map(column => {
-          const value = outputs.get(column.outputId)?.[column.channel];
+          const output = outputs[`output${column.outputId}`] as Record<
+            string,
+            unknown
+          > | null;
+          const channel =
+            declaration.outputs[column.outputId]!.spec.channels[
+              column.channel
+            ]!;
+          const value = output?.[channel.name];
           return value === undefined ? '' : reportValue(value);
         }),
       ]),
@@ -144,18 +157,12 @@ function renderEffects(
   const rows = publications.flatMap(datum =>
     datum.provisional
       ? []
-      : datum.effects.map(effect => {
-          const spec = declaration.effects[effect.effectId];
+      : events(datum).map(({id, payload}) => {
+          const spec = declaration.effects[id];
           return [
             datum.index,
-            spec === undefined
-              ? `effect[${effect.effectId}]`
-              : effectLabel(spec.payload, effect.effectId),
-            spec === undefined
-              ? displayEffectValue(effect.payload)
-              : JSON.stringify(
-                  logicalEffectValue(spec.payload, effect.payload),
-                ),
+            `effect[${id}]${spec === undefined ? '' : ` ${fieldLabel(spec.payload)}`}`,
+            reportValue(payload),
           ] as const;
         }),
   );
@@ -178,57 +185,44 @@ function outputChannelLabel(
     : `${base}.${channel.name}`;
 }
 
-function effectLabel(schema: EffectValueSchema, effectId: number): string {
-  const type =
-    schema.kind === 'enum' || schema.kind === 'struct'
-      ? schema.typeId
-      : schema.kind;
-  return `effect[${effectId}] ${type}`;
-}
-
-function logicalEffectValue(
-  schema: EffectValueSchema,
-  value: EffectValue,
-): unknown {
-  if (value === null || (typeof value === 'number' && Number.isNaN(value))) {
-    return 'na';
-  }
-  if (schema.kind !== 'struct') return value;
-  if (typeof value !== 'object') return '<invalid effect payload>';
-  return Object.fromEntries(
-    schema.fields.map((field, index) => [
-      field.name,
-      logicalEffectValue(field.value, value.fields[index]!),
-    ]),
+function fieldLabel(field: Field): string {
+  return (
+    field.metadata.get('tea:typeId') ??
+    field.metadata.get('tea:type') ??
+    field.type.toString()
   );
 }
 
-function displayEffectValue(value: EffectValue): Cell {
-  if (typeof value === 'number') return Number.isNaN(value) ? 'na' : value;
-  if (value === null) return 'na';
-  return typeof value === 'object' ? JSON.stringify(value) : value;
+function events(datum: Datum) {
+  return Object.entries(datum)
+    .flatMap(([name, value]) =>
+      /^effect\d+$/.test(name) && Array.isArray(value)
+        ? value.map((event: {ordinal: number; payload: unknown}) => ({
+            id: Number(name.slice(6)),
+            ...event,
+          }))
+        : [],
+    )
+    .sort((a, b) => a.ordinal - b.ordinal);
 }
 
-function reportValue(value: Value): Cell {
+function reportValue(value: unknown): Cell {
   if (typeof value === 'number') return Number.isNaN(value) ? 'na' : value;
   if (value === null) return 'na';
   if (typeof value === 'string' || typeof value === 'boolean') return value;
-  return JSON.stringify(value);
+  return JSON.stringify(value, (_key, item: unknown) =>
+    typeof item === 'number' && Number.isNaN(item)
+      ? 'na'
+      : item instanceof Map
+        ? [...item]
+        : item instanceof Uint8Array
+          ? [...item]
+          : item,
+  );
 }
 
-function traceValue(value: Value): string {
-  if (typeof value === 'number') {
-    return Number.isNaN(value) ? 'na' : String(value);
-  }
-  return value === null ? 'na' : String(value);
-}
-
-function traceEffectValue(value: EffectValue): string {
-  if (typeof value === 'number') {
-    return Number.isNaN(value) ? 'na' : String(value);
-  }
-  if (value === null) return 'na';
-  return typeof value === 'object' ? JSON.stringify(value) : String(value);
+function traceValue(value: unknown): string {
+  return String(reportValue(value));
 }
 
 function milliseconds(value: number): string {

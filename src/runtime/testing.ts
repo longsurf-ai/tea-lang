@@ -10,11 +10,13 @@ import {initializeModuleTree} from './module-binding';
 import type {OutputSpec} from './output';
 import type {ParamSpec} from './schema';
 import type {ManifestValue, Value} from './value';
+import {Bool, DataType, Field, Float64, Schema, Utf8} from 'apache-arrow';
 
 type FixtureManifest = Omit<
   ModuleManifest,
-  'series' | 'params' | 'outputs' | 'requests'
+  'inputs' | 'series' | 'params' | 'outputs' | 'requests'
 > & {
+  readonly inputs?: Schema;
   readonly series: readonly (Omit<SeriesSpec, 'supplied'> & {
     readonly supplied?: boolean;
   })[];
@@ -24,6 +26,7 @@ type FixtureManifest = Omit<
     readonly active?: boolean | null;
   })[];
   readonly outputs: readonly (OutputSpec & {
+    readonly layouts?: readonly number[];
     readonly boundArgs?:
       | readonly {readonly name: string; readonly value: Value}[]
       | null;
@@ -57,6 +60,15 @@ type GeneratedModuleFixture = Omit<
 export function testModule(code: GeneratedModuleFixture): JSModule {
   const manifest: ModuleManifest = {
     ...code.manifest,
+    inputs:
+      code.manifest.inputs ??
+      new Schema(
+        code.manifest.series.flatMap(series =>
+          series.id === null
+            ? []
+            : [new Field(series.id, new Float64(), false)],
+        ),
+      ),
     series: code.manifest.series.map(series => ({
       ...series,
       supplied: series.supplied ?? true,
@@ -68,6 +80,23 @@ export function testModule(code: GeneratedModuleFixture): JSModule {
     })),
     outputs: code.manifest.outputs.map(output => ({
       ...output,
+      layouts:
+        output.layouts ??
+        output.channels.map(field =>
+          code.layout.findIndex(layout => {
+            if (DataType.isFloat(field.type)) return layout.kind === 'number';
+            if (DataType.isBool(field.type)) return layout.kind === 'boolean';
+            if (DataType.isUtf8(field.type))
+              return (
+                layout.kind === 'nullable-scalar' || layout.kind === 'enum'
+              );
+            return (
+              layout.kind === field.metadata.get('tea:type') &&
+              (!('name' in layout) ||
+                layout.name === field.metadata.get('tea:name'))
+            );
+          }),
+        ),
       boundArgs: output.boundArgs === undefined ? [] : output.boundArgs,
     })),
     requests: code.manifest.requests.map((request, requestId) => ({
@@ -82,4 +111,18 @@ export function testModule(code: GeneratedModuleFixture): JSModule {
     manifest,
     concretize: code.concretize ?? (() => {}),
   });
+}
+
+/** A concise Arrow field for hand-authored scalar runtime fixtures. */
+export function scalar(name: string, kind = 'float'): Field {
+  return new Field(
+    name,
+    kind === 'bool'
+      ? new Bool()
+      : kind === 'string' || kind === 'color'
+        ? new Utf8()
+        : new Float64(),
+    kind === 'string' || kind === 'color',
+    new Map([['tea:type', kind]]),
+  );
 }

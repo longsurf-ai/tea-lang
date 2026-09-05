@@ -80,6 +80,7 @@ describe('aggregate layout projection', () => {
     };
     const ir: Program = {
       version: 1,
+      nominalIds: new Map(),
       params: [],
       requests: [],
       outputs: [],

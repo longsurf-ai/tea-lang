@@ -68,16 +68,25 @@ not a third binding kind.
 ## Clock and event-time inputs
 
 `DataStream.clock` describes a regular duration when known; `i` means irregular
-or unknown. Event time is separate data. A Zod object schema may declare:
+or unknown. Event time is separate data, declared by ordinary Arrow fields:
 
 ```ts
-time: z.bigint(); // exact epoch-ms interval open
-time_close: z.bigint(); // exact epoch-ms interval close
+import {Field, Float64, Schema, TimestampMillisecond} from 'apache-arrow';
+
+const schema = new Schema([
+  new Field('time', new TimestampMillisecond(), false),
+  new Field('time_close', new TimestampMillisecond(), false),
+  new Field('close', new Float64(), false),
+]);
+// {time: 0n, time_close: 60000n, close: 10} covers [0, 60000) epoch ms.
 ```
 
-These fields do not enter Tea numeric series. Node validates safe epoch-ms
-values, nondecreasing opens and closes, and `time_close >= time`. A close field
-is interval metadata only when the same schema declares `time`.
+These fields do not enter Tea numeric series. Timestamp values may be numbers
+or bigints; Node requires exact safe epoch-ms integers, nondecreasing opens and
+closes, and `time_close >= time`. Arrow `Int64` also supports existing bigint
+sources. A close field is interval metadata only when the same schema declares
+`time`. Use non-nullable times for timed request synchronization; nullable time
+fields can represent absent or explicitly null event metadata.
 
 For finite execution, `DataStream.indices` is the exact number of emissions.
 Node validates it and the Pine Extension uses it for `last_bar_index` and

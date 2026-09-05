@@ -62,7 +62,7 @@ through `error()`.
 
 A DataStream carries:
 
-- a Zod schema;
+- an Arrow `Schema` describing its named fields;
 - a cold or hot Observable;
 - an optional regular Clock;
 - optional finite `indices`.
@@ -71,15 +71,34 @@ A DataStream carries:
 that the stream emits exactly that many values. The Pine Extension uses it for
 `last_bar_index` and `barstate.islast`. A live stream leaves it null.
 
-Object schemas may declare exact epoch-millisecond fields:
+Declare event-time fields with Arrow's `TimestampMillisecond` type:
 
 ```ts
-time: z.bigint();
-time_close: z.bigint();
+import {Field, Float64, Schema, TimestampMillisecond} from 'apache-arrow';
+import {of} from 'rxjs';
+import {DataStream} from 'tea';
+
+const prices = new DataStream(
+  new Schema([
+    new Field('time', new TimestampMillisecond(), false),
+    new Field('time_close', new TimestampMillisecond(), false),
+    new Field('close', new Float64(), false),
+  ]),
+  of({time: -1n, time_close: 0n, close: 10}),
+);
+// One row: close = 10 over the interval [-1, 0) epoch milliseconds.
 ```
 
-Node validates them before execution. They remain event metadata and never
-occupy Tea numeric-series slots.
+Timestamp values may be numbers or bigints, but must fit an exact safe integer
+number of epoch milliseconds. `Int64` fields remain supported for existing
+bigint sources. Node checks event-time ordering before execution; time fields
+remain event metadata and never occupy Tea numeric-series slots. An absent
+nullable time field stays absent in the published row; an explicit null stays
+null. The row's `timed` field records that distinction for Arrow serialization.
+
+DataStream copies its schema at construction and returns defensive copies from
+`schema`. Validation reads the declared Arrow types once per emission; custom
+domain checks or conversions belong in ordinary RxJS operators upstream.
 
 ## Pine Extension
 
@@ -96,14 +115,20 @@ typed empty value. Contextual builtins never become another `Node.bind()` form.
 
 ## Generated JavaScript module
 
-The JS backend emits one recursive Runtime-ABI-7 module tree. Every root and
+The JS backend emits one recursive Runtime-ABI-8 module tree. Every root and
 request child has the same code, manifest, layout table, request children, and
 direct `concretize()` function.
 
-Binding deep-copies the manifest tree, writes parameter values or
-series-supplied markers, runs direct concretization on that copy, freezes it,
-and returns a new module snapshot. Generated code never stores Observables,
-DataStreams, runtime State, or Heap values.
+Raw generated artifacts carry standard Arrow schema-only IPC bytes. Loading restores
+real `Schema`, `Field`, and `DataType` instances. `module.inputs` describes the
+required named series; `module.outputs` describes the complete published row.
+
+Binding copies ordinary manifest data and copies Arrow schemas through Arrow APIs,
+writes parameter values or series-supplied markers, and runs direct `concretize()`.
+It returns a new module snapshot. Node and JSRuntime capture private schemas;
+`node.module` and schema getters expose independent metadata Maps. Neither
+`structuredClone` nor `Object.freeze(Map)` would provide that boundary.
+Generated code never stores Observables, DataStreams, live State, or Heap values.
 
 `JSModule.ready()` and `remaining()` derive their answers from the manifest;
 there is no parallel binding result or parameter vector.
@@ -123,41 +148,88 @@ One step is transactional:
 4. commit State and Heap together on success;
 5. discard every tentative change on failure.
 
-Provisional success replaces Intermediate only. Final success replaces State
-and Intermediate. Detailed assignment, reference, collection, and history
+Provisional success replaces Intermediate and commits its Heap transaction; it does
+not advance committed binding/input history. Final success replaces State and
+Intermediate. A failed step changes neither and aborts the Heap transaction. Detailed assignment, reference, collection, and history
 semantics live in [Memory model](memory-model.md).
 
 Heap allocation safeguards remain internal implementation checks. They are not
 execution inputs or user configuration.
 
-## Lossless Datum
+## Arrow schemas and published rows
 
-`StepResult` remains internal. Node or the GPU adds its absolute index and
-optional event time to create one Datum:
+Arrow owns the recursive I/O type system. Tea's compiler types and execution
+state descriptors retain their separate roles. There is no second output/event
+payload type language, and using an Arrow schema does not require serializing or
+allocating a RecordBatch at every step.
+
+| Value                 | Arrow type                                               |
+| --------------------- | -------------------------------------------------------- |
+| Tea int / float       | Float64, with `tea:type` distinguishing them             |
+| bool / string / color | Bool / Utf8 / Utf8 with color metadata                   |
+| enum                  | Utf8 with nominal identity and member metadata           |
+| struct / tuple        | Struct with named / positional fields                    |
+| array                 | List of a typed child field                              |
+| matrix                | Struct with rows, columns and a flat values List         |
+| map                   | Map with typed non-null keys, preserving insertion order |
+| host binary           | Binary; this does not add binary operations to Tea       |
+| event time            | TimestampMillisecond                                     |
+
+Tea integers deliberately retain their current JavaScript number representation,
+including finite arithmetic outside the safe-integer range and numeric `NaN`.
+Arrow Int64 would change that contract. Numeric `NaN`, signed zero, empty lists,
+null references and absent emissions remain distinct. Nominal IDs come from the
+checker; metadata never re-encodes a recursive structural schema. Internal recursive
+structs are valid, but unrepresentable recursive exports produce a compiler error.
+Resource records contain kind/id and remain scoped to their producing runtime.
+
+For this program (with `close` bound to 10):
+
+```tea
+plot(close)
+effect.emit("buy")
+```
+
+Node publishes:
 
 ```ts
-interface Datum {
-  readonly index: number;
-  readonly time?: number | null;
-  readonly outputs: readonly {
-    readonly outputId: number;
-    readonly channels: readonly Value[];
-  }[];
-  readonly effects: readonly {
-    readonly effectId: number;
-    readonly payload: EffectValue;
-  }[];
-  readonly provisional: boolean;
+{
+  index: 0,
+  timed: false,
+  provisional: false,
+  output0: {series: 10},
+  effect0: [{ordinal: 0, payload: 'buy'}],
 }
 ```
 
-An absent output has no array entry. An explicitly emitted numeric `na` remains
-`NaN`. Channels, effect ids, payloads, index, time, and provisional state are
-never flattened or rewritten in memory. JSON or CSV spelling belongs only to a
-chosen serializer.
+`output0` has Arrow type `Struct<series: Float64>`. It is null when that declaration
+was not emitted. `effect0` is a List of records; its ordinal preserves global
+execution order across all event declarations. Assignment outputs keep the final
+write per channel; event lists retain every emission.
 
-Consumers do not advertise capabilities that alter upstream execution. Every
-producer creates the complete Datum; a collector may retain only what it needs.
+Both paths snapshot aggregates **at emission**. Mutating a struct later in the same
+step cannot change an earlier event. Published records, arrays and Maps contain
+ordinary detached values; they remain usable after the next step or disposal.
+Maps are standard JavaScript Maps suitable for Arrow builders, not Heap handles.
+
+Index and provisional status accompany every row. Event time is optional; `timed`
+is false when the time field is absent and true when present, including null.
+This extra presence bit preserves that distinction when Arrow encodes both absent
+and null nullable cells as null. Source time conversion remains exact.
+
+Inspect the schema with Arrow itself:
+
+```ts
+const field = node.module.outputs.fields.find(
+  field => field.name === 'output0',
+);
+console.log(field?.type.toString()); // Struct<{series:Float64}>
+```
+
+Batch builders and Arrow IPC can consume these values later. The observer chooses
+whether to retain data; the execution engine does not accumulate output batches.
+GPU readback uses the same logical schemas and row shape for its supported subset.
+Arrow schema support does not imply GPU support for every corresponding value.
 
 ## Batch Recipe
 

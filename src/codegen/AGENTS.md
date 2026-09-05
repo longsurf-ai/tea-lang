@@ -32,7 +32,7 @@ owns both execution boundaries.
   external data source, series payload, parameter set, job list, result capacity, GPU
   device, or dispatch policy. CPU/GPU runtimes own those physical inputs after
   codegen.
-- Generated JavaScript uses Runtime ABI 7. Static depths, activity, output
+- Generated JavaScript uses Runtime ABI 8. Static depths, activity, output
   arguments, and request contexts emit directly in the manifest; only facts
   that depend on parameters or permitted context constants emit assignments in
   `concretize()`.
@@ -102,6 +102,11 @@ owns both execution boundaries.
   calls validate and capture the shared receiver before explicit arguments and
   return only their declared result. WGSL fails closed for every reachable
   struct reference until a later GPU storage design lands.
+- `schema.ts` owns the only Type-to-Arrow Field projection, shared by JS and
+  WGSL. Generated manifests embed standard Arrow IPC schema bytes; loading
+  restores genuine Arrow objects. Nominal identity comes from
+  `Program.nominalIds`, never display names or a parallel recursive schema.
+  Physical value layouts retain the same nominal ids for runtime validation.
 - Output bind arguments and per-bar channels evaluate in their Program-owned
   source order before codegen assembles the canonical host argument order.
 - Staged constructs (matrix iteration, unlisted natives) throw

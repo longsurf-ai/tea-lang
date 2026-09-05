@@ -17,7 +17,6 @@ import {
   type Registry,
 } from '../loader/loader';
 import {buildProgram} from '../noder/noder';
-import type {EffectValue, Value} from '../runtime/abi';
 import {parse} from '../syntax/syntax';
 import {csvStream, executeTestProgram} from './batch';
 import {OutputCapture} from './output';
@@ -98,7 +97,7 @@ async function execute(source: string, csv: string) {
   return {program: compiled, sink};
 }
 
-function valuesFor(sink: OutputCapture, oid: number): readonly Value[] {
+function valuesFor(sink: OutputCapture, oid: number): readonly unknown[] {
   return sink.emissions
     .filter(emission => emission.outputId === oid)
     .sort((left, right) => left.row - right.row)
@@ -119,35 +118,21 @@ function effectTimeline(
 }
 
 function effectField(
-  program: Program,
   sink: OutputCapture,
   emissionIndex: number,
   ...path: readonly string[]
-): EffectValue {
+): unknown {
   const emission = sink.effectEmissions[emissionIndex];
-  let type =
-    emission === undefined
-      ? undefined
-      : program.effects[emission.effectId]?.payloadType;
-  let value = emission?.payload;
+  let value: unknown = emission?.payload;
   for (const name of path) {
     if (
-      type?.kind !== TypeKind.Struct ||
-      value === undefined ||
-      typeof value !== 'object' ||
       value === null ||
-      value.kind !== 'struct'
+      typeof value !== 'object' ||
+      !Object.hasOwn(value, name)
     ) {
-      throw new Error(`effect ${emissionIndex} cannot select '${name}'`);
+      throw new Error(`effect payload cannot select '${name}'`);
     }
-    const fieldIndex = type.fields.findIndex(field => field.name === name);
-    const field = type.fields[fieldIndex];
-    const fieldValue = value.fields[fieldIndex];
-    if (field === undefined || fieldValue === undefined) {
-      throw new Error(`effect ${emissionIndex} has no field '${name}'`);
-    }
-    type = field.type;
-    value = fieldValue;
+    value = (value as Record<string, unknown>)[name];
   }
   if (value === undefined) {
     throw new Error(`effect ${emissionIndex} has no payload`);
@@ -156,7 +141,7 @@ function effectField(
 }
 
 function expectNumbersClose(
-  actual: readonly Value[],
+  actual: readonly unknown[],
   expected: readonly number[],
 ): void {
   expect(actual).toHaveLength(expected.length);
@@ -423,9 +408,9 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderRejected'],
       [1, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 2, 'commandId')).toBe('Gated');
-    expect(effectField(program, sink, 2, 'reason')).toBe('invalidAccountState');
-    expect(effectField(program, sink, 3, 'fill', 'commandId')).toBe('Ungated');
+    expect(effectField(sink, 2, 'commandId')).toBe('Gated');
+    expect(effectField(sink, 2, 'reason')).toBe('invalidAccountState');
+    expect(effectField(sink, 3, 'fill', 'commandId')).toBe('Ungated');
   });
 
   test('fails closed on invalid configuration and quantity while preserving implicit sizing', async () => {
@@ -547,10 +532,8 @@ describe('Tea strategy components end to end', () => {
         [0, 'OrderSubmitted'],
         [1, 'OrderRejected'],
       ]);
-      expect(effectField(program, sink, 1, 'commandId')).toBe(commandId);
-      expect(effectField(program, sink, 1, 'reason')).toBe(
-        'invalidConfiguration',
-      );
+      expect(effectField(sink, 1, 'commandId')).toBe(commandId);
+      expect(effectField(sink, 1, 'reason')).toBe('invalidConfiguration');
       expect(valuesFor(sink, 3)).toEqual([0, 0]);
     }
 
@@ -570,7 +553,7 @@ describe('Tea strategy components end to end', () => {
         [0, 'OrderSubmitted'],
         [1, 'OrderRejected'],
       ]);
-      expect(effectField(program, sink, 1, 'reason')).toBe('invalidQuantity');
+      expect(effectField(sink, 1, 'reason')).toBe('invalidQuantity');
       expect(valuesFor(sink, 3)).toEqual([0, 0]);
     }
 
@@ -594,7 +577,7 @@ describe('Tea strategy components end to end', () => {
         [0, 'OrderSubmitted'],
         [1, 'FillExecuted'],
       ]);
-      expect(effectField(program, sink, 1, 'fill', 'quantity')).toBe(10);
+      expect(effectField(sink, 1, 'fill', 'quantity')).toBe(10);
       expectNumbersClose(valuesFor(sink, 1), [100, 0]);
       expectNumbersClose(valuesFor(sink, 2), [0, 10]);
       expect(valuesFor(sink, 3)).toEqual([0, 1]);
@@ -687,8 +670,8 @@ describe('Tea strategy components end to end', () => {
       [0, 'OrderSubmitted'],
       [1, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 1, 'fill', 'referencePrice')).toBe(20);
-    expect(effectField(program, sink, 1, 'fill', 'barIndex')).toBe(1);
+    expect(effectField(sink, 1, 'fill', 'referencePrice')).toBe(20);
+    expect(effectField(sink, 1, 'fill', 'barIndex')).toBe(1);
   });
 
   test('fills on close and accounts for pyramided entries at weighted average cost', async () => {
@@ -777,7 +760,7 @@ describe('Tea strategy components end to end', () => {
       [0, 'FillExecuted'],
       [1, 'OrderRejected'],
     ]);
-    expect(effectField(program, sink, 2, 'reason')).toBe('entryIdMismatch');
+    expect(effectField(sink, 2, 'reason')).toBe('entryIdMismatch');
   });
 
   test('keeps an attached stop live and applies entry before a same-bar stop', async () => {
@@ -891,25 +874,25 @@ describe('Tea strategy components end to end', () => {
 
     // The first stop is submitted only on row 0, remains live through row 1,
     // and gaps out on row 2 at the open before one tick of adverse slippage.
-    expect(effectField(program, sink, 3, 'fill', 'commandId')).toBe('Stop A');
-    expect(effectField(program, sink, 3, 'fill', 'referencePrice')).toBe(7);
-    expect(effectField(program, sink, 3, 'fill', 'price')).toBe(6);
+    expect(effectField(sink, 3, 'fill', 'commandId')).toBe('Stop A');
+    expect(effectField(sink, 3, 'fill', 'referencePrice')).toBe(7);
+    expect(effectField(sink, 3, 'fill', 'price')).toBe(6);
 
     // Percent-of-equity sizing snapshots the row-1 marked equity at submission,
     // before the row-2 gap fill is reflected in the next end-of-bar mark.
     // On row 3 the entry is applied before the attached stop is matched.
-    expect(effectField(program, sink, 6, 'fill', 'commandId')).toBe('Long B');
-    expect(effectField(program, sink, 6, 'fill', 'notional')).toBeCloseTo(
+    expect(effectField(sink, 6, 'fill', 'commandId')).toBe('Long B');
+    expect(effectField(sink, 6, 'fill', 'notional')).toBeCloseTo(
       secondEntryNotional,
       12,
     );
-    expect(effectField(program, sink, 6, 'fill', 'quantity')).toBeCloseTo(
+    expect(effectField(sink, 6, 'fill', 'quantity')).toBeCloseTo(
       secondQuantity,
       12,
     );
-    expect(effectField(program, sink, 7, 'fill', 'commandId')).toBe('Stop B');
-    expect(effectField(program, sink, 7, 'fill', 'referencePrice')).toBe(9);
-    expect(effectField(program, sink, 7, 'fill', 'price')).toBe(8);
+    expect(effectField(sink, 7, 'fill', 'commandId')).toBe('Stop B');
+    expect(effectField(sink, 7, 'fill', 'referencePrice')).toBe(9);
+    expect(effectField(sink, 7, 'fill', 'price')).toBe(8);
   });
 
   test('terminates the prior order when replacing an attached stop', async () => {
@@ -943,9 +926,9 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderSubmitted'],
       [1, 'OrderExpired'],
     ]);
-    expect(effectField(program, sink, 3, 'order', 'stop')).toBe(9);
-    expect(effectField(program, sink, 4, 'order', 'stop')).toBe(8);
-    expect(effectField(program, sink, 5, 'order', 'stop')).toBe(8);
+    expect(effectField(sink, 3, 'order', 'stop')).toBe(9);
+    expect(effectField(sink, 4, 'order', 'stop')).toBe(8);
+    expect(effectField(sink, 5, 'order', 'stop')).toBe(8);
   });
 
   test('cancels an attached stop after a market close fills', async () => {
@@ -979,10 +962,8 @@ describe('Tea strategy components end to end', () => {
       [1, 'FillExecuted'],
       [1, 'OrderCancelled'],
     ]);
-    expect(effectField(program, sink, 4, 'fill', 'commandId')).toBe(
-      'Manual close',
-    );
-    expect(effectField(program, sink, 5, 'order', 'commandId')).toBe('Stop');
+    expect(effectField(sink, 4, 'fill', 'commandId')).toBe('Manual close');
+    expect(effectField(sink, 5, 'order', 'commandId')).toBe('Stop');
   });
 
   test('cancels an attached stop when its initial entry is rejected', async () => {
@@ -1012,10 +993,8 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderRejected'],
       [1, 'OrderCancelled'],
     ]);
-    expect(effectField(program, sink, 2, 'reason')).toBe(
-      'invalidConfiguration',
-    );
-    expect(effectField(program, sink, 3, 'order', 'commandId')).toBe('Stop');
+    expect(effectField(sink, 2, 'reason')).toBe('invalidConfiguration');
+    expect(effectField(sink, 3, 'order', 'commandId')).toBe('Stop');
   });
 
   test('retains entry identity when a triggered stop is rejected', async () => {
@@ -1055,14 +1034,10 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderSubmitted'],
       [1, 'OrderExpired'],
     ]);
-    expect(effectField(program, sink, 3, 'reason')).toBe(
-      'invalidConfiguration',
-    );
-    expect(effectField(program, sink, 4, 'order', 'commandId')).toBe(
-      'Replacement',
-    );
+    expect(effectField(sink, 3, 'reason')).toBe('invalidConfiguration');
+    expect(effectField(sink, 4, 'order', 'commandId')).toBe('Replacement');
     expect(valuesFor(sink, 2)[1]).toBe(3);
-    expect(effectField(program, sink, 5, 'order', 'id')).toBe(3);
+    expect(effectField(sink, 5, 'order', 'id')).toBe(3);
   });
 
   test('one stop closes the full same-id aggregate position', async () => {
@@ -1109,8 +1084,8 @@ describe('Tea strategy components end to end', () => {
       [1, 'FillExecuted'],
       [2, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 5, 'fill', 'commandId')).toBe('Stop');
-    expect(effectField(program, sink, 5, 'fill', 'quantity')).toBe(5);
+    expect(effectField(sink, 5, 'fill', 'commandId')).toBe('Stop');
+    expect(effectField(sink, 5, 'fill', 'quantity')).toBe(5);
   });
 
   test('keeps the live stop when a same-id pyramid entry is rejected', async () => {
@@ -1156,8 +1131,8 @@ describe('Tea strategy components end to end', () => {
       [2, 'OrderRejected'],
       [2, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 4, 'reason')).toBe('invalidAccountState');
-    expect(effectField(program, sink, 5, 'fill', 'commandId')).toBe('Stop');
+    expect(effectField(sink, 4, 'reason')).toBe('invalidAccountState');
+    expect(effectField(sink, 5, 'fill', 'commandId')).toBe('Stop');
   });
 
   test('can re-arm immediately after an entry and attached stop fill in begin_bar', async () => {
@@ -1195,8 +1170,8 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderSubmitted'],
       [1, 'OrderExpired'],
     ]);
-    expect(effectField(program, sink, 4, 'order', 'commandId')).toBe('B');
-    expect(effectField(program, sink, 5, 'order', 'commandId')).toBe('B');
+    expect(effectField(sink, 4, 'order', 'commandId')).toBe('B');
+    expect(effectField(sink, 5, 'order', 'commandId')).toBe('B');
   });
 
   test('clears pending-entry state immediately after begin_bar fills it', async () => {
@@ -1232,7 +1207,7 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderExpired'],
       [1, 'OrderExpired'],
     ]);
-    expect(effectField(program, sink, 3, 'order', 'commandId')).toBe('A');
+    expect(effectField(sink, 3, 'order', 'commandId')).toBe('A');
   });
 
   test('emits rejected and final-expiry events from Tea lifecycle code', async () => {
@@ -1269,14 +1244,14 @@ describe('Tea strategy components end to end', () => {
       [2, 'OrderExpired'],
     ]);
     expect([
-      effectField(program, sink, 0, 'order', 'commandId'),
-      effectField(program, sink, 1, 'commandId'),
-      effectField(program, sink, 2, 'fill', 'commandId'),
-      effectField(program, sink, 3, 'order', 'commandId'),
-      effectField(program, sink, 4, 'commandId'),
-      effectField(program, sink, 5, 'fill', 'commandId'),
-      effectField(program, sink, 6, 'order', 'commandId'),
-      effectField(program, sink, 7, 'order', 'commandId'),
+      effectField(sink, 0, 'order', 'commandId'),
+      effectField(sink, 1, 'commandId'),
+      effectField(sink, 2, 'fill', 'commandId'),
+      effectField(sink, 3, 'order', 'commandId'),
+      effectField(sink, 4, 'commandId'),
+      effectField(sink, 5, 'fill', 'commandId'),
+      effectField(sink, 6, 'order', 'commandId'),
+      effectField(sink, 7, 'order', 'commandId'),
     ]).toEqual([
       'accepted',
       'rejected',
@@ -1314,8 +1289,8 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderSubmitted'],
       [2, 'OrderRejected'],
     ]);
-    expect(effectField(program, sink, 3, 'commandId')).toBe('first');
-    expect(effectField(program, sink, 3, 'reason')).toBe('invalidAccountState');
+    expect(effectField(sink, 3, 'commandId')).toBe('first');
+    expect(effectField(sink, 3, 'reason')).toBe('invalidAccountState');
   });
 
   test('keeps commission inside a percent-of-equity cash budget when requested', async () => {
@@ -1370,14 +1345,11 @@ describe('Tea strategy components end to end', () => {
       [0, 'FillExecuted'],
       [0, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 2, 'fill', 'notional')).toBeCloseTo(
+    expect(effectField(sink, 2, 'fill', 'notional')).toBeCloseTo(
       includedBudget - includedFee,
       12,
     );
-    expect(effectField(program, sink, 2, 'fill', 'fee')).toBeCloseTo(
-      includedFee,
-      12,
-    );
+    expect(effectField(sink, 2, 'fill', 'fee')).toBeCloseTo(includedFee, 12);
   });
 
   test('accepts a fee-inclusive 100% cash budget without a roundoff rejection', async () => {
@@ -1466,14 +1438,14 @@ describe('Tea strategy components end to end', () => {
       [1, 'FillExecuted'],
       [1, 'OrderExpired'],
     ]);
-    expect(effectField(program, sink, 3, 'fill', 'commandId')).toBe('Gap');
-    expect(effectField(program, sink, 3, 'fill', 'referencePrice')).toBe(12);
-    expect(effectField(program, sink, 3, 'fill', 'orderType')).toBe('stop');
-    expect(effectField(program, sink, 4, 'fill', 'commandId')).toBe('Intrabar');
-    expect(effectField(program, sink, 4, 'fill', 'referencePrice')).toBe(13);
-    expect(effectField(program, sink, 4, 'fill', 'orderType')).toBe('stop');
-    expect(effectField(program, sink, 5, 'order', 'commandId')).toBe('Missed');
-    expect(effectField(program, sink, 5, 'order', 'stop')).toBe(15);
+    expect(effectField(sink, 3, 'fill', 'commandId')).toBe('Gap');
+    expect(effectField(sink, 3, 'fill', 'referencePrice')).toBe(12);
+    expect(effectField(sink, 3, 'fill', 'orderType')).toBe('stop');
+    expect(effectField(sink, 4, 'fill', 'commandId')).toBe('Intrabar');
+    expect(effectField(sink, 4, 'fill', 'referencePrice')).toBe(13);
+    expect(effectField(sink, 4, 'fill', 'orderType')).toBe('stop');
+    expect(effectField(sink, 5, 'order', 'commandId')).toBe('Missed');
+    expect(effectField(sink, 5, 'order', 'stop')).toBe(15);
   });
 
   test('replaces a resting buy stop and cancels its contingent bracket atomically', async () => {
@@ -1514,14 +1486,14 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderCancelled'],
       [1, 'OrderCancelled'],
     ]);
-    expect(effectField(program, sink, 0, 'order', 'id')).toBe(1);
-    expect(effectField(program, sink, 0, 'order', 'stop')).toBe(12);
-    expect(effectField(program, sink, 1, 'order', 'orderType')).toBe('bracket');
-    expect(effectField(program, sink, 2, 'order', 'id')).toBe(1);
-    expect(effectField(program, sink, 3, 'order', 'id')).toBe(3);
-    expect(effectField(program, sink, 3, 'order', 'stop')).toBe(13);
-    expect(effectField(program, sink, 4, 'order', 'id')).toBe(3);
-    expect(effectField(program, sink, 5, 'order', 'id')).toBe(2);
+    expect(effectField(sink, 0, 'order', 'id')).toBe(1);
+    expect(effectField(sink, 0, 'order', 'stop')).toBe(12);
+    expect(effectField(sink, 1, 'order', 'orderType')).toBe('bracket');
+    expect(effectField(sink, 2, 'order', 'id')).toBe(1);
+    expect(effectField(sink, 3, 'order', 'id')).toBe(3);
+    expect(effectField(sink, 3, 'order', 'stop')).toBe(13);
+    expect(effectField(sink, 4, 'order', 'id')).toBe(3);
+    expect(effectField(sink, 5, 'order', 'id')).toBe(2);
   });
 
   test('matches one atomic stop-target bracket across gaps, touches, and a tied path', async () => {
@@ -1591,30 +1563,21 @@ describe('Tea strategy components end to end', () => {
         [0, 'FillExecuted'],
         [1, 'FillExecuted'],
       ]);
+      expect(effectField(sink, 1, 'order', 'orderType'), scenario.name).toBe(
+        'bracket',
+      );
+      expect(effectField(sink, 1, 'order', 'stop'), scenario.name).toBe(9);
+      expect(effectField(sink, 1, 'order', 'target'), scenario.name).toBe(11);
       expect(
-        effectField(program, sink, 1, 'order', 'orderType'),
-        scenario.name,
-      ).toBe('bracket');
-      expect(
-        effectField(program, sink, 1, 'order', 'stop'),
-        scenario.name,
-      ).toBe(9);
-      expect(
-        effectField(program, sink, 1, 'order', 'target'),
-        scenario.name,
-      ).toBe(11);
-      expect(
-        effectField(program, sink, 3, 'fill', 'referencePrice'),
+        effectField(sink, 3, 'fill', 'referencePrice'),
         scenario.name,
       ).toBe(scenario.referencePrice);
-      expect(
-        effectField(program, sink, 3, 'fill', 'orderType'),
-        scenario.name,
-      ).toBe(scenario.orderType);
-      expect(
-        effectField(program, sink, 3, 'fill', 'orderId'),
-        scenario.name,
-      ).toBe(effectField(program, sink, 1, 'order', 'id'));
+      expect(effectField(sink, 3, 'fill', 'orderType'), scenario.name).toBe(
+        scenario.orderType,
+      );
+      expect(effectField(sink, 3, 'fill', 'orderId'), scenario.name).toBe(
+        effectField(sink, 1, 'order', 'id'),
+      );
     }
   });
 
@@ -1670,10 +1633,10 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderSubmitted'],
       [1, 'OrderExpired'],
     ]);
-    expect(effectField(program, sink, 3, 'fill', 'commandId')).toBe('Exit');
-    expect(effectField(program, sink, 5, 'fill', 'commandId')).toBe('Reentry');
-    expect(effectField(program, sink, 5, 'fill', 'quantity')).toBe(5.5);
-    expect(effectField(program, sink, 7, 'order', 'commandId')).toBe(
+    expect(effectField(sink, 3, 'fill', 'commandId')).toBe('Exit');
+    expect(effectField(sink, 5, 'fill', 'commandId')).toBe('Reentry');
+    expect(effectField(sink, 5, 'fill', 'quantity')).toBe(5.5);
+    expect(effectField(sink, 7, 'order', 'commandId')).toBe(
       'Third fill is blocked',
     );
     expect(
@@ -1801,8 +1764,8 @@ describe('Tea strategy components end to end', () => {
       [0, 'OrderSubmitted'],
       [1, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 3, 'fill', 'side')).toBe('buy');
-    expect(effectField(program, sink, 3, 'fill', 'orderType')).toBe('target');
+    expect(effectField(sink, 3, 'fill', 'side')).toBe('buy');
+    expect(effectField(sink, 3, 'fill', 'orderType')).toBe('target');
   });
 
   test('applies a reversal close before resolving the opposite fill-time sizing', async () => {
@@ -1855,10 +1818,10 @@ describe('Tea strategy components end to end', () => {
       [1, 'FillExecuted'],
       [2, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 4, 'fill', 'commandKind')).toBe('close');
-    expect(effectField(program, sink, 5, 'fill', 'commandKind')).toBe('entry');
-    expect(effectField(program, sink, 5, 'fill', 'quantity')).toBe(6);
-    expect(effectField(program, sink, 6, 'fill', 'orderType')).toBe('target');
+    expect(effectField(sink, 4, 'fill', 'commandKind')).toBe('close');
+    expect(effectField(sink, 5, 'fill', 'commandKind')).toBe('entry');
+    expect(effectField(sink, 5, 'fill', 'quantity')).toBe(6);
+    expect(effectField(sink, 6, 'fill', 'orderType')).toBe('target');
   });
 
   test('installs a fill-derived bracket before replaying the same bar exit path', async () => {
@@ -1897,7 +1860,7 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderSubmitted'],
       [1, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 3, 'fill', 'orderType')).toBe('target');
+    expect(effectField(sink, 3, 'fill', 'orderType')).toBe('target');
   });
 
   test('cancels a stale same-id exit when reversing without a replacement exit', async () => {
@@ -1948,9 +1911,7 @@ describe('Tea strategy components end to end', () => {
       [1, 'OrderCancelled'],
       [1, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 5, 'order', 'commandId')).toBe(
-      'Old bracket',
-    );
+    expect(effectField(sink, 5, 'order', 'commandId')).toBe('Old bracket');
   });
 
   test('defers a capped reversal continuation exactly once to the next open', async () => {
@@ -1994,7 +1955,7 @@ describe('Tea strategy components end to end', () => {
       [1, 'FillExecuted'],
       [2, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 4, 'fill', 'referencePrice')).toBe(12);
+    expect(effectField(sink, 4, 'fill', 'referencePrice')).toBe(12);
   });
 
   test('charges cash-per-order commission once across a split reversal', async () => {
@@ -2027,10 +1988,10 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 1), [75, 220]);
     expectNumbersClose(valuesFor(sink, 2), [2, -5.5]);
     expectNumbersClose(valuesFor(sink, 3), [5, 10]);
-    expect(effectField(program, sink, 3, 'fill', 'fee')).toBe(5);
-    expect(effectField(program, sink, 4, 'fill', 'fee')).toBe(0);
-    expect(effectField(program, sink, 3, 'fill', 'orderId')).toBe(
-      effectField(program, sink, 4, 'fill', 'orderId'),
+    expect(effectField(sink, 3, 'fill', 'fee')).toBe(5);
+    expect(effectField(sink, 4, 'fill', 'fee')).toBe(0);
+    expect(effectField(sink, 3, 'fill', 'orderId')).toBe(
+      effectField(sink, 4, 'fill', 'orderId'),
     );
   });
 
@@ -2265,7 +2226,7 @@ describe('Tea strategy components end to end', () => {
       [1, 'FillExecuted'],
       [1, 'OrderExpired'],
     ]);
-    expect(effectField(program, sink, 2, 'fill', 'referencePrice')).toBe(11);
+    expect(effectField(sink, 2, 'fill', 'referencePrice')).toBe(11);
   });
 
   test('activates and updates a trailing exit only along the remaining OHLC path', async () => {
@@ -2308,7 +2269,7 @@ describe('Tea strategy components end to end', () => {
       [1, 'FillExecuted'],
       [2, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 3, 'fill', 'referencePrice')).toBe(13);
+    expect(effectField(sink, 3, 'fill', 'referencePrice')).toBe(13);
   });
 
   test('rejects a trailing exit under the ordinary whole-bar policy statically', () => {
@@ -2373,7 +2334,7 @@ describe('Tea strategy components end to end', () => {
       [1, 'FillExecuted'],
       [2, 'FillExecuted'],
     ]);
-    expect(effectField(program, sink, 4, 'fill', 'referencePrice')).toBe(12);
+    expect(effectField(sink, 4, 'fill', 'referencePrice')).toBe(12);
   });
 
   test('rejects lifecycle methods from the other trade policy statically', () => {

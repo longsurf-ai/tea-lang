@@ -2,7 +2,7 @@
 
 import {firstValueFrom, toArray} from 'rxjs';
 import {beforeEach, describe, expect, test} from 'vitest';
-import * as z from 'zod';
+import {Field, Float64, Schema} from 'apache-arrow';
 import {WebSocketSink} from './sink';
 import {WebSocketSource} from './source';
 
@@ -43,7 +43,7 @@ class FakeWebSocket extends EventTarget {
 }
 
 const Socket = FakeWebSocket as unknown as typeof WebSocket;
-const schema = z.object({close: z.number()});
+const schema = new Schema([new Field('close', new Float64(), false)]);
 
 beforeEach(() => {
   FakeWebSocket.instances.splice(0);
@@ -68,6 +68,21 @@ describe('WebSocketSource', () => {
     socket.close();
 
     await expect(values).resolves.toEqual([{close: 1}, {close: 2}]);
+  });
+
+  test('rejects a decoded value that violates the Arrow field type', async () => {
+    const stream = new WebSocketSource(
+      'ws://source',
+      schema,
+      undefined,
+      Socket,
+    ).stream();
+    const result = firstValueFrom(stream.asObservable());
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    socket.message('{"close":"bad"}');
+    await expect(result).rejects.toBeInstanceOf(TypeError);
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
   });
 
   test('fails malformed JSON and closes on unsubscribe', async () => {
@@ -112,6 +127,25 @@ describe('WebSocketSink', () => {
 
     await sink.completion;
     expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+  });
+
+  test('isolates schema mutations and rejects invalid values before sending', async () => {
+    const schema = new Schema([new Field('close', new Float64(), false)]);
+    const sink = new WebSocketSink(
+      'ws://sink',
+      schema,
+      4,
+      'error',
+      1024,
+      Socket,
+    );
+    schema.fields.splice(0);
+    sink.schema.fields.splice(0);
+    const socket = FakeWebSocket.instances[0]!;
+    socket.open();
+    sink.write({close: 'bad'});
+    await expect(sink.completion).rejects.toBeInstanceOf(TypeError);
+    expect(socket.sent).toEqual([]);
   });
 
   test('fails closed when its bounded queue overflows', async () => {
