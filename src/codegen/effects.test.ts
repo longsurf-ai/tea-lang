@@ -3,6 +3,8 @@
 
 import {describe, expect, test} from 'vitest';
 import {Schema} from 'apache-arrow';
+import {cloneSchema} from '../runtime/io';
+import {outputFields} from '../runtime/output';
 import {fieldOf} from './schema';
 import {IrKind} from '../ir/node';
 import type {Program} from '../ir/program';
@@ -81,7 +83,7 @@ const program: Program = {
 const oneIndex = () => finiteStream(new Schema([]), [{}]);
 
 describe('generic sparse effect lowering', () => {
-  test('publishes manifest-typed fixed struct payloads in source order', async () => {
+  test('publishes Arrow-typed struct payloads in source order', async () => {
     const module = loadModule(generate(program));
     const sink = new OutputCapture();
     await executeTestModule(module, {
@@ -90,11 +92,11 @@ describe('generic sparse effect lowering', () => {
       timeNow: 0,
     });
 
-    expect(module.manifest.effects).toEqual([
-      {layout: 0, declaration: {payload: eventSchema}},
-    ]);
-    expect(sink.effectSchemas).toEqual([{payload: eventSchema}]);
-    expect(module.layout[0]).toEqual({
+    expect(module.outputs.declarations).toEqual([{args: [], layouts: [0]}]);
+    expect(sink.fields[0].type.children[0].type.children[1]).toEqual(
+      eventSchema,
+    );
+    expect(module.state.layout[0]).toEqual({
       kind: 'struct',
       name: 'OrderSubmitted',
       typeId: 'effects.test.OrderSubmitted',
@@ -108,7 +110,7 @@ describe('generic sparse effect lowering', () => {
     expect(sink.effectEmissions).toEqual([
       {
         row: 0,
-        effectId: 0,
+        outputId: 0,
         payload: {
           commandId: 'entry-1',
           barIndex: 7,
@@ -117,7 +119,7 @@ describe('generic sparse effect lowering', () => {
       },
       {
         row: 0,
-        effectId: 0,
+        outputId: 0,
         payload: {
           commandId: 'entry-1',
           barIndex: 7,
@@ -188,26 +190,10 @@ describe('generic sparse effect lowering', () => {
 
   test('rejects a same-shaped logical payload with a forged nominal id', async () => {
     const module = loadModule(generate(program));
-    const original = module.manifest.effects[0]!;
-    const forged = {
-      ...module,
-      manifest: {
-        ...module.manifest,
-        effects: [
-          {
-            ...original,
-            declaration: {
-              payload: eventSchema.clone({
-                metadata: new Map([
-                  ...eventSchema.metadata,
-                  ['tea:typeId', 'forged.Other'],
-                ]),
-              }),
-            },
-          },
-        ],
-      },
-    };
+    const schema = cloneSchema(module.outputs.schema);
+    const payload = outputFields(schema)[0].type.children[0].type.children[1];
+    payload.metadata.set('tea:typeId', 'forged.Other');
+    const forged = {...module, outputs: {...module.outputs, schema}};
 
     const execution = executeTestModule(forged, {
       stream: oneIndex(),

@@ -1,294 +1,186 @@
-// Purpose: JSModule binding is an immutable, host-neutral Effect result;
-// concrete streams and application sources remain outside the generated module.
+// Purpose: Mutable module configuration stays separate from Node stream ownership.
 
-import {Effect} from 'effect';
 import {DataType, Schema} from 'apache-arrow';
 import {describe, expect, test} from 'vitest';
 import {generate} from '../codegen/codegen';
 import {mustBuild} from '../noder/testing';
+import {BindError} from '../runtime/errors';
 import {loadModule} from '../runtime/load';
 import {
   boundInputs,
-  moduleBindings,
-  moduleDeclaration,
+  cloneModule,
+  moduleSeriesNames,
 } from '../runtime/module-binding';
 import type {JSModule} from '../runtime/module-abi';
-import {bindModule, type BindingAssignment, type BindingError} from './binding';
+import {createNode} from './node';
 
-describe('JSModule binding', () => {
-  test('becomes ready across immutable binding steps', () => {
-    const module = compileModule(
-      ['length = input.int(14)', 'plot(ta.sma(close, length) + open)'].join(
-        '\n',
-      ),
+describe('JSModule.bind', () => {
+  test('fills defaults and recomputes derived facts without requiring streams', () => {
+    const raw = compileModule(
+      'length = input.int(14)\nplot(close[length] + open)',
     );
-
-    const withClose = Effect.runSync(
-      bindModule(module, [{kind: 'series', name: 'close'}]),
+    const initial = raw.bind();
+    expect(initial.parameters[0]!.value).toBe(14);
+    expect(initial.inputs.series[0]!.depth).toEqual({kind: 'const', bars: 14});
+    const rebound = initial.bind({length: 20});
+    expect(rebound.parameters[0]!.value).toBe(20);
+    expect(rebound.inputs.series[0]!.depth).toEqual({kind: 'const', bars: 20});
+    expect(initial.ready()).toBe(true);
+    expect(initial.remaining()).toEqual([]);
+    expect(moduleSeriesNames(initial)).toEqual(['close', 'open']);
+    expect(rebound).toBe(initial);
+    expect(initial).toBe(raw);
+    expect(initial.inputs.series.every(series => !('supplied' in series))).toBe(
+      true,
     );
-
-    expect(withClose.ready()).toBe(false);
-    expect(withClose.remaining().map(binding => binding.name)).toEqual([
-      'length',
-      'open',
-    ]);
-
-    const ready = Effect.runSync(
-      bindModule(withClose, [
-        {kind: 'parameter', name: 'length', value: 20},
-        {kind: 'series', name: 'open'},
-      ]),
+    expect(initial.parameters.every(param => !('bindable' in param))).toBe(
+      true,
     );
-
-    expect(ready.ready()).toBe(true);
-    expect(ready.remaining()).toEqual([]);
-    expect(withClose.ready()).toBe(false);
-    expect(ready).not.toBe(withClose);
+    expect('manifest' in initial).toBe(false);
+    expect('concretize' in initial).toBe(false);
   });
 
-  test('preserves manifest requirement order and freezes snapshots', () => {
-    const module = compileModule(
-      ['enabled = input.bool(true)', 'plot(enabled ? close : open)'].join('\n'),
-    );
-
-    expect(moduleBindings(module).map(binding => binding.name)).toEqual([
-      'enabled',
-      'close',
-      'open',
-    ]);
-    expect(Object.isFrozen(module)).toBe(true);
-    expect(Object.isFrozen(module.manifest)).toBe(true);
-    expect(module.ready()).toBe(false);
+  test('leaves a parameter without a usable default unresolved until supplied', () => {
+    const raw = compileModule('length = input.int(14)\nplot(close[length])');
+    const pending = {
+      ...raw,
+      parameters: raw.parameters.map(param => ({...param, defaultValue: null})),
+    }.bind();
+    expect(pending.remaining()).toEqual(['length']);
+    expect(pending.ready()).toBe(false);
+    expect(pending.inputs.series[0]!.depth).toEqual({kind: 'bound'});
+    const bound = pending.bind({length: 4});
+    expect(bound.remaining()).toEqual([]);
+    expect(bound.ready()).toBe(true);
+    expect(bound.inputs.series[0]!.depth).toEqual({kind: 'const', bars: 4});
+    expect(bound).toBe(pending);
   });
 
-  test('validates parameter values from the generated parameter manifest', () => {
-    const error = bindingFailure(
-      compileModule('length = input.int(14)\nplot(length)'),
-      [{kind: 'parameter', name: 'length', value: 2.5}],
-    );
-
-    expect(error.code).toBe('INVALID_BINDING');
-    expect(error.message).toContain("parameter 'length'");
+  test('rejects invalid values and unknown parameter names with BindError', () => {
+    const module = compileModule('length = input.int(14)\nplot(length)').bind();
+    expect(() => module.bind({length: 2.5})).toThrow(BindError);
+    expect(() => module.bind({length: 2.5})).toThrow(/length/);
+    expect(() => module.bind({missing: 1})).toThrow(BindError);
+    expect(module.parameters[0]!.value).toBe(14);
+    expect(module.bind({length: 20}).bind().parameters[0]!.value).toBe(20);
   });
 
-  test('fails unknown and wrong-kind assignments and replaces parameters', () => {
-    const module = compileModule(
-      'length = input.int(14)\nplot(close + length)',
-    );
-
-    expect(
-      bindingFailure(module, [{kind: 'parameter', name: 'missing', value: 1}])
-        .code,
-    ).toBe('UNKNOWN_BINDING');
-    expect(
-      bindingFailure(module, [{kind: 'series', name: 'length'}]).code,
-    ).toBe('BINDING_KIND_MISMATCH');
-
-    const once = Effect.runSync(
-      bindModule(module, [{kind: 'parameter', name: 'length', value: 10}]),
-    );
-    const twice = Effect.runSync(
-      bindModule(once, [{kind: 'parameter', name: 'length', value: 20}]),
-    );
-    expect(once.manifest.params[0]?.value).toBe(10);
-    expect(twice.manifest.params[0]?.value).toBe(20);
-  });
-
-  test('keeps real Arrow schemas isolated across binding and rebinding', () => {
+  test('explicit copies isolate schemas and parameter configurations', () => {
     const original = compileModule(
       'length = input.int(1)\nplot(close + length)',
-    );
-    original.manifest.inputs.fields[0]!.metadata.set('test:owner', 'original');
-    original.manifest.outputs[0]!.channels[0]!.metadata.set(
-      'test:owner',
-      'original',
-    );
-    const bound = Effect.runSync(
-      bindModule(original, [
-        {kind: 'parameter', name: 'length', value: 2},
-        {kind: 'series', name: 'close'},
-      ]),
-    );
-    const rebound = Effect.runSync(
-      bindModule(bound, [{kind: 'parameter', name: 'length', value: 3}]),
-    );
-    original.manifest.inputs.fields[0]!.metadata.set('test:owner', 'changed');
-    bound.manifest.outputs[0]!.channels[0]!.metadata.set(
-      'test:owner',
-      'changed',
-    );
-    const inspected = rebound.inputs;
-    inspected.fields[0]!.metadata.set('test:owner', 'reader');
-    inspected.fields.splice(0);
-    expect(rebound.inputs).toBeInstanceOf(Schema);
-    expect(DataType.isFloat(rebound.inputs.fields[0]!.type)).toBe(true);
-    expect(rebound.inputs.fields[0]!.metadata.get('test:owner')).toBe(
-      'original',
-    );
-    expect(
-      rebound.manifest.outputs[0]!.channels[0]!.metadata.get('test:owner'),
-    ).toBe('original');
-    expect(bound.manifest.params[0]!.value).toBe(2);
-    expect(rebound.manifest.params[0]!.value).toBe(3);
+    ).bind();
+    original.inputs.schema.metadata.set('feed', 'prices');
+    original.inputs.schema.fields[0]!.metadata.set('unit', 'USD');
+    const bound = cloneModule(original).bind({length: 2});
+    const rebound = cloneModule(original).bind({length: 3});
+    original.inputs.schema.metadata.set('feed', 'changed');
+    original.inputs.schema.fields[0]!.metadata.set('unit', 'changed');
+    bound.outputs.schema.metadata.set('owner', 'changed');
+    const copy = cloneModule(rebound);
+    copy.inputs.schema.fields[0]!.metadata.set('unit', 'reader');
+    expect(rebound.inputs.schema).toBeInstanceOf(Schema);
+    expect(DataType.isFloat(rebound.inputs.schema.fields[0]!.type)).toBe(true);
+    expect(rebound.inputs.schema.metadata.get('feed')).toBe('prices');
+    expect(rebound.inputs.schema.fields[0]!.metadata.get('unit')).toBe('USD');
+    expect(rebound.outputs.schema.metadata.has('owner')).toBe(false);
+    expect(bound.parameters[0]!.value).toBe(2);
+    expect(rebound.parameters[0]!.value).toBe(3);
   });
 
-  test('retains independent Arrow schemas throughout request module trees', () => {
+  test('explicit copies isolate child metadata and parameters', () => {
     const original = compileModule(
-      'r = request.security("X", "D", close)\nplot(r)',
-    );
-    original.requests[0]!.manifest.inputs.fields[0]!.metadata.set(
-      'test:child',
+      'length = input.int(3)\nr = request.security("X", "D", close[length])\nplot(r)',
+    ).bind();
+    original.requests[0]!.module.inputs.schema.fields[0]!.metadata.set(
+      'owner',
       'original',
     );
-    const bound = Effect.runSync(bindModule(original, []));
-    original.requests[0]!.manifest.inputs.fields[0]!.metadata.set(
-      'test:child',
+    const rebound = cloneModule(original).bind({length: 6});
+    original.requests[0]!.module.inputs.schema.fields[0]!.metadata.set(
+      'owner',
       'changed',
     );
-    expect(
-      bound.requests[0]!.inputs.fields[0]!.metadata.get('test:child'),
-    ).toBe('original');
-    expect(bound.requests[0]!.outputs).toBeInstanceOf(Schema);
-  });
-
-  test('stores only a supplied marker for a series', () => {
-    const module = Effect.runSync(
-      bindModule(compileModule('plot(close)'), [
-        {kind: 'series', name: 'close'},
-      ]),
-    );
-
-    expect(moduleBindings(module)).toEqual([
-      {kind: 'series', name: 'close', supplied: true},
-    ]);
-  });
-
-  test('derives input.source series binding from its current parameter value', () => {
-    const initial = compileModule('source = input.source(close)\nplot(source)');
-    const selected = Effect.runSync(
-      bindModule(initial, [
-        {kind: 'parameter', name: 'source', value: 'close'},
-      ]),
-    );
-    const supplied = Effect.runSync(
-      bindModule(selected, [{kind: 'series', name: 'close'}]),
-    );
-    const switched = Effect.runSync(
-      bindModule(supplied, [
-        {kind: 'parameter', name: 'source', value: 'open'},
-      ]),
-    );
-
-    expect(moduleBindings(selected)).toEqual([
-      {kind: 'parameter', name: 'source', value: 'close'},
-      {kind: 'series', name: 'close', supplied: false},
-    ]);
-    expect(supplied.ready()).toBe(true);
-    expect(moduleBindings(switched)).toEqual([
-      {kind: 'parameter', name: 'source', value: 'open'},
-      {kind: 'series', name: 'close', supplied: true},
-      {kind: 'series', name: 'open', supplied: false},
-    ]);
-    expect(switched.ready()).toBe(false);
-  });
-
-  test('a module without semantic inputs becomes ready on an empty bind', () => {
-    const module = Effect.runSync(bindModule(compileModule('plot(1)'), []));
-
-    expect(module.ready()).toBe(true);
-    expect(module.remaining()).toEqual([]);
-  });
-
-  test('stores parameter-bound retention directly on the module', () => {
-    const module = Effect.runSync(
-      bindModule(
-        compileModule(
-          [
-            'lookback = input.int(3)',
-            'value = close * 2',
-            'plot(value[lookback])',
-          ].join('\n'),
-        ),
-        [
-          {kind: 'parameter', name: 'lookback', value: 5},
-          {kind: 'series', name: 'close'},
-        ],
-      ),
-    );
-
-    expect(module.manifest.frames[0].locals[0].depth).toEqual({
+    expect(rebound.requests[0]!.module.parameters[0]!.value).toBe(6);
+    expect(rebound.requests[0]!.module.inputs.series[0]!.depth).toEqual({
       kind: 'const',
-      bars: 5,
+      bars: 6,
     });
+    expect(original.requests[0]!.module.inputs.series[0]!.depth).toEqual({
+      kind: 'const',
+      bars: 3,
+    });
+    expect(
+      rebound.requests[0]!.module.inputs.schema.fields[0]!.metadata.get(
+        'owner',
+      ),
+    ).toBe('original');
+    expect(rebound.requests[0]!.module.ready()).toBe(true);
+    expect(rebound.requests[0]!.mode).toBe('sample');
   });
 
-  test('exposes ordered parameters, activity, and output declarations when ready', () => {
+  test('source selection changes required series without connecting any data', () => {
     const initial = compileModule(
-      [
-        'enabled = input.bool(true)',
-        'width = input.int(2, active=enabled)',
-        'plot(close, linewidth=width)',
-      ].join('\n'),
-    );
-    const partial = Effect.runSync(
-      bindModule(initial, [{kind: 'parameter', name: 'enabled', value: false}]),
-    );
+      'source = input.source(close)\nplot(source)',
+    ).bind();
+    expect(initial.parameters[0]!.value).toBe('close');
+    const selected = initial.bind({source: 'open'});
+    expect(selected).toBe(initial);
+    expect(selected.parameters[0]!.value).toBe('open');
+    expect(moduleSeriesNames(selected)).toContain('open');
+    expect(selected.remaining()).toEqual([]);
+    expect(selected.ready()).toBe(true);
+  });
 
-    expect(partial.ready()).toBe(false);
-
-    const module = Effect.runSync(
-      bindModule(partial, [
-        {kind: 'parameter', name: 'width', value: 4},
-        {kind: 'series', name: 'close'},
-      ]),
-    );
-
+  test('records parameter-dependent activity, history, and output arguments', () => {
+    const module = compileModule(
+      'enabled = input.bool(true)\nwidth = input.int(2, active=enabled)\nvalue = close * 2\nplot(value[width], linewidth=width)',
+    ).bind({enabled: false, width: 4});
     expect(
       boundInputs(module).map(({value, active}) => ({value, active})),
     ).toEqual([
       {value: false, active: true},
       {value: 4, active: false},
     ]);
-    expect(moduleDeclaration(module).outputs[0].boundArgs).toEqual([
+    expect(module.state.frames[0]!.locals[0]!.depth).toEqual({
+      kind: 'const',
+      bars: 4,
+    });
+    expect(module.outputs.declarations[0]!.args).toEqual([
       {name: 'linewidth', value: 4},
     ]);
-    expect(Object.isFrozen(module.manifest)).toBe(true);
-    expect(Object.isFrozen(module.manifest.params)).toBe(true);
-    expect(Object.isFrozen(module.manifest.frames)).toBe(true);
   });
 
-  test('captures static request settings without resolving data', () => {
-    const module = Effect.runSync(
-      bindModule(
-        compileModule('r = request.security("X", "D", close)\nplot(r)'),
-        [],
-      ),
-    );
+  test('Node owns the given module and delegates parameter patches to it', () => {
+    const module = compileModule('length = input.int(2)\nplot(close[length])');
+    const node = createNode(module);
+    expect(node.module).toBe(module);
+    expect(node.bind({length: 5})).toBe(node);
+    expect(node.module).toBe(module);
+    expect(module.parameters[0]!.value).toBe(5);
+    expect(module.inputs.series[0]!.depth).toEqual({kind: 'const', bars: 5});
+    node.dispose();
+  });
 
-    expect(module.manifest.requests.map(request => request.context)).toEqual([
-      {
-        symbol: 'X',
-        timeframe: 'D',
-        fill: 'carry',
-        availability: 'end',
-        ignoreInvalidSymbol: false,
-        calcBarsCount: 0,
-      },
-    ]);
-    expect(module.ready()).toBe(true);
-    expect(module.requests[0]?.remaining().map(input => input.name)).toEqual([
+  test('static request settings share the record with their executable child', () => {
+    const module = compileModule(
+      'r = request.security("X", "D", close)\nplot(r)',
+    ).bind();
+    expect(module.requests[0]!.context).toEqual({
+      symbol: 'X',
+      timeframe: 'D',
+      fill: 'carry',
+      availability: 'end',
+      ignoreInvalidSymbol: false,
+      calcBarsCount: 0,
+    });
+    expect(module.requests[0]!.module.inputs.schema.fields[0]!.name).toBe(
       'close',
-    ]);
+    );
+    expect(module.requests[0]!.module.remaining()).toEqual([]);
+    expect(module.requests[0]!.module.ready()).toBe(true);
   });
 });
 
 function compileModule(source: string): JSModule {
   return loadModule(generate(mustBuild(source)));
-}
-
-function bindingFailure(
-  target: Parameters<typeof bindModule>[0],
-  supplied: readonly BindingAssignment[],
-): BindingError {
-  return Effect.runSync(Effect.flip(bindModule(target, supplied)));
 }

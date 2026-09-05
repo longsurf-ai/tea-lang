@@ -2,7 +2,7 @@
 
 import type {ParamSpec} from '../runtime/schema';
 
-export const GPU_ARTIFACT_ABI_VERSION = 5 as const;
+export const GPU_ARTIFACT_ABI_VERSION = 6 as const;
 export const GPU_WORKGROUP_SIZE_OVERRIDE = 'tea_workgroup_size';
 
 export const GPU_BUFFER_GROUP = 0;
@@ -74,41 +74,18 @@ export interface WgslModule {
 
 export interface WgslBindingModule {
   readonly language: 'javascript-es2015-function-body';
-  // The ordinary generated JSModule. GPU preparation evaluates its immutable
-  // binding configuration; the loader alone owns generated-expression work.
+  // The ordinary generated JSModule. GPU preparation loads it and calls the
+  // same bind() method available to CPU hosts.
   readonly source: string;
 }
 
 export type WgslResultScalar = 'float' | 'int' | 'bool' | 'enum';
-export type WgslManifestValue = number | string | boolean | null;
 
 export interface WgslResultChannel {
+  /** Index in the embedded module's one output declaration list. */
   readonly outputId: number;
-  readonly effect: string;
-  readonly channelName: string;
   readonly scalar: WgslResultScalar;
-  readonly enumMembers: readonly string[] | null;
   readonly rowCell: number;
-}
-
-/**
- * Presentation and Arrow channel fields for one output, with a separate mapping
- * into the GPU result buffer. The IPC schema remains valid after JSON transport.
- *
- * @example `decodeSchema(output.schema).fields[0].name` is "series" for plot(close);
- * `output.rowCells[0]` identifies that channel's physical result cell.
- */
-export interface WgslOutputSchema {
-  readonly outputId: number;
-  readonly effect: string;
-  readonly staticArgs: readonly {
-    readonly name: string;
-    readonly value: WgslManifestValue;
-  }[];
-  /** Standard Arrow IPC schema bytes for the named output channels. */
-  readonly schema: readonly number[];
-  /** Physical result cells in Arrow field order; null means declaration only. */
-  readonly rowCells: readonly (number | null)[];
 }
 
 /**
@@ -139,24 +116,20 @@ export type WgslCodec =
     };
 
 /**
- * An event's Arrow payload field and physical GPU record codec. GPU records
- * remain ordered by emission; publication adds their global row ordinals.
- *
- * @example `decodeSchema(effect.schema).fields[0].type.toString()` is "Float64"
- * for effect.emit(close), while `effect.payload.kind` selects f32 readback.
+ * Physical encoding of one append output. Its logical payload field belongs to
+ * the embedded JavaScript module's Arrow schema, alongside every set output.
+ * @example `event.outputId` addresses the same slot passed to runtime.append().
  */
-export interface WgslEffectSchema {
-  readonly effectId: number;
+export interface WgslEvent {
+  readonly outputId: number;
   readonly payloadLayout: number;
   readonly payloadWordCount: number;
   readonly payload: WgslCodec;
-  /** Standard Arrow IPC schema bytes containing the payload field. */
-  readonly schema: readonly number[];
 }
 
 export interface WgslStateLocalLayout {
   readonly name: string;
-  // Slot in the generated JS frame manifest. WGSL may elide history-free
+  // Slot in the generated JS frame table. WGSL may elide history-free
   // formals, so this is not necessarily the local's index below.
   readonly slot: number;
   readonly storage: 'perBar' | 'var';
@@ -276,6 +249,5 @@ export interface CompiledWgslProgram {
   readonly paramActive: readonly boolean[];
   readonly requiredSeries: readonly {readonly id: string}[];
   readonly resultChannels: readonly WgslResultChannel[];
-  readonly outputSchemas: readonly WgslOutputSchema[];
-  readonly effectSchemas: readonly WgslEffectSchema[];
+  readonly events: readonly WgslEvent[];
 }

@@ -5,7 +5,13 @@ import type {BuiltinSpec, JSModule} from '../runtime/module-abi';
 import type {Value} from '../runtime/value';
 import {ValueLayoutRegistry} from '../runtime/value-layout';
 
-/** Creates the concrete Pine builtin supplier installed on public Tea Nodes. */
+/**
+ * Supply per-step Pine values from the Node's position, extent, and source time.
+ * The first call captures timenow for the graph; absent symbol/timeframe metadata
+ * uses the builtin's typed empty value. Runtime overlays any bound fixed values.
+ * @example For a module containing only `plot(timenow)`,
+ * `pineBuiltinSupplier(() => 1000)([], module, 0, 1, {})` returns `[1000]`.
+ */
 export function pineBuiltinSupplier(now: () => number = Date.now) {
   let timeNow: number | null = null;
   const layouts = new WeakMap<object, ValueLayoutRegistry>();
@@ -22,12 +28,12 @@ export function pineBuiltinSupplier(now: () => number = Date.now) {
         throw new BindError('Pine timenow must be an exact epoch-ms integer');
       }
     }
-    let registry = layouts.get(module.layout);
+    let registry = layouts.get(module.state.layout);
     if (registry === undefined) {
-      registry = new ValueLayoutRegistry(module.layout);
-      layouts.set(module.layout, registry);
+      registry = new ValueLayoutRegistry(module.state.layout);
+      layouts.set(module.state.layout, registry);
     }
-    return module.manifest.builtin.map(spec =>
+    return module.inputs.builtins.map(spec =>
       builtinValue(spec, index, indices, datum, timeNow!, registry),
     );
   };

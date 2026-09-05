@@ -3,8 +3,8 @@
 /// <reference types="@webgpu/types" />
 
 import {DataType, Precision, type Field} from 'apache-arrow';
-import {decodeSchema} from '../io';
-import {createDatum, outputSchema} from '../output';
+import {cloneSchema} from '../io';
+import {createDatum, outputFields} from '../output';
 import {OperationalError} from '../../base/operational-error';
 import {
   GPU_ARTIFACT_ABI_VERSION,
@@ -23,15 +23,9 @@ import {
 } from '../../gpu/contract';
 import type {BoundInput} from '../binding';
 import {loadModule} from '../load';
-import {resolveGeneratedBindingLayout} from '../module-binding';
+import {boundInputs, cloneModule, depthBars} from '../module-binding';
 import {RUNTIME_ABI_VERSION, type JSModule} from '../module-abi';
-import type {
-  DenseEmission,
-  EffectEmission,
-  ExecutionDeclaration,
-  OutputSink,
-} from '../output';
-import {resolveParamValues} from '../params';
+import type {ExecutionDeclaration, OutputSink} from '../output';
 import type {Value} from '../value';
 
 const MAX_U32 = 0xffff_ffff;
@@ -117,10 +111,12 @@ interface ActiveGpuExecutionInstance {
 
 interface DenseOutputDecoder {
   readonly outputId: number;
+  readonly field: Field;
   readonly channels: readonly WgslResultChannel[];
 }
 
 interface DenseDecoderPlan {
+  readonly fields: readonly Field[];
   readonly channelsPerRow: number;
   readonly outputs: readonly DenseOutputDecoder[];
 }
@@ -142,6 +138,8 @@ export interface PreparedGpuExecutionInstance {
   readonly binding: GpuBinding;
   readonly rows: number;
   readonly boundInputs: readonly BoundInput[];
+  /** Output contract from this binding's prepared JavaScript module. */
+  readonly declaration: ExecutionDeclaration;
   // Scalar-cell offset into `seriesPayload`; every required series occupies
   // one complete, contiguous row span in artifact order.
   readonly seriesOffset: number;
@@ -477,7 +475,6 @@ class InertGpuExecution implements GpuExecution {
 class DeviceGpuExecution implements GpuExecution {
   private readonly cursors: number[];
   private readonly denseDecoder: DenseDecoderPlan;
-  private readonly declaration: ExecutionDeclaration;
   private disposed = false;
   private failed = false;
   private running = false;
@@ -496,8 +493,10 @@ class DeviceGpuExecution implements GpuExecution {
     private readonly workgroupSize: number,
   ) {
     this.cursors = prepared.executions.map(() => 0);
-    this.denseDecoder = planDenseDecoder(prepared.artifact);
-    this.declaration = executionDeclaration(prepared.artifact);
+    this.denseDecoder = planDenseDecoder(
+      prepared.artifact,
+      prepared.executions[0]!.declaration,
+    );
   }
 
   get done(): boolean {
@@ -628,7 +627,6 @@ class DeviceGpuExecution implements GpuExecution {
     publishChunk(
       this.prepared,
       this.denseDecoder,
-      this.declaration,
       active,
       results,
       effectStatus,
@@ -665,7 +663,6 @@ async function readback(buffer: GPUBuffer): Promise<Uint8Array> {
 function publishChunk(
   prepared: PreparedGpuExecution,
   denseDecoder: DenseDecoderPlan,
-  declaration: ExecutionDeclaration,
   active: readonly ActiveGpuExecutionInstance[],
   results: Uint8Array,
   effectStatus: Uint8Array,
@@ -684,9 +681,14 @@ function publishChunk(
     active.map(item => [item.progress.bindingIndex, item.progress]),
   );
   const effectsByExecution = prepared.executions.map(
-    () => new Map<number, EffectEmission[]>(),
+    () =>
+      new Map<
+        number,
+        {outputId: number; ordinal: number; payload: unknown}[]
+      >(),
   );
   const timestampsByExecution: Array<Float64Array | null | undefined> = [];
+  const events = new Map(artifact.events.map(event => [event.outputId, event]));
 
   for (const [executionIndex, execution] of prepared.executions.entries()) {
     if (artifact.maxEffectsPerRow === 0) continue;
@@ -703,9 +705,9 @@ function publishChunk(
     }
     if (overflow === 1) {
       const row = readU32(statusView, base + 8, 'first overflow row');
-      const effectId = readU32(statusView, base + 12, 'first overflow effect');
+      const outputId = readU32(statusView, base + 12, 'first overflow effect');
       throw new GpuExecutionError(
-        `GPU binding ${execution.bindingIndex} effect buffer overflowed at row ${row}, effect ${effectId}`,
+        `GPU binding ${execution.bindingIndex} effect buffer overflowed at row ${row}, output ${outputId}`,
       );
     }
     if (count > execution.effectCapacity) {
@@ -723,11 +725,11 @@ function publishChunk(
       const recordBase =
         (execution.effectOffset + index) * artifact.effectRecordByteStride;
       const row = readU32(recordView, recordBase, 'effect row');
-      const effectId = readU32(recordView, recordBase + 4, 'effect id');
-      const schema = artifact.effectSchemas[effectId];
-      if (schema === undefined || schema.effectId !== effectId) {
+      const outputId = readU32(recordView, recordBase + 4, 'output id');
+      const schema = events.get(outputId);
+      if (schema === undefined) {
         throw new GpuExecutionError(
-          `GPU binding ${execution.bindingIndex} returned unknown effect ${effectId}`,
+          `GPU binding ${execution.bindingIndex} returned unknown append output ${outputId}`,
         );
       }
       if (
@@ -739,19 +741,20 @@ function publishChunk(
           `GPU binding ${execution.bindingIndex} returned effect row ${row} outside the current chunk`,
         );
       }
-      const emission: EffectEmission = {
-        effectId,
+      const rowEffects = effectsByExecution[executionIndex].get(row) ?? [];
+      const emission = {
+        outputId,
+        ordinal: rowEffects.length,
         payload: decodeValue(
           schema.payload,
-          declaration.effects[effectId]!.payload,
+          denseDecoder.fields[outputId]!.type.children[0]!.type.children[1]!,
           recordView,
           recordBase + 8,
           recordBase + 8 + schema.payloadWordCount * 4,
           artifact.literalStrings,
-          `effect ${effectId}`,
+          `output ${outputId}`,
         ),
       };
-      const rowEffects = effectsByExecution[executionIndex].get(row) ?? [];
       rowEffects.push(emission);
       effectsByExecution[executionIndex].set(row, rowEffects);
     }
@@ -806,21 +809,27 @@ function publishChunk(
     const timestamps = timestampsByExecution[executionIndex]!;
     for (let localRow = 0; localRow < item.rowCount; localRow += 1) {
       const row = item.rowStart + localRow;
-      const effects = effectsByExecution[executionIndex].get(row) ?? [];
+      const outputs = decodeOutputs(
+        prepared,
+        denseDecoder,
+        resultView,
+        execution,
+        localRow,
+      );
+      for (const {outputId, ordinal, payload} of effectsByExecution[
+        executionIndex
+      ].get(row) ?? []) {
+        (outputs[outputId] as unknown[]).push(
+          Object.freeze({ordinal, payload}),
+        );
+      }
+      outputs.forEach(value => {
+        if (Array.isArray(value)) Object.freeze(value);
+      });
       const publication = createDatum(
-        declaration,
+        execution.declaration,
         row,
-        {
-          outputs: decodeOutputs(
-            prepared,
-            denseDecoder,
-            resultView,
-            execution,
-            localRow,
-          ),
-          effects,
-          provisional: false,
-        },
+        {outputs, provisional: false},
         timestamps === null
           ? undefined
           : Number.isNaN(timestamps[localRow])
@@ -832,33 +841,20 @@ function publishChunk(
   }
 }
 
-function planDenseDecoder(artifact: CompiledWgslProgram): DenseDecoderPlan {
-  const channelsByCell = new Map(
-    artifact.resultChannels.map(channel => [channel.rowCell, channel]),
-  );
-  const outputs: DenseOutputDecoder[] = [];
-  for (const output of artifact.outputSchemas) {
-    const cells = output.rowCells;
-    if (cells.every(cell => cell === null)) continue;
-    if (cells.some(cell => cell === null)) {
-      throw new GpuExecutionError(
-        `GPU output ${output.outputId} mixes declaration-only and row channels`,
-      );
-    }
-    outputs.push({
-      outputId: output.outputId,
-      channels: cells.map(cell => {
-        const channel = channelsByCell.get(cell as number);
-        if (channel === undefined || channel.outputId !== output.outputId) {
-          throw new GpuExecutionError(
-            `GPU output ${output.outputId} has an invalid result-cell mapping`,
-          );
-        }
-        return channel;
-      }),
-    });
-  }
-  return {channelsPerRow: artifact.resultChannels.length, outputs};
+function planDenseDecoder(
+  artifact: CompiledWgslProgram,
+  declaration: ExecutionDeclaration,
+): DenseDecoderPlan {
+  const fields = outputFields(declaration.schema);
+  return {
+    fields,
+    channelsPerRow: artifact.resultChannels.length,
+    outputs: artifact.resultChannels.map(channel => ({
+      outputId: channel.outputId,
+      field: fields[channel.outputId]!,
+      channels: [channel],
+    })),
+  };
 }
 
 function validateDenseOutputs(
@@ -875,9 +871,10 @@ function validateDenseOutputs(
     localRow,
   );
   for (const output of decoder.outputs) {
-    for (const channel of output.channels) {
+    for (const [index, channel] of output.channels.entries()) {
       decodeResult(
         channel,
+        output.field.type.children[index]!,
         view,
         rowOffset + channel.rowCell * prepared.artifact.resultCellByteStride,
       );
@@ -891,23 +888,36 @@ function decodeOutputs(
   view: DataView,
   execution: PreparedGpuExecutionInstance,
   localRow: number,
-): DenseEmission[] {
+): unknown[] {
   const rowOffset = denseResultRowOffset(
     prepared,
     decoder,
     execution,
     localRow,
   );
-  return decoder.outputs.map(output => ({
-    outputId: output.outputId,
-    channels: output.channels.map(channel =>
-      decodeResult(
-        channel,
-        view,
-        rowOffset + channel.rowCell * prepared.artifact.resultCellByteStride,
+  const values: unknown[] = decoder.fields.map(field =>
+    field.metadata.get('tea:write') === 'append' ? [] : null,
+  );
+  for (const output of decoder.outputs) {
+    values[output.outputId] = Object.freeze(
+      Object.fromEntries(
+        output.channels.map((channel, index) => {
+          const field = output.field.type.children[index]!;
+          return [
+            field.name,
+            decodeResult(
+              channel,
+              field,
+              view,
+              rowOffset +
+                channel.rowCell * prepared.artifact.resultCellByteStride,
+            ),
+          ];
+        }),
       ),
-    ),
-  }));
+    );
+  }
+  return values;
 }
 
 function denseResultRowOffset(
@@ -931,6 +941,7 @@ function denseResultRowOffset(
 
 function decodeResult(
   channel: WgslResultChannel,
+  field: Field,
   view: DataView,
   offset: number,
 ): Value {
@@ -967,7 +978,7 @@ function decodeResult(
       }
       return bits === 1;
     case 'enum': {
-      const member = channel.enumMembers?.[bits];
+      const member = enumMembers(field)[bits];
       if (member === undefined) {
         throw new GpuExecutionError(
           `GPU enum result cell ${channel.rowCell} has invalid ordinal ${bits}`,
@@ -1086,35 +1097,12 @@ function u32AsI32(value: number): number {
   return value > 0x7fff_ffff ? value - 0x1_0000_0000 : value;
 }
 
-function executionDeclaration(
-  artifact: CompiledWgslProgram,
-): ExecutionDeclaration {
-  const outputs = artifact.outputSchemas.map(schema => ({
-    spec: {
-      effect: schema.effect,
-      staticArgs: schema.staticArgs.map(arg => ({...arg})),
-      channels: decodeSchema(schema.schema).fields,
-    },
-    boundArgs: [],
-  }));
-  const effects = artifact.effectSchemas.map(schema => ({
-    payload: decodeSchema(schema.schema).fields[0]!,
-  }));
-  return {
-    outputs,
-    effects,
-    get schema() {
-      return outputSchema(
-        outputs.map(output => output.spec),
-        effects,
-      );
-    },
-  };
-}
-
 function declareBindings(prepared: PreparedGpuExecution): void {
   prepared.executions.forEach(execution =>
-    execution.binding.sink.declare(executionDeclaration(prepared.artifact)),
+    execution.binding.sink.declare({
+      ...execution.declaration,
+      schema: cloneSchema(execution.declaration.schema),
+    }),
   );
 }
 
@@ -1200,7 +1188,8 @@ function resourcesFitDeviceBufferLimits(
 /**
  * Validate and pack finite bindings without allocating a GPU device. Arrow
  * field types must agree with the artifact's physical scalar codecs; binding
- * values resolve history capacities through the ordinary generated module.
+ * values prepare the ordinary generated module. This consumer caps history
+ * depths by the finite extent and places independent state for each binding.
  *
  * @example
  * ```ts
@@ -1228,6 +1217,7 @@ async function prepareGpuExecutionInputsWithLimits(
   try {
     bindingModule = loadModule(artifact.bindingModule.source);
     validateBindingModule(artifact, bindingModule);
+    bindingModule.bind();
   } catch (error) {
     throw new GpuBindingError(
       `compiled WGSL has an invalid binding module: ${error instanceof Error ? error.message : String(error)}`,
@@ -1245,45 +1235,31 @@ async function prepareGpuExecutionInputsWithLimits(
         `GPU binding ${bindingIndex} has ${binding.time.length} times for ${binding.indices} indices`,
       );
     }
-    let values: readonly Value[];
     try {
-      values = resolveParamValues(artifact.params, binding.params);
+      const configured = cloneModule(bindingModule).bind(binding.params);
+      const inputs = boundInputs(configured);
+      if (
+        inputs.length !== artifact.params.length ||
+        inputs.some(
+          (input, pid) => input.active !== (artifact.paramActive[pid] ?? false),
+        )
+      ) {
+        throw new GpuBindingError(
+          'generated bind results disagree with the artifact parameter contract',
+        );
+      }
+      return {
+        binding,
+        bindingIndex,
+        boundInputs: inputs,
+        frames: configured.state.frames,
+        declaration: configured.outputs,
+      };
     } catch (error) {
       throw new GpuBindingError(
         `GPU binding ${bindingIndex}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    let bindingLayout;
-    try {
-      bindingLayout = resolveGeneratedBindingLayout(
-        bindingModule,
-        binding.params,
-        binding.indices,
-      );
-    } catch (error) {
-      throw new GpuBindingError(
-        `GPU binding ${bindingIndex}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    const boundInputs = bindingLayout.inputs;
-    if (
-      boundInputs.length !== artifact.params.length ||
-      boundInputs.some(
-        (input, pid) =>
-          input.value !== values[pid] ||
-          input.active !== (artifact.paramActive[pid] ?? false),
-      )
-    ) {
-      throw new GpuBindingError(
-        `GPU binding ${bindingIndex} generated bind results disagree with the artifact parameter contract`,
-      );
-    }
-    return {
-      binding,
-      bindingIndex,
-      boundInputs,
-      frameHistoryCapacities: bindingLayout.frameHistoryCapacities,
-    };
   });
 
   const executions: PreparedGpuExecutionInstance[] = [];
@@ -1294,7 +1270,8 @@ async function prepareGpuExecutionInputsWithLimits(
     binding,
     bindingIndex,
     boundInputs,
-    frameHistoryCapacities,
+    frames,
+    declaration,
   } of resolved) {
     const seriesOffset = scalarCount;
     const series = artifact.requiredSeries.map(required => {
@@ -1330,7 +1307,8 @@ async function prepareGpuExecutionInputsWithLimits(
     );
     const state = planExecutionState(
       artifact,
-      frameHistoryCapacities,
+      frames,
+      binding.indices,
       nextStateWord,
     );
     nextStateWord = checkedSum(
@@ -1343,6 +1321,7 @@ async function prepareGpuExecutionInputsWithLimits(
       binding,
       rows: binding.indices,
       boundInputs,
+      declaration,
       seriesOffset,
       paramsOffset: bindingIndex * artifact.params.length,
       stateOffset: state.stateOffset,
@@ -1805,25 +1784,69 @@ function validateBindingModule(
   artifact: CompiledWgslProgram,
   module: JSModule,
 ): void {
-  const parameterSchema = module.manifest.params.map(
-    ({value: _value, active: _active, bindable: _bindable, ...spec}) => spec,
+  const parameterSchema = module.parameters.map(
+    ({value: _value, active: _active, ...spec}) => spec,
   );
   if (
     module.abi !== RUNTIME_ABI_VERSION ||
-    module.manifest.requests.length !== 0 ||
-    module.manifest.frames.length !== artifact.state.frames.length ||
+    module.requests.length !== 0 ||
+    module.state.frames.length !== artifact.state.frames.length ||
     JSON.stringify(parameterSchema) !== JSON.stringify(artifact.params) ||
-    module.manifest.series.length !== artifact.requiredSeries.length ||
-    module.manifest.series.some(
+    module.inputs.series.length !== artifact.requiredSeries.length ||
+    module.inputs.series.some(
       (series, sid) => series.id !== artifact.requiredSeries[sid]?.id,
     )
   ) {
     throw new GpuBindingError(
-      'compiled WGSL binding module disagrees with the artifact manifest',
+      'compiled WGSL binding module disagrees with the GPU artifact',
     );
   }
+  const fields = outputFields(module.outputs.schema);
+  const covered = new Set<number>();
+  for (const channel of artifact.resultChannels) {
+    const field = fields[channel.outputId];
+    if (
+      field?.metadata.get('tea:write') !== 'set' ||
+      !DataType.isStruct(field.type) ||
+      field.type.children.length !== 1 ||
+      !fieldMatchesCodec(field.type.children[0]!, channel.scalar) ||
+      covered.has(channel.outputId)
+    ) {
+      throw new GpuBindingError(
+        `compiled WGSL output ${channel.outputId} disagrees with result cell ${channel.rowCell}`,
+      );
+    }
+    covered.add(channel.outputId);
+  }
+  for (const event of artifact.events) {
+    const field = fields[event.outputId];
+    if (
+      field?.metadata.get('tea:write') !== 'append' ||
+      !DataType.isList(field.type) ||
+      !DataType.isStruct(field.type.children[0]!.type) ||
+      !fieldMatchesCodec(
+        field.type.children[0]!.type.children[1]!,
+        event.payload.kind,
+      ) ||
+      covered.has(event.outputId)
+    ) {
+      throw new GpuBindingError(
+        `compiled WGSL append output ${event.outputId} disagrees with its physical payload`,
+      );
+    }
+    covered.add(event.outputId);
+  }
+  fields.forEach((field, id) => {
+    if (
+      !covered.has(id) &&
+      (field.metadata.get('tea:write') === 'append' ||
+        field.type.children.length !== 0)
+    ) {
+      throw new GpuBindingError(`compiled WGSL has no codec for output ${id}`);
+    }
+  });
   artifact.state.frames.forEach((frame, fid) => {
-    const bindingFrame = module.manifest.frames[fid];
+    const bindingFrame = module.state.frames[fid];
     if (bindingFrame === undefined) {
       throw new GpuBindingError(
         `compiled WGSL binding module is missing frame ${fid}`,
@@ -1856,7 +1879,8 @@ function validateBindingModule(
 
 function planExecutionState(
   artifact: CompiledWgslProgram,
-  frameHistoryCapacities: readonly (readonly number[])[],
+  frames: JSModule['state']['frames'],
+  indices: number,
   stateOffset: number,
 ): Pick<
   PreparedGpuExecutionInstance,
@@ -1873,24 +1897,22 @@ function planExecutionState(
     frame: CompiledWgslProgram['state']['frames'][number],
     frameBase: number,
   ): void => {
-    const capacities = frameHistoryCapacities[frame.id];
-    if (capacities === undefined) {
-      throw new GpuBindingError(
-        `generated bind did not report frame ${frame.id}`,
-      );
-    }
     frame.locals.forEach((local, localIndex) => {
-      const capacity = capacities[local.slot];
-      if (
-        capacity === undefined ||
-        !Number.isSafeInteger(capacity) ||
-        capacity < 0 ||
-        capacity > MAX_U32
-      ) {
+      const spec = frames[frame.id]?.locals[local.slot];
+      if (spec === undefined) {
         throw new GpuBindingError(
-          `generated bind reported invalid capacity for frame ${frame.id} local ${localIndex}`,
+          `generated bind has no frame ${frame.id} local ${localIndex}`,
         );
       }
+      // Extent caps usable history; persistent locals still retain their last
+      // value when no history operator occurs in the source.
+      const capacity = Math.max(
+        Math.min(
+          depthBars(spec.depth, `frame ${frame.id} slot ${local.slot}`),
+          indices,
+        ),
+        spec.storage === 'perBar' ? 0 : 1,
+      );
       if (local.historyDescriptorWordOffset === null) {
         // The target intentionally has no descriptor for a statically invalid
         // read (for example an offset beyond the i32 row profile). CPU may
@@ -2073,10 +2095,7 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
     }
   }
   requireU32(artifact.maxEffectsPerRow, 'compiled WGSL maxEffectsPerRow');
-  if (
-    (artifact.maxEffectsPerRow === 0) !==
-    (artifact.effectSchemas.length === 0)
-  ) {
+  if ((artifact.maxEffectsPerRow === 0) !== (artifact.events.length === 0)) {
     throw new GpuBindingError(
       'compiled WGSL effect schemas disagree with maxEffectsPerRow',
     );
@@ -2099,7 +2118,7 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
       );
     }
   }
-  validateStateManifest(artifact);
+  validateState(artifact);
   validateCacheContract(artifact);
   requireU32(
     artifact.effectPayloadWordCapacity,
@@ -2232,20 +2251,13 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
       'compiled WGSL has invalid parameter, literal, or series identities',
     );
   }
-  try {
-    resolveParamValues(artifact.params, {});
-  } catch (error) {
-    throw new GpuBindingError(
-      `compiled WGSL has an invalid parameter schema: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
 
   const resultCells = new Set<number>();
   artifact.resultChannels.forEach((channel, index) => {
     if (
       channel.rowCell !== index ||
       channel.outputId < 0 ||
-      channel.outputId >= artifact.outputSchemas.length ||
+      !Number.isSafeInteger(channel.outputId) ||
       resultCells.has(channel.rowCell)
     ) {
       throw new GpuBindingError(
@@ -2254,50 +2266,12 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
     }
     resultCells.add(channel.rowCell);
   });
-  artifact.outputSchemas.forEach((output, outputId) => {
-    if (output.outputId !== outputId) {
-      throw new GpuBindingError(
-        `compiled WGSL has invalid output schema ${outputId}`,
-      );
-    }
-    const fields = decodeSchema(output.schema).fields;
-    const rowCells = output.rowCells;
+  artifact.events.forEach((schema, index) => {
     if (
-      fields.length !== rowCells.length ||
-      new Set(fields.map(field => field.name)).size !== fields.length
-    ) {
-      throw new GpuBindingError(
-        `compiled WGSL output ${outputId} has invalid Arrow fields`,
-      );
-    }
-    if (
-      rowCells.some(cell => cell === null) &&
-      rowCells.some(cell => cell !== null)
-    ) {
-      throw new GpuBindingError(
-        `compiled WGSL output ${outputId} mixes declaration and row channels`,
-      );
-    }
-    fields.forEach((field, index) => {
-      const rowCell = rowCells[index];
-      if (rowCell === null) return;
-      const result = artifact.resultChannels[rowCell];
-      if (
-        result === undefined ||
-        result.outputId !== outputId ||
-        result.effect !== output.effect ||
-        result.channelName !== field.name ||
-        !fieldMatchesResult(field, result)
-      ) {
-        throw new GpuBindingError(
-          `compiled WGSL output ${outputId} disagrees with result cell ${rowCell}`,
-        );
-      }
-    });
-  });
-  artifact.effectSchemas.forEach((schema, index) => {
-    if (
-      schema.effectId !== index ||
+      !Number.isSafeInteger(schema.outputId) ||
+      schema.outputId < 0 ||
+      (index > 0 &&
+        schema.outputId !== artifact.events[index - 1]!.outputId + 1) ||
       schema.payloadWordCount < 1 ||
       schema.payloadWordCount > artifact.effectPayloadWordCapacity
     ) {
@@ -2316,20 +2290,10 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
       );
     }
     validateCodec(artifact, schema.payload, `effect schema ${index}`);
-    const fields = decodeSchema(schema.schema).fields;
-    if (
-      fields.length !== 1 ||
-      fields[0]!.name !== 'payload' ||
-      !fieldMatchesCodec(fields[0]!, schema.payload.kind)
-    ) {
-      throw new GpuBindingError(
-        `compiled WGSL effect schema ${index} logical declaration disagrees with its physical payload`,
-      );
-    }
   });
 }
 
-function validateStateManifest(artifact: CompiledWgslProgram): void {
+function validateState(artifact: CompiledWgslProgram): void {
   const {state} = artifact;
   if (
     state.initializedWordOffset !== 0 ||
@@ -2341,7 +2305,7 @@ function validateStateManifest(artifact: CompiledWgslProgram): void {
     state.frames.length === 0
   ) {
     throw new GpuBindingError(
-      'compiled WGSL has an invalid execution-state manifest',
+      'compiled WGSL has an invalid execution-state layout',
     );
   }
   const frames = state.frames;
@@ -2458,7 +2422,7 @@ function validateStateManifest(artifact: CompiledWgslProgram): void {
     state.rootFrameWordOffset + root.wordCount !== state.fixedWordCount
   ) {
     throw new GpuBindingError(
-      'compiled WGSL execution-state manifest has an invalid root extent',
+      'compiled WGSL execution-state layout has an invalid root extent',
     );
   }
 }
@@ -2583,17 +2547,6 @@ function fieldMatchesCodec(field: Field, kind: WgslCodec['kind']): boolean {
     case 'color':
       return DataType.isUtf8(field.type);
   }
-}
-
-function fieldMatchesResult(field: Field, result: WgslResultChannel): boolean {
-  if (!fieldMatchesCodec(field, result.scalar)) return false;
-  if (result.scalar !== 'enum') return true;
-  const members = enumMembers(field);
-  return (
-    result.enumMembers !== null &&
-    members.length === result.enumMembers.length &&
-    members.every((member, index) => member === result.enumMembers![index])
-  );
 }
 
 function validateCodec(

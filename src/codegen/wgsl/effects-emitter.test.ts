@@ -64,9 +64,21 @@ describe('chunked sparse-effect WGSL emitter', () => {
     expect(source).toContain(
       'var<storage, read_write> tea_execution_states: array<u32>',
     );
-    expect(source).toContain('TeaEffectRecord(tea_row, 0u');
+    expect(source).toContain('TeaEffectRecord(tea_row, 1u');
     expect(source).toContain('effect_capacity > 0u');
     expect(source).toContain('if (tea_job.result_count != 0u)');
+  });
+
+  test('keeps declaration-only bind arguments outside the GPU subset', () => {
+    const result = compileProgramToWgsl(
+      mustBuild(
+        ['level = input.float(1)', 'hline(level)', 'plot(close)'].join('\n'),
+      ),
+    );
+    expect(result.status).toBe('staged-unsupported');
+    expect(result.eligibility.issues[0]?.code).toBe(
+      'result-transport-lowering-unimplemented',
+    );
   });
 
   test('keeps an initialized absolute cursor in external execution state', () => {

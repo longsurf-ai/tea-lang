@@ -1,15 +1,17 @@
 // Purpose: Minimal structured output capture for tests.
 
-import type {
-  DeclaredOutput,
-  EffectSpec,
-  OutputSink,
-  Datum,
-} from '../runtime/abi';
+import {Schema, type Field} from 'apache-arrow';
+import {
+  outputFields,
+  type OutputSpec,
+  type OutputSink,
+  type Datum,
+} from '../runtime/output';
 
 export class OutputCapture implements OutputSink {
-  outputs: readonly DeclaredOutput[] = [];
-  effectSchemas: readonly EffectSpec[] = [];
+  schema = new Schema([]);
+  fields: readonly Field[] = [];
+  declarations: readonly OutputSpec[] = [];
   readonly publications: Datum[] = [];
   readonly emissions: {
     readonly row: number;
@@ -19,45 +21,45 @@ export class OutputCapture implements OutputSink {
   }[] = [];
   readonly effectEmissions: {
     readonly row: number;
-    readonly effectId: number;
+    readonly outputId: number;
     readonly payload: unknown;
     readonly provisional: boolean;
   }[] = [];
 
   declare(declaration: Parameters<OutputSink['declare']>[0]): void {
-    this.outputs = declaration.outputs;
-    this.effectSchemas = declaration.effects;
+    this.schema = declaration.schema;
+    this.fields = outputFields(declaration.schema);
+    this.declarations = declaration.declarations;
   }
 
   publish(datum: Datum): void {
     this.publications.push(datum);
-    this.outputs.forEach((output, outputId) => {
-      const value = datum[`output${outputId}`] as Record<
-        string,
-        unknown
-      > | null;
-      if (value === null || value === undefined) return;
-      this.emissions.push({
-        row: datum.index,
-        outputId,
-        channels: output.spec.channels.map(field => value[field.name]),
-        provisional: datum.provisional,
-      });
+    const events: {outputId: number; ordinal: number; payload: unknown}[] = [];
+    this.fields.forEach((field, outputId) => {
+      const value = datum[field.name];
+      if (field.metadata.get('tea:write') === 'append') {
+        for (const event of value as readonly {
+          ordinal: number;
+          payload: unknown;
+        }[]) {
+          events.push({outputId, ...event});
+        }
+      } else if (value !== null && value !== undefined) {
+        this.emissions.push({
+          row: datum.index,
+          outputId,
+          channels: field.type.children.map(
+            (channel: Field) =>
+              (value as Record<string, unknown>)[channel.name],
+          ),
+          provisional: datum.provisional,
+        });
+      }
     });
-    const events = this.effectSchemas
-      .flatMap((_, effectId) =>
-        (
-          datum[`effect${effectId}`] as readonly {
-            ordinal: number;
-            payload: unknown;
-          }[]
-        ).map(event => ({effectId, ...event})),
-      )
-      .sort((a, b) => a.ordinal - b.ordinal);
-    for (const event of events) {
+    for (const event of events.sort((a, b) => a.ordinal - b.ordinal)) {
       this.effectEmissions.push({
         row: datum.index,
-        effectId: event.effectId,
+        outputId: event.outputId,
         payload: event.payload,
         provisional: datum.provisional,
       });

@@ -1,4 +1,4 @@
-// Purpose: Typed builtin codegen tests — current-ABI manifests and reads preserve source identity, value layout, depth, and the distinct builtin carrier.
+// Purpose: Typed builtin codegen tests — current-ABI modules and reads preserve source identity, value layout, depth, and the distinct builtin carrier.
 
 import {describe, expect, test} from 'vitest';
 import {
@@ -89,25 +89,28 @@ describe('typed builtin lowering', () => {
     const module = loadModule(source);
 
     expect(module.abi).toBe(RUNTIME_ABI_VERSION);
-    expect(module.manifest.series).toEqual([]);
-    expect(module.manifest.builtin).toEqual([
+    expect(module.inputs.series).toEqual([]);
+    expect(module.inputs.builtins).toEqual([
       {
         source: {domain: 'time', field: 'time'},
+        constant: false,
         layout: 0,
         depth: {kind: 'const', bars: 3},
       },
       {
         source: {domain: 'barstate', field: 'isfirst'},
+        constant: false,
         layout: 1,
         depth: {kind: 'none'},
       },
       {
         source: {domain: 'syminfo', field: 'tickerid'},
+        constant: true,
         layout: 2,
         depth: {kind: 'none'},
       },
     ]);
-    expect(source).not.toContain('manifest.builtin[0].depth =');
+    expect(source).not.toContain('module.inputs.builtins[0].depth =');
     expect(source).toMatch(/ctx\.builtin\(0, t\d+\)/);
     expect(source).toContain('ctx.builtin(1, 0)');
     expect(source).toContain('ctx.builtin(2, 0)');
@@ -119,11 +122,11 @@ describe('typed builtin lowering', () => {
     );
     const module = loadModule(source) as JSModule;
 
-    expect(module.manifest.builtin).toEqual([]);
-    expect(module.requests[0].abi).toBe(RUNTIME_ABI_VERSION);
-    expect(module.requests[0].layout).toBe(module.layout);
-    expect(module.requests[0].manifest.series).toEqual([]);
-    expect(module.requests[0].manifest.builtin).toMatchObject([
+    expect(module.inputs.builtins).toEqual([]);
+    expect(module.requests[0].module.abi).toBe(RUNTIME_ABI_VERSION);
+    expect(module.requests[0].module.state.layout).toBe(module.state.layout);
+    expect(module.requests[0].module.inputs.series).toEqual([]);
+    expect(module.requests[0].module.inputs.builtins).toMatchObject([
       {source: {domain: 'bar', field: 'bar_index'}},
     ]);
     expect(source).toContain('ctx.builtin(0, 0)');

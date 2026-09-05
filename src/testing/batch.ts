@@ -12,15 +12,9 @@ import type {Program} from '../ir/program';
 import {batchRecipe} from '../recipe/batch';
 import type {BoundInput} from '../runtime/binding';
 import {loadModule} from '../runtime/load';
-import {
-  boundInputs,
-  moduleBindings,
-  moduleDeclaration,
-  withModuleBindings,
-} from '../runtime/module-binding';
+import {boundInputs, cloneModule} from '../runtime/module-binding';
 import type {JSModule} from '../runtime/module-abi';
 import type {OutputSink} from '../runtime/output';
-import {resolveParamValues} from '../runtime/params';
 
 export async function executeTestProgram(
   program: Program,
@@ -46,23 +40,11 @@ export async function executeTestModule(
   },
 ): Promise<{readonly indices: number; readonly inputs: readonly BoundInput[]}> {
   const node = createNode(
-    withModuleBindings(module, moduleBindings(module)),
+    cloneModule(module).bind(options.params ?? {}),
     pineBuiltinSupplier(() => options.timeNow ?? 0),
   );
   const bindings: BindingInput[] = [];
-  const values = resolveParamValues(
-    module.manifest.params,
-    options.params ?? {},
-  );
-  const parameters = Object.fromEntries(
-    module.manifest.params.flatMap((spec, index) =>
-      spec.bindable === false ? [] : [[spec.name, values[index]]],
-    ),
-  );
-  if (Object.keys(parameters).length !== 0) {
-    node.bind(parameters);
-  }
-  options.sink.declare(moduleDeclaration(node.module));
+  options.sink.declare(node.module.outputs);
   bindings.push(options.stream);
   if (options.requests !== undefined && Object.keys(options.requests).length) {
     bindings.push(options.requests);

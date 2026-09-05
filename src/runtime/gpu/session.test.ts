@@ -1,7 +1,10 @@
 // Purpose: GPU preparation consumes concrete arrays and derives physical resources.
 
-import {DataType, Field, Schema, Utf8} from 'apache-arrow';
-import {decodeSchema, encodeSchema} from '../io';
+import {DataType, Field, Struct, Utf8} from 'apache-arrow';
+import {encodeSchema} from '../io';
+import {loadModule} from '../load';
+import {outputFields, publicationSchema} from '../output';
+import {RUNTIME_ABI_VERSION} from '../module-abi';
 import {GPU_ARTIFACT_ABI_VERSION} from '../../gpu/contract';
 import {describe, expect, test} from 'vitest';
 import {compileProgramToWgsl} from '../../codegen/wgsl';
@@ -72,14 +75,18 @@ describe('GPU execution preparation', () => {
     const artifact: CompiledWgslProgram = JSON.parse(
       JSON.stringify(strategyArtifact()),
     );
-    const field = decodeSchema(artifact.outputSchemas[1]!.schema).fields[0]!;
+    const fields = outputFields(
+      loadModule(artifact.bindingModule.source).outputs.schema,
+    );
+    const field = fields[1]!.type.children[0]!;
     expect(artifact.abi).toBe(GPU_ARTIFACT_ABI_VERSION);
     expect(field).toBeInstanceOf(Field);
     expect(DataType.isFloat(field.type)).toBe(true);
     expect(field.type.toString()).toBe('Float64');
     expect(field.metadata.get('tea:type')).toBe('float');
     expect(
-      decodeSchema(artifact.effectSchemas[0]!.schema).fields[0]!.name,
+      fields[artifact.events[0]!.outputId]!.type.children[0]!.type.children[1]!
+        .name,
     ).toBe('payload');
     await expect(
       prepareGpuExecutionInputs(artifact, [binding({open: [1], close: [2]})]),
@@ -94,27 +101,26 @@ describe('GPU execution preparation', () => {
         [],
       ),
     ).rejects.toThrow(/ABI|abi/);
-    const output = artifact.outputSchemas[1]!;
-    const field = decodeSchema(output.schema).fields[0]!;
+    const fields = outputFields(
+      loadModule(artifact.bindingModule.source).outputs.schema,
+    );
+    const output = fields[1]!;
+    const channel = output.type.children[0]!;
+    const schema = publicationSchema(
+      fields.map((field, id) =>
+        id === 1
+          ? output.clone({
+              type: new Struct([channel.clone({type: new Utf8()})]),
+            })
+          : field,
+      ),
+    );
     const broken = {
       ...artifact,
-      outputSchemas: artifact.outputSchemas.map((value, id) =>
-        id === 1
-          ? {
-              ...value,
-              schema: encodeSchema(
-                new Schema([
-                  new Field(
-                    field.name,
-                    new Utf8(),
-                    field.nullable,
-                    field.metadata,
-                  ),
-                ]),
-              ),
-            }
-          : value,
-      ),
+      bindingModule: {
+        ...artifact.bindingModule,
+        source: `const module = (function(){${artifact.bindingModule.source}})(); module.outputs.schema = ${JSON.stringify(encodeSchema(schema))}; return module;`,
+      },
     };
     await expect(prepareGpuExecutionInputs(broken, [])).rejects.toThrow(
       'disagrees with result cell',
@@ -151,6 +157,105 @@ describe('GPU execution preparation', () => {
     expect(
       prepared.executions[0]?.boundInputs.map(input => input.value),
     ).toEqual([4, 2.25, false, 'slow']);
+  });
+
+  test('rejects invalid defaults and job values through module binding', async () => {
+    const artifact = parameterArtifact();
+    await expect(
+      prepareGpuExecutionInputs(artifact, [binding({close: [1]}, {length: 0})]),
+    ).rejects.toThrow("parameter 'length' below minval 1");
+    await expect(
+      prepareGpuExecutionInputs(artifact, [
+        binding({close: [1]}, {unknown: 1}),
+      ]),
+    ).rejects.toThrow("unknown parameter 'unknown'");
+    const broken = {
+      ...artifact,
+      params: artifact.params.map((parameter, id) =>
+        id === 0 ? {...parameter, defaultValue: 0} : parameter,
+      ),
+      bindingModule: {
+        ...artifact.bindingModule,
+        source: `const module = (function(){${artifact.bindingModule.source}})(); module.parameters[0].defaultValue = 0; return module;`,
+      },
+    };
+    await expect(prepareGpuExecutionInputs(broken, [])).rejects.toThrow(
+      "parameter 'length' below minval 1",
+    );
+  });
+
+  test('sizes each binding and call site from its own concrete state', async () => {
+    const compiled = compileProgramToWgsl(
+      mustBuild(
+        [
+          'lag = input.int(3, minval=0, maxval=8)',
+          'previous(float value) => value[lag]',
+          'var float total = 0',
+          'total += close',
+          'left = previous(close)',
+          'right = previous(open)',
+          'plot(left + right + total)',
+        ].join('\n'),
+      ),
+    );
+    if (compiled.status !== 'compiled')
+      throw new Error(JSON.stringify(compiled.eligibility.issues));
+    const artifact = compiled.artifact;
+    const prepared = await prepareGpuExecutionInputs(artifact, [
+      binding({close: [1, 2, 3, 4, 5], open: [1, 2, 3, 4, 5]}, {lag: 4}),
+      binding({close: [1, 2], open: [1, 2]}, {lag: 8}),
+    ]);
+    expect(
+      prepared.executions.map(execution =>
+        execution.stateDescriptors.map(local => local.capacity),
+      ),
+    ).toEqual([
+      [1, 4, 4],
+      [1, 2, 2],
+    ]);
+    const [first, second] = prepared.executions;
+    expect(second!.stateOffset).toBe(first!.stateWords);
+    expect(first!.stateWords - second!.stateWords).toBe(8);
+  });
+
+  test('rejects stale embedded modules and divergent parameter contracts', async () => {
+    const artifact = parameterArtifact();
+    const stale = artifact.bindingModule.source.replace(
+      `abi: ${RUNTIME_ABI_VERSION}`,
+      'abi: 8',
+    );
+    expect(stale).not.toBe(artifact.bindingModule.source);
+    await expect(
+      prepareGpuExecutionInputs(
+        {
+          ...artifact,
+          bindingModule: {...artifact.bindingModule, source: stale},
+        },
+        [],
+      ),
+    ).rejects.toThrow(/ABI|abi/);
+    await expect(
+      prepareGpuExecutionInputs(
+        {
+          ...artifact,
+          params: artifact.params.map((param, id) =>
+            id === 0 ? {...param, name: 'other'} : param,
+          ),
+        },
+        [],
+      ),
+    ).rejects.toThrow('binding module disagrees with the GPU artifact');
+    await expect(
+      prepareGpuExecutionInputs(
+        {
+          ...artifact,
+          paramActive: artifact.paramActive.map(active => !active),
+        },
+        [binding({close: [1]})],
+      ),
+    ).rejects.toThrow(
+      'generated bind results disagree with the artifact parameter contract',
+    );
   });
 
   test('rejects missing or misaligned concrete series', async () => {

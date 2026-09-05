@@ -85,7 +85,7 @@ export function isResourceHandle(value: Value): value is ResourceHandle {
   return isTaggedValue(value) && value.kind === 'resource';
 }
 
-export type ManifestValue = number | string | boolean | null;
+export type Scalar = number | string | boolean | null;
 
 export const ValueClass = {
   Numeric: 'numeric',

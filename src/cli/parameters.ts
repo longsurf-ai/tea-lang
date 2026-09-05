@@ -1,9 +1,7 @@
 // Purpose: Parse source-declared parameter flags for one CLI Batch Recipe.
 
 import {OperationalError} from '../base/operational-error';
-import {BindError} from '../runtime/errors';
 import type {ParamSpec} from '../runtime/schema';
-import {resolveParamValues} from '../runtime/params';
 
 export type CliParameterValue = number | string | boolean;
 
@@ -14,7 +12,14 @@ export class CliParameterError extends OperationalError {
   }
 }
 
-/** Parses the dynamic parameter flags that follow one `tea run` command. */
+/**
+ * Decode only the supplied CLI flags into a parameter patch. Usable defaults,
+ * ranges, enum membership, and color normalization belong to JSModule.bind().
+ * Unknown/reserved names, duplicate flags, and unsafe scalar syntax fail here.
+ *
+ * @example With an integer length declaration, `parseRunParameters(specs,
+ * ['--length', '20'])` returns `{length: 20}`; no flags returns `{}`.
+ */
 export function parseRunParameters(
   specs: readonly ParamSpec[],
   tokens: readonly string[],
@@ -58,18 +63,7 @@ export function parseRunParameters(
     seen.add(spec.name);
   }
 
-  try {
-    const values = resolveParamValues(specs, parsed);
-    return Object.fromEntries(
-      specs.map((spec, index) => [
-        spec.name,
-        values[index] as CliParameterValue,
-      ]),
-    );
-  } catch (error) {
-    if (error instanceof BindError) throw new CliParameterError(error.message);
-    throw error;
-  }
+  return Object.freeze(parsed);
 }
 
 function splitFlag(token: string): {

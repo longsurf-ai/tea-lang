@@ -91,9 +91,15 @@ export interface BuiltinInput {
   depth: HistoryDepth;
 }
 
-// A statically-declared effect channel (plot, hline, alertcondition, …):
-// hoisted at compile time so the host knows every output before the first
-// bar. Per-bar values arrive via EmitStmt writes.
+/**
+ * A source declaration whose per-step channels use assignment semantics.
+ * Codegen publishes its structure in Arrow and combines static and bound
+ * arguments into one declaration; these source partitions preserve evaluation
+ * order without becoming separate public reporting contracts.
+ *
+ * @example In `plot(close, title="Close", linewidth=width)`, title is static,
+ * width is resolved by binding, and close is emitted through the series channel.
+ */
 export interface OutputDecl {
   readonly effect: string; // catalog primitive, e.g. 'plot', 'hline'
   readonly staticArgs: readonly {
@@ -102,8 +108,8 @@ export interface OutputDecl {
   }[];
   // input-qualified declarative args (hline price, plot linewidth,
   // plotshape offset) plus output references (fill's plot/hline operands as
-  // const OutputRef exprs): evaluated once in module.bind, delivered to the host
-  // before the first bar.
+  // const OutputRef exprs). Static references fold during generation; late
+  // arguments are evaluated by module.bind and combined with staticArgs.
   readonly bindArgs: readonly {
     readonly name: string;
     readonly expr: IrExpr;
@@ -238,7 +244,7 @@ export type IrFunc = FreeIrFunc | ConstMethodIrFunc | MutableMethodIrFunc;
 // binder, checker, and runtime read what the program needs from the world
 // here, never by walking trees. Context builtins are not declarations:
 // numeric and typed usage sets are projected by seriesInputsOf and
-// builtinInputsOf for manifest publication. Composition internals (names,
+// builtinInputsOf for module publication. Composition internals (names,
 // funcs, call-site slots) are visit.ts projections; the noder fills requests
 // from the same reach walk.
 export interface Program {

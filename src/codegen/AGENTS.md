@@ -2,16 +2,17 @@
 
 Bind-independent target lowering from the one canonical `Program`.
 `codegen.ts` + `lower.ts` emit a recursive self-describing `JSModule`; only its
-`main` and `funcs` target the execution `RuntimeContext`, while
-`concretize(manifest, contextConstants?)` writes late facts directly into a
-caller-owned fresh manifest copy. `wgsl/` audits the supported generic Program
-subset and emits a complete WGSL module with target layouts. `docs/runtime.md`
+`main` and `funcs` target the execution `RuntimeContext`. Its raw
+`bind(module, contextConstants?)` callback writes calculated facts into a private
+configuration draft; the loader captures that callback behind
+`module.bind(values, context?)`, which mutates and returns the existing module.
+`wgsl/` audits the supported generic Program subset and emits a complete WGSL module with target layouts. `docs/runtime.md`
 owns both execution boundaries.
 
 ## Invariants
 
 - Dense ids (sid/pid/oid/fid/slots) are assigned here and published in the
-  manifest; the runtime never re-derives them from the Program. Frame
+  module; the runtime never re-derives them from the Program. Frame
   ownership is explicit: a method owns its hidden receiver, and every func
   owns its explicit params + locals; the program frame owns every remaining
   Name — never ownership by reachability. `ir/frames.ts` is the one
@@ -32,15 +33,25 @@ owns both execution boundaries.
   external data source, series payload, parameter set, job list, result capacity, GPU
   device, or dispatch policy. CPU/GPU runtimes own those physical inputs after
   codegen.
-- Generated JavaScript uses Runtime ABI 8. Static depths, activity, output
-  arguments, and request contexts emit directly in the manifest; only facts
-  that depend on parameters or permitted context constants emit assignments in
-  `concretize()`.
-- A WGSL artifact embeds the ordinary generated `JSModule`. GPU preparation
-  applies each binding to a deep-copied manifest and calls the same direct
-  `concretize()` method to resolve per-binding history capacities; neither
-  codegen nor runtime may introduce a second
-  bound-expression language or public binding ABI.
+- Runtime ABI 10 has no parallel manifest. The module owns `inputs` (Arrow
+  schema, numeric series, typed builtins), `parameters`, `state` (one shared
+  layout table plus frame templates), `outputs` (one Arrow schema and physical
+  declarations), and `requests` (metadata beside each executable child).
+  Codegen emits schema IPC; loading restores Arrow objects.
+- One output schema owns field names, structure and `tea:write`/`tea:kind`
+  metadata. Set declarations precede append declarations; generated `emit` and
+  `append` share one output-ID space. Declaration entries contain only combined
+  arguments and physical layout IDs, never duplicate Arrow fields.
+- Static depths, activity, arguments and request contexts emit directly. The
+  raw binding callback first resets every generated late fact, then checks for
+  missing parameters, then computes new facts. A missing contextual value must
+  never leave an older ready depth or argument array behind.
+- Typed builtin `constant` flags come from the checked qualifier, never name
+  matching. Host-provided fixed values belong to each module's context; codegen
+  receives none of them.
+- A WGSL artifact embeds the ordinary generated module. GPU preparation uses
+  the same public `module.bind` method on an independent module per job to
+  resolve parameter-dependent capacities; there is no second expression language or preparation engine.
 - Only Time-Machine ops lower to ctx calls; arithmetic, comparisons, math
   intrinsics, and na()/nz() expand inline via the rules tables in lower.ts.
   Backend-specific rendering decisions live only in those tables.
@@ -64,7 +75,7 @@ owns both execution boundaries.
   non-finite Program constant is an upstream invariant violation and fails
   lowering instead of being repaired here.
 - Synthesized mixed history demands normalize each bound component in generated
-  manifest concretization before `math.max`; never normalize only the
+  module binding before `math.max`; never normalize only the
   aggregate, because one invalid/unsafe input offset must contribute zero
   without erasing another valid demand.
 - Generated code is deterministic and pure: no Date, no Math.random, no
@@ -76,26 +87,25 @@ owns both execution boundaries.
   by the acorn ES2015 parse gate and deny-list test in
   codegen/portability.test.ts. New emissions must stay inside the ceiling.
 - Request edges lower to one primitive: JSON metadata in
-  `manifest.requests[rid]`, the child Program recursively generated as a
-  full sibling `JSModule` (`M1`, `M2`… in dependency order — code cannot live
-  in the JSON manifest) referenced from `requests: [...]`. Every child carries
-  the same ABI and shared `layout` table reference as the root. Static pairs and
-  options emit directly into `manifest.requests[rid].context`; late values are
-  assigned there by `concretize()`. Execution reads the prepared result via
+  `module.requests[rid]`, with the child Program generated as a sibling
+  `JSModule` (`M1`, `M2`… in dependency order) and stored in that entry's `module`
+  field. Every child carries the same ABI and shared `state.layout` reference.
+  Static pairs/options emit directly into `module.requests[rid].context`; late
+  values are assigned by the private binding callback. Execution reads the prepared result via
   `ctx.request(rid, offset)`. Each spec also carries the direct declaration
   `name`, `Sample`/`Collect` mode, child `resultSlot`/`resultLayout`, and parent
   `layout`; collect therefore transports child scalars while the parent sees an
   array layout. The noder rejects every dynamic edge before a valid Program
-  reaches codegen, so generated request manifests are static. Every edge
+  reaches codegen, so generated request contexts are static. Every edge
   evaluates options and pair once in Program-owned source order; bound values
   have no parallel owner. Every module's code names its own funcs table via its
   const (`ctx.moduleRef`), never `M`.
 - Typed builtins are a distinct runtime carrier: dense bids and exact
-  `{source, layout, depth}` specs publish in `manifest.builtin`, reads lower
-  to `ctx.builtin`, and bound history becomes concrete manifest depth.
+  `{source, layout, depth}` specs publish in `module.inputs.builtins`, reads lower
+  to `ctx.builtin`, and bound history becomes concrete module depth.
   Numeric application series remain `ctx.series` only.
 - Struct construction and field access lower through `newStruct`,
-  `structField`, and `storeStructField` using exact manifest layouts. A field
+  `structField`, and `storeStructField` using exact module layouts. A field
   store validates and captures its reference before the RHS. Collection
   mutation captures either its Name or struct-field location before explicit
   arguments and writes only the replacement header afterward. Mutable method
@@ -103,7 +113,7 @@ owns both execution boundaries.
   return only their declared result. WGSL fails closed for every reachable
   struct reference until a later GPU storage design lands.
 - `schema.ts` owns the only Type-to-Arrow Field projection, shared by JS and
-  WGSL. Generated manifests embed standard Arrow IPC schema bytes; loading
+  WGSL. Generated modules embed standard Arrow IPC schema bytes; loading
   restores genuine Arrow objects. Nominal identity comes from
   `Program.nominalIds`, never display names or a parallel recursive schema.
   Physical value layouts retain the same nominal ids for runtime validation.
@@ -113,7 +123,7 @@ owns both execution boundaries.
   UnimplementedError at generation — exit 2, never wrong code.
 - Bound depth expressions may read root-frame immutable aliases and call
   input-only UDFs; request options may also read context-constant builtins.
-  `concretize()` evaluates only the supported non-allocating
-  const/input/simple subset directly from manifest parameter values and
+  The raw binding callback evaluates only the supported non-allocating
+  const/input/simple subset directly from module parameter values and
   permitted context constants; it has no provisional frame or Heap.
   Row-varying demands remain capped.

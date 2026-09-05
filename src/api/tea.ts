@@ -6,17 +6,10 @@ import {Errors, type ErrorMsg} from '../base/print';
 import {compileToProgram} from '../compiler';
 import {generate} from '../codegen/codegen';
 import {loadModule} from '../runtime/load';
-import {moduleBindings, withModuleBindings} from '../runtime/module-binding';
 import {pineBuiltinSupplier} from '../extension/pine';
 import {createNode, type Node} from './node';
 
-export type {
-  BindingInput,
-  Datum,
-  DenseEmission,
-  EffectEmission,
-  Node,
-} from './node';
+export type {BindingInput, Datum, Node} from './node';
 
 const TEMPLATE_FILENAME = '<tea-template>';
 
@@ -45,10 +38,20 @@ function dedent(source: string): string {
 }
 
 /**
- * Top level tea API entrypoint to create a new Tea node.
- * @param strings
- * @param args
- * @returns
+ * Compile an in-memory Tea template and prepare its usable parameter defaults.
+ * The returned Node owns future stream connections; constructing it does not
+ * subscribe to data or execute a step. Diagnostics throw TeaCompileError.
+ *
+ * @example
+ * ```ts
+ * const node = tea`
+ *   length = input.int(14)
+ *   plot(close[length])
+ * `;
+ * node.module.parameters[0].value; // 14
+ * node.ready(); // false until a close DataStream is connected
+ * node.bind({length: 20}); // updates the same module and Node
+ * ```
  */
 export function tea(
   strings: TemplateStringsArray,
@@ -70,7 +73,6 @@ export function tea(
     throw new TeaCompileError(errors.flushErrors());
   }
 
-  const loaded = loadModule(generate(program));
-  const module = withModuleBindings(loaded, moduleBindings(loaded));
+  const module = loadModule(generate(program)).bind();
   return createNode(module, pineBuiltinSupplier());
 }

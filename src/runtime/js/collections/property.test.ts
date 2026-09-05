@@ -30,7 +30,7 @@ const FLOATS = 10;
 const STRINGS = 11;
 const BOOL = 12;
 
-const MANIFEST = [
+const LAYOUTS = [
   {kind: 'number', numeric: 'int'},
   {kind: 'number', numeric: 'float'},
   {kind: 'nullable-scalar', scalar: 'string'},
@@ -70,7 +70,7 @@ interface Harness {
 
 function harness(maxElements = 10_000): Harness {
   const heap = new ArenaHeap();
-  const layouts = new ValueLayoutRegistry(MANIFEST);
+  const layouts = new ValueLayoutRegistry(LAYOUTS);
   const structs = new StructStorageRuntime(heap, layouts);
   return {
     heap,

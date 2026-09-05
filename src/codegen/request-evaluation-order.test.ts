@@ -6,7 +6,7 @@ import {loadModule} from '../runtime/load';
 import {generate} from './codegen';
 
 describe('request context evaluation order', () => {
-  test('publishes a fully static request context directly in the manifest', () => {
+  test('publishes a fully static request context beside its module', () => {
     const program = mustBuild(
       [
         'd = request.security(',
@@ -19,7 +19,7 @@ describe('request context evaluation order', () => {
     const js = generate(program);
     const module = loadModule(js);
 
-    expect(module.manifest.requests[0].context).toEqual({
+    expect(module.requests[0].context).toEqual({
       symbol: 'SYMBOL_SENTINEL',
       timeframe: 'TIMEFRAME_SENTINEL',
       fill: 'carry',
@@ -27,7 +27,7 @@ describe('request context evaluation order', () => {
       ignoreInvalidSymbol: false,
       calcBarsCount: 0,
     });
-    expect(js).not.toContain('manifest.requests[0].context =');
+    expect(js).not.toContain('module.requests[0].context =');
   });
 
   test('publishes named scalar and collect result layouts', () => {
@@ -43,19 +43,19 @@ describe('request context evaluation order', () => {
       ),
     );
 
-    expect(module.manifest.requests).toMatchObject([
+    expect(module.requests).toMatchObject([
       {
         name: 'scalar',
-        merge: {mode: 'sample'},
-        resultLayout: module.manifest.requests[0]!.layout,
+        mode: 'sample',
+        resultLayout: module.requests[0]!.layout,
       },
       {
         name: 'window',
-        merge: {mode: 'collect'},
+        mode: 'collect',
       },
     ]);
-    const window = module.manifest.requests[1]!;
-    expect(module.layout[window.layout]).toEqual({
+    const window = module.requests[1]!;
+    expect(module.state.layout[window.layout]).toEqual({
       kind: 'array',
       element: window.resultLayout,
     });
@@ -84,9 +84,9 @@ describe('request context evaluation order', () => {
     expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
 
     const js = generate(program);
-    const concretize = js.slice(js.lastIndexOf('concretize(manifest'));
-    const assignment = concretize.match(
-      /manifest\.requests\[0\]\.context = \{symbol: \((t\d+)\), timeframe: \((t\d+)\), availability: \((t\d+)\), fill: \((t\d+)\), ignoreInvalidSymbol: \((t\d+)\), calcBarsCount: \((t\d+)\)\};/,
+    const binding = js.slice(js.lastIndexOf('bind(module'));
+    const assignment = binding.match(
+      /module\.requests\[0\]\.context = \{symbol: \((t\d+)\), timeframe: \((t\d+)\), availability: \((t\d+)\), fill: \((t\d+)\), ignoreInvalidSymbol: \((t\d+)\), calcBarsCount: \((t\d+)\)\};/,
     );
     expect(assignment).not.toBeNull();
     if (assignment === null) {
@@ -99,20 +99,18 @@ describe('request context evaluation order', () => {
       availability,
       ignoreInvalidSymbol,
       fill,
-    ].map(temp => concretize.indexOf(`const ${temp} =`));
+    ].map(temp => binding.indexOf(`const ${temp} =`));
     expect(captures.every(index => index >= 0)).toBe(true);
     expect(captures).toEqual([...captures].sort((a, b) => a - b));
 
-    const symbolCapture = concretize.indexOf('"SYMBOL_SENTINEL"');
+    const symbolCapture = binding.indexOf('"SYMBOL_SENTINEL"');
     const optionCapture = Math.max(...captures);
-    const assignmentIndex = concretize.indexOf(
-      'manifest.requests[0].context =',
-    );
+    const assignmentIndex = binding.indexOf('module.requests[0].context = {');
     expect(symbolCapture).toBeGreaterThan(optionCapture);
     expect(assignmentIndex).toBeGreaterThan(symbolCapture);
 
     const module = loadModule(js);
-    expect(module.manifest.requests[0].merge).toEqual({mode: 'sample'});
+    expect(module.requests[0].mode).toBe('sample');
   });
 
   test('evaluates a root Simple alias before binding request options', () => {
@@ -125,17 +123,17 @@ describe('request context evaluation order', () => {
     );
 
     const js = generate(program);
-    const rootBind = js.lastIndexOf('concretize(manifest');
+    const rootBind = js.lastIndexOf('bind(module');
     const bind = js.slice(rootBind, js.indexOf('funcs:', rootBind));
     const executionRead = bind.indexOf(
       '$contextValue(contextConstants, 0, "syminfo.type")',
     );
-    const optionCall = bind.indexOf('manifest.requests[0].context =');
+    const optionCall = bind.indexOf('module.requests[0].context = {');
     expect(executionRead).toBeGreaterThanOrEqual(0);
     expect(optionCall).toBeGreaterThan(executionRead);
 
     const module = loadModule(js);
-    expect(module.manifest.builtin).toMatchObject([
+    expect(module.inputs.builtins).toMatchObject([
       {source: {domain: 'syminfo', field: 'type'}},
     ]);
   });
@@ -173,4 +171,24 @@ describe('request context evaluation order', () => {
       'request options has an invalid argument evaluation order',
     );
   });
+});
+
+test('binding computes history retained by the parent request result', () => {
+  const initial = loadModule(
+    generate(
+      mustBuild(
+        [
+          'length = input.int(2, minval=0)',
+          'remote = request.security("X", "D", close)',
+          'plot(remote[length])',
+        ].join('\n'),
+      ),
+    ),
+  );
+  const first = initial.bind({length: 3});
+  expect(first.requests[0].depth).toEqual({kind: 'const', bars: 3});
+  const second = first.bind({length: 7});
+  expect(second).toBe(first);
+  expect(second.requests[0].depth).toEqual({kind: 'const', bars: 7});
+  expect(second.requests[0].module.parameters[0].value).toBe(7);
 });

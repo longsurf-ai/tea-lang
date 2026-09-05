@@ -1,7 +1,8 @@
 // Purpose: Public Node contract and private RxJS/Effect lifecycle implementation.
 
-import {Cause, Effect, Either, Exit} from 'effect';
+import {Cause, Effect, Exit} from 'effect';
 import {
+  defer,
   finalize,
   map,
   Observable,
@@ -16,27 +17,20 @@ import {DataType, TimeUnit} from 'apache-arrow';
 import {fatal} from '../base/print';
 import {JSRuntime, type StepResult} from '../runtime/js/runtime';
 import {
-  moduleBindings,
   moduleSeriesNames,
   requireConcreteModule,
-  withRequestModule,
-  initializeModuleTree,
-  moduleDeclaration,
 } from '../runtime/module-binding';
+import {BindError} from '../runtime/errors';
+import {cloneSchema} from '../runtime/io';
 import type {JSModule, RequestSpec} from '../runtime/module-abi';
-import {
-  createDatum,
-  type Datum,
-  type ExecutionDeclaration,
-} from '../runtime/output';
+import {createDatum, type Datum} from '../runtime/output';
 import {isTupleValue, type Value} from '../runtime/value';
 import {ValueLayoutRegistry} from '../runtime/value-layout';
-import {bindModule} from './binding';
 import {i, timeframeClock, type Clock} from './clock';
 import {DataStream} from './stream';
 import {sync} from './sync';
 
-export type {Datum, DenseEmission, EffectEmission} from '../runtime/output';
+export type {Datum} from '../runtime/output';
 
 /** One synchronized set of named input values moving through a Node. */
 type InputDatum = Readonly<Record<string, unknown>>;
@@ -60,7 +54,7 @@ type BuiltinSupplier = (
 ) => readonly Value[];
 
 const noBuiltins: BuiltinSupplier = (path, module) => {
-  if (module.manifest.builtin.length !== 0) {
+  if (module.inputs.builtins.length !== 0) {
     throw new Error(
       `Node builtin input wiring is unavailable at request path ${path.join('.') || 'root'}`,
     );
@@ -71,27 +65,33 @@ const noBuiltins: BuiltinSupplier = (path, module) => {
 /** Values accepted by `Node.bind()`: parameters, one stream, or named streams. */
 export type BindingInput =
   | DataStream<unknown>
-  | Readonly<Record<string, unknown>>
-  | Readonly<Record<string, DataStream<unknown>>>;
+  | Readonly<Record<string, unknown>>;
 
 /**
  * A compiled Tea program that can be bound to streams and observed as output.
  *
- * The Node keeps one stable JavaScript identity while its immutable compiled
- * module is replaced during binding. It owns the input Observable graph, one
- * child Node per Tea request, and the runtime created when execution starts.
+ * The Node and its module keep stable identities. Parameter patches update the
+ * module in place; stream connections live only in the Node. It owns the input
+ * Observable graph, one child Node per request, and the runtime created when
+ * execution starts. Module readiness describes configuration; Node readiness
+ * also requires the source streams to be connected.
  */
 export interface Node {
   /**
-   * Returns the complete compiled module tree for the Node's current bindings.
+   * The same compiled module owned by this Node, including Arrow schemas and
+   * request children. It contains no stream connection state. Binding updates
+   * this object in place until execution starts.
    *
-   * @example After `node.bind({length: 20})`, `node.module` contains that
-   * parameter value in both the main module and any request child modules.
+   * @example After `node.bind({length: 20})`, `node.module.parameters[0].value`
+   * is 20. `node.module.ready()` may be true before `node.ready()`, which also
+   * requires connected streams.
    */
   readonly module: JSModule;
 
   /**
-   * Supplies parameter values or input streams without starting execution.
+   * Supplies a parameter patch or connects input streams without subscribing.
+   * Parameter binding preserves previous values and fills only unset defaults;
+   * stream binding validates every requested field before changing connections.
    *
    * @example `node.bind({length: 20})` supplies a parameter;
    * `node.bind(closeStream)` supplies the remaining main input series.
@@ -129,14 +129,15 @@ export interface Node {
 /**
  * A concrete implementation of the public Node interface.
  *
- * `_module` is this level's compiled program, `data` is its combined input
+ * `module` is this level's compiled program, `data` is its combined input
  * Observable, and `requests` mirrors the compiled request-child array. Binding
- * may replace modules and data while the TeaNode object itself stays stable.
+ * updates configuration and data without replacing Node or module objects.
  */
 class TeaNode implements Node {
-  private _module: JSModule;
   private data: Observable<InputDatum> | null;
-  private requests: TeaNode[];
+  private readonly connected = new Set<string>();
+  private readonly requests: TeaNode[];
+  private publication: JSModule['outputs'] | null = null;
   private clock: Clock = i;
   private indices: number | null = null;
   private timed = false;
@@ -144,7 +145,6 @@ class TeaNode implements Node {
   private readonly results = new Subject<Datum>();
   private readonly deliveryFailure = new Subject<never>();
   private runtime: JSRuntime | null = null;
-  private declaration: ExecutionDeclaration | null = null;
   private connection: Subscription | null = null;
   private committedIndices = 0;
   private started = false;
@@ -158,35 +158,20 @@ class TeaNode implements Node {
    * main TeaNode whose `requests[0]` executes the `daily` expression.
    */
   constructor(
-    module: JSModule,
+    readonly module: JSModule,
     private readonly builtinSupplier: BuiltinSupplier,
     private readonly path: readonly number[] = [],
   ) {
-    module = initializeModuleTree(module);
-    this.layouts = new ValueLayoutRegistry(module.layout);
+    this.layouts = new ValueLayoutRegistry(module.state.layout);
     this.data = null;
     this.requests = module.requests.map(
       (request, requestId) =>
         new TeaNode(
-          request,
+          request.module,
           builtinSupplier,
           Object.freeze([...path, requestId]),
         ),
     );
-    this._module = module;
-  }
-
-  /**
-   * Rebuilds and returns the current immutable module tree.
-   *
-   * Each child Node owns its latest module separately, so this getter gathers
-   * those child modules before exposing one complete tree.
-   *
-   * @example After binding the `daily` request stream, `node.module` includes
-   * the newly bound child module under `module.requests[0]`.
-   */
-  get module(): JSModule {
-    return initializeModuleTree(this.snapshot());
   }
 
   /**
@@ -203,16 +188,17 @@ class TeaNode implements Node {
     if (this.started) {
       throw new Error('Node cannot bind after execution has started');
     }
-    const operation =
-      input instanceof DataStream
-        ? this.bindStreams(input)
-        : Object.values(input).every(value => value instanceof DataStream)
-          ? this.bindStreams(
-              input as Readonly<Record<string, DataStream<unknown>>>,
-            )
-          : this.bindParameters(input);
-    const result = Effect.runSync(Effect.either(operation));
-    if (Either.isLeft(result)) throw result.left;
+    if (input instanceof DataStream) {
+      this.bindStreams(input);
+    } else if (
+      Object.keys(input).length !== 0 &&
+      Object.values(input).every(value => value instanceof DataStream)
+    ) {
+      this.bindStreams(input as Readonly<Record<string, DataStream<unknown>>>);
+    } else {
+      this.module.bind(input);
+      this.refresh();
+    }
     return this;
   }
 
@@ -223,8 +209,11 @@ class TeaNode implements Node {
    * is missing, `ready()` still returns `false`.
    */
   ready(): boolean {
+    this.refresh();
     return (
-      this._module.ready() && this.requests.every(request => request.ready())
+      this.module.ready() &&
+      this.bindingSeriesNames().every(name => this.connected.has(name)) &&
+      this.requests.every(request => request.ready())
     );
   }
 
@@ -243,14 +232,19 @@ class TeaNode implements Node {
     if (this.disposed) throw new Error('Node is disposed');
     if (this.started) return this.observe(observer);
     if (!this.ready()) {
+      const missing = [
+        ...this.module.remaining(),
+        ...this.bindingSeriesNames().filter(name => !this.connected.has(name)),
+        ...this.module.requests
+          .filter((_, id) => !this.requests[id]!.ready())
+          .map(request => request.name),
+      ];
       throw new Error(
-        `Node is missing bindings: ${this._module
-          .remaining()
-          .map(binding => binding.name)
-          .join(', ')}`,
+        missing.length === 0
+          ? 'Node configuration is incomplete'
+          : `Node is missing bindings: ${missing.join(', ')}`,
       );
     }
-    requireConcreteModule(this.snapshot());
     const subscription = this.observe(observer);
     let execution: Observable<readonly [InputDatum, StepResult, index: number]>;
     try {
@@ -260,7 +254,14 @@ class TeaNode implements Node {
       this.disposeRuntime();
       throw error;
     }
-    this.started = true;
+    // The whole graph passed validation. Close every context before a source
+    // can run user callbacks, including request children not yet subscribed.
+    const start = (node: TeaNode): void => {
+      node.started = true;
+      Object.freeze(node.module);
+      node.requests.forEach(start);
+    };
+    start(this);
 
     this.connection = execution
       .pipe(
@@ -300,7 +301,7 @@ class TeaNode implements Node {
   /** Adds Node-owned position and source time to one exact step result. */
   private datum(input: InputDatum, result: StepResult, index: number): Datum {
     return createDatum(
-      (this.declaration ??= moduleDeclaration(this._module)),
+      this.publication!,
       index,
       result,
       this.outputTime(input.time),
@@ -350,297 +351,125 @@ class TeaNode implements Node {
   }
 
   /**
-   * Applies named parameter values to a new immutable compiled module tree.
+   * Connect streams only after every name, schema, clock, and extent passes.
+   * Configuration stays in JSModule; this Node alone records connected series.
    *
-   * `bindModule()` recalculates any configuration that depends on the supplied
-   * values. `updateModule()` then installs the new main and request modules on
-   * their existing Node owners. If a parameter changes which source series is
-   * required, the old input Observable is discarded because it no longer
-   * describes the program's inputs.
-   *
-   * @example For `length = input.int(10)`, `{length: 20}` produces a new module
-   * tree containing `20`; it does not emit data or start the runtime.
-   */
-  private bindParameters(
-    input: Readonly<Record<string, unknown>>,
-  ): Effect.Effect<void, Error> {
-    const self = this;
-    return Effect.gen(function* () {
-      const before = self.bindingSeriesNames();
-      const assignments = Object.entries(input).map(([name, value]) => ({
-        kind: 'parameter' as const,
-        name,
-        value,
-      }));
-      const module = yield* bindModule(self.snapshot(), assignments);
-      self.updateModule(module);
-      if (
-        JSON.stringify(before) !== JSON.stringify(self.bindingSeriesNames())
-      ) {
-        self.data = null;
-        self.clock = i;
-        self.indices = null;
-        self.timed = false;
-        self.intervalTimed = false;
-      }
-    });
-  }
-
-  /**
-   * Connects DataStreams to the main program and its request children.
-   *
-   * A single DataStream supplies every still-missing main series. A named
-   * object routes each key either to a main series or to the child Node created
-   * for a request with that variable name. Binding only builds Observables; it
-   * does not subscribe to them.
-   *
-   * @example `node.bind(closeStream)` supplies `close` to a simple program.
-   * `node.bind({close: main, daily: requested})` supplies the main `close`
-   * stream and the request declared as `daily`.
+   * @example `node.bind({close: prices, daily: dailyPrices})` connects the
+   * root close field and the child declared as daily without subscribing either.
    */
   private bindStreams(
     input: DataStream<unknown> | Readonly<Record<string, DataStream<unknown>>>,
-  ): Effect.Effect<void, Error> {
-    const self = this;
-    /**
-     * Installs streams that feed fields of this Node's main program.
-     *
-     * Each pair says which field names to read from one DataStream. The helper
-     * checks that known clocks agree, marks those series as supplied in a new
-     * module, converts each stream emission into one input record, and combines it with
-     * any main input already bound.
-     *
-     * @example `[[["close", "open"], bars]]` reads both fields from each
-     * object emitted by `bars` and produces Datums such as
-     * `{close: 10, open: 9}`.
-     */
-    const bindRoot = (
-      bindings: readonly (readonly [
-        names: readonly string[],
-        stream: DataStream<unknown>,
-      ])[],
-    ): Effect.Effect<void, Error> =>
-      Effect.gen(function* () {
-        if (bindings.length === 0) return;
-        for (const [names, stream] of bindings) {
-          const error = self.streamError(names, stream);
-          if (error !== undefined) return yield* Effect.fail(error);
-        }
-        const streams = bindings.map(([, stream]) => stream);
-        const clocks = [
-          self.clock,
-          ...streams.map(stream => stream.clock),
-        ].filter(clock => clock !== i);
-        if (clocks.some(clock => clock !== clocks[0])) {
-          return yield* Effect.fail(
-            new Error('bound DataStream clocks disagree'),
+  ): void {
+    this.refresh();
+    const names = this.bindingSeriesNames();
+    const root: (readonly [readonly string[], DataStream<unknown>])[] = [];
+    const children: (readonly [TeaNode, DataStream<unknown>])[] = [];
+    if (input instanceof DataStream) {
+      root.push([names.filter(name => !this.connected.has(name)), input]);
+    } else {
+      for (const [name, stream] of Object.entries(input)) {
+        const ids = this.module.requests.flatMap((request, id) =>
+          request.name === name ? [id] : [],
+        );
+        const count = (names.includes(name) ? 1 : 0) + ids.length;
+        if (count === 0)
+          throw new BindError(
+            `no bind-known root series or static request child matches '${name}'`,
           );
-        }
-        const extents = [
-          self.indices,
-          ...streams.map(stream => stream.indices),
-        ].filter((indices): indices is number => indices !== null);
-        if (extents.some(indices => indices !== extents[0])) {
-          return yield* Effect.fail(
-            new Error('bound DataStream indices disagree'),
-          );
-        }
-        const assignments = bindings.flatMap(([names]) =>
-          names.map(name => ({kind: 'series' as const, name})),
-        );
-        const data = bindings.reduce<Observable<InputDatum> | null>(
-          (combined, [names, stream]) =>
-            self.combineData(combined, self.sourceData(stream, names)),
-          null,
-        );
-        const module = yield* bindModule(self.snapshot(), assignments);
-        self.updateModule(module);
-        self.clock = clocks[0] ?? i;
-        self.indices = extents[0] ?? null;
-        self.timed ||= streams.some(stream => self.hasTime(stream));
-        self.intervalTimed ||= streams.some(
-          stream => self.hasTime(stream) && self.hasTimeClose(stream),
-        );
-        self.data = self.combineData(self.data, data);
-      });
-
-    /**
-     * Validates named stream keys and returns the streams owned by this Node.
-     *
-     * Every key must match exactly one destination: either a main series name
-     * or a direct request variable name. Request streams are deliberately left
-     * out of the return value because `bindRequestStreams()` passes them to
-     * their child Nodes afterward.
-     *
-     * @example Given `{close: main, daily: child}`, this returns the `close`
-     * binding; `daily` is valid but is handled by the request child.
-     */
-    const rootBindings = (
-      input: Readonly<Record<string, DataStream<unknown>>>,
-    ) =>
-      Effect.gen(function* () {
-        const rootNames = self.bindingSeriesNames();
-        const requestNames = self._module.manifest.requests.map(
-          request => request.name,
-        );
-        for (const name of Object.keys(input)) {
-          const root = rootNames.includes(name);
-          const requests = requestNames.filter(
-            candidate => candidate === name,
-          ).length;
-          if ((root ? 1 : 0) + requests === 0) {
-            return yield* Effect.fail(
-              new Error(
-                `no bind-known root series or static request child matches '${name}'`,
-              ),
-            );
-          }
-          if ((root ? 1 : 0) + requests > 1) {
-            return yield* Effect.fail(
-              new Error(`stream binding '${name}' is ambiguous`),
-            );
-          }
-        }
-        return Object.entries(input)
-          .filter(([name]) => rootNames.includes(name))
-          .map(([name, stream]) => [[name], stream] as const);
-      });
-
-    return Effect.gen(function* () {
-      if (input instanceof DataStream) {
-        const names = [
-          ...new Set(
-            self._module
-              .remaining()
-              .filter(binding => binding.kind === 'series')
-              .map(binding => binding.name),
-          ),
-        ];
-        yield* bindRoot([[names, input]]);
-        return;
+        if (count !== 1)
+          throw new BindError(`stream binding '${name}' is ambiguous`);
+        if (ids.length === 1) children.push([this.requests[ids[0]!]!, stream]);
+        else root.push([[name], stream]);
       }
+    }
+    for (const [names, stream] of root) {
+      const error = this.streamError(names, stream);
+      if (error !== undefined) throw error;
+    }
+    for (const [child, stream] of children) {
+      const error = child.streamError(
+        child.bindingSeriesNames().filter(name => !child.connected.has(name)),
+        stream,
+      );
+      if (error !== undefined) throw error;
+    }
+    const clocks = [
+      this.clock,
+      ...root.map(([, stream]) => stream.clock),
+    ].filter(clock => clock !== i);
+    if (clocks.some(clock => clock !== clocks[0]))
+      throw new BindError('bound DataStream clocks disagree');
+    const extents = [
+      this.indices,
+      ...root.map(([, stream]) => stream.indices),
+    ].filter((indices): indices is number => indices !== null);
+    if (extents.some(indices => indices !== extents[0]))
+      throw new BindError('bound DataStream indices disagree');
 
-      const root = yield* rootBindings(input);
-      for (let id = 0; id < self.requests.length; id++) {
-        const child = self.requests[id];
-        const stream = input[self._module.manifest.requests[id].name];
-        if (stream === undefined) continue;
-        const names = child._module
-          .remaining()
-          .filter(binding => binding.kind === 'series')
-          .map(binding => binding.name);
-        const error = child.streamError(names, stream);
-        if (error !== undefined) return yield* Effect.fail(error);
-      }
-      yield* bindRoot(root);
-      yield* self.bindRequestStreams(input);
-    });
+    for (const [names, stream] of root) {
+      this.data = this.combineData(this.data, this.sourceData(stream, names));
+      names.forEach(name => this.connected.add(name));
+      this.timed ||= this.hasTime(stream);
+      this.intervalTimed ||= this.hasTime(stream) && this.hasTimeClose(stream);
+    }
+    this.clock = clocks[0] ?? i;
+    this.indices = extents[0] ?? null;
+    for (const [child, stream] of children) child.bindStreams(stream);
   }
 
   /**
    * Check a stream before changing any binding in the graph.
-   * @example A Utf8 `close` field fails here, before another request is bound.
+   * @example A nullable or Utf8 close field fails before another request connects.
    */
   private streamError(
     names: readonly string[],
     stream: DataStream<unknown>,
   ): Error | undefined {
     if (this.clock !== i && stream.clock !== i && this.clock !== stream.clock)
-      return new Error('bound DataStream clocks disagree');
+      return new BindError('bound DataStream clocks disagree');
     if (
       this.indices !== null &&
       stream.indices !== null &&
       this.indices !== stream.indices
     )
-      return new Error('bound DataStream indices disagree');
+      return new BindError('bound DataStream indices disagree');
     const fields = stream.schema.fields;
     for (const name of names) {
+      if (this.connected.has(name))
+        return new BindError(`series '${name}' is already bound`);
       const field = fields.find(field => field.name === name);
       if (field === undefined)
-        return new Error(`source schema does not provide series '${name}'`);
+        return new BindError(`source schema does not provide series '${name}'`);
       if (
         field.nullable ||
         (!DataType.isFloat(field.type) &&
           !(DataType.isInt(field.type) && field.type.bitWidth < 64))
-      )
-        return new Error(`series '${name}' requires a numeric Arrow field`);
+      ) {
+        return new BindError(`series '${name}' requires a numeric Arrow field`);
+      }
     }
   }
 
   /**
-   * Passes each named request stream to the child Node that computes it.
-   *
-   * The compiled request array and the child Node array have the same order.
-   * Looking up the request's variable name in `input` therefore identifies the
-   * child that should receive that stream. Calling the child's `bindStreams()`
-   * recursively applies the same rule to nested requests.
-   *
-   * @example For `daily = request.security(...)`, `{daily: stream}` is passed
-   * to the child Node responsible for calculating `daily`.
+   * Drop obsolete stream connections after a source parameter changes, including
+   * patches made directly through node.module.bind(). Other parameters keep the
+   * existing graph. A request child owns and refreshes its own connections.
+   * @example Changing source from close to open requires binding an open stream.
    */
-  private bindRequestStreams(
-    input: Readonly<Record<string, DataStream<unknown>>>,
-  ): Effect.Effect<void, Error> {
-    const self = this;
-    return Effect.gen(function* () {
-      for (let requestId = 0; requestId < self.requests.length; requestId++) {
-        const child = self.requests[requestId]!;
-        const name = self._module.manifest.requests[requestId]?.name;
-        const stream = name === undefined ? undefined : input[name];
-        if (stream !== undefined) yield* child.bindStreams(stream);
-      }
-    });
-  }
-
-  /**
-   * Installs a newly bound immutable module tree without replacing Node objects.
-   *
-   * Each new child module is matched to the existing child Node at the same
-   * request-array position. Existing child owners are updated recursively;
-   * a child Node is created only when the new module tree has a new child.
-   * This preserves the identity and Observable ownership of the public Node.
-   *
-   * @example Binding `{length: 20}` replaces the main and `daily` child modules
-   * that contain `length`, while `node` remains the same JavaScript object.
-   */
-  private updateModule(module: JSModule): void {
-    const requests = module.requests.map((request, requestId) => {
-      const child = this.requests[requestId];
-      if (child === undefined) {
-        return new TeaNode(
-          request,
-          this.builtinSupplier,
-          Object.freeze([...this.path, requestId]),
-        );
-      }
-      child.updateModule(request);
-      return child;
-    });
-    this._module = module;
-    this.requests = requests;
-  }
-
-  /**
-   * Collects the modules owned by this Node tree into one immutable JSModule.
-   *
-   * A TeaNode stores its own module and its child TeaNodes separately. This
-   * function walks the children, recursively obtains their current modules,
-   * and replaces only child references that changed. The result is suitable
-   * for `bindModule()` or the public `node.module` getter.
-   *
-   * @example If only the `daily` child was rebound, `snapshot()` returns the
-   * original main module with that one updated child module attached.
-   */
-  private snapshot(): JSModule {
-    if (this.requests.length !== this._module.requests.length) {
-      return fatal('TeaNode request state disagrees with JSModule requests');
+  private refresh(): void {
+    if (this.started) return;
+    const names = new Set(
+      this.module.inputs.schema.fields.map(field => field.name),
+    );
+    if ([...this.connected].some(name => !names.has(name))) {
+      this.connected.clear();
+      this.data = null;
+      this.clock = i;
+      this.indices = null;
+      this.timed = false;
+      this.intervalTimed = false;
     }
-    return this.requests.reduce((parent, child, requestId) => {
-      const childModule = child.snapshot();
-      return parent.requests[requestId] === childModule
-        ? parent
-        : withRequestModule(parent, requestId, childModule);
-    }, this._module);
+    this.requests.forEach(request => request.refresh());
   }
 
   /**
@@ -653,22 +482,21 @@ class TeaNode implements Node {
    * value per sid even when two slots read the same source field.
    */
   private seriesNames(): readonly string[] {
-    return moduleSeriesNames(this._module);
+    return moduleSeriesNames(this.module);
   }
 
   /** Lists the distinct series names currently visible to public binding. */
   private bindingSeriesNames(): readonly string[] {
-    return moduleBindings(this._module)
-      .filter(binding => binding.kind === 'series')
-      .map(binding => binding.name);
+    return [...new Set(moduleSeriesNames(this.module))];
   }
 
   /**
    * Converts one schema-validated DataStream into the input record Node uses.
    *
    * Object emissions contribute only the requested fields. A scalar emission
-   * is allowed when exactly one field name is requested. If the schema declares
-   * `time: bigint`, the time field is retained and must not move backward.
+   * is allowed when exactly one field name is requested. Arrow millisecond
+   * timestamps or Int64 time fields retain exact event time and cannot move
+   * backward; nullable absent and explicit-null time remain distinct.
    *
    * @example With names `["close"]`, `10` and `{close: 10, volume: 5}` both
    * become `{close: 10}`. With names `["close", "open"]`, the source must emit
@@ -867,10 +695,9 @@ class TeaNode implements Node {
   private steps(): Observable<
     readonly [InputDatum, StepResult, index: number]
   > {
-    const runtime = new JSRuntime(this._module);
-    this.runtime = runtime;
+    requireConcreteModule(this.module);
     const names = this.seriesNames();
-    const specs = this._module.manifest.requests;
+    const specs = this.module.requests;
     let pending = this.data ?? of(Object.freeze({}) as InputDatum);
     specs.forEach((spec, requestId) => {
       const child = this.requests[requestId];
@@ -879,51 +706,62 @@ class TeaNode implements Node {
       }
       pending = this.synchronize(spec, child, pending);
     });
-    return pending.pipe(
-      map(datum => {
-        const index = this.committedIndices;
-        const requests = specs.map(spec => {
-          if (!Object.hasOwn(datum, spec.name)) {
-            return fatal(`request '${spec.name}' was not synchronized`);
-          }
-          return datum[spec.name] as Value;
-        });
-        const result = Exit.match(
-          Effect.runSyncExit(
-            runtime.step({
-              series: names.map(name => this.numericSeries(datum[name])),
-              builtins: this.builtinSupplier(
-                this.path,
-                this._module,
-                index,
-                this.indices,
-                datum,
-              ),
-              requests,
-              provisional: false,
-            }),
-          ),
-          {
-            onFailure: cause => {
-              throw Cause.squash(cause);
+    return defer(() => {
+      const runtime = new JSRuntime(this.module);
+      this.runtime = runtime;
+      this.publication = {
+        ...this.module.outputs,
+        schema: cloneSchema(this.module.outputs.schema),
+      };
+      return pending.pipe(
+        map(datum => {
+          const index = this.committedIndices;
+          const requests = specs.map(spec => {
+            if (!Object.hasOwn(datum, spec.name)) {
+              return fatal(`request '${spec.name}' was not synchronized`);
+            }
+            return datum[spec.name] as Value;
+          });
+          const result = Exit.match(
+            Effect.runSyncExit(
+              runtime.step({
+                series: names.map(name => this.numericSeries(datum[name])),
+                builtins: this.builtinSupplier(
+                  this.path,
+                  this.module,
+                  index,
+                  this.indices,
+                  datum,
+                ),
+                requests,
+                provisional: false,
+              }),
+            ),
+            {
+              onFailure: cause => {
+                throw Cause.squash(cause);
+              },
+              onSuccess: value => value,
             },
-            onSuccess: value => value,
+          );
+          if (!result.provisional) this.committedIndices += 1;
+          return [datum, result, index] as const;
+        }),
+        tap({
+          complete: () => {
+            if (
+              this.indices !== null &&
+              this.committedIndices !== this.indices
+            ) {
+              throw new Error(
+                `Node completed ${this.committedIndices} indices from a declared ${this.indices}`,
+              );
+            }
           },
-        );
-        if (!result.provisional) this.committedIndices += 1;
-        return [datum, result, index] as const;
-      }),
-      tap({
-        complete: () => {
-          if (this.indices !== null && this.committedIndices !== this.indices) {
-            throw new Error(
-              `Node completed ${this.committedIndices} indices from a declared ${this.indices}`,
-            );
-          }
-        },
-      }),
-      finalize(() => runtime.dispose()),
-    );
+        }),
+        finalize(() => runtime.dispose()),
+      );
+    });
   }
 
   /**
@@ -1068,7 +906,7 @@ class TeaNode implements Node {
     const childClock = this.requestClock(spec, child);
     let continueAfterSourceComplete = false;
     let project: RequestProjector;
-    if (spec.merge.mode === 'sample') {
+    if (spec.mode === 'sample') {
       const timed =
         spec.context?.availability === 'start'
           ? this.timed && child.timed
@@ -1199,7 +1037,7 @@ class TeaNode implements Node {
    */
   private requestCount(spec: RequestSpec, childClock: Clock): number | null {
     if (
-      spec.merge.mode !== 'collect' ||
+      spec.mode !== 'collect' ||
       this.clock === i ||
       childClock === i ||
       this.clock % childClock !== 0n

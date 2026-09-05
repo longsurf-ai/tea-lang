@@ -1,7 +1,7 @@
 # GPU runtime
 
 WebGPU execution of one bind-independent artifact across caller-ordered
-concrete bindings. `session.ts` owns manifest concretization, buffer planning,
+concrete bindings. `session.ts` owns parameter binding, buffer planning,
 device resources, dispatch, readback, decoding, and publication.
 `src/gpu/contract.ts` is the producer/consumer artifact boundary.
 
@@ -9,9 +9,15 @@ device resources, dispatch, readback, decoding, and publication.
 
 - `createGpuExecution()` is the only public GPU execution entry. It accepts an
   injected `GPUDevice`, one compiled artifact, and ordered `GpuBinding[]`.
-- GPU preparation loads the artifact's generated JavaScript binding module and
-  concretizes a fresh manifest through shared `runtime/module-binding.ts`. It
-  never creates a CPU runtime or re-reads Program IR.
+- GPU preparation loads the artifact's ordinary JS module and copies it for each
+  binding before calling its synchronous mutable `bind()` method. The module is flat: inputs,
+  parameters, state, outputs, and request records containing child modules.
+  State capacities are derived here from prepared frame depths and finite
+  extents. No shared binding-layout wrapper or parallel binder exists.
+- The embedded module owns the only Arrow output schema and declaration list.
+  Set and append outputs use one index space; physical event records carry the
+  unified output ID. The runtime decodes scalar bytes into cells aligned with
+  that declaration list and calls shared `createDatum()` for publication.
 - Fixed buffer groups, descriptor offsets, strides, and artifact ABI constants
   come only from `src/gpu/contract.ts`; runtime code must not duplicate them.
 - Each binding has private state, concrete series arrays, output sink, buffer slices, and
@@ -26,7 +32,7 @@ device resources, dispatch, readback, decoding, and publication.
   artifact and device limit; disposing a session releases only session-created
   GPU resources.
 
-- Output/effect schemas decode from standard Arrow IPC. Each sink receives its
+- The module schema decodes from standard Arrow IPC. Each sink receives its
   own declaration; publication uses named `outputN` records and `effectN` lists
   with global ordinals through shared `createDatum()`. GPU supports its existing
   scalar subset only; Arrow lists and structs do not imply GPU execution support.

@@ -13,6 +13,7 @@ import {mustBuild} from '../../noder/testing';
 import {arrayStream, executeTestModule} from '../../testing/batch';
 import {OutputCapture} from '../../testing/output';
 import {loadModule} from '../load';
+import {outputFields} from '../output';
 import {
   createGpuExecution,
   type GpuBinding,
@@ -89,6 +90,31 @@ test('Dawn preserves Arrow enum payloads, missing values and global event order'
   ]);
 });
 
+test('Dawn keeps bound history and persistent state separate for every binding', async () => {
+  const program = mustBuild(
+    [
+      'lag = input.int(1, minval=0, maxval=8)',
+      'previous(float value) => value[lag]',
+      'var float total = 0',
+      'total += close',
+      'left = previous(close)',
+      'right = previous(open)',
+      'plot(left + right + total)',
+    ].join('\n'),
+  );
+  const {gpuSinks} = await assertParity(program, [
+    binding({close: [1, 2, 3, 4], open: [4, 3, 2, 1]}, {lag: 1}),
+    binding({close: [10, 20, 30], open: [8, 9, 10]}, {lag: 2}),
+  ]);
+  assert.deepEqual(
+    gpuSinks.map(sink => sink.emissions.map(emission => emission.channels[0])),
+    [
+      [NaN, 8, 11, 15],
+      [NaN, NaN, 78],
+    ],
+  );
+});
+
 test('Dawn captures Arrow schema ownership before observer mutation', async () => {
   const artifact = compiledArtifact(
     mustBuild(
@@ -111,10 +137,12 @@ test('Dawn captures Arrow schema ownership before observer mutation', async () =
       sink: {
         declare(declaration) {
           first.declare(declaration);
-          declaration.effects[0]!.payload.metadata.set(
-            'tea:members',
-            '[{"name":"wrong"}]',
-          );
+          outputFields(declaration.schema)
+            .find(field => field.name === 'effect0')!
+            .type.children[0]!.type.children[1]!.metadata.set(
+              'tea:members',
+              '[{"name":"wrong"}]',
+            );
         },
         publish: row => first.publish(row),
       },
@@ -124,7 +152,9 @@ test('Dawn captures Arrow schema ownership before observer mutation', async () =
   try {
     await execution.runAll();
     assert.equal(
-      second.effectSchemas[0]!.payload.metadata.get('tea:members'),
+      second.fields
+        .find(field => field.name === 'effect0')!
+        .type.children[0]!.type.children[1]!.metadata.get('tea:members'),
       '[{"name":"buy","title":"Buy"}]',
     );
     assert.equal(first.effectEmissions[0]!.payload, 'buy');
@@ -215,8 +245,8 @@ async function dawn(): Promise<{readonly device: GPUDevice}> {
 
 function normalize(sink: OutputCapture): unknown {
   return {
-    outputs: sink.outputs,
-    effects: sink.effectSchemas,
+    schema: sink.schema,
+    declarations: sink.declarations,
     publications: sink.publications,
   };
 }

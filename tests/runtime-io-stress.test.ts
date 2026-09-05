@@ -28,7 +28,8 @@ import {compileToProgram} from '../src/compiler';
 import {validateRecord} from '../src/runtime/io';
 import {isRef, type HeapStats} from '../src/runtime/js/heap';
 import {loadModule} from '../src/runtime/load';
-import type {Datum} from '../src/runtime/output';
+import {cloneModule} from '../src/runtime/module-binding';
+import {outputFields, type Datum} from '../src/runtime/output';
 
 const stress = process.env.TEA_STRESS === '1';
 const seed = 0x51a7;
@@ -270,10 +271,11 @@ test('independent bindings preserve source schemas and parameter-derived history
   const rows = Array.from({length: 8}, (_, close) => ({close}));
   for (let index = 0; index < count; index += 1) {
     const lag = index % 8;
-    const node = createNode(module).bind({lag});
-    const snapshot = node.module;
-    snapshot.manifest.outputs[0].channels[0].metadata.set('tea:type', 'forged');
-    node.bind(new DataStream(prices, of(...rows), i, rows.length));
+    const copy = cloneModule(module);
+    const node = createNode(copy).bind({lag});
+    assert.equal(node.module, copy);
+    const source = new Subject<{close: number}>();
+    node.bind(new DataStream(prices, source, i, rows.length));
     let seen = 0;
     let failure: unknown;
     node.to({
@@ -287,13 +289,21 @@ test('independent bindings preserve source schemas and parameter-derived history
         failure = error;
       },
     });
+    outputFields(copy.outputs.schema)[0].type.children[0].metadata.set(
+      'tea:type',
+      'forged',
+    );
+    for (const row of rows) source.next(row);
+    source.complete();
     node.dispose();
     if (failure !== undefined) throw failure;
     assert.equal(seen, rows.length);
-    assert.equal(snapshot.manifest.params[0].value, lag);
-    assert.equal(module.manifest.params[0].value, undefined);
+    assert.equal(copy.parameters[0].value, lag);
+    assert.equal(module.parameters[0].value, undefined);
     assert.equal(
-      module.manifest.outputs[0].channels[0].metadata.get('tea:type'),
+      outputFields(module.outputs.schema)[0].type.children[0].metadata.get(
+        'tea:type',
+      ),
       'float',
     );
   }

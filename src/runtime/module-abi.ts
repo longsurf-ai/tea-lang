@@ -1,4 +1,4 @@
-// Purpose: Versioned recursive JSModule, pure binding data, and the generated
+// Purpose: Versioned recursive JSModule, binding data, and the generated
 // execution RuntimeContext contract.
 
 import type {Schema} from 'apache-arrow';
@@ -6,11 +6,11 @@ import type {BuiltinSource} from '../ir/builtin';
 import type {NameStorage} from '../ir/node';
 import type {Ref} from './js/heap';
 import type {OutputSpec} from './output';
-import type {EffectSpec, ParamSpec} from './schema';
+import type {ParamSpec} from './schema';
 import type {LayoutId, ValueLayout} from './value-layout';
-import type {CollectionValue, ManifestValue, Value} from './value';
+import type {CollectionValue, Scalar, Value} from './value';
 
-export const RUNTIME_ABI_VERSION = 8 as const;
+export const RUNTIME_ABI_VERSION = 10 as const;
 
 /** True when a value can address or retain committed history. */
 export function isHistoryOffset(offset: number): boolean {
@@ -37,30 +37,28 @@ export interface FrameLayout {
 export interface SeriesSpec {
   readonly id: string | null;
   readonly depth: DepthSpec;
-  /** Whether the host has supplied this execution context's source series. */
-  readonly supplied?: boolean;
 }
 
 export interface BuiltinSpec {
+  /** Whether this source can supply a fixed binding-time scalar. */
+  readonly constant: boolean;
+  /** Fixed value supplied through module.bind, never per-step state. */
+  readonly value?: Scalar;
   readonly source: BuiltinSource;
   readonly layout: LayoutId;
   readonly depth: DepthSpec;
 }
 
-export interface EffectManifestSpec {
-  readonly layout: LayoutId;
-  readonly declaration: EffectSpec;
-}
-
 export interface RequestSpec {
+  /** Executable child beside its context and synchronization requirements. */
+  readonly module: JSModule;
   readonly name: string;
-  readonly merge: {readonly mode: 'sample' | 'collect'};
+  readonly mode: 'sample' | 'collect';
   readonly depth: DepthSpec;
   readonly resultSlot: number;
   readonly resultLayout: LayoutId;
   readonly layout: LayoutId;
-  readonly dynamic: boolean;
-  /** Concrete static request configuration, or null until concretization. */
+  /** Concrete static request configuration, or null until binding. */
   readonly context?: {
     readonly symbol: string;
     readonly timeframe: string;
@@ -71,78 +69,60 @@ export interface RequestSpec {
   } | null;
 }
 
-export interface ModuleManifest {
-  readonly inputs: Schema;
-  readonly series: readonly SeriesSpec[];
-  readonly builtin: readonly BuiltinSpec[];
-  readonly params: readonly (ParamSpec & {
-    /** True only where the host binds this compilation-global parameter. */
-    readonly bindable?: boolean;
-    /** Current host-bound value; absent on an incomplete module snapshot. */
-    readonly value?: ManifestValue;
-    /** Null until a parameter-dependent activity expression resolves. */
-    readonly active?: boolean | null;
-  })[];
-  readonly outputs: readonly (OutputSpec & {
-    /** Runtime storage descriptors, separate from Arrow's logical fields. */
-    readonly layouts: readonly number[];
-    /** Concrete declaration arguments, or null until concretization. */
-    readonly boundArgs?:
-      | readonly {
-          readonly name: string;
-          readonly value: Value;
-        }[]
-      | null;
-  })[];
-  readonly effects: readonly EffectManifestSpec[];
-  readonly frames: readonly FrameLayout[];
-  readonly requests: readonly RequestSpec[];
-}
-
 export interface Frame {
   readonly kind: 'frame';
 }
 
-/** One binding state derived from the concrete manifest. */
-export type ModuleBinding =
-  | {
-      readonly kind: 'series';
-      readonly name: string;
-      readonly supplied: boolean;
-    }
-  | {
-      readonly kind: 'parameter';
-      readonly name: string;
-      readonly value?: ManifestValue;
-    };
-
-/** One self-describing generated JavaScript module in the request tree. */
+/**
+ * One compiled module with mutable configuration. Code and requirements live
+ * together; live frames, history and Heap belong to JSRuntime. Binding updates
+ * this module and its request children in place, without subscribing to streams.
+ *
+ * @example
+ * ```ts
+ * module.bind({length: 20, enabled: false});
+ * module.bind({length: 40});
+ * // The same module now has length=40 and still has enabled=false.
+ * ```
+ */
 export interface JSModule {
-  /**
-   * Required named inputs, including currently selected source parameters.
-   * @example `module.inputs.fields[0].name` is `close` for `plot(close)`.
-   */
-  readonly inputs: Schema;
-  /**
-   * An independent Arrow schema for published step records.
-   * @example `module.outputs.fields.find(field => field.name === 'output0')`
-   * describes the first output declaration's record.
-   */
-  readonly outputs: Schema;
   readonly abi: typeof RUNTIME_ABI_VERSION;
-  /** Shared value-layout table for every module in one generated request tree. */
-  readonly layout: readonly ValueLayout[];
-  readonly manifest: ModuleManifest;
-  readonly requests: readonly JSModule[];
-  /** True when this module context's manifest is concrete and fully supplied. */
+  readonly inputs: {
+    readonly schema: Schema;
+    readonly series: readonly SeriesSpec[];
+    readonly builtins: readonly BuiltinSpec[];
+  };
+  readonly parameters: readonly (ParamSpec & {
+    readonly value?: Scalar;
+    readonly active: boolean | null;
+  })[];
+  /** Static storage descriptions, not live execution state. */
+  readonly state: {
+    readonly layout: readonly ValueLayout[];
+    readonly frames: readonly FrameLayout[];
+  };
+  /** The schema is the sole owner of output fields, names and write modes. */
+  readonly outputs: {
+    readonly schema: Schema;
+    readonly declarations: readonly OutputSpec[];
+  };
+  readonly requests: readonly RequestSpec[];
+  /**
+   * Validate a parameter patch, fill still-unset defaults, and resolve dependent
+   * requirements. Fixed context values are private to this module's context;
+   * children retain their own values while inheriting parameter changes.
+   * Returns this same module. Failure leaves the whole tree unchanged; binding
+   * is closed once execution starts. Clone the module for an independent run.
+   * @example `module.bind({length: 10})` resolves close[length] retention to 10.
+   */
+  bind(
+    values?: Readonly<Record<string, unknown>>,
+    context?: ReadonlyMap<number, Scalar>,
+  ): JSModule;
+  /** Configuration completeness only; Node checks connected streams separately. */
   ready(): boolean;
-  /** Missing bindings derived from this module context's manifest. */
-  remaining(): readonly ModuleBinding[];
-  /** Mutate only the caller-owned fresh manifest copy with late concrete facts. */
-  concretize(
-    manifest: ModuleManifest,
-    contextConstants?: ReadonlyMap<number, Value>,
-  ): void;
+  /** Names of parameters without a usable default or supplied value. */
+  remaining(): readonly string[];
   readonly funcs: Readonly<
     Record<
       number,
@@ -165,7 +145,7 @@ export interface RuntimeContext {
   frame(fr: Frame, slot: number): Frame;
   root(): Frame;
   emit(oid: number, channel: number, v: Value): void;
-  emitEffect(effectId: number, payload: Value): void;
+  append(outputId: number, payload: Value): void;
   newStruct(layout: LayoutId, fields: readonly Value[]): Ref<unknown>;
   requireStruct(value: Value, layout: LayoutId): Ref<unknown>;
   structField(value: Value, ownerLayout: LayoutId, index: number): Value;

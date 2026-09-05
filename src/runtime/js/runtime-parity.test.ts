@@ -7,14 +7,16 @@ import {describe, expect, test} from 'vitest';
 import {Storage} from '../../ir/node';
 import {type Value} from '../abi';
 import {JSRuntime, type StepInput, type StepResult} from './runtime';
-import {configureModule} from '../module-binding';
+
 import {
   RUNTIME_ABI_VERSION,
   type Frame,
   type JSModule,
   type RuntimeContext,
 } from '../module-abi';
-import {testModule, scalar} from '../testing';
+import {testModule, scalar, output} from '../testing';
+import {cloneModule} from '../module-binding';
+import {publicationSchema} from '../output';
 import type {ValueLayout} from '../value-layout';
 
 const NUMBER = 0;
@@ -35,7 +37,7 @@ const LAYOUTS = [
 ] as const satisfies readonly ValueLayout[];
 
 function runtime(module: JSModule): JSRuntime {
-  return new JSRuntime(configureModule(module, []));
+  return new JSRuntime(cloneModule(module).bind());
 }
 
 function input({
@@ -55,7 +57,9 @@ function run(target: JSRuntime, input: StepInput): StepResult {
 }
 
 function channels(result: StepResult): readonly unknown[] {
-  return result.outputs[0]?.channels ?? [];
+  return result.outputs[0] === null
+    ? []
+    : Object.values(result.outputs[0] as Record<string, unknown>);
 }
 
 function counter(ctx: RuntimeContext, frame: Frame): Value {
@@ -66,20 +70,15 @@ function counter(ctx: RuntimeContext, frame: Frame): Value {
 
 const COUNTER_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
-  layout: LAYOUTS,
-  manifest: {
-    series: [],
-    builtin: [],
-    params: [],
-    outputs: [
-      {
-        effect: 'probe',
-        staticArgs: [],
-        channels: [scalar('a', 'int'), scalar('b', 'int')],
-      },
-    ],
-    effects: [],
-    requests: [],
+  funcs: {1: counter},
+  main(ctx, root) {
+    ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
+    ctx.emit(0, 1, counter(ctx, ctx.frame(root, 1)));
+  },
+  inputs: {series: [], builtins: []},
+  parameters: [],
+  state: {
+    layout: LAYOUTS,
     frames: [
       {locals: [], subs: [{fid: 1}, {fid: 1}]},
       {
@@ -88,34 +87,29 @@ const COUNTER_MODULE: JSModule = testModule({
       },
     ],
   },
-  requests: [],
-  funcs: {1: counter},
-  main(ctx, root) {
-    ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
-    ctx.emit(0, 1, counter(ctx, ctx.frame(root, 1)));
+  outputs: {
+    schema: publicationSchema([
+      output('output0', [scalar('a', 'int'), scalar('b', 'int')]),
+    ]),
   },
+  requests: [],
 });
 
 const TYPED_HISTORY_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
-  layout: LAYOUTS,
-  manifest: {
-    series: [],
-    builtin: [],
-    params: [],
-    outputs: [
-      {
-        effect: 'probe',
-        staticArgs: [],
-        channels: [
-          scalar('number', 'int'),
-          scalar('boolean', 'bool'),
-          scalar('string', 'string'),
-        ],
-      },
-    ],
-    effects: [],
-    requests: [],
+  funcs: {},
+  main(ctx, root) {
+    ctx.write(root, 0, 7);
+    ctx.write(root, 1, true);
+    ctx.write(root, 2, 'present');
+    ctx.emit(0, 0, ctx.read(root, 0, 2));
+    ctx.emit(0, 1, ctx.read(root, 1, 2));
+    ctx.emit(0, 2, ctx.read(root, 2, 2));
+  },
+  inputs: {series: [], builtins: []},
+  parameters: [],
+  state: {
+    layout: LAYOUTS,
     frames: [
       {
         locals: [
@@ -139,50 +133,20 @@ const TYPED_HISTORY_MODULE: JSModule = testModule({
       },
     ],
   },
-  requests: [],
-  funcs: {},
-  main(ctx, root) {
-    ctx.write(root, 0, 7);
-    ctx.write(root, 1, true);
-    ctx.write(root, 2, 'present');
-    ctx.emit(0, 0, ctx.read(root, 0, 2));
-    ctx.emit(0, 1, ctx.read(root, 1, 2));
-    ctx.emit(0, 2, ctx.read(root, 2, 2));
+  outputs: {
+    schema: publicationSchema([
+      output('output0', [
+        scalar('number', 'int'),
+        scalar('boolean', 'bool'),
+        scalar('string', 'string'),
+      ]),
+    ]),
   },
+  requests: [],
 });
 
 const TICK_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
-  layout: LAYOUTS,
-  manifest: {
-    series: [{id: 'close', depth: {kind: 'none'}}],
-    builtin: [],
-    params: [],
-    outputs: [
-      {
-        effect: 'probe',
-        staticArgs: [],
-        channels: [
-          scalar('var', 'int'),
-          scalar('varip', 'int'),
-          scalar('per-bar', 'int'),
-        ],
-      },
-    ],
-    effects: [],
-    requests: [],
-    frames: [
-      {
-        locals: [
-          {storage: Storage.Var, depth: {kind: 'none'}, layout: NUMBER},
-          {storage: Storage.Varip, depth: {kind: 'none'}, layout: NUMBER},
-          {storage: Storage.PerBar, depth: {kind: 'none'}, layout: NUMBER},
-        ],
-        subs: [],
-      },
-    ],
-  },
-  requests: [],
   funcs: {},
   main(ctx, root) {
     if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
@@ -195,36 +159,36 @@ const TICK_MODULE: JSModule = testModule({
     ctx.emit(0, 1, ctx.read(root, 1, 0));
     ctx.emit(0, 2, ctx.read(root, 2, 0));
   },
+  inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
+  parameters: [],
+  state: {
+    layout: LAYOUTS,
+    frames: [
+      {
+        locals: [
+          {storage: Storage.Var, depth: {kind: 'none'}, layout: NUMBER},
+          {storage: Storage.Varip, depth: {kind: 'none'}, layout: NUMBER},
+          {storage: Storage.PerBar, depth: {kind: 'none'}, layout: NUMBER},
+        ],
+        subs: [],
+      },
+    ],
+  },
+  outputs: {
+    schema: publicationSchema([
+      output('output0', [
+        scalar('var', 'int'),
+        scalar('varip', 'int'),
+        scalar('per-bar', 'int'),
+      ]),
+    ]),
+  },
+  requests: [],
 });
 
 function arrayStateModule(): JSModule {
   return testModule({
     abi: RUNTIME_ABI_VERSION,
-    layout: LAYOUTS,
-    manifest: {
-      series: [{id: 'close', depth: {kind: 'none'}}],
-      builtin: [],
-      params: [],
-      outputs: [
-        {
-          effect: 'probe',
-          staticArgs: [],
-          channels: [scalar('var', 'int'), scalar('varip', 'int')],
-        },
-      ],
-      effects: [],
-      requests: [],
-      frames: [
-        {
-          locals: [
-            {storage: Storage.Var, depth: {kind: 'none'}, layout: ARRAY},
-            {storage: Storage.Varip, depth: {kind: 'none'}, layout: ARRAY},
-          ],
-          subs: [],
-        },
-      ],
-    },
-    requests: [],
     funcs: {},
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
@@ -248,6 +212,26 @@ function arrayStateModule(): JSModule {
         );
       }
     },
+    inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
+    parameters: [],
+    state: {
+      layout: LAYOUTS,
+      frames: [
+        {
+          locals: [
+            {storage: Storage.Var, depth: {kind: 'none'}, layout: ARRAY},
+            {storage: Storage.Varip, depth: {kind: 'none'}, layout: ARRAY},
+          ],
+          subs: [],
+        },
+      ],
+    },
+    outputs: {
+      schema: publicationSchema([
+        output('output0', [scalar('var', 'int'), scalar('varip', 'int')]),
+      ]),
+    },
+    requests: [],
   });
 }
 
@@ -312,15 +296,11 @@ describe('JSRuntime core parity', () => {
     let invoke = true;
     const module: JSModule = testModule({
       ...COUNTER_MODULE,
-      manifest: {
-        ...COUNTER_MODULE.manifest,
-        outputs: [
-          {
-            effect: 'probe',
-            staticArgs: [],
-            channels: [scalar('value', 'int')],
-          },
-        ],
+      main(ctx, root) {
+        if (invoke) ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
+      },
+      state: {
+        layout: COUNTER_MODULE.state.layout,
         frames: [
           {locals: [], subs: [{fid: 1}]},
           {
@@ -331,14 +311,16 @@ describe('JSRuntime core parity', () => {
           },
         ],
       },
-      main(ctx, root) {
-        if (invoke) ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
+      outputs: {
+        schema: publicationSchema([
+          output('output0', [scalar('value', 'int')]),
+        ]),
       },
     });
     const target = runtime(module);
     expect(channels(run(target, input({provisional: true})))).toEqual([1]);
     invoke = false;
-    expect(run(target, input()).outputs).toEqual([]);
+    expect(run(target, input()).outputs).toEqual([null]);
     invoke = true;
     expect(channels(run(target, input()))).toEqual([2]);
     target.dispose();
@@ -348,20 +330,20 @@ describe('JSRuntime core parity', () => {
     let invoke = true;
     const module: JSModule = testModule({
       abi: RUNTIME_ABI_VERSION,
-      layout: LAYOUTS,
-      manifest: {
-        series: [{id: 'close', depth: {kind: 'none'}}],
-        builtin: [],
-        params: [],
-        outputs: [
-          {
-            effect: 'probe',
-            staticArgs: [],
-            channels: [scalar('previous', 'int')],
-          },
-        ],
-        effects: [],
-        requests: [],
+      funcs: {},
+      main(ctx, root) {
+        if (!invoke) {
+          ctx.emit(0, 0, NaN);
+          return;
+        }
+        const child = ctx.frame(root, 0);
+        ctx.write(child, 0, ctx.series(0, 0));
+        ctx.emit(0, 0, ctx.read(child, 0, 1));
+      },
+      inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
+      parameters: [],
+      state: {
+        layout: LAYOUTS,
         frames: [
           {locals: [], subs: [{fid: 1}]},
           {
@@ -376,17 +358,12 @@ describe('JSRuntime core parity', () => {
           },
         ],
       },
-      requests: [],
-      funcs: {},
-      main(ctx, root) {
-        if (!invoke) {
-          ctx.emit(0, 0, NaN);
-          return;
-        }
-        const child = ctx.frame(root, 0);
-        ctx.write(child, 0, ctx.series(0, 0));
-        ctx.emit(0, 0, ctx.read(child, 0, 1));
+      outputs: {
+        schema: publicationSchema([
+          output('output0', [scalar('previous', 'int')]),
+        ]),
       },
+      requests: [],
     });
     const target = runtime(module);
     expect(
@@ -407,40 +384,6 @@ describe('JSRuntime core parity', () => {
   test('struct history keeps a live reference rather than a body snapshot', () => {
     const module: JSModule = testModule({
       abi: RUNTIME_ABI_VERSION,
-      layout: LAYOUTS,
-      manifest: {
-        series: [],
-        builtin: [
-          {
-            source: {domain: 'bar', field: 'bar_index'},
-            layout: NUMBER,
-            depth: {kind: 'none'},
-          },
-        ],
-        params: [],
-        outputs: [
-          {
-            effect: 'probe',
-            staticArgs: [],
-            channels: [scalar('current', 'int'), scalar('prior', 'int')],
-          },
-        ],
-        effects: [],
-        requests: [],
-        frames: [
-          {
-            locals: [
-              {
-                storage: Storage.Var,
-                depth: {kind: 'const', bars: 1},
-                layout: HOLDER,
-              },
-            ],
-            subs: [],
-          },
-        ],
-      },
-      requests: [],
       funcs: {},
       main(ctx, root) {
         if (ctx.needsInit(root, 0)) {
@@ -468,6 +411,38 @@ describe('JSRuntime core parity', () => {
           ctx.emit(0, 1, ctx.callCollection('array.size', NUMBER, [prior]));
         }
       },
+      inputs: {
+        series: [],
+        builtins: [
+          {
+            source: {domain: 'bar', field: 'bar_index'},
+            layout: NUMBER,
+            depth: {kind: 'none'},
+          },
+        ],
+      },
+      parameters: [],
+      state: {
+        layout: LAYOUTS,
+        frames: [
+          {
+            locals: [
+              {
+                storage: Storage.Var,
+                depth: {kind: 'const', bars: 1},
+                layout: HOLDER,
+              },
+            ],
+            subs: [],
+          },
+        ],
+      },
+      outputs: {
+        schema: publicationSchema([
+          output('output0', [scalar('current', 'int'), scalar('prior', 'int')]),
+        ]),
+      },
+      requests: [],
     });
     const target = runtime(module);
     expect(channels(run(target, input({builtins: [0]})))).toEqual([2, NaN]);

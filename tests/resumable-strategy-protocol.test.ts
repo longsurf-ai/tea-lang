@@ -35,8 +35,8 @@ function program() {
 }
 
 function outputId(sink: OutputCapture, title: string): number {
-  const id = sink.outputs.findIndex(output =>
-    output.spec.staticArgs.some(
+  const id = sink.declarations.findIndex(output =>
+    (output.args ?? []).some(
       argument => argument.name === 'title' && argument.value === title,
     ),
   );

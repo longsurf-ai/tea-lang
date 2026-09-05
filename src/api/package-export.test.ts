@@ -9,4 +9,5 @@ test('package root exports the API barrel', async () => {
   expect(typeof api.fromCSV).toBe('function');
   expect(typeof api.CSVSink).toBe('function');
   expect(typeof api.batchRecipe).toBe('function');
+  expect(api).not.toHaveProperty('bindModule');
 });

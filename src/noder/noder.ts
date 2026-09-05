@@ -218,7 +218,7 @@ class Noder {
     };
     body.unshift(...this.nodePackageGlobals(this.program, packageGlobals));
     resolveDepths(program);
-    this.checkConcretizationSupport(program);
+    this.checkBindingSupport(program);
     this.checkRequestSupport(program);
     return program;
   }
@@ -404,10 +404,10 @@ class Noder {
     visit(program.requests);
   }
 
-  // A manifest snapshot is concretized without RuntimeContext, frame state, or
+  // Module binding runs without RuntimeContext, frame state, or
   // Heap storage. Reject expressions that would require those owners before a
   // valid Program reaches target lowering.
-  private checkConcretizationSupport(program: Program): void {
+  private checkBindingSupport(program: Program): void {
     const visitProgram = (current: Program): void => {
       const writes = new Map<IrName, IrExpr>();
       for (const stmt of [...current.init, ...current.body]) {

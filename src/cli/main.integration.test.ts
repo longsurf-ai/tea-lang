@@ -79,4 +79,10 @@ describe('CLI Batch Recipe', () => {
     expect(result.stderr).toBe("tea: unknown parameter option '--missing'\n");
     expect(result.stderr).not.toContain('\n    at ');
   });
+  test('reports semantic parameter failures from module.bind without a stack', () => {
+    const result = invokeCli('run', SOURCE, '-i', DATA, '--scale', '5');
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe("tea: parameter 'scale' above maxval 4\n");
+    expect(result.stderr).not.toContain('\n    at ');
+  });
 });

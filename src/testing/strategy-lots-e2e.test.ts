@@ -107,9 +107,10 @@ function expectNumbersClose(
 }
 
 function effectName(program: Program, emission: SparseEmission): string {
-  const type = program.effects[emission.effectId]?.payloadType;
+  const type =
+    program.effects[emission.outputId - program.outputs.length]?.payloadType;
   if (type?.kind !== TypeKind.Struct) {
-    throw new Error(`effect ${emission.effectId} has no nominal payload`);
+    throw new Error(`effect ${emission.outputId} has no nominal payload`);
   }
   return type.name;
 }
@@ -130,7 +131,7 @@ function effectField(
     value = (value as Record<string, unknown>)[name];
   }
   if (value === undefined) {
-    throw new Error(`effect ${emission.effectId} has no payload`);
+    throw new Error(`effect ${emission.outputId} has no payload`);
   }
   return value;
 }

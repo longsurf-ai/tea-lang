@@ -133,7 +133,7 @@ places to its depth pass for annotation.
   label. Source inputs inside request captures are rejected because their
   series binding is context-owned. That is what the `input` qualifier means.
   For supported input forms, extracted numeric
-  constraints and concrete UI metadata survive into the generated manifest.
+  constraints and concrete UI metadata survive into the compiled module.
   Range constraints and options are a discriminated union, so a parameter
   cannot carry both. Options are direct, non-empty, homogeneously typed tuples
   whose default is a member; numeric defaults and ranges are concrete and
@@ -189,7 +189,7 @@ places to its depth pass for annotation.
   `staticArgs` (compile-time constants),
   `bindArgs` (input-qualified exprs — hline price, plot linewidth,
   plotshape offset — plus `fill`'s plot/hline references, evaluated once in
-  module manifest concretization and stored as `boundArgs` before the first
+  module binding and combined with static arguments in `args` before the first
   bar), and per-bar `channels` written via `Emit`.
   `bindArgumentEvaluationOrder` keeps bind-time named arguments in
   source order while `bindArgs` remains in canonical parameter order. A plot

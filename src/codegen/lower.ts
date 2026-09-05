@@ -32,9 +32,9 @@ import {
 } from '../ir/type';
 import {ValueClass, type ValueClass as ValueClassType} from '../runtime/value';
 
-// Everything the walk needs to address program objects as dense ids. The
-// driver (codegen.ts) builds it; call sites discovered during lowering are
-// reported back through noteCallSite.
+// Compiler bookkeeping for addressing Program objects as dense IDs. The
+// driver builds it from the existing frame topology; noteCallSite verifies
+// that emitted calls agree with it rather than discovering another topology.
 export interface LowerCtx {
   readonly nameSlots: Map<Name, {fid: number; slot: number}>;
   // History-free function receivers and parameters are ordinary generated-JS
@@ -46,15 +46,14 @@ export interface LowerCtx {
   readonly paramIds: Map<ParamInput, number>;
   // input.source params read as series through their bound slot.
   readonly paramSeriesIds: Map<ParamInput, number>;
-  readonly outputIds: Map<OutputDecl, number>;
-  readonly effectIds: Map<EffectDecl, number>;
+  readonly outputIds: Map<OutputDecl | EffectDecl, number>;
   readonly funcIds: Map<IrFunc, number>;
   readonly requestIds: Map<RequestEdge, number>;
-  // During manifest concretization, params/context constants and input-only
+  // During module binding, params/context constants and input-only
   // function calls lower to ordinary generated-JS values rather than the
   // execution RuntimeContext.
-  readonly concretize?: boolean;
-  readonly concretizeFuncRefs?: ReadonlyMap<IrFunc, string>;
+  readonly binding?: boolean;
+  readonly bindFuncRefs?: ReadonlyMap<IrFunc, string>;
   // The generated const this module's own code refers to itself by ('M'
   // for the root, 'M1'… for request children) — funcs-table dispatch must
   // name the module that owns the func.
@@ -103,7 +102,7 @@ export const HELPERS = {
 export type HelperName = keyof typeof HELPERS;
 
 // The generated backend's one projection from semantic types to the three
-// runtime empty-value families. Manifest construction consumes the same
+// runtime empty-value families. Module construction consumes the same
 // projection so frames and lowered expressions cannot disagree.
 export function valueClassOf(t: Type): ValueClassType {
   switch (t.kind) {
@@ -171,10 +170,8 @@ function frameRef(ctx: LowerCtx, name: Name): string {
   if (entry.fid === ctx.currentFid) {
     return 'fr';
   }
-  if (ctx.concretize === true) {
-    return fatal(
-      `manifest concretization reached stateful name '${name.name}'`,
-    );
+  if (ctx.binding === true) {
+    return fatal(`module binding reached stateful name '${name.name}'`);
   }
   if (entry.fid === 0) {
     return 'ctx.root()';
@@ -206,18 +203,16 @@ function readName(
   if (direct !== undefined && current) {
     return direct;
   }
-  if (ctx.concretize === true) {
-    return fatal(`manifest concretization requires history for '${name.name}'`);
+  if (ctx.binding === true) {
+    return fatal(`module binding requires history for '${name.name}'`);
   }
   return `ctx.read(${frameRef(ctx, name)}, ${slotOf(ctx, name)}, ${offset})`;
 }
 
 function writeNameExpr(ctx: LowerCtx, name: Name, value: string): string {
   const direct = directName(ctx, name);
-  if (ctx.concretize === true && direct === undefined) {
-    return fatal(
-      `manifest concretization reached stateful name '${name.name}'`,
-    );
+  if (ctx.binding === true && direct === undefined) {
+    return fatal(`module binding reached stateful name '${name.name}'`);
   }
   return direct !== undefined
     ? `${direct} = (${value})`
@@ -373,8 +368,8 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           return readName(ctx, e.place.name, off, current);
         }
         case PlaceKind.Series: {
-          if (ctx.concretize === true) {
-            return fatal('manifest concretization cannot read a source series');
+          if (ctx.binding === true) {
+            return fatal('module binding cannot read a source series');
           }
           const sid = ctx.seriesIds.get(e.place.series);
           if (sid === undefined) {
@@ -389,11 +384,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
               `unmapped builtin '${e.place.builtin.source.domain}.${e.place.builtin.source.field}'`,
             );
           }
-          if (ctx.concretize === true) {
+          if (ctx.binding === true) {
             if (e.offset !== null) {
-              return fatal(
-                'manifest concretization cannot read builtin history',
-              );
+              return fatal('module binding cannot read builtin history');
             }
             ctx.useHelper('$contextValue');
             const name = `${e.place.builtin.source.domain}.${e.place.builtin.source.field}`;
@@ -404,9 +397,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         case PlaceKind.Param: {
           const sid = ctx.paramSeriesIds.get(e.place.param);
           if (sid !== undefined) {
-            if (ctx.concretize === true) {
+            if (ctx.binding === true) {
               return fatal(
-                `manifest concretization cannot read source parameter '${e.place.param.name}'`,
+                `module binding cannot read source parameter '${e.place.param.name}'`,
               );
             }
             return `ctx.series(${sid}, ${off})`;
@@ -415,17 +408,15 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           if (pid === undefined) {
             return fatal(`unmapped param '${e.place.param.name}'`);
           }
-          if (ctx.concretize === true) {
-            return `manifest.params[${pid}].value`;
+          if (ctx.binding === true) {
+            return `module.parameters[${pid}].value`;
           }
           // Scalar params are constant over rows; history is the value.
           return `ctx.param(${pid})`;
         }
         case PlaceKind.Request: {
-          if (ctx.concretize === true) {
-            return fatal(
-              'manifest concretization cannot read a request result',
-            );
+          if (ctx.binding === true) {
+            return fatal('module binding cannot read a request result');
           }
           const edge = e.place.request;
           const rid = ctx.requestIds.get(edge);
@@ -468,14 +459,14 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `function call '${e.func.name}'`,
       );
-      const concretizeRef = ctx.concretizeFuncRefs?.get(e.func);
-      if (ctx.concretize === true) {
-        if (concretizeRef === undefined) {
+      const bindRef = ctx.bindFuncRefs?.get(e.func);
+      if (ctx.binding === true) {
+        if (bindRef === undefined) {
           return fatal(
-            `manifest concretization reached unavailable function '${e.func.name}'`,
+            `module binding reached unavailable function '${e.func.name}'`,
           );
         }
-        return `${concretizeRef}(${args.map(arg => `(${arg})`).join(', ')})`;
+        return `${bindRef}(${args.map(arg => `(${arg})`).join(', ')})`;
       }
       return `${ctx.moduleRef}.funcs[${fid}](ctx, ctx.frame(fr, ${e.slot})${args.map(arg => `, ${arg}`).join('')})`;
     }
@@ -508,21 +499,21 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `const method call '${e.func.name}'`,
       );
-      const concretizeRef = ctx.concretizeFuncRefs?.get(e.func);
-      if (ctx.concretize === true) {
-        if (concretizeRef === undefined) {
+      const bindRef = ctx.bindFuncRefs?.get(e.func);
+      if (ctx.binding === true) {
+        if (bindRef === undefined) {
           return fatal(
-            `manifest concretization reached unavailable method '${e.func.name}'`,
+            `module binding reached unavailable method '${e.func.name}'`,
           );
         }
-        return `${concretizeRef}((${receiver})${args.map(arg => `, (${arg})`).join('')})`;
+        return `${bindRef}((${receiver})${args.map(arg => `, (${arg})`).join('')})`;
       }
       return `${ctx.moduleRef}.funcs[${fid}](ctx, ctx.frame(fr, ${e.slot}), ${receiver}${args.map(arg => `, ${arg}`).join('')})`;
     }
     case IrKind.CallMutableMethod: {
-      if (ctx.concretize === true) {
+      if (ctx.binding === true) {
         return fatal(
-          `manifest concretization cannot call mutable method '${e.func.name}'`,
+          `module binding cannot call mutable method '${e.func.name}'`,
         );
       }
       if (!typesEqual(e.func.receiver.type, e.receiver.type)) {
@@ -574,9 +565,9 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
       );
     case IrKind.MutateCollection: {
-      if (ctx.concretize === true) {
+      if (ctx.binding === true) {
         return fatal(
-          `manifest concretization cannot mutate collection '${e.operation}'`,
+          `module binding cannot mutate collection '${e.operation}'`,
         );
       }
       const locationType = collectionLocationType(e.location);
@@ -611,23 +602,23 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       return `${result}.result`;
     }
     case IrKind.MakeTuple: {
-      if (ctx.concretize === true) {
-        return fatal('manifest concretization cannot allocate a tuple');
+      if (ctx.binding === true) {
+        return fatal('module binding cannot allocate a tuple');
       }
       const elems = e.elems.map(el => capture(el, out, ctx));
       return `[${elems.map(x => `(${x})`).join(', ')}]`;
     }
     case IrKind.TupleGet: {
-      if (ctx.concretize === true) {
-        return fatal('manifest concretization cannot read a tuple');
+      if (ctx.binding === true) {
+        return fatal('module binding cannot read a tuple');
       }
       const tuple = capture(e.x, out, ctx);
       return `((${tuple}) === null ? ${emptyLiteral(e.type)} : (${tuple})[${e.index}])`;
     }
     case IrKind.NewStruct: {
-      if (ctx.concretize === true) {
+      if (ctx.binding === true) {
         return fatal(
-          `manifest concretization cannot allocate struct '${e.structType.name}'`,
+          `module binding cannot allocate struct '${e.structType.name}'`,
         );
       }
       if (!typesEqual(e.type, e.structType)) {
@@ -658,8 +649,8 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       return `ctx.newStruct(${ctx.layoutOf(e.structType)}, [${args.join(', ')}])`;
     }
     case IrKind.FieldGet: {
-      if (ctx.concretize === true) {
-        return fatal('manifest concretization cannot read a struct field');
+      if (ctx.binding === true) {
+        return fatal('module binding cannot read a struct field');
       }
       if (e.x.type.kind !== TypeKind.Struct) {
         return fatal(`field read traverses non-struct ${e.x.type.kind}`);
@@ -779,8 +770,8 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       return temp;
     }
     case IrKind.ForInExpr: {
-      if (ctx.concretize === true) {
-        return fatal('manifest concretization cannot iterate a collection');
+      if (ctx.binding === true) {
+        return fatal('module binding cannot iterate a collection');
       }
       const result = ctx.fresh();
       const collection = capture(e.x, out, ctx);
@@ -947,7 +938,7 @@ function lowerNative(
   // Internal depth-pass primitive: each component is normalized before a
   // synthesized maximum so one invalid offset cannot erase valid demands.
   if (native === '$historyDepth') {
-    if (ctx.concretize === true) {
+    if (ctx.binding === true) {
       ctx.useHelper('$historyDepth');
       return `$historyDepth((${args[0]}))`;
     }
@@ -958,10 +949,8 @@ function lowerNative(
     native.startsWith('matrix.') ||
     native.startsWith('map.')
   ) {
-    if (ctx.concretize === true) {
-      return fatal(
-        `manifest concretization cannot call aggregate native '${native}'`,
-      );
+    if (ctx.binding === true) {
+      return fatal(`module binding cannot call aggregate native '${native}'`);
     }
     return `ctx.callCollection(${JSON.stringify(native)}, ${ctx.layoutOf(resultType)}, [${args.join(', ')}])`;
   }
@@ -1059,7 +1048,7 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
     }
     case IrKind.InitName: {
       const direct = directName(ctx, stmt.name);
-      if (ctx.concretize === true && direct !== undefined) {
+      if (ctx.binding === true && direct !== undefined) {
         const body: string[] = [];
         const value = lowerExpr(stmt.value, body, ctx);
         out.push(`if (${direct} === undefined) {`);
@@ -1084,8 +1073,8 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       return;
     }
     case IrKind.StoreField: {
-      if (ctx.concretize === true) {
-        return fatal('manifest concretization cannot store a struct field');
+      if (ctx.binding === true) {
+        return fatal('module binding cannot store a struct field');
       }
       if (!typesEqual(stmt.object.type, stmt.owner)) {
         return fatal('struct field store object disagrees with its owner type');
@@ -1107,8 +1096,8 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       return;
     }
     case IrKind.Emit: {
-      if (ctx.concretize === true) {
-        return fatal('manifest concretization cannot emit a row output');
+      if (ctx.binding === true) {
+        return fatal('module binding cannot emit a row output');
       }
       const oid = ctx.outputIds.get(stmt.output);
       if (oid === undefined) {
@@ -1127,15 +1116,15 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       return;
     }
     case IrKind.EmitEffect: {
-      if (ctx.concretize === true) {
-        return fatal('manifest concretization cannot emit an effect');
+      if (ctx.binding === true) {
+        return fatal('module binding cannot emit an effect');
       }
-      const effectId = ctx.effectIds.get(stmt.effect);
-      if (effectId === undefined) {
+      const outputId = ctx.outputIds.get(stmt.effect);
+      if (outputId === undefined) {
         return fatal('lowering reached an unmapped effect');
       }
       const payload = lowerExpr(stmt.payload, out, ctx);
-      out.push(`ctx.emitEffect(${effectId}, (${payload}));`);
+      out.push(`ctx.append(${outputId}, (${payload}));`);
       return;
     }
     case IrKind.Break:

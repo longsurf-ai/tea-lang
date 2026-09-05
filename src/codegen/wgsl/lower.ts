@@ -1,8 +1,5 @@
 // Purpose: Compile a generic Tea Program into one reusable, bind-independent WGSL artifact.
 
-import {Schema} from 'apache-arrow';
-import {encodeSchema} from '../../runtime/io';
-import {fieldOf} from '../schema';
 import type {Pos} from '../../base/pos';
 import {formatPos} from '../../base/pos';
 import {fatal} from '../../base/print';
@@ -19,10 +16,9 @@ import {
   GPU_SERIES_SCALAR_BYTE_STRIDE,
   GPU_WORKGROUP_SIZE_OVERRIDE,
   type CompiledWgslProgram,
-  type WgslEffectSchema,
+  type WgslEvent,
   type WgslModule,
   type WgslNumericContract,
-  type WgslOutputSchema,
   type WgslPhysicalField,
   type WgslPhysicalLayout,
   type WgslResultChannel,
@@ -52,7 +48,6 @@ import {
   TypeKind,
   typesEqual,
   type EnumType,
-  type ConstValue,
   type Type,
   type StructType,
 } from '../../ir/type';
@@ -158,8 +153,8 @@ class UnsupportedGpuSubsetError extends Error {
  * if (program) {
  *   const result = compileProgramToWgsl(program);
  *   if (result.status === 'compiled') {
- *     decodeSchema(result.artifact.outputSchemas[0].schema).fields[0].name;
- *     // "series"
+ *     loadModule(result.artifact.bindingModule.source).outputs.schema.fields[4].name;
+ *     // "output0"
  *   }
  * }
  * ```
@@ -241,7 +236,7 @@ class WgslEmitter {
   private readonly seriesIds = new Map<SeriesInput, number>();
   private readonly paramIds = new Map<ParamInput, number>();
   private readonly outputCells = new Map<OutputDecl, number>();
-  private readonly effectIds = new Map<EffectDecl, number>();
+  private readonly appendIds = new Map<EffectDecl, number>();
   private readonly literalStringIds = new Map<string, number>();
   private readonly literalStrings: string[] = [];
   private readonly enumNames = new Map<EnumType, string>();
@@ -274,7 +269,7 @@ class WgslEmitter {
       this.internLiteralString(value),
     );
     program.effects.forEach((effect, index) => {
-      this.effectIds.set(effect, index);
+      this.appendIds.set(effect, program.outputs.length + index);
       this.collectType(effect.payloadType);
     });
     this.funcs = funcsOf(this.program);
@@ -419,7 +414,7 @@ class WgslEmitter {
       executionStateLayout: this.executionStateLayout,
       executionStateFixedByteSize:
         this.layouts[this.executionStateLayout].byteSize,
-      state: this.stateManifest(),
+      state: this.stateLayout(),
       cache: this.cacheManifest(),
       seriesScalarLayout: this.seriesScalarLayout,
       seriesScalarByteStride: GPU_SERIES_SCALAR_BYTE_STRIDE,
@@ -443,8 +438,7 @@ class WgslEmitter {
       ),
       requiredSeries: this.series.map(series => ({id: series.id})),
       resultChannels: this.resultChannels(),
-      outputSchemas: this.outputSchemas(),
-      effectSchemas: this.effectSchemas(),
+      events: this.events(),
     };
   }
 
@@ -460,7 +454,7 @@ class WgslEmitter {
     return this.frames ?? fatal('WGSL frame projection is not built');
   }
 
-  private stateManifest(): CompiledWgslProgram['state'] {
+  private stateLayout(): CompiledWgslProgram['state'] {
     const frames = this.mustFrames();
     return {
       initializedWordOffset: 0,
@@ -574,7 +568,7 @@ class WgslEmitter {
       });
     };
     visit(frames.root, 2, 'root');
-    const state = this.stateManifest();
+    const state = this.stateLayout();
     let storageEnd = 0;
     for (const segment of [...pending].sort(
       (left, right) => left.storageWordOffset - right.storageWordOffset,
@@ -712,6 +706,22 @@ class WgslEmitter {
   }
 
   private validateOutputs(): void {
+    this.program.outputs.forEach((output, outputId) => {
+      if (output.bindArgs.length > 0) {
+        this.unsupported(
+          'result-transport-lowering-unimplemented',
+          `output ${outputId} has bind-time arguments`,
+        );
+      }
+      for (const channel of output.channels) {
+        if (!isGpuResultType(channel.type)) {
+          this.unsupported(
+            'result-transport-lowering-unimplemented',
+            `output ${outputId} channel has unsupported type ${formatType(channel.type)}`,
+          );
+        }
+      }
+    });
     const directEmits = new Map<OutputDecl, number>();
     for (const stmt of this.program.body) {
       if (stmt.kind === IrKind.Emit) {
@@ -721,12 +731,6 @@ class WgslEmitter {
       }
     }
     this.resultOutputs().forEach(({output, outputId}, rowCell) => {
-      if (output.bindArgs.length > 0) {
-        this.unsupported(
-          'result-transport-lowering-unimplemented',
-          `output ${outputId} has bind-time arguments`,
-        );
-      }
       if (output.channels.length !== 1) {
         this.unsupported(
           'result-transport-lowering-unimplemented',
@@ -734,12 +738,6 @@ class WgslEmitter {
         );
       }
       const channel = output.channels[0];
-      if (!isGpuResultType(channel.type)) {
-        this.unsupported(
-          'result-transport-lowering-unimplemented',
-          `output ${outputId} channel has unsupported type ${formatType(channel.type)}`,
-        );
-      }
       this.collectType(channel.type);
       if (directEmits.get(output) !== 1) {
         this.unsupported(
@@ -932,7 +930,7 @@ class WgslEmitter {
     );
     const effectFields: WgslPhysicalField[] = [
       {path: 'row', scalar: 'u32', byteOffset: 0},
-      {path: 'effect_id', scalar: 'u32', byteOffset: 4},
+      {path: 'output_id', scalar: 'u32', byteOffset: 4},
     ];
     for (
       let index = 0;
@@ -1076,7 +1074,7 @@ class WgslEmitter {
       '}',
       'struct TeaResultCell { bits: u32, valid: u32, }',
       'struct TeaEffectStatus { count: u32, overflow: u32, first_overflow_row: u32, first_overflow_effect: u32, }',
-      `struct TeaEffectRecord { row: u32, effect_id: u32, payload: array<u32, ${Math.max(1, this.maxEffectPayloadWords)}>, }`,
+      `struct TeaEffectRecord { row: u32, output_id: u32, payload: array<u32, ${Math.max(1, this.maxEffectPayloadWords)}>, }`,
       `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_JOBS_BINDING}) var<storage, read> tea_jobs: array<TeaJobDescriptor>;`,
       `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_SERIES_BINDING}) var<storage, read> tea_series: array<f32>;`,
       `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_EXECUTION_STATES_BINDING}) var<storage, read_write> tea_execution_states: array<u32>;`,
@@ -1278,10 +1276,10 @@ class WgslEmitter {
       '  tea_state_store(word + 1u, bitcast<u32>(next.value));',
       '  return next;',
       '}',
-      'fn tea_note_effect_overflow(execution_index: u32, row: u32, effect_id: u32) {',
+      'fn tea_note_effect_overflow(execution_index: u32, row: u32, output_id: u32) {',
       '  if (tea_effect_status[execution_index].overflow == 0u) {',
       '    tea_effect_status[execution_index].first_overflow_row = row;',
-      '    tea_effect_status[execution_index].first_overflow_effect = effect_id;',
+      '    tea_effect_status[execution_index].first_overflow_effect = output_id;',
       '  }',
       '  tea_effect_status[execution_index].overflow = 1u;',
       '}',
@@ -1527,7 +1525,7 @@ class WgslEmitter {
 
   private emitKernel(): string[] {
     const frames = this.mustFrames();
-    const state = this.stateManifest();
+    const state = this.stateLayout();
     const out = [
       'fn tea_execute(tea_job_index: u32) {',
       '  if (tea_job_index >= arrayLength(&tea_jobs) || tea_job_index >= arrayLength(&tea_effect_status)) { return; }',
@@ -1937,13 +1935,13 @@ class WgslEmitter {
             stmt.pos,
           );
         }
-        const effectId = this.effectIds.get(stmt.effect);
-        if (effectId === undefined) {
+        const outputId = this.appendIds.get(stmt.effect);
+        if (outputId === undefined) {
           return fatal('unmapped GPU effect emission');
         }
         const payload = this.capture(stmt.payload, ctx, out);
         this.emitEffectAppend(
-          effectId,
+          outputId,
           stmt.effect.payloadType,
           payload,
           ctx,
@@ -1977,7 +1975,7 @@ class WgslEmitter {
   }
 
   private emitEffectAppend(
-    effectId: number,
+    outputId: number,
     payloadType: Type,
     payload: string,
     ctx: WgslContext,
@@ -1993,7 +1991,7 @@ class WgslEmitter {
       `  if (${cursor} < ${ctx.job}.effect_capacity) {`,
       `  let ${slot}: u32 = ${ctx.job}.effect_offset + ${cursor};`,
       `  if (${slot} >= ${ctx.job}.effect_offset && ${slot} < arrayLength(&tea_effect_records)) {`,
-      `    var ${record}: TeaEffectRecord = TeaEffectRecord(${ctx.row}, ${effectId}u, array<u32, ${payloadWords}>(${new Array(payloadWords).fill('0u').join(', ')}));`,
+      `    var ${record}: TeaEffectRecord = TeaEffectRecord(${ctx.row}, ${outputId}u, array<u32, ${payloadWords}>(${new Array(payloadWords).fill('0u').join(', ')}));`,
     );
     const assignments: string[] = [];
     this.emitEffectPayloadWords(payloadType, payload, record, 0, assignments);
@@ -2002,10 +2000,10 @@ class WgslEmitter {
       `    tea_effect_records[${slot}] = ${record};`,
       `    tea_effect_status[${ctx.executionIndex}].count = ${cursor} + 1u;`,
       '  } else {',
-      `    tea_note_effect_overflow(${ctx.executionIndex}, ${ctx.row}, ${effectId}u);`,
+      `    tea_note_effect_overflow(${ctx.executionIndex}, ${ctx.row}, ${outputId}u);`,
       '  }',
       '} else {',
-      `  tea_note_effect_overflow(${ctx.executionIndex}, ${ctx.row}, ${effectId}u);`,
+      `  tea_note_effect_overflow(${ctx.executionIndex}, ${ctx.row}, ${outputId}u);`,
       '  }',
       '}',
     );
@@ -2782,68 +2780,19 @@ class WgslEmitter {
         output.channels[0] ?? fatal('missing WGSL result channel');
       return {
         outputId,
-        effect: output.effect,
-        channelName: channel.name,
         scalar: resultScalar(channel.type),
-        enumMembers:
-          channel.type.kind === TypeKind.Enum
-            ? channel.type.members.map(member => member.name)
-            : null,
         rowCell,
       };
     });
   }
 
-  private outputSchemas(): readonly WgslOutputSchema[] {
-    return this.program.outputs.map((output, outputId) => {
-      if (output.bindArgs.length > 0) {
-        this.unsupported(
-          'result-transport-lowering-unimplemented',
-          `output ${outputId} has bind-time arguments that cannot enter the GPU declaration schema`,
-        );
-      }
-      const rowCell = this.outputCells.get(output) ?? null;
-      return {
-        outputId,
-        effect: output.effect,
-        staticArgs: output.staticArgs.map(arg => ({
-          name: arg.name,
-          value: manifestValue(arg.value),
-        })),
-        schema: encodeSchema(
-          new Schema(
-            output.channels.map(channel => {
-              if (!isGpuResultType(channel.type)) {
-                this.unsupported(
-                  'result-transport-lowering-unimplemented',
-                  `output ${outputId} channel has unsupported type ${formatType(channel.type)}`,
-                );
-              }
-              return fieldOf(
-                channel.name,
-                channel.type,
-                this.program.nominalIds,
-              );
-            }),
-          ),
-        ),
-        rowCells: output.channels.map(() => rowCell),
-      };
-    });
-  }
-
-  private effectSchemas(): readonly WgslEffectSchema[] {
-    return this.program.effects.map((effect, effectId) => ({
-      effectId,
+  private events(): readonly WgslEvent[] {
+    return this.program.effects.map((effect, index) => ({
+      outputId: this.program.outputs.length + index,
       payloadLayout: this.physicalLayoutOf(effect.payloadType),
       payloadWordCount:
         this.layouts[this.physicalLayoutOf(effect.payloadType)].byteSize / 4,
       payload: this.codec(effect.payloadType),
-      schema: encodeSchema(
-        new Schema([
-          fieldOf('payload', effect.payloadType, this.program.nominalIds),
-        ]),
-      ),
     }));
   }
 
@@ -3051,16 +3000,6 @@ function wgslColor(value: string, pos: Pos): string {
     );
   }
   return `0x${match[1]}${match[2] ?? 'ff'}u`;
-}
-
-function manifestValue(value: ConstValue): number | string | boolean | null {
-  if (isNaValue(value)) {
-    return null;
-  }
-  if (typeof value === 'number' && !Number.isFinite(value)) {
-    return fatal('non-finite constant reached WGSL output schema');
-  }
-  return value;
 }
 
 function unreachableGpuExpr(expr: never): never {

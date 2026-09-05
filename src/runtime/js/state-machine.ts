@@ -54,23 +54,22 @@ export interface IntermediateLocal {
   readonly initialized: boolean;
 }
 
-export interface StateUpdateResult<S, I, Y, E> {
+export interface StateUpdateResult<S, I, Y> {
   readonly state: S;
   readonly intermediate: I;
   /** Ephemeral current root-slot values, valid until the owner's next step. */
   readonly rootValues: readonly Value[];
   readonly output: Y;
-  readonly effects: readonly E[];
 }
 
-export type StateUpdate<S, I, X, Y, E, Err = never, R = never> = (
+export type StateUpdate<S, I, X, Y, Err = never, R = never> = (
   state: Readonly<S>,
   intermediate: Readonly<I>,
   input: X,
-) => Effect.Effect<StateUpdateResult<S, I, Y, E>, Err, R>;
+) => Effect.Effect<StateUpdateResult<S, I, Y>, Err, R>;
 
-export interface StateMachine<S, I, X, Y, E, Err = never, R = never> {
+export interface StateMachine<S, I, X, Y, Err = never, R = never> {
   readonly initialState: S;
   readonly initialIntermediate: I;
-  readonly update: StateUpdate<S, I, X, Y, E, Err, R>;
+  readonly update: StateUpdate<S, I, X, Y, Err, R>;
 }

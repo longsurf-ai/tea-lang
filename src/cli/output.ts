@@ -1,40 +1,26 @@
 // Purpose: Concrete terminal rendering for `tea run` reports and traces.
 
 import type {Field} from 'apache-arrow';
+import {outputFields, type OutputSpec} from '../runtime/output';
 import {TabWriter} from '../base/tabwriter';
-import type {
-  BoundInput,
-  DeclaredOutput,
-  Datum,
-  ExecutionDeclaration,
-} from '../runtime/abi';
+import type {BoundInput, Datum, ExecutionDeclaration} from '../runtime/abi';
 
 type Cell = string | number | boolean | null;
 
 /** Formats declarations using presentation metadata and Arrow payload fields.
- * @example traceDeclaration({outputs: [], effects: [], schema: new Schema([])})
+ * @example traceDeclaration({declarations: [], schema: publicationSchema([])})
  * // []
  */
 export function traceDeclaration(declaration: ExecutionDeclaration): string[] {
-  return [
-    ...declaration.outputs.map((output, outputId) => {
-      const statics = output.spec.staticArgs
-        .map(arg => `${arg.name}=${traceValue(arg.value)}`)
-        .join(' ');
-      const bounds = output.boundArgs
-        .map(arg => `${arg.name}=${traceValue(arg.value)}`)
-        .join(' ');
-      return (
-        `# output[${outputId}] ${output.spec.effect}` +
-        (statics.length > 0 ? ` ${statics}` : '') +
-        (bounds.length > 0 ? ` bound{${bounds}}` : '')
-      );
-    }),
-    ...declaration.effects.map(
-      (effect, effectId) =>
-        `# effect[${effectId}] type=${fieldLabel(effect.payload)}`,
-    ),
-  ];
+  return outputFields(declaration.schema).map((field, outputId) => {
+    if (field.metadata.get('tea:write') === 'append') {
+      return `# effect[${field.name.slice(6)}] type=${fieldLabel(field.type.children[0]!.type.children[1]!)}`;
+    }
+    const args = (declaration.declarations[outputId]!.args ?? [])
+      .map(arg => `${arg.name}=${traceValue(arg.value)}`)
+      .join(' ');
+    return `# output[${field.name.slice(6)}] ${field.metadata.get('tea:kind')}${args ? ` ${args}` : ''}`;
+  });
 }
 
 /** Formats a schema-named publication, restoring global event order.
@@ -61,7 +47,7 @@ export function traceDatum(datum: Datum): string[] {
 /** Renders final publications and timing; provisional updates are excluded.
  * @example
  * ```ts
- * const declaration = {outputs: [], effects: [], schema: new Schema([])};
+ * const declaration = {declarations: [], schema: publicationSchema([])};
  * renderRunReport(declaration, [], [], {
  *   indices: 0, compilationMs: 1, executionMs: 0,
  * }); // A System table reporting zero indices and 1.00 ms compilation.
@@ -115,12 +101,18 @@ function renderOutputs(
   declaration: ExecutionDeclaration,
   publications: readonly Datum[],
 ): string {
-  const columns = declaration.outputs.flatMap((output, outputId) =>
-    output.spec.channels.map((_channel, channel) => ({
-      outputId,
-      channel,
-      label: outputChannelLabel(output, outputId, channel),
-    })),
+  const columns = outputFields(declaration.schema).flatMap((field, id) =>
+    field.metadata.get('tea:write') === 'set'
+      ? field.type.children.map((channel: Field, index: number) => ({
+          name: field.name,
+          channel: channel.name,
+          label: outputChannelLabel(
+            field,
+            declaration.declarations[id]!,
+            index,
+          ),
+        }))
+      : [],
   );
   if (columns.length === 0) return '';
   const byIndex = new Map<number, Datum>();
@@ -135,15 +127,8 @@ function renderOutputs(
       .map(([index, outputs]) => [
         index,
         ...columns.map(column => {
-          const output = outputs[`output${column.outputId}`] as Record<
-            string,
-            unknown
-          > | null;
-          const channel =
-            declaration.outputs[column.outputId]!.spec.channels[
-              column.channel
-            ]!;
-          const value = output?.[channel.name];
+          const output = outputs[column.name] as Record<string, unknown> | null;
+          const value = output?.[column.channel];
           return value === undefined ? '' : reportValue(value);
         }),
       ]),
@@ -154,14 +139,17 @@ function renderEffects(
   declaration: ExecutionDeclaration,
   publications: readonly Datum[],
 ): string {
+  const fields = new Map(
+    outputFields(declaration.schema).map(field => [field.name, field]),
+  );
   const rows = publications.flatMap(datum =>
     datum.provisional
       ? []
       : events(datum).map(({id, payload}) => {
-          const spec = declaration.effects[id];
+          const field = fields.get(`effect${id}`);
           return [
             datum.index,
-            `effect[${id}]${spec === undefined ? '' : ` ${fieldLabel(spec.payload)}`}`,
+            `effect[${id}]${field === undefined ? '' : ` ${fieldLabel(field.type.children[0]!.type.children[1]!)}`}`,
             reportValue(payload),
           ] as const;
         }),
@@ -170,17 +158,18 @@ function renderEffects(
 }
 
 function outputChannelLabel(
-  output: DeclaredOutput,
-  outputId: number,
+  field: Field,
+  output: OutputSpec,
   channelIndex: number,
 ): string {
-  const title = output.spec.staticArgs.find(arg => arg.name === 'title')?.value;
+  const title = output.args?.find(arg => arg.name === 'title')?.value;
   const base =
     typeof title === 'string' && title.length > 0
       ? title
-      : `${output.spec.effect}[${outputId}]`;
-  const channel = output.spec.channels[channelIndex]!;
-  return output.spec.channels.length === 1 || channel.name === 'series'
+      : `${field.metadata.get('tea:kind')}[${field.name.slice(6)}]`;
+  const channels = field.type.children;
+  const channel = channels[channelIndex]!;
+  return channels.length === 1 || channel.name === 'series'
     ? base
     : `${base}.${channel.name}`;
 }

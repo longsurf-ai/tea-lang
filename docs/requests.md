@@ -143,7 +143,7 @@ policy.
 
 ## Static request metadata
 
-The generated manifest retains the request declaration's symbol, timeframe,
+Each module request entry retains the request declaration's symbol, timeframe,
 mode, result layout, and synchronization policy. This is static language data,
 not an instruction for Tea to acquire external data.
 

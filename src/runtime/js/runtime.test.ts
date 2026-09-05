@@ -6,9 +6,11 @@ import {Effect} from 'effect';
 import {describe, expect, test} from 'vitest';
 import {Storage} from '../../ir/node';
 import {JSRuntime, type StepInput, type StepResult} from './runtime';
-import {configureModule} from '../module-binding';
+
 import {RUNTIME_ABI_VERSION, type JSModule} from '../module-abi';
-import {testModule, scalar} from '../testing';
+import {cloneModule} from '../module-binding';
+import {testModule, scalar, output} from '../testing';
+import {publicationSchema} from '../output';
 import type {Value} from '../value';
 import type {ValueLayout} from '../value-layout';
 
@@ -41,20 +43,19 @@ function input(value: number, provisional: boolean): StepInput {
 
 const PROVISIONAL_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
-  layout: LAYOUTS,
-  manifest: {
-    series: [{id: 'close', depth: {kind: 'none'}}],
-    builtin: [],
-    params: [],
-    outputs: [
-      {
-        effect: 'probe',
-        staticArgs: [],
-        channels: [scalar('var', 'int'), scalar('varip', 'int')],
-      },
-    ],
-    effects: [],
-    requests: [],
+  funcs: {},
+  main(ctx, root) {
+    if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
+    if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, 0);
+    ctx.write(root, 0, Number(ctx.read(root, 0, 0)) + ctx.series(0, 0));
+    ctx.write(root, 1, Number(ctx.read(root, 1, 0)) + 1);
+    ctx.emit(0, 0, ctx.read(root, 0, 0));
+    ctx.emit(0, 1, ctx.read(root, 1, 0));
+  },
+  inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
+  parameters: [],
+  state: {
+    layout: LAYOUTS,
     frames: [
       {
         locals: [
@@ -65,45 +66,17 @@ const PROVISIONAL_MODULE: JSModule = testModule({
       },
     ],
   },
-  requests: [],
-  funcs: {},
-  main(ctx, root) {
-    if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
-    if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, 0);
-    ctx.write(root, 0, Number(ctx.read(root, 0, 0)) + ctx.series(0, 0));
-    ctx.write(root, 1, Number(ctx.read(root, 1, 0)) + 1);
-    ctx.emit(0, 0, ctx.read(root, 0, 0));
-    ctx.emit(0, 1, ctx.read(root, 1, 0));
+  outputs: {
+    schema: publicationSchema([
+      output('output0', [scalar('var', 'int'), scalar('varip', 'int')]),
+    ]),
   },
+  requests: [],
 });
 
 function structModule(shouldFail: () => boolean): JSModule {
   return testModule({
     abi: RUNTIME_ABI_VERSION,
-    layout: LAYOUTS,
-    manifest: {
-      series: [{id: 'close', depth: {kind: 'none'}}],
-      builtin: [],
-      params: [],
-      outputs: [
-        {
-          effect: 'probe',
-          staticArgs: [],
-          channels: [scalar('value', 'int')],
-        },
-      ],
-      effects: [],
-      requests: [],
-      frames: [
-        {
-          locals: [
-            {storage: Storage.Var, depth: {kind: 'none'}, layout: COUNTER},
-          ],
-          subs: [],
-        },
-      ],
-    },
-    requests: [],
     funcs: {},
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
@@ -115,23 +88,61 @@ function structModule(shouldFail: () => boolean): JSModule {
       if (shouldFail()) throw new Error('step failed');
       ctx.emit(0, 0, value);
     },
+    inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
+    parameters: [],
+    state: {
+      layout: LAYOUTS,
+      frames: [
+        {
+          locals: [
+            {storage: Storage.Var, depth: {kind: 'none'}, layout: COUNTER},
+          ],
+          subs: [],
+        },
+      ],
+    },
+    outputs: {
+      schema: publicationSchema([output('output0', [scalar('value', 'int')])]),
+    },
+    requests: [],
   });
 }
 
 function structEffectModule(shouldFail: () => boolean): JSModule {
   return testModule({
     abi: RUNTIME_ABI_VERSION,
-    layout: LAYOUTS,
-    manifest: {
-      series: [],
-      builtin: [],
-      params: [],
-      outputs: [],
-      effects: [
+    funcs: {},
+    main(ctx, root) {
+      if (ctx.needsInit(root, 0)) {
+        ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
+      }
+      const counter = ctx.requireStruct(ctx.read(root, 0, 0), COUNTER);
+      const next = Number(ctx.structField(counter, COUNTER, 0)) + 1;
+      ctx.storeStructField(counter, COUNTER, 0, next);
+      const envelope = ctx.newStruct(ENVELOPE, [counter]);
+      ctx.append(0, envelope);
+      ctx.storeStructField(counter, COUNTER, 0, next + 100);
+      if (shouldFail()) throw new Error('effect step failed');
+    },
+    inputs: {series: [], builtins: []},
+    parameters: [],
+    state: {
+      layout: LAYOUTS,
+      frames: [
         {
-          layout: ENVELOPE,
-          declaration: {
-            payload: new Field(
+          locals: [
+            {storage: Storage.Var, depth: {kind: 'none'}, layout: COUNTER},
+          ],
+          subs: [],
+        },
+      ],
+    },
+    outputs: {
+      schema: publicationSchema([
+        output(
+          'effect0',
+          [
+            new Field(
               'payload',
               new Struct([
                 new Field(
@@ -152,46 +163,27 @@ function structEffectModule(shouldFail: () => boolean): JSModule {
                 ['tea:name', 'Envelope'],
               ]),
             ),
-          },
-        },
-      ],
-      requests: [],
-      frames: [
-        {
-          locals: [
-            {storage: Storage.Var, depth: {kind: 'none'}, layout: COUNTER},
           ],
-          subs: [],
-        },
-      ],
+          true,
+        ),
+      ]),
     },
     requests: [],
-    funcs: {},
-    main(ctx, root) {
-      if (ctx.needsInit(root, 0)) {
-        ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
-      }
-      const counter = ctx.requireStruct(ctx.read(root, 0, 0), COUNTER);
-      const next = Number(ctx.structField(counter, COUNTER, 0)) + 1;
-      ctx.storeStructField(counter, COUNTER, 0, next);
-      const envelope = ctx.newStruct(ENVELOPE, [counter]);
-      ctx.emitEffect(0, envelope);
-      ctx.storeStructField(counter, COUNTER, 0, next + 100);
-      if (shouldFail()) throw new Error('effect step failed');
-    },
   });
 }
 
 const WRONG_NOMINAL_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
-  layout: LAYOUTS,
-  manifest: {
-    series: [],
-    builtin: [],
-    params: [],
-    outputs: [],
-    effects: [],
-    requests: [],
+  funcs: {},
+  main(ctx, root) {
+    if (ctx.needsInit(root, 0)) {
+      ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
+    }
+  },
+  inputs: {series: [], builtins: []},
+  parameters: [],
+  state: {
+    layout: LAYOUTS,
     frames: [
       {
         locals: [
@@ -201,31 +193,28 @@ const WRONG_NOMINAL_MODULE: JSModule = testModule({
       },
     ],
   },
+  outputs: {schema: publicationSchema([])},
   requests: [],
-  funcs: {},
-  main(ctx, root) {
-    if (ctx.needsInit(root, 0)) {
-      ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
-    }
-  },
 });
 
 const GC_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
-  layout: LAYOUTS,
-  manifest: {
-    series: [{id: 'close', depth: {kind: 'none'}}],
-    builtin: [],
-    params: [],
-    outputs: [
-      {
-        effect: 'probe',
-        staticArgs: [],
-        channels: [scalar('old-size', 'int')],
-      },
-    ],
-    effects: [],
-    requests: [],
+  funcs: {},
+  main(ctx, root) {
+    const close = ctx.series(0, 0);
+    ctx.write(root, 0, ctx.callCollection('array.from', ARRAY, [close]));
+    ctx.emit(
+      0,
+      0,
+      close < 3
+        ? 0
+        : ctx.callCollection('array.size', NUMBER, [ctx.read(root, 0, 2)]),
+    );
+  },
+  inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
+  parameters: [],
+  state: {
+    layout: LAYOUTS,
     frames: [
       {
         locals: [
@@ -239,31 +228,22 @@ const GC_MODULE: JSModule = testModule({
       },
     ],
   },
-  requests: [],
-  funcs: {},
-  main(ctx, root) {
-    const close = ctx.series(0, 0);
-    ctx.write(root, 0, ctx.callCollection('array.from', ARRAY, [close]));
-    ctx.emit(
-      0,
-      0,
-      close < 3
-        ? 0
-        : ctx.callCollection('array.size', NUMBER, [ctx.read(root, 0, 2)]),
-    );
+  outputs: {
+    schema: publicationSchema([output('output0', [scalar('old-size', 'int')])]),
   },
+  requests: [],
 });
 
 const COLLECT_CHILD_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
-  layout: LAYOUTS,
-  manifest: {
-    series: [],
-    builtin: [],
-    params: [],
-    outputs: [],
-    effects: [],
-    requests: [],
+  funcs: {},
+  main(ctx, root) {
+    ctx.write(root, 0, 0);
+  },
+  inputs: {series: [], builtins: []},
+  parameters: [],
+  state: {
+    layout: LAYOUTS,
     frames: [
       {
         locals: [
@@ -273,57 +253,12 @@ const COLLECT_CHILD_MODULE: JSModule = testModule({
       },
     ],
   },
+  outputs: {schema: publicationSchema([])},
   requests: [],
-  funcs: {},
-  main(ctx, root) {
-    ctx.write(root, 0, 0);
-  },
 });
 
 const COLLECT_REQUEST_MODULE: JSModule = testModule({
   abi: RUNTIME_ABI_VERSION,
-  layout: LAYOUTS,
-  manifest: {
-    series: [],
-    builtin: [],
-    params: [],
-    outputs: [
-      {
-        effect: 'probe',
-        staticArgs: [],
-        channels: [
-          scalar('size', 'int'),
-          scalar('empty', 'bool'),
-          scalar('first', 'int'),
-          scalar('last', 'int'),
-          scalar('prior-size', 'int'),
-          scalar('prior-first', 'int'),
-        ],
-      },
-    ],
-    effects: [],
-    requests: [
-      {
-        name: 'ticks',
-        merge: {mode: 'collect'},
-        depth: {kind: 'const', bars: 1},
-        resultSlot: 0,
-        resultLayout: NUMBER,
-        layout: ARRAY,
-        dynamic: false,
-        context: {
-          symbol: 'X',
-          timeframe: '1m',
-          fill: 'carry',
-          availability: 'end',
-          ignoreInvalidSymbol: false,
-          calcBarsCount: 0,
-        },
-      },
-    ],
-    frames: [{locals: [], subs: []}],
-  },
-  requests: [COLLECT_CHILD_MODULE],
   funcs: {},
   main(ctx) {
     const current = ctx.request(0, 0);
@@ -352,6 +287,40 @@ const COLLECT_REQUEST_MODULE: JSModule = testModule({
       priorSize <= 0 ? -1 : ctx.callCollection('array.first', NUMBER, [prior]),
     );
   },
+  inputs: {series: [], builtins: []},
+  parameters: [],
+  state: {layout: LAYOUTS, frames: [{locals: [], subs: []}]},
+  outputs: {
+    schema: publicationSchema([
+      output('output0', [
+        scalar('size', 'int'),
+        scalar('empty', 'bool'),
+        scalar('first', 'int'),
+        scalar('last', 'int'),
+        scalar('prior-size', 'int'),
+        scalar('prior-first', 'int'),
+      ]),
+    ]),
+  },
+  requests: [
+    {
+      name: 'ticks',
+      mode: 'collect',
+      depth: {kind: 'const', bars: 1},
+      resultSlot: 0,
+      resultLayout: NUMBER,
+      layout: ARRAY,
+      context: {
+        symbol: 'X',
+        timeframe: '1m',
+        fill: 'carry',
+        availability: 'end',
+        ignoreInvalidSymbol: false,
+        calcBarsCount: 0,
+      },
+      module: COLLECT_CHILD_MODULE,
+    },
+  ],
 });
 
 function collectInput(values: Value, provisional = false): StepInput {
@@ -359,12 +328,14 @@ function collectInput(values: Value, provisional = false): StepInput {
 }
 
 function channels(result: StepResult) {
-  return result.outputs[0]?.channels;
+  return result.outputs[0] === null
+    ? []
+    : Object.values(result.outputs[0] as Record<string, unknown>);
 }
 
 describe('JSRuntime', () => {
   test('owns State and Intermediate across provisional and final steps', () => {
-    const runtime = new JSRuntime(configureModule(PROVISIONAL_MODULE, []));
+    const runtime = new JSRuntime(cloneModule(PROVISIONAL_MODULE).bind());
 
     expect(channels(Effect.runSync(runtime.step(input(10, true))))).toEqual([
       10, 1,
@@ -387,12 +358,7 @@ describe('JSRuntime', () => {
 
   test('does not advance owned state or Heap writes after a failed step', () => {
     let fail = false;
-    const runtime = new JSRuntime(
-      configureModule(
-        structModule(() => fail),
-        [],
-      ),
-    );
+    const runtime = new JSRuntime(structModule(() => fail).bind());
 
     expect(channels(Effect.runSync(runtime.step(input(0, false))))).toEqual([
       1,
@@ -410,12 +376,7 @@ describe('JSRuntime', () => {
 
   test('snapshots nested struct effects at emit time and drops failed emissions', () => {
     let fail = true;
-    const runtime = new JSRuntime(
-      configureModule(
-        structEffectModule(() => fail),
-        [],
-      ),
-    );
+    const runtime = new JSRuntime(structEffectModule(() => fail).bind());
 
     expect(() =>
       Effect.runSync(
@@ -437,9 +398,9 @@ describe('JSRuntime', () => {
         provisional: false,
       }),
     );
-    expect(result.effects).toEqual([
+    expect(result.outputs[0]).toEqual([
       {
-        effectId: 0,
+        ordinal: 0,
         payload: {counter: {value: 1}},
       },
     ]);
@@ -447,7 +408,7 @@ describe('JSRuntime', () => {
   });
 
   test('rejects nominally wrong struct values at State initialization', () => {
-    const runtime = new JSRuntime(configureModule(WRONG_NOMINAL_MODULE, []));
+    const runtime = new JSRuntime(cloneModule(WRONG_NOMINAL_MODULE).bind());
     expect(() =>
       Effect.runSync(
         runtime.step({
@@ -462,9 +423,11 @@ describe('JSRuntime', () => {
   });
 
   test('accepts input NaN but fails closed when a read sees infinity', () => {
-    const runtime = new JSRuntime(configureModule(PROVISIONAL_MODULE, []));
+    const runtime = new JSRuntime(cloneModule(PROVISIONAL_MODULE).bind());
     const na = Effect.runSync(runtime.step(input(NaN, false)));
-    expect(Number.isNaN(na.outputs[0]?.channels[0] as number)).toBe(true);
+    expect(
+      Number.isNaN((na.outputs[0] as Record<string, unknown>).var as number),
+    ).toBe(true);
     expect(() => Effect.runSync(runtime.step(input(Infinity, false)))).toThrow(
       'input series 0 returned a non-finite value',
     );
@@ -472,35 +435,27 @@ describe('JSRuntime', () => {
   });
 
   test('preserves multi-channel output and numeric na', () => {
-    const runtime = new JSRuntime(configureModule(PROVISIONAL_MODULE, []));
+    const runtime = new JSRuntime(cloneModule(PROVISIONAL_MODULE).bind());
     const result = Effect.runSync(runtime.step(input(NaN, false)));
 
-    expect(result.outputs).toEqual([{outputId: 0, channels: [Number.NaN, 1]}]);
+    expect(result.outputs).toEqual([{var: Number.NaN, varip: 1}]);
     runtime.dispose();
   });
 
   test('preserves a missing conditional output as no emission', () => {
     const module = testModule({
       abi: RUNTIME_ABI_VERSION,
-      layout: LAYOUTS,
-      manifest: {
-        series: [],
-        builtin: [],
-        params: [],
-        outputs: [
-          {
-            effect: 'probe',
-            staticArgs: [],
-            channels: [scalar('value', 'int')],
-          },
-        ],
-        effects: [],
-        requests: [],
-        frames: [{locals: [], subs: []}],
-      },
-      requests: [],
       funcs: {},
       main() {},
+      inputs: {series: [], builtins: []},
+      parameters: [],
+      state: {layout: LAYOUTS, frames: [{locals: [], subs: []}]},
+      outputs: {
+        schema: publicationSchema([
+          output('output0', [scalar('value', 'int')]),
+        ]),
+      },
+      requests: [],
     });
     const runtime = new JSRuntime(module);
     const result = Effect.runSync(
@@ -512,12 +467,12 @@ describe('JSRuntime', () => {
       }),
     );
 
-    expect(result.outputs).toEqual([]);
+    expect(result.outputs).toEqual([null]);
     runtime.dispose();
   });
 
   test('collects from retained owner state rather than a provisional candidate', () => {
-    const runtime = new JSRuntime(configureModule(GC_MODULE, []));
+    const runtime = new JSRuntime(cloneModule(GC_MODULE).bind());
 
     Effect.runSync(runtime.step(input(1, false)));
     Effect.runSync(runtime.step(input(2, false)));
@@ -527,7 +482,7 @@ describe('JSRuntime', () => {
   });
 
   test('materializes empty, single, and multiple request batches as Tea arrays with history', () => {
-    const runtime = new JSRuntime(configureModule(COLLECT_REQUEST_MODULE, []));
+    const runtime = new JSRuntime(cloneModule(COLLECT_REQUEST_MODULE).bind());
 
     expect(channels(Effect.runSync(runtime.step(collectInput([]))))).toEqual([
       0,
@@ -553,7 +508,7 @@ describe('JSRuntime', () => {
   });
 
   test('rejects non-batch and invalid collect request elements without poisoning state', () => {
-    const runtime = new JSRuntime(configureModule(COLLECT_REQUEST_MODULE, []));
+    const runtime = new JSRuntime(cloneModule(COLLECT_REQUEST_MODULE).bind());
 
     expect(() => Effect.runSync(runtime.step(collectInput(7)))).toThrow(
       'request 0 collect input is not an array',
@@ -582,7 +537,7 @@ describe('JSRuntime', () => {
         if (fail) throw new Error('parent failed');
       },
     });
-    const runtime = new JSRuntime(configureModule(module, []));
+    const runtime = new JSRuntime(module.bind());
 
     expect(() => Effect.runSync(runtime.step(collectInput([1, 2])))).toThrow(
       'parent failed',
@@ -603,22 +558,17 @@ describe('JSRuntime', () => {
   test('rejects a collect request whose parent layout is not its Tea array layout', () => {
     const mismatched = testModule({
       ...COLLECT_REQUEST_MODULE,
-      manifest: {
-        ...COLLECT_REQUEST_MODULE.manifest,
-        requests: [
-          {
-            ...COLLECT_REQUEST_MODULE.manifest.requests[0]!,
-            layout: NUMBER,
-          },
-        ],
-      },
+      inputs: {...COLLECT_REQUEST_MODULE.inputs},
+      requests: [
+        {
+          ...COLLECT_REQUEST_MODULE.requests[0]!,
+          layout: NUMBER,
+          module: COLLECT_REQUEST_MODULE.requests[0].module,
+        },
+      ],
     });
-    const runtime = new JSRuntime(configureModule(mismatched, []));
-
-    expect(() => Effect.runSync(runtime.step(collectInput([1])))).toThrow(
-      'request 0 collect layout does not match its result layout',
+    expect(() => new JSRuntime(mismatched.bind())).toThrow(
+      'request 0 has inconsistent collect layouts',
     );
-
-    runtime.dispose();
   });
 });

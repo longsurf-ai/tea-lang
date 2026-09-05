@@ -23,7 +23,7 @@ const node = tea`
 
 node.bind(source);
 
-const websocket = new WebSocketSink(outputURL, node.module.outputs);
+const websocket = new WebSocketSink(outputURL, node.module.outputs.schema);
 node.to(websocket);
 
 await websocket.completion;

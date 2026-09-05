@@ -9,7 +9,7 @@ import {DataStream} from '../api/stream';
 import {generate} from '../codegen/codegen';
 import {mustBuild} from '../noder/testing';
 import {loadModule} from '../runtime/load';
-import {moduleBindings, withModuleBindings} from '../runtime/module-binding';
+import {cloneModule} from '../runtime/module-binding';
 import {pineBuiltinSupplier} from './pine';
 
 describe('Pine Extension', () => {
@@ -69,6 +69,28 @@ describe('Pine Extension', () => {
     expect(values(sink)).toEqual([[NaN, 0]]);
   });
 
+  test('fixed context survives cloning and rebinding without fabricating first-bar history', async () => {
+    const module = loadModule(
+      generate(
+        mustBuild(
+          'gain = input.float(1)\nplot(timeframe.multiplier[1] * gain)',
+        ),
+      ),
+    ).bind({gain: 2}, new Map([[0, 7]]));
+    const rebound = cloneModule(module).bind({gain: 1});
+    expect(rebound.inputs.builtins[0]!.value).toBe(7);
+    const node = createNode(
+      rebound,
+      pineBuiltinSupplier(() => 0),
+    );
+    node.bind(new DataStream(new Schema([]), of({}, {}), i, 2));
+    const sink = new DatumSink();
+    node.to(sink);
+    await sink.completion;
+    expect(values(sink)).toEqual([[NaN], [7]]);
+    expect(module.parameters[0]!.value).toBe(2);
+  });
+
   test('requires finite indices only for extent-dependent builtins', async () => {
     const node = pineNode('plot(last_bar_index)', 0);
     node.bind(new DataStream(new Schema([]), of({})));
@@ -97,7 +119,7 @@ describe('Pine Extension', () => {
 function pineNode(source: string, timeNow: number) {
   const loaded = loadModule(generate(mustBuild(source)));
   return createNode(
-    withModuleBindings(loaded, moduleBindings(loaded)),
+    loaded.bind(),
     pineBuiltinSupplier(() => timeNow),
   );
 }

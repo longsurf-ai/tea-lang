@@ -1,8 +1,9 @@
 // Purpose: Code generator — lowers a Tea Program to a self-describing JS
 // module against the generated-code RuntimeContext ABI; docs/runtime.md owns
-// the module contract and dense ids published in its manifest.
+// the module contract and dense ids published in its fields.
 
-import {Schema} from 'apache-arrow';
+import {Field, Float64, List, Schema, Struct} from 'apache-arrow';
+import {publicationSchema} from '../runtime/output';
 import {fatal} from '../base/print';
 import {encodeSchema} from '../runtime/io';
 import {fieldOf} from './schema';
@@ -55,7 +56,7 @@ import type {
   RequestSpec,
   SeriesSpec,
 } from '../runtime/module-abi';
-import type {ManifestValue} from '../runtime/value';
+import type {Scalar} from '../runtime/value';
 import type {LayoutId, ValueLayout} from '../runtime/value-layout';
 import {
   HELPERS,
@@ -83,7 +84,7 @@ import {
  * );
  * if (program !== null) {
  *   const module = loadModule(generate(program));
- *   module.manifest.inputs.fields[0].name; // "close"
+ *   module.inputs.schema.fields[0].name; // "close"
  * }
  * ```
  */
@@ -96,7 +97,7 @@ export function generate(program: Program): string {
   }
   // Request children are sibling consts in dependency order (a nested
   // child's const precedes its parent's), referenced from the requests
-  // arrays — code cannot live inside the JSON manifest.
+  // entries — code is referenced beside its JSON request metadata.
   out.push(
     `const L = ${json(emitter.layouts satisfies readonly ValueLayout[])};`,
   );
@@ -234,8 +235,7 @@ class Generator {
   private readonly builtinIds = new Map<BuiltinInput, number>();
   private readonly paramIds = new Map<ParamInput, number>();
   private readonly paramSeriesIds = new Map<ParamInput, number>();
-  private readonly outputIds = new Map<OutputDecl, number>();
-  private readonly effectIds = new Map<EffectDecl, number>();
+  private readonly outputIds = new Map<OutputDecl | EffectDecl, number>();
   private readonly funcIds = new Map<IrFunc, number>();
   private readonly requestIds = new Map<RequestEdge, number>();
   private tempCounter = 0;
@@ -267,7 +267,7 @@ class Generator {
     let nextSid = this.series.length;
     // Parameters are compilation-global. A request child inherits the root's
     // pid map and carries the same parameter specs/values in its own concrete
-    // manifest. Source-parameter reads cannot cross into children.
+    // module. Source-parameter reads cannot cross into children.
     if (parent !== null) {
       for (const [param, pid] of parent.paramIds) {
         this.paramIds.set(param, pid);
@@ -284,7 +284,9 @@ class Generator {
       }
     });
     program.outputs.forEach((output, oid) => this.outputIds.set(output, oid));
-    program.effects.forEach((effect, eid) => this.effectIds.set(effect, eid));
+    program.effects.forEach((effect, eid) =>
+      this.outputIds.set(effect, program.outputs.length + eid),
+    );
     this.topology.frameByFunc.forEach((frame, func) => {
       this.funcIds.set(func, frame.id);
     });
@@ -305,7 +307,6 @@ class Generator {
       paramIds: this.paramIds,
       paramSeriesIds: this.paramSeriesIds,
       outputIds: this.outputIds,
-      effectIds: this.effectIds,
       funcIds: this.funcIds,
       requestIds: this.requestIds,
       moduleRef: this.moduleRef,
@@ -342,9 +343,10 @@ class Generator {
   // The module object's body lines (between the braces). Every node is a
   // complete JSModule; the request tree shares the one emitted layout table.
   moduleBody(): string[] {
-    // Lower all code first: call sites (frame sub layouts) and helpers are
-    // discovered during lowering; the manifest is assembled afterwards.
-    const concretizeLines = this.lowerConcretize();
+    // Frame ownership and call sites already come from frameTopologyOf().
+    // Lower code first to collect its helpers and physical value layouts,
+    // then assemble the preparation description using those same IDs.
+    const bindLines = this.lowerBind();
     const funcBodies = this.lowerFuncs();
     const mainLines: string[] = [];
     lowerStmts(this.program.body, mainLines, this.ctxFor(0));
@@ -352,20 +354,23 @@ class Generator {
     const children = this.requests.map(edge =>
       this.emitter.emitChild(edge.child, edge.resultName, this),
     );
-    const manifest = this.buildManifest(children);
+    const data = this.moduleFields(children);
 
     const out: string[] = [];
     out.push(`abi: ${RUNTIME_ABI_VERSION},`);
-    out.push('layout: L,');
-    // U+2028/2029 are line terminators in ES2015 string literals; escape
-    // them so the embedded manifest stays parseable everywhere.
-    out.push(`manifest: ${json(manifest)},`);
-    out.push(`requests: [${children.map(c => c.ref).join(', ')}],`);
+    out.push(`inputs: ${json(data.inputs)},`);
+    out.push(`parameters: ${json(data.parameters)},`);
+    out.push(`state: {layout: L, frames: ${json(data.frames)}},`);
+    out.push(`outputs: ${json(data.outputs)},`);
     out.push(
-      'concretize(manifest, contextConstants) {',
-      ...indent(concretizeLines),
-      '},',
+      `requests: [${data.requests
+        .map(
+          (request, id) =>
+            `${json(request).slice(0, -1)}, "module": ${children[id].ref}}`,
+        )
+        .join(', ')}],`,
     );
+    out.push('bind(module, contextConstants) {', ...indent(bindLines), '},');
     out.push('funcs: {');
     for (const [fid, lines] of funcBodies) {
       out.push(`  ${fid}: ${lines[0]}`);
@@ -376,12 +381,18 @@ class Generator {
     return out;
   }
 
-  // Concretization is ordinary generated JavaScript over a fresh manifest
-  // copy. Input/simple aliases and input-only UDFs become local JS values;
-  // no RuntimeContext, frame, Heap, or callback evaluator participates.
-  private lowerConcretize(): string[] {
-    const roots = this.concretizeExpressions();
-    const dependencies = this.concretizeDependencies(roots);
+  /**
+   * Emit preparation code for facts depending on bindings. The caller supplies
+   * a private draft of binding facts; expressions use its parameters and context
+   * constants, without allocating execution frames or a Heap.
+   *
+   * @example `close[length]` emits an assignment to
+   * `module.inputs.series[0].depth` using `module.parameters[0].value`.
+   * A literal `close[3]` needs no preparation code: its depth is already 3.
+   */
+  private lowerBind(): string[] {
+    const roots = this.bindingExpressions();
+    const dependencies = this.bindingDependencies(roots);
     const rootNames = new Map<Name, string>();
     for (const name of dependencies.names) {
       const where = this.nameSlots.get(name);
@@ -395,30 +406,30 @@ class Generator {
     }
 
     const funcs = [...dependencies.funcs].sort((left, right) => {
-      const l = this.funcIds.get(left) ?? fatal('unmapped concretize function');
-      const r =
-        this.funcIds.get(right) ?? fatal('unmapped concretize function');
+      const l = this.funcIds.get(left) ?? fatal('unmapped binding function');
+      const r = this.funcIds.get(right) ?? fatal('unmapped binding function');
       return l - r;
     });
     const funcRefs = new Map<IrFunc, string>();
     funcs.forEach(func => {
       const fid = this.funcIds.get(func);
-      if (fid === undefined) return fatal('unmapped concretize function');
+      if (fid === undefined) return fatal('unmapped binding function');
       funcRefs.set(func, `bF${fid}`);
     });
 
+    const resets: string[] = [];
     const lines: string[] = [];
     for (const local of rootNames.values()) {
       lines.push(`let ${local};`);
     }
     for (const func of funcs) {
-      lines.push(...this.lowerConcretizeFunc(func, rootNames, funcRefs));
+      lines.push(...this.lowerBindFunc(func, rootNames, funcRefs));
     }
 
     const ctx = {
       ...this.ctxFor(0, rootNames),
-      concretize: true,
-      concretizeFuncRefs: funcRefs,
+      binding: true,
+      bindFuncRefs: funcRefs,
     } satisfies LowerCtx;
     const validationCtx = {...ctx, fresh: () => 'unused'} satisfies LowerCtx;
     const prelude = [...this.program.init, ...this.program.body].filter(
@@ -433,6 +444,7 @@ class Generator {
       if (depth.kind !== DepthKind.Bound || depthSpec(depth).kind !== 'bound') {
         return;
       }
+      resets.push(`${target} = {kind: "bound"};`);
       const expr = lowerExpr(depth.expr, lines, ctx);
       this.emitter.usedHelpers.add('$historyDepth');
       lines.push(
@@ -440,19 +452,22 @@ class Generator {
       );
     };
     this.series.forEach((series, sid) =>
-      writeDepth(`manifest.series[${sid}].depth`, series.depth),
+      writeDepth(`module.inputs.series[${sid}].depth`, series.depth),
     );
     this.builtins.forEach((builtin, bid) =>
-      writeDepth(`manifest.builtin[${bid}].depth`, builtin.depth),
+      writeDepth(`module.inputs.builtins[${bid}].depth`, builtin.depth),
     );
     if (this.root) {
       for (const [param, sid] of this.paramSeriesIds) {
-        writeDepth(`manifest.series[${sid}].depth`, param.depth);
+        writeDepth(`module.inputs.series[${sid}].depth`, param.depth);
       }
     }
+    this.requests.forEach((request, rid) =>
+      writeDepth(`module.requests[${rid}].depth`, request.depth),
+    );
     for (const [name, where] of this.nameSlots) {
       writeDepth(
-        `manifest.frames[${where.fid}].locals[${where.slot}].depth`,
+        `module.state.frames[${where.fid}].locals[${where.slot}].depth`,
         name.depth,
       );
     }
@@ -462,12 +477,13 @@ class Generator {
         if (staticBool(param.active) !== null) return;
         const pid = this.paramIds.get(param);
         if (pid === undefined) return fatal(`unmapped param '${param.name}'`);
+        resets.push(`module.parameters[${pid}].active = null;`);
         const active = lowerExpr(param.active, lines, ctx);
-        lines.push(`manifest.params[${pid}].active = (${active});`);
+        lines.push(`module.parameters[${pid}].active = (${active});`);
       });
     }
     this.program.outputs.forEach((output, oid) => {
-      if (staticOutputArgs(output) !== null) {
+      if (staticOutputArgs(output, this.outputIds) !== null) {
         captureArguments(
           output.bindArgs.map(arg => arg.expr),
           output.bindArgumentEvaluationOrder,
@@ -477,6 +493,7 @@ class Generator {
         );
         return;
       }
+      resets.push(`module.outputs.declarations[${oid}].args = null;`);
       const args = captureArguments(
         output.bindArgs.map(arg => arg.expr),
         output.bindArgumentEvaluationOrder,
@@ -484,12 +501,17 @@ class Generator {
         ctx,
         `output '${output.effect}' bind arguments`,
       );
-      const entries = output.bindArgs.map(
-        (arg, index) =>
-          `{name: ${JSON.stringify(arg.name)}, value: (${args[index]})}`,
-      );
+      const entries = [
+        ...output.staticArgs.map(arg =>
+          json({name: arg.name, value: constValue(arg.value)}),
+        ),
+        ...output.bindArgs.map(
+          (arg, index) =>
+            `{name: ${JSON.stringify(arg.name)}, value: (${args[index]})}`,
+        ),
+      ];
       lines.push(
-        `manifest.outputs[${oid}].boundArgs = [${entries.join(', ')}];`,
+        `module.outputs.declarations[${oid}].args = [${entries.join(', ')}];`,
       );
     });
     this.requests.forEach((edge, rid) => {
@@ -515,6 +537,7 @@ class Generator {
         );
         return;
       }
+      resets.push(`module.requests[${rid}].context = null;`);
       const [availability, fill, ignoreInvalidSymbol, calcBarsCount] =
         captureArguments(
           [
@@ -536,13 +559,20 @@ class Generator {
         'request context',
       );
       lines.push(
-        `manifest.requests[${rid}].context = {symbol: (${symbol}), timeframe: (${timeframe}), availability: (${availability}), fill: (${fill}), ignoreInvalidSymbol: (${ignoreInvalidSymbol}), calcBarsCount: (${calcBarsCount})};`,
+        `module.requests[${rid}].context = {symbol: (${symbol}), timeframe: (${timeframe}), availability: (${availability}), fill: (${fill}), ignoreInvalidSymbol: (${ignoreInvalidSymbol}), calcBarsCount: (${calcBarsCount})};`,
       );
     });
-    return lines;
+    const missing = this.globalParams.map(
+      (_, pid) => `module.parameters[${pid}].value === undefined`,
+    );
+    return [
+      ...resets,
+      ...(missing.length ? [`if (${missing.join(' || ')}) return;`] : []),
+      ...lines,
+    ];
   }
 
-  private concretizeExpressions(): IrExpr[] {
+  private bindingExpressions(): IrExpr[] {
     const expressions: IrExpr[] = [];
     const noteDepth = (depth: HistoryDepth): void => {
       if (depth.kind === DepthKind.Bound && depthSpec(depth).kind === 'bound') {
@@ -561,11 +591,12 @@ class Generator {
       });
     }
     this.program.outputs.forEach(output => {
-      if (staticOutputArgs(output) === null) {
+      if (staticOutputArgs(output, this.outputIds) === null) {
         output.bindArgs.forEach(arg => expressions.push(arg.expr));
       }
     });
     this.requests.forEach(edge => {
+      noteDepth(edge.depth);
       if (staticRequestContext(edge) === null) {
         expressions.push(
           edge.merge.availability,
@@ -580,7 +611,7 @@ class Generator {
     return expressions;
   }
 
-  private concretizeDependencies(expressions: readonly IrExpr[]): {
+  private bindingDependencies(expressions: readonly IrExpr[]): {
     names: Set<Name>;
     funcs: Set<IrFunc>;
   } {
@@ -630,7 +661,7 @@ class Generator {
     return {names, funcs};
   }
 
-  private lowerConcretizeFunc(
+  private lowerBindFunc(
     func: IrFunc,
     rootNames: ReadonlyMap<Name, string>,
     funcRefs: ReadonlyMap<IrFunc, string>,
@@ -639,7 +670,7 @@ class Generator {
     const fid = this.funcIds.get(func);
     const ref = funcRefs.get(func);
     if (frame === undefined || fid === undefined || ref === undefined) {
-      return fatal(`unmapped concretize function '${func.name}'`);
+      return fatal(`unmapped binding function '${func.name}'`);
     }
     const receiver = func.callMode === 'free' ? [] : [func.receiver];
     const parameters = [...receiver, ...func.params];
@@ -652,9 +683,7 @@ class Generator {
     frame.locals.forEach((name, slot) => {
       if (directNames.has(name)) return;
       if (name.storage !== Storage.PerBar) {
-        return fatal(
-          `manifest concretization reached persistent local '${name.name}'`,
-        );
+        return fatal(`module binding reached persistent local '${name.name}'`);
       }
       const local = `b${fid}_${slot}`;
       directNames.set(name, local);
@@ -662,8 +691,8 @@ class Generator {
     });
     const ctx = {
       ...this.ctxFor(fid, directNames),
-      concretize: true,
-      concretizeFuncRefs: funcRefs,
+      binding: true,
+      bindFuncRefs: funcRefs,
     } satisfies LowerCtx;
     const body: string[] = [];
     const value = lowerExpr(func.body, body, ctx);
@@ -720,70 +749,104 @@ class Generator {
     return bodies;
   }
 
-  // ---- manifest ---------------------------------------------------------------
+  // ---- module data ---------------------------------------------------------------
 
-  private buildManifest(children: readonly {readonly resultSlot: number}[]) {
+  /**
+   * Describe inputs, parameters, state templates, and outputs independently of
+   * any host binding. Arrow schemas are IPC bytes here; loading restores their
+   * classes before callers inspect or prepare the module.
+   *
+   * @example `plot(close[3])` declares `close` and depth 3 under `inputs`,
+   * plus one plot declaration under `outputs`; it allocates no live history.
+   */
+  private moduleFields(children: readonly {readonly resultSlot: number}[]) {
     const series: SeriesSpec[] = this.series.map(s => ({
       id: s.id,
       depth: depthSpec(s.depth),
-      supplied: false,
     }));
     if (this.root) {
       for (const [param] of this.paramSeriesIds) {
-        series.push({id: null, depth: depthSpec(param.depth), supplied: false});
+        series.push({id: null, depth: depthSpec(param.depth)});
       }
     }
 
-    const builtin: BuiltinSpec[] = this.builtins.map(input => ({
+    const builtins: BuiltinSpec[] = this.builtins.map(input => ({
       source: input.source,
+      constant: qualifierLE(input.qualifier, Qualifier.Simple),
       layout: this.emitter.layoutOf(input.type),
       depth: depthSpec(input.depth),
     }));
 
-    const params = paramSpecsOf(this.globalParams).map((spec, pid) => {
+    const parameters = paramSpecsOf(this.globalParams).map((spec, pid) => {
       const param = this.globalParams[pid];
       if (param === undefined) return fatal(`missing global parameter ${pid}`);
       return {
         ...spec,
         seriesSid: this.root ? (this.paramSeriesIds.get(param) ?? null) : null,
-        bindable: this.root,
         active: this.root ? staticBool(param.active) : true,
       };
     });
 
-    const outputs = this.program.outputs.map(output => ({
-      effect: output.effect,
-      staticArgs: output.staticArgs.map(a => ({
-        name: a.name,
-        value: constValue(a.value),
-      })),
-      channels: encodeSchema(
-        new Schema(
-          output.channels.map(ch =>
-            fieldOf(ch.name, ch.type, this.program.nominalIds),
+    const fields = [
+      ...this.program.outputs.map(
+        (output, oid) =>
+          new Field(
+            `output${oid}`,
+            new Struct(
+              output.channels.map(channel =>
+                fieldOf(channel.name, channel.type, this.program.nominalIds),
+              ),
+            ),
+            true,
+            new Map([
+              ['tea:write', 'set'],
+              ['tea:kind', output.effect],
+            ]),
           ),
-        ),
       ),
-      layouts: output.channels.map(ch =>
-        ch.type.kind === TypeKind.Plot || ch.type.kind === TypeKind.Hline
-          ? -1
-          : this.emitter.layoutOf(ch.type),
+      ...this.program.effects.map(
+        (effect, eid) =>
+          new Field(
+            `effect${eid}`,
+            new List(
+              new Field(
+                'item',
+                new Struct([
+                  new Field('ordinal', new Float64(), false),
+                  fieldOf(
+                    'payload',
+                    effect.payloadType,
+                    this.program.nominalIds,
+                  ),
+                ]),
+                false,
+              ),
+            ),
+            false,
+            new Map([
+              ['tea:write', 'append'],
+              ['tea:kind', 'event'],
+            ]),
+          ),
       ),
-      boundArgs: staticOutputArgs(output),
-    }));
-
-    const effects = this.program.effects.map(effect => ({
-      layout: this.emitter.layoutOf(effect.payloadType),
-      declaration: {
-        payload: encodeSchema(
-          new Schema([
-            fieldOf('payload', effect.payloadType, this.program.nominalIds),
-          ]),
+    ];
+    const declarations = [
+      ...this.program.outputs.map(output => ({
+        args: staticOutputArgs(output, this.outputIds),
+        layouts: output.channels.map(channel =>
+          channel.type.kind === TypeKind.Plot ||
+          channel.type.kind === TypeKind.Hline
+            ? -1
+            : this.emitter.layoutOf(channel.type),
         ),
-      },
-    }));
+      })),
+      ...this.program.effects.map(effect => ({
+        args: [],
+        layouts: [this.emitter.layoutOf(effect.payloadType)],
+      })),
+    ];
 
-    const frames: FrameLayout[] = this.topology.frames.map(frame => {
+    const state: FrameLayout[] = this.topology.frames.map(frame => {
       const slotCount =
         frame.children.length === 0
           ? 0
@@ -808,22 +871,19 @@ class Generator {
       };
     });
 
-    const requests: RequestSpec[] = this.requests.map((edge, rid) => {
+    const requests = this.requests.map((edge, rid) => {
       return {
         name: edge.name,
-        merge: {
-          mode: edge.merge.mode,
-        },
+        mode: edge.merge.mode,
         depth: depthSpec(edge.depth),
         resultSlot: children[rid].resultSlot,
         resultLayout: this.emitter.layoutOf(edge.captureType),
         layout: this.emitter.layoutOf(edge.resultType),
-        dynamic: false,
         context: staticRequestContext(edge),
       };
     });
 
-    const inputs = encodeSchema(
+    const schema = encodeSchema(
       new Schema(
         [
           ...new Set(
@@ -835,13 +895,10 @@ class Generator {
       ),
     );
     return {
-      inputs,
-      series,
-      builtin,
-      params,
-      outputs,
-      effects,
-      frames,
+      inputs: {schema, series, builtins},
+      parameters,
+      frames: state,
+      outputs: {schema: encodeSchema(publicationSchema(fields)), declarations},
       requests,
     };
   }
@@ -887,24 +944,26 @@ function staticBool(expr: IrExpr): boolean | null {
 
 function staticOutputArgs(
   output: OutputDecl,
-): readonly {readonly name: string; readonly value: ManifestValue}[] | null {
-  if (output.bindArgs.length === 0) return [];
-  if (
-    !output.bindArgs.every(
-      arg =>
-        arg.expr.kind === IrKind.Const &&
-        !isNaValue(arg.expr.value) &&
-        (typeof arg.expr.value !== 'number' || Number.isFinite(arg.expr.value)),
-    )
-  ) {
-    return null;
+  ids: ReadonlyMap<OutputDecl | EffectDecl, number>,
+): readonly {readonly name: string; readonly value: Scalar}[] | null {
+  const args = output.staticArgs.map(arg => ({
+    name: arg.name,
+    value: constValue(arg.value),
+  }));
+  for (const {name, expr} of output.bindArgs) {
+    if (expr.kind === IrKind.OutputRef) {
+      const value = ids.get(expr.output);
+      if (value === undefined) return fatal('unmapped output reference');
+      args.push({name, value});
+    } else if (
+      expr.kind === IrKind.Const &&
+      !isNaValue(expr.value) &&
+      (typeof expr.value !== 'number' || Number.isFinite(expr.value))
+    ) {
+      args.push({name, value: constValue(expr.value)});
+    } else return null;
   }
-  return output.bindArgs.map(arg => {
-    if (arg.expr.kind !== IrKind.Const) {
-      return fatal('non-constant output argument reached static projection');
-    }
-    return {name: arg.name, value: constValue(arg.expr.value)};
-  });
+  return args;
 }
 
 function staticRequestContext(
@@ -963,12 +1022,12 @@ function capBars(expr: IrExpr): number {
   return fatal('capped depth without a constant cap');
 }
 
-function constValue(v: ConstValue): ManifestValue {
+function constValue(v: ConstValue): Scalar {
   if (isNaValue(v)) {
     return null;
   }
   if (typeof v === 'number' && !Number.isFinite(v)) {
-    return fatal('non-finite constant reached manifest construction');
+    return fatal('non-finite constant reached module construction');
   }
   return v;
 }

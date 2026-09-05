@@ -40,16 +40,15 @@ describe('tea', () => {
       plotshape(crossed, "Crossover")
     `;
 
-    expect(node.module.manifest.params.map(param => param.name)).toEqual([
+    expect(node.module.parameters.map(param => param.name)).toEqual([
       'fast_window',
       'slow_window',
     ]);
-    expect(node.module.manifest.outputs.map(output => output.effect)).toEqual([
-      'indicator',
-      'plot',
-      'plot',
-      'plotshape',
-    ]);
+    expect(
+      node.module.outputs.schema.fields
+        .filter(field => field.metadata.has('tea:write'))
+        .map(field => field.metadata.get('tea:kind')),
+    ).toEqual(['indicator', 'plot', 'plot', 'plotshape']);
   });
 
   test('reports compiler diagnostics with a stable virtual filename', () => {
@@ -76,7 +75,7 @@ describe('tea', () => {
     );
   });
 
-  test('keeps one Node identity while installing immutable module snapshots', () => {
+  test('keeps the same Node and module while binding', () => {
     const node = tea`
       length = input.int(14)
       plot(close + length)
@@ -84,24 +83,63 @@ describe('tea', () => {
     const source = new DataStream(numericSchema, of({close: 1}));
 
     const initial = node.module;
+    expect(initial.ready()).toBe(true);
+    expect(node.ready()).toBe(false);
     expect(node.bind(source)).toBe(node);
     const withSource = node.module;
     expect(node.bind({length: 20})).toBe(node);
     const ready = node.module;
 
-    expect(initial.remaining().map(binding => binding.name)).toEqual([
-      'length',
-      'close',
-    ]);
-    expect(withSource.remaining().map(binding => binding.name)).toEqual([
-      'length',
-    ]);
+    expect(initial.remaining()).toEqual([]);
+    expect(withSource.remaining()).toEqual([]);
+    expect(initial.parameters[0]!.value).toBe(20);
+    expect(withSource.parameters[0]!.value).toBe(20);
+    expect(withSource.inputs).toEqual(initial.inputs);
     expect(ready.ready()).toBe(true);
     expect(node.ready()).toBe(true);
-    expect(withSource).not.toBe(initial);
-    expect(ready).not.toBe(withSource);
+    expect(withSource).toBe(initial);
+    expect(ready).toBe(withSource);
     expect(ready.remaining()).toEqual([]);
   });
+
+  test('rejects duplicate named streams without changing module configuration', () => {
+    const node = tea`plot(close)`;
+    node.bind({close: numericSource(1)});
+    const before = node.module;
+    expect(() => node.bind({close: numericSource(2)})).toThrow(
+      "series 'close' is already bound",
+    );
+    expect(node.module.inputs).toEqual(before.inputs);
+    expect(node.ready()).toBe(true);
+  });
+
+  test.each(['node', 'module'] as const)(
+    'binding a selected source through %s invalidates connected data',
+    async owner => {
+      const node = tea`
+      source = input.source(close)
+      plot(source)
+    `;
+      node.bind(numericSource(10));
+      expect(node.ready()).toBe(true);
+      (owner === 'node' ? node : node.module).bind({source: 'open'});
+      expect(node.module.ready()).toBe(true);
+      expect(node.ready()).toBe(false);
+      node.bind(
+        new DataStream(
+          new Schema([
+            new Field('close', new Float64(), false),
+            new Field('open', new Float64(), false),
+          ]),
+          of({close: 100, open: 20}),
+        ),
+      );
+      const sink = new StepSink();
+      node.to(sink);
+      await sink.completion;
+      expect(values(sink)).toEqual([20]);
+    },
+  );
 
   test('is ready at creation when the Program has no binding requirements', () => {
     const node = tea`plot(1)`;
@@ -341,46 +379,46 @@ describe('tea', () => {
     expect(sink.values[1]!.timed).toBe(true);
   });
 
-  test('isolates supplied and exposed module schemas throughout hot execution', async () => {
+  test('captures execution schemas once while exposing the same mutable module', async () => {
     const supplied = tea`plot(close)`.module;
-    supplied.manifest.inputs.fields[0]!.metadata.set('test:owner', 'original');
-    supplied.manifest.outputs[0]!.channels[0]!.metadata.set(
-      'test:owner',
-      'original',
-    );
+    supplied.inputs.schema.fields[0]!.metadata.set('test:owner', 'original');
+    supplied.outputs.schema.fields
+      .find(field => field.name === 'output0')!
+      .type.children[0]!.metadata.set('test:owner', 'original');
     const node = createNode(supplied);
     const rows = new Subject<{close: number}>();
     node.bind(new DataStream(numericSchema, rows));
-    supplied.manifest.inputs.fields[0]!.metadata.set('test:owner', 'caller');
-    supplied.manifest.outputs[0]!.channels[0]!.metadata.set(
-      'test:owner',
-      'caller',
-    );
+    supplied.inputs.schema.fields[0]!.metadata.set('test:owner', 'caller');
+    supplied.outputs.schema.fields
+      .find(field => field.name === 'output0')!
+      .type.children[0]!.metadata.set('test:owner', 'caller');
     const sink = new StepSink();
     node.to(sink);
     rows.next({close: 10});
     const exposed = node.module;
-    exposed.manifest.inputs.fields[0]!.metadata.set('test:owner', 'reader');
-    exposed.manifest.outputs[0]!.channels[0]!.metadata.set(
-      'test:owner',
-      'reader',
-    );
-    exposed.inputs.fields.splice(0);
-    exposed.outputs.fields.splice(0);
+    exposed.inputs.schema.fields[0]!.metadata.set('test:owner', 'reader');
+    exposed.outputs.schema.fields
+      .find(field => field.name === 'output0')!
+      .type.children[0]!.metadata.set('test:owner', 'reader');
+    exposed.inputs.schema.metadata.set('test:owner', 'reader');
+    exposed.outputs.schema.metadata.set('test:owner', 'reader');
+    exposed.outputs.schema.fields
+      .find(field => field.name === 'output0')!
+      .metadata.delete('tea:write');
+    expect(exposed).toBe(supplied);
+    expect(() => exposed.bind()).toThrow('binding is closed');
     rows.next({close: 20});
     rows.complete();
     await sink.completion;
     expect(values(sink)).toEqual([10, 20]);
-    expect(node.module.inputs.fields[0]!.metadata.get('test:owner')).toBe(
-      'original',
-    );
-    const output = node.module.outputs.fields.find(
+    expect(
+      node.module.inputs.schema.fields[0]!.metadata.get('test:owner'),
+    ).toBe('reader');
+    const output = node.module.outputs.schema.fields.find(
       field => field.name === 'output0',
     )!;
     expect(DataType.isStruct(output.type)).toBe(true);
-    expect(output.type.children[0]!.metadata.get('test:owner')).toBe(
-      'original',
-    );
+    expect(output.type.children[0]!.metadata.get('test:owner')).toBe('reader');
   });
 
   test('does not treat Pine contextual builtins as a third binding kind', () => {
@@ -432,7 +470,7 @@ describe('tea', () => {
       plot(daily + weekly)
     `;
 
-    expect(node.module.manifest.requests.map(request => request.name)).toEqual([
+    expect(node.module.requests.map(request => request.name)).toEqual([
       'daily',
       'weekly',
     ]);
@@ -454,10 +492,11 @@ describe('tea', () => {
     expect(values(sink)).toEqual([11]);
   });
 
-  test('rejects request and DataStream clock disagreement before subscribing', () => {
+  test('allows correcting a request clock after startup fails before subscribing', () => {
     let subscriptions = 0;
     const node = tea`
-      requested = request.security("X", "D", close)
+      period = input.timeframe("D")
+      requested = request.security("X", period, close)
       plot(requested)
     `;
     node.bind({
@@ -473,6 +512,11 @@ describe('tea', () => {
 
     expect(() => node.to(new StepSink())).toThrow('expects clock');
     expect(subscriptions).toBe(0);
+    expect(node.bind({period: '1'})).toBe(node);
+    const sink = new StepSink();
+    node.to(sink);
+    expect(subscriptions).toBe(1);
+    expect(values(sink)).toEqual([1]);
   });
 
   test('rejects conflicting root clocks before changing binding state', () => {
@@ -490,9 +534,10 @@ describe('tea', () => {
         ),
       }),
     ).toThrow('bound DataStream clocks disagree');
-    expect(node.module.manifest).toEqual(initial.manifest);
-    expect(node.module.requests.map(request => request.manifest)).toEqual(
-      initial.requests.map(request => request.manifest),
+    expect(node.module.inputs).toEqual(initial.inputs);
+    expect(node.module.parameters).toEqual(initial.parameters);
+    expect(node.module.requests.map(request => request.module.inputs)).toEqual(
+      initial.requests.map(request => request.module.inputs),
     );
   });
 
@@ -522,8 +567,9 @@ describe('tea', () => {
     expect(node.ready()).toBe(true);
 
     node.bind({symbol: 'Y'});
-    expect(oldModule.manifest.requests[0]?.context?.symbol).toBe('X');
-    expect(node.module.manifest.requests[0]?.context?.symbol).toBe('Y');
+    expect(node.module).toBe(oldModule);
+    expect(oldModule.requests[0]?.context?.symbol).toBe('Y');
+    expect(node.module.requests[0]?.context?.symbol).toBe('Y');
     expect(node.ready()).toBe(true);
   });
 
@@ -538,9 +584,9 @@ describe('tea', () => {
 
     expect(node.ready()).toBe(true);
     expect(
-      node.module.requests[0]?.manifest.params.map(param => param.value),
+      node.module.requests[0]?.module.parameters.map(param => param.value),
     ).toEqual([6]);
-    expect(node.module.requests[0]?.manifest.series[0]?.depth).toEqual({
+    expect(node.module.requests[0]?.module.inputs.series[0]?.depth).toEqual({
       kind: 'const',
       bars: 6,
     });
@@ -937,9 +983,10 @@ describe('tea', () => {
     expect(() => node.bind({x: source, missing: source})).toThrow(
       "no bind-known root series or static request child matches 'missing'",
     );
-    expect(node.module.manifest).toEqual(initial.manifest);
-    expect(node.module.requests.map(request => request.manifest)).toEqual(
-      initial.requests.map(request => request.manifest),
+    expect(node.module.inputs).toEqual(initial.inputs);
+    expect(node.module.parameters).toEqual(initial.parameters);
+    expect(node.module.requests.map(request => request.module.inputs)).toEqual(
+      initial.requests.map(request => request.module.inputs),
     );
     expect(node.ready()).toBe(false);
     expect(node.bind({x: source, y: source})).toBe(node);
@@ -958,8 +1005,8 @@ describe('tea', () => {
       of({close: 'bad'}),
     );
     expect(() => node.bind({x: numericSource(1), y: invalid})).toThrow(/close/);
-    expect(node.module.requests.map(request => request.manifest)).toEqual(
-      initial.requests.map(request => request.manifest),
+    expect(node.module.requests.map(request => request.module.inputs)).toEqual(
+      initial.requests.map(request => request.module.inputs),
     );
     expect(node.ready()).toBe(false);
   });

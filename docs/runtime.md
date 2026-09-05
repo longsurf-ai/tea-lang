@@ -24,7 +24,7 @@ numeric arrays.
 
 ## Public Node execution
 
-`tea` creates one mutable Node over one immutable recursive `JSModule` tree.
+`tea` creates one mutable Node owning one recursive `JSModule` tree.
 Node owns:
 
 - the RxJS input graph;
@@ -35,9 +35,9 @@ Node owns:
 - Pine contextual builtin delivery;
 - lossless Datum publication and cancellation.
 
-`Node.bind()` accepts only parameter objects and DataStreams. Binding replaces
-the immutable module snapshot but never subscribes. Binding is rejected after
-execution starts or disposal.
+`Node.bind()` accepts only parameter objects and DataStreams. Parameter binding
+updates the existing module; stream binding updates Node connections. Neither
+subscribes. Binding is rejected after execution starts or disposal.
 
 The first `Node.to(observer)` starts execution. Later observers share that same
 run and receive only future Datums. Unsubscribing removes one observer;
@@ -113,30 +113,87 @@ Pine is statically enabled while it is Tea's only Extension. It derives:
 Missing application symbol/timeframe metadata becomes the builtin layout's
 typed empty value. Contextual builtins never become another `Node.bind()` form.
 
-## Generated JavaScript module
+## Compiled modules and binding
 
-The JS backend emits one recursive Runtime-ABI-8 module tree. Every root and
-request child has the same code, manifest, layout table, request children, and
-direct `concretize()` function.
+Runtime ABI 10 exposes one compiled module with mutable configuration. There is
+no public manifest or separate preparation operation:
 
-Raw generated artifacts carry standard Arrow schema-only IPC bytes. Loading restores
-real `Schema`, `Field`, and `DataType` instances. `module.inputs` describes the
-required named series; `module.outputs` describes the complete published row.
+```text
+module
+  inputs
+    schema             required application fields (Arrow Schema)
+    series / builtins  history and fixed-context requirements
+  parameters           declarations and bound values
+  state
+    layout             shared runtime descriptors
+    frames             frame templates and retention
+  outputs
+    schema             sole owner of output names, types and write modes
+    declarations       prepared arguments and runtime snapshot descriptors
+  requests[]           each context/policy beside its child module
+  bind                 the one parameter-binding operation
+  main / funcs         generated execution code
+```
 
-Binding copies ordinary manifest data and copies Arrow schemas through Arrow APIs,
-writes parameter values or series-supplied markers, and runs direct `concretize()`.
-It returns a new module snapshot. Node and JSRuntime capture private schemas;
-`node.module` and schema getters expose independent metadata Maps. Neither
-`structuredClone` nor `Object.freeze(Map)` would provide that boundary.
-Generated code never stores Observables, DataStreams, live State, or Heap values.
+`loadModule()` restores Arrow schemas from standard IPC bytes and captures the
+generated binding calculations privately. `module.bind()` validates a named patch,
+preserves existing values, fills usable defaults only for still-unset parameters,
+and recomputes dependent depths, output arguments and request contexts. It updates
+the existing module and returns that same object. Request-child module identities
+also stay stable. A failed binding leaves the entire tree unchanged.
 
-`JSModule.ready()` and `remaining()` derive their answers from the manifest;
-there is no parallel binding result or parameter vector.
+```ts
+const module = tea`
+length = input.int(20)
+enabled = input.bool(true)
+plot(enabled ? close[length] : close)
+`.module;
+
+const same = module.bind({length: 20, enabled: false});
+same === module; // true
+
+module.bind({length: 40});
+module.parameters[0].value; // 40; enabled remains false
+module.inputs.series[0].depth; // {kind: 'const', bars: 40} for close[length]
+```
+
+No tagged assignment list or supplied-series markers are stored in the module.
+`module.remaining()` reports parameters without usable defaults or supplied values.
+`module.ready()` checks configuration only. `Node.bind(parameters)` delegates to
+the module; `Node.bind(streams)` owns connections. `Node.ready()` additionally
+checks every required root and child stream. The first `Node.to()` starts execution.
+
+Input-source changes invalidate the Node's old connections, because they no longer
+satisfy its requirements. Binding never subscribes, creates a frame, or allocates
+Heap state. GPU preparation makes an independent module copy for each job, calls
+its same `bind()` method, then checks physical arrays and plans device buffers.
+
+Fixed contextual builtins can be supplied through the same bind operation:
+
+```ts
+// For a module whose builtin 0 is timeframe.multiplier:
+module.bind({}, new Map([[0, 7]]));
+module.bind({length: 6}); // the same context value 7 is retained
+```
+
+Only builtins marked constant accept these values. Each child owns its own context;
+parent parameter changes propagate without replacing child context values. The
+stored fixed value is also used during execution, including committed history.
+Generated calculations clear late facts before evaluation. Missing parameters or
+context leave configuration incomplete, never apparently ready with stale depths.
+Errors in supplied values or calculated request policies fail binding immediately.
+
+`node.module` returns the Node's existing module, without rebuilding or copying its
+request tree. Configuration closes when execution starts: further `bind()` calls
+fail. The runtime captures the configuration and Arrow metadata needed by that
+execution once, so changing a caller-held metadata Map cannot change a running
+program. Separate executions need independent modules; `cloneModule()` provides
+that explicit copy when an internal caller needs to reuse compiled code.
 
 ## JSRuntime state and transactions
 
 `JSRuntime` owns one committed State, one same-index Intermediate, and one Heap.
-The manifest's frame and history depths determine fixed runtime arrays directly.
+The module's frame and history depths determine fixed runtime arrays directly.
 No workspace preflight, state-storage lease, or duplicated fixed-byte budget is
 needed.
 
@@ -202,6 +259,12 @@ Node publishes:
 }
 ```
 
+`module.outputs.schema` owns every data field. Each field records `tea:write`
+(`set` or `append`) and `tea:kind` metadata; one declaration array carries only
+arguments and snapshot layout IDs. There is one output ID space and no separate
+effect schema or emission table. The historical outputN/effectN row names remain
+stable.
+
 `output0` has Arrow type `Struct<series: Float64>`. It is null when that declaration
 was not emitted. `effect0` is a List of records; its ordinal preserves global
 execution order across all event declarations. Assignment outputs keep the final
@@ -220,7 +283,7 @@ and null nullable cells as null. Source time conversion remains exact.
 Inspect the schema with Arrow itself:
 
 ```ts
-const field = node.module.outputs.fields.find(
+const field = node.module.outputs.schema.fields.find(
   field => field.name === 'output0',
 );
 console.log(field?.type.toString()); // Struct<{series:Float64}>
@@ -246,7 +309,7 @@ await batchRecipe(
 It calls the public `bind()` and `to()` methods, waits for Node completion and
 an observer's optional asynchronous `completion` Promise, counts Node-owned
 indices, and always disposes the Node. It does not compile, resolve external
-data, inspect a manifest, create runtimes, allocate storage, or synchronize
+data, inspect compiled configuration, create runtimes, allocate storage, or synchronize
 requests.
 
 A sweep will be a separate Recipe that composes isolated Batch Recipes. Until

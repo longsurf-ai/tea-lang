@@ -71,8 +71,8 @@ describe('canonical EMA crossover example', () => {
     expect(sink.publications).toHaveLength(3_283);
     expect(sink.effectEmissions).toHaveLength(416);
 
-    const roundTrips = sink.outputs.findIndex(output =>
-      output.spec.staticArgs.some(
+    const roundTrips = sink.declarations.findIndex(output =>
+      (output.args ?? []).some(
         arg => arg.name === 'title' && arg.value === 'round trips',
       ),
     );
@@ -203,8 +203,10 @@ describe('canonical component migration regressions', () => {
     });
 
     const fillEffectIds = new Set(
-      sink.effectSchemas.flatMap((effect, effectId) =>
-        effect.payload.metadata.get('tea:typeId') === 'broker.FillExecuted'
+      sink.fields.flatMap((field, effectId) =>
+        field.metadata.get('tea:write') === 'append' &&
+        field.type.children[0]!.type.children[1]!.metadata.get('tea:typeId') ===
+          'broker.FillExecuted'
           ? [effectId]
           : [],
       ),
@@ -216,7 +218,7 @@ describe('canonical component migration regressions', () => {
       ]),
     );
     const fills = sink.effectEmissions
-      .filter(emission => fillEffectIds.has(emission.effectId))
+      .filter(emission => fillEffectIds.has(emission.outputId))
       .map(emission => {
         const {fill} = effectFields(emission.payload, 'broker.FillExecuted');
         const fields = effectFields(fill, 'broker.FillExecuted.fill');
@@ -249,8 +251,8 @@ describe('canonical component migration regressions', () => {
 });
 
 function outputWithTitle(sink: OutputCapture, title: string): number {
-  const output = sink.outputs.findIndex(candidate =>
-    candidate.spec.staticArgs.some(
+  const output = sink.declarations.findIndex(candidate =>
+    (candidate.args ?? []).some(
       argument => argument.name === 'title' && argument.value === title,
     ),
   );

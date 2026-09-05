@@ -8,17 +8,11 @@ import {CSVSource} from '../api/source';
 import {DataStream} from '../api/stream';
 import {Errors} from '../base/print';
 import {generate} from '../codegen/codegen';
-import {paramSpecsOf} from '../codegen/params';
 import {compileToProgram} from '../compiler';
 import {pineBuiltinSupplier} from '../extension/pine';
 import {batchRecipe} from '../recipe/batch';
 import {loadModule} from '../runtime/load';
-import {
-  boundInputs,
-  moduleBindings,
-  moduleDeclaration,
-  withModuleBindings,
-} from '../runtime/module-binding';
+import {boundInputs} from '../runtime/module-binding';
 import type {Datum} from '../runtime/output';
 import {renderRunReport, traceDatum, traceDeclaration} from './output';
 import {parseRunParameters} from './parameters';
@@ -64,19 +58,18 @@ export async function runCommand(
     }
   }
 
+  const loaded = loadModule(generate(program));
   const parameters = parseRunParameters(
-    paramSpecsOf(program.params),
+    loaded.parameters,
     dynamicTokens,
     RUN_RESERVED_PARAMETERS,
   );
-  const loaded = loadModule(generate(program));
   const node = createNode(
-    withModuleBindings(loaded, moduleBindings(loaded)),
+    loaded.bind(parameters),
     pineBuiltinSupplier(host.now),
   );
-  if (Object.keys(parameters).length !== 0) node.bind(parameters);
 
-  const declaration = moduleDeclaration(node.module);
+  const declaration = node.module.outputs;
   const publications: Datum[] = [];
   if (options.trace) {
     for (const line of traceDeclaration(declaration)) host.print(line);

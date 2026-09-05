@@ -3,9 +3,8 @@
 
 import {Effect} from 'effect';
 import {fatal} from '../../base/print';
-import {initializeModuleTree} from '../module-binding';
+import {cloneModule, requireConcreteModule} from '../module-binding';
 import type {JSModule} from '../module-abi';
-import type {EffectEmission, DenseEmission} from '../output';
 import {ArenaHeap} from './heap';
 import type {ExecutionError} from '../errors';
 import type {Intermediate, State, StepInput} from './state-machine';
@@ -17,8 +16,7 @@ export type {StepInput} from './state-machine';
 
 /** The externally observable product of one completed runtime step. */
 export interface StepResult {
-  readonly outputs: readonly DenseEmission[];
-  readonly effects: readonly EffectEmission[];
+  readonly outputs: readonly unknown[];
   readonly provisional: boolean;
 }
 
@@ -27,8 +25,10 @@ export interface StepResult {
  * Callers provide only synchronized inputs; State, Intermediate, and Heap
  * never cross this boundary.
  *
- * @example `new JSRuntime(readyModule)` captures its own schemas; changing the
- * caller's module metadata afterwards cannot alter this execution.
+ * Creating a runtime closes binding on its module and captures its execution
+ * configuration. Later Arrow metadata edits cannot change a running program.
+ * @example After `new JSRuntime(module)`, `module.bind({length: 10})` throws.
+ * Use `cloneModule(module)` when another run needs different parameters.
  */
 export class JSRuntime {
   private readonly heap: ArenaHeap;
@@ -40,12 +40,10 @@ export class JSRuntime {
   private disposed = false;
 
   constructor(private readonly module: JSModule) {
-    module = initializeModuleTree(module);
-    this.module = module;
-    if (!module.ready()) {
-      fatal('JSRuntime requires a ready JSModule');
-    }
-    this.layouts = new ValueLayoutRegistry(module.layout);
+    this.module = cloneModule(requireConcreteModule(module));
+    Object.freeze(module);
+    module = this.module;
+    this.layouts = new ValueLayoutRegistry(module.state.layout);
     this.heap = new ArenaHeap();
     this.machine = stateMachine(module, this.layouts, this.heap);
     this.state = this.machine.initialState;
@@ -74,7 +72,6 @@ export class JSRuntime {
           }
           return {
             outputs: result.output,
-            effects: result.effects,
             provisional: input.provisional,
           };
         },
@@ -88,7 +85,7 @@ export class JSRuntime {
    */
   readResult(slot: number, layout: LayoutId): Value {
     this.assertLive();
-    const spec = this.module.manifest.frames[0]?.locals[slot];
+    const spec = this.module.state.frames[0]?.locals[slot];
     if (spec === undefined) return fatal(`unknown root result slot ${slot}`);
     if (spec.layout !== layout) {
       return fatal(

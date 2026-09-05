@@ -1,89 +1,58 @@
-// Purpose: Test-only builders for hand-authored generated-module fixtures.
+// Concise Arrow-backed fixtures for execution tests; binding tests compile real Tea.
 
-import type {
+import {
+  Bool,
+  DataType,
+  Field,
+  Float64,
+  List,
+  Schema,
+  Struct,
+  Utf8,
+} from 'apache-arrow';
+import type {BuiltinSpec, JSModule} from './module-abi';
+import {cloneModule, initializeModule} from './module-binding';
+import {outputFields, publicationSchema} from './output';
+
+type Fixture = Omit<
   JSModule,
-  ModuleManifest,
-  RequestSpec,
-  SeriesSpec,
-} from './module-abi';
-import {initializeModuleTree} from './module-binding';
-import type {OutputSpec} from './output';
-import type {ParamSpec} from './schema';
-import type {ManifestValue, Value} from './value';
-import {Bool, DataType, Field, Float64, Schema, Utf8} from 'apache-arrow';
-
-type FixtureManifest = Omit<
-  ModuleManifest,
-  'inputs' | 'series' | 'params' | 'outputs' | 'requests'
+  'bind' | 'ready' | 'remaining' | 'inputs' | 'outputs' | 'parameters'
 > & {
-  readonly inputs?: Schema;
-  readonly series: readonly (Omit<SeriesSpec, 'supplied'> & {
-    readonly supplied?: boolean;
-  })[];
-  readonly params: readonly (ParamSpec & {
-    readonly bindable?: boolean;
-    readonly value?: ManifestValue;
-    readonly active?: boolean | null;
-  })[];
-  readonly outputs: readonly (OutputSpec & {
-    readonly layouts?: readonly number[];
-    readonly boundArgs?:
-      | readonly {readonly name: string; readonly value: Value}[]
-      | null;
-  })[];
-  readonly requests: readonly (Omit<
-    RequestSpec,
-    'context' | 'name' | 'resultLayout'
-  > & {
-    readonly context?: RequestSpec['context'];
-    readonly name?: string;
-    readonly resultLayout?: number;
-  })[];
-};
-
-type GeneratedModuleFixture = Omit<
-  Pick<
-    JSModule,
-    'abi' | 'layout' | 'manifest' | 'requests' | 'concretize' | 'funcs' | 'main'
-  >,
-  'manifest' | 'concretize'
-> & {
-  readonly manifest: FixtureManifest;
-  readonly concretize?: JSModule['concretize'];
+  readonly inputs: Omit<JSModule['inputs'], 'schema' | 'builtins'> & {
+    readonly schema?: Schema;
+    readonly builtins: readonly (Omit<BuiltinSpec, 'constant'> & {
+      readonly constant?: boolean;
+    })[];
+  };
+  readonly parameters: readonly (Omit<
+    JSModule['parameters'][number],
+    'active'
+  > & {readonly active?: boolean | null})[];
+  readonly outputs: {
+    readonly schema: Schema;
+    readonly declarations?: JSModule['outputs']['declarations'];
+  };
 };
 
 /**
- * Normalize concise hand-authored fixtures into the concrete-manifest ABI.
- * Runtime tests start with supplied series and statically complete declarations
- * unless a fixture explicitly models an incomplete field.
+ * Construct a static execution fixture without another binding implementation.
+ * Tests of generated binding must use compile/load instead of this helper.
+ * @example `testModule({...code, outputs: {schema: publicationSchema([])}})`
+ * creates a module with no program output fields.
  */
-export function testModule(code: GeneratedModuleFixture): JSModule {
-  const manifest: ModuleManifest = {
-    ...code.manifest,
-    inputs:
-      code.manifest.inputs ??
-      new Schema(
-        code.manifest.series.flatMap(series =>
-          series.id === null
-            ? []
-            : [new Field(series.id, new Float64(), false)],
-        ),
-      ),
-    series: code.manifest.series.map(series => ({
-      ...series,
-      supplied: series.supplied ?? true,
-    })),
-    params: code.manifest.params.map(param => ({
-      ...param,
-      bindable: param.bindable ?? true,
-      active: param.active ?? true,
-    })),
-    outputs: code.manifest.outputs.map(output => ({
-      ...output,
-      layouts:
-        output.layouts ??
-        output.channels.map(field =>
-          code.layout.findIndex(layout => {
+export function testModule(code: Fixture): JSModule {
+  const fields = outputFields(code.outputs.schema);
+  const declarations =
+    code.outputs.declarations ??
+    fields.map(field => {
+      const channels: readonly Field[] =
+        field.metadata.get('tea:write') === 'append'
+          ? [field.type.children[0].type.children[1]]
+          : field.type.children;
+      return {
+        args: [],
+        layouts: channels.map(field =>
+          code.state.layout.findIndex(layout => {
             if (DataType.isFloat(field.type)) return layout.kind === 'number';
             if (DataType.isBool(field.type)) return layout.kind === 'boolean';
             if (DataType.isUtf8(field.type))
@@ -97,23 +66,36 @@ export function testModule(code: GeneratedModuleFixture): JSModule {
             );
           }),
         ),
-      boundArgs: output.boundArgs === undefined ? [] : output.boundArgs,
-    })),
-    requests: code.manifest.requests.map((request, requestId) => ({
-      ...request,
-      name: request.name ?? `request@${requestId}`,
-      resultLayout: request.resultLayout ?? request.layout,
-      context: request.context ?? null,
-    })),
-  };
-  return initializeModuleTree({
+      };
+    });
+  const module = initializeModule({
     ...code,
-    manifest,
-    concretize: code.concretize ?? (() => {}),
+    inputs: {
+      ...code.inputs,
+      schema:
+        code.inputs.schema ??
+        new Schema(
+          code.inputs.series.flatMap(series =>
+            series.id === null ? [] : [scalar(series.id)],
+          ),
+        ),
+      builtins: code.inputs.builtins.map(builtin => ({
+        ...builtin,
+        constant: builtin.constant ?? false,
+      })),
+    },
+    parameters: code.parameters.map(parameter => ({
+      ...parameter,
+      active: parameter.active ?? true,
+    })),
+    outputs: {schema: code.outputs.schema, declarations},
+    requests: [],
+    bind() {},
   });
+  return cloneModule({...module, requests: code.requests});
 }
 
-/** A concise Arrow field for hand-authored scalar runtime fixtures. */
+/** A scalar Arrow field; `scalar('price')` describes a non-null Float64. */
 export function scalar(name: string, kind = 'float'): Field {
   return new Field(
     name,
@@ -124,5 +106,30 @@ export function scalar(name: string, kind = 'float'): Field {
         : new Float64(),
     kind === 'string' || kind === 'color',
     new Map([['tea:type', kind]]),
+  );
+}
+
+/**
+ * Describe a fixture output with ordinary Arrow types and explicit write mode.
+ * @example `output('output0', [scalar('series')])` is an assignment field;
+ * `output('effect0', [scalar('payload')], true)` is an event list.
+ */
+export function output(
+  name: string,
+  fields: readonly Field[],
+  append = false,
+): Field {
+  return new Field(
+    name,
+    append
+      ? new List(
+          new Field('item', new Struct([scalar('ordinal'), ...fields]), false),
+        )
+      : new Struct([...fields]),
+    !append,
+    new Map([
+      ['tea:write', append ? 'append' : 'set'],
+      ['tea:kind', append ? 'event' : 'probe'],
+    ]),
   );
 }

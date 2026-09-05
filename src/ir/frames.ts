@@ -143,10 +143,10 @@ export function frameTopologyOf(program: Program): FrameTopology {
   return {frames, root, frameByFunc, nameLocations};
 }
 
-// The root frame serves both module.bind and the per-row body. Keep all
-// executable Program-owned expressions here so a bind-only call site (for
-// example input.active, an output bind argument, or a bound history depth)
-// receives the same static child-frame identity as a body call.
+// Enumerate every root-owned expression, including preparation-only calls,
+// so all backends use the same static function and call-site identities.
+// Preparation emits ordinary JavaScript locals and never opens these runtime
+// frames; only per-step execution materializes frame instances.
 function walkRootFrame(
   program: Program,
   names: readonly Name[],
@@ -174,9 +174,9 @@ function walkRootFrame(
   seriesInputsOf(program).forEach(series => walkDepth(series.depth));
   builtinInputsOf(program).forEach(builtin => walkDepth(builtin.depth));
   requestsOf(program).forEach(request => {
-    // Static contexts are captured by module.bind in the root frame. Dynamic
-    // contexts execute at their lexical HistRead site and are expanded by
-    // walkFrameExpr under that site's owner instead.
+    // Bind-known request expressions belong to the root lexical context.
+    // Dynamic expressions are instead walked at their lexical HistRead site;
+    // the noder rejects them before the current backends are selected.
     if (!request.dynamic) {
       walkExpr(request.symbol);
       walkExpr(request.timeframe);

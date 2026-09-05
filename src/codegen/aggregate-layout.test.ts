@@ -114,21 +114,13 @@ describe('aggregate layout projection', () => {
     };
 
     const source = generate(ir);
-    const module = loadModule(source) as {
-      readonly abi: number;
-      readonly layout: readonly unknown[];
-      readonly manifest: {
-        readonly frames: readonly {
-          readonly locals: readonly unknown[];
-        }[];
-      };
-    };
+    const module = loadModule(source);
 
     expect(module.abi).toBe(RUNTIME_ABI_VERSION);
-    expect(module.manifest.frames[0].locals).toEqual([
+    expect(module.state.frames[0].locals).toEqual([
       {storage: Storage.PerBar, depth: {kind: 'none'}, layout: 0},
     ]);
-    expect(module.layout).toEqual([
+    expect(module.state.layout).toEqual([
       {
         kind: 'struct',
         name: 'Envelope',

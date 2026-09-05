@@ -12,7 +12,7 @@ const CHILD = 3;
 const PARENT = 4;
 const NODE = 5;
 
-const MANIFEST = [
+const LAYOUTS = [
   {kind: 'number', numeric: 'int'},
   {kind: 'boolean'},
   {kind: 'nullable-scalar', scalar: 'string'},
@@ -39,7 +39,7 @@ const MANIFEST = [
 
 function harness() {
   const heap = new ArenaHeap();
-  const layouts = new ValueLayoutRegistry(MANIFEST);
+  const layouts = new ValueLayoutRegistry(LAYOUTS);
   const structs = new StructStorageRuntime(heap, layouts);
   return {heap, layouts, structs};
 }

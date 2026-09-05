@@ -1,41 +1,58 @@
 // Purpose: CLI output keeps one deterministic human report and machine trace.
 
-import {Field, Float64, Schema, Struct, Utf8} from 'apache-arrow';
-import {outputSchema} from '../runtime/output';
+import {Field, Float64, List, Struct, Utf8} from 'apache-arrow';
+import {publicationSchema} from '../runtime/output';
 import {describe, expect, test} from 'vitest';
 import type {ExecutionDeclaration} from '../runtime/abi';
 import {renderRunReport, traceDatum, traceDeclaration} from './output';
 
 const declaration: ExecutionDeclaration = {
-  get schema(): Schema {
-    return outputSchema(
-      this.outputs.map(output => output.spec),
-      this.effects,
-    );
-  },
-  outputs: [
+  declarations: [
     {
-      spec: {
-        effect: 'plot',
-        staticArgs: [{name: 'title', value: 'Equity'}],
-        channels: [new Field('series', new Float64(), true)],
-      },
-      boundArgs: [{name: 'display', value: 'all'}],
+      args: [
+        {name: 'title', value: 'Equity'},
+        {name: 'display', value: 'all'},
+      ],
+      layouts: [0],
     },
+    {args: [], layouts: [1]},
   ],
-  effects: [
-    {
-      payload: new Field(
-        'payload',
-        new Struct([
-          new Field('id', new Float64()),
-          new Field('side', new Utf8()),
-        ]),
-        true,
-        new Map([['tea:typeId', 'broker.FillExecuted']]),
+  schema: publicationSchema([
+    new Field(
+      'output0',
+      new Struct([new Field('series', new Float64())]),
+      true,
+      new Map([
+        ['tea:write', 'set'],
+        ['tea:kind', 'plot'],
+      ]),
+    ),
+    new Field(
+      'effect0',
+      new List(
+        new Field(
+          'item',
+          new Struct([
+            new Field('ordinal', new Float64()),
+            new Field(
+              'payload',
+              new Struct([
+                new Field('id', new Float64()),
+                new Field('side', new Utf8()),
+              ]),
+              true,
+              new Map([['tea:typeId', 'broker.FillExecuted']]),
+            ),
+          ]),
+        ),
       ),
-    },
-  ],
+      false,
+      new Map([
+        ['tea:write', 'append'],
+        ['tea:kind', 'event'],
+      ]),
+    ),
+  ]),
 };
 
 const payload = {id: 7, side: 'buy'};
@@ -43,7 +60,7 @@ const payload = {id: 7, side: 'buy'};
 describe('CLI output', () => {
   test('renders the stable machine trace', () => {
     expect(traceDeclaration(declaration)).toEqual([
-      '# output[0] plot title=Equity bound{display=all}',
+      '# output[0] plot title=Equity display=all',
       '# effect[0] type=broker.FillExecuted',
     ]);
     expect(

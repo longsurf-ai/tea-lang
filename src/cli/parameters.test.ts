@@ -1,4 +1,8 @@
 import {describe, expect, test} from 'vitest';
+import {generate} from '../codegen/codegen';
+import {mustBuild} from '../noder/testing';
+import {loadModule} from '../runtime/load';
+import {BindError} from '../runtime/errors';
 import type {ParamSpec} from '../runtime/schema';
 import {CliParameterError, parseRunParameters} from './parameters';
 
@@ -69,8 +73,42 @@ describe('dynamic CLI parameters', () => {
     expect(() => parseRunParameters(specs, ['--enabled', 'yes'])).toThrow(
       "parameter 'enabled' expects true or false",
     );
-    expect(() => parseRunParameters(specs, ['--length', '0'])).toThrow(
+    expect(() =>
+      parseRunParameters(specs, ['--length', '9007199254740992']),
+    ).toThrow('expects a safe integer');
+  });
+
+  test('returns only supplied values and leaves defaults and domain checks to module.bind', () => {
+    const module = loadModule(
+      generate(
+        mustBuild(
+          'enum Mode\n    fast\n    slow\nlength = input.int(10, minval=1)\nshade = input.color(#ff0000)\nmode = input.enum(Mode.fast)\nplot(close[length], color=shade)',
+        ),
+      ),
+    );
+    const empty = parseRunParameters(module.parameters, []);
+    expect(empty).toEqual({});
+    expect(module.bind(empty).parameters.map(param => param.value)).toEqual([
+      10,
+      '#FF0000',
+      'fast',
+    ]);
+    const invalid = parseRunParameters(module.parameters, ['--length', '0']);
+    expect(invalid).toEqual({length: 0});
+    expect(() => module.bind(invalid)).toThrow(BindError);
+    expect(() => module.bind(invalid)).toThrow(
       "parameter 'length' below minval 1",
+    );
+    const color = parseRunParameters(module.parameters, [
+      '--shade',
+      '#abcdefff',
+    ]);
+    expect(color.shade).toBe('#abcdefff');
+    expect(module.bind(color).parameters[1]!.value).toBe('#ABCDEF');
+    const mode = parseRunParameters(module.parameters, ['--mode', 'invalid']);
+    expect(mode).toEqual({mode: 'invalid'});
+    expect(() => module.bind(mode)).toThrow(
+      "parameter 'mode' is not a member of enum 'Mode'",
     );
   });
 

@@ -147,8 +147,8 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
 }, 15_000);
 
 function finalMetric(sink: OutputCapture, title: string): number {
-  const outputId = sink.outputs.findIndex(output =>
-    output.spec.staticArgs.some(
+  const outputId = sink.declarations.findIndex(output =>
+    (output.args ?? []).some(
       argument => argument.name === 'title' && argument.value === title,
     ),
   );
@@ -177,8 +177,10 @@ function fillFields(payload: unknown): Record<string, unknown> {
 
 function fillTape(sink: OutputCapture) {
   const fillEffectIds = new Set(
-    sink.effectSchemas.flatMap((effect, effectId) =>
-      effect.payload.metadata.get('tea:typeId') === 'broker.FillExecuted'
+    sink.fields.flatMap((field, effectId) =>
+      field.metadata.get('tea:write') === 'append' &&
+      field.type.children[0]!.type.children[1]!.metadata.get('tea:typeId') ===
+        'broker.FillExecuted'
         ? [effectId]
         : [],
     ),
@@ -187,7 +189,7 @@ function fillTape(sink: OutputCapture) {
     sink.publications.map(publication => [publication.index, publication.time]),
   );
   const fills = sink.effectEmissions
-    .filter(emission => fillEffectIds.has(emission.effectId))
+    .filter(emission => fillEffectIds.has(emission.outputId))
     .map(emission => {
       const fields = fillFields(emission.payload);
       return {
@@ -213,7 +215,7 @@ function lifecycleTape(
   return sink.effectEmissions.map(emission => ({
     row: emission.row,
     time: timeByRow.get(emission.row),
-    kind: lifecycleKind(sink, emission.effectId),
+    kind: lifecycleKind(sink, emission.outputId),
     payload: emission.payload,
   }));
 }
@@ -223,7 +225,7 @@ function hash(value: unknown): string {
 }
 
 function lifecycleKind(sink: OutputCapture, effectId: number): string {
-  const payload = sink.effectSchemas[effectId]?.payload;
+  const payload = sink.fields[effectId]?.type.children[0]!.type.children[1];
   if (payload === undefined) return `unknown:${effectId}`;
   return (
     payload.metadata.get('tea:typeId') ??

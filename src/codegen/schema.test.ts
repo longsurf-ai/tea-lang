@@ -18,6 +18,8 @@ import {
 import {loadModule} from '../runtime/load';
 import {encodeSchema, decodeSchema} from '../runtime/io';
 import {generate} from './codegen';
+import {mustBuild} from '../noder/testing';
+import {outputFields} from '../runtime/output';
 import {fieldOf} from './schema';
 
 const mode: EnumType = {
@@ -73,9 +75,9 @@ describe('Arrow I/O projection', () => {
       mode,
       value,
     ]);
-    const fields = module.manifest.outputs[0].channels;
-    expect(fields.every(field => field instanceof Field)).toBe(true);
-    expect(fields.map(field => field.type.toString())).toEqual([
+    const fields = outputFields(module.outputs.schema)[0].type.children;
+    expect(fields.every((field: Field) => field instanceof Field)).toBe(true);
+    expect(fields.map((field: Field) => field.type.toString())).toEqual([
       'Float64',
       'Float64',
       'Bool',
@@ -84,16 +86,10 @@ describe('Arrow I/O projection', () => {
       'Utf8',
       'Struct<{prices:List<Float64>, mode:Utf8}>',
     ]);
-    expect(fields.map(field => field.metadata.get('tea:type'))).toEqual([
-      'int',
-      'float',
-      'bool',
-      'string',
-      'color',
-      'enum',
-      'struct',
-    ]);
-    expect(fields.map(field => field.nullable)).toEqual([
+    expect(
+      fields.map((field: Field) => field.metadata.get('tea:type')),
+    ).toEqual(['int', 'float', 'bool', 'string', 'color', 'enum', 'struct']);
+    expect(fields.map((field: Field) => field.nullable)).toEqual([
       false,
       false,
       false,
@@ -107,19 +103,23 @@ describe('Arrow I/O projection', () => {
     expect(JSON.parse(fields[5].metadata.get('tea:members')!)).toEqual([
       {name: 'fast', title: 'Fast'},
     ]);
-    expect(module.layout[module.manifest.outputs[0].layouts[6]]).toMatchObject({
+    expect(
+      module.state.layout[module.outputs.declarations[0].layouts[6]],
+    ).toMatchObject({
       typeId: 'user.Mode',
     });
   });
 
   test('projects complete list, tuple, matrix, map and resource fields through IPC', () => {
-    const fields = moduleFor([
-      {kind: TypeKind.Array, elem: value},
-      {kind: TypeKind.Tuple, elems: [IntType, StringType]},
-      {kind: TypeKind.Matrix, elem: FloatType},
-      {kind: TypeKind.Map, key: StringType, value},
-      LineType,
-    ]).manifest.outputs[0].channels;
+    const fields = outputFields(
+      moduleFor([
+        {kind: TypeKind.Array, elem: value},
+        {kind: TypeKind.Tuple, elems: [IntType, StringType]},
+        {kind: TypeKind.Matrix, elem: FloatType},
+        {kind: TypeKind.Map, key: StringType, value},
+        LineType,
+      ]).outputs.schema,
+    )[0].type.children;
     const restored = decodeSchema(encodeSchema(new Schema([...fields])));
     expect(restored).toEqual(new Schema([...fields]));
     expect(DataType.isList(restored.fields[0].type)).toBe(true);
@@ -206,3 +206,41 @@ test.runIf(process.env.TEA_STRESS === '1')(
   },
   120_000,
 );
+
+test('one Arrow schema owns set and append declarations and their unified IDs', () => {
+  const source = generate(mustBuild('effect.emit(close)\nplot(close)'));
+  const module = loadModule(source);
+  const fields = outputFields(module.outputs.schema);
+  expect(module.outputs.schema.fields.map(field => field.name)).toEqual([
+    'index',
+    'time',
+    'timed',
+    'provisional',
+    'output0',
+    'effect0',
+  ]);
+  expect(
+    fields.map(field => [
+      field.name,
+      field.metadata.get('tea:write'),
+      field.metadata.get('tea:kind'),
+    ]),
+  ).toEqual([
+    ['output0', 'set', 'plot'],
+    ['effect0', 'append', 'event'],
+  ]);
+  expect(
+    module.outputs.declarations.map(output => Object.keys(output).sort()),
+  ).toEqual([
+    ['args', 'layouts'],
+    ['args', 'layouts'],
+  ]);
+  expect(source).toContain('ctx.append(1,');
+  expect(source).toContain('ctx.emit(0, 0,');
+  expect(source.indexOf('ctx.append(1,')).toBeLessThan(
+    source.indexOf('ctx.emit(0, 0,'),
+  );
+  expect(module).not.toHaveProperty('manifest');
+  expect(module).not.toHaveProperty('concretize');
+  expect(module.requests).toEqual([]);
+});

@@ -13,10 +13,11 @@ import {
   type CollectionMutationOperation,
   type CollectionOperation,
   type Frame,
+  type DepthSpec,
   type JSModule,
   type RuntimeContext,
 } from '../module-abi';
-import type {EffectEmission, DenseEmission} from '../output';
+import {outputFields} from '../output';
 import {ExecutionError} from '../errors';
 import type {Heap, HeapTransaction, Ref} from './heap';
 import {CollectionRuntime} from './collections';
@@ -50,8 +51,7 @@ export type TeaStateUpdate = StateUpdate<
   State,
   Intermediate,
   StepInput,
-  readonly DenseEmission[],
-  EffectEmission,
+  readonly unknown[],
   ExecutionError
 >;
 
@@ -59,8 +59,7 @@ export type TeaStateMachine = StateMachine<
   State,
   Intermediate,
   StepInput,
-  readonly DenseEmission[],
-  EffectEmission,
+  readonly unknown[],
   ExecutionError
 >;
 
@@ -148,8 +147,9 @@ interface WorkspaceFrame extends Frame {
 
 class RuntimeOperations implements RuntimeContext {
   private readonly rootFrame: WorkspaceFrame;
-  private readonly outputs = new Map<number, unknown[]>();
-  private readonly effects: EffectEmission[] = [];
+  private readonly fields: readonly Field[];
+  private readonly outputs: unknown[];
+  private ordinal = 0;
   private transaction: HeapTransaction | null = null;
   private requestValues: readonly Value[] = [];
 
@@ -163,6 +163,19 @@ class RuntimeOperations implements RuntimeContext {
     private readonly structs: StructStorageRuntime,
     private readonly collections: CollectionRuntime,
   ) {
+    this.input = {
+      ...input,
+      builtins: input.builtins.map((value, id) => {
+        const spec = module.inputs.builtins[id];
+        return spec?.constant && Object.hasOwn(spec, 'value')
+          ? spec.value!
+          : value;
+      }),
+    };
+    this.fields = outputFields(module.outputs.schema);
+    this.outputs = this.fields.map(field =>
+      field.metadata.get('tea:write') === 'append' ? [] : null,
+    );
     this.validateInput();
     this.rootFrame = this.openFrame(0, state.root, intermediate.root, true);
   }
@@ -173,8 +186,8 @@ class RuntimeOperations implements RuntimeContext {
     let committed = false;
     try {
       this.requestValues = this.input.requests.map((value, rid) => {
-        const spec = this.module.manifest.requests[rid]!;
-        return spec.merge.mode === 'sample'
+        const spec = this.module.requests[rid]!;
+        return spec.mode === 'sample'
           ? value
           : this.collections.call(
               transaction,
@@ -190,11 +203,13 @@ class RuntimeOperations implements RuntimeContext {
           root: this.finishIntermediateFrame(this.rootFrame),
         },
         rootValues: this.rootFrame.locals.map(local => local.value),
-        output: [...this.outputs.entries()].map(([outputId, channels]) => ({
-          outputId,
-          channels,
-        })),
-        effects: this.effects,
+        output: Object.freeze(
+          this.outputs.map(value =>
+            typeof value === 'object' && value !== null
+              ? Object.freeze(value)
+              : value,
+          ),
+        ),
       };
       transaction.commit();
       committed = true;
@@ -213,7 +228,7 @@ class RuntimeOperations implements RuntimeContext {
       sid,
       offset,
       NaN,
-      this.module.manifest.series.length,
+      this.module.inputs.series.length,
     );
     if (typeof value !== 'number') {
       return fatal(`series ${sid} produced a non-number value`);
@@ -225,31 +240,31 @@ class RuntimeOperations implements RuntimeContext {
   }
 
   builtin(bid: number, offset: number): Value {
-    const spec = this.module.manifest.builtin[bid];
+    const spec = this.module.inputs.builtins[bid];
     if (spec === undefined) return fatal(`unknown builtin ${bid}`);
     return this.inputValue(
       'builtins',
       bid,
       offset,
       this.layouts.empty(spec.layout),
-      this.module.manifest.builtin.length,
+      this.module.inputs.builtins.length,
     );
   }
 
   request(rid: number, offset: number): Value {
-    const spec = this.module.manifest.requests[rid];
+    const spec = this.module.requests[rid];
     if (spec === undefined) return fatal(`unknown request ${rid}`);
     return this.inputValue(
       'requests',
       rid,
       offset,
       this.layouts.empty(spec.layout),
-      this.module.manifest.requests.length,
+      this.module.requests.length,
     );
   }
 
   param(pid: number): Value {
-    const parameter = this.module.manifest.params[pid];
+    const parameter = this.module.parameters[pid];
     if (parameter === undefined || !Object.hasOwn(parameter, 'value')) {
       return fatal(`unknown parameter ${pid}`);
     }
@@ -354,41 +369,44 @@ class RuntimeOperations implements RuntimeContext {
     }
   }
 
-  emit(oid: number, channel: number, value: Value): void {
-    const spec = this.module.manifest.outputs[oid];
-    if (spec === undefined || spec.channels[channel] === undefined) {
-      return fatal(`emit to unknown output ${oid} channel ${channel}`);
-    }
-    let channels = this.outputs.get(oid);
-    if (channels === undefined) {
-      channels = spec.channels.map(field =>
-        field.nullable ? null : DataType.isBool(field.type) ? false : NaN,
+  emit(output: number, channel: number, value: Value): void {
+    const field = this.fields[output];
+    const spec = this.module.outputs.declarations[output];
+    if (
+      field?.metadata.get('tea:write') !== 'set' ||
+      field.type.children[channel] === undefined
+    )
+      return fatal(`unknown output ${output} channel ${channel}`);
+    let row = this.outputs[output] as Record<string, unknown> | null;
+    if (row === null) {
+      row = Object.fromEntries(
+        field.type.children.map((child: Field) => [
+          child.name,
+          child.nullable ? null : DataType.isBool(child.type) ? false : NaN,
+        ]),
       );
-      this.outputs.set(oid, channels);
+      this.outputs[output] = row;
     }
-    channels[channel] = this.snapshot(
+    row[field.type.children[channel].name] = this.snapshot(
       spec.layouts[channel],
-      spec.channels[channel],
+      field.type.children[channel],
       value,
     );
   }
 
-  emitEffect(effectId: number, payload: Value): void {
-    const spec = this.module.manifest.effects[effectId];
-    if (spec === undefined) {
-      return fatal(`effect emission references unknown effect ${effectId}`);
-    }
-    const transaction = this.mustTransaction();
-    this.structs.assertValue(
-      spec.layout,
+  append(output: number, payload: Value): void {
+    const field = this.fields[output];
+    const spec = this.module.outputs.declarations[output];
+    if (field?.metadata.get('tea:write') !== 'append')
+      return fatal(`unknown append output ${output}`);
+    const value = this.snapshot(
+      spec.layouts[0],
+      field.type.children[0].type.children[1],
       payload,
-      `effect ${effectId} payload`,
-      transaction,
     );
-    this.effects.push({
-      effectId,
-      payload: this.snapshot(spec.layout, spec.declaration.payload, payload),
-    });
+    (this.outputs[output] as unknown[]).push(
+      Object.freeze({ordinal: this.ordinal++, payload: value}),
+    );
   }
 
   // Copy at the emission, not at the end of the step: later mutation must not
@@ -578,22 +596,22 @@ class RuntimeOperations implements RuntimeContext {
   }
 
   private validateInput(): void {
-    if (this.input.series.length !== this.module.manifest.series.length) {
+    if (this.input.series.length !== this.module.inputs.series.length) {
       throw new ExecutionError(
         'VALUE_LAYOUT_MISMATCH',
-        `step input has ${this.input.series.length} series values, expected ${this.module.manifest.series.length}`,
+        `step input has ${this.input.series.length} series values, expected ${this.module.inputs.series.length}`,
       );
     }
-    if (this.input.builtins.length !== this.module.manifest.builtin.length) {
+    if (this.input.builtins.length !== this.module.inputs.builtins.length) {
       throw new ExecutionError(
         'VALUE_LAYOUT_MISMATCH',
-        `step input has ${this.input.builtins.length} builtin values, expected ${this.module.manifest.builtin.length}`,
+        `step input has ${this.input.builtins.length} builtin values, expected ${this.module.inputs.builtins.length}`,
       );
     }
-    if (this.input.requests.length !== this.module.manifest.requests.length) {
+    if (this.input.requests.length !== this.module.requests.length) {
       throw new ExecutionError(
         'VALUE_LAYOUT_MISMATCH',
-        `step input has ${this.input.requests.length} request values, expected ${this.module.manifest.requests.length}`,
+        `step input has ${this.input.requests.length} request values, expected ${this.module.requests.length}`,
       );
     }
     this.input.series.forEach((value, sid) => {
@@ -606,14 +624,14 @@ class RuntimeOperations implements RuntimeContext {
     });
     this.input.builtins.forEach((value, bid) => {
       this.structs.assertValue(
-        this.module.manifest.builtin[bid]!.layout,
+        this.module.inputs.builtins[bid]!.layout,
         value,
         `builtin ${bid}`,
       );
     });
     this.input.requests.forEach((value, rid) => {
-      const spec = this.module.manifest.requests[rid]!;
-      if (spec.merge.mode === 'sample') {
+      const spec = this.module.requests[rid]!;
+      if (spec.mode === 'sample') {
         this.structs.assertValue(spec.layout, value, `request ${rid}`);
         return;
       }
@@ -748,17 +766,17 @@ class RuntimeOperations implements RuntimeContext {
       series: this.finishInputHistory(
         'series',
         this.state.root.series,
-        this.module.manifest.series,
+        this.module.inputs.series,
       ),
       builtins: this.finishInputHistory(
         'builtins',
         this.state.root.builtins,
-        this.module.manifest.builtin,
+        this.module.inputs.builtins,
       ),
       requests: this.finishInputHistory(
         'requests',
         this.state.root.requests,
-        this.module.manifest.requests,
+        this.module.requests,
       ),
     };
   }
@@ -769,7 +787,7 @@ class RuntimeOperations implements RuntimeContext {
     specs: readonly {readonly depth: Parameters<typeof depthRetention>[0]}[],
   ): readonly HistoryState[] {
     if (histories.length !== specs.length) {
-      return fatal(`${field} history topology disagrees with the manifest`);
+      return fatal(`${field} history topology disagrees with the module`);
     }
     return histories.map((history, id) =>
       commitHistory(
@@ -811,7 +829,7 @@ class RuntimeOperations implements RuntimeContext {
   }
 
   private frameLayout(fid: number) {
-    const layout = this.module.manifest.frames[fid];
+    const layout = this.module.state.frames[fid];
     return layout === undefined ? fatal(`unknown frame layout ${fid}`) : layout;
   }
 }
@@ -821,7 +839,7 @@ function initialFrame(
   fid: number,
   active: boolean,
 ): FrameState {
-  const layout = module.manifest.frames[fid];
+  const layout = module.state.frames[fid];
   if (layout === undefined) return fatal(`unknown frame layout ${fid}`);
   return {
     active,
@@ -836,9 +854,9 @@ function initialFrame(
 function initialRoot(module: JSModule): RootState {
   return {
     ...initialFrame(module, 0, true),
-    series: module.manifest.series.map(() => ({values: []})),
-    builtins: module.manifest.builtin.map(() => ({values: []})),
-    requests: module.manifest.requests.map(() => ({values: []})),
+    series: module.inputs.series.map(() => ({values: []})),
+    builtins: module.inputs.builtins.map(() => ({values: []})),
+    requests: module.requests.map(() => ({values: []})),
   };
 }
 
@@ -847,7 +865,7 @@ function initialIntermediateFrame(
   fid: number,
   active: boolean,
 ): IntermediateFrame {
-  const layout = module.manifest.frames[fid];
+  const layout = module.state.frames[fid];
   if (layout === undefined) return fatal(`unknown frame layout ${fid}`);
   return {
     active,
@@ -876,9 +894,7 @@ function commitHistory(
   };
 }
 
-function depthRetention(
-  depth: JSModule['manifest']['series'][number]['depth'],
-) {
+function depthRetention(depth: DepthSpec) {
   switch (depth.kind) {
     case 'none':
       return 0;
@@ -904,11 +920,11 @@ function discoverRoots(
   };
 
   state.root.builtins.forEach((ring, bid) => {
-    const spec = module.manifest.builtin[bid]!;
+    const spec = module.inputs.builtins[bid]!;
     ring.values.forEach(value => visit(spec.layout, value));
   });
   state.root.requests.forEach((ring, rid) => {
-    const spec = module.manifest.requests[rid]!;
+    const spec = module.requests[rid]!;
     ring.values.forEach(value => visit(spec.layout, value));
   });
   visitFrameState(module, state.root, 0, visit);
@@ -952,7 +968,7 @@ function visitIntermediateFrame(
 }
 
 function frameLayout(module: JSModule, fid: number) {
-  const layout = module.manifest.frames[fid];
+  const layout = module.state.frames[fid];
   return layout === undefined ? fatal(`unknown frame layout ${fid}`) : layout;
 }
 
@@ -1054,12 +1070,19 @@ function validateIoSchemas(
     }
     active.delete(id);
   };
-  module.manifest.outputs.forEach(output => {
-    if (output.layouts.length !== output.channels.length)
+  const fields = outputFields(module.outputs.schema);
+  if (fields.length !== module.outputs.declarations.length)
+    fatal('output schema and declarations disagree');
+  module.outputs.declarations.forEach((output, id) => {
+    const field = fields[id];
+    const channels =
+      field.metadata.get('tea:write') === 'append'
+        ? [field.type.children[0].type.children[1]]
+        : field.type.children;
+    if (output.layouts.length !== channels.length)
       fatal('output descriptor count disagrees with Arrow schema');
-    output.channels.forEach((field, i) => validate(output.layouts[i], field));
+    channels.forEach((field: Field, i: number) =>
+      validate(output.layouts[i], field),
+    );
   });
-  module.manifest.effects.forEach(effect =>
-    validate(effect.layout, effect.declaration.payload),
-  );
 }

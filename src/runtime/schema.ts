@@ -1,8 +1,7 @@
 // Purpose: Target-neutral parameter and effect declarations shared by generated artifacts and hosts.
 
-import type {Field} from 'apache-arrow';
 import type {ParamDisplay} from '../ir/program';
-import type {ManifestValue} from './value';
+import type {Scalar} from './value';
 
 export type ParamConstraintSpec =
   | {
@@ -13,7 +12,7 @@ export type ParamConstraintSpec =
     }
   | {
       readonly kind: 'options';
-      readonly options: readonly ManifestValue[];
+      readonly options: readonly Scalar[];
     };
 
 export interface ParamSpec {
@@ -28,7 +27,7 @@ export interface ParamSpec {
     | 'source'
     | 'enum';
   readonly control: string;
-  readonly defaultValue: ManifestValue;
+  readonly defaultValue: Scalar;
   readonly constraints: ParamConstraintSpec | null;
   readonly enumType: {
     readonly name: string;
@@ -43,12 +42,4 @@ export interface ParamSpec {
   readonly confirm: boolean;
   readonly display: ParamDisplay;
   readonly seriesSid: number | null;
-}
-
-/**
- * An event declaration whose payload structure is an ordinary Arrow field.
- * @example A struct event uses a `payload` Field with a Struct DataType.
- */
-export interface EffectSpec {
-  readonly payload: Field;
 }

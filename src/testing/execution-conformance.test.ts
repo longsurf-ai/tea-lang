@@ -3,6 +3,7 @@
 import {existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import type {Field} from 'apache-arrow';
 import {describe, expect, test} from 'vitest';
 import {formatPos} from '../base/pos';
 import {traceDatum, traceDeclaration} from '../cli/output';
@@ -78,12 +79,9 @@ function expectFiniteOrNa(value: unknown, label: string): void {
 }
 
 function expectSinkFiniteOrNa(sink: ConformanceSink, label: string): void {
-  sink.outputs.forEach((output, oid) => {
-    output.spec.staticArgs.forEach((arg, i) =>
-      expectFiniteOrNa(arg.value, `${label}.outputs[${oid}].staticArgs[${i}]`),
-    );
-    output.boundArgs.forEach((arg, i) =>
-      expectFiniteOrNa(arg.value, `${label}.outputs[${oid}].boundArgs[${i}]`),
+  sink.declarations.forEach((output, oid) => {
+    (output.args ?? []).forEach((arg, i) =>
+      expectFiniteOrNa(arg.value, `${label}.outputs[${oid}].args[${i}]`),
     );
   });
   sink.emissions.forEach((emission, i) => {
@@ -205,7 +203,7 @@ async function runCase(entry: CorpusCase): Promise<{
   const primary = reference.bindings[0];
   const data = readFileSync(join(EXECUTION_ROOT, entry.data), 'utf8');
   const requests = Object.fromEntries(
-    module.manifest.requests.map(request => [
+    module.requests.map(request => [
       request.name,
       csvStream(data, request.context?.calcBarsCount || undefined),
     ]),
@@ -244,30 +242,29 @@ async function runCase(entry: CorpusCase): Promise<{
   expect(completed.indices, `${entry.id} index count`).toBe(
     reference.rows.length,
   );
-  expect(sink.outputs.length, `${entry.id} output count`).toBe(
-    reference.outputs.length,
-  );
+  expect(
+    sink.fields.filter(field => field.metadata.get('tea:write') === 'set')
+      .length,
+    `${entry.id} output count`,
+  ).toBe(reference.outputs.length);
   reference.outputs.forEach((expected, oid) => {
     expect(expected.oid, `${entry.id} dense oid`).toBe(oid);
-    const actual = sink.outputs[oid];
+    const actual = sink.declarations[oid];
+    const field = sink.fields[oid]!;
     if (actual === undefined) {
       throw new Error(`${entry.id} output ${oid} is missing`);
     }
-    expect(actual.spec.effect, `${entry.id} output ${oid} effect`).toBe(
-      expected.effect,
-    );
+    expect(
+      field.metadata.get('tea:kind'),
+      `${entry.id} output ${oid} effect`,
+    ).toBe(expected.effect);
     expectArgs(
-      actual.spec.staticArgs,
-      expected.staticArgs,
-      `${entry.id} output ${oid} staticArgs`,
-    );
-    expectArgs(
-      actual.boundArgs,
-      expected.boundArgs,
-      `${entry.id} output ${oid} boundArgs`,
+      actual.args ?? [],
+      [...expected.staticArgs, ...expected.boundArgs],
+      `${entry.id} output ${oid} args`,
     );
     expect(
-      actual.spec.channels.map(channel => [
+      field.type.children.map((channel: Field) => [
         channel.name,
         channel.metadata.get('tea:type'),
       ]),
@@ -303,9 +300,9 @@ async function runCase(entry: CorpusCase): Promise<{
       `${entry.id} emission ${i} channel count`,
     ).toBe(expected.channels.length);
     expected.channels.forEach((value, channel) => {
-      const output = sink.outputs[expected.oid];
+      const output = sink.fields[expected.oid];
       const channelType =
-        output?.spec.channels[channel]?.metadata.get('tea:type');
+        output?.type.children[channel]?.metadata.get('tea:type');
       if (channelType === undefined) {
         throw new Error(
           `${entry.id} emission ${i} refers to a missing channel`,
@@ -329,7 +326,8 @@ async function runCase(entry: CorpusCase): Promise<{
 
   expect(sink.traceLines.length, `${entry.id} trace line count`).toBe(
     reference.outputs.length +
-      sink.effectSchemas.length +
+      sink.fields.filter(field => field.metadata.get('tea:write') === 'append')
+        .length +
       expectedEmissions.length +
       sink.effectEmissions.length,
   );

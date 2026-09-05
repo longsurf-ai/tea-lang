@@ -8,7 +8,7 @@ import {
 } from '../ir/program';
 import {isNaValue, TypeKind, type ConstValue} from '../ir/type';
 import type {ParamSpec} from '../runtime/schema';
-import type {ManifestValue} from '../runtime/value';
+import type {Scalar} from '../runtime/value';
 
 export function paramSpecsOf(
   params: readonly ParamInput[],
@@ -52,7 +52,7 @@ function paramType(param: ParamInput): ParamSpec['type'] {
     case TypeKind.Enum:
       return 'enum';
     default:
-      return fatal(`param '${param.name}' has no manifest type`);
+      return fatal(`param '${param.name}' has no parameter type`);
   }
 }
 
@@ -64,10 +64,12 @@ function paramDefault(param: ParamInput): ParamSpec['defaultValue'] {
   return constValue(param.defaultValue.value);
 }
 
-function constValue(value: ConstValue): ManifestValue {
+function constValue(value: ConstValue): Scalar {
   if (isNaValue(value)) return null;
   if (typeof value === 'number' && !Number.isFinite(value)) {
-    return fatal('non-finite constant reached parameter manifest construction');
+    return fatal(
+      'non-finite constant reached parameter declaration construction',
+    );
   }
   return value;
 }
@@ -77,7 +79,7 @@ function numericOrNull(value: ConstValue | null): number | null {
   return Number.isFinite(value)
     ? value
     : fatal(
-        'non-finite numeric constraint reached parameter manifest construction',
+        'non-finite numeric constraint reached parameter declaration construction',
       );
 }
 

@@ -14,7 +14,7 @@ reactive graph and each runtime it creates. `collections/`, `struct-storage.ts`,
   Intermediate contains only the current frame candidate and never owns Heap.
 - Each runtime owns one Heap and at most one active transaction. A successful
   step commits state and storage together; abort discards tentative storage and
-  all output/effects. Disposal is idempotent.
+  all output cells. Disposal is idempotent.
 - Struct values are source-hidden references to Heap-owned bodies. Assignment
   copies the reference. Collection headers are immutable values whose mutations
   allocate replacement backing. Precise roots cover both State and
@@ -34,3 +34,5 @@ reactive graph and each runtime it creates. `collections/`, `struct-storage.ts`,
   physical history arrays, Heap cells, source objects, or host buffers.
 
 - Ordinary outputs and events share Arrow-directed detached snapshots taken at emission. Public values use named records, Lists and Maps; mutable Heap identity remains internal. Successful provisional Heap behavior is unchanged.
+
+- StepResult contains one output-cell array aligned with the module Arrow schema. emit assigns record channels; append adds an ordinal/payload entry. Fixed builtin values replace the current input vector before normal history reads and commits, so the first historical read remains typed-empty.

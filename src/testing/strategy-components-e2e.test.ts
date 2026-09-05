@@ -109,9 +109,10 @@ function effectTimeline(
   sink: OutputCapture,
 ): readonly (readonly [number, string])[] {
   return sink.effectEmissions.map(emission => {
-    const type = program.effects[emission.effectId]?.payloadType;
+    const type =
+      program.effects[emission.outputId - program.outputs.length]?.payloadType;
     if (type?.kind !== TypeKind.Struct) {
-      throw new Error(`effect ${emission.effectId} has no nominal payload`);
+      throw new Error(`effect ${emission.outputId} has no nominal payload`);
     }
     return [emission.row, type.name] as const;
   });
