@@ -469,7 +469,7 @@ class Noder {
                 case IrKind.NewStruct:
                 case IrKind.MakeTuple:
                 case IrKind.TupleGet:
-                case IrKind.FieldGet:
+                case IrKind.Selector:
                 case IrKind.ForInExpr:
                   valid = false;
                   return;
@@ -613,7 +613,7 @@ class Noder {
       return fatal('collection field location disagrees with receiver fact');
     }
     return {
-      kind: IrKind.FieldGet,
+      kind: IrKind.Selector,
       pos: receiver.expr.pos,
       type: location.field.type,
       qualifier: receiver.tv.qualifier,
@@ -793,7 +793,7 @@ class Noder {
     if (x.kind === IrKind.Const) {
       return [];
     }
-    return [{kind: IrKind.ExprStmt, pos: stmt.pos, x}];
+    return [x];
   }
 
   private nodeDecl(d: syntax.DeclStmt): IrStmt[] {
@@ -912,7 +912,7 @@ class Noder {
         return fatal('unchecked assignment target reached the noder');
       const field = this.structFieldStore(checked);
       target = {
-        kind: IrKind.FieldGet,
+        kind: IrKind.Selector,
         pos: a.target.pos,
         type: checked.field.type,
         qualifier: Qualifier.Series,
@@ -1163,7 +1163,7 @@ class Noder {
       return fatal('non-canonical field selection reached the noder');
     }
     return {
-      kind: IrKind.FieldGet,
+      kind: IrKind.Selector,
       pos: e.pos,
       type: tv.type,
       qualifier: tv.qualifier,

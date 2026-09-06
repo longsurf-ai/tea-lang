@@ -4,6 +4,7 @@ import {fatal} from '../base/print';
 import {
   DepthKind,
   IrKind,
+  isExpr,
   PlaceKind,
   type HistoryDepth,
   type HistReadExpr,
@@ -25,13 +26,10 @@ import {Qualifier, qualifierLE} from './type';
 // called function body, a request child Program, or metadata such as a Name's
 // depth; analyses that own those semantic edges add them explicitly.
 export function visitStmtChildren(
-  stmt: IrStmt,
+  stmt: Exclude<IrStmt, IrExpr>,
   visitExprChild: (expr: IrExpr) => void,
 ): void {
   switch (stmt.kind) {
-    case IrKind.ExprStmt:
-      visitExprChild(stmt.x);
-      return;
     case IrKind.InitName:
     case IrKind.Emit:
       visitExprChild(stmt.value);
@@ -82,7 +80,7 @@ export function visitExprChildren(
       expr.elems.forEach(visitExprChild);
       return;
     case IrKind.TupleGet:
-    case IrKind.FieldGet:
+    case IrKind.Selector:
       visitExprChild(expr.x);
       return;
     case IrKind.IfExpr:
@@ -120,12 +118,18 @@ export function visitExprChildren(
   }
 }
 
+// A node is visited once: expr handles expressions in any position; stmt handles
+// dedicated statements such as assignment, emission, and return.
 export interface IrVisitor {
   readonly expr?: (expr: IrExpr) => void;
   readonly stmt?: (stmt: IrStmt) => void;
 }
 
 export function walkIrStmt(stmt: IrStmt, visitor: IrVisitor): void {
+  if (isExpr(stmt)) {
+    walkIrExpr(stmt, visitor);
+    return;
+  }
   visitor.stmt?.(stmt);
   visitStmtChildren(stmt, expr => walkIrExpr(expr, visitor));
 }
@@ -232,6 +236,10 @@ function visitDepth(depth: HistoryDepth, reach: Reach): void {
 }
 
 function visitStmt(stmt: IrStmt, reach: Reach): void {
+  if (isExpr(stmt)) {
+    visitExpr(stmt, reach);
+    return;
+  }
   if (stmt.kind === IrKind.InitName) {
     noteName(stmt.name, reach);
   }

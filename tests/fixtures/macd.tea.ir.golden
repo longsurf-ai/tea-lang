@@ -108,18 +108,17 @@ func ta.sma(source#2: series float, length#2: input int): series float
     Assign
       target: Read name:sum: series float
       value: Const 0: const float
-    ExprStmt
-      ForExpr index=i: series float
-        from: Const 0: const int
-        to: Binary Sub: input int
-          Read name:length#2: input int
-          Const 1: const int
-        body: BlockExpr: series float
-          Assign Add
-            target: Read name:sum: series float
-            value: HistRead name:source#2: series float
-              offset: Read name:i: series int
-          value: Read name:sum: series float
+    ForExpr index=i: series float
+      from: Const 0: const int
+      to: Binary Sub: input int
+        Read name:length#2: input int
+        Const 1: const int
+      body: BlockExpr: series float
+        Assign Add
+          target: Read name:sum: series float
+          value: HistRead name:source#2: series float
+            offset: Read name:i: series int
+        value: Read name:sum: series float
     value: Binary Div: series float
       Read name:sum: series float
       Read name:length#2: input int
@@ -142,24 +141,22 @@ func hline(id: const string, price: const float, title: const string, color: con
       value: Read name:p: series Hline
 func alertcondition(id#1: const string, condition: series bool, title#1: const string, message: const string): series void
   body: BlockExpr: const void
-    ExprStmt
-      IfExpr: series void
-        cond: Read name:condition: series bool
-        then: BlockExpr: const void
-          Emit output[4]
-            value: NewStruct Alert: series Alert
-              Const "Rising to falling": const string
-              Const "MACD histogram switched from a rising to falling state": const string
+    IfExpr: series void
+      cond: Read name:condition: series bool
+      then: BlockExpr: const void
+        Emit output[4]
+          value: NewStruct Alert: series Alert
+            Const "Rising to falling": const string
+            Const "MACD histogram switched from a rising to falling state": const string
 func alertcondition(id#2: const string, condition#1: series bool, title#2: const string, message#1: const string): series void
   body: BlockExpr: const void
-    ExprStmt
-      IfExpr: series void
-        cond: Read name:condition#1: series bool
-        then: BlockExpr: const void
-          Emit output[5]
-            value: NewStruct Alert: series Alert
-              Const "Falling to rising": const string
-              Const "MACD histogram switched from a falling to rising state": const string
+    IfExpr: series void
+      cond: Read name:condition#1: series bool
+      then: BlockExpr: const void
+        Emit output[5]
+          value: NewStruct Alert: series Alert
+            Const "Falling to rising": const string
+            Const "MACD histogram switched from a falling to rising state": const string
 body:
   Assign
     target: Read name:maFast: series float
@@ -215,45 +212,42 @@ body:
             value: Const "#FFCDD2": const color
           else: BlockExpr: const color
             value: Const "#FF5252": const color
-  ExprStmt
-    CallFunc hline slot=3: series Hline
-      Const "output0": const string
-      Const 0: const int
-      Const "Zero": const string
-      Const "#787B8680": const color
-      Const "solid": const string
-      Const 1: const int
-      Const true: const bool
-      Const "all": const string
+  CallFunc hline slot=3: series Hline
+    Const "output0": const string
+    Const 0: const int
+    Const "Zero": const string
+    Const "#787B8680": const color
+    Const "solid": const string
+    Const 1: const int
+    Const true: const bool
+    Const "all": const string
   Emit output[1]
     value: Read name:hist: series float
   Emit output[2]
     value: Read name:macd: series float
   Emit output[3]
     value: Read name:signal: series float
-  ExprStmt
-    CallFunc alertcondition slot=4: series void
-      Const "output4": const string
-      Binary And: series bool
-        Binary Ge: series bool
-          HistRead name:hist: series float
-            offset: Const 1: const int
-          Const 0: const int
-        Binary Lt: series bool
-          Read name:hist: series float
-          Const 0: const int
-      Const "Rising to falling": const string
-      Const "MACD histogram switched from a rising to falling state": const string
-  ExprStmt
-    CallFunc alertcondition slot=5: series void
-      Const "output5": const string
-      Binary And: series bool
-        Binary Le: series bool
-          HistRead name:hist: series float
-            offset: Const 1: const int
-          Const 0: const int
-        Binary Gt: series bool
-          Read name:hist: series float
-          Const 0: const int
-      Const "Falling to rising": const string
-      Const "MACD histogram switched from a falling to rising state": const string
+  CallFunc alertcondition slot=4: series void
+    Const "output4": const string
+    Binary And: series bool
+      Binary Ge: series bool
+        HistRead name:hist: series float
+          offset: Const 1: const int
+        Const 0: const int
+      Binary Lt: series bool
+        Read name:hist: series float
+        Const 0: const int
+    Const "Rising to falling": const string
+    Const "MACD histogram switched from a rising to falling state": const string
+  CallFunc alertcondition slot=5: series void
+    Const "output5": const string
+    Binary And: series bool
+      Binary Le: series bool
+        HistRead name:hist: series float
+          offset: Const 1: const int
+        Const 0: const int
+      Binary Gt: series bool
+        Read name:hist: series float
+        Const 0: const int
+    Const "Falling to rising": const string
+    Const "MACD histogram switched from a falling to rising state": const string

@@ -56,14 +56,13 @@ export const IrKind = {
   NewStruct: 'NewStruct', // New struct value, e.g. `Point.new(x, y)`.
   MakeTuple: 'MakeTuple', // Tuple value, e.g. `[x, y]`.
   TupleGet: 'TupleGet', // Tuple element from destructuring, e.g. `x` in `[x, y] = pair()`.
-  FieldGet: 'FieldGet', // Struct-field read, e.g. `point.x`.
+  Selector: 'Selector', // Field selection for reading or assignment, e.g. `point.x`.
   IfExpr: 'IfExpr', // Block-form conditional, e.g. `if ready ... else ...`.
   SwitchExpr: 'SwitchExpr', // Value-producing switch, e.g. `switch side`.
   ForExpr: 'ForExpr', // Counted range loop, e.g. `for i = 0 to 9`.
   ForInExpr: 'ForInExpr', // Collection iteration, e.g. `for x in xs`.
   WhileExpr: 'WhileExpr', // Condition-controlled loop, e.g. `while ready`.
   BlockExpr: 'BlockExpr', // Indented block with an optional trailing value, e.g. an `if` body.
-  ExprStmt: 'ExprStmt', // Expression evaluated only for effects, e.g. `counter.add(1)`.
   InitName: 'InitName', // Persistent name initialization, e.g. `var x = 0`.
   Assign: 'Assign', // Assignment to a binding or field, e.g. `x += 1` or `point.x := 1`.
   Emit: 'Emit', // Write a named output column, e.g. `emit "price" close` or `emit.append "fills" fill`.
@@ -160,7 +159,7 @@ export type IrExpr =
   | NewStructExpr
   | MakeTupleExpr
   | TupleGetExpr
-  | FieldGetExpr
+  | SelectorExpr
   | IfExpr
   | SwitchExpr
   | ForExpr
@@ -251,8 +250,8 @@ export interface TupleGetExpr extends IrExprBase {
   readonly index: number;
 }
 
-export interface FieldGetExpr extends IrExprBase {
-  readonly kind: typeof IrKind.FieldGet;
+export interface SelectorExpr extends IrExprBase {
+  readonly kind: typeof IrKind.Selector;
   readonly x: IrExpr;
   readonly fieldIndex: number;
 }
@@ -262,7 +261,7 @@ export interface FieldGetExpr extends IrExprBase {
  */
 export type WritableExpr =
   | (ReadExpr & {readonly place: Extract<Place, {kind: typeof PlaceKind.Name}>})
-  | FieldGetExpr;
+  | SelectorExpr;
 
 // Control structures stay expressions in the IR (mirroring the language);
 // flattening into plain statements is a later optimization pass, not a
@@ -317,8 +316,9 @@ export interface BlockExpr extends IrExprBase {
 
 // ---- statements -------------------------------------------------------------
 
+// Expressions can appear directly in statement lists; their values are discarded.
 export type IrStmt =
-  | ExprStmt
+  | IrExpr
   | InitNameStmt
   | AssignStmt
   | EmitStmt
@@ -326,9 +326,9 @@ export type IrStmt =
   | BreakStmt
   | ContinueStmt;
 
-export interface ExprStmt extends IrNode {
-  readonly kind: typeof IrKind.ExprStmt;
-  readonly x: IrExpr;
+/** Expressions carry a value type, including when used as statements. */
+export function isExpr(stmt: IrStmt): stmt is IrExpr {
+  return 'type' in stmt;
 }
 
 // A persistent declaration at its lexical execution site. `value` is

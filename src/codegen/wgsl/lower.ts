@@ -25,6 +25,7 @@ import {
   type WgslCodec,
 } from '../../gpu/contract';
 import {
+  isExpr,
   IrKind,
   IrOp,
   PlaceKind,
@@ -1636,7 +1637,7 @@ class WgslEmitter {
           'GPU tuples are outside the executable subset',
           expr.pos,
         );
-      case IrKind.FieldGet:
+      case IrKind.Selector:
         return this.unsupported(
           'struct-reference-lowering-unimplemented',
           'GPU struct-reference field reads are deferred',
@@ -1772,10 +1773,11 @@ class WgslEmitter {
   }
 
   private emitStmt(stmt: IrStmt, ctx: WgslContext, out: string[]): void {
+    if (isExpr(stmt)) {
+      this.emitExpr(stmt, ctx, out);
+      return;
+    }
     switch (stmt.kind) {
-      case IrKind.ExprStmt:
-        this.emitExpr(stmt.x, ctx, out);
-        return;
       case IrKind.InitName: {
         const location = this.locateName(stmt.name, ctx);
         if (location.local.tentativeInitWordOffset === null) {

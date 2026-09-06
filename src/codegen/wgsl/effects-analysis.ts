@@ -4,6 +4,7 @@
 import type {Pos} from '../../base/pos';
 import {fatal} from '../../base/print';
 import {
+  isExpr,
   IrKind,
   PlaceKind,
   type IrExpr,
@@ -67,6 +68,7 @@ export function collectLiteralStrings(program: Program): readonly string[] {
   };
 
   const visitStmt = (stmt: IrStmt): void => {
+    if (isExpr(stmt)) return visitExpr(stmt);
     visitStmtChildren(stmt, visitExpr);
   };
 
@@ -129,9 +131,8 @@ class EffectBound {
   }
 
   private stmt(stmt: IrStmt): number {
+    if (isExpr(stmt)) return this.expr(stmt);
     switch (stmt.kind) {
-      case IrKind.ExprStmt:
-        return this.expr(stmt.x);
       case IrKind.InitName: {
         const bound = this.expr(stmt.value);
         if (bound !== 0) {
@@ -192,7 +193,7 @@ class EffectBound {
       case IrKind.MakeTuple:
         return sum(expr.elems, elem => this.expr(elem));
       case IrKind.TupleGet:
-      case IrKind.FieldGet:
+      case IrKind.Selector:
         return this.expr(expr.x);
       case IrKind.IfExpr:
         return checkedAdd(

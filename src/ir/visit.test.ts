@@ -11,8 +11,10 @@ import {
   PlaceKind,
   Storage,
   type CallFuncExpr,
+  type BlockExpr,
   type WritableExpr,
   type IrExpr,
+  type IrStmt,
   type Name,
 } from './node';
 import {
@@ -41,6 +43,7 @@ import {
   requestsOf,
   seriesInputsOf,
   slotCountOf,
+  walkIrStmt,
 } from './visit';
 
 const pos: Pos = {base: newFileBase('t.tea'), line: 1, col: 1};
@@ -235,27 +238,19 @@ const program: Program = {
       },
     },
     {
-      kind: IrKind.ExprStmt,
+      kind: IrKind.Read,
       pos,
-      x: {
-        kind: IrKind.Read,
-        pos,
-        type: FloatType,
-        qualifier: Qualifier.Series,
-        place: {kind: PlaceKind.Request, request: edge},
-      },
+      type: FloatType,
+      qualifier: Qualifier.Series,
+      place: {kind: PlaceKind.Request, request: edge},
     },
     {
-      kind: IrKind.ExprStmt,
+      kind: IrKind.HistRead,
       pos,
-      x: {
-        kind: IrKind.HistRead,
-        pos,
-        type: IntType,
-        qualifier: Qualifier.Series,
-        place: {kind: PlaceKind.Builtin, builtin: barIndex},
-        offset: int(1),
-      },
+      type: IntType,
+      qualifier: Qualifier.Series,
+      place: {kind: PlaceKind.Builtin, builtin: barIndex},
+      offset: int(1),
     },
   ],
 };
@@ -338,7 +333,7 @@ const mutationProgram: Program = {
       kind: IrKind.Assign,
       pos,
       target: {
-        kind: IrKind.FieldGet,
+        kind: IrKind.Selector,
         pos,
         type: FloatType,
         qualifier: Qualifier.Series,
@@ -349,50 +344,92 @@ const mutationProgram: Program = {
       op: null,
     },
     {
-      kind: IrKind.ExprStmt,
+      kind: IrKind.CallNative,
       pos,
-      x: {
-        kind: IrKind.CallNative,
+      type: FloatType,
+      qualifier: Qualifier.Series,
+      receiver: {
+        kind: IrKind.Selector,
         pos,
-        type: FloatType,
+        type: holder.fields[1].type,
         qualifier: Qualifier.Series,
-        receiver: {
-          kind: IrKind.FieldGet,
-          pos,
-          type: holder.fields[1].type,
-          qualifier: Qualifier.Series,
-          x: read(holderName),
-          fieldIndex: 1,
-        },
-        native: {
-          name: 'array.pop',
-          argTypes: [],
-          resultType: FloatType,
-          effect: 'write',
-        },
-        args: [],
-        argumentEvaluationOrder: [],
+        x: read(holderName),
+        fieldIndex: 1,
       },
+      native: {
+        name: 'array.pop',
+        argTypes: [],
+        resultType: FloatType,
+        effect: 'write',
+      },
+      args: [],
+      argumentEvaluationOrder: [],
     },
     {
-      kind: IrKind.ExprStmt,
+      kind: IrKind.CallFunc,
       pos,
-      x: {
-        kind: IrKind.CallFunc,
-        pos,
-        type: FloatType,
-        qualifier: Qualifier.Series,
-        func: mutate,
-        receiver: read(holderName),
-        slot: 2,
-        argumentEvaluationOrder: [],
-        args: [],
-      },
+      type: FloatType,
+      qualifier: Qualifier.Series,
+      func: mutate,
+      receiver: read(holderName),
+      slot: 2,
+      argumentEvaluationOrder: [],
+      args: [],
     },
   ],
 };
 
 describe('derived enumerations', () => {
+  test('statement-position calls, selectors, and control flow visit each expression once', () => {
+    const body: BlockExpr = {
+      kind: IrKind.BlockExpr,
+      pos,
+      type: FloatType,
+      qualifier: Qualifier.Series,
+      stmts: [read(x)],
+      value: num(1),
+    };
+    const roots: IrStmt[] = [
+      ...mutationProgram.body.slice(1),
+      {
+        kind: IrKind.Selector,
+        pos,
+        type: FloatType,
+        qualifier: Qualifier.Series,
+        x: read(holderName),
+        fieldIndex: 0,
+      },
+      {
+        kind: IrKind.IfExpr,
+        pos,
+        type: FloatType,
+        qualifier: Qualifier.Series,
+        cond: bool(true),
+        then: body,
+        else: null,
+      },
+      {
+        kind: IrKind.WhileExpr,
+        pos,
+        type: FloatType,
+        qualifier: Qualifier.Series,
+        cond: bool(false),
+        body,
+      },
+    ];
+    for (const root of roots) {
+      const expressions: IrExpr[] = [];
+      const statements: IrStmt[] = [];
+      walkIrStmt(root, {
+        expr: expr => expressions.push(expr),
+        stmt: stmt => statements.push(stmt),
+      });
+      expect(expressions[0]).toBe(root);
+      expect(expressions.length).toBe(new Set(expressions).size);
+      expect(statements).toEqual([]);
+    }
+  });
+
   test('one topology owns frame names and call-site children for every target', () => {
     const topology = frameTopologyOf(program);
     expect(topology.frames).toHaveLength(2);

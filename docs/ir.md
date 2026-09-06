@@ -274,10 +274,16 @@ barriers.
 Assignments compose one `Assign {target, value, op}` with writable binding reads
 or field selections. The optional compound operator applies to the destination's
 captured old value. `NewStruct` describes construction in canonical field order;
-`FieldGet` carries a logical field index and works as a read or destination.
+`Selector` carries a logical field index and works as a read or destination.
 Lowering captures and validates a field destination before evaluating its RHS,
 so later rebindings cannot redirect the store. Persistent declarations remain
 lexical, lazy `InitName` statements.
+
+Expressions appear directly in statement lists. Their values are discarded there;
+a block's separate result expression supplies the block value. The syntax AST
+retains `ExprStmt`, but the semantic IR has no wrapper for it. For example, a
+standalone call is a `CallFunc` statement, while the same call can be the value of
+an assignment or block result.
 
 A collection mutator is a `CallNative` with a writable receiver using the same
 destination forms. Lowering captures its old header before explicit arguments,

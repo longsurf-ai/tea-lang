@@ -30,7 +30,10 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   defaults; each `CheckedExpression` supplies the exact semantic `Info` to use
   while the value lowers into the caller's current Program and frame. A
   default expression is never prebuilt IR shared between Programs.
-- A checked `StructFieldStore` projects to the ordinary `FieldGet` destination of `Assign`; binding destinations use `Read`. Compound assignment retains its operator so lowering captures the receiver and previous value exactly once. Collection inout calls reuse these destinations with a concrete intrinsic signature/effect descriptor; user method policy remains on the callee.
+- A checked `StructFieldStore` projects to the ordinary `Selector` destination of `Assign`; binding destinations use `Read`. Compound assignment retains its operator so lowering captures the receiver and previous value exactly once. Collection inout calls reuse these destinations with a concrete intrinsic signature/effect descriptor; user method policy remains on the callee.
+- Syntax `ExprStmt` projects directly to its expression in IR statement lists.
+  Block statements discard expression values; a block's separate result expression
+  retains its value. There is no semantic IR expression-statement wrapper.
 - Reference bindings- Parameter bindings are compile-time only: a never-reassigned input-call declaration binds its name to `ParamInput`. Tea const declarations vanish entirely. Visual values use ordinary names, structs, calls and history; there are no output handles.
 - Param identity- Param identity: the binding name when the input call initializes a program-
   scope declaration, else `input@line:col`. Inputs in local blocks and

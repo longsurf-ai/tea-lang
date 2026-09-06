@@ -9,7 +9,7 @@ import {
   type ConstExpr,
   type ReadExpr,
   type WritableExpr,
-  type FieldGetExpr,
+  type SelectorExpr,
   type IrExpr,
   type IrStmt,
   type Name,
@@ -57,9 +57,9 @@ function read(target: Name): ReadExpr & WritableExpr {
   };
 }
 
-function field(x: IrExpr, fieldIndex: number, type: Type): FieldGetExpr {
+function field(x: IrExpr, fieldIndex: number, type: Type): SelectorExpr {
   return {
-    kind: IrKind.FieldGet,
+    kind: IrKind.Selector,
     pos,
     type,
     qualifier: Qualifier.Series,
@@ -143,7 +143,7 @@ describe('malformed Program rejection', () => {
             args: [constant(IntType, 1), constant(IntType, 2)],
             argumentEvaluationOrder: [0, 1],
           }),
-          {kind: IrKind.ExprStmt, pos, x: field(read(root), 2, IntType)},
+          field(read(root), 2, IntType),
         ]),
       ),
     ).toThrow('field index 2 is out of range for Pair');
@@ -207,19 +207,15 @@ describe('malformed Program rejection', () => {
             argumentEvaluationOrder: [0],
           }),
           {
-            kind: IrKind.ExprStmt,
+            kind: IrKind.CallFunc,
             pos,
-            x: {
-              kind: IrKind.CallFunc,
-              pos,
-              type: IntType,
-              qualifier: Qualifier.Series,
-              func: invalid,
-              receiver: read(root),
-              slot: 0,
-              args: [constant(IntType, 2)],
-              argumentEvaluationOrder: [0],
-            },
+            type: IntType,
+            qualifier: Qualifier.Series,
+            func: invalid,
+            receiver: read(root),
+            slot: 0,
+            args: [constant(IntType, 2)],
+            argumentEvaluationOrder: [0],
           },
         ]),
       ),

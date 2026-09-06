@@ -22,6 +22,29 @@ async function execute(source: string, rows = 1): Promise<OutputCapture> {
 }
 
 describe('compositional semantic IR', () => {
+  test('statement expressions keep their effects without replacing a block result', async () => {
+    const sink = await execute(`
+struct Counter
+    int value
+    int next() =>
+        this.value += 1
+        this.value
+sample(Counter counter) =>
+    counter.next()
+    if true
+        counter.next()
+    for i = 0 to 1
+        counter.next()
+    counter.value
+    42
+counter = Counter.new(0)
+counter.next()
+emit "result" sample(counter)
+emit "calls" counter.value
+`);
+    expect(sink.publications[0]).toMatchObject({result: 42, calls: 5});
+  });
+
   test('compound assignment captures the receiver once before RHS rebinding', async () => {
     const sink = await execute(`
 struct Counter

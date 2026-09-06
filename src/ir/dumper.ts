@@ -5,6 +5,7 @@ import {formatPos} from '../base/pos';
 import {
   DepthKind,
   IrKind,
+  isExpr,
   PlaceKind,
   type HistoryDepth,
   type IrExpr,
@@ -235,11 +236,11 @@ function dumpStmt(
   out: string[],
   labels: Labels,
 ): void {
+  if (isExpr(stmt)) {
+    dumpExpr(stmt, label, indent, out, labels);
+    return;
+  }
   switch (stmt.kind) {
-    case IrKind.ExprStmt:
-      out.push(`${indent}${label}ExprStmt`);
-      dumpExpr(stmt.x, '', `${indent}  `, out, labels);
-      return;
     case IrKind.InitName:
       out.push(`${indent}${label}InitName ${labels.name(stmt.name)}`);
       dumpExpr(stmt.value, '', `${indent}  `, out, labels);
@@ -335,7 +336,7 @@ function dumpExpr(
       line(` index=${expr.index}`);
       child(expr.x);
       return;
-    case IrKind.FieldGet:
+    case IrKind.Selector:
       line(` field[${expr.fieldIndex}]`);
       child(expr.x);
       return;

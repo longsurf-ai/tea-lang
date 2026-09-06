@@ -10,6 +10,7 @@ import {
   analyzeWgslEffects,
   collectLiteralStrings,
 } from './effects-analysis';
+import {compileProgramToWgsl} from './lower';
 
 describe('WGSL effect artifact analysis', () => {
   test('collects strategy command ids in deterministic first-encounter order', () => {
@@ -42,6 +43,34 @@ describe('WGSL effect artifact analysis', () => {
     );
 
     expect(collectLiteralStrings(program)).toEqual(['nested', 'root']);
+  });
+
+  test('includes discarded calls and loop roots in effects and literal strings', () => {
+    const program = mustBuild(
+      [
+        'publish(string value) =>',
+        '    emit.append "events" value',
+        '    return value',
+        'publish("before")',
+        'for i = 0 to 2',
+        '    publish("inside")',
+        'publish("after")',
+        'emit "close" close',
+      ].join('\n'),
+    );
+
+    expect(analyzeWgslEffects(program)).toEqual({
+      maxEffectsPerRow: 5,
+      literalStrings: ['before', 'inside', 'after'],
+    });
+    const result = compileProgramToWgsl(program);
+    if (result.status !== 'compiled') {
+      throw new Error(JSON.stringify(result.eligibility.issues));
+    }
+    expect(result.artifact.module.source.match(/= tea_fn_\d+\(/g)).toHaveLength(
+      3,
+    );
+    expect(result.artifact.module.source).toMatch(/for \(var range_index\d+:/);
   });
 
   test('takes one lazy conditional arm plus sequential function calls', () => {

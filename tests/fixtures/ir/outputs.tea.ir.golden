@@ -123,9 +123,9 @@ func fill(id#2: const string, plot1: series Plot, plot2: series Plot, color#2: c
       target: Read name:p#2: series Fill
       value: NewStruct Fill: series Fill
         Const "output2": const string
-        FieldGet field[0]: series string
+        Selector field[0]: series string
           Read name:plot1: series Plot
-        FieldGet field[0]: series string
+        Selector field[0]: series string
           Read name:plot2: series Plot
         Const "#2196F31A": const color
         Const "": const string
@@ -209,44 +209,41 @@ body:
       Const "all": const string
       Const "inherit": const string
       Const 0: const int
-  ExprStmt
-    CallFunc fill slot=2: series Fill
-      Const "output2": const string
-      Read name:p1: series Plot
-      Read name:p2: series Plot
-      Const "#2196F31A": const color
-      Const "": const string
-      Const true: const bool
-      Const "all": const string
-  ExprStmt
-    CallFunc hline slot=3: series Hline
-      Const "output3": const string
-      Const 0: const int
-      Const "Zero": const string
-      Const na: const color
-      Const "dashed": const string
-      Const 1: const int
-      Const true: const bool
-      Const "all": const string
+  CallFunc fill slot=2: series Fill
+    Const "output2": const string
+    Read name:p1: series Plot
+    Read name:p2: series Plot
+    Const "#2196F31A": const color
+    Const "": const string
+    Const true: const bool
+    Const "all": const string
+  CallFunc hline slot=3: series Hline
+    Const "output3": const string
+    Const 0: const int
+    Const "Zero": const string
+    Const na: const color
+    Const "dashed": const string
+    Const 1: const int
+    Const true: const bool
+    Const "all": const string
   Assign
     target: Read name:mid: series float
     value: CallNative math.avg pure: series float
       Read series:high: series float
       Read series:low: series float
-  ExprStmt
-    CallFunc plotshape slot=4: series Shape
-      Const "output4": const string
-      Binary Gt: series bool
-        Read series:close: series float
-        Read name:mid: series float
-      Const "": const string
-      Const "triangleup": const string
-      Const "abovebar": const string
-      Const na: const color
-      Const 0: const int
-      Const "": const string
-      Const na: const color
-      Const "auto": const string
-      Const true: const bool
-      Const 0: const int
-      Const "all": const string
+  CallFunc plotshape slot=4: series Shape
+    Const "output4": const string
+    Binary Gt: series bool
+      Read series:close: series float
+      Read name:mid: series float
+    Const "": const string
+    Const "triangleup": const string
+    Const "abovebar": const string
+    Const na: const color
+    Const 0: const int
+    Const "": const string
+    Const na: const color
+    Const "auto": const string
+    Const true: const bool
+    Const 0: const int
+    Const "all": const string

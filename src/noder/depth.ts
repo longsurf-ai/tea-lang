@@ -405,7 +405,7 @@ function normalize(
     case IrKind.NewStruct:
     case IrKind.MakeTuple:
     case IrKind.TupleGet:
-    case IrKind.FieldGet:
+    case IrKind.Selector:
     case IrKind.SwitchExpr:
     case IrKind.ForExpr:
     case IrKind.ForInExpr:

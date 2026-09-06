@@ -83,11 +83,7 @@ describe('typed builtin lowering', () => {
       outputs: [],
       packageGlobals: [],
       init: [],
-      body: [
-        {kind: IrKind.ExprStmt, pos, x: read(time, constant(2))},
-        {kind: IrKind.ExprStmt, pos, x: read(first, null)},
-        {kind: IrKind.ExprStmt, pos, x: read(ticker, null)},
-      ],
+      body: [read(time, constant(2)), read(first, null), read(ticker, null)],
     };
 
     const source = generate(program);

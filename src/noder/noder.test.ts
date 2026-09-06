@@ -134,6 +134,35 @@ describe('declarations', () => {
     expect(second.value.kind).toBe(IrKind.TupleGet);
   });
 
+  test('statement expressions are direct nodes and block results stay separate', () => {
+    const program = mustBuild(`
+struct Point
+    int x
+inspect(Point point) =>
+    point.x
+    point.x + 1
+point = Point.new(1)
+inspect(point)
+point.x
+if close > 0
+    inspect(point)
+for i = 0 to 1
+    inspect(point)
+`);
+    expect(program.body.map(stmt => stmt.kind)).toEqual([
+      IrKind.Assign,
+      IrKind.CallFunc,
+      IrKind.Selector,
+      IrKind.IfExpr,
+      IrKind.ForExpr,
+    ]);
+    expect(funcsOf(program)[0].body).toMatchObject({
+      kind: IrKind.BlockExpr,
+      stmts: [{kind: IrKind.Selector}],
+      value: {kind: IrKind.Binary},
+    });
+  });
+
   test('every na constant entering Program IR has a concrete nullable type', () => {
     const program = mustBuild(
       [
@@ -236,7 +265,7 @@ describe('structs', () => {
     expect(program.requests[0].child.body[0]).toMatchObject({
       kind: IrKind.Assign,
       value: {
-        kind: IrKind.FieldGet,
+        kind: IrKind.Selector,
         fieldIndex: 0,
         x: {
           kind: IrKind.NewStruct,
@@ -261,8 +290,8 @@ describe('structs', () => {
     expect(program.body[1]).toMatchObject({
       kind: IrKind.Assign,
       target: {
-        kind: IrKind.FieldGet,
-        x: {kind: IrKind.FieldGet, fieldIndex: 0, x: {kind: IrKind.Read}},
+        kind: IrKind.Selector,
+        x: {kind: IrKind.Selector, fieldIndex: 0, x: {kind: IrKind.Read}},
         fieldIndex: 0,
       },
       value: {kind: IrKind.Const, value: 3},
@@ -270,9 +299,9 @@ describe('structs', () => {
     expect(program.body[2]).toMatchObject({
       kind: IrKind.Assign,
       value: {
-        kind: IrKind.FieldGet,
+        kind: IrKind.Selector,
         fieldIndex: 0,
-        x: {kind: IrKind.FieldGet, fieldIndex: 0},
+        x: {kind: IrKind.Selector, fieldIndex: 0},
       },
     });
   });
@@ -282,16 +311,13 @@ describe('structs', () => {
       ['xs = array.from(1, 2)', 'xs.push(3)', 'last = xs.pop()'].join('\n'),
     );
     expect(program.body[1]).toMatchObject({
-      kind: IrKind.ExprStmt,
-      x: {
-        kind: IrKind.CallNative,
-        native: {name: 'array.push', effect: 'write'},
-        receiver: {
-          kind: IrKind.Read,
-          place: {kind: PlaceKind.Name, name: {name: 'xs'}},
-        },
-        args: [{kind: IrKind.Const, value: 3}],
+      kind: IrKind.CallNative,
+      native: {name: 'array.push', effect: 'write'},
+      receiver: {
+        kind: IrKind.Read,
+        place: {kind: PlaceKind.Name, name: {name: 'xs'}},
       },
+      args: [{kind: IrKind.Const, value: 3}],
     });
     expect(program.body[2]).toMatchObject({
       kind: IrKind.Assign,
@@ -327,7 +353,7 @@ describe('structs', () => {
         kind: IrKind.CallNative,
         native: {name: 'array.push', effect: 'write'},
         receiver: {
-          kind: IrKind.FieldGet,
+          kind: IrKind.Selector,
           x: {kind: IrKind.Read},
           fieldIndex: 0,
         },
@@ -337,13 +363,10 @@ describe('structs', () => {
       expect(append.params).not.toContain(append.receiver);
     }
     expect(program.body[1]).toMatchObject({
-      kind: IrKind.ExprStmt,
-      x: {
-        kind: IrKind.CallFunc,
-        func: append,
-        receiver: {kind: IrKind.Read},
-        args: [{kind: IrKind.Const, value: 2}],
-      },
+      kind: IrKind.CallFunc,
+      func: append,
+      receiver: {kind: IrKind.Read},
+      args: [{kind: IrKind.Const, value: 2}],
     });
   });
 

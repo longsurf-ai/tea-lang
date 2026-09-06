@@ -20,16 +20,15 @@ body:
       Read series:open: series float
   InitName count
     Const 0: const int
-  ExprStmt
-    IfExpr: series int
-      cond: Read name:up: series bool
-      then: BlockExpr: series int
-        Assign
-          target: Read name:count: series int
-          value: Binary Add: series int
-            Read name:count: series int
-            Const 1: const int
-        value: Read name:count: series int
+  IfExpr: series int
+    cond: Read name:up: series bool
+    then: BlockExpr: series int
+      Assign
+        target: Read name:count: series int
+        value: Binary Add: series int
+          Read name:count: series int
+          Const 1: const int
+      value: Read name:count: series int
   Assign
     target: Read name:delta: series float
     value: Binary Sub: series float

@@ -67,6 +67,10 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   offset. Only direct readable bindings admit history. Ternary syntax lowers
   to lazy `IfExpr`; `Return` exits the enclosing function, including when it
   occurs within a persistent initializer. `InitName` remains lexical and lazy.
+- `Selector` represents a field selection for both reads and writable destinations.
+  Expressions are also statements: placement in an `IrStmt` list discards the
+  value, while a block's separate result expression yields its value. Syntax
+  owns the `ExprStmt` wrapper; the semantic IR has none.
 - `visit.ts` owns canonical lexical child enumeration and recursive IR
   traversal; specialized analyses add only semantic edges such as function
   bodies, request metadata, or history-depth expressions. Its switches are

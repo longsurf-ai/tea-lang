@@ -5,6 +5,7 @@ import type {FrameTopology} from '../ir/frames';
 import {unimplemented} from '../base/unimplemented';
 import {
   IrKind,
+  isExpr,
   IrOp,
   PlaceKind,
   type WritableExpr,
@@ -509,7 +510,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       );
       return `${ctx.factoryOf(e.structType)}.create(ctx, {${args.map((arg, i) => `${JSON.stringify(e.structType.fields[i].name)}: ${coerce(arg, e.args[i].type, e.structType.fields[i].type)}`).join(', ')}})`;
     }
-    case IrKind.FieldGet: {
+    case IrKind.Selector: {
       if (ctx.binding === true) {
         return fatal('module binding cannot read a struct field');
       }
@@ -797,12 +798,12 @@ export function lowerStmts(
 }
 
 function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
+  if (isExpr(stmt)) {
+    const value = lowerExpr(stmt, out, ctx);
+    out.push(`void (${value});`);
+    return;
+  }
   switch (stmt.kind) {
-    case IrKind.ExprStmt: {
-      const x = lowerExpr(stmt.x, out, ctx);
-      out.push(`void (${x});`);
-      return;
-    }
     case IrKind.InitName: {
       const direct = directName(ctx, stmt.name);
       if (ctx.binding === true && direct !== undefined) {

@@ -11,7 +11,7 @@ import {
   type BlockExpr,
   type ConstExpr,
   type HistReadExpr,
-  type FieldGetExpr,
+  type SelectorExpr,
   type ReadExpr,
   type WritableExpr,
   type IrExpr,
@@ -82,9 +82,9 @@ function readAt(target: Name, offset: number): HistReadExpr {
   };
 }
 
-function field(x: IrExpr, fieldIndex: number, type: Type): FieldGetExpr {
+function field(x: IrExpr, fieldIndex: number, type: Type): SelectorExpr {
   return {
-    kind: IrKind.FieldGet,
+    kind: IrKind.Selector,
     pos,
     type,
     qualifier: Qualifier.Series,
@@ -390,28 +390,24 @@ describe('aggregate expression and reference-store lowering', () => {
           argumentEvaluationOrder: [0, 1],
         }),
         {
-          kind: IrKind.ExprStmt,
+          kind: IrKind.CallNative,
           pos,
-          x: {
-            kind: IrKind.CallNative,
-            pos,
-            type: VoidType,
-            qualifier: Qualifier.Series,
-            receiver: field(read(holderName), 0, arrayType),
-            native: {
-              name: 'array.push',
-              argTypes: [IntType],
-              resultType: VoidType,
-              effect: 'write',
-            },
-            args: [
-              block(
-                [storeField(read(holderName), holder, 1, constant(IntType, 9))],
-                constant(IntType, 2),
-              ),
-            ],
-            argumentEvaluationOrder: [0],
+          type: VoidType,
+          qualifier: Qualifier.Series,
+          receiver: field(read(holderName), 0, arrayType),
+          native: {
+            name: 'array.push',
+            argTypes: [IntType],
+            resultType: VoidType,
+            effect: 'write',
           },
+          args: [
+            block(
+              [storeField(read(holderName), holder, 1, constant(IntType, 9))],
+              constant(IntType, 2),
+            ),
+          ],
+          argumentEvaluationOrder: [0],
         },
         write(size, {
           kind: IrKind.CallNative,
@@ -816,23 +812,19 @@ describe('aggregate expression and reference-store lowering', () => {
         [
           storeField(read(receiver), holder, 1, constant(IntType, 9)),
           {
-            kind: IrKind.ExprStmt,
+            kind: IrKind.CallNative,
             pos,
-            x: {
-              kind: IrKind.CallNative,
-              pos,
-              type: VoidType,
-              qualifier: Qualifier.Series,
-              receiver: field(read(receiver), 0, arrayType),
-              native: {
-                name: 'array.set',
-                argTypes: [IntType, IntType],
-                resultType: VoidType,
-                effect: 'write',
-              },
-              args: [constant(IntType, 0), constant(IntType, 2)],
-              argumentEvaluationOrder: [0, 1],
+            type: VoidType,
+            qualifier: Qualifier.Series,
+            receiver: field(read(receiver), 0, arrayType),
+            native: {
+              name: 'array.set',
+              argTypes: [IntType, IntType],
+              resultType: VoidType,
+              effect: 'write',
             },
+            args: [constant(IntType, 0), constant(IntType, 2)],
+            argumentEvaluationOrder: [0, 1],
           },
         ],
         field(read(receiver), 1, IntType),
@@ -866,19 +858,15 @@ describe('aggregate expression and reference-store lowering', () => {
           argumentEvaluationOrder: [0, 1],
         }),
         {
-          kind: IrKind.ExprStmt,
+          kind: IrKind.CallFunc,
           pos,
-          x: {
-            kind: IrKind.CallFunc,
-            pos,
-            type: IntType,
-            qualifier: Qualifier.Series,
-            func: failing,
-            receiver: read(rootName),
-            slot: 0,
-            args: [],
-            argumentEvaluationOrder: [],
-          },
+          type: IntType,
+          qualifier: Qualifier.Series,
+          func: failing,
+          receiver: read(rootName),
+          slot: 0,
+          args: [],
+          argumentEvaluationOrder: [],
         },
       ]),
     );

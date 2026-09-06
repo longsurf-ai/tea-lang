@@ -3,6 +3,7 @@
 import {fatal} from '../base/print';
 import {
   IrKind,
+  isExpr,
   PlaceKind,
   Storage,
   type IrExpr,
@@ -45,6 +46,10 @@ function immutableBindNamesFromCounts(
 }
 
 function countWritesStmt(stmt: IrStmt, writes: Map<Name, number>): void {
+  if (isExpr(stmt)) {
+    countWritesExpr(stmt, writes);
+    return;
+  }
   if (stmt.kind === IrKind.Assign && stmt.target.kind === IrKind.Read) {
     const name = stmt.target.place.name;
     writes.set(name, (writes.get(name) ?? 0) + 1);
@@ -104,6 +109,7 @@ export function exprChildren(
 }
 
 export function stmtExprs(stmt: IrStmt): readonly IrExpr[] {
+  if (isExpr(stmt)) return [stmt];
   const children: IrExpr[] = [];
   visitStmtChildren(stmt, child => children.push(child));
   return children;
