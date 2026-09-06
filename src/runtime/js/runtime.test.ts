@@ -47,8 +47,8 @@ const PROVISIONAL_MODULE: Module = testModule({
     if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, 0);
     ctx.write(root, 0, Number(ctx.read(root, 0, 0)) + ctx.series(0, 0));
     ctx.write(root, 1, Number(ctx.read(root, 1, 0)) + 1);
-    ctx.emit(0, 0, ctx.read(root, 0, 0));
-    ctx.emit(0, 1, ctx.read(root, 1, 0));
+    ctx.emit(0, ctx.read(root, 0, 0));
+    ctx.emit(1, ctx.read(root, 1, 0));
   },
   inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
   parameters: [],
@@ -66,7 +66,9 @@ const PROVISIONAL_MODULE: Module = testModule({
   },
   outputs: {
     schema: outputSchema([
-      output('output0', [scalar('var', 'int'), scalar('varip', 'int')]),
+      ...[scalar('var', 'int'), scalar('varip', 'int')].map(field =>
+        output(field.name, field),
+      ),
     ]),
   },
   requests: [],
@@ -83,7 +85,7 @@ function structModule(shouldFail: () => boolean): Module {
       const value = Number(ctx.structField(counter, COUNTER, 0)) + 1;
       ctx.storeStructField(counter, COUNTER, 0, value);
       if (shouldFail()) throw new Error('step failed');
-      ctx.emit(0, 0, value);
+      ctx.emit(0, value);
     },
     inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
     parameters: [],
@@ -99,7 +101,9 @@ function structModule(shouldFail: () => boolean): Module {
       ],
     },
     outputs: {
-      schema: outputSchema([output('output0', [scalar('value', 'int')])]),
+      schema: outputSchema([
+        ...[scalar('value', 'int')].map(field => output(field.name, field)),
+      ]),
     },
     requests: [],
   });
@@ -137,29 +141,27 @@ function structEffectModule(shouldFail: () => boolean): Module {
       schema: outputSchema([
         output(
           'effect0',
-          [
-            new Field(
-              'payload',
-              new Struct([
-                new Field(
-                  'counter',
-                  new Struct([scalar('value', 'int')]),
-                  true,
-                  new Map([
-                    ['tea:type', 'struct'],
-                    ['tea:typeId', 'test.Counter'],
-                    ['tea:name', 'Counter'],
-                  ]),
-                ),
-              ]),
-              true,
-              new Map([
-                ['tea:type', 'struct'],
-                ['tea:typeId', 'test.Envelope'],
-                ['tea:name', 'Envelope'],
-              ]),
-            ),
-          ],
+          new Field(
+            'payload',
+            new Struct([
+              new Field(
+                'counter',
+                new Struct([scalar('value', 'int')]),
+                true,
+                new Map([
+                  ['tea:type', 'struct'],
+                  ['tea:typeId', 'test.Counter'],
+                  ['tea:name', 'Counter'],
+                ]),
+              ),
+            ]),
+            true,
+            new Map([
+              ['tea:type', 'struct'],
+              ['tea:typeId', 'test.Envelope'],
+              ['tea:name', 'Envelope'],
+            ]),
+          ),
           true,
         ),
       ]),
@@ -199,7 +201,6 @@ const GC_MODULE: Module = testModule({
     ctx.write(root, 0, ctx.callCollection('array.from', ARRAY, [close]));
     ctx.emit(
       0,
-      0,
       close < 3
         ? 0
         : ctx.callCollection('array.size', NUMBER, [ctx.read(root, 0, 2)]),
@@ -223,7 +224,9 @@ const GC_MODULE: Module = testModule({
     ],
   },
   outputs: {
-    schema: outputSchema([output('output0', [scalar('old-size', 'int')])]),
+    schema: outputSchema([
+      ...[scalar('old-size', 'int')].map(field => output(field.name, field)),
+    ]),
   },
   requests: [],
 });
@@ -260,21 +263,18 @@ const COLLECT_REQUEST_MODULE: Module = testModule({
       prior === null
         ? -1
         : Number(ctx.callCollection('array.size', NUMBER, [prior]));
-    ctx.emit(0, 0, size);
-    ctx.emit(0, 1, ctx.callCollection('array.is_empty', BOOLEAN, [current]));
+    ctx.emit(0, size);
+    ctx.emit(1, ctx.callCollection('array.is_empty', BOOLEAN, [current]));
     ctx.emit(
-      0,
       2,
       size === 0 ? -1 : ctx.callCollection('array.first', NUMBER, [current]),
     );
     ctx.emit(
-      0,
       3,
       size === 0 ? -1 : ctx.callCollection('array.last', NUMBER, [current]),
     );
-    ctx.emit(0, 4, priorSize);
+    ctx.emit(4, priorSize);
     ctx.emit(
-      0,
       5,
       priorSize <= 0 ? -1 : ctx.callCollection('array.first', NUMBER, [prior]),
     );
@@ -284,14 +284,14 @@ const COLLECT_REQUEST_MODULE: Module = testModule({
   state: {layout: LAYOUTS, frames: [{locals: [], subs: []}]},
   outputs: {
     schema: outputSchema([
-      output('output0', [
+      ...[
         scalar('size', 'int'),
         scalar('empty', 'bool'),
         scalar('first', 'int'),
         scalar('last', 'int'),
         scalar('prior-size', 'int'),
         scalar('prior-first', 'int'),
-      ]),
+      ].map(field => output(field.name, field)),
     ]),
   },
   requests: [
@@ -320,12 +320,68 @@ function collectInput(values: Stored, provisional = false): StepInput {
 }
 
 function channels(result: StepResult) {
-  return result.outputs[0] === null
-    ? []
-    : Object.values(result.outputs[0] as Record<string, unknown>);
+  return result.outputs;
 }
 
 describe('Context', () => {
+  test('rejects duplicate handwritten sets including null and aborts staged state', () => {
+    let duplicate = true;
+    const module = testModule({
+      abi: RUNTIME_ABI_VERSION,
+      main(step, root) {
+        if (step.needsInit(root, 0)) step.initialize(root, 0, 0);
+        step.write(root, 0, Number(step.read(root, 0, 0)) + 1);
+        step.emit(0, step.read(root, 0, 0));
+        step.emit(1, null);
+        if (duplicate) step.emit(1, null);
+      },
+      inputs: {series: [], builtins: []},
+      parameters: [],
+      requests: [],
+      state: {
+        layout: LAYOUTS,
+        frames: [
+          {
+            locals: [
+              {storage: Storage.Var, depth: {kind: 'none'}, layout: NUMBER},
+            ],
+            subs: [],
+          },
+        ],
+      },
+      outputs: {
+        schema: outputSchema([
+          output('count', scalar('count', 'int')),
+          output(
+            'counter',
+            new Field(
+              'counter',
+              new Struct([scalar('value', 'int')]),
+              true,
+              new Map([
+                ['tea:type', 'struct'],
+                ['tea:name', 'Counter'],
+                ['tea:typeId', 'test.Counter'],
+              ]),
+            ),
+          ),
+        ]),
+      },
+    });
+    const runtime = new Context(module.bind());
+    const emptyInput = {
+      series: [],
+      builtins: [],
+      requests: [],
+      provisional: false,
+    };
+    expect(() => runtime.step(emptyInput)).toThrow(
+      "duplicate emit to output 'counter'",
+    );
+    duplicate = false;
+    expect(runtime.step(emptyInput).outputs).toEqual([1, null]);
+    runtime.dispose();
+  });
   test('owns State and Intermediate across provisional and final steps', () => {
     const runtime = new Context(PROVISIONAL_MODULE.clone().bind());
 
@@ -372,8 +428,7 @@ describe('Context', () => {
     });
     expect(result.outputs[0]).toEqual([
       {
-        ordinal: 0,
-        payload: {counter: {value: 1}},
+        counter: {value: 1},
       },
     ]);
     runtime.dispose();
@@ -395,9 +450,7 @@ describe('Context', () => {
   test('accepts input NaN but fails closed when a read sees infinity', () => {
     const runtime = new Context(PROVISIONAL_MODULE.clone().bind());
     const na = runtime.step(input(NaN, false));
-    expect(
-      Number.isNaN((na.outputs[0] as Record<string, unknown>).var as number),
-    ).toBe(true);
+    expect(Number.isNaN(na.outputs[0] as number)).toBe(true);
     expect(() => runtime.step(input(Infinity, false))).toThrow(
       'input series 0 returned a non-finite value',
     );
@@ -408,7 +461,7 @@ describe('Context', () => {
     const runtime = new Context(PROVISIONAL_MODULE.clone().bind());
     const result = runtime.step(input(NaN, false));
 
-    expect(result.outputs).toEqual([{var: Number.NaN, varip: 1}]);
+    expect(result.outputs).toEqual([Number.NaN, 1]);
     runtime.dispose();
   });
 
@@ -420,7 +473,9 @@ describe('Context', () => {
       parameters: [],
       state: {layout: LAYOUTS, frames: [{locals: [], subs: []}]},
       outputs: {
-        schema: outputSchema([output('output0', [scalar('value', 'int')])]),
+        schema: outputSchema([
+          ...[scalar('value', 'int')].map(field => output(field.name, field)),
+        ]),
       },
       requests: [],
     });

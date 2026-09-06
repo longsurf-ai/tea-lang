@@ -99,7 +99,9 @@ async function execute(source: string, csv: string) {
 
 function valuesFor(sink: OutputCapture, oid: number): readonly unknown[] {
   return sink.emissions
-    .filter(emission => emission.outputId === oid)
+    .filter(
+      emission => sink.fields[emission.outputId].name === `output${oid - 1}`,
+    )
     .sort((left, right) => left.row - right.row)
     .map(emission => emission.channels[0]);
 }
@@ -109,8 +111,7 @@ function effectTimeline(
   sink: OutputCapture,
 ): readonly (readonly [number, string])[] {
   return sink.effectEmissions.map(emission => {
-    const type =
-      program.effects[emission.outputId - program.outputs.length]?.payloadType;
+    const type = program.outputs[emission.outputId]?.valueType;
     if (type?.kind !== TypeKind.Struct) {
       throw new Error(`effect ${emission.outputId} has no nominal payload`);
     }
@@ -119,11 +120,16 @@ function effectTimeline(
 }
 
 function effectField(
+  program: Program,
   sink: OutputCapture,
+  typeName: string,
   emissionIndex: number,
   ...path: readonly string[]
 ): unknown {
-  const emission = sink.effectEmissions[emissionIndex];
+  const emission = sink.effectEmissions.filter(emission => {
+    const type = program.outputs[emission.outputId]?.valueType;
+    return type?.kind === TypeKind.Struct && type.name === typeName;
+  })[emissionIndex];
   let value: unknown = emission?.payload;
   for (const name of path) {
     if (
@@ -136,9 +142,18 @@ function effectField(
     value = (value as Record<string, unknown>)[name];
   }
   if (value === undefined) {
-    throw new Error(`effect ${emissionIndex} has no payload`);
+    throw new Error(`effect ${typeName}[${emissionIndex}] has no payload`);
   }
   return value;
+}
+
+// Output columns are independent; each retains its own row and append order.
+function effectRowsByType(
+  events: readonly (readonly [number, string])[],
+): Record<string, number[]> {
+  const rows: Record<string, number[]> = {};
+  for (const [row, type] of events) (rows[type] ??= []).push(row);
+  return rows;
 }
 
 function expectNumbersClose(
@@ -154,7 +169,7 @@ function expectNumbersClose(
 describe('Tea strategy components end to end', () => {
   test('keeps two configured strategy values isolated through scripted phases', async () => {
     const source = [
-      'strategy("isolated component state")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -171,18 +186,18 @@ describe('Tea strategy components end to end', () => {
       '    secondary.close("Secondary")',
       'primary.end_bar(close, barstate.islast)',
       'secondary.end_bar(close, barstate.islast)',
-      'plot(primary.cash())',
-      'plot(primary.position_quantity())',
-      'plot(primary.snapshot().equity)',
-      'plot(primary.snapshot().realizedPnl)',
-      'plot(float(primary.snapshot().fillCount))',
-      'plot(secondary.cash())',
-      'plot(secondary.position_quantity())',
-      'plot(secondary.snapshot().equity)',
-      'plot(secondary.snapshot().realizedPnl)',
-      'plot(float(secondary.snapshot().fillCount))',
-      'plot(primary.has_pending() ? 1 : 0)',
-      'plot(secondary.has_pending() ? 1 : 0)',
+      'emit "output0" primary.cash()',
+      'emit "output1" primary.position_quantity()',
+      'emit "output2" primary.snapshot().equity',
+      'emit "output3" primary.snapshot().realizedPnl',
+      'emit "output4" float(primary.snapshot().fillCount)',
+      'emit "output5" secondary.cash()',
+      'emit "output6" secondary.position_quantity()',
+      'emit "output7" secondary.snapshot().equity',
+      'emit "output8" secondary.snapshot().realizedPnl',
+      'emit "output9" float(secondary.snapshot().fillCount)',
+      'emit "output10" primary.has_pending() ? 1 : 0',
+      'emit "output11" secondary.has_pending() ? 1 : 0',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -202,7 +217,9 @@ describe('Tea strategy components end to end', () => {
         'NextOpenTrade<BrokerEmulator, NetPortfolio>.end_bar',
       ]),
     );
-    expect(program.outputs[0]?.effect).toBe('strategy');
+    expect(program.outputs.some(output => output.name === 'output0')).toBe(
+      true,
+    );
     expect(valuesFor(sink, 1)).toEqual([100, 0, 0, 200]);
     expect(valuesFor(sink, 2)).toEqual([0, 5, 5, 0]);
     expect(valuesFor(sink, 3)).toEqual([100, 100, 150, 200]);
@@ -219,7 +236,7 @@ describe('Tea strategy components end to end', () => {
 
   test('retains an entry submitted after begin until a later bar', async () => {
     const source = [
-      'strategy("enforced next-open causality")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -228,10 +245,10 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 0',
       '    strat.entry("Long", trade.Direction.long)',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.has_pending() ? 1 : 0)',
+      'emit "output0" strat.snapshot().fillCount',
+      'emit "output1" strat.cash()',
+      'emit "output2" strat.position_quantity()',
+      'emit "output3" strat.has_pending() ? 1 : 0',
     ].join('\n');
     const {sink} = await execute(
       source,
@@ -246,7 +263,7 @@ describe('Tea strategy components end to end', () => {
 
   test('marks but does not forcibly liquidate an open position at end of data', async () => {
     const source = [
-      'strategy("open position at end of data")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -255,12 +272,12 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 0',
       '    strat.entry("Long", trade.Direction.long)',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().equity)',
-      'plot(strat.snapshot().realizedPnl)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().roundTripCount)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().equity',
+      'emit "output3" strat.snapshot().realizedPnl',
+      'emit "output4" strat.snapshot().fillCount',
+      'emit "output5" strat.snapshot().roundTripCount',
     ].join('\n');
     const {sink} = await execute(
       source,
@@ -277,7 +294,7 @@ describe('Tea strategy components end to end', () => {
 
   test('fills on the next open and applies slippage, fees, and round-trip accounting', async () => {
     const source = [
-      'strategy("next-open accounting")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -288,14 +305,14 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 1',
       '    strat.close("Long")',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().equity)',
-      'plot(strat.snapshot().realizedPnl)',
-      'plot(strat.snapshot().totalFees)',
-      'plot(float(strat.snapshot().fillCount))',
-      'plot(float(strat.snapshot().roundTripCount))',
-      'plot(strat.snapshot().maxDrawdown)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().equity',
+      'emit "output3" strat.snapshot().realizedPnl',
+      'emit "output4" strat.snapshot().totalFees',
+      'emit "output5" float(strat.snapshot().fillCount)',
+      'emit "output6" float(strat.snapshot().roundTripCount)',
+      'emit "output7" strat.snapshot().maxDrawdown',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -312,17 +329,15 @@ describe('Tea strategy components end to end', () => {
     expect(valuesFor(sink, 8)[0]).toBe(0);
     expect(valuesFor(sink, 8)[1]).toBeCloseTo(11 / 121, 12);
     expect(valuesFor(sink, 8)[2]).toBeCloseTo(11 / 121, 12);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [2, 'FillExecuted'],
-    ]);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1],
+      FillExecuted: [1, 2],
+    });
   });
 
   test('uses explicit quantity, tick slippage, per-contract commission, and zero margin', async () => {
     const source = [
-      'strategy("canonical fixed-contract policy")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -340,11 +355,11 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 1',
       '    strat.close("Long")',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().equity)',
-      'plot(strat.snapshot().realizedPnl)',
-      'plot(strat.snapshot().totalFees)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().equity',
+      'emit "output3" strat.snapshot().realizedPnl',
+      'emit "output4" strat.snapshot().totalFees',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -356,17 +371,15 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 3), [5, 3.5, 22]);
     expectNumbersClose(valuesFor(sink, 4), [0, 0, 17]);
     expectNumbersClose(valuesFor(sink, 5), [0, 0.5, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [2, 'FillExecuted'],
-    ]);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1],
+      FillExecuted: [1, 2],
+    });
   });
 
   test('applies the configured long-margin gate only when margin is enabled', async () => {
     const source = [
-      'strategy("explicit quantity margin gate")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -385,12 +398,12 @@ describe('Tea strategy components end to end', () => {
       '    ungated.entry("Ungated", trade.Direction.long, qty = 2.0)',
       'gated.end_bar(close, barstate.islast)',
       'ungated.end_bar(close, barstate.islast)',
-      'plot(gated.cash())',
-      'plot(gated.position_quantity())',
-      'plot(gated.snapshot().fillCount)',
-      'plot(ungated.cash())',
-      'plot(ungated.position_quantity())',
-      'plot(ungated.snapshot().fillCount)',
+      'emit "output0" gated.cash()',
+      'emit "output1" gated.position_quantity()',
+      'emit "output2" gated.snapshot().fillCount',
+      'emit "output3" ungated.cash()',
+      'emit "output4" ungated.position_quantity()',
+      'emit "output5" ungated.snapshot().fillCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -403,15 +416,20 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 4), [5, -15]);
     expectNumbersClose(valuesFor(sink, 5), [0, 2]);
     expect(valuesFor(sink, 6)).toEqual([0, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [1, 'OrderRejected'],
-      [1, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 2, 'commandId')).toBe('Gated');
-    expect(effectField(sink, 2, 'reason')).toBe('invalidAccountState');
-    expect(effectField(sink, 3, 'fill', 'commandId')).toBe('Ungated');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0],
+      OrderRejected: [1],
+      FillExecuted: [1],
+    });
+    expect(effectField(program, sink, 'OrderRejected', 0, 'commandId')).toBe(
+      'Gated',
+    );
+    expect(effectField(program, sink, 'OrderRejected', 0, 'reason')).toBe(
+      'invalidAccountState',
+    );
+    expect(
+      effectField(program, sink, 'FillExecuted', 0, 'fill', 'commandId'),
+    ).toBe('Ungated');
   });
 
   test('fails closed on invalid configuration and quantity while preserving implicit sizing', async () => {
@@ -425,7 +443,7 @@ describe('Tea strategy components end to end', () => {
       entryCall: string,
     ) =>
       [
-        `strategy("${title}")`,
+        `// ${title}`,
         'import broker',
         'import portfolio',
         'import trade',
@@ -437,9 +455,9 @@ describe('Tea strategy components end to end', () => {
         'if bar_index == 0',
         `    ${entryCall}`,
         'strat.end_bar(close, barstate.islast)',
-        'plot(strat.cash())',
-        'plot(strat.position_quantity())',
-        'plot(strat.snapshot().fillCount)',
+        'emit "output0" strat.cash()',
+        'emit "output1" strat.position_quantity()',
+        'emit "output2" strat.snapshot().fillCount',
       ].join('\n');
     const csv = ['open,close', '8,8', '10,10', ''].join('\n');
 
@@ -529,12 +547,16 @@ describe('Tea strategy components end to end', () => {
         csv,
       );
 
-      expect(effectTimeline(program, sink)).toEqual([
-        [0, 'OrderSubmitted'],
-        [1, 'OrderRejected'],
-      ]);
-      expect(effectField(sink, 1, 'commandId')).toBe(commandId);
-      expect(effectField(sink, 1, 'reason')).toBe('invalidConfiguration');
+      expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+        OrderSubmitted: [0],
+        OrderRejected: [1],
+      });
+      expect(effectField(program, sink, 'OrderRejected', 0, 'commandId')).toBe(
+        commandId,
+      );
+      expect(effectField(program, sink, 'OrderRejected', 0, 'reason')).toBe(
+        'invalidConfiguration',
+      );
       expect(valuesFor(sink, 3)).toEqual([0, 0]);
     }
 
@@ -550,11 +572,13 @@ describe('Tea strategy components end to end', () => {
         csv,
       );
 
-      expect(effectTimeline(program, sink)).toEqual([
-        [0, 'OrderSubmitted'],
-        [1, 'OrderRejected'],
-      ]);
-      expect(effectField(sink, 1, 'reason')).toBe('invalidQuantity');
+      expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+        OrderSubmitted: [0],
+        OrderRejected: [1],
+      });
+      expect(effectField(program, sink, 'OrderRejected', 0, 'reason')).toBe(
+        'invalidQuantity',
+      );
       expect(valuesFor(sink, 3)).toEqual([0, 0]);
     }
 
@@ -574,11 +598,13 @@ describe('Tea strategy components end to end', () => {
         csv,
       );
 
-      expect(effectTimeline(program, sink)).toEqual([
-        [0, 'OrderSubmitted'],
-        [1, 'FillExecuted'],
-      ]);
-      expect(effectField(sink, 1, 'fill', 'quantity')).toBe(10);
+      expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+        OrderSubmitted: [0],
+        FillExecuted: [1],
+      });
+      expect(
+        effectField(program, sink, 'FillExecuted', 0, 'fill', 'quantity'),
+      ).toBe(10);
       expectNumbersClose(valuesFor(sink, 1), [100, 0]);
       expectNumbersClose(valuesFor(sink, 2), [0, 10]);
       expect(valuesFor(sink, 3)).toEqual([0, 1]);
@@ -587,7 +613,7 @@ describe('Tea strategy components end to end', () => {
 
   test('normalizes percent commissions to rates and charges cash per order once', async () => {
     const source = [
-      'strategy("canonical commission policies")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -617,14 +643,14 @@ describe('Tea strategy components end to end', () => {
       'percent.end_bar(close, barstate.islast)',
       'rate.end_bar(close, barstate.islast)',
       'flat.end_bar(close, barstate.islast)',
-      'plot(percent.snapshot().totalFees)',
-      'plot(rate.snapshot().totalFees)',
-      'plot(percent.cash())',
-      'plot(rate.cash())',
-      'plot(flat.snapshot().totalFees)',
-      'plot(flat.cash())',
-      'plot(flat.snapshot().fillCount)',
-      'plot(flat.snapshot().realizedPnl)',
+      'emit "output0" percent.snapshot().totalFees',
+      'emit "output1" rate.snapshot().totalFees',
+      'emit "output2" percent.cash()',
+      'emit "output3" rate.cash()',
+      'emit "output4" flat.snapshot().totalFees',
+      'emit "output5" flat.cash()',
+      'emit "output6" flat.snapshot().fillCount',
+      'emit "output7" flat.snapshot().realizedPnl',
     ].join('\n');
     const {sink} = await execute(
       source,
@@ -643,7 +669,7 @@ describe('Tea strategy components end to end', () => {
 
   test('keeps next-open execution for commands submitted after close processing', async () => {
     const source = [
-      'strategy("close processing preserves next-open fallback")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -655,9 +681,9 @@ describe('Tea strategy components end to end', () => {
       'strat.end_bar(close, barstate.islast)',
       'if bar_index == 0',
       '    strat.entry("Late", trade.Direction.long, qty = 2.0)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().fillCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -667,17 +693,21 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 1), [100, 60]);
     expectNumbersClose(valuesFor(sink, 2), [0, 2]);
     expect(valuesFor(sink, 3)).toEqual([0, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 1, 'fill', 'referencePrice')).toBe(20);
-    expect(effectField(sink, 1, 'fill', 'barIndex')).toBe(1);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0],
+      FillExecuted: [1],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 0, 'fill', 'referencePrice'),
+    ).toBe(20);
+    expect(
+      effectField(program, sink, 'FillExecuted', 0, 'fill', 'barIndex'),
+    ).toBe(1);
   });
 
   test('fills on close and accounts for pyramided entries at weighted average cost', async () => {
     const source = [
-      'strategy("canonical close fills and pyramiding")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -695,13 +725,13 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 3',
       '    strat.close("All")',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.position_avg_price())',
-      'plot(strat.snapshot().equity)',
-      'plot(strat.snapshot().realizedPnl)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().roundTripCount)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.position_avg_price()',
+      'emit "output3" strat.snapshot().equity',
+      'emit "output4" strat.snapshot().realizedPnl',
+      'emit "output5" strat.snapshot().fillCount',
+      'emit "output6" strat.snapshot().roundTripCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -718,21 +748,16 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 5), [0, 0, 0, 120]);
     expect(valuesFor(sink, 6)).toEqual([1, 2, 2, 3]);
     expect(valuesFor(sink, 7)).toEqual([0, 0, 0, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [2, 'OrderSubmitted'],
-      [2, 'OrderRejected'],
-      [3, 'OrderSubmitted'],
-      [3, 'FillExecuted'],
-    ]);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1, 2, 3],
+      FillExecuted: [0, 1, 3],
+      OrderRejected: [2],
+    });
   });
 
   test('fails closed when an aggregate pyramid changes entry id', async () => {
     const source = [
-      'strategy("aggregate entry identity")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -746,8 +771,8 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 1',
       '    strat.entry("B", trade.Direction.long, qty = 1.0)',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" strat.snapshot().fillCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -756,17 +781,19 @@ describe('Tea strategy components end to end', () => {
 
     expect(valuesFor(sink, 1)).toEqual([1, 1]);
     expect(valuesFor(sink, 2)).toEqual([1, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [1, 'OrderRejected'],
-    ]);
-    expect(effectField(sink, 2, 'reason')).toBe('entryIdMismatch');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0],
+      FillExecuted: [0],
+      OrderRejected: [1],
+    });
+    expect(effectField(program, sink, 'OrderRejected', 0, 'reason')).toBe(
+      'entryIdMismatch',
+    );
   });
 
   test('keeps an attached stop live and applies entry before a same-bar stop', async () => {
     const source = [
-      'strategy("scalar attached stop")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -786,13 +813,13 @@ describe('Tea strategy components end to end', () => {
       '    strat.entry("Long B", trade.Direction.long, sizing = trade.percentOfEquity(10.0))',
       '    strat.exit("Stop B", fromEntry = "Long B", stop = 9.0, activateOnEntryBar = true)',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().equity)',
-      'plot(strat.snapshot().realizedPnl)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().roundTripCount)',
-      'plot(strat.snapshot().totalFees)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().equity',
+      'emit "output3" strat.snapshot().realizedPnl',
+      'emit "output4" strat.snapshot().fillCount',
+      'emit "output5" strat.snapshot().roundTripCount',
+      'emit "output6" strat.snapshot().totalFees',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -862,43 +889,49 @@ describe('Tea strategy components end to end', () => {
       firstEntryFee + firstExitFee,
       firstEntryFee + firstExitFee + secondEntryFee + secondExitFee,
     ]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [2, 'FillExecuted'],
-      [2, 'OrderSubmitted'],
-      [2, 'OrderSubmitted'],
-      [3, 'FillExecuted'],
-      [3, 'FillExecuted'],
-    ]);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0, 2, 2],
+      FillExecuted: [1, 2, 3, 3],
+    });
 
     // The first stop is submitted only on row 0, remains live through row 1,
     // and gaps out on row 2 at the open before one tick of adverse slippage.
-    expect(effectField(sink, 3, 'fill', 'commandId')).toBe('Stop A');
-    expect(effectField(sink, 3, 'fill', 'referencePrice')).toBe(7);
-    expect(effectField(sink, 3, 'fill', 'price')).toBe(6);
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'commandId'),
+    ).toBe('Stop A');
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'referencePrice'),
+    ).toBe(7);
+    expect(effectField(program, sink, 'FillExecuted', 1, 'fill', 'price')).toBe(
+      6,
+    );
 
     // Percent-of-equity sizing snapshots the row-1 marked equity at submission,
     // before the row-2 gap fill is reflected in the next end-of-bar mark.
     // On row 3 the entry is applied before the attached stop is matched.
-    expect(effectField(sink, 6, 'fill', 'commandId')).toBe('Long B');
-    expect(effectField(sink, 6, 'fill', 'notional')).toBeCloseTo(
-      secondEntryNotional,
-      12,
+    expect(
+      effectField(program, sink, 'FillExecuted', 2, 'fill', 'commandId'),
+    ).toBe('Long B');
+    expect(
+      effectField(program, sink, 'FillExecuted', 2, 'fill', 'notional'),
+    ).toBeCloseTo(secondEntryNotional, 12);
+    expect(
+      effectField(program, sink, 'FillExecuted', 2, 'fill', 'quantity'),
+    ).toBeCloseTo(secondQuantity, 12);
+    expect(
+      effectField(program, sink, 'FillExecuted', 3, 'fill', 'commandId'),
+    ).toBe('Stop B');
+    expect(
+      effectField(program, sink, 'FillExecuted', 3, 'fill', 'referencePrice'),
+    ).toBe(9);
+    expect(effectField(program, sink, 'FillExecuted', 3, 'fill', 'price')).toBe(
+      8,
     );
-    expect(effectField(sink, 6, 'fill', 'quantity')).toBeCloseTo(
-      secondQuantity,
-      12,
-    );
-    expect(effectField(sink, 7, 'fill', 'commandId')).toBe('Stop B');
-    expect(effectField(sink, 7, 'fill', 'referencePrice')).toBe(9);
-    expect(effectField(sink, 7, 'fill', 'price')).toBe(8);
   });
 
   test('terminates the prior order when replacing an attached stop', async () => {
     const source = [
-      'strategy("replace attached stop")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -919,22 +952,26 @@ describe('Tea strategy components end to end', () => {
       ['open,high,low,close', '10,10,10,10', '10,10,10,10', ''].join('\n'),
     );
 
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderCancelled'],
-      [1, 'OrderSubmitted'],
-      [1, 'OrderExpired'],
-    ]);
-    expect(effectField(sink, 3, 'order', 'stop')).toBe(9);
-    expect(effectField(sink, 4, 'order', 'stop')).toBe(8);
-    expect(effectField(sink, 5, 'order', 'stop')).toBe(8);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0, 1],
+      FillExecuted: [1],
+      OrderCancelled: [1],
+      OrderExpired: [1],
+    });
+    expect(
+      effectField(program, sink, 'OrderCancelled', 0, 'order', 'stop'),
+    ).toBe(9);
+    expect(
+      effectField(program, sink, 'OrderSubmitted', 2, 'order', 'stop'),
+    ).toBe(8);
+    expect(effectField(program, sink, 'OrderExpired', 0, 'order', 'stop')).toBe(
+      8,
+    );
   });
 
   test('cancels an attached stop after a market close fills', async () => {
     const source = [
-      'strategy("close cancels stop")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -955,21 +992,22 @@ describe('Tea strategy components end to end', () => {
       ['open,high,low,close', '10,10,10,10', '12,12,12,12', ''].join('\n'),
     );
 
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderCancelled'],
-    ]);
-    expect(effectField(sink, 4, 'fill', 'commandId')).toBe('Manual close');
-    expect(effectField(sink, 5, 'order', 'commandId')).toBe('Stop');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0, 1],
+      FillExecuted: [0, 1],
+      OrderCancelled: [1],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'commandId'),
+    ).toBe('Manual close');
+    expect(
+      effectField(program, sink, 'OrderCancelled', 0, 'order', 'commandId'),
+    ).toBe('Stop');
   });
 
   test('cancels an attached stop when its initial entry is rejected', async () => {
     const source = [
-      'strategy("rejected entry cancels stop")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -988,19 +1026,22 @@ describe('Tea strategy components end to end', () => {
       ['open,high,low,close', '10,10,10,10', '10,10,10,10', ''].join('\n'),
     );
 
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [1, 'OrderRejected'],
-      [1, 'OrderCancelled'],
-    ]);
-    expect(effectField(sink, 2, 'reason')).toBe('invalidConfiguration');
-    expect(effectField(sink, 3, 'order', 'commandId')).toBe('Stop');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0],
+      OrderRejected: [1],
+      OrderCancelled: [1],
+    });
+    expect(effectField(program, sink, 'OrderRejected', 0, 'reason')).toBe(
+      'invalidConfiguration',
+    );
+    expect(
+      effectField(program, sink, 'OrderCancelled', 0, 'order', 'commandId'),
+    ).toBe('Stop');
   });
 
   test('retains entry identity when a triggered stop is rejected', async () => {
     const source = [
-      'strategy("rejected stop keeps identity")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1018,8 +1059,8 @@ describe('Tea strategy components end to end', () => {
       'finished = strat.end_bar(close, barstate.islast)',
       'if bar_index == 0',
       '    strat.broker.commissionValue := -1.0',
-      'plot(strat.position_quantity())',
-      'plot(na(finished) or na(finished.exit) ? 0 : finished.exit.id)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" na(finished) or na(finished.exit) ? 0 : finished.exit.id',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1027,23 +1068,27 @@ describe('Tea strategy components end to end', () => {
     );
 
     expect(valuesFor(sink, 1)).toEqual([1, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [1, 'OrderRejected'],
-      [1, 'OrderSubmitted'],
-      [1, 'OrderExpired'],
-    ]);
-    expect(effectField(sink, 3, 'reason')).toBe('invalidConfiguration');
-    expect(effectField(sink, 4, 'order', 'commandId')).toBe('Replacement');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0, 1],
+      FillExecuted: [0],
+      OrderRejected: [1],
+      OrderExpired: [1],
+    });
+    expect(effectField(program, sink, 'OrderRejected', 0, 'reason')).toBe(
+      'invalidConfiguration',
+    );
+    expect(
+      effectField(program, sink, 'OrderSubmitted', 2, 'order', 'commandId'),
+    ).toBe('Replacement');
     expect(valuesFor(sink, 2)[1]).toBe(3);
-    expect(effectField(sink, 5, 'order', 'id')).toBe(3);
+    expect(effectField(program, sink, 'OrderExpired', 0, 'order', 'id')).toBe(
+      3,
+    );
   });
 
   test('one stop closes the full same-id aggregate position', async () => {
     const source = [
-      'strategy("aggregate attached stop")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1058,11 +1103,11 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 1',
       '    strat.entry("Long", trade.Direction.long, qty = 3.0)',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.position_quantity())',
-      'plot(strat.position_avg_price())',
-      'plot(strat.cash())',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().roundTripCount)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" strat.position_avg_price()',
+      'emit "output2" strat.cash()',
+      'emit "output3" strat.snapshot().fillCount',
+      'emit "output4" strat.snapshot().roundTripCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1077,21 +1122,21 @@ describe('Tea strategy components end to end', () => {
     expect(valuesFor(sink, 3)).toEqual([80, 20, 45]);
     expect(valuesFor(sink, 4)).toEqual([1, 2, 3]);
     expect(valuesFor(sink, 5)).toEqual([0, 0, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [2, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 5, 'fill', 'commandId')).toBe('Stop');
-    expect(effectField(sink, 5, 'fill', 'quantity')).toBe(5);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0, 1],
+      FillExecuted: [0, 1, 2],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 2, 'fill', 'commandId'),
+    ).toBe('Stop');
+    expect(
+      effectField(program, sink, 'FillExecuted', 2, 'fill', 'quantity'),
+    ).toBe(5);
   });
 
   test('keeps the live stop when a same-id pyramid entry is rejected', async () => {
     const source = [
-      'strategy("rejected pyramid keeps stop")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1106,9 +1151,9 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 1',
       '    strat.entry("Long", trade.Direction.long, qty = 1.0)',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().roundTripCount)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" strat.snapshot().fillCount',
+      'emit "output2" strat.snapshot().roundTripCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1124,21 +1169,22 @@ describe('Tea strategy components end to end', () => {
     expect(valuesFor(sink, 1)).toEqual([0, 1, 0]);
     expect(valuesFor(sink, 2)).toEqual([0, 1, 2]);
     expect(valuesFor(sink, 3)).toEqual([0, 0, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [2, 'OrderRejected'],
-      [2, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 4, 'reason')).toBe('invalidAccountState');
-    expect(effectField(sink, 5, 'fill', 'commandId')).toBe('Stop');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0, 1],
+      FillExecuted: [1, 2],
+      OrderRejected: [2],
+    });
+    expect(effectField(program, sink, 'OrderRejected', 0, 'reason')).toBe(
+      'invalidAccountState',
+    );
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'commandId'),
+    ).toBe('Stop');
   });
 
   test('can re-arm immediately after an entry and attached stop fill in begin_bar', async () => {
     const source = [
-      'strategy("same-bar stop rearm")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1153,8 +1199,8 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 1 and strat.position_quantity() == 0.0 and not strat.has_pending_entry()',
       '    strat.entry("B", trade.Direction.long, qty = 1.0)',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.position_quantity())',
+      'emit "output0" strat.snapshot().fillCount',
+      'emit "output1" strat.position_quantity()',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1163,21 +1209,22 @@ describe('Tea strategy components end to end', () => {
 
     expect(valuesFor(sink, 1)).toEqual([0, 2]);
     expect(valuesFor(sink, 2)).toEqual([0, 0]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'OrderExpired'],
-    ]);
-    expect(effectField(sink, 4, 'order', 'commandId')).toBe('B');
-    expect(effectField(sink, 5, 'order', 'commandId')).toBe('B');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0, 1],
+      FillExecuted: [1, 1],
+      OrderExpired: [1],
+    });
+    expect(
+      effectField(program, sink, 'OrderSubmitted', 2, 'order', 'commandId'),
+    ).toBe('B');
+    expect(
+      effectField(program, sink, 'OrderExpired', 0, 'order', 'commandId'),
+    ).toBe('B');
   });
 
   test('clears pending-entry state immediately after begin_bar fills it', async () => {
     const source = [
-      'strategy("post-fill pending state")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1192,7 +1239,7 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 1 and not strat.has_pending_entry()',
       '    strat.entry("A", trade.Direction.long, qty = 1.0)',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.position_quantity())',
+      'emit "output0" strat.position_quantity()',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1200,20 +1247,19 @@ describe('Tea strategy components end to end', () => {
     );
 
     expect(valuesFor(sink, 1)).toEqual([0, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'OrderExpired'],
-      [1, 'OrderExpired'],
-    ]);
-    expect(effectField(sink, 3, 'order', 'commandId')).toBe('A');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0, 1],
+      FillExecuted: [1],
+      OrderExpired: [1, 1],
+    });
+    expect(
+      effectField(program, sink, 'OrderSubmitted', 2, 'order', 'commandId'),
+    ).toBe('A');
   });
 
   test('emits rejected and final-expiry events from Tea lifecycle code', async () => {
     const source = [
-      'strategy("effect lifecycle")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1234,25 +1280,21 @@ describe('Tea strategy components end to end', () => {
       ['open,close', '10,10', '10,10', '20,20', ''].join('\n'),
     );
 
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderRejected'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'OrderRejected'],
-      [2, 'FillExecuted'],
-      [2, 'OrderSubmitted'],
-      [2, 'OrderExpired'],
-    ]);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1, 2],
+      OrderRejected: [0, 1],
+      FillExecuted: [1, 2],
+      OrderExpired: [2],
+    });
     expect([
-      effectField(sink, 0, 'order', 'commandId'),
-      effectField(sink, 1, 'commandId'),
-      effectField(sink, 2, 'fill', 'commandId'),
-      effectField(sink, 3, 'order', 'commandId'),
-      effectField(sink, 4, 'commandId'),
-      effectField(sink, 5, 'fill', 'commandId'),
-      effectField(sink, 6, 'order', 'commandId'),
-      effectField(sink, 7, 'order', 'commandId'),
+      effectField(program, sink, 'OrderSubmitted', 0, 'order', 'commandId'),
+      effectField(program, sink, 'OrderRejected', 0, 'commandId'),
+      effectField(program, sink, 'FillExecuted', 0, 'fill', 'commandId'),
+      effectField(program, sink, 'OrderSubmitted', 1, 'order', 'commandId'),
+      effectField(program, sink, 'OrderRejected', 1, 'commandId'),
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'commandId'),
+      effectField(program, sink, 'OrderSubmitted', 2, 'order', 'commandId'),
+      effectField(program, sink, 'OrderExpired', 0, 'order', 'commandId'),
     ]).toEqual([
       'accepted',
       'rejected',
@@ -1267,7 +1309,7 @@ describe('Tea strategy components end to end', () => {
 
   test('lets the concrete broker report an invalid account state', async () => {
     const source = [
-      'strategy("broker rejection ownership")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1284,19 +1326,22 @@ describe('Tea strategy components end to end', () => {
       ['open,close', '10,10', '10,10', '10,10', ''].join('\n'),
     );
 
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [2, 'OrderRejected'],
-    ]);
-    expect(effectField(sink, 3, 'commandId')).toBe('first');
-    expect(effectField(sink, 3, 'reason')).toBe('invalidAccountState');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1],
+      FillExecuted: [1],
+      OrderRejected: [2],
+    });
+    expect(effectField(program, sink, 'OrderRejected', 0, 'commandId')).toBe(
+      'first',
+    );
+    expect(effectField(program, sink, 'OrderRejected', 0, 'reason')).toBe(
+      'invalidAccountState',
+    );
   });
 
   test('keeps commission inside a percent-of-equity cash budget when requested', async () => {
     const source = [
-      'strategy("fee-inclusive percent sizing")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1319,12 +1364,12 @@ describe('Tea strategy components end to end', () => {
       'excluded.mark(close)',
       'included.finish(barstate.islast)',
       'excluded.finish(barstate.islast)',
-      'plot(included.cash())',
-      'plot(included.position_quantity())',
-      'plot(included.snapshot().totalFees)',
-      'plot(excluded.cash())',
-      'plot(excluded.position_quantity())',
-      'plot(excluded.snapshot().totalFees)',
+      'emit "output0" included.cash()',
+      'emit "output1" included.position_quantity()',
+      'emit "output2" included.snapshot().totalFees',
+      'emit "output3" excluded.cash()',
+      'emit "output4" excluded.position_quantity()',
+      'emit "output5" excluded.snapshot().totalFees',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1340,22 +1385,21 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 4), [899]);
     expectNumbersClose(valuesFor(sink, 5), [10]);
     expectNumbersClose(valuesFor(sink, 6), [1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [0, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 2, 'fill', 'notional')).toBeCloseTo(
-      includedBudget - includedFee,
-      12,
-    );
-    expect(effectField(sink, 2, 'fill', 'fee')).toBeCloseTo(includedFee, 12);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0],
+      FillExecuted: [0, 0],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 0, 'fill', 'notional'),
+    ).toBeCloseTo(includedBudget - includedFee, 12);
+    expect(
+      effectField(program, sink, 'FillExecuted', 0, 'fill', 'fee'),
+    ).toBeCloseTo(includedFee, 12);
   });
 
   test('accepts a fee-inclusive 100% cash budget without a roundoff rejection', async () => {
     const source = [
-      'strategy("full fee-inclusive cash budget")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1368,9 +1412,9 @@ describe('Tea strategy components end to end', () => {
       'strat.process_close(close)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().fillCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1380,15 +1424,15 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 1), [0]);
     expect(valuesFor(sink, 2)[0]).toBeGreaterThan(0);
     expect(valuesFor(sink, 3)).toEqual([1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-    ]);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0],
+      FillExecuted: [0],
+    });
   });
 
   test('distinguishes resting buy-stop gap, intrabar, and missed fills', async () => {
     const source = [
-      'strategy("resting buy-stop paths")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1411,13 +1455,13 @@ describe('Tea strategy components end to end', () => {
       'gap.finish(barstate.islast)',
       'intrabar.finish(barstate.islast)',
       'missed.finish(barstate.islast)',
-      'plot(gap.cash())',
-      'plot(gap.position_quantity())',
-      'plot(intrabar.cash())',
-      'plot(intrabar.position_quantity())',
-      'plot(missed.cash())',
-      'plot(missed.position_quantity())',
-      'plot(missed.has_pending() ? 1 : 0)',
+      'emit "output0" gap.cash()',
+      'emit "output1" gap.position_quantity()',
+      'emit "output2" intrabar.cash()',
+      'emit "output3" intrabar.position_quantity()',
+      'emit "output4" missed.cash()',
+      'emit "output5" missed.position_quantity()',
+      'emit "output6" missed.has_pending() ? 1 : 0',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1431,27 +1475,40 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 5), [100, 100]);
     expectNumbersClose(valuesFor(sink, 6), [0, 0]);
     expect(valuesFor(sink, 7)).toEqual([1, 0]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderExpired'],
-    ]);
-    expect(effectField(sink, 3, 'fill', 'commandId')).toBe('Gap');
-    expect(effectField(sink, 3, 'fill', 'referencePrice')).toBe(12);
-    expect(effectField(sink, 3, 'fill', 'orderType')).toBe('stop');
-    expect(effectField(sink, 4, 'fill', 'commandId')).toBe('Intrabar');
-    expect(effectField(sink, 4, 'fill', 'referencePrice')).toBe(13);
-    expect(effectField(sink, 4, 'fill', 'orderType')).toBe('stop');
-    expect(effectField(sink, 5, 'order', 'commandId')).toBe('Missed');
-    expect(effectField(sink, 5, 'order', 'stop')).toBe(15);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0, 0],
+      FillExecuted: [1, 1],
+      OrderExpired: [1],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 0, 'fill', 'commandId'),
+    ).toBe('Gap');
+    expect(
+      effectField(program, sink, 'FillExecuted', 0, 'fill', 'referencePrice'),
+    ).toBe(12);
+    expect(
+      effectField(program, sink, 'FillExecuted', 0, 'fill', 'orderType'),
+    ).toBe('stop');
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'commandId'),
+    ).toBe('Intrabar');
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'referencePrice'),
+    ).toBe(13);
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'orderType'),
+    ).toBe('stop');
+    expect(
+      effectField(program, sink, 'OrderExpired', 0, 'order', 'commandId'),
+    ).toBe('Missed');
+    expect(effectField(program, sink, 'OrderExpired', 0, 'order', 'stop')).toBe(
+      15,
+    );
   });
 
   test('replaces a resting buy stop and cancels its contingent bracket atomically', async () => {
     const source = [
-      'strategy("replace and cancel resting entry")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1467,9 +1524,9 @@ describe('Tea strategy components end to end', () => {
       'strat.process_close(close)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(cancelled)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.has_pending() ? 1 : 0)',
+      'emit "output0" cancelled',
+      'emit "output1" strat.snapshot().fillCount',
+      'emit "output2" strat.has_pending() ? 1 : 0',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1479,27 +1536,39 @@ describe('Tea strategy components end to end', () => {
     expect(valuesFor(sink, 1)).toEqual([0, 2]);
     expect(valuesFor(sink, 2)).toEqual([0, 0]);
     expect(valuesFor(sink, 3)).toEqual([1, 0]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [0, 'OrderCancelled'],
-      [0, 'OrderSubmitted'],
-      [1, 'OrderCancelled'],
-      [1, 'OrderCancelled'],
-    ]);
-    expect(effectField(sink, 0, 'order', 'id')).toBe(1);
-    expect(effectField(sink, 0, 'order', 'stop')).toBe(12);
-    expect(effectField(sink, 1, 'order', 'orderType')).toBe('bracket');
-    expect(effectField(sink, 2, 'order', 'id')).toBe(1);
-    expect(effectField(sink, 3, 'order', 'id')).toBe(3);
-    expect(effectField(sink, 3, 'order', 'stop')).toBe(13);
-    expect(effectField(sink, 4, 'order', 'id')).toBe(3);
-    expect(effectField(sink, 5, 'order', 'id')).toBe(2);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0, 0],
+      OrderCancelled: [0, 1, 1],
+    });
+    expect(effectField(program, sink, 'OrderSubmitted', 0, 'order', 'id')).toBe(
+      1,
+    );
+    expect(
+      effectField(program, sink, 'OrderSubmitted', 0, 'order', 'stop'),
+    ).toBe(12);
+    expect(
+      effectField(program, sink, 'OrderSubmitted', 1, 'order', 'orderType'),
+    ).toBe('bracket');
+    expect(effectField(program, sink, 'OrderCancelled', 0, 'order', 'id')).toBe(
+      1,
+    );
+    expect(effectField(program, sink, 'OrderSubmitted', 2, 'order', 'id')).toBe(
+      3,
+    );
+    expect(
+      effectField(program, sink, 'OrderSubmitted', 2, 'order', 'stop'),
+    ).toBe(13);
+    expect(effectField(program, sink, 'OrderCancelled', 1, 'order', 'id')).toBe(
+      3,
+    );
+    expect(effectField(program, sink, 'OrderCancelled', 2, 'order', 'id')).toBe(
+      2,
+    );
   });
 
   test('matches one atomic stop-target bracket across gaps, touches, and a tied path', async () => {
     const source = [
-      'strategy("atomic bracket paths")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1514,8 +1583,8 @@ describe('Tea strategy components end to end', () => {
       'strat.process_close(close)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" strat.snapshot().fillCount',
     ].join('\n');
     const cases = [
       {
@@ -1558,33 +1627,40 @@ describe('Tea strategy components end to end', () => {
 
       expect(valuesFor(sink, 1), scenario.name).toEqual([1, 0]);
       expect(valuesFor(sink, 2), scenario.name).toEqual([1, 2]);
-      expect(effectTimeline(program, sink), scenario.name).toEqual([
-        [0, 'OrderSubmitted'],
-        [0, 'OrderSubmitted'],
-        [0, 'FillExecuted'],
-        [1, 'FillExecuted'],
-      ]);
-      expect(effectField(sink, 1, 'order', 'orderType'), scenario.name).toBe(
-        'bracket',
-      );
-      expect(effectField(sink, 1, 'order', 'stop'), scenario.name).toBe(9);
-      expect(effectField(sink, 1, 'order', 'target'), scenario.name).toBe(11);
       expect(
-        effectField(sink, 3, 'fill', 'referencePrice'),
+        effectRowsByType(effectTimeline(program, sink)),
+        scenario.name,
+      ).toEqual({OrderSubmitted: [0, 0], FillExecuted: [0, 1]});
+      expect(
+        effectField(program, sink, 'OrderSubmitted', 1, 'order', 'orderType'),
+        scenario.name,
+      ).toBe('bracket');
+      expect(
+        effectField(program, sink, 'OrderSubmitted', 1, 'order', 'stop'),
+        scenario.name,
+      ).toBe(9);
+      expect(
+        effectField(program, sink, 'OrderSubmitted', 1, 'order', 'target'),
+        scenario.name,
+      ).toBe(11);
+      expect(
+        effectField(program, sink, 'FillExecuted', 1, 'fill', 'referencePrice'),
         scenario.name,
       ).toBe(scenario.referencePrice);
-      expect(effectField(sink, 3, 'fill', 'orderType'), scenario.name).toBe(
-        scenario.orderType,
-      );
-      expect(effectField(sink, 3, 'fill', 'orderId'), scenario.name).toBe(
-        effectField(sink, 1, 'order', 'id'),
-      );
+      expect(
+        effectField(program, sink, 'FillExecuted', 1, 'fill', 'orderType'),
+        scenario.name,
+      ).toBe(scenario.orderType);
+      expect(
+        effectField(program, sink, 'FillExecuted', 1, 'fill', 'orderId'),
+        scenario.name,
+      ).toBe(effectField(program, sink, 'OrderSubmitted', 1, 'order', 'id'));
     }
   });
 
   test('processes a close, marks equity, and permits only one same-close reentry fill', async () => {
     const source = [
-      'strategy("same-close reentry and fill cap")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1608,11 +1684,11 @@ describe('Tea strategy components end to end', () => {
       'strat.process_close(close)',
       'strat.mark(close)',
       'finished = strat.finish(barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().equity)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(na(finished) or na(finished.pending) ? 0 : finished.pending.id)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().equity',
+      'emit "output3" strat.snapshot().fillCount',
+      'emit "output4" na(finished) or na(finished.pending) ? 0 : finished.pending.id',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1624,22 +1700,23 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 3), [100, 110]);
     expect(valuesFor(sink, 4)).toEqual([1, 3]);
     expect(valuesFor(sink, 5)).toEqual([0, 4]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'OrderExpired'],
-    ]);
-    expect(effectField(sink, 3, 'fill', 'commandId')).toBe('Exit');
-    expect(effectField(sink, 5, 'fill', 'commandId')).toBe('Reentry');
-    expect(effectField(sink, 5, 'fill', 'quantity')).toBe(5.5);
-    expect(effectField(sink, 7, 'order', 'commandId')).toBe(
-      'Third fill is blocked',
-    );
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1, 1, 1],
+      FillExecuted: [0, 1, 1],
+      OrderExpired: [1],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'commandId'),
+    ).toBe('Exit');
+    expect(
+      effectField(program, sink, 'FillExecuted', 2, 'fill', 'commandId'),
+    ).toBe('Reentry');
+    expect(
+      effectField(program, sink, 'FillExecuted', 2, 'fill', 'quantity'),
+    ).toBe(5.5);
+    expect(
+      effectField(program, sink, 'OrderExpired', 0, 'order', 'commandId'),
+    ).toBe('Third fill is blocked');
     expect(
       effectTimeline(program, sink).filter(
         ([row, type]) => row === 1 && type === 'FillExecuted',
@@ -1649,7 +1726,7 @@ describe('Tea strategy components end to end', () => {
 
   test('resolves target-percent rebalances at the open and preserves one pyramiding slot across adds', async () => {
     const source = [
-      'strategy("fill-time target rebalance")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1669,10 +1746,10 @@ describe('Tea strategy components end to end', () => {
       'if bar_index == 2',
       '    strat.rebalance("Allocation", trade.targetPercentOfEquity(25.0))',
       'strat.mark(close)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.has_pending() ? 1 : 0)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().fillCount',
+      'emit "output3" strat.has_pending() ? 1 : 0',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1709,15 +1786,10 @@ describe('Tea strategy components end to end', () => {
     ]);
     expect(valuesFor(sink, 3)).toEqual([0, 1, 2, 3]);
     expect(valuesFor(sink, 4)).toEqual([1, 1, 1, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'OrderSubmitted'],
-      [2, 'FillExecuted'],
-      [2, 'OrderSubmitted'],
-      [3, 'FillExecuted'],
-    ]);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1, 1, 2],
+      FillExecuted: [1, 2, 3],
+    });
     expect(
       effectTimeline(program, sink).filter(
         ([, type]) => type === 'OrderCancelled',
@@ -1727,7 +1799,7 @@ describe('Tea strategy components end to end', () => {
 
   test('opens and covers a short through a symmetric atomic bracket', async () => {
     const source = [
-      'strategy("symmetric short bracket")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1743,11 +1815,11 @@ describe('Tea strategy components end to end', () => {
       '    strat.exit("Short bracket", fromEntry = "Short", stop = 12.0, target = 8.0)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().realizedPnl)',
-      'plot(strat.snapshot().roundTripCount)',
-      'plot(strat.snapshot().winRate)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().realizedPnl',
+      'emit "output3" strat.snapshot().roundTripCount',
+      'emit "output4" strat.snapshot().winRate',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1759,19 +1831,21 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 3), [0, 8]);
     expect(valuesFor(sink, 4)).toEqual([0, 1]);
     expectNumbersClose(valuesFor(sink, 5), [0, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 3, 'fill', 'side')).toBe('buy');
-    expect(effectField(sink, 3, 'fill', 'orderType')).toBe('target');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0],
+      FillExecuted: [0, 1],
+    });
+    expect(effectField(program, sink, 'FillExecuted', 1, 'fill', 'side')).toBe(
+      'buy',
+    );
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'orderType'),
+    ).toBe('target');
   });
 
   test('applies a reversal close before resolving the opposite fill-time sizing', async () => {
     const source = [
-      'strategy("close then reverse")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1788,11 +1862,11 @@ describe('Tea strategy components end to end', () => {
       'strat.process_close(close)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().realizedPnl)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().roundTripCount)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().realizedPnl',
+      'emit "output3" strat.snapshot().fillCount',
+      'emit "output4" strat.snapshot().roundTripCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1810,24 +1884,27 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 3), [0, 20, 80]);
     expect(valuesFor(sink, 4)).toEqual([1, 3, 4]);
     expect(valuesFor(sink, 5)).toEqual([0, 1, 2]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'FillExecuted'],
-      [2, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 4, 'fill', 'commandKind')).toBe('close');
-    expect(effectField(sink, 5, 'fill', 'commandKind')).toBe('entry');
-    expect(effectField(sink, 5, 'fill', 'quantity')).toBe(6);
-    expect(effectField(sink, 6, 'fill', 'orderType')).toBe('target');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1, 1],
+      FillExecuted: [0, 1, 1, 2],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'commandKind'),
+    ).toBe('close');
+    expect(
+      effectField(program, sink, 'FillExecuted', 2, 'fill', 'commandKind'),
+    ).toBe('entry');
+    expect(
+      effectField(program, sink, 'FillExecuted', 2, 'fill', 'quantity'),
+    ).toBe(6);
+    expect(
+      effectField(program, sink, 'FillExecuted', 3, 'fill', 'orderType'),
+    ).toBe('target');
   });
 
   test('installs a fill-derived bracket before replaying the same bar exit path', async () => {
     const source = [
-      'strategy("fill-derived bracket phases")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1843,9 +1920,9 @@ describe('Tea strategy components end to end', () => {
       '    strat.exit("Bracket", fromEntry = "Long", stop = average - 1.0, target = average + 1.0, activateOnEntryBar = true)',
       'strat.continue_bar(open, high, low, close)',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().realizedPnl)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" strat.snapshot().fillCount',
+      'emit "output2" strat.snapshot().realizedPnl',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1855,18 +1932,18 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 1), [0, 0]);
     expect(valuesFor(sink, 2)).toEqual([0, 2]);
     expectNumbersClose(valuesFor(sink, 3), [0, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 3, 'fill', 'orderType')).toBe('target');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1],
+      FillExecuted: [1, 1],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'orderType'),
+    ).toBe('target');
   });
 
   test('cancels a stale same-id exit when reversing without a replacement exit', async () => {
     const source = [
-      'strategy("stale reversal exit")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1885,9 +1962,9 @@ describe('Tea strategy components end to end', () => {
       '    strat.process_close(close)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.has_pending() ? 1 : 0)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" strat.snapshot().fillCount',
+      'emit "output2" strat.has_pending() ? 1 : 0',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1903,21 +1980,19 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 1), [1, -1, -1]);
     expect(valuesFor(sink, 2)).toEqual([1, 3, 3]);
     expect(valuesFor(sink, 3)).toEqual([1, 0, 0]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [0, 'OrderSubmitted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderCancelled'],
-      [1, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 5, 'order', 'commandId')).toBe('Old bracket');
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0, 1],
+      FillExecuted: [0, 1, 1],
+      OrderCancelled: [1],
+    });
+    expect(
+      effectField(program, sink, 'OrderCancelled', 0, 'order', 'commandId'),
+    ).toBe('Old bracket');
   });
 
   test('defers a capped reversal continuation exactly once to the next open', async () => {
     const source = [
-      'strategy("deferred reversal continuation")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1933,8 +2008,8 @@ describe('Tea strategy components end to end', () => {
       '    strat.process_close(close)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" strat.snapshot().fillCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1949,19 +2024,18 @@ describe('Tea strategy components end to end', () => {
 
     expectNumbersClose(valuesFor(sink, 1), [0, 0, -1]);
     expect(valuesFor(sink, 2)).toEqual([0, 2, 3]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [2, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 4, 'fill', 'referencePrice')).toBe(12);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1],
+      FillExecuted: [1, 1, 2],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 2, 'fill', 'referencePrice'),
+    ).toBe(12);
   });
 
   test('charges cash-per-order commission once across a split reversal', async () => {
     const source = [
-      'strategy("one reversal order fee")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -1977,9 +2051,9 @@ describe('Tea strategy components end to end', () => {
       'strat.process_close(close)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().totalFees)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().totalFees',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -1989,16 +2063,20 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 1), [75, 220]);
     expectNumbersClose(valuesFor(sink, 2), [2, -5.5]);
     expectNumbersClose(valuesFor(sink, 3), [5, 10]);
-    expect(effectField(sink, 3, 'fill', 'fee')).toBe(5);
-    expect(effectField(sink, 4, 'fill', 'fee')).toBe(0);
-    expect(effectField(sink, 3, 'fill', 'orderId')).toBe(
-      effectField(sink, 4, 'fill', 'orderId'),
+    expect(effectField(program, sink, 'FillExecuted', 1, 'fill', 'fee')).toBe(
+      5,
     );
+    expect(effectField(program, sink, 'FillExecuted', 2, 'fill', 'fee')).toBe(
+      0,
+    );
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'orderId'),
+    ).toBe(effectField(program, sink, 'FillExecuted', 2, 'fill', 'orderId'));
   });
 
   test('rejects an over-capitalized target cross and terminates an equal target', async () => {
     const source = [
-      'strategy("target capacity and no-op")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -2016,9 +2094,9 @@ describe('Tea strategy components end to end', () => {
       'strat.process_close(close)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.snapshot().fillCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -2034,19 +2112,17 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 1), [200, 200, 200]);
     expectNumbersClose(valuesFor(sink, 2), [-10, -10, -10]);
     expect(valuesFor(sink, 3)).toEqual([1, 1, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'OrderRejected'],
-      [2, 'OrderSubmitted'],
-      [2, 'OrderCancelled'],
-    ]);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1, 2],
+      FillExecuted: [0],
+      OrderRejected: [1],
+      OrderCancelled: [2],
+    });
   });
 
   test('rejects a percent target when reference equity is nonpositive', async () => {
     const source = [
-      'strategy("bankrupt percent target")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -2062,8 +2138,8 @@ describe('Tea strategy components end to end', () => {
       'strat.process_close(close)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" strat.snapshot().fillCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -2072,17 +2148,16 @@ describe('Tea strategy components end to end', () => {
 
     expectNumbersClose(valuesFor(sink, 1), [20, 20]);
     expect(valuesFor(sink, 2)).toEqual([1, 1]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'OrderRejected'],
-    ]);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1],
+      FillExecuted: [0],
+      OrderRejected: [1],
+    });
   });
 
   test('keeps partial signed PnL in the trade completed by a target cross', async () => {
     const source = [
-      'strategy("signed partial and cross")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -2102,13 +2177,13 @@ describe('Tea strategy components end to end', () => {
       'strat.process_close(close)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.position_avg_price())',
-      'plot(strat.snapshot().realizedPnl)',
-      'plot(strat.snapshot().roundTripCount)',
-      'plot(strat.snapshot().winRate)',
-      'plot(strat.snapshot().profitFactor)',
+      'emit "output0" strat.cash()',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" strat.position_avg_price()',
+      'emit "output3" strat.snapshot().realizedPnl',
+      'emit "output4" strat.snapshot().roundTripCount',
+      'emit "output5" strat.snapshot().winRate',
+      'emit "output6" strat.snapshot().profitFactor',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -2130,21 +2205,15 @@ describe('Tea strategy components end to end', () => {
     expect(valuesFor(sink, 5)).toEqual([0, 0, 1, 2]);
     expectNumbersClose(valuesFor(sink, 6), [0, 0, 1, 0.5]);
     expectNumbersClose(valuesFor(sink, 7), [0, 0, 0, 12]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [2, 'OrderSubmitted'],
-      [2, 'FillExecuted'],
-      [3, 'OrderSubmitted'],
-      [3, 'FillExecuted'],
-    ]);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1, 2, 3],
+      FillExecuted: [0, 1, 2, 3],
+    });
   });
 
   test('turns SMA crossovers into next-open fills in the documented phase order', async () => {
     const source = [
-      'strategy("SMA crossover lifecycle")',
+      '',
       'import ta',
       'import broker',
       'import portfolio',
@@ -2160,13 +2229,13 @@ describe('Tea strategy components end to end', () => {
       'if exitLong',
       '    strat.close("Long")',
       'strat.end_bar(close, barstate.islast)',
-      'plot(enterLong ? 1 : 0)',
-      'plot(exitLong ? 1 : 0)',
-      'plot(strat.cash())',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().realizedPnl)',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().roundTripCount)',
+      'emit "output0" enterLong ? 1 : 0',
+      'emit "output1" exitLong ? 1 : 0',
+      'emit "output2" strat.cash()',
+      'emit "output3" strat.position_quantity()',
+      'emit "output4" strat.snapshot().realizedPnl',
+      'emit "output5" strat.snapshot().fillCount',
+      'emit "output6" strat.snapshot().roundTripCount',
     ].join('\n');
     const {sink} = await execute(
       source,
@@ -2195,7 +2264,7 @@ describe('Tea strategy components end to end', () => {
 
   test('resumes an intrabar stop entry after its fill instead of replaying an earlier extreme', async () => {
     const source = [
-      'strategy("path cursor")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -2209,9 +2278,9 @@ describe('Tea strategy components end to end', () => {
       '    strat.exit("Bracket", fromEntry = "Long", stop = 9.0, target = 13.0, activateOnEntryBar = true)',
       'strat.continue_bar(open, high, low, close)',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().realizedPnl)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" strat.snapshot().fillCount',
+      'emit "output2" strat.snapshot().realizedPnl',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -2221,18 +2290,19 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 1), [0, 1]);
     expect(valuesFor(sink, 2)).toEqual([0, 1]);
     expectNumbersClose(valuesFor(sink, 3), [0, 0]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderExpired'],
-    ]);
-    expect(effectField(sink, 2, 'fill', 'referencePrice')).toBe(11);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0],
+      FillExecuted: [1],
+      OrderExpired: [1],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 0, 'fill', 'referencePrice'),
+    ).toBe(11);
   });
 
   test('activates and updates a trailing exit only along the remaining OHLC path', async () => {
     const source = [
-      'strategy("path trailing")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -2246,9 +2316,9 @@ describe('Tea strategy components end to end', () => {
       '    strat.exit("Trail", fromEntry = "Long", activateOnEntryBar = true, trailPrice = 12.0, trailOffset = 1.0)',
       'strat.continue_bar(open, high, low, close)',
       'strat.end_bar(close, barstate.islast)',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
-      'plot(strat.snapshot().realizedPnl)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" strat.snapshot().fillCount',
+      'emit "output2" strat.snapshot().realizedPnl',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -2264,18 +2334,18 @@ describe('Tea strategy components end to end', () => {
     expectNumbersClose(valuesFor(sink, 1), [0, 1, 0]);
     expect(valuesFor(sink, 2)).toEqual([0, 1, 2]);
     expectNumbersClose(valuesFor(sink, 3), [0, 0, 3]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [2, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 3, 'fill', 'referencePrice')).toBe(13);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 0],
+      FillExecuted: [1, 2],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 1, 'fill', 'referencePrice'),
+    ).toBe(13);
   });
 
   test('rejects a trailing exit under the ordinary whole-bar policy statically', () => {
     const source = [
-      'strategy("path-only trailing")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -2296,7 +2366,7 @@ describe('Tea strategy components end to end', () => {
 
   test('continues a path-capped reversal exactly once at the next open', async () => {
     const source = [
-      'strategy("path deferred reversal")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -2312,8 +2382,8 @@ describe('Tea strategy components end to end', () => {
       '    strat.process_close(close)',
       'strat.mark(close)',
       'strat.finish(barstate.islast)',
-      'plot(strat.position_quantity())',
-      'plot(strat.snapshot().fillCount)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" strat.snapshot().fillCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -2328,19 +2398,18 @@ describe('Tea strategy components end to end', () => {
 
     expectNumbersClose(valuesFor(sink, 1), [0, 0, -1]);
     expect(valuesFor(sink, 2)).toEqual([0, 2, 3]);
-    expect(effectTimeline(program, sink)).toEqual([
-      [0, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [1, 'OrderSubmitted'],
-      [1, 'FillExecuted'],
-      [2, 'FillExecuted'],
-    ]);
-    expect(effectField(sink, 4, 'fill', 'referencePrice')).toBe(12);
+    expect(effectRowsByType(effectTimeline(program, sink))).toEqual({
+      OrderSubmitted: [0, 1],
+      FillExecuted: [1, 1, 2],
+    });
+    expect(
+      effectField(program, sink, 'FillExecuted', 2, 'fill', 'referencePrice'),
+    ).toBe(12);
   });
 
   test('rejects lifecycle methods from the other trade policy statically', () => {
     const source = [
-      'strategy("portfolio policy guards")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',

@@ -96,6 +96,21 @@ function collectRegexes(value: unknown): string[] {
 }
 
 describe('Tea TextMate grammar', () => {
+  test('highlights emission and return keywords while retaining ternary operators', () => {
+    const tokens = tokenize(
+      'emit "price" flag ? close : open\nemit.append "fills" value\nreturn value',
+    );
+    for (const token of [
+      ...tokensNamed(tokens, 'emit'),
+      ...tokensNamed(tokens, 'return'),
+    ]) {
+      expect(token.scopes).toContain('keyword.control.tea');
+    }
+    expect(tokensNamed(tokens, 'emit')).toHaveLength(2);
+    expect(tokensNamed(tokens, 'return')).toHaveLength(1);
+    expect(tokensNamed(tokens, '?')).toHaveLength(1);
+    expect(tokensNamed(tokens, ':')).toHaveLength(1);
+  });
   test('generated file is current', async () => {
     const target = new URL('../syntaxes/tea.tmLanguage.json', import.meta.url);
     expect(await readFile(target, 'utf8')).toBe(renderGrammar());
@@ -282,12 +297,12 @@ describe('Tea TextMate grammar', () => {
     );
     for (const word of ['export', 'type', 'method', 'inout']) {
       for (const token of tokensNamed(tokens, word)) {
-        expect(
-          token.scopes.some(scope => scope.startsWith('storage.')),
-        ).toBe(false);
-        expect(
-          token.scopes.some(scope => scope.startsWith('keyword.')),
-        ).toBe(false);
+        expect(token.scopes.some(scope => scope.startsWith('storage.'))).toBe(
+          false,
+        );
+        expect(token.scopes.some(scope => scope.startsWith('keyword.'))).toBe(
+          false,
+        );
       }
     }
   });

@@ -1,18 +1,5 @@
-File @2:1 version="1" eof=@34:1
-  stmtList[0]: ExprStmt @2:1
-    x: CallExpr @2:1
-      fun: Name @2:1 value="indicator"
-      args[0]: Arg @2:11
-        value: BasicLit @2:11 litKind="string" value="\"Moving Average Convergence Divergence\"" bad=false
-      args[1]: Arg @2:52
-        value: BasicLit @2:52 litKind="string" value="\"MACD\"" bad=false
-      args[2]: Arg @2:60
-        name: Name @2:60 value="timeframe"
-        value: BasicLit @2:72 litKind="string" value="\"\"" bad=false
-      args[3]: Arg @2:76
-        name: Name @2:76 value="timeframe_gaps"
-        value: Name @2:93 value="true"
-  stmtList[1]: DeclStmt @5:1 mode="none"
+File @5:1 version="1" eof=@34:1
+  stmtList[0]: DeclStmt @5:1 mode="none"
     declType: TypeAnnotation @5:1
       name: Name @5:1 value="float"
     target: Name @5:8 value="sourceInput"
@@ -24,7 +11,7 @@ File @2:1 version="1" eof=@34:1
         value: Name @5:36 value="close"
       args[1]: Arg @5:43
         value: BasicLit @5:43 litKind="string" value="\"Source\"" bad=false
-  stmtList[2]: DeclStmt @6:1 mode="none"
+  stmtList[1]: DeclStmt @6:1 mode="none"
     declType: TypeAnnotation @6:1
       name: Name @6:1 value="int"
     target: Name @6:8 value="fastLenInput"
@@ -38,7 +25,7 @@ File @2:1 version="1" eof=@34:1
         value: BasicLit @6:37 litKind="string" value="\"Fast length\"" bad=false
       args[2]: Arg @6:54
         value: BasicLit @6:54 litKind="int" value="1" bad=false
-  stmtList[3]: DeclStmt @7:1 mode="none"
+  stmtList[2]: DeclStmt @7:1 mode="none"
     declType: TypeAnnotation @7:1
       name: Name @7:1 value="int"
     target: Name @7:8 value="slowLenInput"
@@ -52,7 +39,7 @@ File @2:1 version="1" eof=@34:1
         value: BasicLit @7:37 litKind="string" value="\"Slow length\"" bad=false
       args[2]: Arg @7:54
         value: BasicLit @7:54 litKind="int" value="1" bad=false
-  stmtList[4]: DeclStmt @8:1 mode="none"
+  stmtList[3]: DeclStmt @8:1 mode="none"
     declType: TypeAnnotation @8:1
       name: Name @8:1 value="int"
     target: Name @8:8 value="sigLenInput"
@@ -66,7 +53,7 @@ File @2:1 version="1" eof=@34:1
         value: BasicLit @8:37 litKind="string" value="\"Signal length\"" bad=false
       args[2]: Arg @8:54
         value: BasicLit @8:54 litKind="int" value="1" bad=false
-  stmtList[5]: DeclStmt @9:1 mode="none"
+  stmtList[4]: DeclStmt @9:1 mode="none"
     declType: TypeAnnotation @9:1
       name: Name @9:1 value="string"
     target: Name @9:8 value="oscTypeInput"
@@ -87,7 +74,7 @@ File @2:1 version="1" eof=@34:1
         value: SelectorExpr @9:91
           x: Name @9:91 value="display"
           sel: Name @9:99 value="none"
-  stmtList[6]: DeclStmt @10:1 mode="none"
+  stmtList[5]: DeclStmt @10:1 mode="none"
     declType: TypeAnnotation @10:1
       name: Name @10:1 value="string"
     target: Name @10:8 value="sigTypeInput"
@@ -108,7 +95,7 @@ File @2:1 version="1" eof=@34:1
         value: SelectorExpr @10:91
           x: Name @10:91 value="display"
           sel: Name @10:99 value="none"
-  stmtList[7]: FuncDecl @13:1 exported=false
+  stmtList[6]: FuncDecl @13:1 exported=false
     name: Name @13:1 value="ma"
     params[0]: Param @13:4
       paramType: TypeAnnotation @13:4
@@ -147,7 +134,7 @@ File @2:1 version="1" eof=@34:1
                 value: Name @16:25 value="source"
               args[1]: Arg @16:33
                 value: Name @16:33 value="length"
-  stmtList[8]: DeclStmt @19:1 mode="none"
+  stmtList[7]: DeclStmt @19:1 mode="none"
     declType: TypeAnnotation @19:1
       name: Name @19:1 value="float"
     target: Name @19:7 value="maFast"
@@ -159,7 +146,7 @@ File @2:1 version="1" eof=@34:1
         value: Name @19:32 value="fastLenInput"
       args[2]: Arg @19:46
         value: Name @19:46 value="oscTypeInput"
-  stmtList[9]: DeclStmt @20:1 mode="none"
+  stmtList[8]: DeclStmt @20:1 mode="none"
     declType: TypeAnnotation @20:1
       name: Name @20:1 value="float"
     target: Name @20:7 value="maSlow"
@@ -171,14 +158,14 @@ File @2:1 version="1" eof=@34:1
         value: Name @20:32 value="slowLenInput"
       args[2]: Arg @20:46
         value: Name @20:46 value="oscTypeInput"
-  stmtList[10]: DeclStmt @21:1 mode="none"
+  stmtList[9]: DeclStmt @21:1 mode="none"
     declType: TypeAnnotation @21:1
       name: Name @21:1 value="float"
     target: Name @21:7 value="macd"
     init: BinaryExpr @21:16 op="-"
       x: Name @21:16 value="maFast"
       y: Name @21:25 value="maSlow"
-  stmtList[11]: DeclStmt @22:1 mode="none"
+  stmtList[10]: DeclStmt @22:1 mode="none"
     declType: TypeAnnotation @22:1
       name: Name @22:1 value="float"
     target: Name @22:7 value="signal"
@@ -190,14 +177,14 @@ File @2:1 version="1" eof=@34:1
         value: Name @22:25 value="sigLenInput"
       args[2]: Arg @22:38
         value: Name @22:38 value="sigTypeInput"
-  stmtList[12]: DeclStmt @23:1 mode="none"
+  stmtList[11]: DeclStmt @23:1 mode="none"
     declType: TypeAnnotation @23:1
       name: Name @23:1 value="float"
     target: Name @23:7 value="hist"
     init: BinaryExpr @23:16 op="-"
       x: Name @23:16 value="macd"
       y: Name @23:23 value="signal"
-  stmtList[13]: DeclStmt @24:1 mode="none"
+  stmtList[12]: DeclStmt @24:1 mode="none"
     declType: TypeAnnotation @24:1
       name: Name @24:1 value="color"
     target: Name @24:7 value="hColor"
@@ -221,76 +208,61 @@ File @2:1 version="1" eof=@34:1
             offset: BasicLit @24:77 litKind="int" value="1" bad=false
         then: BasicLit @24:82 litKind="color" value="#ffcdd2" bad=false
         else: BasicLit @24:92 litKind="color" value="#ff5252" bad=false
-  stmtList[14]: ExprStmt @26:1
+  stmtList[13]: ExprStmt @26:1
     x: CallExpr @26:1
       fun: Name @26:1 value="hline"
       args[0]: Arg @26:7
-        value: BasicLit @26:7 litKind="int" value="0" bad=false
-      args[1]: Arg @26:10
-        value: BasicLit @26:10 litKind="string" value="\"Zero\"" bad=false
-      args[2]: Arg @26:18
-        value: BasicLit @26:18 litKind="color" value="#787b8680" bad=false
-  stmtList[15]: ExprStmt @27:1
-    x: CallExpr @27:1
-      fun: Name @27:1 value="plot"
-      args[0]: Arg @27:6
-        value: Name @27:6 value="hist"
-      args[1]: Arg @27:12
-        value: BasicLit @27:12 litKind="string" value="\"Histogram\"" bad=false
-      args[2]: Arg @27:25
-        value: Name @27:25 value="hColor"
-      args[3]: Arg @27:33
-        name: Name @27:33 value="style"
-        value: SelectorExpr @27:41
-          x: Name @27:41 value="plot"
-          sel: Name @27:46 value="style_columns"
-  stmtList[16]: ExprStmt @28:1
-    x: CallExpr @28:1
-      fun: Name @28:1 value="plot"
-      args[0]: Arg @28:6
-        value: Name @28:6 value="macd"
-      args[1]: Arg @28:12
-        value: BasicLit @28:12 litKind="string" value="\"MACD\"" bad=false
-  stmtList[17]: ExprStmt @29:1
-    x: CallExpr @29:1
-      fun: Name @29:1 value="plot"
-      args[0]: Arg @29:6
-        value: Name @29:6 value="signal"
-      args[1]: Arg @29:14
-        value: BasicLit @29:14 litKind="string" value="\"Signal line\"" bad=false
-      args[2]: Arg @29:29
-        value: BasicLit @29:29 litKind="color" value="#ff6d00" bad=false
-  stmtList[18]: ExprStmt @32:1
+        value: BasicLit @26:7 litKind="string" value="\"output0\"" bad=false
+      args[1]: Arg @26:18
+        value: BasicLit @26:18 litKind="int" value="0" bad=false
+      args[2]: Arg @26:21
+        value: BasicLit @26:21 litKind="string" value="\"Zero\"" bad=false
+      args[3]: Arg @26:29
+        value: BasicLit @26:29 litKind="color" value="#787b8680" bad=false
+  stmtList[14]: EmitStmt @27:1 append=false
+    name: BasicLit @27:6 litKind="string" value="\"output1\"" bad=false
+    value: Name @27:16 value="hist"
+  stmtList[15]: EmitStmt @28:1 append=false
+    name: BasicLit @28:6 litKind="string" value="\"output2\"" bad=false
+    value: Name @28:16 value="macd"
+  stmtList[16]: EmitStmt @29:1 append=false
+    name: BasicLit @29:6 litKind="string" value="\"output3\"" bad=false
+    value: Name @29:16 value="signal"
+  stmtList[17]: ExprStmt @32:1
     x: CallExpr @32:1
       fun: Name @32:1 value="alertcondition"
       args[0]: Arg @32:16
-        value: BinaryExpr @32:16 op="and"
-          x: BinaryExpr @32:16 op=">="
-            x: HistoryExpr @32:16
-              x: Name @32:16 value="hist"
-              offset: BasicLit @32:21 litKind="int" value="1" bad=false
-            y: BasicLit @32:27 litKind="int" value="0" bad=false
-          y: BinaryExpr @32:33 op="<"
-            x: Name @32:33 value="hist"
-            y: BasicLit @32:40 litKind="int" value="0" bad=false
-      args[1]: Arg @32:43
-        value: BasicLit @32:43 litKind="string" value="\"Rising to falling\"" bad=false
-      args[2]: Arg @32:64
-        value: BasicLit @32:64 litKind="string" value="\"MACD histogram switched from a rising to falling state\"" bad=false
-  stmtList[19]: ExprStmt @33:1
+        value: BasicLit @32:16 litKind="string" value="\"output4\"" bad=false
+      args[1]: Arg @32:27
+        value: BinaryExpr @32:27 op="and"
+          x: BinaryExpr @32:27 op=">="
+            x: HistoryExpr @32:27
+              x: Name @32:27 value="hist"
+              offset: BasicLit @32:32 litKind="int" value="1" bad=false
+            y: BasicLit @32:38 litKind="int" value="0" bad=false
+          y: BinaryExpr @32:44 op="<"
+            x: Name @32:44 value="hist"
+            y: BasicLit @32:51 litKind="int" value="0" bad=false
+      args[2]: Arg @32:54
+        value: BasicLit @32:54 litKind="string" value="\"Rising to falling\"" bad=false
+      args[3]: Arg @32:75
+        value: BasicLit @32:75 litKind="string" value="\"MACD histogram switched from a rising to falling state\"" bad=false
+  stmtList[18]: ExprStmt @33:1
     x: CallExpr @33:1
       fun: Name @33:1 value="alertcondition"
       args[0]: Arg @33:16
-        value: BinaryExpr @33:16 op="and"
-          x: BinaryExpr @33:16 op="<="
-            x: HistoryExpr @33:16
-              x: Name @33:16 value="hist"
-              offset: BasicLit @33:21 litKind="int" value="1" bad=false
-            y: BasicLit @33:27 litKind="int" value="0" bad=false
-          y: BinaryExpr @33:33 op=">"
-            x: Name @33:33 value="hist"
-            y: BasicLit @33:40 litKind="int" value="0" bad=false
-      args[1]: Arg @33:43
-        value: BasicLit @33:43 litKind="string" value="\"Falling to rising\"" bad=false
-      args[2]: Arg @33:64
-        value: BasicLit @33:64 litKind="string" value="\"MACD histogram switched from a falling to rising state\"" bad=false
+        value: BasicLit @33:16 litKind="string" value="\"output5\"" bad=false
+      args[1]: Arg @33:27
+        value: BinaryExpr @33:27 op="and"
+          x: BinaryExpr @33:27 op="<="
+            x: HistoryExpr @33:27
+              x: Name @33:27 value="hist"
+              offset: BasicLit @33:32 litKind="int" value="1" bad=false
+            y: BasicLit @33:38 litKind="int" value="0" bad=false
+          y: BinaryExpr @33:44 op=">"
+            x: Name @33:44 value="hist"
+            y: BasicLit @33:51 litKind="int" value="0" bad=false
+      args[2]: Arg @33:54
+        value: BasicLit @33:54 litKind="string" value="\"Falling to rising\"" bad=false
+      args[3]: Arg @33:75
+        value: BasicLit @33:75 litKind="string" value="\"MACD histogram switched from a falling to rising state\"" bad=false

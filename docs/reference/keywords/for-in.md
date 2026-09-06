@@ -79,7 +79,7 @@ values = array.from(3, 5, 8)
 lastSquare = for element in values
     element * element
 
-plot(lastSquare) // 64
+emit "output0" lastSquare // 64
 ```
 
 ### Using an array index and element
@@ -93,7 +93,7 @@ weighted = 0
 for [index, element] in values
     weighted += index * element
 
-plot(weighted) // 16
+emit "output0" weighted // 16
 ```
 
 ### Visiting map entries in insertion order
@@ -109,7 +109,7 @@ total = 0
 for [key, value] in values
     total += value
 
-plot(total) // 5
+emit "output0" total // 5
 ```
 
 ### Updating the source during iteration
@@ -124,8 +124,8 @@ for element in values
     visited += 1
     values.push(element + 10)
 
-plot(visited)       // 2
-plot(values.size()) // 4
+emit "output0" visited       // 2
+emit "output1" values.size() // 4
 ```
 
 ## Remarks

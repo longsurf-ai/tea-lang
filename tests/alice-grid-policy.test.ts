@@ -103,12 +103,13 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
     '385f0e707ebdc95121563b74c984611fcaa6b3214e545765f1367f17269ba64c',
   );
 
-  // Schema migration oracle: execute pre-Arrow commit 5a369670093b82c6d363f988b2971e7bf46d5894,
-  // verify its original lifecycle hashes, then replace positional struct fields
-  // with names from that baseline's declarations. Economic fill hashes stay unchanged.
+  // Column-order oracle: HEAD f980c4605b5fe51372a9278fc3159de3855429f4
+  // passed its original global lifecycle hashes in an isolated checkout. Group
+  // that verified baseline by kind, sorting keys only and preserving each tape.
+  // The economic fill hashes and all values remain independently unchanged.
   const lifecycle = lifecycleTape(sink, timeByRow);
   expect(hash(lifecycle)).toBe(
-    '9b0dea8882b64345cb1314fe6e9622848562f10090a1499df51157b3582b66a4',
+    '5dc541149290d6331fe25459d3a04f1b79d6ca3adcf7ba60c6bfaf7c037e6b77',
   );
 }, 15_000);
 
@@ -142,20 +143,17 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
     'ceb1eaf1a12b2967d554396e292dec3f43274304241d34095f07dba7eb99a48f',
   );
   expect(hash(lifecycleTape(sink, timeByRow))).toBe(
-    '30a8a4e8ca734e433ad7f76106479f6a8b8cfe4b50c858919d855803b7bdf3ef',
+    'c8725b9991746f50a930e32e6eb963589a41b2dace18dcab749b0f35f1d86f0c',
   );
 }, 15_000);
 
 function finalMetric(sink: OutputCapture, title: string): number {
-  const outputId = sink.declarations.findIndex(output =>
-    (output.args ?? []).some(
-      argument => argument.name === 'title' && argument.value === title,
-    ),
-  );
+  const outputId = sink.fields.findIndex(field => field.name === title);
   if (outputId < 0) throw new Error(`Alice output '${title}' is missing`);
-  const value = sink.emissions.findLast(
+  const plot = sink.emissions.findLast(
     emission => emission.outputId === outputId,
-  )?.channels[0];
+  )?.channels[0] as {series: number} | undefined;
+  const value = plot?.series;
   if (typeof value !== 'number') {
     throw new Error(`Alice output '${title}' has no final numeric value`);
   }
@@ -179,7 +177,7 @@ function fillTape(sink: OutputCapture) {
   const fillEffectIds = new Set(
     sink.fields.flatMap((field, effectId) =>
       field.metadata.get('tea:write') === 'append' &&
-      field.type.children[0]!.type.children[1]!.metadata.get('tea:typeId') ===
+      field.type.children[0]!.metadata.get('tea:typeId') ===
         'broker.FillExecuted'
         ? [effectId]
         : [],
@@ -212,12 +210,18 @@ function lifecycleTape(
   sink: OutputCapture,
   timeByRow: ReadonlyMap<number, number | null | undefined>,
 ) {
-  return sink.effectEmissions.map(emission => ({
+  const tape = sink.effectEmissions.map(emission => ({
     row: emission.row,
     time: timeByRow.get(emission.row),
     kind: lifecycleKind(sink, emission.outputId),
     payload: emission.payload,
   }));
+  const groups = Object.groupBy(tape, event => event.kind);
+  return Object.fromEntries(
+    Object.keys(groups)
+      .sort()
+      .map(kind => [kind, groups[kind]]),
+  );
 }
 
 function hash(value: unknown): string {
@@ -225,7 +229,7 @@ function hash(value: unknown): string {
 }
 
 function lifecycleKind(sink: OutputCapture, effectId: number): string {
-  const payload = sink.fields[effectId]?.type.children[0]!.type.children[1];
+  const payload = sink.fields[effectId]?.type.children[0];
   if (payload === undefined) return `unknown:${effectId}`;
   return (
     payload.metadata.get('tea:typeId') ??

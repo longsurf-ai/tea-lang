@@ -2,11 +2,10 @@ Program version=1
 param len: int title="Length" default=9 depth=none
 series close: series float depth=none
 builtin syminfo.tickerid: simple string depth=none
-output[0] indicator static{title="Request"}
-output[1] plot static{title="Gap"} channels{series: float}
-output[2] plot static{title="PrevDaily"} channels{series: float}
+output[0] "output0" set: float @ request.tea:9:1
+output[1] "output1" set: float @ request.tea:10:1
 request[0] name="daily" mode=sample context_order=0,1 option_order=0,1,2,3 capture=float result=float depth=const(1)
-  symbol: HistRead builtin:syminfo.tickerid: simple string
+  symbol: Read builtin:syminfo.tickerid: simple string
   timeframe: Const "D": const string
   availability: Const "end": const string
   fill: Const "carry": const string
@@ -22,45 +21,52 @@ request[0] name="daily" mode=sample context_order=0,1 option_order=0,1,2,3 captu
     name e: var series float depth=none
     func ta.ema(source: series float, length: input int): series float
       body: BlockExpr: series float
-        WriteName alpha
-          Binary Div: input float
+        Assign
+          target: Read name:alpha: input float
+          value: Binary Div: input float
             Const 2: const float
             Binary Add: input int
-              HistRead name:length: input int
+              Read name:length: input int
               Const 1: const int
         InitName e
           Const na: const float
-        WriteName e
-          Cond: series float
-            cond: CallNative na: series bool
-              HistRead name:e: series float
-            then: HistRead name:source: series float
-            else: Binary Add: series float
-              Binary Mul: series float
-                HistRead name:alpha: input float
-                HistRead name:source: series float
-              Binary Mul: series float
-                Binary Sub: input float
-                  Const 1: const int
-                  HistRead name:alpha: input float
-                HistRead name:e: series float
-        value: HistRead name:e: series float
+        Assign
+          target: Read name:e: series float
+          value: IfExpr: series float
+            cond: CallNative na pure: series bool
+              Read name:e: series float
+            then: BlockExpr: series float
+              value: Read name:source: series float
+            else: BlockExpr: series float
+              value: Binary Add: series float
+                Binary Mul: series float
+                  Read name:alpha: input float
+                  Read name:source: series float
+                Binary Mul: series float
+                  Binary Sub: input float
+                    Const 1: const int
+                    Read name:alpha: input float
+                  Read name:e: series float
+        value: Read name:e: series float
     body:
-      WriteName $result
-        CallFunc ta.ema slot=0: series float
-          HistRead series:close: series float
-          HistRead param:len: input int
+      Assign
+        target: Read name:$result: series float
+        value: CallFunc ta.ema slot=0: series float
+          Read series:close: series float
+          Read param:len: input int
 name gap: perBar series float depth=none
 name prev: perBar series float depth=none
 body:
-  WriteName gap
-    Binary Sub: series float
-      HistRead series:close: series float
-      HistRead request[0]: series float
-  WriteName prev
-    HistRead request[0]: series float
+  Assign
+    target: Read name:gap: series float
+    value: Binary Sub: series float
+      Read series:close: series float
+      Read request[0]: series float
+  Assign
+    target: Read name:prev: series float
+    value: HistRead request[0]: series float
       offset: Const 1: const int
-  Emit output[1] eval=[0]
-    HistRead name:gap: series float
-  Emit output[2] eval=[0]
-    HistRead name:prev: series float
+  Emit output[0]
+    value: Read name:gap: series float
+  Emit output[1]
+    value: Read name:prev: series float

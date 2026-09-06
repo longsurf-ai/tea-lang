@@ -3,34 +3,37 @@ param len: int title="Length" default=14 {min=1} depth=none
 param src: float title="Source" default=series(close) depth=const(1)
 series close: series float depth=none
 series open: series float depth=none
-output[0] indicator static{title="Basic" overlay=true}
-output[1] plot static{title="Delta" color="#2196F3"} channels{series: float}
+output[0] "output0" set: float @ basic.tea:15:1
 name prev: perBar series float depth=none
 name up: perBar series bool depth=none
 name count: var series int depth=none
 name delta: perBar series float depth=none
 body:
-  WriteName prev
-    HistRead param:src: series float
+  Assign
+    target: Read name:prev: series float
+    value: HistRead param:src: series float
       offset: Const 1: const int
-  WriteName up
-    Binary Gt: series bool
-      HistRead series:close: series float
-      HistRead series:open: series float
+  Assign
+    target: Read name:up: series bool
+    value: Binary Gt: series bool
+      Read series:close: series float
+      Read series:open: series float
   InitName count
     Const 0: const int
   ExprStmt
     IfExpr: series int
-      cond: HistRead name:up: series bool
+      cond: Read name:up: series bool
       then: BlockExpr: series int
-        WriteName count
-          Binary Add: series int
-            HistRead name:count: series int
+        Assign
+          target: Read name:count: series int
+          value: Binary Add: series int
+            Read name:count: series int
             Const 1: const int
-        value: HistRead name:count: series int
-  WriteName delta
-    Binary Sub: series float
-      HistRead series:close: series float
-      HistRead name:prev: series float
-  Emit output[1] eval=[0]
-    HistRead name:delta: series float
+        value: Read name:count: series int
+  Assign
+    target: Read name:delta: series float
+    value: Binary Sub: series float
+      Read series:close: series float
+      Read name:prev: series float
+  Emit output[0]
+    value: Read name:delta: series float

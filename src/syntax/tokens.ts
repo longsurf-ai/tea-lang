@@ -53,6 +53,8 @@ export const Tok = {
   This: 'this',
   Break: 'break',
   Continue: 'continue',
+  Return: 'return',
+  Emit: 'emit',
 } as const;
 
 export type TokenKind = (typeof Tok)[keyof typeof Tok];
@@ -72,6 +74,8 @@ export const RESERVED_KEYWORDS = [
   Tok.Switch,
   Tok.Break,
   Tok.Continue,
+  Tok.Return,
+  Tok.Emit,
   Tok.This,
 ] as const;
 

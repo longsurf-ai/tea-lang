@@ -603,7 +603,7 @@
     "control-keywords": {
       "patterns": [
         {
-          "match": "\\b(?:if|else|for|while|switch|break|continue)\\b",
+          "match": "\\b(?:if|else|for|while|switch|break|continue|return|emit)\\b",
           "name": "keyword.control.tea"
         }
       ]
@@ -619,7 +619,7 @@
     "script-declarations": {
       "patterns": [
         {
-          "match": "\\b(?:indicator|library|strategy)\\b(?=\\s*\\()",
+          "match": "\\b(?:library)\\b(?=\\s*\\()",
           "name": "support.function.declaration.tea"
         }
       ]

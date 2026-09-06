@@ -1,11 +1,11 @@
 //@version=1
-indicator("requests")
+
 
 len = input.int(9)
 
 d1 = request.security("AAPL", "D", close)
 d2 = request.security(syminfo.tickerid, "W", ta.ema(close, len), fill="sparse")
-plot(d1 - d2)
+emit "output0" d1 - d2
 
 x = close * 2
 bad = request.security("A", "D", x) // ERROR request expressions cannot reference script variable 'x'
@@ -20,4 +20,4 @@ capturesRoot() =>
 
 bad2 = request.security("A", "D", capturesRoot()) // ERROR reads script variable 'x'
 
-bad3 = request.security("A", "D", plot(close)) // ERROR 'plot' declares an output and can only be called at the top level
+bad3 = request.security("A", "D", plot("output1", close)) // ERROR cannot call 'emit' inside a request expression

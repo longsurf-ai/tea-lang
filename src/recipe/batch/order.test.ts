@@ -21,7 +21,7 @@ describe('batch Recipe composition', () => {
         scale = input.float(1.0)
         var float total = 0.0
         total := total + close * scale
-        plot(total)
+        emit "output0" total
       `;
       const values: number[] = [];
       const stream = new DataStream(
@@ -46,7 +46,7 @@ describe('batch Recipe composition', () => {
 
   test('rejects when public Node output delivery fails', async () => {
     const failure = new Error('delivery failed');
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     const stream = new DataStream(
       new Schema([new Field('close', new Float64(), false)]),
       of({close: 1}, {close: 2}),
@@ -68,7 +68,7 @@ describe('batch Recipe composition', () => {
     const completion = new Promise<void>((_resolve, reject) => {
       rejectCompletion = reject;
     });
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     const stream = new DataStream(
       new Schema([new Field('close', new Float64(), false)]),
       of({close: 1}, {close: 2}),
@@ -87,5 +87,5 @@ describe('batch Recipe composition', () => {
 });
 
 function output(datum: Datum): number {
-  return (datum.output0 as {series: number}).series;
+  return datum.output0 as number;
 }

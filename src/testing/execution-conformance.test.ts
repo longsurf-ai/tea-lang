@@ -4,13 +4,11 @@ import type {Module} from '../runtime/module-binding';
 import {existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
 import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import type {Field} from 'apache-arrow';
 import {describe, expect, test} from 'vitest';
 import {formatPos} from '../base/pos';
 import {traceDatum, traceDeclaration} from '../cli/output';
 import {compile} from '../compiler';
 import type {Datum} from '../runtime/output';
-import type {Stored} from '../runtime/value';
 
 import {OutputCapture} from './output';
 import {loadModule} from '../runtime/load';
@@ -56,7 +54,7 @@ class ConformanceSink extends OutputCapture {
 
   override publish(publication: Datum): void {
     super.publish(publication);
-    this.traceLines.push(...traceDatum(publication));
+    this.traceLines.push(...traceDatum(publication, this.schema));
   }
 }
 
@@ -82,11 +80,6 @@ function expectFiniteOrNa(value: unknown, label: string): void {
 }
 
 function expectSinkFiniteOrNa(sink: ConformanceSink, label: string): void {
-  sink.declarations.forEach((output, oid) => {
-    (output.args ?? []).forEach((arg, i) =>
-      expectFiniteOrNa(arg.value, `${label}.outputs[${oid}].args[${i}]`),
-    );
-  });
   sink.emissions.forEach((emission, i) => {
     emission.channels.forEach((value, channel) =>
       expectFiniteOrNa(value, `${label}.emissions[${i}].channels[${channel}]`),
@@ -151,28 +144,6 @@ function expectValue(
     return;
   }
   expect(actual, label).toBe(expected);
-}
-
-function expectArgs(
-  actual: readonly {readonly name: string; readonly value: Stored}[],
-  expected: readonly (readonly [string, JsonScalar])[],
-  label: string,
-): void {
-  expect(actual.length, `${label}.length`).toBe(expected.length);
-  expected.forEach(([name, value], i) => {
-    expect(actual[i]?.name, `${label}[${i}].name`).toBe(name);
-    const actualValue = actual[i]?.value;
-    if (actualValue === undefined) {
-      throw new Error(`${label}[${i}] is missing`);
-    }
-    expectValue(
-      actualValue,
-      value,
-      typeof value,
-      {absolute: 0, relative: 0},
-      label,
-    );
-  });
 }
 
 async function runCase(entry: CorpusCase): Promise<{
@@ -261,35 +232,16 @@ async function runCase(entry: CorpusCase): Promise<{
   expect(completed.indices, `${entry.id} index count`).toBe(
     reference.rows.length,
   );
+  const setFields = sink.fields.filter(
+    field => field.metadata.get('tea:write') === 'set',
+  );
   expect(
-    sink.fields.filter(field => field.metadata.get('tea:write') === 'set')
-      .length,
-    `${entry.id} output count`,
-  ).toBe(reference.outputs.length);
-  reference.outputs.forEach((expected, oid) => {
-    expect(expected.oid, `${entry.id} dense oid`).toBe(oid);
-    const actual = sink.declarations[oid];
-    const field = sink.fields[oid]!;
-    if (actual === undefined) {
-      throw new Error(`${entry.id} output ${oid} is missing`);
-    }
-    expect(
-      field.metadata.get('tea:kind'),
-      `${entry.id} output ${oid} effect`,
-    ).toBe(expected.effect);
-    expectArgs(
-      actual.args ?? [],
-      [...expected.staticArgs, ...expected.boundArgs],
-      `${entry.id} output ${oid} args`,
-    );
-    expect(
-      field.type.children.map((channel: Field) => [
-        channel.name,
-        channel.metadata.get('tea:type'),
-      ]),
-      `${entry.id} output ${oid} channels`,
-    ).toEqual(expected.channels.map(([name, type]) => [name, type]));
-  });
+    setFields.map(field => ({
+      name: field.name,
+      type: field.metadata.get('tea:type'),
+    })),
+    `${entry.id} named output declarations`,
+  ).toEqual(reference.outputs);
 
   expect(
     reference.rows.map(row => row.row),
@@ -303,52 +255,33 @@ async function runCase(entry: CorpusCase): Promise<{
   );
   expectedEmissions.forEach((expected, i) => {
     const actual = sink.emissions[i];
-    if (actual === undefined) {
+    if (actual === undefined)
       throw new Error(`${entry.id} emission ${i} is missing`);
-    }
+    const field = sink.fields[actual.outputId]!;
     expect(
-      {row: actual.row, oid: actual.outputId, provisional: actual.provisional},
+      {
+        row: actual.row,
+        name: field.name,
+        provisional: actual.provisional,
+      },
       `${entry.id} emission ${i} identity`,
     ).toEqual({
       row: expected.row,
-      oid: expected.oid,
+      name: expected.name,
       provisional: expected.provisional,
     });
-    expect(
-      actual.channels.length,
-      `${entry.id} emission ${i} channel count`,
-    ).toBe(expected.channels.length);
-    expected.channels.forEach((value, channel) => {
-      const output = sink.fields[expected.oid];
-      const channelType =
-        output?.type.children[channel]?.metadata.get('tea:type');
-      if (channelType === undefined) {
-        throw new Error(
-          `${entry.id} emission ${i} refers to a missing channel`,
-        );
-      }
-      const actualValue = actual.channels[channel];
-      if (actualValue === undefined) {
-        throw new Error(
-          `${entry.id} emission ${i} channel ${channel} is missing`,
-        );
-      }
-      expectValue(
-        actualValue,
-        value,
-        channelType,
-        reference.tolerance,
-        `${entry.id} row ${expected.row} oid ${expected.oid} channel ${channel}`,
-      );
-    });
+    expect(actual.channels.length).toBe(1);
+    expectValue(
+      actual.channels[0],
+      expected.value,
+      field.metadata.get('tea:type')!,
+      reference.tolerance,
+      `${entry.id} row ${expected.row} column ${expected.name}`,
+    );
   });
 
   expect(sink.traceLines.length, `${entry.id} trace line count`).toBe(
-    reference.outputs.length +
-      sink.fields.filter(field => field.metadata.get('tea:write') === 'append')
-        .length +
-      expectedEmissions.length +
-      sink.effectEmissions.length,
+    sink.fields.length * (reference.rows.length + 1),
   );
   expectSinkFiniteOrNa(sink, entry.id);
   return {reference, sink};

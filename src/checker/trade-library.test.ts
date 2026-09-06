@@ -11,7 +11,7 @@ import {ObjectKind} from './object';
 import {checkText, type CheckResult} from './testing';
 
 const SPECIALIZATION_SOURCE = [
-  'strategy("trade package specialization")',
+  '',
   'import broker',
   'import portfolio',
   'import trade',
@@ -40,10 +40,10 @@ const SPECIALIZATION_SOURCE = [
   'ohlcState.end_bar(close, barstate.islast)',
   'pathState.end_bar(close, barstate.islast)',
   'lotState.mark()',
-  'plot(nextOpenState.snapshot().equity)',
-  'plot(ohlcState.snapshot().equity)',
-  'plot(pathState.snapshot().equity)',
-  'plot(lotState.snapshot().equity)',
+  'emit "output0" nextOpenState.snapshot().equity',
+  'emit "output1" ohlcState.snapshot().equity',
+  'emit "output2" pathState.snapshot().equity',
+  'emit "output3" lotState.snapshot().equity',
 ].join('\n');
 
 function tradePackage(result: CheckResult) {
@@ -57,17 +57,12 @@ function tradePackage(result: CheckResult) {
 }
 
 function valuesFor(sink: OutputCapture, oid: number): readonly unknown[] {
-  return sink.emissions
-    .filter(emission => emission.outputId === oid)
-    .sort((left, right) => left.row - right.row)
-    .map(emission => emission.channels[0]);
+  return sink.publications.map(datum => datum[`output${oid}`]);
 }
 
 describe('trade library', () => {
   test('registers and exports constrained policy coordinators', () => {
-    const result = checkText(
-      ['indicator("trade imports")', 'import trade', 'value = 1'].join('\n'),
-    );
+    const result = checkText(['', 'import trade', 'value = 1'].join('\n'));
 
     expect(result.errors).toEqual([]);
     expect(result.checked.pkg.imports.map(pkg => pkg.path)).toEqual(
@@ -161,7 +156,7 @@ describe('trade library', () => {
   test('does not expose lifecycle methods from the other policy', () => {
     const result = checkText(
       [
-        'strategy("segregated trade lifecycle")',
+        '',
         'import broker',
         'import portfolio',
         'import trade',
@@ -194,7 +189,7 @@ describe('trade library', () => {
   test('rejects cross-policy broker and ledger composition', () => {
     const result = checkText(
       [
-        'strategy("invalid trade composition")',
+        '',
         'import broker',
         'import portfolio',
         'import trade',
@@ -216,7 +211,7 @@ describe('trade library', () => {
 
   test('executes stable-id immediate lot entry and close on CPU', async () => {
     const source = [
-      'strategy("trade lot cpu")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -233,10 +228,10 @@ describe('trade library', () => {
       '    state.close_trade("Long close", activeTradeId)',
       'state.mark()',
       'metrics = state.snapshot()',
-      'plot(metrics.cash)',
-      'plot(metrics.positionQuantity)',
-      'plot(metrics.equity)',
-      'plot(metrics.fillCount)',
+      'emit "output0" metrics.cash',
+      'emit "output1" metrics.positionQuantity',
+      'emit "output2" metrics.equity',
+      'emit "output3" metrics.fillCount',
     ].join('\n');
     const program = mustBuild(source);
     const sink = new OutputCapture();
@@ -246,9 +241,9 @@ describe('trade library', () => {
       timeNow: 0,
     });
 
-    expect(valuesFor(sink, 1)).toEqual([90, 102]);
-    expect(valuesFor(sink, 2)).toEqual([1, 0]);
-    expect(valuesFor(sink, 3)).toEqual([100, 102]);
-    expect(valuesFor(sink, 4)).toEqual([1, 2]);
+    expect(valuesFor(sink, 0)).toEqual([90, 102]);
+    expect(valuesFor(sink, 1)).toEqual([1, 0]);
+    expect(valuesFor(sink, 2)).toEqual([100, 102]);
+    expect(valuesFor(sink, 3)).toEqual([1, 2]);
   });
 });

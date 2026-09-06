@@ -2,7 +2,7 @@
 
 import type {Module} from '../runtime/module-binding';
 
-import {Field, Float64, List, Schema, Struct} from 'apache-arrow';
+import {Field, Float64, Schema} from 'apache-arrow';
 import {outputSchema} from '../runtime/output';
 import {fatal} from '../base/print';
 import {fieldOf, schemaSource} from './schema';
@@ -22,7 +22,6 @@ import {unimplemented} from '../base/unimplemented';
 import {
   MergeMode,
   ParamDefaultKind,
-  type EffectDecl,
   type IrFunc,
   type BuiltinInput,
   type OutputDecl,
@@ -235,8 +234,6 @@ class ModuleEmitter {
       case TypeKind.Polyline:
       case TypeKind.Linefill:
         return 'ResourceHandle | null';
-      case TypeKind.Plot:
-      case TypeKind.Hline:
         return 'number';
       default:
         return fatal(
@@ -259,8 +256,6 @@ class ModuleEmitter {
         return `color(${raw})`;
       case TypeKind.Enum:
         return `enumeration<${type.members.map(member => json(member.name)).join(' | ')}, ${json(this.kindOf(type))}>(${raw} as ${this.rawType(type)}, ${json(this.kindOf(type))})`;
-      case TypeKind.Plot:
-      case TypeKind.Hline:
         return `int(${raw})`;
       default:
         return `new ${this.typeOf(type)}(${raw}, ${json(this.kindOf(type))})`;
@@ -397,8 +392,6 @@ class ModuleEmitter {
         return fatal('uncontextualized na type reached layout projection');
       case TypeKind.Invalid:
       case TypeKind.Void:
-      case TypeKind.Plot:
-      case TypeKind.Hline:
       case TypeKind.Func:
         return fatal(`non-runtime type ${type.kind} reached layout projection`);
     }
@@ -431,7 +424,7 @@ class Generator {
   private readonly builtinIds = new Map<BuiltinInput, number>();
   private readonly paramIds = new Map<ParamInput, number>();
   private readonly paramSeriesIds = new Map<ParamInput, number>();
-  private readonly outputIds = new Map<OutputDecl | EffectDecl, number>();
+  private readonly outputIds = new Map<OutputDecl, number>();
   private readonly funcIds = new Map<IrFunc, number>();
   private readonly requestIds = new Map<RequestEdge, number>();
   private readonly localKeys = new Map<Name, string>();
@@ -502,9 +495,6 @@ class Generator {
       }
     });
     program.outputs.forEach((output, oid) => this.outputIds.set(output, oid));
-    program.effects.forEach((effect, eid) =>
-      this.outputIds.set(effect, program.outputs.length + eid),
-    );
     this.topology.frameByFunc.forEach((frame, func) => {
       this.funcIds.set(func, frame.id);
     });
@@ -649,16 +639,10 @@ class Generator {
       request =>
         `readonly ${json(request.name)}: ${this.emitter.typeOf(request.resultType, 'Input')}`,
     );
-    const outputs = [
-      ...this.program.outputs.map(
-        (output, id) =>
-          `readonly output${id}: {set(value: {${output.channels.map(channel => `readonly ${json(channel.name)}: ${this.emitter.typeOf(channel.type)}`).join('; ')}}): void}`,
-      ),
-      ...this.program.effects.map(
-        (effect, id) =>
-          `readonly effect${id}: {append(value: ${this.emitter.typeOf(effect.payloadType)}): void}`,
-      ),
-    ];
+    const outputs = this.program.outputs.map(
+      output =>
+        `readonly ${json(output.name)}: {${output.mode}(value: ${this.emitter.typeOf(output.valueType)}): void}`,
+    );
     out.push(
       `export type ${this.contextName()} = Context<{${params.join('; ')}}, {readonly series: {${series.join('; ')}}; readonly builtins: {${builtins.join('; ')}}; readonly children: {${children.join('; ')}}}, ${this.frameName(0)}, {${outputs.join('; ')}}>;`,
     );
@@ -717,10 +701,19 @@ class Generator {
     } satisfies LowerCtx;
     const validationCtx = {...ctx, fresh: () => 'unused'} satisfies LowerCtx;
     const prelude = [...this.program.init, ...this.program.body].filter(
-      stmt =>
-        (stmt.kind === IrKind.InitName || stmt.kind === IrKind.WriteName) &&
-        dependencies.names.has(stmt.name) &&
-        qualifierLE(stmt.name.qualifier, Qualifier.Simple),
+      stmt => {
+        const name =
+          stmt.kind === IrKind.InitName
+            ? stmt.name
+            : stmt.kind === IrKind.Assign && stmt.target.kind === IrKind.Read
+              ? stmt.target.place.name
+              : null;
+        return (
+          name !== null &&
+          dependencies.names.has(name) &&
+          qualifierLE(name.qualifier, Qualifier.Simple)
+        );
+      },
     );
     lowerStmts(prelude, lines, ctx);
 
@@ -765,38 +758,6 @@ class Generator {
         lines.push(`module.parameters[${pid}].active = (${active}).value;`);
       });
     }
-    this.program.outputs.forEach((output, oid) => {
-      if (staticOutputArgs(output, this.outputIds) !== null) {
-        captureArguments(
-          output.bindArgs.map(arg => arg.expr),
-          output.bindArgumentEvaluationOrder,
-          [],
-          validationCtx,
-          `output '${output.effect}' bind arguments`,
-        );
-        return;
-      }
-      resets.push(`module.outputs.declarations[${oid}].args = null;`);
-      const args = captureArguments(
-        output.bindArgs.map(arg => arg.expr),
-        output.bindArgumentEvaluationOrder,
-        lines,
-        ctx,
-        `output '${output.effect}' bind arguments`,
-      );
-      const entries = [
-        ...output.staticArgs.map(arg =>
-          json({name: arg.name, value: constValue(arg.value)}),
-        ),
-        ...output.bindArgs.map(
-          (arg, index) =>
-            `{name: ${JSON.stringify(arg.name)}, value: (${args[index]}).value}`,
-        ),
-      ];
-      lines.push(
-        `module.outputs.declarations[${oid}].args = [${entries.join(', ')}];`,
-      );
-    });
     this.requests.forEach((edge, rid) => {
       if (staticRequestContext(edge) !== null) {
         captureArguments(
@@ -873,11 +834,6 @@ class Generator {
         if (staticBool(param.active) === null) expressions.push(param.active);
       });
     }
-    this.program.outputs.forEach(output => {
-      if (staticOutputArgs(output, this.outputIds) === null) {
-        output.bindArgs.forEach(arg => expressions.push(arg.expr));
-      }
-    });
     this.requests.forEach(edge => {
       noteDepth(edge.depth);
       if (staticRequestContext(edge) === null) {
@@ -902,12 +858,14 @@ class Generator {
     const funcs = new Set<IrFunc>();
     const writes = new Map<Name, IrExpr>();
     for (const stmt of [...this.program.init, ...this.program.body]) {
-      if (
-        (stmt.kind === IrKind.InitName || stmt.kind === IrKind.WriteName) &&
-        !writes.has(stmt.name)
-      ) {
+      if (stmt.kind === IrKind.InitName && !writes.has(stmt.name))
         writes.set(stmt.name, stmt.value);
-      }
+      if (
+        stmt.kind === IrKind.Assign &&
+        stmt.target.kind === IrKind.Read &&
+        !writes.has(stmt.target.place.name)
+      )
+        writes.set(stmt.target.place.name, stmt.value);
     }
     const scannedNames = new Set<Name>();
     const scanName = (name: Name): void => {
@@ -926,15 +884,11 @@ class Generator {
       walkIrExpr(expr, {
         expr: nested => {
           if (
-            nested.kind === IrKind.HistRead &&
+            (nested.kind === IrKind.Read || nested.kind === IrKind.HistRead) &&
             nested.place.kind === PlaceKind.Name
           ) {
             scanName(nested.place.name);
-          } else if (
-            nested.kind === IrKind.CallFunc ||
-            nested.kind === IrKind.CallConstMethod ||
-            nested.kind === IrKind.CallMutableMethod
-          ) {
+          } else if (nested.kind === IrKind.CallFunc) {
             scanFunc(nested.func);
           }
         },
@@ -974,6 +928,7 @@ class Generator {
     });
     const ctx = {
       ...this.ctxFor(fid, directNames),
+      currentResultType: func.resultType,
       binding: true,
       bindFuncRefs: funcRefs,
     } satisfies LowerCtx;
@@ -984,7 +939,9 @@ class Generator {
       ...indent([
         ...declarations,
         ...body,
-        `return (${coerce(value, func.body.type, func.resultType)});`,
+        ...(func.body.type.kind === TypeKind.Void
+          ? []
+          : [`return (${coerce(value, func.body.type, func.resultType)});`]),
       ]),
       '}',
     ];
@@ -1011,7 +968,10 @@ class Generator {
           directNames.set(param, params[index]);
         }
       });
-      const ctx = this.ctxFor(fid, directNames);
+      const ctx = {
+        ...this.ctxFor(fid, directNames),
+        currentResultType: func.resultType,
+      };
       const lines: string[] = [
         `function ${this.functionRef(func)}(ctx: ${this.contextName()}, frame: ${this.frameName(fid)}${params.map((p, i) => `, ${p}: ${this.emitter.typeOf(parameters[i].type)}`).join('')}): ${this.emitter.typeOf(func.resultType)} {`,
       ];
@@ -1031,9 +991,10 @@ class Generator {
       const bodyLines: string[] = [];
       const value = lowerExpr(func.body, bodyLines, ctx);
       lines.push(...indent(bodyLines));
-      lines.push(
-        `  return (${coerce(value, func.body.type, func.resultType)});`,
-      );
+      if (func.body.type.kind !== TypeKind.Void)
+        lines.push(
+          `  return (${coerce(value, func.body.type, func.resultType)});`,
+        );
       lines.push('}');
       bodies.set(fid, lines);
     });
@@ -1086,64 +1047,22 @@ class Generator {
       };
     });
 
-    const fields = [
-      ...this.program.outputs.map(
-        (output, oid) =>
-          new Field(
-            `output${oid}`,
-            new Struct(
-              output.channels.map(channel =>
-                fieldOf(channel.name, channel.type, this.program.nominalIds),
-              ),
-            ),
-            true,
-            new Map([
-              ['tea:write', 'set'],
-              ['tea:kind', output.effect],
-            ]),
-          ),
-      ),
-      ...this.program.effects.map(
-        (effect, eid) =>
-          new Field(
-            `effect${eid}`,
-            new List(
-              new Field(
-                'item',
-                new Struct([
-                  new Field('ordinal', new Float64(), false),
-                  fieldOf(
-                    'payload',
-                    effect.payloadType,
-                    this.program.nominalIds,
-                  ),
-                ]),
-                false,
-              ),
-            ),
-            false,
-            new Map([
-              ['tea:write', 'append'],
-              ['tea:kind', 'event'],
-            ]),
-          ),
-      ),
-    ];
-    const declarations = [
-      ...this.program.outputs.map(output => ({
-        args: staticOutputArgs(output, this.outputIds),
-        layouts: output.channels.map(channel =>
-          channel.type.kind === TypeKind.Plot ||
-          channel.type.kind === TypeKind.Hline
-            ? -1
-            : this.emitter.layoutOf(channel.type),
-        ),
-      })),
-      ...this.program.effects.map(effect => ({
-        args: [],
-        layouts: [this.emitter.layoutOf(effect.payloadType)],
-      })),
-    ];
+    const fields = this.program.outputs.map(output => {
+      const value = fieldOf(
+        output.name,
+        output.mode === 'append'
+          ? {kind: TypeKind.Array, elem: output.valueType}
+          : output.valueType,
+        this.program.nominalIds,
+      );
+      return value.clone({
+        nullable: output.mode === 'set',
+        metadata: new Map([...value.metadata, ['tea:write', output.mode]]),
+      });
+    });
+    const declarations = this.program.outputs.map(output => ({
+      layout: this.emitter.layoutOf(output.valueType),
+    }));
 
     const state: FrameLayout[] = this.topology.frames.map(frame => {
       const slotCount =
@@ -1243,30 +1162,6 @@ function staticBool(expr: IrExpr): boolean | null {
     : null;
 }
 
-function staticOutputArgs(
-  output: OutputDecl,
-  ids: ReadonlyMap<OutputDecl | EffectDecl, number>,
-): readonly {readonly name: string; readonly value: Scalar}[] | null {
-  const args = output.staticArgs.map(arg => ({
-    name: arg.name,
-    value: constValue(arg.value),
-  }));
-  for (const {name, expr} of output.bindArgs) {
-    if (expr.kind === IrKind.OutputRef) {
-      const value = ids.get(expr.output);
-      if (value === undefined) return fatal('unmapped output reference');
-      args.push({name, value});
-    } else if (
-      expr.kind === IrKind.Const &&
-      !isNaValue(expr.value) &&
-      (typeof expr.value !== 'number' || Number.isFinite(expr.value))
-    ) {
-      args.push({name, value: constValue(expr.value)});
-    } else return null;
-  }
-  return args;
-}
-
 function staticRequestContext(
   edge: RequestEdge,
 ): NonNullable<Request['context']> | null {
@@ -1352,10 +1247,7 @@ function title(name: string): string {
 }
 
 function argumentNames(parameters: readonly Name[]): string[] {
-  const used = new Set(
-    'ctx frame this super return function const let var new class for while switch if else break continue import export default await yield delete void typeof in instanceof true false null'.split(
-      ' ',
-    ),
+  return parameters.map(
+    (parameter, index) => `p${index}_${identifier(parameter.name)}`,
   );
-  return parameters.map(parameter => unique(identifier(parameter.name), used));
 }

@@ -179,8 +179,8 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
           'earlier = values',
           'values.push(30)',
           '',
-          'plot(earlier.size() + bar_index * 0) // 2',
-          'plot(values.size() + bar_index * 0)  // 3',
+          'emit "output0" earlier.size() + bar_index * 0 // 2',
+          'emit "output1" values.size() + bar_index * 0  // 3',
         ),
       },
       {
@@ -196,8 +196,8 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
           'right = array.from(point)',
           '',
           'point.x := 2',
-          'plot(left.get(0).x)  // 2',
-          'plot(right.get(0).x) // 2',
+          'emit "output0" left.get(0).x  // 2',
+          'emit "output1" right.get(0).x // 2',
         ),
       },
     ],
@@ -234,7 +234,7 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
         source: lines(
           'previous = nz(close[1], close)',
           'change = close - previous',
-          'plot(change)',
+          'emit "output0" change',
         ),
       },
     ],
@@ -269,7 +269,7 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
         source: lines(
           'falling = close < close[1]',
           'lineColor = falling ? color.red : color.green',
-          'plot(close, color=lineColor)',
+          'emit "output0" close',
         ),
       },
     ],
@@ -307,7 +307,7 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
         source: lines(
           'var values = array.new<float>()',
           'values.push(close)',
-          'plot(values.size())',
+          'emit "output0" values.size()',
         ),
       },
       {
@@ -317,7 +317,7 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
         source: lines(
           'values = array.from(1, 2)',
           'array.push(values, 3)',
-          'plot(values.last()) // 3',
+          'emit "output0" values.last() // 3',
         ),
       },
     ],
@@ -460,7 +460,7 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
           'lastSquare = for element in values',
           '    element * element',
           '',
-          'plot(lastSquare) // 64',
+          'emit "output0" lastSquare // 64',
         ),
       },
       {
@@ -474,7 +474,7 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
           'for [index, element] in values',
           '    weighted += index * element',
           '',
-          'plot(weighted) // 16',
+          'emit "output0" weighted // 16',
         ),
       },
       {
@@ -490,7 +490,7 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
           'for [key, value] in values',
           '    total += value',
           '',
-          'plot(total) // 5',
+          'emit "output0" total // 5',
         ),
       },
       {
@@ -505,8 +505,8 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
           '    visited += 1',
           '    values.push(element + 10)',
           '',
-          'plot(visited)       // 2',
-          'plot(values.size()) // 4',
+          'emit "output0" visited       // 2',
+          'emit "output1" values.size() // 4',
         ),
       },
     ],
@@ -557,7 +557,7 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
         source: lines(
           'previous = nz(close[1], close)',
           'rising = close > previous',
-          'plot(rising ? 1 : 0)',
+          'emit "output0" rising ? 1 : 0',
         ),
       },
       {
@@ -568,7 +568,7 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
           'var values = array.new<int>()',
           'previous = values[1]',
           'values.push(bar_index)',
-          'plot(na(previous) ? 0 : previous.size())',
+          'emit "output0" na(previous) ? 0 : previous.size()',
         ),
       },
     ],
@@ -602,12 +602,7 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
       {
         title: 'Declaring Tea version 1',
         explanation: 'The annotation applies to the complete source file.',
-        source: lines(
-          '//@version=1',
-          '',
-          'indicator("Versioned source")',
-          'plot(close)',
-        ),
+        source: lines('//@version=1', '', '', 'emit "output0" close'),
       },
     ],
     remarks: [
@@ -615,5 +610,125 @@ export const PILOT_REFERENCE_ENTRIES: readonly ReferenceEntry[] = [
       'The annotation is still a comment; it does not produce a runtime value.',
     ],
     seeAlso: [{label: 'Reference overview', href: '/reference/overview/'}],
+  },
+  {
+    kind: 'keyword',
+    id: 'emit',
+    category: 'keywords',
+    compilerKeywords: ['emit'],
+    title: 'emit and emit.append',
+    route: '/reference/keywords/emit/',
+    summary: 'Write a named output value or append to a named output list.',
+    syntax: ['emit "name" expression', 'emit.append "name" expression'],
+    parts: [
+      {
+        name: 'name',
+        type: 'const string',
+        description:
+          'A constant-foldable column name, supplied as a literal, constant binding, or parenthesized constant expression.',
+      },
+      {
+        name: 'expression',
+        type: 'T',
+        description:
+          'The value captured at the emission. Every site for a name must agree on its Tea type.',
+      },
+    ],
+    typeRelationships: [],
+    description: [
+      'Plain emit declares a nullable `T` column; emit.append declares a `List<T>` column. Type and write mode are checked before the Arrow schema is built. Modes cannot mix even when their Arrow types match.',
+    ],
+    behaviorSections: [
+      {
+        title: 'Names and execution',
+        paragraphs: [
+          'A plain column has one writer and may execute at most once per step. Potential repetition through loops or helper calls is a compile-time error. Append sites can share a column, and their values retain execution order within that column.',
+          'Column order follows declarations. Missing plain emission and emitted null both publish null; append columns begin as empty lists. A failed execution publishes nothing.',
+        ],
+      },
+    ],
+    examples: [
+      {
+        title: 'Publishing a value and a list',
+        explanation:
+          'The output has one price value and one ordered sample list per step.',
+        source: lines(
+          'emit "price" close',
+          'emit.append "samples" close',
+          'emit.append "samples" open',
+        ),
+      },
+      {
+        title: 'Forwarding a constant column name',
+        explanation:
+          'Ordinary function specialization resolves the supplied name during compilation.',
+        source: lines(
+          'publish(const string id, float value) =>',
+          '    emit id value',
+          'publish("price", close)',
+        ),
+      },
+    ],
+    remarks: [
+      'Names cannot depend on input or series values. Execution coordinate names index, time, timed, and provisional are reserved.',
+      'Values are detached when emitted, so later mutation cannot change a prior output.',
+    ],
+    seeAlso: [
+      {label: 'return', href: '/reference/keywords/return/'},
+      {label: 'Reference overview', href: '/reference/overview/'},
+    ],
+  },
+  {
+    kind: 'keyword',
+    id: 'return',
+    category: 'keywords',
+    compilerKeywords: ['return'],
+    title: 'return',
+    route: '/reference/keywords/return/',
+    summary:
+      'Finish the enclosing function or method, optionally returning a value.',
+    syntax: ['return expression', 'return'],
+    parts: [
+      {
+        name: 'expression',
+        type: 'Result',
+        description:
+          'A value compatible with the enclosing function result. Omit it only for a void result.',
+      },
+    ],
+    typeRelationships: [],
+    description: [
+      'Return exits the surrounding Tea function through nested blocks and loops. It does not commit the runtime step.',
+    ],
+    behaviorSections: [
+      {
+        title: 'Function results',
+        paragraphs: [
+          'All return paths must produce compatible results. Implicit tail-expression returns remain supported. The program entry completes normally without a source return.',
+        ],
+      },
+    ],
+    examples: [
+      {
+        title: 'Returning from a selected branch',
+        explanation:
+          'Only the chosen branch executes; each path returns an integer.',
+        source: lines(
+          'choose(bool flag) =>',
+          '    if flag',
+          '        return 1',
+          '    return 2',
+          'emit "chosen" choose(close > open)',
+        ),
+      },
+    ],
+    remarks: [
+      'A source return belongs to a function or method. A main entry does not require one.',
+      'A return nested in a persistent initializer still exits its enclosing Tea function.',
+    ],
+    seeAlso: [
+      {label: 'emit', href: '/reference/keywords/emit/'},
+      {label: 'Reference overview', href: '/reference/overview/'},
+    ],
   },
 ];

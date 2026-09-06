@@ -11,7 +11,6 @@ export interface BindingTables {
   readonly defs: Map<syntax.Name, Object>;
   readonly uses: Map<syntax.Name | syntax.ThisExpr, Object>;
   readonly reassigned: Set<VariableObject>;
-  readonly historyBindings: Set<VariableObject>;
 }
 
 // @agent invariant: Text names are lookup keys only. Every declaration and
@@ -114,18 +113,12 @@ class NameBinder {
         }
         return;
       case NodeKind.HistoryExpr:
-        this.noteHistoryBinding(expr.x);
         this.bindExpr(expr.x);
         this.bindExpr(expr.offset);
         return;
       case NodeKind.TupleExpr:
         for (const elem of expr.elems) {
           this.bindExpr(elem);
-        }
-        return;
-      case NodeKind.ArgumentObjectExpr:
-        for (const field of expr.fields) {
-          this.bindExpr(field.value);
         }
         return;
       case NodeKind.IfExpr:
@@ -194,6 +187,13 @@ class NameBinder {
     switch (stmt.kind) {
       case NodeKind.ExprStmt:
         this.bindExpr(stmt.x);
+        return;
+      case NodeKind.EmitStmt:
+        this.bindExpr(stmt.name);
+        this.bindExpr(stmt.value);
+        return;
+      case NodeKind.ReturnStmt:
+        if (stmt.value !== null) this.bindExpr(stmt.value);
         return;
       case NodeKind.DeclStmt:
         this.bindExpr(stmt.init);
@@ -287,17 +287,6 @@ class NameBinder {
     };
     this.tables.defs.set(node, object);
     this.scope.declare(object);
-  }
-
-  private noteHistoryBinding(expr: syntax.Expr): void {
-    const direct = unwrapParens(expr);
-    if (direct.kind !== NodeKind.Name) {
-      return;
-    }
-    const object = this.scope.lookup(direct.value);
-    if (object?.kind === ObjectKind.Variable) {
-      this.tables.historyBindings.add(object);
-    }
   }
 }
 

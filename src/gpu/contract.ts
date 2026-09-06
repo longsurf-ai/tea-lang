@@ -2,7 +2,7 @@
 
 import type {Parameter} from '../runtime/params';
 
-export const GPU_ARTIFACT_ABI_VERSION = 7 as const;
+export const GPU_ARTIFACT_ABI_VERSION = 8 as const;
 export const GPU_WORKGROUP_SIZE_OVERRIDE = 'tea_workgroup_size';
 
 export const GPU_BUFFER_GROUP = 0;
@@ -33,7 +33,7 @@ export const GPU_JOB_DESCRIPTOR_OFFSETS = Object.freeze({
 export const GPU_SERIES_SCALAR_BYTE_STRIDE = 4;
 export const GPU_PARAMETER_BYTE_STRIDE = 4;
 export const GPU_EXECUTION_STATE_MIN_BYTE_SIZE = 8;
-export const GPU_RESULT_CELL_BYTE_STRIDE = 8;
+export const GPU_RESULT_CELL_BYTE_STRIDE = 12;
 export const GPU_EFFECT_STATUS_BYTE_STRIDE = 16;
 
 export type WgslScalarType = 'i32' | 'u32' | 'f32';

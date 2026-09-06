@@ -23,17 +23,16 @@ describe('ta Wilder indicators', () => {
   test('SMA-seeds RMA, ATR, RSI, and DMI from the required samples', async () => {
     const program = mustBuild(
       [
-        'indicator("Wilder seed")',
         'average = ta.rma(close, 3)',
         'range = ta.atr(3)',
         'strength = ta.rsi(close, 3)',
         '[plus, minus, adx] = ta.dmi(3, 3)',
-        'plot(average, "RMA")',
-        'plot(range, "ATR")',
-        'plot(strength, "RSI")',
-        'plot(plus, "+DI")',
-        'plot(minus, "-DI")',
-        'plot(adx, "ADX")',
+        'emit "RMA" average',
+        'emit "ATR" range',
+        'emit "RSI" strength',
+        'emit "+DI" plus',
+        'emit "-DI" minus',
+        'emit "ADX" adx',
       ].join('\n'),
     );
     const sink = new OutputCapture();
@@ -50,24 +49,24 @@ describe('ta Wilder indicators', () => {
     const finiteAt = (outputId: number, row: number, expected: number): void =>
       expect(values(outputId)[row]).toBeCloseTo(expected, 12);
 
+    expect(values(0).slice(0, 2).every(Number.isNaN)).toBe(true);
+    finiteAt(0, 2, 10);
+    finiteAt(0, 7, 12.292181069958849);
+
     expect(values(1).slice(0, 2).every(Number.isNaN)).toBe(true);
-    finiteAt(1, 2, 10);
-    finiteAt(1, 7, 12.292181069958849);
+    finiteAt(1, 2, 3);
+    finiteAt(1, 7, 5.053497942386831);
 
-    expect(values(2).slice(0, 2).every(Number.isNaN)).toBe(true);
-    finiteAt(2, 2, 3);
-    finiteAt(2, 7, 5.053497942386831);
+    expect(values(2).slice(0, 3).every(Number.isNaN)).toBe(true);
+    finiteAt(2, 3, 80);
+    finiteAt(2, 7, 68.10073452256033);
 
-    expect(values(3).slice(0, 3).every(Number.isNaN)).toBe(true);
-    finiteAt(3, 3, 80);
-    finiteAt(3, 7, 68.10073452256033);
-
+    expect(values(3).slice(0, 2).every(Number.isNaN)).toBe(true);
     expect(values(4).slice(0, 2).every(Number.isNaN)).toBe(true);
-    expect(values(5).slice(0, 2).every(Number.isNaN)).toBe(true);
+    finiteAt(3, 2, 22.222222222222218);
     finiteAt(4, 2, 22.222222222222218);
-    finiteAt(5, 2, 22.222222222222218);
-    expect(values(6).slice(0, 4).every(Number.isNaN)).toBe(true);
-    finiteAt(6, 4, 16.988416988416986);
-    finiteAt(6, 7, 36.30022485980952);
+    expect(values(5).slice(0, 4).every(Number.isNaN)).toBe(true);
+    finiteAt(5, 4, 16.988416988416986);
+    finiteAt(5, 7, 36.30022485980952);
   });
 });

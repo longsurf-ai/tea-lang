@@ -82,7 +82,7 @@ describe('dynamic CLI parameters', () => {
     const module = loadModule(
       generate(
         mustBuild(
-          'enum Mode\n    fast\n    slow\nlength = input.int(10, minval=1)\nshade = input.color(#ff0000)\nmode = input.enum(Mode.fast)\nplot(close[length], color=shade)',
+          'enum Mode\n    fast\n    slow\nlength = input.int(10, minval=1)\nshade = input.color(#ff0000)\nmode = input.enum(Mode.fast)\nemit "output0" close[length]',
         ),
       ),
     );

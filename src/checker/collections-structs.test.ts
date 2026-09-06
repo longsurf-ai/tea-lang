@@ -326,9 +326,9 @@ describe('collection type checking', () => {
       },
     ];
     for (const {src, error} of invalidCases) {
-      expect(
-        checkText(src).errors.some(item => item.msg.includes(error)),
-      ).toBe(true);
+      expect(checkText(src).errors.some(item => item.msg.includes(error))).toBe(
+        true,
+      );
     }
   });
 
@@ -477,7 +477,7 @@ describe('struct field stores and collection locations', () => {
     }
   });
 
-  test('rejects compound fields, field persistence, equality, and implicit struct copies', () => {
+  test('accepts compound fields but rejects field persistence, equality, and implicit copies', () => {
     const result = checkText(
       [
         'type Point',
@@ -494,16 +494,13 @@ describe('struct field stores and collection locations', () => {
     expect(messages).toContain(
       "field-level 'varip' is not supported; persistence belongs to the containing variable",
     );
-    expect(messages).toContain(
-      'compound assignment to a field is not supported',
-    );
     expect(
       messages.some(message =>
         message.includes('aggregate equality is not defined'),
       ),
     ).toBe(true);
     expect(messages).toContain("Point has no method 'copy'");
-    expect(result.info.updates.size).toBe(0);
+    expect(result.info.updates.size).toBe(1);
   });
 });
 
@@ -729,12 +726,12 @@ describe('method receivers', () => {
     expect(valid?.kind).toBe(CallKind.Function);
     // A poisoned omitted default has no semantic call owner, so noding cannot
     // accidentally project or lower it in the caller's frame.
-    expect(
-      result.info.calls.has(declarationCall(result, 'badThis')),
-    ).toBe(false);
-    expect(
-      result.info.calls.has(declarationCall(result, 'badSibling')),
-    ).toBe(false);
+    expect(result.info.calls.has(declarationCall(result, 'badThis'))).toBe(
+      false,
+    );
+    expect(result.info.calls.has(declarationCall(result, 'badSibling'))).toBe(
+      false,
+    );
   });
 
   test('validates every method body without requiring a call site', () => {
@@ -848,21 +845,17 @@ describe('history binding boundary', () => {
       'const bindings do not have runtime history',
     );
 
-    const output = checkText('plotRef = plot(close)\nbad = plotRef[0]');
-    expect(output.errors.map(error => error.msg)).toContain(
-      'output references do not have runtime history',
+    const output = checkText(
+      'plotRef = plot("output0", close)\nbad = plotRef[0]',
     );
+    expect(output.errors).toEqual([]);
   });
 });
 
 describe('reserved future aggregate surfaces', () => {
-  test('rejects aggregate output channels and pointer syntax in V1', () => {
-    const output = checkText('values = array.from(1)\nplot(values)');
-    expect(
-      output.errors.some(error =>
-        error.msg.startsWith("argument 'series' to 'plot':"),
-      ),
-    ).toBe(true);
+  test('accepts aggregate output values but rejects pointer syntax', () => {
+    const output = checkText('values = array.from(1)\nemit "output0" values');
+    expect(output.errors).toEqual([]);
 
     const pointer = checkText(
       ['type Point', '    int x', '*Point pointer = na'].join('\n'),

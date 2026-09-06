@@ -274,19 +274,18 @@ describe('library package runtime globals', () => {
       {
         bad: [
           'library("bad")',
-          'var int value = plotshape(true)',
+          'publish() =>',
+          '    emit.append "events" 1',
+          '    return 1',
+          'var int value = publish()',
           'export read() => 1',
         ].join('\n'),
       },
       'import bad\nvalue = bad.read()',
     );
-    expect(
-      messages(output).some(
-        message =>
-          message.includes("cannot call 'plotshape'") &&
-          message.includes('output'),
-      ),
-    ).toBe(true);
+    expect(messages(output).some(message => message.includes('emit'))).toBe(
+      true,
+    );
 
     const directWrite = checkWith(
       {
@@ -355,7 +354,7 @@ describe('library package runtime globals', () => {
         bad: [
           'library("bad")',
           'noisy() =>',
-          '    effect.emit(1)',
+          '    emit.append "effect0" 1',
           '    7',
           'type Box',
           '    int value = noisy()',
@@ -365,20 +364,16 @@ describe('library package runtime globals', () => {
       },
       'import bad\nvalue = bad.read()',
     );
-    expect(
-      messages(omitted).some(
-        message =>
-          message.includes("cannot call 'effect.emit'") &&
-          message.includes('emit'),
-      ),
-    ).toBe(true);
+    expect(messages(omitted).some(message => message.includes('emit'))).toBe(
+      true,
+    );
 
     const supplied = checkWith(
       {
         valid: [
           'library("valid")',
           'noisy() =>',
-          '    effect.emit(1)',
+          '    emit.append "effect0" 1',
           '    7',
           'type Box',
           '    int value = noisy()',

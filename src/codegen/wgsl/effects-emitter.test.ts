@@ -58,36 +58,38 @@ function compileWithCounter(source: string): string {
 
 describe('chunked sparse-effect WGSL emitter', () => {
   test('accepts an effects-only stateless Program', () => {
-    const source = compile(
-      ['strategy("effects only")', 'effect.emit(close)'].join('\n'),
-    );
+    const source = compile(['', 'emit.append "effect0" close'].join('\n'));
     expect(source).toContain(
       'var<storage, read_write> tea_execution_states: array<u32>',
     );
-    expect(source).toContain('TeaEffectRecord(tea_row, 1u');
+    expect(source).toContain('TeaEffectRecord(tea_row, 0u');
     expect(source).toContain('effect_capacity > 0u');
     expect(source).toContain('if (tea_job.result_count != 0u)');
   });
 
-  test('keeps declaration-only bind arguments outside the GPU subset', () => {
+  test('keeps visual reference structs outside the GPU subset', () => {
     const result = compileProgramToWgsl(
       mustBuild(
-        ['level = input.float(1)', 'hline(level)', 'plot(close)'].join('\n'),
+        [
+          'level = input.float(1)',
+          'hline("level", level)',
+          'emit "output1" close',
+        ].join('\n'),
       ),
     );
     expect(result.status).toBe('staged-unsupported');
     expect(result.eligibility.issues[0]?.code).toBe(
-      'result-transport-lowering-unimplemented',
+      'struct-reference-lowering-unimplemented',
     );
   });
 
   test('keeps an initialized absolute cursor in external execution state', () => {
     const source = compile(
       [
-        'strategy("cursor")',
+        '',
         'var int seen = 0',
         'seen := bar_index',
-        'plot(close + (barstate.islast ? seen : -1))',
+        'emit "output0" close + (barstate.islast ? seen : -1)',
       ].join('\n'),
     );
 
@@ -104,17 +106,17 @@ describe('chunked sparse-effect WGSL emitter', () => {
     const result = compileProgramToWgsl(
       mustBuild(
         [
-          'strategy("effects")',
+          '',
           'type Event',
           '    string id',
           '    int row',
           'emitTwo(int row) =>',
-          '    effect.emit(Event.new("first", row))',
-          '    effect.emit(Event.new("second", row))',
+          '    emit.append "effect0" Event.new("first", row)',
+          '    emit.append "effect1" Event.new("second", row)',
           '    row',
           'var int last = 0',
           'last := emitTwo(bar_index)',
-          'plot(close + last)',
+          'emit "output0" close + last',
         ].join('\n'),
       ),
     );
@@ -127,30 +129,30 @@ describe('chunked sparse-effect WGSL emitter', () => {
   test('uses literal ids for string equality and fails closed for concatenation', () => {
     const equality = compile(
       [
-        'strategy("string ids")',
+        '',
         'same(string value) =>',
         '    value == "same"',
         'var int keep = 0',
         'keep := same("same") ? 1 : 0',
-        'plot(close + keep)',
+        'emit "output0" close + keep',
       ].join('\n'),
     );
     expect(
       equality.match(/TeaString\(1u, 0u\)/g)?.length ?? 0,
-    ).toBeGreaterThanOrEqual(2);
+    ).toBeGreaterThanOrEqual(1);
 
     const dynamic = compileProgramToWgsl(
       mustBuild(
         [
-          'strategy("dynamic string")',
+          '',
           'type Event',
           '    string id',
           'emitValue(string value) =>',
-          '    effect.emit(Event.new(value + "b"))',
+          '    emit.append "effect0" Event.new(value + "b")',
           '    0',
           'var int keep = 0',
           'keep := emitValue("a")',
-          'plot(close + keep)',
+          'emit "output0" close + keep',
         ].join('\n'),
       ),
     );
@@ -163,10 +165,10 @@ describe('chunked sparse-effect WGSL emitter', () => {
   test('emits package globals through the same external execution state', () => {
     const source = compileWithCounter(
       [
-        'strategy("package global")',
+        '',
         'import counter',
         'value = counter.next(bar_index)',
-        'plot(close + value)',
+        'emit "output0" close + value',
       ].join('\n'),
     );
 

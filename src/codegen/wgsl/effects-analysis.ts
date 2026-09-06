@@ -4,7 +4,6 @@
 import type {Pos} from '../../base/pos';
 import {fatal} from '../../base/print';
 import {
-  CollectionLocationKind,
   IrKind,
   PlaceKind,
   type IrExpr,
@@ -68,10 +67,6 @@ export function collectLiteralStrings(program: Program): readonly string[] {
   };
 
   const visitStmt = (stmt: IrStmt): void => {
-    if (stmt.kind === IrKind.Emit) {
-      visitArgs(stmt.args, stmt.argumentEvaluationOrder);
-      return;
-    }
     visitStmtChildren(stmt, visitExpr);
   };
 
@@ -82,28 +77,15 @@ export function collectLiteralStrings(program: Program): readonly string[] {
       typeof expr.value === 'string'
     ) {
       strings.add(expr.value);
-    } else if (expr.kind === IrKind.HistRead) {
+    } else if (expr.kind === IrKind.Read || expr.kind === IrKind.HistRead) {
       if (expr.place.kind === PlaceKind.Name) visitName(expr.place.name);
-    } else if (expr.kind === IrKind.CallFunc) {
-      visitArgs(expr.args, expr.argumentEvaluationOrder);
-      visitFunc(expr.func);
-      return;
     } else if (
-      expr.kind === IrKind.CallConstMethod ||
-      expr.kind === IrKind.CallMutableMethod
+      expr.kind === IrKind.CallFunc ||
+      expr.kind === IrKind.CallNative
     ) {
-      visitExpr(expr.receiver);
+      if (expr.receiver !== null) visitExpr(expr.receiver);
       visitArgs(expr.args, expr.argumentEvaluationOrder);
-      visitFunc(expr.func);
-      return;
-    } else if (expr.kind === IrKind.CallNative) {
-      visitArgs(expr.args, expr.argumentEvaluationOrder);
-      return;
-    } else if (expr.kind === IrKind.MutateCollection) {
-      if (expr.location.kind === CollectionLocationKind.StructField) {
-        visitExpr(expr.location.object);
-      }
-      visitArgs(expr.args, expr.argumentEvaluationOrder);
+      if (expr.kind === IrKind.CallFunc) visitFunc(expr.func);
       return;
     } else if (expr.kind === IrKind.NewStruct) {
       visitArgs(expr.args, expr.argumentEvaluationOrder);
@@ -160,18 +142,20 @@ class EffectBound {
         }
         return 0;
       }
-      case IrKind.WriteName:
-        return this.expr(stmt.value);
-      case IrKind.StoreField:
+      case IrKind.Assign:
         return checkedAdd(
-          this.expr(stmt.object),
+          this.expr(stmt.target),
           this.expr(stmt.value),
           stmt.pos,
         );
+      case IrKind.Return:
+        return stmt.value === null ? 0 : this.expr(stmt.value);
       case IrKind.Emit:
-        return this.args(stmt.args, stmt.argumentEvaluationOrder);
-      case IrKind.EmitEffect:
-        return checkedAdd(this.expr(stmt.payload), 1, stmt.pos);
+        return checkedAdd(
+          this.expr(stmt.value),
+          stmt.output.mode === 'append' ? 1 : 0,
+          stmt.pos,
+        );
       case IrKind.Break:
       case IrKind.Continue:
         return 0;
@@ -183,7 +167,7 @@ class EffectBound {
   private expr(expr: IrExpr): number {
     switch (expr.kind) {
       case IrKind.Const:
-      case IrKind.OutputRef:
+      case IrKind.Read:
         return 0;
       case IrKind.HistRead:
         return expr.offset === null ? 0 : this.expr(expr.offset);
@@ -192,38 +176,15 @@ class EffectBound {
         return checkedAdd(this.expr(expr.x), this.expr(expr.y), expr.pos);
       case IrKind.Unary:
         return this.expr(expr.x);
-      case IrKind.Cond:
-        // Unlike IfExpr, Cond evaluates both value arms.
-        return checkedAdd(
-          checkedAdd(this.expr(expr.cond), this.expr(expr.then), expr.pos),
-          this.expr(expr.else),
-          expr.pos,
-        );
       case IrKind.CallFunc:
-        return checkedAdd(
-          this.args(expr.args, expr.argumentEvaluationOrder),
-          this.func(expr.func, expr.pos),
-          expr.pos,
-        );
-      case IrKind.CallConstMethod:
-      case IrKind.CallMutableMethod:
+      case IrKind.CallNative:
         return checkedAdd(
           checkedAdd(
-            this.expr(expr.receiver),
+            expr.receiver === null ? 0 : this.expr(expr.receiver),
             this.args(expr.args, expr.argumentEvaluationOrder),
             expr.pos,
           ),
-          this.func(expr.func, expr.pos),
-          expr.pos,
-        );
-      case IrKind.CallNative:
-        return this.args(expr.args, expr.argumentEvaluationOrder);
-      case IrKind.MutateCollection:
-        return checkedAdd(
-          expr.location.kind === CollectionLocationKind.StructField
-            ? this.expr(expr.location.object)
-            : 0,
-          this.args(expr.args, expr.argumentEvaluationOrder),
+          expr.kind === IrKind.CallFunc ? this.func(expr.func, expr.pos) : 0,
           expr.pos,
         );
       case IrKind.NewStruct:

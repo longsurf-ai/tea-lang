@@ -1,3 +1,4 @@
+import {newFileBase} from '../base/pos';
 // Purpose: Both targets expose real Arrow schemas with complete nested types.
 
 import {DataType, Field, Schema} from 'apache-arrow';
@@ -46,16 +47,12 @@ function moduleFor(types: readonly Type[]) {
     nominalIds,
     params: [],
     requests: [],
-    outputs: [
-      {
-        effect: 'probe',
-        staticArgs: [],
-        bindArgs: [],
-        bindArgumentEvaluationOrder: [],
-        channels: types.map((type, index) => ({name: `field${index}`, type})),
-      },
-    ],
-    effects: [],
+    outputs: types.map((valueType, index) => ({
+      name: `field${index}`,
+      mode: 'set' as const,
+      valueType,
+      pos: {base: newFileBase('schema.tea'), line: 1, col: 1},
+    })),
     packageGlobals: [],
     init: [],
     body: [],
@@ -75,7 +72,7 @@ describe('Arrow I/O projection', () => {
       mode,
       value,
     ]);
-    const fields = outputFields(module.outputs.schema)[0].type.children;
+    const fields = outputFields(module.outputs.schema);
     expect(fields.every((field: Field) => field instanceof Field)).toBe(true);
     expect(fields.map((field: Field) => field.type.toString())).toEqual([
       'Float64',
@@ -90,9 +87,9 @@ describe('Arrow I/O projection', () => {
       fields.map((field: Field) => field.metadata.get('tea:type')),
     ).toEqual(['int', 'float', 'bool', 'string', 'color', 'enum', 'struct']);
     expect(fields.map((field: Field) => field.nullable)).toEqual([
-      false,
-      false,
-      false,
+      true,
+      true,
+      true,
       true,
       true,
       true,
@@ -104,7 +101,7 @@ describe('Arrow I/O projection', () => {
       {name: 'fast', title: 'Fast'},
     ]);
     expect(
-      module.state.layout[module.outputs.declarations[0].layouts[6]],
+      module.state.layout[module.outputs.declarations[6].layout],
     ).toMatchObject({
       typeId: 'user.Mode',
     });
@@ -119,7 +116,7 @@ describe('Arrow I/O projection', () => {
         {kind: TypeKind.Map, key: StringType, value},
         LineType,
       ]).outputs.schema,
-    )[0].type.children;
+    );
     const restored = decodeSchema(encodeSchema(new Schema([...fields])));
     expect(restored).toEqual(new Schema([...fields]));
     expect(DataType.isList(restored.fields[0].type)).toBe(true);
@@ -208,7 +205,9 @@ test.runIf(process.env.TEA_STRESS === '1')(
 );
 
 test('one Arrow schema owns set and append declarations and their unified IDs', () => {
-  const source = generate(mustBuild('effect.emit(close)\nplot(close)'));
+  const source = generate(
+    mustBuild('emit.append "effect0" close\nemit "output0" close'),
+  );
   const module = loadModule(source);
   const fields = outputFields(module.outputs.schema);
   expect(module.outputs.schema.fields.map(field => field.name)).toEqual([
@@ -216,25 +215,18 @@ test('one Arrow schema owns set and append declarations and their unified IDs', 
     'time',
     'timed',
     'provisional',
-    'output0',
     'effect0',
+    'output0',
   ]);
   expect(
-    fields.map(field => [
-      field.name,
-      field.metadata.get('tea:write'),
-      field.metadata.get('tea:kind'),
-    ]),
+    fields.map(field => [field.name, field.metadata.get('tea:write')]),
   ).toEqual([
-    ['output0', 'set', 'plot'],
-    ['effect0', 'append', 'event'],
+    ['effect0', 'append'],
+    ['output0', 'set'],
   ]);
   expect(
     module.outputs.declarations.map(output => Object.keys(output).sort()),
-  ).toEqual([
-    ['args', 'layouts'],
-    ['args', 'layouts'],
-  ]);
+  ).toEqual([['layout'], ['layout']]);
   expect(source).toContain('ctx.outputs.effect0.append(');
   expect(source).toContain('ctx.outputs.output0.set(');
   expect(source.indexOf('ctx.outputs.effect0.append(')).toBeLessThan(

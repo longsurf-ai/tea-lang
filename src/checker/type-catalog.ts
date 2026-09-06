@@ -215,22 +215,6 @@ export const PUBLIC_TYPE_CATALOG: readonly PublicTypeDescriptor[] = [
     typeKind: TypeKind.Void,
     methodResultType: VoidType,
   },
-  {
-    kind: 'reference-only',
-    name: 'plot',
-    forms: ['plot'],
-    summary:
-      'Compile-time output reference returned by plot() and consumed by fill(); it is not a type annotation.',
-    typeKind: TypeKind.Plot,
-  },
-  {
-    kind: 'reference-only',
-    name: 'hline',
-    forms: ['hline'],
-    summary:
-      'Compile-time output reference returned by hline() and consumed by fill(); it is not a type annotation.',
-    typeKind: TypeKind.Hline,
-  },
 ];
 
 export const INTERNAL_TYPE_KINDS: readonly TypeKind[] = [

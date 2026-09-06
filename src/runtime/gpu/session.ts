@@ -115,7 +115,7 @@ interface ActiveGpuExecutionInstance {
 interface DenseOutputDecoder {
   readonly outputId: number;
   readonly field: Field;
-  readonly channels: readonly WgslResultChannel[];
+  readonly channel: WgslResultChannel;
 }
 
 interface DenseDecoderPlan {
@@ -685,11 +685,7 @@ function publishChunk(
     active.map(item => [item.progress.bindingIndex, item.progress]),
   );
   const effectsByExecution = prepared.executions.map(
-    () =>
-      new Map<
-        number,
-        {outputId: number; ordinal: number; payload: unknown}[]
-      >(),
+    () => new Map<number, {outputId: number; payload: unknown}[]>(),
   );
   const timestampsByExecution: Array<Float64Array | null | undefined> = [];
   const events = new Map(artifact.events.map(event => [event.outputId, event]));
@@ -748,10 +744,9 @@ function publishChunk(
       const rowEffects = effectsByExecution[executionIndex].get(row) ?? [];
       const emission = {
         outputId,
-        ordinal: rowEffects.length,
         payload: decodeValue(
           schema.payload,
-          denseDecoder.fields[outputId]!.type.children[0]!.type.children[1]!,
+          denseDecoder.fields[outputId]!.type.children[0]!,
           recordView,
           recordBase + 8,
           recordBase + 8 + schema.payloadWordCount * 4,
@@ -819,12 +814,10 @@ function publishChunk(
         execution,
         localRow,
       );
-      for (const {outputId, ordinal, payload} of effectsByExecution[
-        executionIndex
-      ].get(row) ?? []) {
-        (outputs[outputId] as unknown[]).push(
-          Object.freeze({ordinal, payload}),
-        );
+      for (const {outputId, payload} of effectsByExecution[executionIndex].get(
+        row,
+      ) ?? []) {
+        (outputs[outputId] as unknown[]).push(payload);
       }
       outputs.forEach(value => {
         if (Array.isArray(value)) Object.freeze(value);
@@ -855,7 +848,7 @@ function planDenseDecoder(
     outputs: artifact.resultChannels.map(channel => ({
       outputId: channel.outputId,
       field: fields[channel.outputId]!,
-      channels: [channel],
+      channel,
     })),
   };
 }
@@ -874,14 +867,13 @@ function validateDenseOutputs(
     localRow,
   );
   for (const output of decoder.outputs) {
-    for (const [index, channel] of output.channels.entries()) {
-      decodeResult(
-        channel,
-        output.field.type.children[index]!,
-        view,
-        rowOffset + channel.rowCell * prepared.artifact.resultCellByteStride,
-      );
-    }
+    decodeResult(
+      output.channel,
+      output.field,
+      view,
+      rowOffset +
+        output.channel.rowCell * prepared.artifact.resultCellByteStride,
+    );
   }
 }
 
@@ -902,22 +894,12 @@ function decodeOutputs(
     field.metadata.get('tea:write') === 'append' ? [] : null,
   );
   for (const output of decoder.outputs) {
-    values[output.outputId] = Object.freeze(
-      Object.fromEntries(
-        output.channels.map((channel, index) => {
-          const field = output.field.type.children[index]!;
-          return [
-            field.name,
-            decodeResult(
-              channel,
-              field,
-              view,
-              rowOffset +
-                channel.rowCell * prepared.artifact.resultCellByteStride,
-            ),
-          ];
-        }),
-      ),
+    values[output.outputId] = decodeResult(
+      output.channel,
+      output.field,
+      view,
+      rowOffset +
+        output.channel.rowCell * prepared.artifact.resultCellByteStride,
     );
   }
   return values;
@@ -948,6 +930,12 @@ function decodeResult(
   view: DataView,
   offset: number,
 ): Stored {
+  const present = readU32(view, offset + 8, 'result presence');
+  if (present !== 0 && present !== 1)
+    throw new GpuExecutionError(
+      `GPU result cell ${channel.rowCell} has invalid presence ${present}`,
+    );
+  if (present === 0) return null;
   const bits = readU32(view, offset, 'result bits');
   const validWord = readU32(view, offset + 4, 'result validity');
   if (validWord !== 0 && validWord !== 1) {
@@ -1810,9 +1798,7 @@ function validateBindingModule(
     const field = fields[channel.outputId];
     if (
       field?.metadata.get('tea:write') !== 'set' ||
-      !DataType.isStruct(field.type) ||
-      field.type.children.length !== 1 ||
-      !fieldMatchesCodec(field.type.children[0]!, channel.scalar) ||
+      !fieldMatchesCodec(field, channel.scalar) ||
       covered.has(channel.outputId)
     ) {
       throw new GpuBindingError(
@@ -1826,11 +1812,7 @@ function validateBindingModule(
     if (
       field?.metadata.get('tea:write') !== 'append' ||
       !DataType.isList(field.type) ||
-      !DataType.isStruct(field.type.children[0]!.type) ||
-      !fieldMatchesCodec(
-        field.type.children[0]!.type.children[1]!,
-        event.payload.kind,
-      ) ||
+      !fieldMatchesCodec(field.type.children[0]!, event.payload.kind) ||
       covered.has(event.outputId)
     ) {
       throw new GpuBindingError(
@@ -2273,8 +2255,7 @@ function validateArtifact(artifact: CompiledWgslProgram): void {
     if (
       !Number.isSafeInteger(schema.outputId) ||
       schema.outputId < 0 ||
-      (index > 0 &&
-        schema.outputId !== artifact.events[index - 1]!.outputId + 1) ||
+      (index > 0 && schema.outputId <= artifact.events[index - 1]!.outputId) ||
       schema.payloadWordCount < 1 ||
       schema.payloadWordCount > artifact.effectPayloadWordCapacity
     ) {

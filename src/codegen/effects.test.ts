@@ -34,11 +34,13 @@ const EVENT: StructType = {
 };
 
 const nominalIds = new Map([[EVENT, 'effects.test.OrderSubmitted']]);
-const eventSchema = fieldOf('payload', EVENT, nominalIds);
+const eventSchema = fieldOf('item', EVENT, nominalIds);
 const effect = {
-  payloadType: EVENT,
-  sourcePosition: pos,
-};
+  name: 'events',
+  mode: 'append',
+  valueType: EVENT,
+  pos,
+} as const;
 const payload = {
   kind: IrKind.NewStruct,
   pos,
@@ -69,14 +71,13 @@ const program: Program = {
   nominalIds,
   params: [],
   requests: [],
-  outputs: [],
-  effects: [effect],
+  outputs: [effect],
   packageGlobals: [],
   init: [],
   body: [
-    {kind: IrKind.EmitEffect, pos, effect, payload},
+    {kind: IrKind.Emit, pos, output: effect, value: payload},
     // Repeated execution of one call site appends a second ordered record.
-    {kind: IrKind.EmitEffect, pos, effect, payload},
+    {kind: IrKind.Emit, pos, output: effect, value: payload},
   ],
 };
 
@@ -92,10 +93,8 @@ describe('generic sparse effect lowering', () => {
       timeNow: 0,
     });
 
-    expect(module.outputs.declarations).toEqual([{args: [], layouts: [0]}]);
-    expect(sink.fields[0].type.children[0].type.children[1]).toEqual(
-      eventSchema,
-    );
+    expect(module.outputs.declarations).toEqual([{layout: 0}]);
+    expect(sink.fields[0].type.children[0]).toEqual(eventSchema);
     expect(module.state.layout[0]).toEqual({
       kind: 'struct',
       name: 'OrderSubmitted',
@@ -143,11 +142,11 @@ describe('generic sparse effect lowering', () => {
             'values = map.new<string, float>()',
             'values.put("first", 7.0)',
             'event = Event.new(samples, grid, values)',
-            'output(event, kind="snapshot", args={})',
-            'effect.emit([event, values])',
+            'emit "snapshot" event',
+            'emit.append "effect0" [event, values]',
             'event.samples.push(99.0)',
             'event.values.put("second", 8.0)',
-            'effect.emit(event)',
+            'emit.append "effect1" event',
           ].join('\n'),
         ),
       ),
@@ -191,7 +190,7 @@ describe('generic sparse effect lowering', () => {
   test('rejects a same-shaped logical payload with a forged nominal id', async () => {
     const module = loadModule(generate(program));
     const schema = cloneSchema(module.outputs.schema);
-    const payload = outputFields(schema)[0].type.children[0].type.children[1];
+    const payload = outputFields(schema)[0].type.children[0];
     payload.metadata.set('tea:typeId', 'forged.Other');
     const forged = Object.assign(module.clone(), {
       outputs: {...module.outputs, schema},
@@ -208,12 +207,12 @@ describe('generic sparse effect lowering', () => {
   test('WGSL fails closed for struct effect payloads', () => {
     const gpuProgram = mustBuild(
       [
-        'strategy("GPU effects")',
+        '',
         'type OrderSubmitted',
         '    string commandId',
         '    int barIndex',
         'emitOne() =>',
-        '    effect.emit(OrderSubmitted.new("entry-1", 7))',
+        '    emit.append "effect0" OrderSubmitted.new("entry-1", 7)',
         '    1',
         'emitOne()',
         'emitOne()',

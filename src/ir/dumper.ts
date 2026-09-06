@@ -3,7 +3,6 @@
 import {fatal} from '../base/print';
 import {formatPos} from '../base/pos';
 import {
-  CollectionLocationKind,
   DepthKind,
   IrKind,
   PlaceKind,
@@ -120,28 +119,8 @@ export function dumpProgram(program: Program): string {
   }
 
   program.outputs.forEach((output, i) => {
-    const statics = output.staticArgs
-      .map(a => `${a.name}=${formatValue(a.value)}`)
-      .join(' ');
-    const channels = output.channels
-      .map(ch => `${ch.name}: ${formatType(ch.type)}`)
-      .join(', ');
     out.push(
-      `output[${i}] ${output.effect}` +
-        (statics.length > 0 ? ` static{${statics}}` : '') +
-        (output.bindArgs.length > 0
-          ? ` bind_eval=[${output.bindArgumentEvaluationOrder.join(',')}]`
-          : '') +
-        (channels.length > 0 ? ` channels{${channels}}` : ''),
-    );
-    for (const bind of output.bindArgs) {
-      dumpExpr(bind.expr, `bind ${bind.name}: `, '  ', out, labels);
-    }
-  });
-
-  program.effects.forEach((effect, i) => {
-    out.push(
-      `effect[${i}]: ${formatType(effect.payloadType)} @ ${formatPos(effect.sourcePosition)}`,
+      `output[${i}] ${JSON.stringify(output.name)} ${output.mode}: ${formatType(output.valueType)} @ ${formatPos(output.pos)}`,
     );
   });
 
@@ -265,28 +244,21 @@ function dumpStmt(
       out.push(`${indent}${label}InitName ${labels.name(stmt.name)}`);
       dumpExpr(stmt.value, '', `${indent}  `, out, labels);
       return;
-    case IrKind.WriteName:
-      out.push(`${indent}${label}WriteName ${labels.name(stmt.name)}`);
-      dumpExpr(stmt.value, '', `${indent}  `, out, labels);
-      return;
-    case IrKind.StoreField:
+    case IrKind.Assign:
       out.push(
-        `${indent}${label}StoreField ${stmt.owner.name}[${stmt.fieldIndex}]`,
+        `${indent}${label}Assign${stmt.op === null ? '' : ` ${stmt.op}`}`,
       );
-      dumpExpr(stmt.object, 'object: ', `${indent}  `, out, labels);
+      dumpExpr(stmt.target, 'target: ', `${indent}  `, out, labels);
       dumpExpr(stmt.value, 'value: ', `${indent}  `, out, labels);
       return;
     case IrKind.Emit:
-      out.push(
-        `${indent}${label}Emit ${labels.output(stmt.output)} eval=[${stmt.argumentEvaluationOrder.join(',')}]`,
-      );
-      for (const arg of stmt.args) {
-        dumpExpr(arg, '', `${indent}  `, out, labels);
-      }
+      out.push(`${indent}${label}Emit ${labels.output(stmt.output)}`);
+      dumpExpr(stmt.value, 'value: ', `${indent}  `, out, labels);
       return;
-    case IrKind.EmitEffect:
-      out.push(`${indent}${label}EmitEffect`);
-      dumpExpr(stmt.payload, 'payload: ', `${indent}  `, out, labels);
+    case IrKind.Return:
+      out.push(`${indent}${label}Return`);
+      if (stmt.value !== null)
+        dumpExpr(stmt.value, 'value: ', `${indent}  `, out, labels);
       return;
     case IrKind.Break:
       out.push(`${indent}${label}Break`);
@@ -317,14 +289,12 @@ function dumpExpr(
     case IrKind.Const:
       line(` ${formatValue(expr.value)}`);
       return;
-    case IrKind.OutputRef:
-      line(` ${labels.output(expr.output)}`);
+    case IrKind.Read:
+      line(` ${placeLabel(expr.place, labels)}`);
       return;
     case IrKind.HistRead:
       line(` ${placeLabel(expr.place, labels)}`);
-      if (expr.offset !== null) {
-        child(expr.offset, 'offset: ');
-      }
+      child(expr.offset, 'offset: ');
       return;
     case IrKind.Binary:
       line(` ${expr.op}`);
@@ -335,49 +305,16 @@ function dumpExpr(
       line(` ${expr.op}`);
       child(expr.x);
       return;
-    case IrKind.Cond:
-      line('');
-      child(expr.cond, 'cond: ');
-      child(expr.then, 'then: ');
-      child(expr.else, 'else: ');
-      return;
     case IrKind.CallFunc:
       line(` ${expr.func.name} slot=${expr.slot}`);
-      for (const arg of expr.args) {
-        child(arg);
-      }
-      return;
-    case IrKind.CallConstMethod:
-      line(` ${expr.func.name} slot=${expr.slot}`);
-      child(expr.receiver, 'receiver: ');
-      for (const arg of expr.args) {
-        child(arg);
-      }
-      return;
-    case IrKind.CallMutableMethod:
-      line(` ${expr.func.name} slot=${expr.slot}`);
-      child(expr.receiver, 'receiver: ');
+      if (expr.receiver !== null) child(expr.receiver, 'receiver: ');
       for (const arg of expr.args) {
         child(arg);
       }
       return;
     case IrKind.CallNative:
-      line(` ${expr.native}${expr.slot !== null ? ` slot=${expr.slot}` : ''}`);
-      for (const arg of expr.args) {
-        child(arg);
-      }
-      return;
-    case IrKind.MutateCollection:
-      if (expr.location.kind === CollectionLocationKind.Name) {
-        line(
-          ` ${expr.operation} location=name:${labels.name(expr.location.name)}`,
-        );
-      } else {
-        line(
-          ` ${expr.operation} location=${expr.location.owner.name}[${expr.location.fieldIndex}]`,
-        );
-        child(expr.location.object, 'object: ');
-      }
+      line(` ${expr.native.name} ${expr.native.effect}`);
+      if (expr.receiver !== null) child(expr.receiver, 'receiver: ');
       for (const arg of expr.args) {
         child(arg);
       }

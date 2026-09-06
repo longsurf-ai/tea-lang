@@ -74,9 +74,9 @@ describe('source library headers and package declarations', () => {
       {lib: 'library("lib")\nlibrary("other")\nexport value() => 1\n'},
       'import lib\nvalue = 1',
     );
-    expect(
-      hasMessage(duplicate, 'duplicate', 'library() declaration'),
-    ).toBe(true);
+    expect(hasMessage(duplicate, 'duplicate', 'library() declaration')).toBe(
+      true,
+    );
 
     const invalidName = checkWith(
       {lib: 'library("not-addressable")\nexport value() => 1\n'},
@@ -96,9 +96,9 @@ describe('source library headers and package declarations', () => {
       },
       'import lib\nvalue = lib.value()',
     );
-    expect(
-      hasMessage(duplicateFunctions, "'value' is already declared"),
-    ).toBe(true);
+    expect(hasMessage(duplicateFunctions, "'value' is already declared")).toBe(
+      true,
+    );
 
     const duplicateAliases = checkWith(
       {
@@ -113,9 +113,9 @@ describe('source library headers and package declarations', () => {
       },
       'import lib\nvalue = lib.value()',
     );
-    expect(
-      hasMessage(duplicateAliases, "'dep' is already declared"),
-    ).toBe(true);
+    expect(hasMessage(duplicateAliases, "'dep' is already declared")).toBe(
+      true,
+    );
 
     const crossKind = checkWith(
       {
@@ -197,9 +197,9 @@ describe('source library headers and package declarations', () => {
       },
       'import broken\nvalue = 1',
     );
-    expect(
-      hasMessage(duplicateParam, "duplicate parameter 'value'"),
-    ).toBe(true);
+    expect(hasMessage(duplicateParam, "duplicate parameter 'value'")).toBe(
+      true,
+    );
 
     const lazyBody = checkWith(
       {

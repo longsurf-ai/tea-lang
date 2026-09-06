@@ -1,33 +1,33 @@
 //@version=1
-indicator("calls", overlay=true)
 
-plot(close, "Close", color=color.blue, linewidth=2)
-hline(0, "Zero", linestyle=hline.style_dashed)
 
-p1 = plot(high, "High")
-p2 = plot(low, "Low")
-fill(p1, p2, color=color.new(color.blue, 90))
+emit "output0" close
+hline("output1", 0, "Zero", linestyle=hline.style_dashed)
 
-plotshape(close > open, style=shape.triangleup, location=location.abovebar)
+p1 = plot("output2", high, "High")
+p2 = plot("output3", low, "Low")
+fill("output4", p1, p2, color=color.new(color.blue, 90))
 
-alertcondition(close > open, "Up", "went up")
+plotshape("output5", close > open, style=shape.triangleup, location=location.abovebar)
+
+alertcondition("output6", close > open, "Up", "went up")
 
 mx = math.max(1, 2, 3)
 mn = math.min(1.5, 2)
 r = math.round(close)
 av = math.avg(close, open)
 
-plot() // ERROR missing argument 'series' in call to 'plot'
+plot("missing") // ERROR missing argument 'series' in call to 'plot'
 
-plot(close, title=syminfo.ticker) // ERROR argument 'title' to 'plot' accepts at most const
+plot("output7", close, title=syminfo.ticker) // ERROR argument 'title' to 'plot' accepts at most const
 
-plot(close, foo=1) // ERROR unknown argument 'foo' in call to 'plot'
+plot("output8", close, foo=1) // ERROR unknown argument 'foo' in call to 'plot'
 
-plot(close, "a", "b") // ERROR argument 'color' to 'plot': cannot use string as color
+plot("output9", close, color="red") // ERROR argument 'color' to 'plot': cannot use string as color
 
 na(close, 2) // ERROR too many arguments in call to 'na'
 
 lw = input.int(bar_index) // ERROR argument 'defval' to 'input\.int' accepts at most const, got series
 
 if close > 0
-	plot(open) // ERROR 'plot' declares an output and can only be called at the top level of the script
+	emit "output10" open

@@ -31,7 +31,7 @@ describe('inference and folding', () => {
     expect(initTvOf(r, 'b').value).toBe(true);
   });
 
-  test('eager ternaries fold only when every operand has a concrete value', () => {
+  test('lazy ternaries fold the chosen constant arm', () => {
     const r = checkText(
       [
         'folded = true ? 1 : 2',
@@ -40,7 +40,7 @@ describe('inference and folding', () => {
     );
     expect(r.errors).toEqual([]);
     expect(initTvOf(r, 'folded').value).toBe(1);
-    expect(initTvOf(r, 'fallible').value).toBeNull();
+    expect(initTvOf(r, 'fallible').value).toBe(1);
   });
 
   test('fold values travel only through never-reassigned names', () => {
@@ -449,7 +449,7 @@ describe('semantic ownership', () => {
 
   test('request calls require one plain top-level declaration target', () => {
     for (const source of [
-      'plot(request.security("X", "D", close))',
+      'emit "output0" request.security("X", "D", close)',
       'request.security("X", "D", close)',
       '[left, right] = request.security("X", "D", [open, close])',
       'var value = request.security("X", "D", close)',
@@ -609,7 +609,9 @@ describe('context builtins', () => {
 
 describe('calls', () => {
   test('named arguments align to Tea prelude parameters', () => {
-    const r = checkText('plot(close, color=color.blue, title="x")');
+    const r = checkText(
+      'plot(id="line", series=close, color=color.blue, title="x")',
+    );
     expect(r.errors).toEqual([]);
     const call = (r.file.stmtList[0] as ExprStmt).x as CallExpr;
     expect(call.kind).toBe(NodeKind.CallExpr);
@@ -623,9 +625,10 @@ describe('calls', () => {
     expect(resolved.args[0]).not.toBeNull();
     expect(resolved.args[1]).not.toBeNull();
     expect(resolved.args[2]).not.toBeNull();
-    expect(resolved.args[3]).toBeNull();
+    expect(resolved.args[3]).not.toBeNull();
+    expect(resolved.args[4]).toBeNull();
     expect(resolved.argumentEvaluationOrder).toEqual([
-      0, 2, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      0, 1, 3, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
     ]);
   });
 
@@ -686,81 +689,13 @@ describe('calls', () => {
     );
   });
 
-  test('indicator max_bars_back is an integer from 0 through 5000', () => {
-    for (const source of [
-      'indicator("t", max_bars_back=na)',
-      'indicator("t", max_bars_back=-1)',
-      'indicator("t", max_bars_back=5001)',
-      'indicator("t", max_bars_back=9007199254740992)',
-    ]) {
-      const r = checkText(source);
-      expect(r.errors).not.toEqual([]);
+  test('removed script headers are ordinary unknown functions', () => {
+    for (const name of ['indicator', 'strategy']) {
+      expect(CATALOG.funcs.has(name)).toBe(false);
+      expect(
+        checkText(`${name}("Title")`).errors.map(error => error.msg),
+      ).toContain(`unknown function '${name}'`);
     }
-
-    expect(checkText('indicator("t", max_bars_back=5000)').errors).toEqual([]);
-  });
-
-  test('strategy has the exact minimal declaration surface', () => {
-    const overloads = CATALOG.funcs.get('strategy');
-    expect(overloads).toHaveLength(1);
-    expect(overloads?.[0]?.params.map(param => param.name)).toEqual([
-      'title',
-      'shorttitle',
-      'overlay',
-    ]);
-    expect(overloads?.[0]?.effect).toBe('declaration');
-
-    expect(
-      checkText('strategy("Strategy", "Short", overlay=true)').errors,
-    ).toEqual([]);
-    expect(
-      checkText('strategy("Strategy", format="price")').errors.map(
-        error => error.msg,
-      ),
-    ).toContainEqual(expect.stringContaining("unknown argument 'format'"));
-  });
-
-  test('strategy is one exclusive first-statement declaration', () => {
-    const late = checkText('value = 1\nstrategy("Late")');
-    expect(late.errors.map(error => error.msg)).toContain(
-      'strategy() declaration must be the first statement in a strategy script',
-    );
-
-    const duplicate = checkText('strategy("First")\nstrategy("Second")');
-    expect(duplicate.errors.map(error => error.msg)).toContain(
-      'duplicate strategy() declaration',
-    );
-
-    for (const other of ['indicator("Indicator")', 'library("library")']) {
-      const conflict = checkText(`strategy("Strategy")\n${other}`);
-      expect(conflict.errors.map(error => error.msg)).toContain(
-        `strategy() cannot be combined with ${other.slice(0, other.indexOf('('))}()`,
-      );
-    }
-
-    const nested = checkText(['if true', '    strategy("Nested")'].join('\n'));
-    expect(nested.errors.map(error => error.msg)).toContain(
-      "'strategy' can only be called at the top level of the script",
-    );
-  });
-
-  test('parentheses do not bypass strategy declaration placement rules', () => {
-    const late = checkText('value = 1\n(strategy("Late"))');
-    expect(late.errors.map(error => error.msg)).toContain(
-      'strategy() declaration must be the first statement in a strategy script',
-    );
-
-    const duplicate = checkText('strategy("First")\n((strategy("Second")))');
-    expect(duplicate.errors.map(error => error.msg)).toContain(
-      'duplicate strategy() declaration',
-    );
-
-    const conflict = checkText(
-      'strategy("Strategy")\n(indicator("Indicator"))',
-    );
-    expect(conflict.errors.map(error => error.msg)).toContain(
-      'strategy() cannot be combined with indicator()',
-    );
   });
 
   test('input overloads preserve their exact positional and nominal types', () => {

@@ -9,7 +9,7 @@ Batch Recipe. The embedding application owns data acquisition.
 ## 1. Write the strategy
 
 ```tea
-strategy("EMA crossover")
+
 
 import broker
 import portfolio
@@ -34,7 +34,7 @@ if ta.crossunder(fast, slow)
 
 state.mark(close)
 metrics = state.snapshot()
-plot(metrics.equity, "equity")
+plot("equity", metrics.equity, "equity")
 ```
 
 The strategy source owns trading policy. Broker, portfolio, and coordinator

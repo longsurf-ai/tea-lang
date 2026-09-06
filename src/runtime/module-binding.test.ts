@@ -21,7 +21,9 @@ import {Context} from './js/context';
 describe('module binding', () => {
   test('rejects malformed binding containers through the one error contract', () => {
     const module = loadModule(
-      generate(mustBuild('length = input.int(2)\nplot(close[length])')),
+      generate(
+        mustBuild('length = input.int(2)\nemit "output0" close[length]'),
+      ),
     );
     for (const values of [null, [], 1, '', () => {}]) {
       expect(() => module.bind(values as never)).toThrow(BindError);
@@ -33,7 +35,9 @@ describe('module binding', () => {
   });
   test('cloning copies request facts without freezing the caller context', () => {
     const original = loadModule(
-      generate(mustBuild('r = request.security("X", "D", close)\nplot(r)')),
+      generate(
+        mustBuild('r = request.security("X", "D", close)\nemit "output0" r'),
+      ),
     );
     const context = original.requests[0]!.context!;
     const module = original.clone();
@@ -44,11 +48,11 @@ describe('module binding', () => {
     expect(module.bind().requests[0]!.context?.symbol).toBe('X');
   });
 
-  test('writes parameter-dependent depth, activity, and output arguments', () => {
+  test('writes parameter-dependent depth and activity with fixed output identities', () => {
     const module = loadModule(
       generate(
         mustBuild(
-          'length = input.int(3)\nlevel = input.float(10)\nhline(level)\nplot(close[length])',
+          'length = input.int(3)\nlevel = input.float(10)\nemit "output0" level\nemit "output1" close[length]',
         ),
       ),
     );
@@ -62,15 +66,18 @@ describe('module binding', () => {
       true,
       true,
     ]);
-    expect(configured.outputs.declarations[0]!.args).toEqual([
-      {name: 'price', value: 25},
-    ]);
+    expect(configured.outputs.schema.fields.at(-2)?.name).toBe('output0');
+    expect(configured.parameters[1].value).toBe(25);
     expect(Object.isFrozen(configured)).toBe(false);
   });
 
   test('keeps unavailable context incomplete and retains supplied fixed values across patches', () => {
     const module = loadModule(
-      generate(mustBuild('length = timeframe.multiplier\nplot(close[length])')),
+      generate(
+        mustBuild(
+          'length = timeframe.multiplier\nemit "output0" close[length]',
+        ),
+      ),
     );
     const pending = module.bind();
     expect(pending.ready()).toBe(false);
@@ -84,20 +91,22 @@ describe('module binding', () => {
   });
 
   test('rejects fixed bindings for per-step builtins or incompatible values', () => {
-    const perStep = loadModule(generate(mustBuild('plot(bar_index)')));
+    const perStep = loadModule(generate(mustBuild('emit "output0" bar_index')));
     expect(perStep.inputs.builtins[0]!.constant).toBe(false);
     expect(() => perStep.bind({}, new Map([[0, 7]]))).toThrow(BindError);
     expect(() => perStep.bind({}, new Map([[0, 7]]))).toThrow(
       'not a fixed binding input',
     );
-    const fixed = loadModule(generate(mustBuild('plot(timeframe.multiplier)')));
+    const fixed = loadModule(
+      generate(mustBuild('emit "output0" timeframe.multiplier')),
+    );
     expect(() => fixed.bind({}, new Map([[0, 'bad']]))).toThrow(BindError);
     expect(() => fixed.bind({}, new Map([[4, 7]]))).toThrow(BindError);
   });
 
   test('fixed integer inputs accept safe integers or NaN, not fractional or inexact host numbers', () => {
     const module = loadModule(
-      generate(mustBuild('plot(timeframe.multiplier)')),
+      generate(mustBuild('emit "output0" timeframe.multiplier')),
     );
     for (const value of [
       1.5,
@@ -125,7 +134,7 @@ describe('module binding', () => {
     const module = loadModule(
       generate(
         mustBuild(
-          'length = input.int(3)\nvalue = request.security("X", "D", close[length] + open[timeframe.multiplier])\nplot(value)',
+          'length = input.int(3)\nvalue = request.security("X", "D", close[length] + open[timeframe.multiplier])\nemit "output0" value',
         ),
       ),
     ).bind({length: 4});
@@ -153,7 +162,9 @@ describe('module binding', () => {
 
   test('clears old late facts when a required parameter becomes unset', () => {
     const configured = loadModule(
-      generate(mustBuild('length = input.int(3)\nplot(close[length])')),
+      generate(
+        mustBuild('length = input.int(3)\nemit "output0" close[length]'),
+      ),
     ).bind({length: 4});
     const pending = Object.assign(configured.clone(), {
       parameters: configured.parameters.map(({value: _value, ...param}) => ({
@@ -174,7 +185,7 @@ describe('module binding', () => {
     const module = loadModule(
       generate(
         mustBuild(
-          'length = input.int(2)\npolicy = input.string("end")\nr = request.security("X", "D", close[length], availability=policy)\nplot(r)',
+          'length = input.int(2)\npolicy = input.string("end")\nr = request.security("X", "D", close[length], availability=policy)\nemit "output0" r',
         ),
       ),
     ).bind();
@@ -192,7 +203,9 @@ describe('module binding', () => {
 
   test('execution closes binding while an explicit copy can configure another run', () => {
     const module = loadModule(
-      generate(mustBuild('length = input.int(2)\nplot(close[length])')),
+      generate(
+        mustBuild('length = input.int(2)\nemit "output0" close[length]'),
+      ),
     ).bind();
     new Context(module);
     expect(() => module.bind({length: 5})).toThrow('execution starts');
@@ -206,7 +219,7 @@ describe('module binding', () => {
       const module = loadModule(
         generate(
           mustBuild(
-            'length = input.int(2)\nplot(close[length] + timeframe.multiplier)',
+            'length = input.int(2)\nemit "output0" close[length] + timeframe.multiplier',
           ),
         ),
       );
@@ -232,12 +245,16 @@ describe('module binding', () => {
       expect(module.inputs.series[0]!.depth).toEqual({kind: 'bound'});
     },
   );
-  test('runtime admission rejects list-shaped set outputs and missing declarations', () => {
-    const module = loadModule(generate(mustBuild('plot(close)'))).bind();
+  test('runtime admission rejects mismatched set layouts and missing declarations', () => {
+    const module = loadModule(
+      generate(mustBuild('emit "output0" close')),
+    ).bind();
     const schema = new Schema(
       module.outputs.schema.fields.map(field =>
         field.name === 'output0'
-          ? field.clone({type: new List(field.type.children[0])})
+          ? field.clone({
+              type: new List(new Field('item', new Float64(), false)),
+            })
           : field,
       ),
     );
@@ -246,7 +263,7 @@ describe('module binding', () => {
         new Context(
           Object.assign(module.clone(), {outputs: {...module.outputs, schema}}),
         ),
-    ).toThrow('requires a nullable record');
+    ).toThrow('disagrees with Arrow field');
     expect(
       () =>
         new Context(
@@ -257,36 +274,36 @@ describe('module binding', () => {
     ).toThrow('output fields and declarations disagree');
   });
 
-  test.each([
-    new Field('ordinal', new Float32(), false),
-    new Field('wrong', new Float64(), false),
-    new Field('ordinal', new Float64(), true),
-    new Field('ordinal', new Utf8(), false),
-  ])('runtime admission rejects malformed append ordinal %s', ordinal => {
-    const module = loadModule(
-      generate(mustBuild('type E\n    float value\neffect.emit(E.new(1))')),
-    ).bind();
-    const schema = new Schema(
-      module.outputs.schema.fields.map(field => {
-        if (field.metadata.get('tea:write') !== 'append') return field;
-        const item = field.type.children[0];
-        return field.clone({
-          type: new List(
-            item.clone({type: new Struct([ordinal, item.type.children[1]])}),
-          ),
-        });
-      }),
-    );
-    expect(
-      () =>
-        new Context(
-          Object.assign(module.clone(), {outputs: {...module.outputs, schema}}),
+  test.each([new Float32(), new Utf8(), new Struct([])])(
+    'runtime admission rejects mismatched append payload %s',
+    type => {
+      const module = loadModule(
+        generate(
+          mustBuild('type E\n    float value\nemit.append "events" E.new(1)'),
         ),
-    ).toThrow('requires an ordinal/payload event list');
-  });
+      ).bind();
+      const schema = new Schema(
+        module.outputs.schema.fields.map(field =>
+          field.metadata.get('tea:write') === 'append'
+            ? field.clone({type: new List(new Field('item', type, true))})
+            : field,
+        ),
+      );
+      expect(
+        () =>
+          new Context(
+            Object.assign(module.clone(), {
+              outputs: {...module.outputs, schema},
+            }),
+          ),
+      ).toThrow('disagrees with Arrow field');
+    },
+  );
 
   test('runtime admission rejects changed execution coordinate fields', () => {
-    const module = loadModule(generate(mustBuild('plot(close)'))).bind();
+    const module = loadModule(
+      generate(mustBuild('emit "output0" close')),
+    ).bind();
     const schema = new Schema(
       module.outputs.schema.fields.map(field =>
         field.name === 'index' ? field.clone({type: new Float32()}) : field,

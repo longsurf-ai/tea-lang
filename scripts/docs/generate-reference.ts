@@ -216,7 +216,11 @@ function keywordBehavior(entry: KeywordEntry): string {
 }
 
 function keywordPage(entry: KeywordEntry): string {
-  return `${frontmatter(entry.title, entry.summary)}\n\n${GENERATED_WARNING}\n\n## Syntax\n\n${fencedTea(entry.syntax.join('\n\n'))}\n\n## Syntax components\n\n${syntaxParts(entry.parts)}\n\n## Type relationships\n\n${keywordTypeRelationships(entry)}\n\n${renderDescription(entry)}\n\n${keywordBehavior(entry)}\n\n${commonTail(entry)}\n`;
+  const relationships =
+    entry.typeRelationships.length === 0
+      ? ''
+      : `\n\n## Type relationships\n\n${keywordTypeRelationships(entry)}`;
+  return `${frontmatter(entry.title, entry.summary)}\n\n${GENERATED_WARNING}\n\n## Syntax\n\n${fencedTea(entry.syntax.join('\n\n'))}\n\n## Syntax components\n\n${syntaxParts(entry.parts)}${relationships}\n\n${renderDescription(entry)}\n\n${keywordBehavior(entry)}\n\n${commonTail(entry)}\n`;
 }
 
 function operatorPage(entry: OperatorEntry): string {

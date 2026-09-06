@@ -67,8 +67,6 @@ function resolutionKind(resolution: CallResolution): string {
       return CallKind.Constructor;
     case CallKind.Request:
       return CallKind.Request;
-    case CallKind.Output:
-      return CallKind.Output;
   }
   const exhaustive: never = resolution;
   return exhaustive;

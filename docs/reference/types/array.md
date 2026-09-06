@@ -43,8 +43,8 @@ values = array.from(10, 20)
 earlier = values
 values.push(30)
 
-plot(earlier.size() + bar_index * 0) // 2
-plot(values.size() + bar_index * 0)  // 3
+emit "output0" earlier.size() + bar_index * 0 // 2
+emit "output1" values.size() + bar_index * 0  // 3
 ```
 
 ### Sharing a contained struct
@@ -60,8 +60,8 @@ left = array.from(point)
 right = array.from(point)
 
 point.x := 2
-plot(left.get(0).x)  // 2
-plot(right.get(0).x) // 2
+emit "output0" left.get(0).x  // 2
+emit "output1" right.get(0).x // 2
 ```
 
 ## Remarks

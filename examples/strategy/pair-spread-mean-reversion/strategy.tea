@@ -1,7 +1,7 @@
 //@version=1
 // Pair-spread mean reversion. Two requested markets form the signal while the
 // primary dataset remains the instrument traded by the strategy.
-strategy("Pair-spread mean reversion", shorttitle="Pair Spread", overlay=false)
+
 
 import broker
 import portfolio
@@ -54,16 +54,16 @@ if exit_long and strat.position_quantity() > 0.0 and not strat.has_pending()
 strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
-plot(spread, "spread")
-plot(spread_mean, "spread mean")
-plot(lower_band, "entry threshold")
-plot(enter_long ? 1.0 : 0.0, "long signal")
-plot(exit_long ? 1.0 : 0.0, "close signal")
-plot(metrics.positionQuantity, "position quantity")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("spread", spread, "spread")
+plot("spread mean", spread_mean, "spread mean")
+plot("entry threshold", lower_band, "entry threshold")
+plot("long signal", enter_long ? 1.0 : 0.0, "long signal")
+plot("close signal", exit_long ? 1.0 : 0.0, "close signal")
+plot("position quantity", metrics.positionQuantity, "position quantity")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("total fees", metrics.totalFees, "total fees")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

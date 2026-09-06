@@ -1,5 +1,5 @@
 //@version=1
-strategy("EMA crossover strategy", shorttitle="EMA Cross", overlay=true)
+
 
 import broker
 import portfolio
@@ -43,16 +43,16 @@ if valid_lengths and crossed_below and strat.position_quantity() > 0.0 and not s
 strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(fast_value, "fast ema")
-plot(slow_value, "slow ema")
-plot(crossed_above ? 1.0 : 0.0, "long signal")
-plot(crossed_below ? 1.0 : 0.0, "close signal")
-plot(metrics.positionQuantity, "position quantity")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("fast ema", fast_value, "fast ema")
+plot("slow ema", slow_value, "slow ema")
+plot("long signal", crossed_above ? 1.0 : 0.0, "long signal")
+plot("close signal", crossed_below ? 1.0 : 0.0, "close signal")
+plot("position quantity", metrics.positionQuantity, "position quantity")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("total fees", metrics.totalFees, "total fees")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

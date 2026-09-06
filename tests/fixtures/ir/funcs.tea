@@ -1,9 +1,9 @@
 //@version=1
-indicator("Funcs")
+
 
 double(x) =>
 	x * 2
 
 fast = ta.ema(close, 9)
 slow = ta.ema(close, 21)
-plot(double(fast - slow), "Delta")
+emit "output0" double(fast - slow)

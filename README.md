@@ -1,72 +1,52 @@
-# TEA language
+# Tea language
 
-Tea is a programming language for doing quantitative analysis and beyond. It is inspired by the Pine Script language (https://www.tradingview.com/pine-script-reference/v6/) but is designed to be more general and flexible. For example, it supports native cross-sectional analysis, has native support for LLMs as well as third-party broker/backtest libraries and APIs.
+Tea is a programming language for time-series analysis and trading. It compiles
+to typed TypeScript using `tea/runtime`, with a supported scalar subset also
+lowering to WGSL. Broker, portfolio, and visualization behavior lives in ordinary
+Tea libraries.
 
-The most canonical usage of Tea is to perform transformations on time series and generate side effects from it. Consider the following example:
+Every entry is an ordinary program. For example:
 
-```
-// my_indicator.tea
-var my_var = close + open
-if my_var > my_var[1]
-    color = colors.green
-else
-    color = colors.red
-plot("my_plot", my_var, color)
-```
-
-and the following dataset
-
-```
-$> cat dataset.csv
-
-| open  | close |
-|---------------|
-| 1.0   |  1.3  |
-| 1.2   |  1.5  |
-| 1.4   |  1.2  |
+```tea
+// example.tea
+sum = close + open
+emit "sum" sum
+plot("sum-plot", sum, "Open plus close")
 ```
 
-Running the tea script would give the following output
+With `dataset.csv`:
 
+```csv
+open,close
+1.0,1.3
+1.2,1.5
+1.4,1.2
 ```
-$> tea run my_indicator.tea -i dataset.csv
 
-| my_plot | color  |
-|------------------|
-| 2.3     |        |
-| 2.7     |  green |
-| 2.6     |  red   |
-```
+Run `tea run example.tea -i dataset.csv`. The named `sum` column contains
+2.3, 2.7, and 2.6; `sum-plot` contains the corresponding visual descriptions.
+
+Plain `emit` writes a column once per step. `emit.append` collects an ordered
+list of values per step. Column names and types are fixed at compilation.
+Functions support explicit `return` and implicit tail-expression returns;
+ternaries evaluate only their selected branch.
 
 ## Editor support
 
-The VS Code/Cursor extension under [`editors/vscode`](editors/vscode) provides
+The VS Code/Cursor extension under [editors/vscode](editors/vscode) provides
 syntax highlighting, comment commands, bracket pairing, and indentation-aware
 folding for `.tea` files. See its README for packaging and installation.
 
 ## Documentation
 
-The language documentation and Mintlify configuration live in [`docs`](docs).
-Use an LTS Node release (20, 22, or 24), then run `npm run docs:dev` while
-writing or `npm run docs:check` to validate generated references, Mintlify
-navigation and links, and the packaged offline build. Configure the Mintlify
-GitHub deployment with `/docs` as its documentation subdirectory.
+Language documentation and Mintlify configuration live in [docs](docs).
+Use a supported LTS Node release (20, 22, or 24), then run `npm run docs:dev`
+while writing or `npm run docs:check` to validate references, navigation, and
+the packaged offline build. The hosted documentation root is `/docs`.
 
-The Docusaurus shell in [`website`](website) is retained only as the static
-offline renderer for installed Tea releases. It is not the hosted documentation
-framework: `tea docs` serves its version-matched build locally without requiring
-Mintlify, a network connection, or credentials.
+The Docusaurus shell in [website](website) renders the version-matched offline
+site. `tea docs` serves that packaged build locally without running a site
+builder or requiring network access.
 
-## Why is
-
-## Execution Model
-
-The execution model can be conceptually understood as a **for loop** that runs the script over and over again for a given dataset, row by row. That means the script only defines the inner loop of the
-
-## Memory Model
-
-## Compilation and IR
-
-Unlike general purpose programming languages like C++ or Javascript, Tea is not compiled to native code nor can be interpreted directly without its runtime. Instead, Tea code is first compiled to an intermediate representation (IR), which then gets lowered to the language of the runtime (currently Javascript). The Tea runtime then instantiates the compiled script as an executable and provides it with the necessary data and context to run.
-
-This do
+See [Program IR](docs/ir.md), [Memory model](docs/memory-model.md), and
+[Runtime](docs/runtime.md) for compiler and execution contracts.

@@ -2,7 +2,7 @@
 // Clean-room historical CPU implementation of the public AliceTears Grid.
 // The canonical bounded-lot portfolio owns accounting; GridPosition owns the
 // strategy-specific per-entry exit policy keyed by broker fill trade id.
-strategy("AliceTears Grid", shorttitle="Alice Grid", overlay=true)
+
 
 import broker
 import portfolio
@@ -181,16 +181,16 @@ for level = 1 to maximum_steps
 strat.mark()
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(session_base, "session base")
-plot(metrics.positionQuantity, "position quantity")
-plot(metrics.openTradeCount, "open lots")
-plot(metrics.maxLongStack, "maximum long stack")
-plot(metrics.maxShortStack, "maximum short stack")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("session base", session_base, "session base")
+plot("position quantity", metrics.positionQuantity, "position quantity")
+plot("open lots", metrics.openTradeCount, "open lots")
+plot("maximum long stack", metrics.maxLongStack, "maximum long stack")
+plot("maximum short stack", metrics.maxShortStack, "maximum short stack")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("total fees", metrics.totalFees, "total fees")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

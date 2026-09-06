@@ -28,11 +28,7 @@ function rows(node: Node, lag: number): readonly unknown[][] {
   );
   node.to({
     next: datum =>
-      rows.push(
-        ['output0', 'output1', 'output2'].map(
-          name => (datum[name] as {series: number}).series,
-        ),
-      ),
+      rows.push(['output0', 'output1', 'output2'].map(name => datum[name])),
     error: error => {
       failure = error;
     },
@@ -52,9 +48,9 @@ test('handwritten TypeScript preserves parameter history and independent call fr
           total
       a = accumulate(close)
       b = accumulate(open)
-      plot(a, "Close sum")
-      plot(b, "Open sum")
-      plot(close[lag], "Previous close")
+      emit "output0" a
+      emit "output1" b
+      emit "output2" close[lag]
     `;
     const expected = [
       [10, 1, lag === 0 ? 10 : NaN],
@@ -69,7 +65,7 @@ test('handwritten TypeScript preserves parameter history and independent call fr
 test('a null var initializer survives same-index attempts before the final commit', () => {
   const node = tea`
     var string value = close > 0 ? na : "reinitialized"
-    output(value, kind="probe", args={})
+    emit "probe" value
     value := "later"
   `;
   const context = new Context(node.module);
@@ -81,10 +77,10 @@ test('a null var initializer survives same-index attempts before the final commi
       provisional,
     }).outputs[0];
   try {
-    expect(attempt(1, true)).toEqual({value: null});
-    expect(attempt(-1, true)).toEqual({value: null});
-    expect(attempt(-1, false)).toEqual({value: null});
-    expect(attempt(-1, false)).toEqual({value: 'later'});
+    expect(attempt(1, true)).toBeNull();
+    expect(attempt(-1, true)).toBeNull();
+    expect(attempt(-1, false)).toBeNull();
+    expect(attempt(-1, false)).toBe('later');
   } finally {
     context.dispose();
     node.dispose();

@@ -1,5 +1,5 @@
 //@version=1
-indicator("imports")
+
 
 // Builtin libraries need no import; ta is bound by the implicit import.
 s1 = ta.sma(close, 3)
@@ -8,7 +8,7 @@ s1 = ta.sma(close, 3)
 import ta
 
 s2 = ta.sma(close, 3)
-plot(s1 - s2)
+emit "output0" s1 - s2
 
 import nosuchlib // ERROR unknown library 'nosuchlib'
 

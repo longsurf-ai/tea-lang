@@ -1,5 +1,5 @@
 //@version=1
-indicator("Depth", max_bars_back=300)
+
 
 lookback = input.int(20, "Lookback")
 
@@ -8,4 +8,4 @@ b = close[lookback]
 c = open[bar_index % 5]
 hl = high + low
 d = hl[2]
-plot(a + b + c + d, "Sum")
+emit "output0" a + b + c + d

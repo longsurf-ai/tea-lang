@@ -1,7 +1,7 @@
 //@version=1
 // Clean-room historical CPU implementation derived from the public VWAP Suite.
 // The signed account keeps the publication's symmetric long/short paths.
-strategy("VWAP Suite", shorttitle="VWAP Suite", overlay=true)
+
 
 import broker
 import portfolio
@@ -223,19 +223,19 @@ if strat.position_quantity() != 0.0
 strat.finish(barstate.islast)
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(vwap_value, "vwap")
-plot(upper_band1, "upper band 1")
-plot(lower_band1, "lower band 1")
-plot(upper_band2, "upper band 2")
-plot(lower_band2, "lower band 2")
-plot(long_signal ? 1.0 : 0.0, "long signal")
-plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(metrics.positionQuantity, "position quantity")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("vwap", vwap_value, "vwap")
+plot("upper band 1", upper_band1, "upper band 1")
+plot("lower band 1", lower_band1, "lower band 1")
+plot("upper band 2", upper_band2, "upper band 2")
+plot("lower band 2", lower_band2, "lower band 2")
+plot("long signal", long_signal ? 1.0 : 0.0, "long signal")
+plot("short signal", short_signal ? 1.0 : 0.0, "short signal")
+plot("position quantity", metrics.positionQuantity, "position quantity")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("total fees", metrics.totalFees, "total fees")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

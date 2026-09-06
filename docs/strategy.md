@@ -9,20 +9,10 @@ libraries compiled into the same `Program` as the strategy.
 For a runnable walkthrough, see
 [Backtest your strategy](getting-started/backtest-your-strategy.md).
 
-## Declaration versus trade composition
+## Ordinary program composition
 
-The first statement declares script metadata:
-
-```tea
-strategy("Title", shorttitle="Short", overlay=true)
-```
-
-`strategy()` is a native declaration. It tells the host that this source is a
-strategy and publishes its title, short title, and overlay preference. It does
-not construct an execution object and does not require an import. A source
-cannot declare both `strategy()` and `indicator()` or `library()`.
-
-Execution composition comes from a separate ordinary library:
+Every Tea entry is an ordinary program; no `indicator()` or `strategy()` header
+is required or supported. Import the libraries that supply the desired policy:
 
 ```tea
 import broker
@@ -30,9 +20,8 @@ import portfolio
 import trade
 ```
 
-There is no `strategy` package. `import trade` binds the selectors used to
-construct a coordinator and intentionally avoids confusing script identity
-with execution machinery.
+The entry source constructs a coordinator and owns its policy state. A program
+that emits only indicators uses the same compiler and execution model.
 
 ## Responsibility boundaries
 
@@ -235,14 +224,15 @@ cash, position, equity, P&L, fees, fill counts, and risk statistics:
 
 ```tea
 metrics = strat.snapshot()
-plot(metrics.equity, "Equity")
-plot(metrics.realizedPnl, "Realized PnL")
+plot("Equity", metrics.equity, "Equity")
+plot("Realized PnL", metrics.realizedPnl, "Realized PnL")
 ```
 
 Dense per-bar values use ordinary outputs. The broker emits nominal
 `OrderSubmitted`, `FillExecuted`, `OrderCancelled`, `OrderExpired`, and
-`OrderRejected` payloads through the generic `effect.emit` transport at the
-decision point. The host transports those typed values; it does not reconstruct
+`OrderRejected` payloads through distinct named `emit.append` columns at the
+decision point. Items retain execution order within their own column; independent
+columns have no shared event ordering. The host transports those typed values; it does not reconstruct
 a strategy-specific journal.
 
 ## Compilation, CPU, and GPU

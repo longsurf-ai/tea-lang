@@ -34,7 +34,7 @@ The array stored in `var` grows by one element on every execution row.
 ```tea
 var values = array.new<float>()
 values.push(close)
-plot(values.size())
+emit "output0" values.size()
 ```
 
 ### Calling through the array namespace
@@ -44,7 +44,7 @@ Use the namespace spelling when an explicit function call is clearer.
 ```tea
 values = array.from(1, 2)
 array.push(values, 3)
-plot(values.last()) // 3
+emit "output0" values.last() // 3
 ```
 
 ## Remarks

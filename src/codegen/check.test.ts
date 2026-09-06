@@ -16,7 +16,7 @@ const source = () =>
         'previous(float value) => value[1]',
         'var float total = 0',
         'total += previous(close) * length',
-        'plot(total)',
+        'emit "output0" total',
       ].join('\n'),
     ),
   );
@@ -33,7 +33,7 @@ function invalid(ctx: ProgramContext) {
   ctx.params.missing;
   ctx.inputs.series.missing;
   ctx.params.length.add(wrongText('bad'));
-  ctx.outputs.output0.set({series: wrongText('bad')});
+  ctx.outputs.output0.set(wrongText('bad'));
 }
 `),
   ).toThrow(/Property 'missing' does not exist/);
@@ -41,7 +41,7 @@ function invalid(ctx: ProgramContext) {
     checkGenerated(`${source()}
 import {text as wrongText} from 'tea/runtime';
 function invalid(ctx: ProgramContext) {
-  ctx.outputs.output0.set({series: wrongText('bad')});
+  ctx.outputs.output0.set(wrongText('bad'));
 }
 `),
   ).toThrow(/not assignable/);
@@ -73,7 +73,7 @@ test('generated parameter values preserve nominal enums and numeric promotion', 
         '    same',
         'left = input.enum(Left.same)',
         'right = input.enum(Right.same)',
-        'plot(close)',
+        'emit "output0" close',
       ].join('\n'),
     ),
   );
@@ -113,7 +113,7 @@ test('an input-dependent tuple return keeps its captured values through history 
         'lag = input.int(2)',
         'pair(n) => [n, n + 1]',
         '[a, b] = pair(lag)',
-        'plot(close[b])',
+        'emit "output0" close[b]',
       ].join('\n'),
     ),
   );
@@ -128,6 +128,6 @@ test('an input-dependent tuple return keeps its captured values through history 
         provisional: false,
       }).outputs,
   );
-  expect(values).toEqual([NaN, NaN, NaN, 10, 20].map(series => [{series}]));
+  expect(values).toEqual([NaN, NaN, NaN, 10, 20].map(value => [value]));
   context.dispose();
 });

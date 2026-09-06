@@ -15,7 +15,7 @@ try {
   const source = join(directory, 'program.tea');
   writeFileSync(
     source,
-    'length = input.int(2)\nvar float total = 0\ntotal += close * length\nplot(total)',
+    'length = input.int(2)\nvar float total = 0\ntotal += close * length\nemit "output0" total',
   );
   const compiled = compile([source]);
   assert.equal(compiled.ok, true);
@@ -50,8 +50,8 @@ const context = new Context(checked);
 const input = {series: [2], builtins: [], requests: [], provisional: false};
 assert.throws(() => context.step(input), /abort/);
 fail = false;
-assert.equal(context.step(input).outputs[0].series, 6);
-assert.equal(context.step(input).outputs[0].series, 12);
+assert.equal(context.step(input).outputs[0], 6);
+assert.equal(context.step(input).outputs[0], 12);
 context.dispose();
 assert.throws(() => context.step(input), /disposed/);
 `,

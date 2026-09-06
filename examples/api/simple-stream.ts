@@ -9,7 +9,7 @@ const source = new DataStream(schema, input);
 const node = tea`
   var float total = 0.0
   total := total + close
-  plot(total)
+  plot("output0", total)
 `;
 
 node.bind(source);

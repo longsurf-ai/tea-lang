@@ -223,6 +223,34 @@ oldX = x[1]
 An offset must be a non-negative safe integer. Invalid or unavailable offsets
 return the binding layout's typed empty value.
 
+## Conditional evaluation and function return
+
+Both `condition ? left : right` and block-form `if` evaluate the condition once
+and execute only the selected branch. Both branches must still typecheck.
+
+`return value` exits the enclosing function or method, including when nested in
+loops, value-producing blocks, or a persistent initializer. Existing trailing
+expression returns remain supported. A value-returning function must produce a
+compatible value on every terminating path; a void function can use bare
+`return`. The program entry runs to completion without a source return.
+Returning from a helper never commits the runtime transaction independently.
+
+## Named output writes
+
+`emit "price" close` writes one named column for the current step;
+`emit.append "fills" execution` appends a value to that column's list.
+Names must be compile-time strings, including names forwarded through constant
+function arguments. One name has one fixed Tea type and write mode. Duplicate
+plain writers, possibly repeated plain writes in loops, and mixed modes are
+compile-time errors. Multiple append sites may share a name and must agree on
+its element type.
+
+Emissions snapshot values immediately. Later mutation cannot change the emitted
+value, and a failed step publishes nothing. Missing plain emission and an
+explicit null both produce null; numeric `NaN` remains distinct. Append columns
+start as empty lists and preserve runtime append order independently. Schema
+column order is static declaration order.
+
 ## Transactions, realtime, `var`, and `varip`
 
 One execution transaction owns tentative storage allocation, struct-field
@@ -238,7 +266,7 @@ struct Counter
 
 var counter = Counter.new(0)
 counter.value := counter.value + 1
-plot(counter.value)
+plot("output0", counter.value)
 ```
 
 Successive ticks on one realtime bar observe `1`, then `2`, then `3`. If the

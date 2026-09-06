@@ -18,8 +18,8 @@ const source = [
   'length = input.int(2, minval=0)',
   'enabled = input.bool(true)',
   'weight = input.int(3, minval=1, maxval=4, active=enabled)',
-  'plot(close[length], linewidth=weight)',
-  'hline(float(length))',
+  'emit "output0" close[length]',
+  'emit "output1" float(length)',
 ].join('\n');
 
 function tree(module: Module): Module[] {
@@ -76,19 +76,19 @@ function deepProgram(depth: number, contextual = false): Program {
       'length = input.int(2, minval=0)',
       'symbol = input.string("X")',
       `r = request.security(symbol, "D", close[${contextual ? 'syminfo.type == "stock" ? length : 1' : 'length'}])`,
-      'plot(r)',
+      'emit "output0" r',
     ].join('\n'),
   );
   const edge = base.requests[0];
   const emission = base.body[0];
   const write = edge.child.body[0];
   assert.equal(emission.kind, IrKind.Emit);
-  assert.equal(write.kind, IrKind.WriteName);
-  if (emission.kind !== IrKind.Emit || write.kind !== IrKind.WriteName)
+  assert.equal(write.kind, IrKind.Assign);
+  if (emission.kind !== IrKind.Emit || write.kind !== IrKind.Assign)
     throw new Error('request fixture shape changed');
-  const read = emission.args[0];
-  assert.equal(read.kind, IrKind.HistRead);
-  if (read.kind !== IrKind.HistRead)
+  const read = emission.value;
+  assert.equal(read.kind, IrKind.Read);
+  if (read.kind !== IrKind.Read)
     throw new Error('request fixture read changed');
   let child = edge.child;
   let resultName = edge.resultName;
@@ -101,7 +101,13 @@ function deepProgram(depth: number, contextual = false): Program {
       body: [
         {
           ...write,
-          name,
+          target: {
+            kind: IrKind.Read,
+            pos: write.pos,
+            type: name.type,
+            qualifier: name.qualifier,
+            place: {kind: PlaceKind.Name, name},
+          },
           value: {...read, place: {kind: PlaceKind.Request, request}},
         },
       ],
@@ -115,7 +121,7 @@ function deepProgram(depth: number, contextual = false): Program {
     body: [
       {
         ...emission,
-        args: [{...read, place: {kind: PlaceKind.Request, request}}],
+        value: {...read, place: {kind: PlaceKind.Request, request}},
       },
     ],
   };
@@ -143,7 +149,7 @@ test('module fields own requirements and bind fills usable defaults in place', (
   assert.deepStrictEqual(bound.remaining(), []);
 });
 
-test('independent copies bind history, activity and display values without leaks', () => {
+test('independent copies bind history and activity without schema leaks', () => {
   const started = performance.now();
   const count = stress ? 1_000 : 24;
   const calls: number[] = [];
@@ -163,8 +169,8 @@ test('independent copies bind history, activity and display values without leaks
     });
     assert.equal(prepared.parameters[2].active, enabled);
     assert.deepStrictEqual(
-      prepared.outputs.declarations.map(output => output.args),
-      [[{name: 'linewidth', value: weight}], [{name: 'price', value: length}]],
+      outputFields(prepared.outputs.schema).map(output => output.name),
+      ['output0', 'output1'],
     );
     outputFields(prepared.outputs.schema)[0].metadata.set(
       'test:owner',
@@ -204,7 +210,7 @@ test('wide requests calculate each module once and independent binding orders ag
           (_, index) =>
             `r${index} = request.security(symbol, "D", close[length])`,
         ),
-        `plot(open[length] + ${Array.from({length: width}, (_, index) => `r${index}`).join(' + ')})`,
+        `emit "output0" open[length] + ${Array.from({length: width}, (_, index) => `r${index}`).join(' + ')}`,
       ].join('\n'),
     ),
     calls,

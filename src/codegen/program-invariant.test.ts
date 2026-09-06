@@ -7,7 +7,9 @@ import {
   PlaceKind,
   Storage,
   type ConstExpr,
-  type HistReadExpr,
+  type ReadExpr,
+  type WritableExpr,
+  type FieldGetExpr,
   type IrExpr,
   type IrStmt,
   type Name,
@@ -45,18 +47,17 @@ function name(id: string, type: Type): Name {
   };
 }
 
-function read(target: Name): HistReadExpr {
+function read(target: Name): ReadExpr & WritableExpr {
   return {
-    kind: IrKind.HistRead,
+    kind: IrKind.Read,
     pos,
     type: target.type,
     qualifier: target.qualifier,
     place: {kind: PlaceKind.Name, name: target},
-    offset: null,
   };
 }
 
-function field(x: IrExpr, fieldIndex: number, type: Type): IrExpr {
+function field(x: IrExpr, fieldIndex: number, type: Type): FieldGetExpr {
   return {
     kind: IrKind.FieldGet,
     pos,
@@ -68,7 +69,7 @@ function field(x: IrExpr, fieldIndex: number, type: Type): IrExpr {
 }
 
 function write(target: Name, value: IrExpr): IrStmt {
-  return {kind: IrKind.WriteName, pos, name: target, value};
+  return {kind: IrKind.Assign, pos, target: read(target), value, op: null};
 }
 
 function storeField(
@@ -78,12 +79,11 @@ function storeField(
   value: IrExpr,
 ): IrStmt {
   return {
-    kind: IrKind.StoreField,
+    kind: IrKind.Assign,
     pos,
-    object,
-    owner,
-    fieldIndex,
+    target: field(object, fieldIndex, owner.fields[fieldIndex].type),
     value,
+    op: null,
   };
 }
 
@@ -94,7 +94,6 @@ function program(body: readonly IrStmt[]): Program {
     params: [],
     requests: [],
     outputs: [],
-    effects: [],
     packageGlobals: [],
     init: [],
     body,
@@ -178,7 +177,7 @@ describe('malformed Program rejection', () => {
           storeField(read(root), pair, 0, constant(IntType, 2)),
         ]),
       ),
-    ).toThrow('struct field store object disagrees with its owner type');
+    ).toThrow('field destination has a non-struct receiver');
   });
 
   test('rejects a method receiver exposed as an explicit parameter', () => {
@@ -211,7 +210,7 @@ describe('malformed Program rejection', () => {
             kind: IrKind.ExprStmt,
             pos,
             x: {
-              kind: IrKind.CallMutableMethod,
+              kind: IrKind.CallFunc,
               pos,
               type: IntType,
               qualifier: Qualifier.Series,

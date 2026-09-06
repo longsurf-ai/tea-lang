@@ -27,17 +27,14 @@ export interface CorpusManifest {
 }
 
 interface ExpectedOutput {
-  readonly oid: number;
-  readonly effect: string;
-  readonly staticArgs: readonly (readonly [string, JsonScalar])[];
-  readonly boundArgs: readonly (readonly [string, JsonScalar])[];
-  readonly channels: readonly (readonly [string, string])[];
+  readonly name: string;
+  readonly type: string;
 }
 
 interface ExpectedEmission {
-  readonly oid: number;
+  readonly name: string;
   readonly provisional: boolean;
-  readonly channels: readonly JsonScalar[];
+  readonly value: JsonScalar;
 }
 
 type ExpectedInputConstraint =
@@ -500,35 +497,15 @@ export function parseReference(raw: unknown, label: string): ExpectedReference {
   }
   const outputs = array(root['outputs'], `${label}.outputs`).map((entry, i) => {
     const output = object(entry, `${label}.outputs[${i}]`);
-    keys(
-      output,
-      ['oid', 'effect', 'staticArgs', 'boundArgs', 'channels'],
-      `${label}.outputs[${i}]`,
-    );
-    const channels = array(
-      output['channels'],
-      `${label}.outputs[${i}].channels`,
-    ).map((entry, c) => {
-      const pair = array(entry, `${label}.outputs[${i}].channels[${c}]`);
-      if (pair.length !== 2) {
-        throw new Error(`${label}.outputs[${i}].channels[${c}] must be a pair`);
-      }
-      return [
-        string(pair[0], `${label}.outputs[${i}].channels[${c}][0]`),
-        string(pair[1], `${label}.outputs[${i}].channels[${c}][1]`),
-      ] as const;
-    });
+    keys(output, ['name', 'type'], `${label}.outputs[${i}]`);
     return {
-      oid: integer(output['oid'], `${label}.outputs[${i}].oid`),
-      effect: string(output['effect'], `${label}.outputs[${i}].effect`),
-      staticArgs: pairs(
-        output['staticArgs'],
-        `${label}.outputs[${i}].staticArgs`,
-      ),
-      boundArgs: pairs(output['boundArgs'], `${label}.outputs[${i}].boundArgs`),
-      channels,
+      name: string(output['name'], `${label}.outputs[${i}].name`),
+      type: string(output['type'], `${label}.outputs[${i}].type`),
     };
   });
+  if (new Set(outputs.map(output => output.name)).size !== outputs.length) {
+    throw new Error(`${label} contains duplicate output names`);
+  }
   const rows = array(root['rows'], `${label}.rows`).map((entry, i) => {
     const row = object(entry, `${label}.rows[${i}]`);
     keys(row, ['row', 'emissions'], `${label}.rows[${i}]`);
@@ -539,23 +516,21 @@ export function parseReference(raw: unknown, label: string): ExpectedReference {
       const emission = object(entry, `${label}.rows[${i}].emissions[${e}]`);
       keys(
         emission,
-        ['oid', 'provisional', 'channels'],
+        ['name', 'provisional', 'value'],
         `${label}.rows[${i}].emissions[${e}]`,
       );
       return {
-        oid: integer(
-          emission['oid'],
-          `${label}.rows[${i}].emissions[${e}].oid`,
+        name: string(
+          emission['name'],
+          `${label}.rows[${i}].emissions[${e}].name`,
         ),
         provisional: boolean(
           emission['provisional'],
           `${label}.rows[${i}].emissions[${e}].provisional`,
         ),
-        channels: array(
-          emission['channels'],
-          `${label}.rows[${i}].emissions[${e}].channels`,
-        ).map((value, c) =>
-          scalar(value, `${label}.rows[${i}].emissions[${e}].channels[${c}]`),
+        value: scalar(
+          emission['value'],
+          `${label}.rows[${i}].emissions[${e}].value`,
         ),
       };
     });

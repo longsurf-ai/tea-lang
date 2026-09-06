@@ -14,7 +14,7 @@ import {createNode} from './node';
 describe('Module.bind', () => {
   test('fills defaults and recomputes derived facts without requiring streams', () => {
     const raw = compileModule(
-      'length = input.int(14)\nplot(close[length] + open)',
+      'length = input.int(14)\nemit "output0" close[length] + open',
     );
     const initial = raw.bind();
     expect(initial.parameters[0]!.value).toBe(14);
@@ -38,7 +38,9 @@ describe('Module.bind', () => {
   });
 
   test('leaves a parameter without a usable default unresolved until supplied', () => {
-    const raw = compileModule('length = input.int(14)\nplot(close[length])');
+    const raw = compileModule(
+      'length = input.int(14)\nemit "output0" close[length]',
+    );
     const pending = Object.assign(raw.clone(), {
       parameters: raw.parameters.map(param => ({...param, defaultValue: null})),
     }).bind();
@@ -53,7 +55,9 @@ describe('Module.bind', () => {
   });
 
   test('rejects invalid values and unknown parameter names with BindError', () => {
-    const module = compileModule('length = input.int(14)\nplot(length)').bind();
+    const module = compileModule(
+      'length = input.int(14)\nemit "output0" length',
+    ).bind();
     expect(() => module.bind({length: 2.5})).toThrow(BindError);
     expect(() => module.bind({length: 2.5})).toThrow(/length/);
     expect(() => module.bind({missing: 1})).toThrow(BindError);
@@ -63,7 +67,7 @@ describe('Module.bind', () => {
 
   test('explicit copies isolate schemas and parameter configurations', () => {
     const original = compileModule(
-      'length = input.int(1)\nplot(close + length)',
+      'length = input.int(1)\nemit "output0" close + length',
     ).bind();
     original.inputs.schema.metadata.set('feed', 'prices');
     original.inputs.schema.fields[0]!.metadata.set('unit', 'USD');
@@ -85,7 +89,7 @@ describe('Module.bind', () => {
 
   test('explicit copies isolate child metadata and parameters', () => {
     const original = compileModule(
-      'length = input.int(3)\nr = request.security("X", "D", close[length])\nplot(r)',
+      'length = input.int(3)\nr = request.security("X", "D", close[length])\nemit "output0" r',
     ).bind();
     original.requests[0]!.module.inputs.schema.fields[0]!.metadata.set(
       'owner',
@@ -116,7 +120,7 @@ describe('Module.bind', () => {
 
   test('source selection changes required series without connecting any data', () => {
     const initial = compileModule(
-      'source = input.source(close)\nplot(source)',
+      'source = input.source(close)\nemit "output0" source',
     ).bind();
     expect(initial.parameters[0]!.value).toBe('close');
     const selected = initial.bind({source: 'open'});
@@ -127,9 +131,9 @@ describe('Module.bind', () => {
     expect(selected.ready()).toBe(true);
   });
 
-  test('records parameter-dependent activity, history, and output arguments', () => {
+  test('records parameter-dependent activity and history', () => {
     const module = compileModule(
-      'enabled = input.bool(true)\nwidth = input.int(2, active=enabled)\nvalue = close * 2\nplot(value[width], linewidth=width)',
+      'enabled = input.bool(true)\nwidth = input.int(2, active=enabled)\nvalue = close * 2\nemit "output0" value[width]',
     ).bind({enabled: false, width: 4});
     expect(
       module.parameters.map(({value, active}) => ({value, active})),
@@ -141,13 +145,15 @@ describe('Module.bind', () => {
       kind: 'const',
       bars: 4,
     });
-    expect(module.outputs.declarations[0]!.args).toEqual([
-      {name: 'linewidth', value: 4},
-    ]);
+    expect(module.outputs.declarations[0]).toEqual({
+      layout: expect.any(Number),
+    });
   });
 
   test('Node owns the given module and delegates parameter patches to it', () => {
-    const module = compileModule('length = input.int(2)\nplot(close[length])');
+    const module = compileModule(
+      'length = input.int(2)\nemit "output0" close[length]',
+    );
     const node = createNode(module);
     expect(node.module).toBe(module);
     expect(node.bind({length: 5})).toBe(node);
@@ -159,7 +165,7 @@ describe('Module.bind', () => {
 
   test('static request settings share the record with their executable child', () => {
     const module = compileModule(
-      'r = request.security("X", "D", close)\nplot(r)',
+      'r = request.security("X", "D", close)\nemit "output0" r',
     ).bind();
     expect(module.requests[0]!.context).toEqual({
       symbol: 'X',

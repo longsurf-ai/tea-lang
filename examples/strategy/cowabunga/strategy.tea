@@ -2,7 +2,7 @@
 // Clean-room conversion of the inspected Pine v2 Cowabunga strategy. The
 // source is two-sided and uses long lookbacks on a 15-minute chart rather than
 // true higher-timeframe requests; both behaviors are preserved here.
-strategy("Cowabunga System — inspected Pine v2", shorttitle="Cowabunga v2", overlay=true)
+
 
 import broker
 import portfolio
@@ -126,17 +126,17 @@ if short_signal
 strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(ema_5, "EMA 5")
-plot(ema_10, "EMA 10")
-plot(macd_line, "MACD line")
-plot(macd_signal, "MACD signal (source computes but does not filter on it)")
-plot(long_signal ? 1.0 : 0.0, "long signal")
-plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(metrics.positionQuantity, "signed position quantity")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("EMA 5", ema_5, "EMA 5")
+plot("EMA 10", ema_10, "EMA 10")
+plot("MACD line", macd_line, "MACD line")
+plot("MACD signal (source computes but does not filter on it)", macd_signal, "MACD signal (source computes but does not filter on it)")
+plot("long signal", long_signal ? 1.0 : 0.0, "long signal")
+plot("short signal", short_signal ? 1.0 : 0.0, "short signal")
+plot("signed position quantity", metrics.positionQuantity, "signed position quantity")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

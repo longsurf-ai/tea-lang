@@ -6,20 +6,18 @@ import {dumpProgram} from './dumper';
 import {frameTopologyOf} from './frames';
 import {
   DepthKind,
-  CollectionLocationKind,
   IrKind,
   IrOp,
   PlaceKind,
   Storage,
-  type CallConstMethodExpr,
   type CallFuncExpr,
-  type CallMutableMethodExpr,
+  type WritableExpr,
   type IrExpr,
   type Name,
 } from './node';
 import {
   MergeMode,
-  type ConstMethodIrFunc,
+  type IrFunc,
   type BuiltinInput,
   type FreeIrFunc,
   type MutableMethodIrFunc,
@@ -52,11 +50,15 @@ type Same<A, B> =
     ? true
     : false;
 
-const CALL_MODE_TYPES: readonly [
-  Same<CallFuncExpr['func'], FreeIrFunc>,
-  Same<CallConstMethodExpr['func'], ConstMethodIrFunc>,
-  Same<CallMutableMethodExpr['func'], MutableMethodIrFunc>,
-] = [true, true, true];
+const CALL_MODE_TYPES: readonly [Same<CallFuncExpr['func'], IrFunc>] = [true];
+
+const read = (name: Name): WritableExpr => ({
+  kind: IrKind.Read,
+  pos,
+  type: name.type,
+  qualifier: name.qualifier,
+  place: {kind: PlaceKind.Name, name},
+});
 
 const num = (value: number): IrExpr => ({
   kind: IrKind.Const,
@@ -134,12 +136,11 @@ const inc: FreeIrFunc = {
     qualifier: Qualifier.Series,
     op: IrOp.Add,
     x: {
-      kind: IrKind.HistRead,
+      kind: IrKind.Read,
       pos,
       type: FloatType,
       qualifier: Qualifier.Series,
       place: {kind: PlaceKind.Name, name: p},
-      offset: null,
     },
     y: num(1),
   },
@@ -159,7 +160,6 @@ const child: Program = {
   params: [],
   requests: [],
   outputs: [],
-  effects: [],
   packageGlobals: [],
   init: [],
   body: [],
@@ -205,20 +205,21 @@ const program: Program = {
   params: [],
   requests: [edge],
   outputs: [],
-  effects: [],
   packageGlobals: [],
   init: [],
   body: [
     {
-      kind: IrKind.WriteName,
+      kind: IrKind.Assign,
       pos,
-      name: x,
+      target: read(x),
+      op: null,
       value: {
         kind: IrKind.CallFunc,
         pos,
         type: FloatType,
         qualifier: Qualifier.Series,
         func: inc,
+        receiver: null,
         slot: 0,
         args: [
           {
@@ -237,12 +238,11 @@ const program: Program = {
       kind: IrKind.ExprStmt,
       pos,
       x: {
-        kind: IrKind.HistRead,
+        kind: IrKind.Read,
         pos,
         type: FloatType,
         qualifier: Qualifier.Series,
         place: {kind: PlaceKind.Request, request: edge},
-        offset: null,
       },
     },
     {
@@ -265,31 +265,26 @@ const bindOnlyProgram: Program = {
   nominalIds: new Map(),
   params: [],
   requests: [],
-  outputs: [
+  outputs: [],
+  packageGlobals: [
     {
-      effect: 'plot',
-      staticArgs: [],
-      bindArgs: [
-        {
-          name: 'linewidth',
-          expr: {
-            kind: IrKind.CallFunc,
-            pos,
-            type: FloatType,
-            qualifier: Qualifier.Series,
-            func: inc,
-            slot: 0,
-            args: [num(1)],
-            argumentEvaluationOrder: [0],
-          },
+      ...x,
+      depth: {
+        kind: DepthKind.Bound,
+        expr: {
+          kind: IrKind.CallFunc,
+          pos,
+          type: FloatType,
+          qualifier: Qualifier.Series,
+          func: inc,
+          receiver: null,
+          slot: 0,
+          args: [num(1)],
+          argumentEvaluationOrder: [0],
         },
-      ],
-      bindArgumentEvaluationOrder: [0],
-      channels: [],
+      },
     },
   ],
-  effects: [],
-  packageGlobals: [],
   init: [],
   body: [],
 };
@@ -336,47 +331,45 @@ const mutationProgram: Program = {
   params: [],
   requests: [],
   outputs: [],
-  effects: [],
   packageGlobals: [],
   init: [],
   body: [
     {
-      kind: IrKind.StoreField,
+      kind: IrKind.Assign,
       pos,
-      object: {
-        kind: IrKind.HistRead,
+      target: {
+        kind: IrKind.FieldGet,
         pos,
-        type: holder,
+        type: FloatType,
         qualifier: Qualifier.Series,
-        place: {kind: PlaceKind.Name, name: holderName},
-        offset: null,
+        x: read(holderName),
+        fieldIndex: 0,
       },
-      owner: holder,
-      fieldIndex: 0,
       value: num(2),
+      op: null,
     },
     {
       kind: IrKind.ExprStmt,
       pos,
       x: {
-        kind: IrKind.MutateCollection,
+        kind: IrKind.CallNative,
         pos,
         type: FloatType,
         qualifier: Qualifier.Series,
-        location: {
-          kind: CollectionLocationKind.StructField,
-          object: {
-            kind: IrKind.HistRead,
-            pos,
-            type: holder,
-            qualifier: Qualifier.Series,
-            place: {kind: PlaceKind.Name, name: holderName},
-            offset: null,
-          },
-          owner: holder,
+        receiver: {
+          kind: IrKind.FieldGet,
+          pos,
+          type: holder.fields[1].type,
+          qualifier: Qualifier.Series,
+          x: read(holderName),
           fieldIndex: 1,
         },
-        operation: 'array.pop',
+        native: {
+          name: 'array.pop',
+          argTypes: [],
+          resultType: FloatType,
+          effect: 'write',
+        },
         args: [],
         argumentEvaluationOrder: [],
       },
@@ -385,19 +378,12 @@ const mutationProgram: Program = {
       kind: IrKind.ExprStmt,
       pos,
       x: {
-        kind: IrKind.CallMutableMethod,
+        kind: IrKind.CallFunc,
         pos,
         type: FloatType,
         qualifier: Qualifier.Series,
         func: mutate,
-        receiver: {
-          kind: IrKind.HistRead,
-          pos,
-          type: holder,
-          qualifier: Qualifier.Series,
-          place: {kind: PlaceKind.Name, name: holderName},
-          offset: null,
-        },
+        receiver: read(holderName),
         slot: 2,
         argumentEvaluationOrder: [],
         args: [],
@@ -426,8 +412,8 @@ describe('derived enumerations', () => {
     ]);
   });
 
-  test('call kinds admit only their matching function mode', () => {
-    expect(CALL_MODE_TYPES).toEqual([true, true, true]);
+  test('one call kind refers to every user function mode', () => {
+    expect(CALL_MODE_TYPES).toEqual([true]);
   });
 
   test('names reach through writes, places, and function params', () => {
@@ -457,12 +443,10 @@ describe('derived enumerations', () => {
     expect(namesOf(mutationProgram)).toEqual([holderName, receiver]);
     expect(funcsOf(mutationProgram)).toEqual([mutate]);
     expect(slotCountOf(mutationProgram)).toBe(3);
-    expect(dumpProgram(mutationProgram)).toContain('StoreField Holder[0]');
+    expect(dumpProgram(mutationProgram)).toContain('Assign');
     expect(dumpProgram(mutationProgram)).toContain(
-      'MutateCollection array.pop location=Holder[1]',
+      'CallNative array.pop write',
     );
-    expect(dumpProgram(mutationProgram)).toContain(
-      'CallMutableMethod mutate slot=2',
-    );
+    expect(dumpProgram(mutationProgram)).toContain('CallFunc mutate slot=2');
   });
 });

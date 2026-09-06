@@ -24,7 +24,7 @@ The first row has no earlier close, so `nz()` substitutes the current close and 
 ```tea
 previous = nz(close[1], close)
 change = close - previous
-plot(change)
+emit "output0" change
 ```
 
 ## Remarks

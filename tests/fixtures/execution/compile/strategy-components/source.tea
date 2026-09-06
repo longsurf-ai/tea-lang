@@ -1,5 +1,5 @@
 //@version=1
-strategy("Tea strategy components")
+
 
 import broker
 import portfolio
@@ -22,12 +22,12 @@ if bar_index == 2
 expired = strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
-plot(strat.cash(), "cash")
-plot(strat.position_quantity(), "position quantity")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round-trip count")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(na(expired) or na(expired.pending) ? 0 : expired.pending.id, "expired order id")
+emit "output0" strat.cash()
+emit "output1" strat.position_quantity()
+emit "output2" metrics.equity
+emit "output3" metrics.realizedPnl
+emit "output4" metrics.totalFees
+emit "output5" metrics.fillCount
+emit "output6" metrics.roundTripCount
+emit "output7" metrics.maxDrawdown
+emit "output8" na(expired) or na(expired.pending) ? 0 : expired.pending.id

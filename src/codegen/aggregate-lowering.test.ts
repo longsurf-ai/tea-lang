@@ -3,7 +3,6 @@ import type {Module} from '../runtime/module-binding';
 
 import {describe, expect, test} from 'vitest';
 import {
-  CollectionLocationKind,
   DepthKind,
   IrKind,
   IrOp,
@@ -12,6 +11,9 @@ import {
   type BlockExpr,
   type ConstExpr,
   type HistReadExpr,
+  type FieldGetExpr,
+  type ReadExpr,
+  type WritableExpr,
   type IrExpr,
   type IrStmt,
   type Name,
@@ -62,25 +64,25 @@ function name(id: string, type: Type): Name {
   };
 }
 
-function read(target: Name): HistReadExpr {
+function read(target: Name): ReadExpr & WritableExpr {
   return {
-    kind: IrKind.HistRead,
+    kind: IrKind.Read,
     pos,
     type: target.type,
     qualifier: target.qualifier,
     place: {kind: PlaceKind.Name, name: target},
-    offset: null,
   };
 }
 
 function readAt(target: Name, offset: number): HistReadExpr {
   return {
     ...read(target),
+    kind: IrKind.HistRead,
     offset: constant(IntType, offset),
   };
 }
 
-function field(x: IrExpr, fieldIndex: number, type: Type): IrExpr {
+function field(x: IrExpr, fieldIndex: number, type: Type): FieldGetExpr {
   return {
     kind: IrKind.FieldGet,
     pos,
@@ -103,7 +105,7 @@ function block(stmts: readonly IrStmt[], value: IrExpr): BlockExpr {
 }
 
 function write(target: Name, value: IrExpr): IrStmt {
-  return {kind: IrKind.WriteName, pos, name: target, value};
+  return {kind: IrKind.Assign, pos, target: read(target), value, op: null};
 }
 
 function storeField(
@@ -113,12 +115,11 @@ function storeField(
   value: IrExpr,
 ): IrStmt {
   return {
-    kind: IrKind.StoreField,
+    kind: IrKind.Assign,
     pos,
-    object,
-    owner,
-    fieldIndex,
+    target: field(object, fieldIndex, owner.fields[fieldIndex].type),
     value,
+    op: null,
   };
 }
 
@@ -129,7 +130,6 @@ function program(body: readonly IrStmt[]): Program {
     params: [],
     requests: [],
     outputs: [],
-    effects: [],
     packageGlobals: [],
     init: [],
     body,
@@ -368,8 +368,13 @@ describe('aggregate expression and reference-store lowering', () => {
       pos,
       type: arrayType,
       qualifier: Qualifier.Series,
-      native: 'array.from',
-      slot: null,
+      native: {
+        name: 'array.from',
+        argTypes: [IntType],
+        resultType: arrayType,
+        effect: 'allocate',
+      },
+      receiver: null,
       args: [constant(IntType, 1)],
       argumentEvaluationOrder: [0],
     };
@@ -388,17 +393,17 @@ describe('aggregate expression and reference-store lowering', () => {
           kind: IrKind.ExprStmt,
           pos,
           x: {
-            kind: IrKind.MutateCollection,
+            kind: IrKind.CallNative,
             pos,
             type: VoidType,
             qualifier: Qualifier.Series,
-            location: {
-              kind: CollectionLocationKind.StructField,
-              object: read(holderName),
-              owner: holder,
-              fieldIndex: 0,
+            receiver: field(read(holderName), 0, arrayType),
+            native: {
+              name: 'array.push',
+              argTypes: [IntType],
+              resultType: VoidType,
+              effect: 'write',
             },
-            operation: 'array.push',
             args: [
               block(
                 [storeField(read(holderName), holder, 1, constant(IntType, 9))],
@@ -413,8 +418,13 @@ describe('aggregate expression and reference-store lowering', () => {
           pos,
           type: IntType,
           qualifier: Qualifier.Series,
-          native: 'array.size',
-          slot: null,
+          native: {
+            name: 'array.size',
+            argTypes: [arrayType],
+            resultType: IntType,
+            effect: 'read',
+          },
+          receiver: null,
           args: [field(read(holderName), 0, arrayType)],
           argumentEvaluationOrder: [0],
         }),
@@ -486,7 +496,7 @@ describe('aggregate expression and reference-store lowering', () => {
         argumentEvaluationOrder: [0, 1],
       }),
       write(resultName, {
-        kind: IrKind.CallConstMethod,
+        kind: IrKind.CallFunc,
         pos,
         type: IntType,
         qualifier: Qualifier.Series,
@@ -566,7 +576,7 @@ describe('aggregate expression and reference-store lowering', () => {
         argumentEvaluationOrder: [0, 1],
       }),
       write(resultName, {
-        kind: IrKind.CallMutableMethod,
+        kind: IrKind.CallFunc,
         pos,
         type: IntType,
         qualifier: Qualifier.Series,
@@ -643,7 +653,7 @@ describe('aggregate expression and reference-store lowering', () => {
         argumentEvaluationOrder: [0],
       }),
       write(resultName, {
-        kind: IrKind.CallMutableMethod,
+        kind: IrKind.CallFunc,
         pos,
         type: IntType,
         qualifier: Qualifier.Series,
@@ -685,6 +695,7 @@ describe('aggregate expression and reference-store lowering', () => {
       program([
         write(result, {
           kind: IrKind.CallFunc,
+          receiver: null,
           pos,
           type: IntType,
           qualifier: Qualifier.Series,
@@ -696,7 +707,7 @@ describe('aggregate expression and reference-store lowering', () => {
       ]),
     );
 
-    expect(js).toContain('frame.locals.source.set(source);');
+    expect(js).toContain('frame.locals.source.set(p0_source);');
     expect(js).toContain('frame.locals.source.hist((t0).value)');
   });
 
@@ -729,7 +740,7 @@ describe('aggregate expression and reference-store lowering', () => {
       resultType: IntType,
       resultQualifier: Qualifier.Series,
       body: {
-        kind: IrKind.CallMutableMethod,
+        kind: IrKind.CallFunc,
         pos,
         type: IntType,
         qualifier: Qualifier.Series,
@@ -763,7 +774,7 @@ describe('aggregate expression and reference-store lowering', () => {
         argumentEvaluationOrder: [0],
       }),
       write(resultName, {
-        kind: IrKind.CallMutableMethod,
+        kind: IrKind.CallFunc,
         pos,
         type: IntType,
         qualifier: Qualifier.Series,
@@ -808,17 +819,17 @@ describe('aggregate expression and reference-store lowering', () => {
             kind: IrKind.ExprStmt,
             pos,
             x: {
-              kind: IrKind.MutateCollection,
+              kind: IrKind.CallNative,
               pos,
               type: VoidType,
               qualifier: Qualifier.Series,
-              location: {
-                kind: CollectionLocationKind.StructField,
-                object: read(receiver),
-                owner: holder,
-                fieldIndex: 0,
+              receiver: field(read(receiver), 0, arrayType),
+              native: {
+                name: 'array.set',
+                argTypes: [IntType, IntType],
+                resultType: VoidType,
+                effect: 'write',
               },
-              operation: 'array.set',
               args: [constant(IntType, 0), constant(IntType, 2)],
               argumentEvaluationOrder: [0, 1],
             },
@@ -833,8 +844,13 @@ describe('aggregate expression and reference-store lowering', () => {
       pos,
       type: arrayType,
       qualifier: Qualifier.Series,
-      native: 'array.from',
-      slot: null,
+      native: {
+        name: 'array.from',
+        argTypes: [IntType],
+        resultType: arrayType,
+        effect: 'allocate',
+      },
+      receiver: null,
       args: [constant(IntType, 1)],
       argumentEvaluationOrder: [0],
     };
@@ -853,7 +869,7 @@ describe('aggregate expression and reference-store lowering', () => {
           kind: IrKind.ExprStmt,
           pos,
           x: {
-            kind: IrKind.CallMutableMethod,
+            kind: IrKind.CallFunc,
             pos,
             type: IntType,
             qualifier: Qualifier.Series,

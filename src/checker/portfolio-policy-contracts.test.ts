@@ -27,7 +27,7 @@ function contractMethods(result: CheckResult, name: string): string[] {
 }
 
 const SPECIALIZATION_SOURCE = [
-  'indicator("portfolio policy contracts")',
+  '',
   'import broker',
   'import portfolio',
   'type ViewReader<P: portfolio.PortfolioView>',
@@ -55,19 +55,13 @@ const SPECIALIZATION_SOURCE = [
   'netValue = netCoordinator.value(close)',
   'lotCount = lotCoordinator.count()',
   'lotTrade = lotCoordinator.trade(0)',
-  'plot(netSnapshot.cash + lotSnapshot.cash + netValue)',
-  'plot(float(netAccepted + lotAccepted + lotCount + lotTrade.id))',
+  'emit "output0" netSnapshot.cash + lotSnapshot.cash + netValue',
+  'emit "output1" float(netAccepted + lotAccepted + lotCount + lotTrade.id)',
 ].join('\n');
 
 describe('portfolio policy contracts', () => {
   test('exports exact additive read, net-ledger, and lot-ledger surfaces', () => {
-    const result = checkText(
-      [
-        'indicator("portfolio contracts")',
-        'import portfolio',
-        'value = 1',
-      ].join('\n'),
-    );
+    const result = checkText(['', 'import portfolio', 'value = 1'].join('\n'));
 
     expect(result.errors).toEqual([]);
     expect(contractMethods(result, 'PortfolioView')).toEqual([
@@ -126,7 +120,7 @@ describe('portfolio policy contracts', () => {
   test('rejects cross-policy ledger pairings structurally', () => {
     const netAsLots = checkText(
       [
-        'indicator("net as lots")',
+        '',
         'import portfolio',
         'type Holder<P: portfolio.LotLedger>',
         '    P value',
@@ -139,7 +133,7 @@ describe('portfolio policy contracts', () => {
 
     const lotsAsNet = checkText(
       [
-        'indicator("lots as net")',
+        '',
         'import portfolio',
         'type Holder<P: portfolio.NetLedger>',
         '    P value',

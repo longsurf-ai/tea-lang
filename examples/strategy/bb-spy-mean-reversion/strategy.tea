@@ -1,7 +1,7 @@
 //@version=1
 // Clean-room long-only historical profile of the public BB SPY mean-reversion
 // strategy. It keeps the published stop-entry re-arm and segmented ATR exits.
-strategy("BB SPY Mean Reversion", shorttitle="BB Mean Reversion", overlay=true)
+
 
 import broker
 import portfolio
@@ -226,20 +226,20 @@ if strat.position_quantity() > 0.0 and not na(monthly_atr)
 strat.finish(barstate.islast)
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(basis, "BB basis")
-plot(upper_band, "BB upper")
-plot(lower_band, "BB lower")
-plot(use_adaptive_multiplier == 1 ? upper_adaptive : na, "BB upper adaptive")
-plot(use_adaptive_multiplier == 1 ? lower_adaptive : na, "BB lower adaptive")
-plot(monthly_atr, "confirmed monthly ATR")
-plot(long_signal ? 1.0 : 0.0, "long signal")
-plot(current_bias, "bias")
-plot(metrics.positionQuantity, "position quantity")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("BB basis", basis, "BB basis")
+plot("BB upper", upper_band, "BB upper")
+plot("BB lower", lower_band, "BB lower")
+plot("BB upper adaptive", use_adaptive_multiplier == 1 ? upper_adaptive : na, "BB upper adaptive")
+plot("BB lower adaptive", use_adaptive_multiplier == 1 ? lower_adaptive : na, "BB lower adaptive")
+plot("confirmed monthly ATR", monthly_atr, "confirmed monthly ATR")
+plot("long signal", long_signal ? 1.0 : 0.0, "long signal")
+plot("bias", current_bias, "bias")
+plot("position quantity", metrics.positionQuantity, "position quantity")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("total fees", metrics.totalFees, "total fees")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

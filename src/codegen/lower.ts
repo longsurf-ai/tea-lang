@@ -4,18 +4,16 @@ import {fatal} from '../base/print';
 import type {FrameTopology} from '../ir/frames';
 import {unimplemented} from '../base/unimplemented';
 import {
-  CollectionLocationKind,
   IrKind,
   IrOp,
   PlaceKind,
-  type CollectionLocation,
+  type WritableExpr,
   type IrBinaryOp,
   type IrExpr,
   type IrStmt,
   type Name,
 } from '../ir/node';
 import type {
-  EffectDecl,
   IrFunc,
   BuiltinInput,
   OutputDecl,
@@ -43,7 +41,7 @@ export interface LowerCtx {
   readonly paramIds: Map<ParamInput, number>;
   // input.source params read as series through their bound slot.
   readonly paramSeriesIds: Map<ParamInput, number>;
-  readonly outputIds: Map<OutputDecl | EffectDecl, number>;
+  readonly outputIds: Map<OutputDecl, number>;
   readonly funcIds: Map<IrFunc, number>;
   readonly requestIds: Map<RequestEdge, number>;
   // Binding reads fixed parameter/context values without execution state.
@@ -54,6 +52,7 @@ export interface LowerCtx {
   layoutOf(type: Type): number;
   // Which typed frame owns the currently lowered function.
   currentFid: number;
+  readonly currentResultType?: Type;
   noteCallSite(fid: number, slot: number, callee: IrFunc): void;
   typeOf(type: Type): string;
   valueOf(type: Type, raw: string): string;
@@ -145,48 +144,42 @@ function structFieldType(
   );
 }
 
-function collectionLocationType(location: CollectionLocation): Type {
-  return location.kind === CollectionLocationKind.Name
-    ? location.name.type
-    : structFieldType(location.owner, location.fieldIndex);
-}
-
-interface CapturedCollectionLocation {
-  readonly value: string;
+interface CapturedDestination {
+  readonly read: string;
   store(replacement: string): string;
 }
 
-// Capture a collection location and its current header before explicit
-// arguments. A struct-field receiver is certified once and reused for the
-// final replacement write even if an argument rebinds an ancestor Name.
-function captureCollectionLocation(
-  location: CollectionLocation,
+// Capture the destination, not its value. Compound assignments and writable
+// calls capture read separately, before their later operand effects.
+function captureDestination(
+  location: WritableExpr,
   out: string[],
   ctx: LowerCtx,
-): CapturedCollectionLocation {
-  if (location.kind === CollectionLocationKind.Name) {
-    const value = ctx.fresh();
-    out.push(`const ${value} = (${readName(ctx, location.name, '0', true)});`);
+): CapturedDestination {
+  if (location.kind === IrKind.Read) {
+    if (location.place.kind !== PlaceKind.Name)
+      return fatal('assignment destination is not writable');
+    const name = location.place.name;
     return {
-      value,
-      store: replacement =>
-        `${writeNameExpr(ctx, location.name, replacement)};`,
+      read: readName(ctx, name, '0', true),
+      store: replacement => `${writeNameExpr(ctx, name, replacement)};`,
     };
   }
-  if (!typesEqual(location.object.type, location.owner)) {
-    return fatal('collection field object disagrees with its owner type');
-  }
-  structFieldType(location.owner, location.fieldIndex);
-  const object = capture(location.object, out, ctx);
+  if (ctx.binding === true)
+    return fatal('module binding cannot store a struct field');
+  const owner = location.x.type;
+  if (owner.kind !== TypeKind.Struct)
+    return fatal('field destination has a non-struct receiver');
+  if (!typesEqual(structFieldType(owner, location.fieldIndex), location.type))
+    return fatal('field destination has the wrong type');
+  const object = capture(location.x, out, ctx);
   const target = ctx.fresh();
-  const value = ctx.fresh();
-  const field = location.owner.fields[location.fieldIndex].name;
+  const field = owner.fields[location.fieldIndex].name;
   out.push(
     `const ${target} = (${object}).require().field(${JSON.stringify(field)});`,
-    `const ${value} = ${target}.get();`,
   );
   return {
-    value,
+    read: `${target}.get()`,
     store: replacement => `${target}.set(${replacement});`,
   };
 }
@@ -254,21 +247,14 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       }
       return ctx.valueOf(e.type, JSON.stringify(v));
     }
-    case IrKind.OutputRef: {
-      // Output references cross the ABI as their oid (fill's plot args).
-      const oid = ctx.outputIds.get(e.output);
-      if (oid === undefined) {
-        return fatal('lowering reached an unmapped output reference');
-      }
-      return `int(${oid})`;
-    }
+    case IrKind.Read:
     case IrKind.HistRead: {
       const off =
-        e.offset === null ? '0' : `(${capture(e.offset, out, ctx)}).value`;
+        e.kind === IrKind.Read ? '0' : `(${capture(e.offset, out, ctx)}).value`;
       switch (e.place.kind) {
         case PlaceKind.Name: {
           const current =
-            e.offset === null ||
+            e.kind === IrKind.Read ||
             (e.offset.kind === IrKind.Const &&
               typeof e.offset.value === 'number' &&
               e.offset.value === 0);
@@ -292,7 +278,7 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
             );
           }
           if (ctx.binding === true) {
-            if (e.offset !== null) {
+            if (e.kind === IrKind.HistRead) {
               return fatal('module binding cannot read builtin history');
             }
             const name = `${e.place.builtin.source.domain}.${e.place.builtin.source.field}`;
@@ -350,17 +336,35 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
       }
       return `(${x}).neg()`;
     }
-    case IrKind.Cond: {
-      // Pine evaluates all three operands eagerly.
-      const c = capture(e.cond, out, ctx);
-      const t = capture(e.then, out, ctx);
-      const f = capture(e.else, out, ctx);
-      return `((${c}).value ? (${coerce(t, e.then.type, e.type)}) : (${coerce(f, e.else.type, e.type)}))`;
-    }
     case IrKind.CallFunc: {
       const fid = ctx.funcIds.get(e.func);
       if (fid === undefined) {
         return fatal(`unmapped function '${e.func.name}'`);
+      }
+      if (e.args.length !== e.func.params.length)
+        return fatal(`function '${e.func.name}' has the wrong argument count`);
+      if (!typesEqual(e.type, e.func.resultType))
+        return fatal(`function '${e.func.name}' has the wrong result type`);
+      let receiver: string | null = null;
+      if (e.func.callMode === 'free') {
+        if (e.receiver !== null)
+          return fatal(`free function '${e.func.name}' has a receiver`);
+      } else {
+        if (
+          e.receiver === null ||
+          !typesEqual(e.func.receiver.type, e.receiver.type)
+        )
+          return fatal(`method '${e.func.name}' receiver has the wrong type`);
+        receiver = capture(e.receiver, out, ctx);
+        if (e.func.callMode === 'mutable-method') {
+          if (ctx.binding === true)
+            return fatal(
+              `module binding cannot call mutable method '${e.func.name}'`,
+            );
+          const validated = ctx.fresh();
+          out.push(`const ${validated} = (${receiver}).require();`);
+          receiver = validated;
+        }
       }
       ctx.noteCallSite(ctx.currentFid, e.slot, e.func);
       const args = captureArguments(
@@ -370,6 +374,10 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
         ctx,
         `function call '${e.func.name}'`,
       );
+      const operands = args.map((arg, i) =>
+        coerce(arg, e.args[i].type, e.func.params[i].type),
+      );
+      if (receiver !== null) operands.unshift(receiver);
       const bindRef = ctx.bindFuncRefs?.get(e.func);
       if (ctx.binding === true) {
         if (bindRef === undefined) {
@@ -377,110 +385,48 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
             `module binding reached unavailable function '${e.func.name}'`,
           );
         }
-        return `${bindRef}(${args.map((arg, i) => coerce(arg, e.args[i].type, e.func.params[i].type)).join(', ')})`;
+        return `${bindRef}(${operands.join(', ')})`;
       }
-      return `${ctx.functionRef(e.func)}(ctx, ${property(`${ctx.currentFid === 0 ? 'ctx.state' : 'frame'}.calls`, ctx.callKey(ctx.currentFid, e.slot))}${args.map((arg, i) => `, ${coerce(arg, e.args[i].type, e.func.params[i].type)}`).join('')})`;
+      return `${ctx.functionRef(e.func)}(ctx, ${property(`${ctx.currentFid === 0 ? 'ctx.state' : 'frame'}.calls`, ctx.callKey(ctx.currentFid, e.slot))}${operands.map(arg => `, ${arg}`).join('')})`;
     }
-    case IrKind.CallConstMethod: {
-      if (!typesEqual(e.func.receiver.type, e.receiver.type)) {
+    case IrKind.CallNative: {
+      if (
+        e.args.length !== e.native.argTypes.length ||
+        !typesEqual(e.type, e.native.resultType)
+      )
         return fatal(
-          `const method call '${e.func.name}' receiver has the wrong type`,
+          `native '${e.native.name}' disagrees with its concrete signature`,
         );
-      }
-      if (e.args.length !== e.func.params.length) {
+      if (
+        ctx.binding === true &&
+        (e.receiver !== null || e.native.effect !== 'pure')
+      )
         return fatal(
-          `const method call '${e.func.name}' has the wrong argument count`,
+          `module binding cannot execute ${e.native.effect} native '${e.native.name}'`,
         );
-      }
-      if (!typesEqual(e.type, e.func.resultType)) {
+      if (
+        e.args.some(
+          (arg, index) => !assignable(arg.type, e.native.argTypes[index]),
+        )
+      )
         return fatal(
-          `const method call '${e.func.name}' has the wrong result type`,
+          `native '${e.native.name}' has an incompatible argument type`,
         );
-      }
-      const fid = ctx.funcIds.get(e.func);
-      if (fid === undefined) {
-        return fatal(`unmapped const method '${e.func.name}'`);
-      }
-      ctx.noteCallSite(ctx.currentFid, e.slot, e.func);
-      const receiver = capture(e.receiver, out, ctx);
-      const args = captureArguments(
-        e.args,
-        e.argumentEvaluationOrder,
-        out,
-        ctx,
-        `const method call '${e.func.name}'`,
-      );
-      const bindRef = ctx.bindFuncRefs?.get(e.func);
-      if (ctx.binding === true) {
-        if (bindRef === undefined) {
-          return fatal(
-            `module binding reached unavailable method '${e.func.name}'`,
-          );
-        }
-        return `${bindRef}(${receiver}${args.map((arg, i) => `, ${coerce(arg, e.args[i].type, e.func.params[i].type)}`).join('')})`;
-      }
-      return `${ctx.functionRef(e.func)}(ctx, ${property(`${ctx.currentFid === 0 ? 'ctx.state' : 'frame'}.calls`, ctx.callKey(ctx.currentFid, e.slot))}, ${receiver}${args.map((arg, i) => `, ${coerce(arg, e.args[i].type, e.func.params[i].type)}`).join('')})`;
-    }
-    case IrKind.CallMutableMethod: {
-      if (ctx.binding === true) {
+      if (e.receiver === null)
+        return lowerNative(
+          e.native.name,
+          e.native.argTypes,
+          e.args,
+          e.argumentEvaluationOrder,
+          e.type,
+          out,
+          ctx,
+        );
+      if (e.native.effect !== 'write')
         return fatal(
-          `module binding cannot call mutable method '${e.func.name}'`,
+          `writable receiver on non-writing native '${e.native.name}'`,
         );
-      }
-      if (!typesEqual(e.func.receiver.type, e.receiver.type)) {
-        return fatal(
-          `mutable method call '${e.func.name}' receiver has the wrong type`,
-        );
-      }
-      if (e.args.length !== e.func.params.length) {
-        return fatal(
-          `mutable method call '${e.func.name}' has the wrong argument count`,
-        );
-      }
-      if (!typesEqual(e.type, e.func.resultType)) {
-        return fatal(
-          `mutable method call '${e.func.name}' has the wrong result type`,
-        );
-      }
-      if (e.receiver.type.kind !== TypeKind.Struct) {
-        return fatal(
-          `mutable method '${e.func.name}' has non-struct receiver ${e.receiver.type.kind}`,
-        );
-      }
-      const fid = ctx.funcIds.get(e.func);
-      if (fid === undefined) {
-        return fatal(`unmapped mutable method '${e.func.name}'`);
-      }
-      ctx.noteCallSite(ctx.currentFid, e.slot, e.func);
-      const candidate = capture(e.receiver, out, ctx);
-      const receiver = ctx.fresh();
-      out.push(`const ${receiver} = (${candidate}).require();`);
-      const args = captureArguments(
-        e.args,
-        e.argumentEvaluationOrder,
-        out,
-        ctx,
-        `mutable method call '${e.func.name}'`,
-      );
-      return `${ctx.functionRef(e.func)}(ctx, ${property(`${ctx.currentFid === 0 ? 'ctx.state' : 'frame'}.calls`, ctx.callKey(ctx.currentFid, e.slot))}, ${receiver}${args.map((arg, i) => `, ${coerce(arg, e.args[i].type, e.func.params[i].type)}`).join('')})`;
-    }
-    case IrKind.CallNative:
-      return lowerNative(
-        e.native,
-        e.args,
-        e.argumentEvaluationOrder,
-        e.type,
-        out,
-        ctx,
-      );
-    case IrKind.MutateCollection: {
-      if (ctx.binding === true) {
-        return fatal(
-          `module binding cannot mutate collection '${e.operation}'`,
-        );
-      }
-      const locationType = collectionLocationType(e.location);
-      const collectionKind = locationType.kind;
+      const collectionKind = e.receiver.type.kind;
       if (
         collectionKind !== TypeKind.Array &&
         collectionKind !== TypeKind.Matrix &&
@@ -490,42 +436,28 @@ export function lowerExpr(e: IrExpr, out: string[], ctx: LowerCtx): string {
           `collection mutation receiver has non-collection type ${collectionKind}`,
         );
       }
-      if (!e.operation.startsWith(`${collectionKind.toLowerCase()}.`)) {
+      if (!e.native.name.startsWith(`${collectionKind.toLowerCase()}.`)) {
         return fatal(
-          `collection mutation '${e.operation}' disagrees with ${collectionKind} receiver`,
+          `collection mutation '${e.native.name}' disagrees with ${collectionKind} receiver`,
         );
       }
-      const location = captureCollectionLocation(e.location, out, ctx);
+      const location = captureDestination(e.receiver, out, ctx);
+      const receiver = ctx.fresh();
+      out.push(`const ${receiver} = ${location.read};`);
       const args = captureArguments(
         e.args,
         e.argumentEvaluationOrder,
         out,
         ctx,
-        `collection mutation '${e.operation}'`,
+        `native call '${e.native.name}'`,
       );
-      const method = e.operation.split('.')[1];
-      const expected =
-        locationType.kind === TypeKind.Map
-          ? method === 'put'
-            ? [locationType.key, locationType.value]
-            : [locationType.key]
-          : locationType.kind === TypeKind.Array
-            ? method === 'set'
-              ? [e.args[0]?.type, locationType.elem]
-              : [locationType.elem]
-            : locationType.kind === TypeKind.Matrix
-              ? method === 'set'
-                ? [e.args[0]?.type, e.args[1]?.type, locationType.elem]
-                : [locationType.elem]
-              : [];
+      const method = e.native.name.split('.')[1];
       const values = args.map((arg, index) =>
-        expected[index] === undefined
-          ? arg
-          : coerce(arg, e.args[index].type, expected[index]),
+        coerce(arg, e.args[index].type, e.native.argTypes[index]),
       );
       const result = ctx.fresh();
       out.push(
-        `const ${result} = ${location.value}.${method}(${values.join(', ')});`,
+        `const ${result} = ${receiver}.${method}(${values.join(', ')});`,
         location.store(`${result}.replacement`),
       );
       return `${result}.result`;
@@ -804,6 +736,7 @@ function scalarType(type: Type): string {
 
 function lowerNative(
   native: string,
+  argTypes: readonly Type[],
   argExprs: readonly IrExpr[],
   argumentEvaluationOrder: readonly number[],
   resultType: Type,
@@ -816,7 +749,7 @@ function lowerNative(
     out,
     ctx,
     `native call '${native}'`,
-  );
+  ).map((arg, index) => coerce(arg, argExprs[index].type, argTypes[index]));
   if (native === '$historyDepth') return `historyDepth(${args[0]})`;
   if (/^(array|matrix|map)\./.test(native)) {
     ctx.layoutOf(resultType);
@@ -826,29 +759,9 @@ function lowerNative(
       .split('.')[1]
       .replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
     if (method === 'new' || method === 'from') {
-      const initial =
-        resultType.kind === TypeKind.Array ||
-        resultType.kind === TypeKind.Matrix
-          ? resultType.elem
-          : null;
-      const values = args.map((arg, index) =>
-        initial !== null &&
-        (method === 'from' ||
-          index === (resultType.kind === TypeKind.Matrix ? 2 : 1))
-          ? coerce(arg, argExprs[index].type, initial)
-          : arg,
-      );
-      return `${ctx.factoryOf(resultType)}.${method}(ctx${values.map(arg => `, ${arg}`).join('')})`;
+      return `${ctx.factoryOf(resultType)}.${method}(ctx${args.map(arg => `, ${arg}`).join('')})`;
     }
-    const receiver = argExprs[0].type;
-    const values = args
-      .slice(1)
-      .map((arg, index) =>
-        receiver.kind === TypeKind.Map && index === 0
-          ? coerce(arg, argExprs[index + 1].type, receiver.key)
-          : arg,
-      );
-    return `${args[0]}.${method}(${values.join(', ')})`;
+    return `${args[0]}.${method}(${args.slice(1).join(', ')})`;
   }
   if (native === 'int') return `int(Math.trunc(${args[0]}.value))`;
   if (native === 'float') return `float(${args[0]}.value)`;
@@ -905,41 +818,41 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       const body: string[] = [];
       const value = lowerExpr(stmt.value, body, ctx);
       out.push(
-        `${local}.init(() => {`,
+        `if (${local}.needsInit()) {`,
         ...indent(body),
-        `  return ${coerce(value, stmt.value.type, stmt.name.type)};`,
-        '});',
+        `  ${local}.initialize(${coerce(value, stmt.value.type, stmt.name.type)});`,
+        '}',
       );
       return;
     }
-    case IrKind.WriteName: {
-      const v = lowerExpr(stmt.value, out, ctx);
-      out.push(
-        `${writeNameExpr(ctx, stmt.name, coerce(v, stmt.value.type, stmt.name.type))};`,
-      );
-      return;
-    }
-    case IrKind.StoreField: {
-      if (ctx.binding === true) {
-        return fatal('module binding cannot store a struct field');
-      }
-      if (!typesEqual(stmt.object.type, stmt.owner)) {
-        return fatal('struct field store object disagrees with its owner type');
-      }
-      const targetType = structFieldType(stmt.owner, stmt.fieldIndex);
-      if (!assignable(stmt.value.type, targetType)) {
+    case IrKind.Assign: {
+      if (!assignable(stmt.value.type, stmt.target.type)) {
         return fatal(
-          `struct field value type ${stmt.value.type.kind} is not assignable to ${targetType.kind}`,
+          `assigned value type ${stmt.value.type.kind} is not assignable to ${stmt.target.type.kind}`,
         );
       }
-      const object = capture(stmt.object, out, ctx);
-      const target = ctx.fresh();
+      const target = captureDestination(stmt.target, out, ctx);
+      let previous: string | null = null;
+      if (stmt.op !== null) {
+        previous = ctx.fresh();
+        out.push(`const ${previous} = ${target.read};`);
+      }
+      let value = lowerExpr(stmt.value, out, ctx);
+      if (stmt.op !== null) {
+        const method =
+          stmt.op === IrOp.Add && stmt.target.type.kind === TypeKind.String
+            ? 'concat'
+            : stmt.op.toLowerCase();
+        value = `${previous}.${method}(${value})`;
+      }
       out.push(
-        `const ${target} = (${object}).require().field(${JSON.stringify(stmt.owner.fields[stmt.fieldIndex].name)});`,
-      );
-      const value = lowerExpr(stmt.value, out, ctx);
-      out.push(
-        ` ${target}.set(${coerce(value, stmt.value.type, targetType)});`,
+        target.store(
+          coerce(
+            value,
+            stmt.op === null ? stmt.value.type : stmt.target.type,
+            stmt.target.type,
+          ),
+        ),
       );
       return;
     }
@@ -951,31 +864,22 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       if (oid === undefined) {
         return fatal('lowering reached an unmapped output');
       }
-      const args = captureArguments(
-        stmt.args,
-        stmt.argumentEvaluationOrder,
-        out,
-        ctx,
-        `output '${stmt.output.effect}'`,
-      );
-      if (args.length === 0) return;
+      const value = lowerExpr(stmt.value, out, ctx);
       out.push(
-        `${property('ctx.outputs', `output${oid}`)}.set({${args.map((arg, channel) => `${JSON.stringify(stmt.output.channels[channel].name)}: ${arg}`).join(', ')}});`,
+        `${property('ctx.outputs', stmt.output.name)}.${stmt.output.mode}(${coerce(value, stmt.value.type, stmt.output.valueType)});`,
       );
       return;
     }
-    case IrKind.EmitEffect: {
-      if (ctx.binding === true) {
-        return fatal('module binding cannot emit an effect');
+    case IrKind.Return: {
+      if (ctx.currentResultType === undefined)
+        return fatal('return outside a function reached lowering');
+      if (stmt.value === null) out.push('return;');
+      else {
+        const value = lowerExpr(stmt.value, out, ctx);
+        out.push(
+          `return ${coerce(value, stmt.value.type, ctx.currentResultType)};`,
+        );
       }
-      const outputId = ctx.outputIds.get(stmt.effect);
-      if (outputId === undefined) {
-        return fatal('lowering reached an unmapped effect');
-      }
-      const payload = lowerExpr(stmt.payload, out, ctx);
-      out.push(
-        `${property('ctx.outputs', `effect${outputId - [...ctx.outputIds.keys()].filter(output => 'channels' in output).length}`)}.append(${payload});`,
-      );
       return;
     }
     case IrKind.Break:

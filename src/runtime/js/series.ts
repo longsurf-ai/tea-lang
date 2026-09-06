@@ -24,8 +24,8 @@ export class Series<T, K extends string = string> extends Input<T, K> {
   constructor(
     read: (offset: number) => Value<T, K>,
     private readonly write: (value: Value<T, K>) => void,
-    private readonly needsInit: () => boolean,
-    private readonly initialize: (value: Value<T, K>) => void,
+    private readonly isUninitialized: () => boolean,
+    private readonly initializeValue: (value: Value<T, K>) => void,
   ) {
     super(read);
   }
@@ -41,5 +41,15 @@ export class Series<T, K extends string = string> extends Input<T, K> {
   /** Evaluate a persistent initializer only on its first reached execution. */
   init(initial: () => Value<T, K>): void {
     if (this.needsInit()) this.initialize(initial());
+  }
+
+  /** Test the lexical initializer guard without adding a function boundary. */
+  needsInit(): boolean {
+    return this.isUninitialized();
+  }
+
+  /** Stage a first initialization after its guarded expression completes. */
+  initialize(value: Value<T, K>): void {
+    this.initializeValue(value);
   }
 }

@@ -2,7 +2,6 @@
 
 import {fatal} from '../base/print';
 import {
-  CollectionLocationKind,
   DepthKind,
   IrKind,
   PlaceKind,
@@ -34,18 +33,15 @@ export function visitStmtChildren(
       visitExprChild(stmt.x);
       return;
     case IrKind.InitName:
-    case IrKind.WriteName:
-      visitExprChild(stmt.value);
-      return;
-    case IrKind.StoreField:
-      visitExprChild(stmt.object);
-      visitExprChild(stmt.value);
-      return;
     case IrKind.Emit:
-      stmt.args.forEach(visitExprChild);
+      visitExprChild(stmt.value);
       return;
-    case IrKind.EmitEffect:
-      visitExprChild(stmt.payload);
+    case IrKind.Assign:
+      visitExprChild(stmt.target);
+      visitExprChild(stmt.value);
+      return;
+    case IrKind.Return:
+      if (stmt.value !== null) visitExprChild(stmt.value);
       return;
     case IrKind.Break:
     case IrKind.Continue:
@@ -62,10 +58,10 @@ export function visitExprChildren(
 ): void {
   switch (expr.kind) {
     case IrKind.Const:
-    case IrKind.OutputRef:
+    case IrKind.Read:
       return;
     case IrKind.HistRead:
-      if (expr.offset !== null) visitExprChild(expr.offset);
+      visitExprChild(expr.offset);
       return;
     case IrKind.Binary:
       visitExprChild(expr.x);
@@ -74,24 +70,9 @@ export function visitExprChildren(
     case IrKind.Unary:
       visitExprChild(expr.x);
       return;
-    case IrKind.Cond:
-      visitExprChild(expr.cond);
-      visitExprChild(expr.then);
-      visitExprChild(expr.else);
-      return;
     case IrKind.CallFunc:
     case IrKind.CallNative:
-      expr.args.forEach(visitExprChild);
-      return;
-    case IrKind.CallConstMethod:
-    case IrKind.CallMutableMethod:
-      visitExprChild(expr.receiver);
-      expr.args.forEach(visitExprChild);
-      return;
-    case IrKind.MutateCollection:
-      if (expr.location.kind === CollectionLocationKind.StructField) {
-        visitExprChild(expr.location.object);
-      }
+      if (expr.receiver !== null) visitExprChild(expr.receiver);
       expr.args.forEach(visitExprChild);
       return;
     case IrKind.NewStruct:
@@ -192,11 +173,6 @@ function reachProgram(program: Program): Reach {
     visitDepth(param.depth, reach);
     visitExpr(param.active, reach);
   }
-  for (const output of program.outputs) {
-    for (const arg of output.bindArgs) {
-      visitExpr(arg.expr, reach);
-    }
-  }
   for (const stmt of program.init) {
     visitStmt(stmt, reach);
   }
@@ -256,15 +232,15 @@ function visitDepth(depth: HistoryDepth, reach: Reach): void {
 }
 
 function visitStmt(stmt: IrStmt, reach: Reach): void {
-  if (stmt.kind === IrKind.InitName || stmt.kind === IrKind.WriteName) {
+  if (stmt.kind === IrKind.InitName) {
     noteName(stmt.name, reach);
   }
   visitStmtChildren(stmt, child => visitExpr(child, reach));
 }
 
 function visitExpr(expr: IrExpr, reach: Reach): void {
-  if (expr.kind === IrKind.HistRead) {
-    reach.reads.push(expr);
+  if (expr.kind === IrKind.HistRead || expr.kind === IrKind.Read) {
+    if (expr.kind === IrKind.HistRead) reach.reads.push(expr);
     const place = expr.place;
     if (place.kind === PlaceKind.Name) {
       noteName(place.name, reach);
@@ -275,19 +251,9 @@ function visitExpr(expr: IrExpr, reach: Reach): void {
     } else if (place.kind === PlaceKind.Request) {
       noteRequest(place.request, reach);
     }
-  } else if (
-    expr.kind === IrKind.CallFunc ||
-    expr.kind === IrKind.CallConstMethod ||
-    expr.kind === IrKind.CallMutableMethod
-  ) {
+  } else if (expr.kind === IrKind.CallFunc) {
     noteFunc(expr.func, reach);
     reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
-  } else if (expr.kind === IrKind.CallNative && expr.slot !== null) {
-    reach.maxSlot = Math.max(reach.maxSlot, expr.slot);
-  } else if (expr.kind === IrKind.MutateCollection) {
-    if (expr.location.kind === CollectionLocationKind.Name) {
-      noteName(expr.location.name, reach);
-    }
   } else if (expr.kind === IrKind.ForExpr) {
     noteName(expr.index, reach);
   } else if (expr.kind === IrKind.ForInExpr) {
@@ -323,28 +289,37 @@ export function bindEvaluable(e: IrExpr): boolean {
   switch (e.kind) {
     case IrKind.Const:
       return true;
-    case IrKind.HistRead:
+    case IrKind.Read:
       // Source params are excluded: their reads are series (a bound host
       // series), not bind-time scalars, and would lower to ctx.series. A typed
       // A builtin is bind-visible only when its Tea qualifier is no later
       // than simple; row-varying builtins remain per-row reads.
       return (
-        e.offset === null &&
-        ((e.place.kind === PlaceKind.Param &&
+        (e.place.kind === PlaceKind.Param &&
           e.place.param.defaultValue?.kind !== ParamDefaultKind.Series) ||
-          (e.place.kind === PlaceKind.Builtin &&
-            qualifierLE(e.qualifier, Qualifier.Simple)))
+        (e.place.kind === PlaceKind.Builtin &&
+          qualifierLE(e.qualifier, Qualifier.Simple))
       );
     case IrKind.Binary:
       return bindEvaluable(e.x) && bindEvaluable(e.y);
     case IrKind.Unary:
       return bindEvaluable(e.x);
-    case IrKind.Cond:
+    case IrKind.IfExpr:
       return (
-        bindEvaluable(e.cond) && bindEvaluable(e.then) && bindEvaluable(e.else)
+        bindEvaluable(e.cond) &&
+        bindEvaluable(e.then) &&
+        (e.else === null || bindEvaluable(e.else))
       );
     case IrKind.CallNative:
-      return e.args.every(bindEvaluable);
+      return (
+        e.receiver === null &&
+        e.native.effect === 'pure' &&
+        e.args.every(bindEvaluable)
+      );
+    case IrKind.BlockExpr:
+      return (
+        e.stmts.length === 0 && (e.value === null || bindEvaluable(e.value))
+      );
     default:
       return false;
   }

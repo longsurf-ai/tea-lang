@@ -1,11 +1,11 @@
 //@version=1
-indicator("typed execution and bounded request")
 
-plot(time, "bar open time")
-plot(time_close, "bar close time")
-plot(bar_index, "parent bar index")
-plot(last_bar_index, "parent last bar index")
-plot(timenow, "historical execution clock")
+
+emit "output0" time
+emit "output1" time_close
+emit "output2" bar_index
+emit "output3" last_bar_index
+emit "output4" timenow
 
 firstBit = barstate.isfirst ? 1 : 0
 lastBit = barstate.islast ? 2 : 0
@@ -14,7 +14,7 @@ realtimeBit = barstate.isrealtime ? 8 : 0
 confirmedBit = barstate.isconfirmed ? 16 : 0
 newBit = barstate.isnew ? 32 : 0
 barstateCode = firstBit + lastBit + historyBit + realtimeBit + confirmedBit + newBit
-plot(barstateCode, "historical bar state")
+emit "output5" barstateCode
 
 previousFirstBit = barstate.isfirst[1] ? 1 : 0
 previousLastBit = barstate.islast[1] ? 2 : 0
@@ -26,11 +26,11 @@ previousBarstateCode = if bar_index > 0
     previousFirstBit + previousLastBit + previousHistoryBit + previousRealtimeBit + previousConfirmedBit + previousNewBit
 else
     -1
-plot(previousBarstateCode, "previous historical bar state")
+emit "output6" previousBarstateCode
 
 tailPosition = request.security(
     "",
     "",
     bar_index * 10 + last_bar_index,
     calc_bars_count = 2)
-plot(tailPosition, "bounded child position")
+emit "output7" tailPosition

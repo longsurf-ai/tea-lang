@@ -1,26 +1,252 @@
-Program version=1
+Program version=1 slots=5
 series high: series float depth=none
 series low: series float depth=none
 series close: series float depth=none
-output[0] indicator static{title="Outputs"}
-output[1] plot static{title="High"} channels{series: float}
-output[2] plot static{title="Low"} channels{series: float}
-output[3] fill static{color="#2196F31A"} bind_eval=[0,1]
-  bind plot1: OutputRef output[1]: const plot
-  bind plot2: OutputRef output[2]: const plot
-output[4] hline static{price=0 title="Zero" linestyle="dashed"}
-output[5] plotshape static{style="triangleup" location="abovebar"} channels{series: bool}
+output[0] "output0" set: Plot @ tea-lib/visual.tea:38:5
+output[1] "output1" set: Plot @ tea-lib/visual.tea:38:5
+output[2] "output2" set: Fill @ tea-lib/visual.tea:67:5
+output[3] "output3" set: Hline @ tea-lib/visual.tea:53:5
+output[4] "output4" set: Shape @ tea-lib/visual.tea:87:5
+name p1: perBar series Plot depth=none
+name id: perBar const string depth=none
+name series: perBar series float depth=none
+name title: perBar const string depth=none
+name color: perBar const color depth=none
+name linewidth: perBar const int depth=none
+name style: perBar const string depth=none
+name trackprice: perBar const bool depth=none
+name histbase: perBar const float depth=none
+name offset: perBar const int depth=none
+name editable: perBar const bool depth=none
+name show_last: perBar const int depth=none
+name display: perBar const string depth=none
+name format: perBar const string depth=none
+name precision: perBar const int depth=none
+name p: perBar series Plot depth=none
+name p2: perBar series Plot depth=none
+name id#1: perBar const string depth=none
+name series#1: perBar series float depth=none
+name title#1: perBar const string depth=none
+name color#1: perBar const color depth=none
+name linewidth#1: perBar const int depth=none
+name style#1: perBar const string depth=none
+name trackprice#1: perBar const bool depth=none
+name histbase#1: perBar const float depth=none
+name offset#1: perBar const int depth=none
+name editable#1: perBar const bool depth=none
+name show_last#1: perBar const int depth=none
+name display#1: perBar const string depth=none
+name format#1: perBar const string depth=none
+name precision#1: perBar const int depth=none
+name p#1: perBar series Plot depth=none
+name id#2: perBar const string depth=none
+name plot1: perBar series Plot depth=none
+name plot2: perBar series Plot depth=none
+name color#2: perBar const color depth=none
+name title#2: perBar const string depth=none
+name editable#2: perBar const bool depth=none
+name display#2: perBar const string depth=none
+name p#2: perBar series Fill depth=none
+name id#3: perBar const string depth=none
+name price: perBar const float depth=none
+name title#3: perBar const string depth=none
+name color#3: perBar const color depth=none
+name linestyle: perBar const string depth=none
+name linewidth#2: perBar const int depth=none
+name editable#3: perBar const bool depth=none
+name display#3: perBar const string depth=none
+name p#3: perBar series Hline depth=none
 name mid: perBar series float depth=none
+name id#4: perBar const string depth=none
+name series#2: perBar series bool depth=none
+name title#4: perBar const string depth=none
+name style#2: perBar const string depth=none
+name location: perBar const string depth=none
+name color#4: perBar const color depth=none
+name offset#2: perBar const int depth=none
+name text: perBar const string depth=none
+name textcolor: perBar const color depth=none
+name size: perBar const string depth=none
+name editable#4: perBar const bool depth=none
+name show_last#2: perBar const int depth=none
+name display#4: perBar const string depth=none
+name p#4: perBar series Shape depth=none
+func plot(id: const string, series: series float, title: const string, color: const color, linewidth: const int, style: const string, trackprice: const bool, histbase: const float, offset: const int, editable: const bool, show_last: const int, display: const string, format: const string, precision: const int): series Plot
+  body: BlockExpr: const void
+    Assign
+      target: Read name:p: series Plot
+      value: NewStruct Plot: series Plot
+        Const "output0": const string
+        Read name:series: series float
+        Const "High": const string
+        Const na: const color
+        Const 1: const int
+        Const "line": const string
+        Const false: const bool
+        Const 0: const float
+        Const 0: const int
+        Const true: const bool
+        Const 0: const int
+        Const "all": const string
+        Const "inherit": const string
+        Const 0: const int
+    Emit output[0]
+      value: Read name:p: series Plot
+    Return
+      value: Read name:p: series Plot
+func plot(id#1: const string, series#1: series float, title#1: const string, color#1: const color, linewidth#1: const int, style#1: const string, trackprice#1: const bool, histbase#1: const float, offset#1: const int, editable#1: const bool, show_last#1: const int, display#1: const string, format#1: const string, precision#1: const int): series Plot
+  body: BlockExpr: const void
+    Assign
+      target: Read name:p#1: series Plot
+      value: NewStruct Plot: series Plot
+        Const "output1": const string
+        Read name:series#1: series float
+        Const "Low": const string
+        Const na: const color
+        Const 1: const int
+        Const "line": const string
+        Const false: const bool
+        Const 0: const float
+        Const 0: const int
+        Const true: const bool
+        Const 0: const int
+        Const "all": const string
+        Const "inherit": const string
+        Const 0: const int
+    Emit output[1]
+      value: Read name:p#1: series Plot
+    Return
+      value: Read name:p#1: series Plot
+func fill(id#2: const string, plot1: series Plot, plot2: series Plot, color#2: const color, title#2: const string, editable#2: const bool, display#2: const string): series Fill
+  body: BlockExpr: const void
+    Assign
+      target: Read name:p#2: series Fill
+      value: NewStruct Fill: series Fill
+        Const "output2": const string
+        FieldGet field[0]: series string
+          Read name:plot1: series Plot
+        FieldGet field[0]: series string
+          Read name:plot2: series Plot
+        Const "#2196F31A": const color
+        Const "": const string
+        Const true: const bool
+        Const "all": const string
+    Emit output[2]
+      value: Read name:p#2: series Fill
+    Return
+      value: Read name:p#2: series Fill
+func hline(id#3: const string, price: const float, title#3: const string, color#3: const color, linestyle: const string, linewidth#2: const int, editable#3: const bool, display#3: const string): series Hline
+  body: BlockExpr: const void
+    Assign
+      target: Read name:p#3: series Hline
+      value: NewStruct Hline: series Hline
+        Const "output3": const string
+        Const 0: const float
+        Const "Zero": const string
+        Const na: const color
+        Const "dashed": const string
+        Const 1: const int
+        Const true: const bool
+        Const "all": const string
+    Emit output[3]
+      value: Read name:p#3: series Hline
+    Return
+      value: Read name:p#3: series Hline
+func plotshape(id#4: const string, series#2: series bool, title#4: const string, style#2: const string, location: const string, color#4: const color, offset#2: const int, text: const string, textcolor: const color, size: const string, editable#4: const bool, show_last#2: const int, display#4: const string): series Shape
+  body: BlockExpr: const void
+    Assign
+      target: Read name:p#4: series Shape
+      value: NewStruct Shape: series Shape
+        Const "output4": const string
+        Read name:series#2: series bool
+        Const "": const string
+        Const "triangleup": const string
+        Const "abovebar": const string
+        Const na: const color
+        Const 0: const int
+        Const "": const string
+        Const na: const color
+        Const "auto": const string
+        Const true: const bool
+        Const 0: const int
+        Const "all": const string
+    Emit output[4]
+      value: Read name:p#4: series Shape
+    Return
+      value: Read name:p#4: series Shape
 body:
-  Emit output[1] eval=[0]
-    HistRead series:high: series float
-  Emit output[2] eval=[0]
-    HistRead series:low: series float
-  WriteName mid
-    CallNative math.avg: series float
-      HistRead series:high: series float
-      HistRead series:low: series float
-  Emit output[5] eval=[0]
-    Binary Gt: series bool
-      HistRead series:close: series float
-      HistRead name:mid: series float
+  Assign
+    target: Read name:p1: series Plot
+    value: CallFunc plot slot=0: series Plot
+      Const "output0": const string
+      Read series:high: series float
+      Const "High": const string
+      Const na: const color
+      Const 1: const int
+      Const "line": const string
+      Const false: const bool
+      Const 0: const float
+      Const 0: const int
+      Const true: const bool
+      Const 0: const int
+      Const "all": const string
+      Const "inherit": const string
+      Const 0: const int
+  Assign
+    target: Read name:p2: series Plot
+    value: CallFunc plot slot=1: series Plot
+      Const "output1": const string
+      Read series:low: series float
+      Const "Low": const string
+      Const na: const color
+      Const 1: const int
+      Const "line": const string
+      Const false: const bool
+      Const 0: const float
+      Const 0: const int
+      Const true: const bool
+      Const 0: const int
+      Const "all": const string
+      Const "inherit": const string
+      Const 0: const int
+  ExprStmt
+    CallFunc fill slot=2: series Fill
+      Const "output2": const string
+      Read name:p1: series Plot
+      Read name:p2: series Plot
+      Const "#2196F31A": const color
+      Const "": const string
+      Const true: const bool
+      Const "all": const string
+  ExprStmt
+    CallFunc hline slot=3: series Hline
+      Const "output3": const string
+      Const 0: const int
+      Const "Zero": const string
+      Const na: const color
+      Const "dashed": const string
+      Const 1: const int
+      Const true: const bool
+      Const "all": const string
+  Assign
+    target: Read name:mid: series float
+    value: CallNative math.avg pure: series float
+      Read series:high: series float
+      Read series:low: series float
+  ExprStmt
+    CallFunc plotshape slot=4: series Shape
+      Const "output4": const string
+      Binary Gt: series bool
+        Read series:close: series float
+        Read name:mid: series float
+      Const "": const string
+      Const "triangleup": const string
+      Const "abovebar": const string
+      Const na: const color
+      Const 0: const int
+      Const "": const string
+      Const na: const color
+      Const "auto": const string
+      Const true: const bool
+      Const 0: const int
+      Const "all": const string

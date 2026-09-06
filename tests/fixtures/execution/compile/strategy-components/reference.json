@@ -8,120 +8,197 @@
       "../../../../../docs/memory-model.md"
     ]
   },
-  "tolerance": {"absolute": 1e-12, "relative": 1e-12},
+  "tolerance": {
+    "absolute": 1e-12,
+    "relative": 1e-12
+  },
   "outputs": [
     {
-      "oid": 0,
-      "effect": "strategy",
-      "staticArgs": [["title", "Tea strategy components"]],
-      "boundArgs": [],
-      "channels": []
+      "name": "output0",
+      "type": "float"
     },
     {
-      "oid": 1,
-      "effect": "plot",
-      "staticArgs": [["title", "cash"]],
-      "boundArgs": [],
-      "channels": [["series", "float"]]
+      "name": "output1",
+      "type": "float"
     },
     {
-      "oid": 2,
-      "effect": "plot",
-      "staticArgs": [["title", "position quantity"]],
-      "boundArgs": [],
-      "channels": [["series", "float"]]
+      "name": "output2",
+      "type": "float"
     },
     {
-      "oid": 3,
-      "effect": "plot",
-      "staticArgs": [["title", "equity"]],
-      "boundArgs": [],
-      "channels": [["series", "float"]]
+      "name": "output3",
+      "type": "float"
     },
     {
-      "oid": 4,
-      "effect": "plot",
-      "staticArgs": [["title", "realized pnl"]],
-      "boundArgs": [],
-      "channels": [["series", "float"]]
+      "name": "output4",
+      "type": "float"
     },
     {
-      "oid": 5,
-      "effect": "plot",
-      "staticArgs": [["title", "total fees"]],
-      "boundArgs": [],
-      "channels": [["series", "float"]]
+      "name": "output5",
+      "type": "int"
     },
     {
-      "oid": 6,
-      "effect": "plot",
-      "staticArgs": [["title", "fill count"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output6",
+      "type": "int"
     },
     {
-      "oid": 7,
-      "effect": "plot",
-      "staticArgs": [["title", "round-trip count"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output7",
+      "type": "float"
     },
     {
-      "oid": 8,
-      "effect": "plot",
-      "staticArgs": [["title", "maximum drawdown"]],
-      "boundArgs": [],
-      "channels": [["series", "float"]]
-    },
-    {
-      "oid": 9,
-      "effect": "plot",
-      "staticArgs": [["title", "expired order id"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output8",
+      "type": "int"
     }
   ],
   "rows": [
     {
       "row": 0,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [121]},
-        {"oid": 2, "provisional": false, "channels": [0]},
-        {"oid": 3, "provisional": false, "channels": [121]},
-        {"oid": 4, "provisional": false, "channels": [0]},
-        {"oid": 5, "provisional": false, "channels": [0]},
-        {"oid": 6, "provisional": false, "channels": [0]},
-        {"oid": 7, "provisional": false, "channels": [0]},
-        {"oid": 8, "provisional": false, "channels": [0]},
-        {"oid": 9, "provisional": false, "channels": [0]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 121
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 121
+        },
+        {
+          "name": "output3",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output4",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output5",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output6",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output7",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output8",
+          "provisional": false,
+          "value": 0
+        }
       ]
     },
     {
       "row": 1,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [0]},
-        {"oid": 2, "provisional": false, "channels": [10]},
-        {"oid": 3, "provisional": false, "channels": [110]},
-        {"oid": 4, "provisional": false, "channels": [0]},
-        {"oid": 5, "provisional": false, "channels": [11]},
-        {"oid": 6, "provisional": false, "channels": [1]},
-        {"oid": 7, "provisional": false, "channels": [0]},
-        {"oid": 8, "provisional": false, "channels": [0.09090909090909091]},
-        {"oid": 9, "provisional": false, "channels": [0]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 10
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 110
+        },
+        {
+          "name": "output3",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output4",
+          "provisional": false,
+          "value": 11
+        },
+        {
+          "name": "output5",
+          "provisional": false,
+          "value": 1
+        },
+        {
+          "name": "output6",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output7",
+          "provisional": false,
+          "value": 0.09090909090909091
+        },
+        {
+          "name": "output8",
+          "provisional": false,
+          "value": 0
+        }
       ]
     },
     {
       "row": 2,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [162]},
-        {"oid": 2, "provisional": false, "channels": [0]},
-        {"oid": 3, "provisional": false, "channels": [162]},
-        {"oid": 4, "provisional": false, "channels": [41]},
-        {"oid": 5, "provisional": false, "channels": [29]},
-        {"oid": 6, "provisional": false, "channels": [2]},
-        {"oid": 7, "provisional": false, "channels": [1]},
-        {"oid": 8, "provisional": false, "channels": [0.09090909090909091]},
-        {"oid": 9, "provisional": false, "channels": [3]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 162
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 162
+        },
+        {
+          "name": "output3",
+          "provisional": false,
+          "value": 41
+        },
+        {
+          "name": "output4",
+          "provisional": false,
+          "value": 29
+        },
+        {
+          "name": "output5",
+          "provisional": false,
+          "value": 2
+        },
+        {
+          "name": "output6",
+          "provisional": false,
+          "value": 1
+        },
+        {
+          "name": "output7",
+          "provisional": false,
+          "value": 0.09090909090909091
+        },
+        {
+          "name": "output8",
+          "provisional": false,
+          "value": 3
+        }
       ]
     }
   ],

@@ -2,7 +2,7 @@
 // Compile-only spike for a static resumable broker/coordinator protocol.
 // The two concrete brokers share a structural method set; no interface value,
 // collection, or runtime dispatch object is constructed.
-strategy("Resumable strategy protocol")
+
 
 type Bar
 	float open
@@ -144,5 +144,5 @@ simple.end()
 pathLike.begin(bar)
 pathLike.end()
 
-plot(simple.equity(close), "simple equity")
-plot(pathLike.equity(close), "path-like equity")
+emit "output0" simple.equity(close)
+emit "output1" pathLike.equity(close)

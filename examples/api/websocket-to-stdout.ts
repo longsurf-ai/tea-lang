@@ -17,8 +17,8 @@ const node = tea`
   else
       balance := balance - close
 
-  plot(balance, "Signed running balance")
-  plot(close >= threshold ? 1 : 0, "Above threshold")
+  plot("Signed running balance", balance, "Signed running balance")
+  plot("Above threshold", close >= threshold ? 1 : 0, "Above threshold")
 `;
 
 node.bind(source);

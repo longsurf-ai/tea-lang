@@ -15,13 +15,13 @@ describe('Pine Extension', () => {
   test('derives finite indices, times, and bar state from public input', async () => {
     const node = pineNode(
       [
-        'plot(time)',
-        'plot(time_close)',
-        'plot(timenow)',
-        'plot(bar_index)',
-        'plot(last_bar_index)',
-        'plot(barstate.isfirst ? 1 : 0)',
-        'plot(barstate.islast ? 1 : 0)',
+        'emit "output0" time',
+        'emit "output1" time_close',
+        'emit "output2" timenow',
+        'emit "output3" bar_index',
+        'emit "output4" last_bar_index',
+        'emit "output5" barstate.isfirst ? 1 : 0',
+        'emit "output6" barstate.islast ? 1 : 0',
       ].join('\n'),
       1_777_777_777_777,
     );
@@ -54,9 +54,10 @@ describe('Pine Extension', () => {
 
   test('uses typed empty values when application metadata is absent', async () => {
     const node = pineNode(
-      ['plot(timeframe.multiplier)', 'plot(timeframe.isdaily ? 1 : 0)'].join(
-        '\n',
-      ),
+      [
+        'emit "output7" timeframe.multiplier',
+        'emit "output8" timeframe.isdaily ? 1 : 0',
+      ].join('\n'),
       0,
     );
     node.bind(new DataStream(new Schema([]), of({}), i, 1));
@@ -72,7 +73,7 @@ describe('Pine Extension', () => {
     const module = loadModule(
       generate(
         mustBuild(
-          'gain = input.float(1)\nplot(timeframe.multiplier[1] * gain)',
+          'gain = input.float(1)\nemit "output0" timeframe.multiplier[1] * gain',
         ),
       ),
     ).bind({gain: 2}, new Map([[0, 7]]));
@@ -91,7 +92,7 @@ describe('Pine Extension', () => {
   });
 
   test('requires finite indices only for extent-dependent builtins', async () => {
-    const node = pineNode('plot(last_bar_index)', 0);
+    const node = pineNode('emit "output9" last_bar_index', 0);
     node.bind(new DataStream(new Schema([]), of({})));
     const sink = new DatumSink();
 
@@ -103,7 +104,7 @@ describe('Pine Extension', () => {
   });
 
   test('requires exact bigint event time when time is demanded', async () => {
-    const node = pineNode('plot(time)', 0);
+    const node = pineNode('emit "output10" time', 0);
     node.bind(new DataStream(new Schema([]), of({}), i, 1));
     const sink = new DatumSink();
 
@@ -128,7 +129,7 @@ function values(sink: DatumSink): readonly (readonly unknown[])[] {
     Object.entries(datum)
       .filter(([key, value]) => /^output\d+$/.test(key) && value !== null)
       .sort(([a], [b]) => Number(a.slice(6)) - Number(b.slice(6)))
-      .map(([, value]) => (value as {series: unknown}).series),
+      .map(([, value]) => value),
   );
 }
 

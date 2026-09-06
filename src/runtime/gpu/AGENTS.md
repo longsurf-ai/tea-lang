@@ -33,6 +33,8 @@ device resources, dispatch, readback, decoding, and publication.
   GPU resources.
 
 - The embedded TypeScript constructs ordinary Arrow schemas. Each declaration
-  callback receives its own schema copy; publication uses named `outputN` records and `effectN` lists
-  with global ordinals through shared `createDatum()`. GPU supports its existing
+  callback receives its own schema copy; publication uses source-named values and lists
+  in schema declaration order through shared `createDatum()`. Scalar set cells have
+  separate presence and value-validity words; skipped sets decode to null and emitted
+  numeric NA remains NaN. Lists preserve per-column order without global ordinals. GPU supports its existing
   scalar subset only; Arrow lists and structs do not imply GPU execution support.

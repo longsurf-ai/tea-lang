@@ -35,9 +35,9 @@ runtime semantics remain in their existing packages.
   idempotent. Current steps are final (`provisional: false`).
 - `Context` keeps `StepResult` internal to Node. Node adds its successful-step
   index and exact source time, then publishes one lossless Arrow-schema row:
-  assignment-style `outputN` fields contain named channels, append-style
-  `effectN` fields contain ordered `{ordinal, payload}` events, numeric `NaN`
-  remains `NaN`, and provisional state is explicit. A thrown
+  source-named set fields contain nullable raw values, append fields contain
+  raw lists in per-column execution order, numeric `NaN` remains `NaN`,
+  absence and an explicit null output share null, and provisional state is explicit. A thrown
   observer `next()` callback terminates the shared execution and reaches every
   observer through `error()`.
 - `DataStream` owns one Arrow schema validation per emission plus optional

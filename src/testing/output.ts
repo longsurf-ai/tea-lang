@@ -30,35 +30,25 @@ export class OutputCapture {
 
   publish(datum: Datum): void {
     this.publications.push(datum);
-    const events: {outputId: number; ordinal: number; payload: unknown}[] = [];
     this.fields.forEach((field, outputId) => {
       const value = datum[field.name];
       if (field.metadata.get('tea:write') === 'append') {
-        for (const event of value as readonly {
-          ordinal: number;
-          payload: unknown;
-        }[]) {
-          events.push({outputId, ...event});
+        for (const payload of value as readonly unknown[]) {
+          this.effectEmissions.push({
+            row: datum.index,
+            outputId,
+            payload,
+            provisional: datum.provisional,
+          });
         }
       } else if (value !== null && value !== undefined) {
         this.emissions.push({
           row: datum.index,
           outputId,
-          channels: field.type.children.map(
-            (channel: Field) =>
-              (value as Record<string, unknown>)[channel.name],
-          ),
+          channels: [value],
           provisional: datum.provisional,
         });
       }
     });
-    for (const event of events.sort((a, b) => a.ordinal - b.ordinal)) {
-      this.effectEmissions.push({
-        row: datum.index,
-        outputId: event.outputId,
-        payload: event.payload,
-        provisional: datum.provisional,
-      });
-    }
   }
 }

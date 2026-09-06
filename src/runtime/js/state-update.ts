@@ -95,7 +95,7 @@ export class Step {
   readonly rootFrame: WorkspaceFrame;
   private readonly fields: readonly Field[];
   private readonly outputs: unknown[];
-  private ordinal = 0;
+  private readonly written = new Set<number>();
   private transaction: HeapTransaction | null = null;
   private requestValues: readonly Stored[] = [];
 
@@ -309,29 +309,16 @@ export class Step {
     }
   }
 
-  emit(output: number, channel: number, value: Stored): void {
+  emit(output: number, value: Stored): void {
     const field = this.fields[output];
     const spec = this.module.outputs.declarations[output];
-    if (
-      field?.metadata.get('tea:write') !== 'set' ||
-      field.type.children[channel] === undefined
-    )
-      return fatal(`unknown output ${output} channel ${channel}`);
-    let row = this.outputs[output] as Record<string, unknown> | null;
-    if (row === null) {
-      row = Object.fromEntries(
-        field.type.children.map((child: Field) => [
-          child.name,
-          child.nullable ? null : DataType.isBool(child.type) ? false : NaN,
-        ]),
-      );
-      this.outputs[output] = row;
-    }
-    row[field.type.children[channel].name] = this.snapshot(
-      spec.layouts[channel],
-      field.type.children[channel],
-      value,
-    );
+    if (field?.metadata.get('tea:write') !== 'set')
+      return fatal(`unknown set output ${output}`);
+    if (this.written.has(output))
+      return fatal(`duplicate emit to output '${field.name}'`);
+    const detached = this.snapshot(spec.layout, field, value);
+    this.written.add(output);
+    this.outputs[output] = detached;
   }
 
   append(output: number, payload: Stored): void {
@@ -339,14 +326,8 @@ export class Step {
     const spec = this.module.outputs.declarations[output];
     if (field?.metadata.get('tea:write') !== 'append')
       return fatal(`unknown append output ${output}`);
-    const value = this.snapshot(
-      spec.layouts[0],
-      field.type.children[0].type.children[1],
-      payload,
-    );
-    (this.outputs[output] as unknown[]).push(
-      Object.freeze({ordinal: this.ordinal++, payload: value}),
-    );
+    const value = this.snapshot(spec.layout, field.type.children[0], payload);
+    (this.outputs[output] as unknown[]).push(value);
   }
 
   // Copy at the emission, not at the end of the step: later mutation must not
@@ -359,10 +340,6 @@ export class Step {
     active?: Set<object>,
   ): unknown {
     const transaction = this.mustTransaction();
-    if (layoutId === -1)
-      return value === null
-        ? null
-        : Object.freeze({kind: field.metadata.get('tea:name'), id: value});
     this.structs.assertValue(layoutId, value, 'output payload', transaction);
     if (value === null) {
       if (!field.nullable)
@@ -913,7 +890,6 @@ function frameLayout(module: Module, fid: number) {
 export function validateIoSchemas(module: Module, layouts: StorageTypes): void {
   const active = new Set<number>();
   const validate = (id: number, field: Field): void => {
-    if (id === -1 && field.metadata.get('tea:type') === 'output-ref') return;
     if (active.has(id)) return fatal('recursive output schema');
     active.add(id);
     const layout = layouts.layout(id);
@@ -1010,14 +986,10 @@ export function validateIoSchemas(module: Module, layouts: StorageTypes): void {
     fatal('output schema and declarations disagree');
   module.outputs.declarations.forEach((output, id) => {
     const field = fields[id];
-    const channels =
+    const value =
       field.metadata.get('tea:write') === 'append'
-        ? [field.type.children[0].type.children[1]]
-        : field.type.children;
-    if (output.layouts.length !== channels.length)
-      fatal('output descriptor count disagrees with Arrow schema');
-    channels.forEach((field: Field, i: number) =>
-      validate(output.layouts[i], field),
-    );
+        ? field.type.children[0]
+        : field;
+    validate(output.layout, value);
   });
 }

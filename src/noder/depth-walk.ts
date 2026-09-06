@@ -2,7 +2,6 @@
 
 import {fatal} from '../base/print';
 import {
-  CollectionLocationKind,
   IrKind,
   PlaceKind,
   Storage,
@@ -46,8 +45,9 @@ function immutableBindNamesFromCounts(
 }
 
 function countWritesStmt(stmt: IrStmt, writes: Map<Name, number>): void {
-  if (stmt.kind === IrKind.WriteName) {
-    writes.set(stmt.name, (writes.get(stmt.name) ?? 0) + 1);
+  if (stmt.kind === IrKind.Assign && stmt.target.kind === IrKind.Read) {
+    const name = stmt.target.place.name;
+    writes.set(name, (writes.get(name) ?? 0) + 1);
   }
   for (const child of stmtExprs(stmt)) {
     countWritesExpr(child, writes);
@@ -55,11 +55,8 @@ function countWritesStmt(stmt: IrStmt, writes: Map<Name, number>): void {
 }
 
 function countWritesExpr(expr: IrExpr, writes: Map<Name, number>): void {
-  if (
-    expr.kind === IrKind.MutateCollection &&
-    expr.location.kind === CollectionLocationKind.Name
-  ) {
-    const name = expr.location.name;
+  if (expr.kind === IrKind.CallNative && expr.receiver?.kind === IrKind.Read) {
+    const name = expr.receiver.place.name;
     writes.set(name, (writes.get(name) ?? 0) + 1);
   }
   if (expr.kind === IrKind.BlockExpr) {
@@ -89,7 +86,10 @@ export function exprChildren(
     child => children.push(child),
     stmt => fatal(`non-block expression exposed child statement ${stmt.kind}`),
   );
-  if (expr.kind === IrKind.HistRead && expr.place.kind === PlaceKind.Request) {
+  if (
+    (expr.kind === IrKind.Read || expr.kind === IrKind.HistRead) &&
+    expr.place.kind === PlaceKind.Request
+  ) {
     const edge = expr.place.request;
     children.push(
       edge.symbol,

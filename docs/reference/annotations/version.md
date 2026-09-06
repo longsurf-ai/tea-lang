@@ -32,8 +32,8 @@ The annotation applies to the complete source file.
 ```tea
 //@version=1
 
-indicator("Versioned source")
-plot(close)
+
+emit "output0" close
 ```
 
 ## Remarks

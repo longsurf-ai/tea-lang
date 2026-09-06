@@ -139,7 +139,8 @@ describe('package runtime global projection', () => {
       'export read() => used',
     ].join('\n');
     expect(
-      buildWith('import state\nplot(1)', {state: library}).packageGlobals,
+      buildWith('import state\nemit "output0" 1', {state: library})
+        .packageGlobals,
     ).toEqual([]);
     expect(
       buildWith('import state\nbox = state.Box.new(1)', {state: library})

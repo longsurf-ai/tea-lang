@@ -1,7 +1,7 @@
 //@version=1
 // Clean-room conversion of the inspected current Multi-Timeframe Parabolic SAR
 // v2.0 source, including its two-sided close-then-reverse order sequence.
-strategy("Multi-timeframe PSAR — inspected v2.0", shorttitle="MTF PSAR v2", overlay=true)
+
 
 import broker
 import portfolio
@@ -117,18 +117,18 @@ strat.mark(close)
 strat.finish(barstate.islast)
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(current_sar, "current SAR")
-plot(higher_sar, "higher-timeframe SAR")
-plot(long_signal ? 1.0 : 0.0, "long signal")
-plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(metrics.positionQuantity, "signed position quantity")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.winRate, "win rate")
-plot(metrics.profitFactor, "profit factor")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("current SAR", current_sar, "current SAR")
+plot("higher-timeframe SAR", higher_sar, "higher-timeframe SAR")
+plot("long signal", long_signal ? 1.0 : 0.0, "long signal")
+plot("short signal", short_signal ? 1.0 : 0.0, "short signal")
+plot("signed position quantity", metrics.positionQuantity, "signed position quantity")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("total fees", metrics.totalFees, "total fees")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("win rate", metrics.winRate, "win rate")
+plot("profit factor", metrics.profitFactor, "profit factor")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

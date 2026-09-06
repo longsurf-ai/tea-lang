@@ -1,5 +1,5 @@
 // Run after `npm run build:package`: node examples/api/typed-runtime.ts
-import {Field, Float64, Schema, Struct} from 'apache-arrow';
+import {Field, Float64, Schema} from 'apache-arrow';
 import {from} from 'rxjs';
 import {createNode, DataStream} from 'tea';
 import {
@@ -20,9 +20,9 @@ type Program = Context<
   {series: {close: Input<number, 'float'>; open: Input<number, 'float'>}},
   Frame<{}, {close: Sum; open: Sum}>,
   {
-    output0: {set(value: {series: Value<number, 'float'>}): void};
-    output1: {set(value: {series: Value<number, 'float'>}): void};
-    output2: {set(value: {series: Value<number, 'float'>}): void};
+    output0: {set(value: Value<number, 'float'>): void};
+    output1: {set(value: Value<number, 'float'>): void};
+    output2: {set(value: Value<number, 'float'>): void};
   }
 >;
 
@@ -37,11 +37,9 @@ function main(ctx: Program): void {
   const close = ctx.inputs.series.close.hist(0);
   const open = ctx.inputs.series.open.hist(0);
   const state = ctx.state;
-  ctx.outputs.output0.set({series: accumulate(state.calls.close, close)});
-  ctx.outputs.output1.set({series: accumulate(state.calls.open, open)});
-  ctx.outputs.output2.set({
-    series: ctx.inputs.series.close.hist(ctx.params.lag),
-  });
+  ctx.outputs.output0.set(accumulate(state.calls.close, close));
+  ctx.outputs.output1.set(accumulate(state.calls.open, open));
+  ctx.outputs.output2.set(ctx.inputs.series.close.hist(ctx.params.lag));
 }
 
 const schema = new Schema([
@@ -103,19 +101,16 @@ export const program = new Module<Program>(
           name =>
             new Field(
               name,
-              new Struct([new Field('series', new Float64(), false)]),
+              new Float64(),
               true,
               new Map([
                 ['tea:write', 'set'],
-                ['tea:kind', 'plot'],
+                ['tea:type', 'float'],
               ]),
             ),
         ),
       ),
-      declarations: ['Close sum', 'Open sum', 'Previous close'].map(title => ({
-        args: [{name: 'title', value: title}],
-        layouts: [0],
-      })),
+      declarations: [{layout: 0}, {layout: 0}, {layout: 0}],
     },
     requests: [],
   },

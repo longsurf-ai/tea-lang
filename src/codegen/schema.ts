@@ -120,14 +120,7 @@ export function fieldOf(
         case TypeKind.Table:
         case TypeKind.Polyline:
         case TypeKind.Linefill:
-        case TypeKind.Plot:
-        case TypeKind.Hline:
-          metadata.set(
-            'tea:type',
-            type.kind === TypeKind.Plot || type.kind === TypeKind.Hline
-              ? 'output-ref'
-              : 'resource',
-          );
+          metadata.set('tea:type', 'resource');
           metadata.set('tea:name', type.kind.toLowerCase());
           return new Field(
             name,

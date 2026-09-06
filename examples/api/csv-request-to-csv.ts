@@ -26,8 +26,8 @@ const node = tea`
   else if close < requested
       spreadBalance := spreadBalance - requested + close
 
-  plot(spreadBalance, "Cumulative spread")
-  plot(close + requested, "Combined value")
+  plot("Cumulative spread", spreadBalance, "Cumulative spread")
+  plot("Combined value", close + requested, "Combined value")
 `;
 
 node.bind({close: main, requested});

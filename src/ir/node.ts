@@ -3,10 +3,7 @@
 import type {Pos} from '../base/pos';
 import type {ConstValue, Storage, Qualifier, StructType, Type} from './type';
 import type {
-  ConstMethodIrFunc,
-  EffectDecl,
-  FreeIrFunc,
-  MutableMethodIrFunc,
+  IrFunc,
   OutputDecl,
   ParamInput,
   RequestEdge,
@@ -19,8 +16,7 @@ export {Storage} from './type';
 // None = never read historically (no buffer materializes); Const = known
 // at compile time; Bound = an input/simple-qualified expression evaluated
 // at bind; Capped = dynamic (series) offsets bounded by an explicit
-// max_bars_back-style cap — itself bind-resolvable, sourced by the noder from
-// max_bars_back(x, n), the indicator declaration, or the engine default.
+// cap — itself bind-resolvable and supplied by the engine default.
 export const DepthKind = {
   None: 'none',
   Const: 'const',
@@ -51,16 +47,12 @@ export interface Name {
 
 export const IrKind = {
   Const: 'Const', // Literal or folded constant, e.g. `42` or folded `1 + 2`.
-  OutputRef: 'OutputRef', // Declarative output handle, e.g. `p` in `p = plot(close)`.
-  HistRead: 'HistRead', // Current or historical read, e.g. `close` or `close[1]`.
+  Read: 'Read', // Current binding value, e.g. `close` or `total`.
+  HistRead: 'HistRead', // Historical binding value, e.g. `close[1]`.
   Binary: 'Binary', // Binary operation, e.g. `x + y`.
   Unary: 'Unary', // Unary operation, e.g. `-x` or `not ready`.
-  Cond: 'Cond', // Ternary conditional, e.g. `ready ? x : y`.
-  CallFunc: 'CallFunc', // Free Tea function call, e.g. `average(x, y)`.
-  CallConstMethod: 'CallConstMethod', // Read-only Tea method call, e.g. `portfolio.size()`.
-  CallMutableMethod: 'CallMutableMethod', // Mutable Tea method call, e.g. `portfolio.add(1)`.
-  CallNative: 'CallNative', // Native catalog call, e.g. `math.abs(x)`.
-  MutateCollection: 'MutateCollection', // Collection mutation with header write-back, e.g. `xs.push(x)`.
+  CallFunc: 'CallFunc', // Tea function or method call, e.g. `average(x, y)` or `counter.add(1)`.
+  CallNative: 'CallNative', // Resolved primitive call, e.g. `math.abs(x)` or `xs.push(x)`.
   NewStruct: 'NewStruct', // New struct value, e.g. `Point.new(x, y)`.
   MakeTuple: 'MakeTuple', // Tuple value, e.g. `[x, y]`.
   TupleGet: 'TupleGet', // Tuple element from destructuring, e.g. `x` in `[x, y] = pair()`.
@@ -73,10 +65,9 @@ export const IrKind = {
   BlockExpr: 'BlockExpr', // Indented block with an optional trailing value, e.g. an `if` body.
   ExprStmt: 'ExprStmt', // Expression evaluated only for effects, e.g. `counter.add(1)`.
   InitName: 'InitName', // Persistent name initialization, e.g. `var x = 0`.
-  WriteName: 'WriteName', // Per-bar name write, e.g. `x = close` or `x := close`.
-  StoreField: 'StoreField', // Struct-field write, e.g. `point.x := 1`.
-  Emit: 'Emit', // Per-bar output-channel write, e.g. the `close` in `plot(close)`.
-  EmitEffect: 'EmitEffect', // Sparse effect append, e.g. `effect.emit(fill)`.
+  Assign: 'Assign', // Assignment to a binding or field, e.g. `x += 1` or `point.x := 1`.
+  Emit: 'Emit', // Write a named output column, e.g. `emit "price" close` or `emit.append "fills" fill`.
+  Return: 'Return', // Return from the enclosing function, e.g. `return total`.
   Break: 'Break', // Exit from the nearest loop, e.g. `break`.
   Continue: 'Continue', // Jump to the next loop iteration, e.g. `continue`.
 } as const;
@@ -145,28 +136,6 @@ export type Place =
     }
   | {readonly kind: typeof PlaceKind.Request; readonly request: RequestEdge};
 
-// A mutating collection produces a replacement header, so the Program keeps
-// the exact writable location that receives it. Struct-field locations carry
-// the receiver expression itself: lowering captures that reference before it
-// evaluates any explicit argument and writes the replacement through the same
-// captured reference afterward.
-export const CollectionLocationKind = {
-  Name: 'name',
-  StructField: 'struct-field',
-} as const;
-
-export type CollectionLocation =
-  | {
-      readonly kind: typeof CollectionLocationKind.Name;
-      readonly name: Name;
-    }
-  | {
-      readonly kind: typeof CollectionLocationKind.StructField;
-      readonly object: IrExpr;
-      readonly owner: StructType;
-      readonly fieldIndex: number;
-    };
-
 // @agent invariant: the IR is built only from checked, error-free syntax —
 // there are no Bad nodes here; recovery ends at the checker's phase barrier.
 // Every expression carries (type, qualifier); the compiler DESCRIBES history
@@ -182,16 +151,12 @@ export interface IrExprBase extends IrNode {
 
 export type IrExpr =
   | ConstExpr
-  | OutputRefExpr
+  | ReadExpr
   | HistReadExpr
   | BinaryExpr
   | UnaryExpr
-  | CondExpr
   | CallFuncExpr
-  | CallConstMethodExpr
-  | CallMutableMethodExpr
   | CallNativeExpr
-  | MutateCollectionExpr
   | NewStructExpr
   | MakeTupleExpr
   | TupleGetExpr
@@ -208,22 +173,18 @@ export interface ConstExpr extends IrExprBase {
   readonly value: ConstValue;
 }
 
-// A compile-time reference to a declarative output channel (type Plot or
-// Hline, always const-qualified): `x = plot(...)` binds x to this, and
-// fill(x, y) consumes it in bindArgs. Never a runtime heap handle.
-export interface OutputRefExpr extends IrExprBase {
-  readonly kind: typeof IrKind.OutputRef;
-  readonly output: OutputDecl;
+/** A current value read. Each occurrence retains its own source position. */
+export interface ReadExpr extends IrExprBase {
+  readonly kind: typeof IrKind.Read;
+  readonly place: Place;
 }
 
-// A read through the time machine: offset null means the current bar
-// (offset 0), a non-null offset is `x[k]`. The use site keeps its own pos —
-// unlike shared-node designs, per-use positions survive for diagnostics.
-// The checker guarantees offset qualifiers obey the bind-time depth rule.
+// Explicit history retains its offset even at zero; only a direct readable
+// binding can supply the place, and noding has already checked that rule.
 export interface HistReadExpr extends IrExprBase {
   readonly kind: typeof IrKind.HistRead;
   readonly place: Place;
-  readonly offset: IrExpr | null;
+  readonly offset: IrExpr;
 }
 
 export interface BinaryExpr extends IrExprBase {
@@ -239,62 +200,35 @@ export interface UnaryExpr extends IrExprBase {
   readonly x: IrExpr;
 }
 
-export interface CondExpr extends IrExprBase {
-  readonly kind: typeof IrKind.Cond;
-  readonly cond: IrExpr;
-  readonly then: IrExpr;
-  readonly else: IrExpr;
-}
-
+/** A user call captures its optional receiver before explicit arguments.
+ * The callee's mode owns receiver validation; slots preserve written-call state.
+ */
 export interface CallFuncExpr extends IrExprBase {
   readonly kind: typeof IrKind.CallFunc;
-  readonly func: FreeIrFunc;
+  readonly func: IrFunc;
+  readonly receiver: IrExpr | null;
   readonly slot: number;
   readonly args: readonly IrExpr[];
   readonly argumentEvaluationOrder: readonly number[];
 }
 
-// A read-only method call. `receiver` is evaluated exactly once before the
-// source-visible explicit arguments and becomes the callee's hidden receiver.
-export interface CallConstMethodExpr extends IrExprBase {
-  readonly kind: typeof IrKind.CallConstMethod;
-  readonly func: ConstMethodIrFunc;
-  readonly receiver: IrExpr;
-  readonly slot: number;
-  readonly args: readonly IrExpr[];
-  readonly argumentEvaluationOrder: readonly number[];
+/** Concrete primitive signature projected from checking. Effect controls
+ * bind-time legality; argument types follow the call's explicit operand list.
+ */
+export interface Intrinsic {
+  readonly name: string;
+  readonly argTypes: readonly Type[];
+  readonly resultType: Type;
+  readonly effect: 'pure' | 'read' | 'write' | 'allocate';
 }
 
-// A mutable method receives the same struct reference as its caller. The
-// receiver is evaluated and validated once before source-visible arguments;
-// field writes in the body mutate the referenced Heap storage directly.
-export interface CallMutableMethodExpr extends IrExprBase {
-  readonly kind: typeof IrKind.CallMutableMethod;
-  readonly func: MutableMethodIrFunc;
-  readonly receiver: IrExpr;
-  readonly slot: number;
-  readonly args: readonly IrExpr[];
-  readonly argumentEvaluationOrder: readonly number[];
-}
-
-// A native primitive call (data-source-, effect-, or intrinsic-classed per
-// the catalog). Stateful natives also carry a call-site slot.
+/** A resolved primitive. A writable receiver is captured and read before
+ * arguments; its replacement is assigned before the call yields its result.
+ */
 export interface CallNativeExpr extends IrExprBase {
   readonly kind: typeof IrKind.CallNative;
-  readonly native: string;
-  readonly slot: number | null;
-  readonly args: readonly IrExpr[];
-  readonly argumentEvaluationOrder: readonly number[];
-}
-
-// A mutating collection primitive. Lowering reads and captures `location`
-// before the remaining arguments. The operation computes
-// `{replacement, result}` and lowering writes the replacement header through
-// that same location before yielding `result`.
-export interface MutateCollectionExpr extends IrExprBase {
-  readonly kind: typeof IrKind.MutateCollection;
-  readonly location: CollectionLocation;
-  readonly operation: string;
+  readonly native: Intrinsic;
+  readonly receiver: WritableExpr | null;
   readonly args: readonly IrExpr[];
   readonly argumentEvaluationOrder: readonly number[];
 }
@@ -322,6 +256,13 @@ export interface FieldGetExpr extends IrExprBase {
   readonly x: IrExpr;
   readonly fieldIndex: number;
 }
+
+/** An assignable expression. Field targets capture and validate their receiver
+ * before the RHS; historical reads and external inputs are never writable.
+ */
+export type WritableExpr =
+  | (ReadExpr & {readonly place: Extract<Place, {kind: typeof PlaceKind.Name}>})
+  | FieldGetExpr;
 
 // Control structures stay expressions in the IR (mirroring the language);
 // flattening into plain statements is a later optimization pass, not a
@@ -379,10 +320,9 @@ export interface BlockExpr extends IrExprBase {
 export type IrStmt =
   | ExprStmt
   | InitNameStmt
-  | WriteNameStmt
-  | StoreFieldStmt
+  | AssignStmt
   | EmitStmt
-  | EmitEffectStmt
+  | ReturnStmt
   | BreakStmt
   | ContinueStmt;
 
@@ -400,42 +340,29 @@ export interface InitNameStmt extends IrNode {
   readonly value: IrExpr;
 }
 
-// Declarations, reassignments, and compound assignments all become name
-// writes; the compound operator is desugared by the noder.
-export interface WriteNameStmt extends IrNode {
-  readonly kind: typeof IrKind.WriteName;
-  readonly name: Name;
+/** Assignment evaluates the destination once before the RHS. A non-null op
+ * also captures its old value before RHS effects, as in `point.x += f()`.
+ */
+export interface AssignStmt extends IrNode {
+  readonly kind: typeof IrKind.Assign;
+  readonly target: WritableExpr;
   readonly value: IrExpr;
+  readonly op: IrBinaryOp | null;
 }
 
-// Atomic reference-property write. Lowering captures and validates `object`
-// before evaluating `value`, then stores through that same reference. A RHS
-// rebind of any Name therefore cannot redirect the write.
-export interface StoreFieldStmt extends IrNode {
-  readonly kind: typeof IrKind.StoreField;
-  readonly object: IrExpr;
-  readonly owner: StructType;
-  readonly fieldIndex: number;
-  readonly value: IrExpr;
-}
-
-// A per-bar write into a declarative output channel (plot value, plot color,
-// …). The output's static declaration lives in Program.outputs.
+/** Capture a value into its named column. The declaration selects set or append;
+ * the runtime publishes buffered values only after the row succeeds.
+ */
 export interface EmitStmt extends IrNode {
   readonly kind: typeof IrKind.Emit;
   readonly output: OutputDecl;
-  readonly args: readonly IrExpr[];
-  // Canonical channel indices in source evaluation order. Output metadata and
-  // the ABI remain canonical; only evaluation follows the source call.
-  readonly argumentEvaluationOrder: readonly number[];
+  readonly value: IrExpr;
 }
 
-// One ordered append into a sparse effect stream. The declaration lives in
-// Program.effects and owns the stable effect id plus payload schema.
-export interface EmitEffectStmt extends IrNode {
-  readonly kind: typeof IrKind.EmitEffect;
-  readonly effect: EffectDecl;
-  readonly payload: IrExpr;
+/** Exit the enclosing Tea function; its caller still owns the row transaction. */
+export interface ReturnStmt extends IrNode {
+  readonly kind: typeof IrKind.Return;
+  readonly value: IrExpr | null;
 }
 
 export interface BreakStmt extends IrNode {

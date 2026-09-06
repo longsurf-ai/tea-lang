@@ -79,7 +79,7 @@ function ownershipViolations(source: string): readonly string[] {
   const lifecycleNames = brokerLifecycleEffects.join('|');
   for (const match of source.matchAll(
     new RegExp(
-      `\\beffect\\s*\\.\\s*emit\\s*\\(\\s*broker\\s*\\.\\s*(?:${lifecycleNames})\\s*\\.\\s*new\\s*\\(`,
+      '\\bemit\\s*\\.\\s*append\\s+"[^"]+"\\s+broker\\s*\\.\\s*(?:OrderSubmitted|FillExecuted|OrderExpired|OrderCancelled|OrderRejected)\\s*\\.\\s*new\\s*\\(',
       'g',
     ),
   )) {
@@ -145,7 +145,7 @@ describe('clean-room strategy catalog', () => {
         'order = broker.Order.new()',
         'account = broker.Account.new()',
         'touched = broker.stop_touched(broker.Side.sell, high, low, close)',
-        'effect.emit(broker.FillExecuted.new(fill))',
+        'emit.append "effect0" broker.FillExecuted.new(fill)',
         'var book = portfolio.new(initialCash = 100.0)',
         'book.apply(fill)',
         'book.cashValue := 0.0',
@@ -236,13 +236,7 @@ describe('clean-room strategy catalog', () => {
       }
       expect(errors.count).toBe(0);
 
-      const outputTitles = new Set(
-        program.outputs.flatMap(output =>
-          output.staticArgs
-            .filter(argument => argument.name === 'title')
-            .map(argument => argument.value),
-        ),
-      );
+      const outputTitles = new Set(program.outputs.map(output => output.name));
       for (const title of [
         'equity',
         'round trips',

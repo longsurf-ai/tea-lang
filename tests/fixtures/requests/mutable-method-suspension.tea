@@ -1,7 +1,7 @@
 // Purpose: Rejected fixture — a function-local series request context must fail before runtime mutation or suspension is possible.
 
 //@version=1
-indicator("mutable method suspension", dynamic_requests = true)
+
 
 struct Counter
     int value
@@ -13,5 +13,5 @@ struct Counter
 varip Counter counter = Counter.new(0)
 returned = counter.advance(close > 3 ? "X" : "Y")
 
-plot(counter.value, "caller value")
-plot(returned, "method result")
+emit "output0" counter.value
+emit "output1" returned

@@ -15,8 +15,8 @@ else
     score := score
 
 regime = close > threshold ? 1 : close < threshold ? -1 : 0
-plot(score, "Running score")
-plot(regime, "Regime")
+plot("Running score", score, "Running score")
+plot("Regime", regime, "Regime")
 `;
 
 // create source from a fake observable

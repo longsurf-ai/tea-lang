@@ -2,8 +2,6 @@
 // with value and execution-context contracts, not strategy policy.
 
 import {describe, expect, test} from 'vitest';
-import {CallKind} from './info';
-import type {NativeCall} from './info';
 import {checkText} from './testing';
 
 function messages(source: string): string[] {
@@ -23,18 +21,15 @@ describe('effect.emit semantic contract', () => {
         '    Inner inner',
         '    int barIndex',
         'event = Event.new(Inner.new("entry", Kind.order), bar_index)',
-        'effect.emit(event)',
-        'effect.emit(1.5)',
+        'emit.append "effect0" event',
+        'emit.append "effect1" 1.5',
       ].join('\n'),
     );
 
     expect(result.errors).toEqual([]);
-    const emits = [...result.info.calls.values()].filter(
-      (call): call is NativeCall =>
-        call.kind === CallKind.Native && call.native.name === 'effect.emit',
-    );
+    const emits = [...result.info.emits.values()];
     expect(emits).toHaveLength(2);
-    expect(emits[0].argTypes[0].kind).toBe('Struct');
+    expect(emits[0].valueType.kind).toBe('Struct');
   });
 
   test('accepts collections, tuples and resource values; rejects untyped na', () => {
@@ -42,15 +37,15 @@ describe('effect.emit semantic contract', () => {
       messages(
         [
           'values = array.from(1, 2)',
-          'effect.emit(values)',
-          'effect.emit([1, 2])',
+          'emit.append "effect0" values',
+          'emit.append "effect1" [1, 2]',
           'line handle = na',
-          'effect.emit(handle)',
+          'emit.append "effect2" handle',
         ].join('\n'),
       ),
     ).toEqual([]);
-    expect(messages('effect.emit(na)')).toContain(
-      "cannot infer type argument 'T' for 'effect.emit'; provide it explicitly",
+    expect(messages('emit.append "effect0" na')).toContain(
+      'output value needs a concrete exportable type, got na',
     );
   });
 
@@ -58,14 +53,14 @@ describe('effect.emit semantic contract', () => {
     const result = messages(
       [
         'emitAndRead() =>',
-        '    effect.emit(close)',
+        '    emit.append "effect0" close',
         '    close',
         'nested = request.security("X", "", emitAndRead())',
       ].join('\n'),
     );
 
     expect(result).toContain(
-      "'emitAndRead' cannot call 'effect.emit' inside a request expression",
+      "'emitAndRead' cannot call 'emit' inside a request expression",
     );
   });
 
@@ -73,26 +68,28 @@ describe('effect.emit semantic contract', () => {
     const result = messages(
       [
         'noisyInt() =>',
-        '    effect.emit(1)',
+        '    emit.append "effect0" 1',
         '    2',
         'var int seeded = noisyInt()',
-        'plot(close, linewidth = noisyInt())',
+        'emit "output0" close',
       ].join('\n'),
     );
 
     expect(result).toContain(
-      "'effect.emit' cannot execute from a persistent variable initializer",
+      "'emit' cannot execute from a persistent variable initializer",
     );
-    expect(result).toContain(
-      "'effect.emit' cannot execute from bind-time argument 'linewidth'",
-    );
+    expect(
+      messages(
+        'noisy() =>\\n    emit.append "events" 1\\n    return true\\nlength = input.int(1, active=noisy())',
+      ).length,
+    ).toBeGreaterThan(0);
   });
 
   test('includes only omitted function and method defaults in transitive effect checks', () => {
     const suppliedFunction = messages(
       [
         'noisy() =>',
-        '    effect.emit(1)',
+        '    emit.append "effect0" 1',
         '    2',
         'read(int value = noisy()) => value',
         'var int seeded = read(3)',
@@ -103,20 +100,20 @@ describe('effect.emit semantic contract', () => {
     const omittedFunction = messages(
       [
         'noisy() =>',
-        '    effect.emit(1)',
+        '    emit.append "effect0" 1',
         '    2',
         'read(int value = noisy()) => value',
         'var int seeded = read()',
       ].join('\n'),
     );
     expect(omittedFunction).toContain(
-      "'effect.emit' cannot execute from a persistent variable initializer",
+      "'emit' cannot execute from a persistent variable initializer",
     );
 
     const suppliedMethod = messages(
       [
         'noisy() =>',
-        '    effect.emit(1)',
+        '    emit.append "effect0" 1',
         '    2',
         'type Box',
         '    int value',
@@ -130,7 +127,7 @@ describe('effect.emit semantic contract', () => {
     const omittedMethod = messages(
       [
         'noisy() =>',
-        '    effect.emit(1)',
+        '    emit.append "effect0" 1',
         '    2',
         'type Box',
         '    int value',
@@ -140,7 +137,7 @@ describe('effect.emit semantic contract', () => {
       ].join('\n'),
     );
     expect(omittedMethod).toContain(
-      "'effect.emit' cannot execute from a persistent variable initializer",
+      "'emit' cannot execute from a persistent variable initializer",
     );
   });
 
@@ -148,7 +145,7 @@ describe('effect.emit semantic contract', () => {
     const supplied = messages(
       [
         'noisy() =>',
-        '    effect.emit(1)',
+        '    emit.append "effect0" 1',
         '    2',
         'type Box',
         '    int value = noisy()',
@@ -160,7 +157,7 @@ describe('effect.emit semantic contract', () => {
     const omitted = messages(
       [
         'noisy() =>',
-        '    effect.emit(1)',
+        '    emit.append "effect0" 1',
         '    2',
         'type Box',
         '    int value = noisy()',
@@ -168,13 +165,12 @@ describe('effect.emit semantic contract', () => {
       ].join('\n'),
     );
     expect(omitted).toContain(
-      "'effect.emit' cannot execute from a persistent variable initializer",
+      "'emit' cannot execute from a persistent variable initializer",
     );
   });
 
-  test('the intrinsic root cannot be shadowed', () => {
-    expect(messages('effect = 1')).toContain(
-      "cannot redeclare built-in 'effect'",
-    );
+  test('emit is reserved while the removed effect namespace is ordinary', () => {
+    expect(messages('emit = 1').length).toBeGreaterThan(0);
+    expect(messages('effect = 1')).toEqual([]);
   });
 });

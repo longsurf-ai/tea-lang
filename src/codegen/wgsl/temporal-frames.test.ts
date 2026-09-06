@@ -39,15 +39,15 @@ describe('WGSL temporal call-site frames', () => {
   test('lowers canonical ta.ema and cross functions as ordinary Tea functions', () => {
     const artifact = compile(
       [
-        'strategy("canonical EMA cross")',
+        '',
         'fast = ta.ema(close, 3)',
         'slow = ta.ema(close, 5)',
         'longSignal = ta.crossover(fast, slow)',
         'closeSignal = ta.crossunder(fast, slow)',
-        'plot(fast)',
-        'plot(slow)',
-        'plotshape(longSignal)',
-        'plotshape(closeSignal)',
+        'emit "output0" fast',
+        'emit "output1" slow',
+        'emit "output2" longSignal',
+        'emit "output3" closeSignal',
       ].join('\n'),
     );
 
@@ -70,15 +70,15 @@ describe('WGSL temporal call-site frames', () => {
   test('one function body serves independent written call-site frames', () => {
     const artifact = compile(
       [
-        'indicator("independent sites")',
+        '',
         'accumulate(float source) =>',
         '    var float total = 0.0',
         '    total := total + source',
         '    total',
         'left = accumulate(close)',
         'right = accumulate(open)',
-        'plot(left)',
-        'plot(right)',
+        'emit "output0" left',
+        'emit "output1" right',
       ].join('\n'),
     );
 
@@ -88,9 +88,9 @@ describe('WGSL temporal call-site frames', () => {
   test('supports constant history on a function parameter', () => {
     const artifact = compile(
       [
-        'indicator("parameter history")',
+        '',
         'previous(float source) => source[1]',
-        'plot(previous(close))',
+        'emit "output0" previous(close)',
       ].join('\n'),
     );
 
@@ -108,13 +108,13 @@ describe('WGSL temporal call-site frames', () => {
     const result = compileProgramToWgsl(
       mustBuild(
         [
-          'indicator("const method args")',
+          '',
           'type Sample',
           '    float value',
           '    float add(float other) const =>',
           '        this.value + other',
           'sample = Sample.new(close)',
-          'plot(sample.add(1.0))',
+          'emit "output0" sample.add(1.0)',
         ].join('\n'),
       ),
     );
@@ -128,7 +128,7 @@ describe('WGSL temporal call-site frames', () => {
     const result = compileProgramToWgsl(
       mustBuild(
         [
-          'strategy("mutable receiver locals")',
+          '',
           'type Pair',
           '    float left',
           '    float right',
@@ -137,8 +137,8 @@ describe('WGSL temporal call-site frames', () => {
           '        value',
           'var Pair pair = Pair.new(0.0, 0.0)',
           'pair.left := pair.touch(close)',
-          'plot(pair.left)',
-          'plot(pair.right)',
+          'emit "output0" pair.left',
+          'emit "output1" pair.right',
         ].join('\n'),
       ),
     );
@@ -151,12 +151,12 @@ describe('WGSL temporal call-site frames', () => {
   test('supports first-late activation and skipped active frames', () => {
     compile(
       [
-        'indicator("skipped activation")',
+        '',
         'previous(float source) => source[1]',
         'float value = na',
         'if bar_index >= 2 and bar_index != 3',
         '    value := previous(close)',
-        'plot(value)',
+        'emit "output0" value',
       ].join('\n'),
     );
   });
@@ -165,7 +165,7 @@ describe('WGSL temporal call-site frames', () => {
     const result = compileProgramToWgsl(
       mustBuild(
         [
-          'indicator("wide state copy")',
+          '',
           'type Quad',
           '    float a',
           '    float b',
@@ -175,7 +175,7 @@ describe('WGSL temporal call-site frames', () => {
           '    Quad left',
           '    Quad right',
           'var Wide state = Wide.new(Quad.new(close, open, high, low), Quad.new(open, high, low, close))',
-          'plot(state.left.a)',
+          'emit "output0" state.left.a',
         ].join('\n'),
       ),
     );
@@ -187,22 +187,16 @@ describe('WGSL temporal call-site frames', () => {
 
   test('returns typed empty for invalid and unreachable constant offsets', () => {
     const artifact = compile(
-      [
-        'indicator("invalid offsets")',
-        'plot(close[-1])',
-        'plot(close[4294967296])',
-      ].join('\n'),
+      ['', 'emit "output0" close[-1]', 'emit "output1" close[4294967296]'].join(
+        '\n',
+      ),
     );
     expect(artifact.module.source).not.toContain('4294967296u');
   });
 
   test('does not allocate frame history for a target-invalid name offset', () => {
     const artifact = compile(
-      [
-        'indicator("target-invalid name history")',
-        'flag = close > open',
-        'plotshape(flag[2147483648])',
-      ].join('\n'),
+      ['', 'flag = close > open', 'emit "output0" flag[2147483648]'].join('\n'),
     );
     const flag = artifact.state.frames
       .flatMap(frame => frame.locals)
@@ -213,11 +207,7 @@ describe('WGSL temporal call-site frames', () => {
 
   test('keeps execution state metadata compact', () => {
     const artifact = compile(
-      [
-        'indicator("compact state metadata")',
-        'flag = close > open',
-        'plotshape(flag[10000])',
-      ].join('\n'),
+      ['', 'flag = close > open', 'emit "output0" flag[10000]'].join('\n'),
     );
     const layout = artifact.layouts[artifact.executionStateLayout];
     expect(layout?.byteSize).toBeLessThan(100);
@@ -230,14 +220,14 @@ describe('WGSL temporal call-site frames', () => {
   test('ignores target-invalid depth annotations with no valid read site', () => {
     const program = mustBuild(
       [
-        'indicator("oversized history")',
+        '',
         'var float value = close',
         'value := close',
-        'plot(value)',
+        'emit "output0" value',
       ].join('\n'),
     );
-    const root = program.body.find(stmt => stmt.kind === 'WriteName');
-    if (root?.kind !== 'WriteName') throw new Error('expected root name');
+    const root = program.body.find(stmt => stmt.kind === 'InitName');
+    if (root?.kind !== 'InitName') throw new Error('expected root name');
     root.name.depth = {kind: DepthKind.Const, bars: 0x1_0000_0000};
     const result = compileProgramToWgsl(program);
     expect(result.status).toBe('compiled');
@@ -246,11 +236,9 @@ describe('WGSL temporal call-site frames', () => {
   test('keeps large valid history out of the bind-independent fixed layout', () => {
     const result = compileProgramToWgsl(
       mustBuild(
-        [
-          'indicator("oversized valid history")',
-          'flag = close > open',
-          'plotshape(flag[1500000000])',
-        ].join('\n'),
+        ['', 'flag = close > open', 'emit "output0" flag[1500000000]'].join(
+          '\n',
+        ),
       ),
     );
     expect(result.status).toBe('compiled');

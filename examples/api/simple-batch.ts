@@ -4,7 +4,7 @@ import {Field, Float64, Schema} from 'apache-arrow';
 
 const node = tea`
 gain = input.float(2.0)
-plot(close * gain)
+plot("output0", close * gain)
 `;
 const prices = new DataStream(
   new Schema([new Field('close', new Float64(), false)]),

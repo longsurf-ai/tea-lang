@@ -1,47 +1,51 @@
 Program version=1
 param lookback: int title="Lookback" default=20 depth=none
 series close: series float depth=bound
-  depth.expr: CallNative math.max: input int
+  depth.expr: CallNative math.max pure: input int
     Const 0: const int
-    CallNative $historyDepth: input int
-      HistRead param:lookback: input int
+    CallNative $historyDepth pure: input int
+      Read param:lookback: input int
     Const 3: const int
 series open: series float depth=capped
-  depth.cap: Const 300: const int
+  depth.cap: Const 500: const int
 series high: series float depth=none
 series low: series float depth=none
 builtin bar.bar_index: series int depth=none
-output[0] indicator static{title="Depth" max_bars_back=300}
-output[1] plot static{title="Sum"} channels{series: float}
+output[0] "output0" set: float @ depth.tea:11:1
 name a: perBar series float depth=none
 name b: perBar series float depth=none
 name c: perBar series float depth=none
 name hl: perBar series float depth=const(2)
 name d: perBar series float depth=none
 body:
-  WriteName a
-    HistRead series:close: series float
+  Assign
+    target: Read name:a: series float
+    value: HistRead series:close: series float
       offset: Const 3: const int
-  WriteName b
-    HistRead series:close: series float
-      offset: HistRead param:lookback: input int
-  WriteName c
-    HistRead series:open: series float
+  Assign
+    target: Read name:b: series float
+    value: HistRead series:close: series float
+      offset: Read param:lookback: input int
+  Assign
+    target: Read name:c: series float
+    value: HistRead series:open: series float
       offset: Binary Mod: series int
-        HistRead builtin:bar.bar_index: series int
+        Read builtin:bar.bar_index: series int
         Const 5: const int
-  WriteName hl
-    Binary Add: series float
-      HistRead series:high: series float
-      HistRead series:low: series float
-  WriteName d
-    HistRead name:hl: series float
+  Assign
+    target: Read name:hl: series float
+    value: Binary Add: series float
+      Read series:high: series float
+      Read series:low: series float
+  Assign
+    target: Read name:d: series float
+    value: HistRead name:hl: series float
       offset: Const 2: const int
-  Emit output[1] eval=[0]
-    Binary Add: series float
+  Emit output[0]
+    value: Binary Add: series float
       Binary Add: series float
         Binary Add: series float
-          HistRead name:a: series float
-          HistRead name:b: series float
-        HistRead name:c: series float
-      HistRead name:d: series float
+          Read name:a: series float
+          Read name:b: series float
+        Read name:c: series float
+      Read name:d: series float

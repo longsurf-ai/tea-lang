@@ -29,12 +29,13 @@ import {
   IrOp,
   PlaceKind,
   type HistReadExpr,
+  type Intrinsic,
+  type ReadExpr,
   type IrExpr,
   type IrStmt,
   type Name,
 } from '../../ir/node';
 import type {
-  EffectDecl,
   BuiltinInput,
   IrFunc,
   OutputDecl,
@@ -223,7 +224,7 @@ function inventoryOf(program: Program): WgslProgramInventory {
       .length,
     callSiteSlotCount: slotCountOf(program),
     outputCount: program.outputs.length,
-    resultChannelCount: program.body.filter(stmt => stmt.kind === IrKind.Emit)
+    resultChannelCount: program.outputs.filter(output => output.mode === 'set')
       .length,
   };
 }
@@ -236,7 +237,7 @@ class WgslEmitter {
   private readonly seriesIds = new Map<SeriesInput, number>();
   private readonly paramIds = new Map<ParamInput, number>();
   private readonly outputCells = new Map<OutputDecl, number>();
-  private readonly appendIds = new Map<EffectDecl, number>();
+  private readonly appendIds = new Map<OutputDecl, number>();
   private readonly literalStringIds = new Map<string, number>();
   private readonly literalStrings: string[] = [];
   private readonly enumNames = new Map<EnumType, string>();
@@ -268,9 +269,9 @@ class WgslEmitter {
     this.effectAnalysis.literalStrings.forEach(value =>
       this.internLiteralString(value),
     );
-    program.effects.forEach((effect, index) => {
-      this.appendIds.set(effect, program.outputs.length + index);
-      this.collectType(effect.payloadType);
+    program.outputs.forEach((output, index) => {
+      if (output.mode === 'append') this.appendIds.set(output, index);
+      this.collectType(output.valueType);
     });
     this.funcs = funcsOf(this.program);
     this.funcs.forEach((func, index) => {
@@ -707,68 +708,18 @@ class WgslEmitter {
 
   private validateOutputs(): void {
     this.program.outputs.forEach((output, outputId) => {
-      if (output.bindArgs.length > 0) {
+      if (output.mode === 'set' && !isGpuResultType(output.valueType)) {
         this.unsupported(
           'result-transport-lowering-unimplemented',
-          `output ${outputId} has bind-time arguments`,
+          `output ${outputId} has unsupported type ${formatType(output.valueType)}`,
+          output.pos,
         );
       }
-      for (const channel of output.channels) {
-        if (!isGpuResultType(channel.type)) {
-          this.unsupported(
-            'result-transport-lowering-unimplemented',
-            `output ${outputId} channel has unsupported type ${formatType(channel.type)}`,
-          );
-        }
-      }
+      this.collectType(output.valueType);
     });
-    const directEmits = new Map<OutputDecl, number>();
-    for (const stmt of this.program.body) {
-      if (stmt.kind === IrKind.Emit) {
-        directEmits.set(stmt.output, (directEmits.get(stmt.output) ?? 0) + 1);
-      } else {
-        this.rejectNestedEmit(stmt);
-      }
-    }
-    this.resultOutputs().forEach(({output, outputId}, rowCell) => {
-      if (output.channels.length !== 1) {
-        this.unsupported(
-          'result-transport-lowering-unimplemented',
-          `output ${outputId} must have exactly one scalar channel`,
-        );
-      }
-      const channel = output.channels[0];
-      this.collectType(channel.type);
-      if (directEmits.get(output) !== 1) {
-        this.unsupported(
-          'result-transport-lowering-unimplemented',
-          `output ${outputId} must have one unconditional top-level emission`,
-        );
-      }
-      this.outputCells.set(output, rowCell);
-    });
-    for (const output of directEmits.keys()) {
-      if (!this.outputCells.has(output)) {
-        this.unsupported(
-          'result-transport-lowering-unimplemented',
-          'the Program emits an output outside Program.outputs',
-        );
-      }
-    }
-  }
-
-  private rejectNestedEmit(stmt: IrStmt): void {
-    walkIrStmt(stmt, {
-      stmt: node => {
-        if (node.kind === IrKind.Emit) {
-          this.unsupported(
-            'result-transport-lowering-unimplemented',
-            'conditional or nested GPU result emissions are unsupported',
-            node.pos,
-          );
-        }
-      },
-    });
+    this.resultOutputs().forEach(({output}, rowCell) =>
+      this.outputCells.set(output, rowCell),
+    );
   }
 
   private validateCallGraph(): void {
@@ -787,11 +738,7 @@ class WgslEmitter {
       state.set(func, 'visiting');
       walkIrExpr(func.body, {
         expr: expr => {
-          if (
-            expr.kind === IrKind.CallFunc ||
-            expr.kind === IrKind.CallConstMethod ||
-            expr.kind === IrKind.CallMutableMethod
-          ) {
+          if (expr.kind === IrKind.CallFunc) {
             if (!this.funcNames.has(expr.func)) {
               this.unsupported(
                 'function-frame-lowering-unimplemented',
@@ -818,8 +765,10 @@ class WgslEmitter {
       this.physicalLayoutOf(type);
     }
     for (const name of namesOf(this.program)) this.physicalLayoutOf(name.type);
-    for (const effect of this.program.effects) {
-      const layout = this.layouts[this.physicalLayoutOf(effect.payloadType)];
+    for (const effect of this.program.outputs.filter(
+      output => output.mode === 'append',
+    )) {
+      const layout = this.layouts[this.physicalLayoutOf(effect.valueType)];
       this.maxEffectPayloadWords = Math.max(
         this.maxEffectPayloadWords,
         layout.byteSize / 4,
@@ -917,6 +866,7 @@ class WgslEmitter {
     this.resultCellLayout = this.addLayout('TeaResultCell', RESULT_CELL_BYTES, [
       {path: 'bits', scalar: 'u32', byteOffset: 0},
       {path: 'valid', scalar: 'u32', byteOffset: 4},
+      {path: 'present', scalar: 'u32', byteOffset: 8},
     ]);
     this.effectStatusLayout = this.addLayout(
       'TeaEffectStatus',
@@ -1072,7 +1022,7 @@ class WgslEmitter {
       '  state_offset: u32,',
       '  state_words: u32,',
       '}',
-      'struct TeaResultCell { bits: u32, valid: u32, }',
+      'struct TeaResultCell { bits: u32, valid: u32, present: u32, }',
       'struct TeaEffectStatus { count: u32, overflow: u32, first_overflow_row: u32, first_overflow_effect: u32, }',
       `struct TeaEffectRecord { row: u32, output_id: u32, payload: array<u32, ${Math.max(1, this.maxEffectPayloadWords)}>, }`,
       `@group(${GPU_BUFFER_GROUP}) @binding(${GPU_JOBS_BINDING}) var<storage, read> tea_jobs: array<TeaJobDescriptor>;`,
@@ -1415,12 +1365,15 @@ class WgslEmitter {
       'tea_execution_index: u32',
       'tea_job: TeaJobDescriptor',
       'tea_row: u32',
+      'tea_chunk_row: u32',
       explicitSignature,
     ]
       .filter(part => part.length > 0)
       .join(', ');
     const resultType = this.wgslType(func.resultType);
-    const out = [`fn ${fn}(${signature}) -> ${resultType} {`];
+    const out = [
+      `fn ${fn}(${signature})${func.resultType.kind === TypeKind.Void ? '' : ` -> ${resultType}`} {`,
+    ];
     const frame =
       this.mustFrames().templateByFunc.get(func) ??
       fatal(`unmapped frame template for '${func.name}'`);
@@ -1460,17 +1413,18 @@ class WgslEmitter {
       rootBase: 'tea_root_base',
       functionLocals,
       loopDepth: 0,
-      allowDenseEmit: false,
-      allowEffect: true,
+      resultType: func.resultType,
       executionIndex: 'tea_execution_index',
       job: 'tea_job',
       row: 'tea_row',
-      chunkRow: '0u',
+      chunkRow: 'tea_chunk_row',
     };
     const value = this.emitExpr(func.body, ctx, body);
     out.push(...indent(body, 1));
-    const result = this.coerce(value, func.body.type, func.resultType);
-    out.push(`  return ${result};`);
+    if (func.body.type.kind !== TypeKind.Void)
+      out.push(
+        `  return ${this.coerce(value, func.body.type, func.resultType)};`,
+      );
     out.push('}');
     return out;
   }
@@ -1563,8 +1517,6 @@ class WgslEmitter {
       rootBase: 'tea_root_base',
       functionLocals: new Map(),
       loopDepth: 0,
-      allowDenseEmit: true,
-      allowEffect: true,
       executionIndex: 'tea_job_index',
       job: 'tea_job',
       row: 'tea_row',
@@ -1574,7 +1526,7 @@ class WgslEmitter {
       this.emitStmt(stmt, ctx, body);
     }
     out.push(
-      ...indent(body, 2),
+      '    tea_main(tea_root_base, tea_job_index, tea_job, tea_row, tea_chunk_row);',
       `    tea_commit_frame_${frames.root.id}(tea_root_base, tea_row);`,
       '  }',
       `  tea_state_store(tea_execution_base + ${state.nextRowWordOffset}u, tea_start_row + tea_chunk_count);`,
@@ -1603,6 +1555,11 @@ class WgslEmitter {
       '  tea_cache_flush();',
       '}',
     );
+    out.unshift(
+      'fn tea_main(tea_root_base: u32, tea_job_index: u32, tea_job: TeaJobDescriptor, tea_row: u32, tea_chunk_row: u32) {',
+      ...indent(body, 1),
+      '}',
+    );
     return out;
   }
 
@@ -1610,12 +1567,7 @@ class WgslEmitter {
     switch (expr.kind) {
       case IrKind.Const:
         return this.constant(expr.type, expr.value, expr.pos);
-      case IrKind.OutputRef:
-        return this.unsupported(
-          'host-value-type-unsupported',
-          'output references cannot enter the executable GPU value plane',
-          expr.pos,
-        );
+      case IrKind.Read:
       case IrKind.HistRead:
         return this.emitRead(expr, ctx, out);
       case IrKind.Binary:
@@ -1653,32 +1605,15 @@ class WgslEmitter {
         }
         return result;
       }
-      case IrKind.Cond: {
-        const condition = this.capture(expr.cond, ctx, out);
-        const thenValue = this.capture(expr.then, ctx, out);
-        const elseValue = this.capture(expr.else, ctx, out);
-        const result = this.fresh();
-        out.push(
-          `var ${result}: ${this.wgslType(expr.type)} = ${this.empty(expr.type)};`,
-        );
-        out.push(`if (${condition} != 0u) {`);
-        out.push(
-          `  ${result} = ${this.coerce(thenValue, expr.then.type, expr.type)};`,
-        );
-        out.push('} else {');
-        out.push(
-          `  ${result} = ${this.coerce(elseValue, expr.else.type, expr.type)};`,
-        );
-        out.push('}');
-        return result;
-      }
       case IrKind.CallFunc:
-        return this.emitCall(expr, null, ctx, out);
-      case IrKind.CallConstMethod:
-        return this.emitCall(expr, expr.receiver, ctx, out);
-      case IrKind.CallMutableMethod:
         return this.emitCall(expr, expr.receiver, ctx, out);
       case IrKind.CallNative:
+        if (expr.receiver !== null)
+          return this.unsupported(
+            'collection-operation-lowering-unimplemented',
+            'GPU collections are outside the executable subset',
+            expr.pos,
+          );
         return this.emitNative(
           expr.native,
           expr.args,
@@ -1687,12 +1622,6 @@ class WgslEmitter {
           expr.pos,
           ctx,
           out,
-        );
-      case IrKind.MutateCollection:
-        return this.unsupported(
-          'collection-operation-lowering-unimplemented',
-          'GPU collections are outside the executable subset',
-          expr.pos,
         );
       case IrKind.NewStruct:
         return this.unsupported(
@@ -1873,79 +1802,73 @@ class WgslEmitter {
         );
         return;
       }
-      case IrKind.WriteName: {
-        const value = this.emitExpr(stmt.value, ctx, out);
+      case IrKind.Assign: {
+        if (stmt.target.kind !== IrKind.Read)
+          return this.unsupported(
+            'struct-reference-lowering-unimplemented',
+            'GPU struct-reference field stores are deferred',
+            stmt.pos,
+          );
+        const name = stmt.target.place.name;
+        const value =
+          stmt.op === null
+            ? this.emitExpr(stmt.value, ctx, out)
+            : this.emitBinary(
+                {
+                  kind: IrKind.Binary,
+                  pos: stmt.pos,
+                  type: name.type,
+                  qualifier: name.qualifier,
+                  op: stmt.op,
+                  x: stmt.target,
+                  y: stmt.value,
+                },
+                ctx,
+                out,
+              );
         this.emitCurrentNameStore(
-          stmt.name,
-          this.coerce(value, stmt.value.type, stmt.name.type),
+          name,
+          this.coerce(value, stmt.value.type, name.type),
           ctx,
           out,
         );
         return;
       }
-      case IrKind.StoreField:
-        return this.unsupported(
-          'struct-reference-lowering-unimplemented',
-          'GPU struct-reference field stores are deferred',
-          stmt.pos,
-        );
-      case IrKind.Emit: {
-        if (!ctx.allowDenseEmit) {
-          this.unsupported(
-            'result-transport-lowering-unimplemented',
-            'a function attempted to emit a GPU result',
-            stmt.pos,
+      case IrKind.Return: {
+        if (stmt.value === null) out.push('return;');
+        else {
+          const value = this.emitExpr(stmt.value, ctx, out);
+          out.push(
+            `return ${this.coerce(value, stmt.value.type, ctx.resultType ?? stmt.value.type)};`,
           );
         }
-        const values = this.captureArguments(
-          stmt.args,
-          stmt.argumentEvaluationOrder,
-          ctx,
-          out,
-        );
-        if (values.length !== 1) {
-          this.unsupported(
-            'result-transport-lowering-unimplemented',
-            'the executable GPU subset requires one scalar emission channel',
-            stmt.pos,
+        return;
+      }
+      case IrKind.Emit: {
+        const value = this.capture(stmt.value, ctx, out);
+        if (stmt.output.mode === 'append') {
+          const outputId = this.appendIds.get(stmt.output);
+          if (outputId === undefined)
+            return fatal('unmapped GPU append emission');
+          this.emitEffectAppend(
+            outputId,
+            stmt.output.valueType,
+            value,
+            ctx,
+            out,
           );
+          return;
         }
         const rowCell = this.outputCells.get(stmt.output);
-        if (rowCell === undefined) {
-          fatal('unmapped GPU output emission');
-        }
+        if (rowCell === undefined) return fatal('unmapped GPU output emission');
         const slot = this.fresh();
         const resultRow = this.fresh();
         out.push(
           `let ${resultRow}: u32 = select(${ctx.chunkRow}, 0u, ${ctx.job}.result_count == ${this.outputCells.size}u);`,
           `let ${slot}: u32 = ${ctx.job}.result_offset + ${resultRow} * ${this.outputCells.size}u + ${rowCell}u;`,
-        );
-        out.push(
           `if ((${ctx.job}.result_count != ${this.outputCells.size}u || ${ctx.row} + 1u == ${ctx.job}.row_count) && ${slot} < arrayLength(&tea_results) && ${slot} < ${ctx.job}.result_offset + ${ctx.job}.result_count) {`,
-        );
-        const encoded = this.encodeResult(values[0], stmt.args[0].type);
-        out.push(`  tea_results[${slot}] = ${encoded};`, '}');
-        return;
-      }
-      case IrKind.EmitEffect: {
-        if (!ctx.allowEffect) {
-          this.unsupported(
-            'effect-transport-lowering-unimplemented',
-            'effect emission reached a GPU initialization context',
-            stmt.pos,
-          );
-        }
-        const outputId = this.appendIds.get(stmt.effect);
-        if (outputId === undefined) {
-          return fatal('unmapped GPU effect emission');
-        }
-        const payload = this.capture(stmt.payload, ctx, out);
-        this.emitEffectAppend(
-          outputId,
-          stmt.effect.payloadType,
-          payload,
-          ctx,
-          out,
+          `  tea_results[${slot}] = ${this.encodeResult(value, stmt.output.valueType)};`,
+          '}',
         );
         return;
       }
@@ -2056,11 +1979,16 @@ class WgslEmitter {
   }
 
   private emitRead(
-    expr: HistReadExpr,
+    expr: HistReadExpr | ReadExpr,
     ctx: WgslContext,
     out: string[],
   ): string {
-    const offset = this.historyOffset(expr.offset, expr.pos, ctx, out);
+    const offset = this.historyOffset(
+      expr.kind === IrKind.Read ? null : expr.offset,
+      expr.pos,
+      ctx,
+      out,
+    );
     if (offset === null) return this.empty(expr.type);
     const dynamicOffset = typeof offset === 'number' ? null : offset.value;
     const offsetValue =
@@ -2250,10 +2178,7 @@ class WgslEmitter {
     expr: Extract<
       IrExpr,
       {
-        kind:
-          | typeof IrKind.CallFunc
-          | typeof IrKind.CallConstMethod
-          | typeof IrKind.CallMutableMethod;
+        kind: typeof IrKind.CallFunc;
       }
     >,
     receiverExpr: IrExpr | null,
@@ -2276,7 +2201,16 @@ class WgslEmitter {
       ctx,
       out,
     );
-    const explicitArgs = receiver === null ? args : [receiver, ...args];
+    const actual =
+      receiverExpr === null ? expr.args : [receiverExpr, ...expr.args];
+    const parameters =
+      expr.func.callMode === 'free'
+        ? expr.func.params
+        : [expr.func.receiver, ...expr.func.params];
+    const explicitArgs = (receiver === null ? args : [receiver, ...args]).map(
+      (value, index) =>
+        this.coerce(value, actual[index].type, parameters[index].type),
+    );
     const child = ctx.frame.children.find(
       candidate =>
         candidate.slot === expr.slot && candidate.callee === expr.func,
@@ -2292,8 +2226,13 @@ class WgslEmitter {
       ctx.executionIndex,
       ctx.job,
       ctx.row,
+      ctx.chunkRow,
       ...explicitArgs,
     ];
+    if (expr.type.kind === TypeKind.Void) {
+      out.push(`${fn}(${callArgs.join(', ')});`);
+      return '';
+    }
     const result = this.fresh();
     out.push(
       `let ${result}: ${this.wgslType(expr.type)} = ${fn}(${callArgs.join(', ')});`,
@@ -2302,7 +2241,7 @@ class WgslEmitter {
   }
 
   private emitNative(
-    native: string,
+    intrinsic: Intrinsic,
     args: readonly IrExpr[],
     order: readonly number[],
     resultType: Type,
@@ -2310,13 +2249,19 @@ class WgslEmitter {
     ctx: WgslContext,
     out: string[],
   ): string {
-    const values = this.captureArguments(args, order, ctx, out);
+    const native = intrinsic.name;
+    if (intrinsic.argTypes.length !== args.length)
+      return fatal('native argument types disagree with arguments');
+    const argTypes = intrinsic.argTypes;
+    const values = this.captureArguments(args, order, ctx, out).map(
+      (value, index) => this.coerce(value, args[index].type, argTypes[index]),
+    );
     if (native === 'na') {
       if (args.length !== 1 || resultType.kind !== TypeKind.Bool) {
         return fatal('malformed na call reached GPU lowering');
       }
       const result = this.fresh();
-      const valid = this.validity(values[0], args[0].type);
+      const valid = this.validity(values[0], argTypes[0]);
       out.push(`let ${result}: u32 = select(1u, 0u, ${valid});`);
       return result;
     }
@@ -2326,7 +2271,7 @@ class WgslEmitter {
       }
       const result = this.fresh();
       out.push(
-        `let ${result}: TeaFloat = ${this.coerce(values[0], args[0].type, resultType)};`,
+        `let ${result}: TeaFloat = ${this.coerce(values[0], argTypes[0], resultType)};`,
       );
       return result;
     }
@@ -2337,7 +2282,7 @@ class WgslEmitter {
       ) {
         return fatal('malformed math.abs call reached GPU lowering');
       }
-      const value = this.coerce(values[0], args[0].type, resultType);
+      const value = this.coerce(values[0], argTypes[0], resultType);
       const result = this.fresh();
       const helper =
         resultType.kind === TypeKind.Int ? 'tea_abs_i32' : 'tea_abs_f32';
@@ -2351,9 +2296,9 @@ class WgslEmitter {
         return fatal('malformed math.floor call reached GPU lowering');
       }
       const result = this.fresh();
-      if (args[0].type.kind === TypeKind.Int) {
+      if (argTypes[0].kind === TypeKind.Int) {
         out.push(`let ${result}: TeaInt = ${values[0]};`);
-      } else if (args[0].type.kind === TypeKind.Float) {
+      } else if (argTypes[0].kind === TypeKind.Float) {
         out.push(`let ${result}: TeaInt = tea_floor_f32(${values[0]});`);
       } else {
         return fatal('non-numeric math.floor argument reached GPU lowering');
@@ -2368,7 +2313,7 @@ class WgslEmitter {
         return fatal(`malformed ${native} call reached GPU lowering`);
       }
       const coerced = values.map((value, index) =>
-        this.coerce(value, args[index].type, resultType),
+        this.coerce(value, argTypes[index], resultType),
       );
       const valid = coerced
         .map(value => this.validity(value, resultType))
@@ -2742,13 +2687,13 @@ class WgslEmitter {
   private encodeResult(value: string, type: Type): string {
     switch (type.kind) {
       case TypeKind.Float:
-        return `TeaResultCell(bitcast<u32>(${value}.value), ${value}.valid)`;
+        return `TeaResultCell(bitcast<u32>(${value}.value), ${value}.valid, 1u)`;
       case TypeKind.Int:
-        return `TeaResultCell(bitcast<u32>(${value}.value), ${value}.valid)`;
+        return `TeaResultCell(bitcast<u32>(${value}.value), ${value}.valid, 1u)`;
       case TypeKind.Bool:
-        return `TeaResultCell(${value}, 1u)`;
+        return `TeaResultCell(${value}, 1u, 1u)`;
       case TypeKind.Enum:
-        return `TeaResultCell(${value}.value, ${value}.valid)`;
+        return `TeaResultCell(${value}.value, ${value}.valid, 1u)`;
       default:
         return this.unsupported(
           'result-transport-lowering-unimplemented',
@@ -2761,39 +2706,34 @@ class WgslEmitter {
     readonly output: OutputDecl;
     readonly outputId: number;
   }[] {
-    const emitted = new Set(
-      this.program.body
-        .filter(
-          (stmt): stmt is Extract<IrStmt, {kind: typeof IrKind.Emit}> =>
-            stmt.kind === IrKind.Emit,
-        )
-        .map(stmt => stmt.output),
-    );
     return this.program.outputs.flatMap((output, outputId) =>
-      emitted.has(output) ? [{output, outputId}] : [],
+      output.mode === 'set' ? [{output, outputId}] : [],
     );
   }
 
   private resultChannels(): readonly WgslResultChannel[] {
-    return this.resultOutputs().map(({output, outputId}, rowCell) => {
-      const channel =
-        output.channels[0] ?? fatal('missing WGSL result channel');
-      return {
-        outputId,
-        scalar: resultScalar(channel.type),
-        rowCell,
-      };
-    });
+    return this.resultOutputs().map(({output, outputId}, rowCell) => ({
+      outputId,
+      scalar: resultScalar(output.valueType),
+      rowCell,
+    }));
   }
 
   private events(): readonly WgslEvent[] {
-    return this.program.effects.map((effect, index) => ({
-      outputId: this.program.outputs.length + index,
-      payloadLayout: this.physicalLayoutOf(effect.payloadType),
-      payloadWordCount:
-        this.layouts[this.physicalLayoutOf(effect.payloadType)].byteSize / 4,
-      payload: this.codec(effect.payloadType),
-    }));
+    return this.program.outputs.flatMap((output, outputId) =>
+      output.mode === 'append'
+        ? [
+            {
+              outputId,
+              payloadLayout: this.physicalLayoutOf(output.valueType),
+              payloadWordCount:
+                this.layouts[this.physicalLayoutOf(output.valueType)].byteSize /
+                4,
+              payload: this.codec(output.valueType),
+            },
+          ]
+        : [],
+    );
   }
 
   private codec(type: Type): WgslCodec {
@@ -2872,8 +2812,7 @@ interface WgslContext {
   readonly rootBase: string;
   readonly functionLocals: ReadonlyMap<Name, string>;
   readonly loopDepth: number;
-  readonly allowDenseEmit: boolean;
-  readonly allowEffect: boolean;
+  readonly resultType?: Type;
   readonly executionIndex: string;
   readonly job: string;
   readonly row: string;

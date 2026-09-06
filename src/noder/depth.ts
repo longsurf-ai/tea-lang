@@ -81,7 +81,7 @@ function collectDemands(
     return;
   }
   visited.add(program);
-  const cap = declarationCap(program);
+  const cap = DEFAULT_MAX_BARS_BACK;
   const funcs = funcsOf(program);
   const names = namesOf(program);
   const functionNames = new Set(
@@ -101,9 +101,6 @@ function collectDemands(
   ]);
 
   const note = (read: HistReadExpr, ctx: WalkContext): void => {
-    if (read.offset === null) {
-      return;
-    }
     const carrier = carrierOf(read);
     let demand = demands.get(carrier);
     if (demand === undefined) {
@@ -118,9 +115,7 @@ function collectDemands(
       return;
     }
     const induction =
-      offset.kind === IrKind.HistRead &&
-      offset.offset === null &&
-      offset.place.kind === PlaceKind.Name
+      offset.kind === IrKind.Read && offset.place.kind === PlaceKind.Name
         ? ctx.induction.get(offset.place.name)
         : undefined;
     const normalized = induction ?? normalize(offset, ctx, functionNames);
@@ -138,8 +133,16 @@ function collectDemands(
     for (const expr of stmtExprs(stmt)) {
       walkExpr(expr, ctx);
     }
-    if (stmt.kind === IrKind.WriteName && ctx.immutable.has(stmt.name)) {
-      ctx.env.set(stmt.name, normalize(stmt.value, ctx, functionNames));
+    if (
+      stmt.kind === IrKind.Assign &&
+      stmt.op === null &&
+      stmt.target.kind === IrKind.Read &&
+      ctx.immutable.has(stmt.target.place.name)
+    ) {
+      ctx.env.set(
+        stmt.target.place.name,
+        normalize(stmt.value, ctx, functionNames),
+      );
     }
   };
 
@@ -161,16 +164,13 @@ function collectDemands(
     expr: Extract<
       IrExpr,
       {
-        kind:
-          | typeof IrKind.CallFunc
-          | typeof IrKind.CallConstMethod
-          | typeof IrKind.CallMutableMethod;
+        kind: typeof IrKind.CallFunc;
       }
     >,
     ctx: WalkContext,
   ): void => {
     const args =
-      expr.kind === IrKind.CallFunc ? expr.args : [expr.receiver, ...expr.args];
+      expr.receiver === null ? expr.args : [expr.receiver, ...expr.args];
     for (const arg of args) {
       walkExpr(arg, ctx);
     }
@@ -208,11 +208,7 @@ function collectDemands(
     if (expr.kind === IrKind.HistRead) {
       note(expr, ctx);
     }
-    if (
-      expr.kind === IrKind.CallFunc ||
-      expr.kind === IrKind.CallConstMethod ||
-      expr.kind === IrKind.CallMutableMethod
-    ) {
+    if (expr.kind === IrKind.CallFunc) {
       walkCall(expr, ctx);
       return;
     }
@@ -249,8 +245,13 @@ function collectDemands(
             pos: expr.pos,
             type: IntType,
             qualifier: joinQualifiers(from.expr.qualifier, to.expr.qualifier),
-            native: 'math.max',
-            slot: null,
+            native: {
+              name: 'math.max',
+              argTypes: args.map(arg => arg.type),
+              resultType: IntType,
+              effect: 'pure',
+            },
+            receiver: null,
             args,
             argumentEvaluationOrder: [0, 1],
           },
@@ -261,7 +262,11 @@ function collectDemands(
       let indexReassigned = false;
       walkIrExpr(expr.body, {
         stmt: stmt => {
-          if (stmt.kind === IrKind.WriteName && stmt.name === expr.index) {
+          if (
+            stmt.kind === IrKind.Assign &&
+            stmt.target.kind === IrKind.Read &&
+            stmt.target.place.name === expr.index
+          ) {
             indexReassigned = true;
           }
         },
@@ -289,11 +294,6 @@ function collectDemands(
   for (const param of program.params) {
     walkExpr(param.active, root);
   }
-  for (const output of program.outputs) {
-    for (const arg of output.bindArgs) {
-      walkExpr(arg.expr, root);
-    }
-  }
   for (const stmt of [...program.init, ...program.body]) {
     walkStmt(stmt, root);
   }
@@ -310,8 +310,8 @@ function normalize(
   switch (expr.kind) {
     case IrKind.Const:
       return {expr, rootSafe: true};
-    case IrKind.HistRead: {
-      if (expr.offset === null && expr.place.kind === PlaceKind.Name) {
+    case IrKind.Read: {
+      if (expr.place.kind === PlaceKind.Name) {
         const bound = ctx.env.get(expr.place.name);
         if (bound !== undefined) {
           return bound;
@@ -326,11 +326,10 @@ function normalize(
       return {
         expr,
         rootSafe:
-          expr.offset === null &&
-          ((expr.place.kind === PlaceKind.Param &&
+          (expr.place.kind === PlaceKind.Param &&
             expr.place.param.defaultValue?.kind !== ParamDefaultKind.Series) ||
-            (expr.place.kind === PlaceKind.Builtin &&
-              qualifierLE(expr.qualifier, Qualifier.Simple))),
+          (expr.place.kind === PlaceKind.Builtin &&
+            qualifierLE(expr.qualifier, Qualifier.Simple)),
       };
     }
     case IrKind.Binary: {
@@ -345,21 +344,36 @@ function normalize(
       const x = normalize(expr.x, ctx, functionNames);
       return {expr: {...expr, x: x.expr}, rootSafe: x.rootSafe};
     }
-    case IrKind.Cond: {
+    case IrKind.IfExpr: {
       const cond = normalize(expr.cond, ctx, functionNames);
-      const then = normalize(expr.then, ctx, functionNames);
-      const otherwise = normalize(expr.else, ctx, functionNames);
+      const then = normalizeFunctionResult(expr.then, ctx, functionNames);
+      const otherwise =
+        expr.else === null
+          ? null
+          : normalizeFunctionResult(expr.else, ctx, functionNames);
+      const blockOf = (value: IrExpr) =>
+        ({
+          kind: IrKind.BlockExpr,
+          pos: value.pos,
+          type: value.type,
+          qualifier: value.qualifier,
+          stmts: [],
+          value,
+        }) as const;
       return {
         expr: {
           ...expr,
           cond: cond.expr,
-          then: then.expr,
-          else: otherwise.expr,
+          then: blockOf(then.expr),
+          else: otherwise === null ? null : blockOf(otherwise.expr),
         },
-        rootSafe: cond.rootSafe && then.rootSafe && otherwise.rootSafe,
+        rootSafe:
+          cond.rootSafe && then.rootSafe && (otherwise?.rootSafe ?? true),
       };
     }
     case IrKind.CallNative: {
+      if (expr.receiver !== null || expr.native.effect !== 'pure')
+        return {expr, rootSafe: false};
       const args = expr.args.map(arg => normalize(arg, ctx, functionNames));
       return {
         expr: {...expr, args: args.map(arg => arg.expr)},
@@ -367,43 +381,31 @@ function normalize(
       };
     }
     case IrKind.CallFunc: {
+      if (expr.func.callMode === 'mutable-method')
+        return {expr, rootSafe: false};
+      const receiver =
+        expr.receiver === null
+          ? null
+          : normalize(expr.receiver, ctx, functionNames);
       const args = expr.args.map(arg => normalize(arg, ctx, functionNames));
-      if (ctx.scope === 'function') {
-        return normalizeFunctionCall(expr, args, ctx, functionNames);
-      }
-      return {
-        expr: {...expr, args: args.map(arg => arg.expr)},
-        rootSafe: args.every(arg => arg.rootSafe),
-      };
-    }
-    case IrKind.CallConstMethod: {
-      const receiver = normalize(expr.receiver, ctx, functionNames);
-      const args = expr.args.map(arg => normalize(arg, ctx, functionNames));
-      const operands = [receiver, ...args];
+      const operands = receiver === null ? args : [receiver, ...args];
       if (ctx.scope === 'function') {
         return normalizeFunctionCall(expr, operands, ctx, functionNames);
       }
       return {
         expr: {
           ...expr,
-          receiver: receiver.expr,
+          receiver: receiver?.expr ?? null,
           args: args.map(arg => arg.expr),
         },
         rootSafe: operands.every(arg => arg.rootSafe),
       };
     }
-    case IrKind.CallMutableMethod:
-      // A mutable method writes a root and cannot participate in a bind-time
-      // history-depth expression. Its body is still entered by walkExpr so
-      // history demands inside the method are collected.
-      return {expr, rootSafe: false};
-    case IrKind.OutputRef:
-    case IrKind.MutateCollection:
+    case IrKind.HistRead:
     case IrKind.NewStruct:
     case IrKind.MakeTuple:
     case IrKind.TupleGet:
     case IrKind.FieldGet:
-    case IrKind.IfExpr:
     case IrKind.SwitchExpr:
     case IrKind.ForExpr:
     case IrKind.ForInExpr:
@@ -416,10 +418,7 @@ function normalize(
 }
 
 function normalizeFunctionCall(
-  call: Extract<
-    IrExpr,
-    {kind: typeof IrKind.CallFunc | typeof IrKind.CallConstMethod}
-  >,
+  call: Extract<IrExpr, {kind: typeof IrKind.CallFunc}>,
   args: readonly Normalized[],
   ctx: WalkContext,
   functionNames: ReadonlySet<Name>,
@@ -468,14 +467,21 @@ function normalizeFunctionResult(
   }
   const block = {...ctx, env: new Map(ctx.env)};
   for (const stmt of expr.stmts) {
-    if (stmt.kind !== IrKind.WriteName || !block.immutable.has(stmt.name)) {
+    if (stmt.kind === IrKind.Return && stmt.value !== null)
+      return normalize(stmt.value, block, functionNames);
+    if (
+      stmt.kind !== IrKind.Assign ||
+      stmt.op !== null ||
+      stmt.target.kind !== IrKind.Read ||
+      !block.immutable.has(stmt.target.place.name)
+    ) {
       return {expr, rootSafe: false};
     }
     const value = normalize(stmt.value, block, functionNames);
     if (!value.rootSafe) {
       return {expr, rootSafe: false};
     }
-    block.env.set(stmt.name, value);
+    block.env.set(stmt.target.place.name, value);
   }
   return expr.value === null
     ? {expr, rootSafe: false}
@@ -531,8 +537,13 @@ function maxDemand(demand: Demand, minimum: number): IrExpr {
       (qualifier, expr) => joinQualifiers(qualifier, expr.qualifier),
       Qualifier.Const,
     ),
-    native: 'math.max',
-    slot: null,
+    native: {
+      name: 'math.max',
+      argTypes: args.map(arg => arg.type),
+      resultType: IntType,
+      effect: 'pure',
+    },
+    receiver: null,
     args,
     argumentEvaluationOrder: args.map((_arg, index) => index),
   };
@@ -544,8 +555,13 @@ function validDepthDemand(expr: IrExpr): IrExpr {
     pos: expr.pos,
     type: IntType,
     qualifier: expr.qualifier,
-    native: '$historyDepth',
-    slot: null,
+    native: {
+      name: '$historyDepth',
+      argTypes: [expr.type],
+      resultType: IntType,
+      effect: 'pure',
+    },
+    receiver: null,
     args: [expr],
     argumentEvaluationOrder: [0],
   };
@@ -566,22 +582,6 @@ function cappedDepth(demand: Demand, cap: number): HistoryDepth {
     kind: DepthKind.Capped,
     bars: intConst(cap, demand.pos),
   };
-}
-
-// indicator(max_bars_back=N) declares the cap; the engine default otherwise.
-// OutputDecl.effect holds the native's NAME (indicator/strategy), not its
-// effect class.
-function declarationCap(program: Program): number {
-  for (const output of program.outputs) {
-    if (output.effect !== 'indicator' && output.effect !== 'strategy') {
-      continue;
-    }
-    const declared = output.staticArgs.find(a => a.name === 'max_bars_back');
-    if (declared !== undefined && typeof declared.value === 'number') {
-      return declared.value;
-    }
-  }
-  return DEFAULT_MAX_BARS_BACK;
 }
 
 function unreachableExpr(expr: never): never {

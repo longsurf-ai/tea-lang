@@ -49,12 +49,8 @@ export class Module<C extends Context = Context> {
   declare readonly outputs: {
     readonly schema: Schema;
     readonly declarations: readonly {
-      /** Bound display arguments; null while parameter/context facts are missing. */
-      readonly args:
-        | readonly {readonly name: string; readonly value: Scalar}[]
-        | null;
-      /** Private storage descriptors used to detach the field's values. */
-      readonly layouts: readonly number[];
+      /** Private storage descriptor used to detach each written value. */
+      readonly layout: number;
     }[];
   };
   declare readonly requests: readonly Request[];
@@ -319,7 +315,6 @@ function concrete(
       parameter => typeof parameter.active === 'boolean',
     ) &&
     depths(module).every(depth => depth.kind !== 'bound') &&
-    module.outputs.declarations.every(output => output.args !== null) &&
     module.requests.every(request => request.context != null)
   );
 }
@@ -384,40 +379,23 @@ export function requireConcreteModule(module: Module): Module {
   }
   if (fields.length !== module.outputs.declarations.length)
     throw new BindError('output fields and declarations disagree');
+  const layouts = new StorageTypes(module.state.layout);
   fields.forEach((field, id) => {
-    const count = module.outputs.declarations[id].layouts.length;
     if (field.metadata.get('tea:write') === 'set') {
-      if (
-        !field.nullable ||
-        !DataType.isStruct(field.type) ||
-        field.type.children.length !== count
-      ) {
+      if (!field.nullable) {
         throw new BindError(
-          `output '${field.name}' requires a nullable record`,
+          `output '${field.name}' requires a nullable set field`,
         );
       }
     } else if (field.metadata.get('tea:write') === 'append') {
-      const item = field.type.children?.[0];
-      if (
-        field.nullable ||
-        !DataType.isList(field.type) ||
-        item?.nullable !== false ||
-        !DataType.isStruct(item.type) ||
-        item.type.children.length !== 2 ||
-        count !== 1 ||
-        !util.compareFields(
-          coordinates[0].clone({name: 'ordinal'}),
-          item.type.children[0],
-        ) ||
-        item.type.children[1].name !== 'payload'
-      ) {
+      if (field.nullable || !DataType.isList(field.type)) {
         throw new BindError(
-          `output '${field.name}' requires an ordinal/payload event list`,
+          `output '${field.name}' requires a non-nullable append list`,
         );
       }
     } else throw new BindError(`output '${field.name}' has no write mode`);
+    layouts.layout(module.outputs.declarations[id].layout);
   });
-  const layouts = new StorageTypes(module.state.layout);
   module.requests.forEach((request, id) => {
     const layout = layouts.layout(request.layout);
     layouts.layout(request.resultLayout);

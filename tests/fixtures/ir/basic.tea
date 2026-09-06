@@ -1,5 +1,5 @@
 //@version=1
-indicator("Basic", overlay=true)
+
 
 len = input.int(14, "Length", minval=1)
 src = input.source(close, "Source")
@@ -12,4 +12,4 @@ if up
 	count := count + 1
 
 delta = close - prev
-plot(delta, "Delta", color=color.blue)
+emit "output0" delta

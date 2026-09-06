@@ -70,7 +70,7 @@ not.
 
 **The compiler describes; the runtime implements.** The Program is a complete
 static description — slots, storage classes, qualifiers, bind-resolvable
-history depths, request edges, effect declarations. All Time Machine
+history depths, request edges, output declarations. All Time Machine
 mechanics — ring buffers, copy-on-write epochs, commit/rollback, provisional
 overlays — are runtime-owned. The IR never encodes buffer layouts or COW
 strategy, so runtime implementations can evolve freely against a stable
@@ -109,9 +109,8 @@ canonicalizes every folded non-finite result to `NA_VALUE`. Noding then gives
 each `NA_VALUE` the concrete nullable type supplied by its declaration, branch
 join, or call parameter. `TypeKind.Na` is therefore checker-only and never
 appears in a Program.
-Plot/hline references are their own value types
-(`TypeKind.Plot`/`Hline`): compile-time output ids, const-qualified,
-consumed by `fill` — not runtime heap handles.
+Visual descriptions are ordinary library-defined struct values. Their output column
+identity is a compile-time string, and the compiler has no Plot/Hline reference type.
 
 ## Program (`src/ir/program.ts`)
 
@@ -173,7 +172,7 @@ places to its depth pass for annotation.
   time** (non-negotiable):
   `none` (no buffer materializes), `const`, `bound` (an immutable root-safe
   expression no later than `simple`, evaluated at bind), or `capped` (dynamic
-  offsets under an explicit bind-resolvable `max_bars_back` cap). A persistent
+  offsets under the generic history cap). A persistent
   declaration is represented separately by `InitName` at its lexical position
   in a body. This keeps evaluation order and control flow explicit: the value
   is evaluated only after execution reaches the statement and the runtime
@@ -181,20 +180,20 @@ places to its depth pass for annotation.
   the noder's depth pass. Series inputs, builtins, params, and request
   results carry the same depth field, so every history demand is resolved
   before execution.
-- **outputs**: statically-declared dense channels, hoisted so the host knows
-  every output before the first bar. The sole declaration intrinsic is
-  `output(value, kind, args={...})`; compiler-shipped Tea wrappers such as
-  unqualified `plot(...)` elaborate it at each caller, preserving distinct
-  `PlotType`/`OutputRefExpr` identities for `fill`. Three argument buckets:
-  `staticArgs` (compile-time constants),
-  `bindArgs` (input-qualified exprs — hline price, plot linewidth,
-  plotshape offset — plus `fill`'s plot/hline references, evaluated once in
-  module binding and combined with static arguments in `args` before the first
-  bar), and per-bar `channels` written via `Emit`.
-  `bindArgumentEvaluationOrder` keeps bind-time named arguments in
-  source order while `bindArgs` remains in canonical parameter order. A plot
-  assignment lowers to the OutputDecl plus a const plot-typed binding holding
-  the OutputId.
+- **outputs**: one source-ordered table of named columns, each with a name,
+  mode (`set` or `append`), Tea value type, and source position. `emit "price" close`
+  declares a set column; `emit.append "fills" execution` declares a list of the
+  expression's type. All sites with the same name must agree on type and mode,
+  even when different modes would have the same Arrow shape. Duplicate plain
+  writers and potentially repeated set execution within one step are compiler
+  errors. Append sites may share a column. Column names must be constant-foldable
+  strings; const string arguments permit ordinary library helpers to name outputs.
+  Concrete call occurrences contribute emission counts independently even when
+  they share a checked function body. Unused templates and method-validation-only
+  instances do not declare columns. One `Emit {output, value}` serves both modes.
+  The runtime schema projects set values as nullable T and appended values as
+  non-null `List<T>`. Missing set and emitted null both yield null; append lists
+  preserve their own execution order and contain no global event ordinals.
 - **requests**: the recursive edge. The checker records capture semantics in
   the request call's resolution; the noder projects that resolution to a
   `RequestEdge` and compiles its captured expression into a **child Program**
@@ -219,14 +218,13 @@ places to its depth pass for annotation.
   during binding: constants, inputs, and root-safe `simple` expressions are
   supported. The noder still classifies a series-qualified context as a
   `RequestEdge.dynamic` fact, but fails compilation before that Program reaches
-  codegen or runtime. Pine's `dynamic_requests` declaration option therefore
-  does not enable dynamic contexts in this implementation. Non-security request
+  codegen or runtime. Non-security request
   kinds (financial/dividends/economic) map to edges whose child is a plain
   series-input projection; their extra context args ride the same static shape.
   [Requests](requests.md) owns the detailed Node synchronization and separate
   Pine Batch sample contracts.
 - **funcs** (a projection, not a field): semantic function stencils are keyed
-  only by `(FunctionObject, type + qualifier signature)`, not by a Program or
+  by `(FunctionObject, type + qualifier + folded constant argument values)`, not by a Program or
   request owner. They remain **real functions with runtime call dispatch**;
   inlining is at most a codegen optimization. The same semantic
   `FunctionInstance` may therefore be used while noding multiple Programs,
@@ -258,8 +256,8 @@ places to its depth pass for annotation.
 Typed and resolved: every expression carries `(type, qualifier)`; every use
 is a `Place` referencing its projected IR declaration object directly (Name |
 ParamInput | SeriesInput | BuiltinInput | RequestEdge — no ids), with
-`HistRead {place, offset?}` — a
-read through the time machine, offset null meaning the current bar — and
+`Read {place}` for current values and `HistRead {place, offset}` for explicit
+historical access, and
 each use keeping its own position (unlike shared-node designs, diagnostics
 never lose the use site). `TupleGet` has no surface syntax: Pine tuples are
 destructured immediately, so it appears only in noder-generated lowerings of
@@ -273,18 +271,29 @@ later pass, not a representation constraint. There are no Bad nodes — the IR
 exists only for error-free compilations, enforced by `compile()`'s phase
 barriers.
 
-Struct operations expose reference semantics without exposing physical
-storage. `NewStruct` describes construction in canonical field order;
-`FieldGet` names a canonical field index; and `StoreField` captures one struct
-receiver and stores one field after evaluating the replacement. A mutable
-method carries the receiver expression but no copy-out path and returns only
-its declared result.
+Assignments compose one `Assign {target, value, op}` with writable binding reads
+or field selections. The optional compound operator applies to the destination's
+captured old value. `NewStruct` describes construction in canonical field order;
+`FieldGet` carries a logical field index and works as a read or destination.
+Lowering captures and validates a field destination before evaluating its RHS,
+so later rebindings cannot redirect the store. Persistent declarations remain
+lexical, lazy `InitName` statements.
 
-A mutating collection call carries a `CollectionLocation`: either a Name whose
-state receives the replacement header or a captured struct field whose storage
-receives it. A collection accessor result alone is not a location. There are no
-Program nodes for Heap slots, `Ref` handles, transaction overlays, commit,
-abort, or garbage collection.
+A collection mutator is a `CallNative` with a writable receiver using the same
+destination forms. Lowering captures its old header before explicit arguments,
+then stores the returned replacement before yielding the call result. A collection
+accessor result alone is not writable. Intrinsic descriptors carry concrete
+argument/result types and effects; read/write/allocate calls are not classified
+as pure merely because their operands are constant. Native calls have no state
+slot; ordinary Tea calls retain per-written-call state.
+
+There are no Program nodes for Heap slots, transaction overlays, commit, abort,
+or garbage collection. `Return` exits the enclosing function, including through
+loops and persistent-initializer blocks; it never commits independently. Implicit
+tail-expression returns remain supported. Main completes without a source return.
+Ternary syntax is retained, typechecks both arms, and nodes as a lazy `IfExpr`.
+The condition executes once and only the selected arm executes. Its checked
+qualifier is preserved, including in bind-time history-depth expressions.
 
 Canonical argument slots and evaluation order are distinct Program facts.
 Constructors and calls retain an `argumentEvaluationOrder`: lowering captures
@@ -293,63 +302,41 @@ in canonical parameter/field order, and only then assembles the canonical ABI
 argument vector. A method receiver is absent from this schedule and from
 `args`; its dedicated call field is always captured once before the scheduled
 explicit arguments. Named arguments therefore never reorder observable effects
-or failures. Output declarations retain the
-analogous `bindArgumentEvaluationOrder` for bind-time arguments, while an
-`Emit` retains it for per-bar channels. A `RequestEdge` retains two independent
+or failures. A `RequestEdge` retains two independent
 schedules: `optionArgumentEvaluationOrder` for its four bind-time options and
 `contextArgumentEvaluationOrder` for its parent-owned symbol and timeframe.
 There is deliberately no cross-phase schedule. The captured expression is
 absent from both because it executes in the child Program rather than the
 parent context.
 
-User functions are discriminated by call mode. `CallFunc` targets only a
-`FreeIrFunc`; `CallConstMethod` targets only a `ConstMethodIrFunc`; and
-`CallMutableMethod` targets only a `MutableMethodIrFunc`. Both method function
-types own a hidden receiver `Name` distinct from every explicit param. The
-generated mutable-method `{receiver, result}` return envelope is an internal
-codegen protocol, not a Tea tuple or Program value; const methods return their
-result directly and never write back the receiver.
+All ordinary function and method invocations use `CallFunc`. The callee owns its
+call mode and hidden receiver declaration, separate from source parameters.
+A mutable receiver is validated before explicit argument effects; shallow const
+permits mutation through child references and is not a purity annotation.
 
 ## Primitives vs prelude
 
-A builtin is native **only if it is inexpressible in Tea**: data sources
-(`close`, `bar_index`), host effects (`output`, `line.new`), context capture
-(`request.*`), collection primitives (`array.*`, `matrix.*`, `map.*`), math
-intrinsics. Everything else — all of `ta.*` and visual wrappers such as
-`plot` — is library code in real Tea libraries
-(`src/tea-lib/{ta,visual}.tea`, each with a `library(...)` declaration and `export` functions, loaded by
-the loader/importer seam and implicitly imported into every script), compiled
-by the ordinary pipeline, with per-call-site state falling out of ordinary
-function semantics. Semantic stencils are per type + qualifier signature, not
-per value or Program: a const-qualified param (`length`) is known per call site
-at bind time but carries no fold value into the shared body. The native catalog
-(typecheck round) declares, per primitive: value signature, per-param qualifier
-caps, const-required and
-**expression-capture** markers (what makes `request`'s third argument a
-subgraph), and an **effect class** — the tag that selects the compilation and
-runtime protocol:
+A builtin is native only when its operation is inexpressible in Tea: data sources,
+context capture, collection operations and scalar intrinsics. `ta`, visual
+functions, and trade policy are ordinary Tea libraries. `plot("price", close)`
+constructs a library Plot value, executes plain `emit id p`, and returns `p`.
+Its constant ID participates in ordinary function specialization; there is no
+output-wrapper expansion, special output return type, or compiler interpretation
+of visual kinds. Other side-effect libraries use named `emit.append` columns.
 
-| Effect class         | Examples                        | Protocol                                                                                                                          |
-| -------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| none                 | `math.*`                        | pure call                                                                                                                         |
-| param                | `input.*`                       | extracts one global `ParamInput` per call site; local blocks, non-exported UDFs, scalar request captures allowed                  |
-| declaration          | `indicator`, `strategy`         | script metadata; top-level placement; `strategy` is first, unique, and excludes other script declarations                         |
-| output (declarative) | `output(value, kind, args)`     | hoisted to `Program.outputs`; per-bar `Emit`; top-level/unconditional placement; Tea wrappers such as `plot` elaborate per caller |
-| handle-object        | `line.*`, `label.*`, `box.*`    | per-bar host object ops; handle values; rollback participation                                                                    |
-| host-service         | reserved; no strategy order API | future host services with feedback                                                                                                |
-| async-host-call      | `llm()` (Tea)                   | awaited/batched host call                                                                                                         |
-| request              | `request.*`                     | expression capture; compiles a child Program (`RequestEdge`)                                                                      |
-
-New builtin families are catalog entries plus at most a new noding policy —
-never new checker or IR architecture. Future cross-sectional analysis
-generalizes the request edge (a universe of contexts instead of one).
+The catalog owns primitive signatures, qualifier requirements, expression capture,
+and effect classification. Noding preserves the concrete intrinsic contract in
+IR-owned facts; it never imports checker objects into the Program. `input.*`
+remains parameter declaration syntax through native calls, `request.*` captures
+child Programs, and `library()` identifies library modules. Entry programs have
+no indicator/strategy headers or program-kind distinction.
 
 ## Program fields vs projections
 
 A Program declares its external needs — `params` (bind-time values; an
 unused input still renders in the settings UI) and `requests`
 (child-Program contexts the runtime must resolve) — and its emissions
-(`outputs`; a static-only hline has no Emit), explicitly even where
+(`outputs`, including both write modes), explicitly even where
 derivable: the noder populates this interface, and codegen/runtime read what
 the program needs from the world here without reinterpreting checker facts.
 Context builtins are NOT declared as Program fields: they are available only
@@ -402,18 +389,10 @@ unreachable never enter `requests` — dead-request elimination by construction.
   story exists. The Program is always a closed script; a
   distributable compiled-library artifact, if ever needed, is a separate
   contract — never a bent Program.
-- Reference bindings are compile-time only: a never-reassigned declaration
-  initialized by an input call binds the name to its `ParamInput` (reads
-  become param reads; no per-bar write), and one initialized by an output
-  call (or an alias of one) binds to its `OutputDecl` via `OutputRef` — so
-  `fill(p1, p2)` resolves refs at bind, never per bar. “Never reassigned” is
-  a whole-context fact about the exact declaration object, not every binding
-  with the same spelling. That declaration object is the semantic
-  `VariableObject`; the noder chooses the current Program's projected Name.
-  Tea `const` declarations vanish entirely (every read folded).
-- `indicator()`/`strategy()` node as OutputDecls whose `effect` is the
-  native's name: script metadata is an emission to the host, hoisted like
-  every other declarative output.
+- A never-reassigned declaration initialized by an input call aliases its
+  `ParamInput`, so reads do not require a per-bar name write. Eligibility is
+  keyed by canonical declaration identity. Tea `const` declarations disappear
+  after folding. Visual function results remain ordinary runtime values.
 - A native call's omitted trailing optionals are dropped (the runtime
   applies defaults); omitted middles node as `na` constants.
 - `Program.init` stays empty for now — hoisting const/input/simple work out
@@ -430,7 +409,7 @@ unreachable never enter `requests` — dead-request elimination by construction.
   and `BuiltinInput`, then combined into one exact `bound` maximum
   (invalid/na components contribute zero). A demand that still depends on
   per-bar or unresolved frame state is `capped` by
-  `indicator(max_bars_back=…)` or the engine default (500). For a history read
+  the generic engine default (500). For a history read
   indexed directly by a numeric range's induction variable, the noder uses the
   range's bind-safe maximum as the exact demand. More complex index arithmetic
   remains capped until a general interval pass can prove it safely.
@@ -439,10 +418,8 @@ unreachable never enter `requests` — dead-request elimination by construction.
 
 There is no strategy-specific IR or compiler path. `compileToProgram()` owns
 the one load → import resolution/check → noding sequence, and both target
-backends consume its `Program` directly. `indicator()` and `strategy()` remain
-ordinary declaration `OutputDecl`s; downstream code does not copy them into a
-second semantic object. The native `strategy()` declaration is unrelated to
-the explicitly imported ordinary `trade` library.
+backends consume its `Program` directly. Every entry is a program. The explicitly
+imported `trade` library owns trading policy without a special declaration header.
 
 The selected direct trade coordinator, its concrete broker and portfolio
 fields, and their reachable methods are ordinary Tea code in the closed Program

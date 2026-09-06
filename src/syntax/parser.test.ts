@@ -301,20 +301,15 @@ describe('expressions', () => {
     expect(out).toContain('args[2]: Arg @1:22');
   });
 
-  test('contextual argument object expression', () => {
+  test('named set and append statements plus explicit returns', () => {
     const out = dump(
-      [
-        'output(',
-        '    close,',
-        '    kind = "plot",',
-        '    args = {title: "Close", color: lineColor})',
-        '',
-      ].join('\n'),
+      'publish(const string id, v) =>\n    emit id v\n    emit.append ("events") v\n    return v\n',
     );
-    expect(out).toContain('ArgumentObjectExpr @4:12');
-    expect(out).toContain('fields[0]: ArgumentObjectField @4:13');
-    expect(out).toContain('name: Name @4:13 value="title"');
-    expect(out).toContain('fields[1]: ArgumentObjectField @4:29');
+    expect(out).toContain('EmitStmt');
+    expect(out).toContain('append=false');
+    expect(out).toContain('append=true');
+    expect(out).toContain('ReturnStmt');
+    expect(out).toContain('name: Name @2:10 value="id"');
   });
 
   test('full qualifier caps in function parameters', () => {

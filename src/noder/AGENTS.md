@@ -30,26 +30,15 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   defaults; each `CheckedExpression` supplies the exact semantic `Info` to use
   while the value lowers into the caller's current Program and frame. A
   default expression is never prebuilt IR shared between Programs.
-- A checked `StructFieldStore` projects to `StoreField` with its captured
-  object expression and canonical owner/field index. A checked collection
-  location projects to either a Name or one captured struct field for the
-  replacement header. Mutable methods carry the receiver expression but no
-  copy-out path; no checker object or runtime storage handle enters Program.
-- Reference bindings are compile-time only: a never-reassigned declaration
-  whose initializer is an input call binds the name to its `ParamInput`
-  (reads become param reads, no per-bar write), and one whose initializer
-  nodes to an `OutputRef` binds the name to its `OutputDecl` (fill resolves
-  refs at bind). Reassignment eligibility comes directly from the current
-  `Info` and is keyed by canonical semantic `VariableObject` identity; the
-  noder then applies the binding to that Program's projected `IrName`. Tea
-  `const` declarations vanish entirely.
-- Param identity: the binding name when the input call initializes a program-
+- A checked `StructFieldStore` projects to the ordinary `FieldGet` destination of `Assign`; binding destinations use `Read`. Compound assignment retains its operator so lowering captures the receiver and previous value exactly once. Collection inout calls reuse these destinations with a concrete intrinsic signature/effect descriptor; user method policy remains on the callee.
+- Reference bindings- Parameter bindings are compile-time only: a never-reassigned input-call declaration binds its name to `ParamInput`. Tea const declarations vanish entirely. Visual values use ordinary names, structs, calls and history; there are no output handles.
+- Param identity- Param identity: the binding name when the input call initializes a program-
   scope declaration, else `input@line:col`. Inputs in local blocks and
   non-exported UDFs, plus scalar inputs in request captures, are extracted
   globally; local declaration spellings are labels, never identities, because
   separate scopes may reuse them. The checker guarantees each extracted
   `active` expression is evaluable without its source function/capture frame.
-  One `ParamInput`/`OutputDecl` per call site, deduped by syntax node. Supported
+  One `ParamInput` per call site, deduped by syntax node; output columns instead use their checker-owned static names. Supported
   projections must not discard fields: the exclusive range/options constraint,
   concrete group/inline/tooltip/confirm/display metadata, nominal enum type, and
   input-qualified `active` expression are copied into that ParamInput after
@@ -58,24 +47,16 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   output or effect payload types through the compilation's Errors; recursive
   structs used only inside execution remain valid. Nominal declaration ids
   pass directly from the checked package into Program.nominalIds.
-- Output args partition by when they are known: folded constants →
-  `staticArgs`; output refs and at-most-input exprs → `bindArgs` (module.bind);
-  simple/series exprs → `channels` + one per-bar `Emit` after the statement.
-  The native `output` intrinsic arrives as `OutputCall`; a direct-tail
-  Tea-authored wrapper such as `visual.plot` elaborates at its caller and never
-  becomes an `IrFunc`, so two calls own two `OutputDecl`s while retaining
-  `PlotType`/`HlineType` `OutputRefExpr` behavior. Both runtime-evaluated
-  buckets retain source evaluation order separately from canonical order.
-  `indicator()`/`strategy()` are OutputDecls whose effect is the native's
-  name — script metadata is an emission to the host.
-- History is valid only on a direct readable binding. Noding projects that
+- `Info.emits` projects to one Program-owned column table and `Emit(output, value)`. Columns carry name, write mode and Tea value type. Visual declarations and append payloads use this same path; no output-wrapper expansion or separate effect declaration remains.
+- `Return` nodes preserve lexical exits and concrete result types. Ternaries node as lazy `IfExpr` using the original checked qualifier/type; returning branches carry no block value.
+- History is valid- History is valid only on a direct readable binding. Noding projects that
   binding to its ordinary `Place` and never creates a synthetic history Name;
-  offset zero follows the same checked-binding rule as every other offset.
+  offset zero follows the same checked-binding rule as every other offset. Current reads use `Read`; `HistRead` always carries an explicit offset.
 - Depth resolution walks each UDF body in call-site context. It substitutes
   parameters and single-write bind-known locals with root-safe expressions,
   then combines every constant/bound demand on a carrier into one exact,
   na-safe maximum. Any remaining per-bar or unresolved frame dependency is
-  `capped` by `indicator(max_bars_back=…)` or the engine default. Depths
+  `capped` by the engine's generic 500-bar fallback. Depths
   annotate the noder-created IR place objects (names, series, params, and
   requests) in place and accumulate across the recursive Program graph; every
   `bound` expression is normalized for lowering from the root bind frame.
@@ -107,7 +88,7 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   materialize them there.
 - One `IrFunc` per checker `FunctionInstance` per Program projection, its body
   noded against the instance's `Info` under its own frame-local slot counter.
-  Free functions, const methods, and mutable methods remain distinct; a
+  All user calls use `CallFunc`; the callee distinguishes free functions and receiver modes. A
   method's hidden receiver is projected separately from explicit params and
   from named/default argument ordering. Every user-call site mints the next
   slot of the frame it sits in — the sub-frame selector. Omitted arguments node

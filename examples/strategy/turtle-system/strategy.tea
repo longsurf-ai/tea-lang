@@ -2,7 +2,7 @@
 // Clean-room execution model of the published Turtle System strategy profile.
 // Canonical trade components own broker execution and portfolio accounting;
 // the strategy owns only the published Turtle signals and sizing rules.
-strategy("Turtle system", shorttitle="Turtle", overlay=true)
+
 
 import broker
 import portfolio
@@ -149,20 +149,20 @@ strat.mark(close)
 strat.finish(barstate.islast)
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(l1_entry[1], "system 1 entry")
-plot(l2_entry[1], "system 2 entry")
-plot(l1_exit[1], "system 1 exit")
-plot(l2_exit[1], "system 2 exit")
-plot(n_value, "N")
-plot(stop_price, "stop")
-plot(next_buy_price, "next pyramid")
-plot(fake_trade ? 1.0 : 0.0, "fake trade")
-plot(metrics.positionQuantity, "position quantity")
-plot(metrics.positionAveragePrice, "average price")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("system 1 entry", l1_entry[1], "system 1 entry")
+plot("system 2 entry", l2_entry[1], "system 2 entry")
+plot("system 1 exit", l1_exit[1], "system 1 exit")
+plot("system 2 exit", l2_exit[1], "system 2 exit")
+plot("N", n_value, "N")
+plot("stop", stop_price, "stop")
+plot("next pyramid", next_buy_price, "next pyramid")
+plot("fake trade", fake_trade ? 1.0 : 0.0, "fake trade")
+plot("position quantity", metrics.positionQuantity, "position quantity")
+plot("average price", metrics.positionAveragePrice, "average price")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

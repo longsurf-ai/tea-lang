@@ -1,48 +1,28 @@
 import type {Module} from '../runtime/module-binding';
 // Purpose: Concrete terminal rendering for `tea run` reports and traces.
 
-import type {Field} from 'apache-arrow';
+import {DataType, type Field, type Schema} from 'apache-arrow';
 import {outputFields} from '../runtime/output';
 import {TabWriter} from '../base/tabwriter';
 import type {Datum} from '../runtime/output';
 
 type Cell = string | number | boolean | null;
 
-/** Formats declarations using presentation metadata and Arrow payload fields.
- * @example traceDeclaration({declarations: [], schema: outputSchema([])})
- * // []
- */
+/** Describe named output columns in their declared schema order. */
 export function traceDeclaration(declaration: Module['outputs']): string[] {
-  return outputFields(declaration.schema).map((field, outputId) => {
-    if (field.metadata.get('tea:write') === 'append') {
-      return `# effect[${field.name.slice(6)}] type=${fieldLabel(field.type.children[0]!.type.children[1]!)}`;
-    }
-    const args = (declaration.declarations[outputId]!.args ?? [])
-      .map(arg => `${arg.name}=${traceValue(arg.value)}`)
-      .join(' ');
-    return `# output[${field.name.slice(6)}] ${field.metadata.get('tea:kind')}${args ? ` ${args}` : ''}`;
-  });
+  return outputFields(declaration.schema).map(
+    field =>
+      `# ${field.metadata.get('tea:write')} ${JSON.stringify(field.name)} type=${fieldLabel(field)}`,
+  );
 }
 
-/** Formats a schema-named publication, restoring global event order.
- * @example traceDatum({index: 2, timed: false, provisional: false, output0: {series: 7}})
- * // ['2 0 7']
- */
-export function traceDatum(datum: Datum): string[] {
+/** Render every output cell using schema order, including integer-like names. */
+export function traceDatum(datum: Datum, schema: Schema): string[] {
   const provisional = datum.provisional ? ' ?' : '';
-  return [
-    ...Object.entries(datum).flatMap(([name, value]) =>
-      /^output\d+$/.test(name) && value !== null && typeof value === 'object'
-        ? [
-            `${datum.index} ${name.slice(6)}${provisional} ${Object.values(value).map(traceValue).join(' ')}`,
-          ]
-        : [],
-    ),
-    ...events(datum).map(
-      ({id, payload}) =>
-        `${datum.index} effect[${id}]${provisional} ${traceValue(payload)}`,
-    ),
-  ];
+  return outputFields(schema).map(
+    field =>
+      `${datum.index} ${JSON.stringify(field.name)}${provisional} ${traceValue(datum[field.name])}`,
+  );
 }
 
 /** Renders final publications and timing; provisional updates are excluded.
@@ -88,7 +68,6 @@ export function renderRunReport(
       inputs.map(input => [input.name, reportValue(input.value), input.active]),
     ),
     renderOutputs(declaration, publications),
-    renderEffects(declaration, publications),
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -98,19 +77,7 @@ function renderOutputs(
   declaration: Module['outputs'],
   publications: readonly Datum[],
 ): string {
-  const columns = outputFields(declaration.schema).flatMap((field, id) =>
-    field.metadata.get('tea:write') === 'set'
-      ? field.type.children.map((channel: Field, index: number) => ({
-          name: field.name,
-          channel: channel.name,
-          label: outputChannelLabel(
-            field,
-            declaration.declarations[id]!,
-            index,
-          ),
-        }))
-      : [],
-  );
+  const columns = outputFields(declaration.schema);
   if (columns.length === 0) return '';
   const byIndex = new Map<number, Datum>();
   for (const datum of publications) {
@@ -118,60 +85,19 @@ function renderOutputs(
   }
   return renderSection(
     'Outputs',
-    ['index', ...columns.map(column => column.label)],
+    ['index', ...columns.map(column => column.name)],
     [...byIndex.entries()]
       .sort(([left], [right]) => left - right)
       .map(([index, outputs]) => [
         index,
-        ...columns.map(column => {
-          const output = outputs[column.name] as Record<string, unknown> | null;
-          const value = output?.[column.channel];
-          return value === undefined ? '' : reportValue(value);
-        }),
+        ...columns.map(column => reportValue(outputs[column.name])),
       ]),
   );
 }
 
-function renderEffects(
-  declaration: Module['outputs'],
-  publications: readonly Datum[],
-): string {
-  const fields = new Map(
-    outputFields(declaration.schema).map(field => [field.name, field]),
-  );
-  const rows = publications.flatMap(datum =>
-    datum.provisional
-      ? []
-      : events(datum).map(({id, payload}) => {
-          const field = fields.get(`effect${id}`);
-          return [
-            datum.index,
-            `effect[${id}]${field === undefined ? '' : ` ${fieldLabel(field.type.children[0]!.type.children[1]!)}`}`,
-            reportValue(payload),
-          ] as const;
-        }),
-  );
-  return renderSection('Effects', ['index', 'effect', 'payload'], rows);
-}
-
-function outputChannelLabel(
-  field: Field,
-  output: Module['outputs']['declarations'][number],
-  channelIndex: number,
-): string {
-  const title = output.args?.find(arg => arg.name === 'title')?.value;
-  const base =
-    typeof title === 'string' && title.length > 0
-      ? title
-      : `${field.metadata.get('tea:kind')}[${field.name.slice(6)}]`;
-  const channels = field.type.children;
-  const channel = channels[channelIndex]!;
-  return channels.length === 1 || channel.name === 'series'
-    ? base
-    : `${base}.${channel.name}`;
-}
-
 function fieldLabel(field: Field): string {
+  if (DataType.isList(field.type))
+    return `List<${fieldLabel(field.type.children[0])}>`;
   return (
     field.metadata.get('tea:typeId') ??
     field.metadata.get('tea:type') ??
@@ -179,31 +105,20 @@ function fieldLabel(field: Field): string {
   );
 }
 
-function events(datum: Datum) {
-  return Object.entries(datum)
-    .flatMap(([name, value]) =>
-      /^effect\d+$/.test(name) && Array.isArray(value)
-        ? value.map((event: {ordinal: number; payload: unknown}) => ({
-            id: Number(name.slice(6)),
-            ...event,
-          }))
-        : [],
-    )
-    .sort((a, b) => a.ordinal - b.ordinal);
-}
-
 function reportValue(value: unknown): Cell {
   if (typeof value === 'number') return Number.isNaN(value) ? 'na' : value;
   if (value === null) return 'na';
   if (typeof value === 'string' || typeof value === 'boolean') return value;
-  return JSON.stringify(value, (_key, item: unknown) =>
-    typeof item === 'number' && Number.isNaN(item)
-      ? 'na'
-      : item instanceof Map
-        ? [...item]
-        : item instanceof Uint8Array
+  return (
+    JSON.stringify(value, (_key, item: unknown) =>
+      typeof item === 'number' && Number.isNaN(item)
+        ? 'na'
+        : item instanceof Map
           ? [...item]
-          : item,
+          : item instanceof Uint8Array
+            ? [...item]
+            : item,
+    ) ?? ''
   );
 }
 

@@ -1,8 +1,8 @@
 //@version=1
-strategy("transient struct value")
+
 
 type Point
 	float x
 
 var float keep = 0.0
-plot(Point.new(close).x + keep)
+emit "output0" Point.new(close).x + keep

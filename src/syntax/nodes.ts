@@ -12,6 +12,8 @@ export const NodeKind = {
   ExprStmt: 'ExprStmt',
   DeclStmt: 'DeclStmt',
   AssignStmt: 'AssignStmt',
+  EmitStmt: 'EmitStmt',
+  ReturnStmt: 'ReturnStmt',
   FuncDecl: 'FuncDecl',
   MethodDecl: 'MethodDecl',
   InterfaceDecl: 'InterfaceDecl',
@@ -41,8 +43,6 @@ export const NodeKind = {
   SelectorExpr: 'SelectorExpr',
   HistoryExpr: 'HistoryExpr',
   TupleExpr: 'TupleExpr',
-  ArgumentObjectExpr: 'ArgumentObjectExpr',
-  ArgumentObjectField: 'ArgumentObjectField',
   ParenExpr: 'ParenExpr',
   TuplePattern: 'TuplePattern',
   Block: 'Block',
@@ -98,6 +98,8 @@ export type Stmt =
   | ExprStmt
   | DeclStmt
   | AssignStmt
+  | EmitStmt
+  | ReturnStmt
   | FuncDecl
   | InterfaceDecl
   | StructDecl
@@ -173,6 +175,20 @@ export interface AssignStmt extends Node {
   readonly op: AssignOp;
   readonly target: Expr;
   readonly value: Expr;
+}
+
+/** A named output write. Name resolution and column typing belong to checking. */
+export interface EmitStmt extends Node {
+  readonly kind: typeof NodeKind.EmitStmt;
+  readonly name: Expr;
+  readonly value: Expr;
+  readonly append: boolean;
+}
+
+/** Exits the enclosing Tea function; a missing value returns void. */
+export interface ReturnStmt extends Node {
+  readonly kind: typeof NodeKind.ReturnStmt;
+  readonly value: Expr | null;
 }
 
 // `ma(float source, int length, simple string maType) => ...`; body is the
@@ -335,7 +351,6 @@ export type Expr =
   | SelectorExpr
   | HistoryExpr
   | TupleExpr
-  | ArgumentObjectExpr
   | ParenExpr
   | IfExpr
   | ForExpr
@@ -415,20 +430,6 @@ export interface HistoryExpr extends Node {
 export interface TupleExpr extends Node {
   readonly kind: typeof NodeKind.TupleExpr;
   readonly elems: readonly Expr[];
-}
-
-// Contextual named arguments for compiler-declared metadata consumers such as
-// output(..., args={title: title, color: color}). The checker decides where
-// this syntax is admissible; syntax does not make it a runtime record value.
-export interface ArgumentObjectExpr extends Node {
-  readonly kind: typeof NodeKind.ArgumentObjectExpr;
-  readonly fields: readonly ArgumentObjectField[];
-}
-
-export interface ArgumentObjectField extends Node {
-  readonly kind: typeof NodeKind.ArgumentObjectField;
-  readonly name: Name;
-  readonly value: Expr;
 }
 
 export interface ParenExpr extends Node {

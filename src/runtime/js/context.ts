@@ -2,7 +2,6 @@ import type {Module} from '../module-binding';
 // Purpose: One bound program's typed values and synchronous transaction lifecycle.
 
 import {fatal} from '../../base/print';
-import type {Field} from 'apache-arrow';
 
 import {requireConcreteModule} from '../module-binding';
 import {outputFields} from '../output';
@@ -134,22 +133,8 @@ export class Context<
                 this.storage.append(id, unwrap(value)),
             }
           : {
-              set: (values: Record<string, Value<unknown>>) => {
-                if (
-                  Object.keys(values).some(
-                    name =>
-                      !field.type.children.some(
-                        (child: Field) => child.name === name,
-                      ),
-                  )
-                )
-                  fatal(`unknown channel in output '${field.name}'`);
-                field.type.children.forEach((channel: Field, index: number) => {
-                  if (!Object.hasOwn(values, channel.name))
-                    fatal(`missing output channel '${channel.name}'`);
-                  this.storage.emit(id, index, unwrap(values[channel.name]));
-                });
-              },
+              set: (value: Value<unknown>) =>
+                this.storage.emit(id, unwrap(value)),
             },
       ]),
     ) as O;

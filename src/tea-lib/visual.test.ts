@@ -1,40 +1,68 @@
-// Purpose: Compiler-shipped visual prelude functions resolve as ordinary Tea
-// functions and elaborate through the generic output intrinsic.
+// Visuals use ordinary function instances and named output columns.
 
 import {describe, expect, test} from 'vitest';
 import {CallKind} from '../checker/info';
 import {checkText} from '../checker/testing';
+import {funcsOf} from '../ir/visit';
 import {mustBuild} from '../noder/testing';
+import {csvStream, executeTestProgram} from '../testing/batch';
+import {OutputCapture} from '../testing/output';
 
 describe('visual prelude', () => {
-  test('exposes plot unqualified while retaining plot.style_* native constants', () => {
+  test('exposes plot as an ordinary function with a constant output ID', () => {
     const result = checkText(
-      'p = plot(close, "Close", style=plot.style_columns)',
+      'p = plot("price", close, "Close", style=plot.style_columns)',
     );
     expect(result.errors).toEqual([]);
-    const rootPlot = [...result.info.calls.values()].find(
+    const call = [...result.info.calls.values()].find(
       call => call.kind === CallKind.Function && call.instance.name === 'plot',
     );
-    expect(rootPlot?.kind).toBe(CallKind.Function);
-    if (rootPlot?.kind === CallKind.Function) {
-      expect(rootPlot.instance.template.pkg.path).toBe('visual');
-      expect(rootPlot.instance.output?.resolution.kind).toBe(CallKind.Output);
+    expect(call?.kind).toBe(CallKind.Function);
+    if (call?.kind === CallKind.Function) {
+      expect(call.instance.template.pkg.path).toBe('visual');
+      expect(call.instance.resultType).toMatchObject({
+        kind: 'Struct',
+        name: 'Plot',
+      });
     }
   });
 
-  test('creates distinct caller-owned plot declarations consumable by fill', () => {
+  test('plot IDs name distinct columns and fill returns ordinary visual data', async () => {
     const program = mustBuild(
       [
-        'first = plot(close, "Close")',
-        'second = plot(open, "Open")',
-        'fill(first, second, color=color.blue)',
+        'first = plot("close", close, "Close")',
+        'second = plot("open", open, "Open")',
+        'fill("band", first, second, color=color.blue)',
+        'first.series := 999',
       ].join('\n'),
     );
-    expect(program.outputs.map(output => output.effect)).toEqual([
-      'plot',
-      'plot',
-      'fill',
+    expect(program.outputs.map(output => [output.name, output.mode])).toEqual([
+      ['close', 'set'],
+      ['open', 'set'],
+      ['band', 'set'],
     ]);
-    expect(program.outputs[2].bindArgs).toHaveLength(2);
+    expect(funcsOf(program).filter(func => func.name === 'plot')).toHaveLength(
+      2,
+    );
+    const sink = new OutputCapture();
+    await executeTestProgram(program, {
+      stream: csvStream('close,open\n10,8\n'),
+      sink,
+    });
+    expect(sink.publications[0]).toMatchObject({
+      close: {id: 'close', series: 10, title: 'Close'},
+      open: {id: 'open', series: 8, title: 'Open'},
+      band: {id: 'band', first: 'close', second: 'open', color: '#2196F3'},
+    });
+  });
+
+  test('rejects duplicate plot IDs even when values have the same type', () => {
+    expect(
+      checkText('plot("price", close)\nplot("price", open)').errors.some(
+        error =>
+          error.msg.includes('price') &&
+          error.msg.includes('plain emit writer'),
+      ),
+    ).toBe(true);
   });
 });

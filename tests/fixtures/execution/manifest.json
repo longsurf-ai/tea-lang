@@ -8,9 +8,9 @@
       "data": "compile/aggregate-values/data.csv",
       "reference": "compile/aggregate-values/reference.json",
       "sha256": {
-        "source": "d11638a549be5e828ab7dc67a53f04875138876c5a86bc440640f09049ba533b",
+        "source": "dd3f2cc1b22890a46fe53d488c34f7df8525cf5b78dfabf5ad4e88f4d3530297",
         "data": "cff07aff370ed4b45ff408cc12757ef70c0617a547db33fd01207e76b49aa382",
-        "reference": "1bc3cee7d1cd8e447ca6baf2574cc9c304d04e4781f58550e6af29561c5216f7"
+        "reference": "6efb881543c1e64d12c547661dcfb9b837e6ee703339d844bbb6d9bac647aba4"
       }
     },
     {
@@ -20,9 +20,9 @@
       "data": "compile/input-family/data.csv",
       "reference": "compile/input-family/reference.json",
       "sha256": {
-        "source": "cf273ce27d476706e46490efbb20ca25cc99c693eb6ac09f9daacd86057cd186",
+        "source": "30fb87e7e6938c1a166f5861bc68d52f2e4b08a87e1cd6117877525b8589d7ff",
         "data": "93754f8fb16b8238a4b98d72546f706a1d572082973c724cb7007916b3c719e1",
-        "reference": "f2b725a5d23bbe2be409b4254ec0d078c8056661f1b4c5c6cde5c8d2aae8d8fa"
+        "reference": "c76dd17cef3843beaf40c6754bd991f6e82360027e5cd3c91b23022cbd20a086"
       }
     },
     {
@@ -32,9 +32,9 @@
       "data": "compile/typed-execution-range/data.csv",
       "reference": "compile/typed-execution-range/reference.json",
       "sha256": {
-        "source": "eeb0d293fa003270976963696309d73debf659b723c0169a890c09a924dad6d9",
+        "source": "25fe85d118e1a66f378183f04effd5b84f04b31b6df180143e165c1b44b24da5",
         "data": "8730fbf989456c0374879b32ca59c411fface63b3b84c5b09a39fcbd9bf1921a",
-        "reference": "ab9ecc019f52b447b44a2801322af789ab0e27ed9142bd0e40dfad30bfd721a4"
+        "reference": "4254a5a6bc42e5211709d8ffe932210d54d06ab45b83d944000ceabef9b4c598"
       }
     },
     {
@@ -44,9 +44,9 @@
       "data": "compile/strategy-components/data.csv",
       "reference": "compile/strategy-components/reference.json",
       "sha256": {
-        "source": "cbf5493c0f63d1e1d7c26f16355c0374c15ae2f5901b4d1557bfd28c779b2f68",
+        "source": "12cb9539b416d27bc831f4a56a41b60cd8f0b847897a6ee7eecc2c6b2a53a4b7",
         "data": "e1e088513ef236556ec9f781dfec7aa0df1ceae7b93683320391039f0a985a9b",
-        "reference": "38e2d2dbee999a133a240a682f6529688e6649490f541a96ce400b8d577089e5"
+        "reference": "f95853a2b3b5560913d33c3963d9bc124a80f4f4d2e38848601f89f4ece40287"
       }
     },
     {
@@ -56,9 +56,9 @@
       "data": "differential/moving-averages/data.csv",
       "reference": "differential/moving-averages/reference.json",
       "sha256": {
-        "source": "b8b75ef31ccd8f30e8458048a6108d20c17228a8618b7476437835016727f719",
+        "source": "4391b13d0b55eb348f5cf7709f58bf6ebc771019afe20b5feb92a60f5795107f",
         "data": "72c3d6f074bccf21aa309c239059b920af80bde0e8692cb8acb8e2253bfc7eab",
-        "reference": "4c865f0f4952ab77d23076873dff5a11e5ce5864365266b8cf5a959e9029d8cc"
+        "reference": "340040e1a505c6e944c8744fb4f93d19f3b94fc6b1173f44e659d489d65302c8"
       }
     },
     {
@@ -68,9 +68,9 @@
       "data": "differential/na-comparisons/data.csv",
       "reference": "differential/na-comparisons/reference.json",
       "sha256": {
-        "source": "4f89ae75c0378526be4fdc95e5ebfb97e5cea0ec466aa7a3094eb58d56ef5af2",
+        "source": "dd8e6ca00f16bdf56fd69b62d38bc9b860b333401f3074dde70582ce9ee704f4",
         "data": "b893313e6346dcfa94990c4e875c80b61923481fe625d5932b304455f1c3c2df",
-        "reference": "11be4b248fe3140106f1f2a3d9f22f3eced44e5d4bbf8cff38229fd6791709ef"
+        "reference": "ec5d1c01bd2abb1205b96e17493bea3a9c740dc88cfce450030fb73e778cc674"
       }
     }
   ],

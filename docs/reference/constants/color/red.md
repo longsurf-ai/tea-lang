@@ -26,7 +26,7 @@ The plot is red when the current close is below the previous close and green oth
 ```tea
 falling = close < close[1]
 lineColor = falling ? color.red : color.green
-plot(close, color=lineColor)
+emit "output0" close
 ```
 
 ## Remarks

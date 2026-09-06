@@ -7,6 +7,7 @@ import {
   IrKind,
   PlaceKind,
   type HistReadExpr,
+  type ReadExpr,
   type IrExpr,
 } from '../ir/node';
 import type {BuiltinInput, Program} from '../ir/program';
@@ -41,15 +42,19 @@ function input(
   return {source, type, qualifier, depth};
 }
 
-function read(builtin: BuiltinInput, offset: IrExpr | null): HistReadExpr {
-  return {
-    kind: IrKind.HistRead,
+function read(
+  builtin: BuiltinInput,
+  offset: IrExpr | null,
+): HistReadExpr | ReadExpr {
+  const base = {
     pos,
     type: builtin.type,
     qualifier: builtin.qualifier,
     place: {kind: PlaceKind.Builtin, builtin},
-    offset,
-  };
+  } as const;
+  return offset === null
+    ? {...base, kind: IrKind.Read}
+    : {...base, kind: IrKind.HistRead, offset};
 }
 
 describe('typed builtin lowering', () => {
@@ -76,7 +81,6 @@ describe('typed builtin lowering', () => {
       params: [],
       requests: [],
       outputs: [],
-      effects: [],
       packageGlobals: [],
       init: [],
       body: [
@@ -121,7 +125,9 @@ describe('typed builtin lowering', () => {
 
   test('restarts builtin ids in a request child module', () => {
     const source = generate(
-      mustBuild('value = request.security("X", "D", bar_index)\nplot(value)'),
+      mustBuild(
+        'value = request.security("X", "D", bar_index)\nemit "output0" value',
+      ),
     );
     const module = loadModule(source) as Module;
 

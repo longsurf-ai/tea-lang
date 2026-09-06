@@ -9,26 +9,26 @@ import {checkGenerated} from './check';
 const SOURCES = [
   // Exercises funcs, loops, switch dispatch, tuples, and bind-time args.
   [
-    'indicator("gate", overlay=true)',
+    '',
     'len = input.int(5, "Len", minval=1)',
     'level = input.float(70.0)',
-    'hline(level * 1.5)',
-    'p1 = plot(ta.sma(close, len))',
-    'p2 = plot(ta.ema(close, len))',
-    'fill(p1, p2, color=color.new(color.blue, 90))',
+    'hline("output0", level * 1.5)',
+    'p1 = plot("output1", ta.sma(close, len))',
+    'p2 = plot("output2", ta.ema(close, len))',
+    'fill("output3", p1, p2, color=color.new(color.blue, 90))',
     '[m, s, h] = ta.macd(close, 5, 8, 3)',
-    'plot(m + s + h)',
-    'plot(ta.sar(0.02, 0.02, 0.2))',
+    'emit "output4" m + s + h',
+    'emit "output5" ta.sar(0.02, 0.02, 0.2)',
   ].join(String.fromCharCode(10)),
   // Exercises the request emission shapes: sibling child-module consts,
   // request entries, the private binding callback, ctx.request reads, and an
   // input param crossing into the capture (compilation-global params).
   [
-    'indicator("req")',
+    '',
     'scale = input.float(10.0)',
     'r = request.security("X", "D", ta.change(close) * scale)',
-    'plot(r)',
-    'plot(r[1])',
+    'emit "output0" r',
+    'emit "output1" r[1]',
   ].join(String.fromCharCode(10)),
 ];
 

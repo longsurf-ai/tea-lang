@@ -52,9 +52,7 @@ function run(target: Context, input: StepInput): StepResult {
 }
 
 function channels(result: StepResult): readonly unknown[] {
-  return result.outputs[0] === null
-    ? []
-    : Object.values(result.outputs[0] as Record<string, unknown>);
+  return result.outputs;
 }
 
 function counter(ctx: Step, frame: WorkspaceFrame): Stored {
@@ -66,8 +64,8 @@ function counter(ctx: Step, frame: WorkspaceFrame): Stored {
 const COUNTER_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
   main(ctx, root) {
-    ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
-    ctx.emit(0, 1, counter(ctx, ctx.frame(root, 1)));
+    ctx.emit(0, counter(ctx, ctx.frame(root, 0)));
+    ctx.emit(1, counter(ctx, ctx.frame(root, 1)));
   },
   inputs: {series: [], builtins: []},
   parameters: [],
@@ -83,7 +81,9 @@ const COUNTER_MODULE: Module = testModule({
   },
   outputs: {
     schema: outputSchema([
-      output('output0', [scalar('a', 'int'), scalar('b', 'int')]),
+      ...[scalar('a', 'int'), scalar('b', 'int')].map(field =>
+        output(field.name, field),
+      ),
     ]),
   },
   requests: [],
@@ -95,9 +95,9 @@ const TYPED_HISTORY_MODULE: Module = testModule({
     ctx.write(root, 0, 7);
     ctx.write(root, 1, true);
     ctx.write(root, 2, 'present');
-    ctx.emit(0, 0, ctx.read(root, 0, 2));
-    ctx.emit(0, 1, ctx.read(root, 1, 2));
-    ctx.emit(0, 2, ctx.read(root, 2, 2));
+    ctx.emit(0, ctx.read(root, 0, 2));
+    ctx.emit(1, ctx.read(root, 1, 2));
+    ctx.emit(2, ctx.read(root, 2, 2));
   },
   inputs: {series: [], builtins: []},
   parameters: [],
@@ -128,11 +128,11 @@ const TYPED_HISTORY_MODULE: Module = testModule({
   },
   outputs: {
     schema: outputSchema([
-      output('output0', [
+      ...[
         scalar('number', 'int'),
         scalar('boolean', 'bool'),
         scalar('string', 'string'),
-      ]),
+      ].map(field => output(field.name, field)),
     ]),
   },
   requests: [],
@@ -147,9 +147,9 @@ const TICK_MODULE: Module = testModule({
     ctx.write(root, 0, Number(ctx.read(root, 0, 0)) + close);
     ctx.write(root, 1, Number(ctx.read(root, 1, 0)) + 1);
     ctx.write(root, 2, close);
-    ctx.emit(0, 0, ctx.read(root, 0, 0));
-    ctx.emit(0, 1, ctx.read(root, 1, 0));
-    ctx.emit(0, 2, ctx.read(root, 2, 0));
+    ctx.emit(0, ctx.read(root, 0, 0));
+    ctx.emit(1, ctx.read(root, 1, 0));
+    ctx.emit(2, ctx.read(root, 2, 0));
   },
   inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
   parameters: [],
@@ -168,11 +168,11 @@ const TICK_MODULE: Module = testModule({
   },
   outputs: {
     schema: outputSchema([
-      output('output0', [
+      ...[
         scalar('var', 'int'),
         scalar('varip', 'int'),
         scalar('per-bar', 'int'),
-      ]),
+      ].map(field => output(field.name, field)),
     ]),
   },
   requests: [],
@@ -197,7 +197,6 @@ function arrayStateModule(): Module {
         );
         ctx.write(root, slot, mutation.replacement);
         ctx.emit(
-          0,
           slot,
           ctx.callCollection('array.size', NUMBER, [mutation.replacement]),
         );
@@ -219,7 +218,9 @@ function arrayStateModule(): Module {
     },
     outputs: {
       schema: outputSchema([
-        output('output0', [scalar('var', 'int'), scalar('varip', 'int')]),
+        ...[scalar('var', 'int'), scalar('varip', 'int')].map(field =>
+          output(field.name, field),
+        ),
       ]),
     },
     requests: [],
@@ -244,7 +245,7 @@ describe('Context core parity', () => {
           counter(ctx, ctx.frame(root, 0));
           throw new Error('after first call');
         }
-        ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
+        ctx.emit(0, counter(ctx, ctx.frame(root, 0)));
       },
     });
     const target = runtime(module);
@@ -288,7 +289,7 @@ describe('Context core parity', () => {
     const module: Module = testModule({
       ...COUNTER_MODULE,
       main(ctx, root) {
-        if (invoke) ctx.emit(0, 0, counter(ctx, ctx.frame(root, 0)));
+        if (invoke) ctx.emit(0, counter(ctx, ctx.frame(root, 0)));
       },
       state: {
         layout: COUNTER_MODULE.state.layout,
@@ -303,7 +304,9 @@ describe('Context core parity', () => {
         ],
       },
       outputs: {
-        schema: outputSchema([output('output0', [scalar('value', 'int')])]),
+        schema: outputSchema([
+          ...[scalar('value', 'int')].map(field => output(field.name, field)),
+        ]),
       },
     });
     const target = runtime(module);
@@ -321,12 +324,12 @@ describe('Context core parity', () => {
       abi: RUNTIME_ABI_VERSION,
       main(ctx, root) {
         if (!invoke) {
-          ctx.emit(0, 0, NaN);
+          ctx.emit(0, NaN);
           return;
         }
         const child = ctx.frame(root, 0);
         ctx.write(child, 0, ctx.series(0, 0));
-        ctx.emit(0, 0, ctx.read(child, 0, 1));
+        ctx.emit(0, ctx.read(child, 0, 1));
       },
       inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
       parameters: [],
@@ -347,7 +350,11 @@ describe('Context core parity', () => {
         ],
       },
       outputs: {
-        schema: outputSchema([output('output0', [scalar('previous', 'int')])]),
+        schema: outputSchema([
+          ...[scalar('previous', 'int')].map(field =>
+            output(field.name, field),
+          ),
+        ]),
       },
       requests: [],
     });
@@ -388,12 +395,12 @@ describe('Context core parity', () => {
           [Number(ctx.builtin(0, 0)) + 1],
         ).replacement;
         ctx.storeStructField(holder, HOLDER, 0, current);
-        ctx.emit(0, 0, ctx.callCollection('array.size', NUMBER, [current]));
+        ctx.emit(0, ctx.callCollection('array.size', NUMBER, [current]));
         if (Number(ctx.builtin(0, 0)) === 0) {
-          ctx.emit(0, 1, NaN);
+          ctx.emit(1, NaN);
         } else {
           const prior = ctx.structField(ctx.read(root, 0, 1), HOLDER, 0);
-          ctx.emit(0, 1, ctx.callCollection('array.size', NUMBER, [prior]));
+          ctx.emit(1, ctx.callCollection('array.size', NUMBER, [prior]));
         }
       },
       inputs: {
@@ -424,7 +431,9 @@ describe('Context core parity', () => {
       },
       outputs: {
         schema: outputSchema([
-          output('output0', [scalar('current', 'int'), scalar('prior', 'int')]),
+          ...[scalar('current', 'int'), scalar('prior', 'int')].map(field =>
+            output(field.name, field),
+          ),
         ]),
       },
       requests: [],

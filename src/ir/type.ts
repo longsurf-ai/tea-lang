@@ -87,10 +87,6 @@ export const TypeKind = {
   Table: 'Table',
   Polyline: 'Polyline',
   Linefill: 'Linefill',
-  // Declarative-output references (compile-time ids consumed by fill());
-  // not runtime heap handles — no COW or rollback participation.
-  Plot: 'Plot',
-  Hline: 'Hline',
   // Collections are value headers with persistent backing storage. Their
   // source semantics never expose backing identity.
   Array: 'Array',
@@ -135,12 +131,6 @@ export interface PrimitiveType {
 
 export interface HandleType {
   readonly kind: HandleKind;
-}
-
-export type OutputRefKind = typeof TypeKind.Plot | typeof TypeKind.Hline;
-
-export interface OutputRefType {
-  readonly kind: OutputRefKind;
 }
 
 export interface ArrayType {
@@ -206,7 +196,6 @@ export type Type =
   | InvalidType
   | PrimitiveType
   | HandleType
-  | OutputRefType
   | ArrayType
   | MatrixType
   | MapType
@@ -231,8 +220,6 @@ export const BoxType: Type = {kind: TypeKind.Box};
 export const TableType: Type = {kind: TypeKind.Table};
 export const PolylineType: Type = {kind: TypeKind.Polyline};
 export const LinefillType: Type = {kind: TypeKind.Linefill};
-export const PlotType: Type = {kind: TypeKind.Plot};
-export const HlineType: Type = {kind: TypeKind.Hline};
 
 // ---- constants --------------------------------------------------------------
 
@@ -360,10 +347,7 @@ export function unifyTypes(a: Type, b: Type): Type | null {
 
 // ---- formatting -------------------------------------------------------------
 
-const PRIMITIVE_NAMES: Record<
-  PrimitiveKind | HandleKind | OutputRefKind,
-  string
-> = {
+const PRIMITIVE_NAMES: Record<PrimitiveKind | HandleKind, string> = {
   Int: 'int',
   Float: 'float',
   Bool: 'bool',
@@ -377,8 +361,6 @@ const PRIMITIVE_NAMES: Record<
   Table: 'table',
   Polyline: 'polyline',
   Linefill: 'linefill',
-  Plot: 'plot',
-  Hline: 'hline',
 };
 
 export function formatType(t: Type): string {
@@ -406,17 +388,14 @@ export function formatType(t: Type): string {
 }
 
 // Values admitted by collection storage. Tuple is compiler transport rather
-// than a source-storable value; functions, void, and output references are
-// likewise excluded.
+// than a source-storable value; functions and void are likewise excluded.
 export function isStorableType(type: Type): boolean {
   return (
     type.kind !== TypeKind.Invalid &&
     type.kind !== TypeKind.Void &&
     type.kind !== TypeKind.Na &&
     type.kind !== TypeKind.Func &&
-    type.kind !== TypeKind.Tuple &&
-    type.kind !== TypeKind.Plot &&
-    type.kind !== TypeKind.Hline
+    type.kind !== TypeKind.Tuple
   );
 }
 

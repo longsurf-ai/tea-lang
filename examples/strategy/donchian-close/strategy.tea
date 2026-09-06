@@ -2,7 +2,7 @@
 // Clean-room implementation of the published Donchian strategy's explicit
 // Close mode. Signals are evaluated on the completed bar and market orders
 // are resolved by the Tea reference broker at the following bar's open.
-strategy("Donchian close breakout", shorttitle="Donchian Close", overlay=true)
+
 
 import broker
 import portfolio
@@ -82,19 +82,19 @@ if close_signal and not strat.has_pending()
 strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(upper_channel, "upper channel")
-plot(lower_channel, "lower channel")
-plot(tight_stop_enabled ? tight_channel : na, "tight initial channel")
-plot(active_stop, "active stop")
-plot(long_signal ? 1.0 : 0.0, "long signal")
-plot(close_signal ? 1.0 : 0.0, "close signal")
-plot(valid_parameters ? 1.0 : 0.0, "valid parameters")
-plot(metrics.positionQuantity, "position quantity")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("upper channel", upper_channel, "upper channel")
+plot("lower channel", lower_channel, "lower channel")
+plot("tight initial channel", tight_stop_enabled ? tight_channel : na, "tight initial channel")
+plot("active stop", active_stop, "active stop")
+plot("long signal", long_signal ? 1.0 : 0.0, "long signal")
+plot("close signal", close_signal ? 1.0 : 0.0, "close signal")
+plot("valid parameters", valid_parameters ? 1.0 : 0.0, "valid parameters")
+plot("position quantity", metrics.positionQuantity, "position quantity")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("total fees", metrics.totalFees, "total fees")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

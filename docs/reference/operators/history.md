@@ -37,7 +37,7 @@ History applies to the variable before later selection. For example, `point[1].x
 ```tea
 previous = nz(close[1], close)
 rising = close > previous
-plot(rising ? 1 : 0)
+emit "output0" rising ? 1 : 0
 ```
 
 ### Reading historical collection contents
@@ -48,7 +48,7 @@ The array read through history keeps the contents committed for that earlier row
 var values = array.new<int>()
 previous = values[1]
 values.push(bar_index)
-plot(na(previous) ? 0 : previous.size())
+emit "output0" na(previous) ? 0 : previous.size()
 ```
 
 ## Remarks

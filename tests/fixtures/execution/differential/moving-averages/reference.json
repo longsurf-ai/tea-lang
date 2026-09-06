@@ -5,57 +5,79 @@
     "description": "SMA(2) is the arithmetic mean of the current and preceding close. EMA(3) starts at 2 and recursively applies alpha 2/(3+1) = 0.5.",
     "references": []
   },
-  "tolerance": {"absolute": 0, "relative": 0},
+  "tolerance": {
+    "absolute": 0,
+    "relative": 0
+  },
   "outputs": [
     {
-      "oid": 0,
-      "effect": "indicator",
-      "staticArgs": [["title", "Conformance averages"]],
-      "boundArgs": [],
-      "channels": []
+      "name": "output0",
+      "type": "float"
     },
     {
-      "oid": 1,
-      "effect": "plot",
-      "staticArgs": [["title", "SMA 2"]],
-      "boundArgs": [],
-      "channels": [["series", "float"]]
-    },
-    {
-      "oid": 2,
-      "effect": "plot",
-      "staticArgs": [["title", "EMA 3"]],
-      "boundArgs": [],
-      "channels": [["series", "float"]]
+      "name": "output1",
+      "type": "float"
     }
   ],
   "rows": [
     {
       "row": 0,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [null]},
-        {"oid": 2, "provisional": false, "channels": [2]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": null
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 2
+        }
       ]
     },
     {
       "row": 1,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [3]},
-        {"oid": 2, "provisional": false, "channels": [3]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 3
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 3
+        }
       ]
     },
     {
       "row": 2,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [5]},
-        {"oid": 2, "provisional": false, "channels": [4.5]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 5
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 4.5
+        }
       ]
     },
     {
       "row": 3,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [7]},
-        {"oid": 2, "provisional": false, "channels": [6.25]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 7
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 6.25
+        }
       ]
     }
   ],

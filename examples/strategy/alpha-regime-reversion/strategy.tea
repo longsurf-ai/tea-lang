@@ -1,7 +1,7 @@
 //@version=1
 // Clean-room implementation of the published Swing Core + Dip profile from
 // Alpha Regime Reversion Pro. Allocation changes fill at the next bar's open.
-strategy("Alpha Regime Reversion - Swing Core + Dip", shorttitle="ARR Swing", overlay=true)
+
 
 import broker
 import portfolio
@@ -174,19 +174,19 @@ strat.mark(close)
 strat.finish(barstate.islast)
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(stock_average, "stock regime average")
-plot(benchmark_close, "benchmark close")
-plot(benchmark_average, "benchmark regime average")
-plot(fast_ema, "fast EMA")
-plot(slow_ema, "slow EMA")
-plot(target_percent, "target allocation percent")
-plot(dip_active ? 1.0 : 0.0, "dip active")
-plot(metrics.positionQuantity, "position quantity")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("stock regime average", stock_average, "stock regime average")
+plot("benchmark close", benchmark_close, "benchmark close")
+plot("benchmark regime average", benchmark_average, "benchmark regime average")
+plot("fast EMA", fast_ema, "fast EMA")
+plot("slow EMA", slow_ema, "slow EMA")
+plot("target allocation percent", target_percent, "target allocation percent")
+plot("dip active", dip_active ? 1.0 : 0.0, "dip active")
+plot("position quantity", metrics.positionQuantity, "position quantity")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("total fees", metrics.totalFees, "total fees")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

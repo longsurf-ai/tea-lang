@@ -5,13 +5,12 @@ import {
   BoolType,
   ColorType,
   FloatType,
-  HlineType,
   IntType,
   NaType,
   NA_VALUE,
-  PlotType,
   Qualifier,
   StringType,
+  TypeKind,
   VoidType,
   type ConstValue,
   type Type,
@@ -31,7 +30,7 @@ export const TypeRef = {
 
 export interface NativeTypeParam {
   readonly name: string;
-  readonly constraint: 'storable' | 'map-key' | 'effect-payload';
+  readonly constraint: 'storable' | 'map-key';
 }
 
 export interface TypeParamRef {
@@ -93,16 +92,14 @@ export interface NativeParam {
 }
 
 // The effect class selects the compilation and runtime protocol of a call:
-// none = pure; param = extracts a Program ParamInput (input.*); declaration =
-// script metadata (indicator/strategy); output = hoisted OutputDecl + per-bar
-// Emit (plot family); handle = per-bar host drawing-object ops (line.*);
+// none = ordinary intrinsic; param = extracts a Program ParamInput (input.*);
+// declaration = library identity; handle = host drawing-object ops (line.*);
 // host = host service with next-bar feedback (strategy.*); async = awaited
 // host call (llm); request = compiles a child Program (request.*).
 export const Effect = {
   None: 'none',
   Param: 'param',
   Declaration: 'declaration',
-  Output: 'output',
   Handle: 'handle',
   Host: 'host',
   Async: 'async',
@@ -126,10 +123,7 @@ export interface NativeFunc {
   readonly result: NativeResult;
   readonly resultQualifier: ResultQualifier;
   readonly effect: NativeEffect;
-  // Mints a per-call-site slot (a sub-frame in the caller's frame). None of
-  // the seed natives carry slot state; ta.* is prelude and gets its state
-  // from ordinary function semantics.
-  readonly stateful: boolean;
+  readonly runtimeEffect: 'pure' | 'read' | 'write' | 'allocate';
   // Param controls have a concrete display default. null on every non-param
   // native keeps the catalog as the sole owner of this host-visible default.
   readonly inputDefaultDisplay: InputDisplay | null;
@@ -223,7 +217,33 @@ function func(
     result,
     resultQualifier,
     effect,
-    stateful: false,
+    runtimeEffect:
+      params.some(param => param.mode === 'inout') || effect !== Effect.None
+        ? 'write'
+        : typeof result !== 'string' &&
+            [
+              'array',
+              'matrix',
+              'map',
+              TypeKind.Array,
+              TypeKind.Matrix,
+              TypeKind.Map,
+            ].includes(result.kind)
+          ? 'allocate'
+          : params.some(
+                param =>
+                  typeof param.type !== 'string' &&
+                  [
+                    'array',
+                    'matrix',
+                    'map',
+                    TypeKind.Array,
+                    TypeKind.Matrix,
+                    TypeKind.Map,
+                  ].includes(param.type.kind),
+              )
+            ? 'read'
+            : 'pure',
     inputDefaultDisplay,
   };
 }
@@ -713,80 +733,10 @@ function mathNum(
 function buildFuncs(): NativeFunc[] {
   const funcs: NativeFunc[] = [];
 
-  // The sole dense-output declaration intrinsic. Its contextual args object
-  // and kind-dependent result are checked by checkOutput rather than ordinary
-  // overload matching; this catalog entry owns only its intrinsic identity.
-  funcs.push(
-    func(
-      'output',
-      [
-        req('value', TypeRef.Any, Qualifier.Series),
-        req('kind', StringType, Qualifier.Const),
-        req('args', TypeRef.Any, Qualifier.Series),
-      ],
-      VoidType,
-      Qualifier.Const,
-      Effect.Output,
-    ),
-  );
-
-  // Generic sparse side effects. This is a checker-owned intrinsic namespace,
-  // not a source library; codegen lowers each semantic call site to one typed
-  // Program effect declaration.
-  const effectValue = {kind: 'type-param', name: 'T'} as const;
-  funcs.push(
-    genericFunc(
-      'effect.emit',
-      [{name: 'T', constraint: 'effect-payload'}],
-      [req('value', effectValue, Qualifier.Series)],
-      VoidType,
-      Qualifier.Const,
-      Effect.Emit,
-    ),
-  );
-
-  // Script declarations.
   funcs.push(
     func(
       'library',
       [req('title', StringType, Qualifier.Const, {literal: true})],
-      VoidType,
-      Qualifier.Const,
-      Effect.Declaration,
-    ),
-    func(
-      'indicator',
-      [
-        req('title', StringType, Qualifier.Const, {literal: true}),
-        opt('shorttitle', StringType, Qualifier.Const, {literal: true}),
-        opt('overlay', BoolType, Qualifier.Const, {literal: true}),
-        opt('format', StringType, Qualifier.Const),
-        opt('precision', IntType, Qualifier.Const, {literal: true}),
-        opt('max_bars_back', IntType, Qualifier.Const, CONCRETE_CONST_NUMBER),
-        opt('timeframe', StringType, Qualifier.Const),
-        opt('timeframe_gaps', BoolType, Qualifier.Const, {literal: true}),
-        // Pine v6: default true; false restores the static-only gate on
-        // request context args (enforced by the noder).
-        opt('dynamic_requests', BoolType, Qualifier.Const, {literal: true}),
-        // Drawing-object budgets: recorded as script metadata now; the
-        // drawing runtime enforces them when handle objects land.
-        opt('max_lines_count', IntType, Qualifier.Const, {literal: true}),
-        opt('max_labels_count', IntType, Qualifier.Const, {literal: true}),
-        opt('max_boxes_count', IntType, Qualifier.Const, {literal: true}),
-        opt('max_polylines_count', IntType, Qualifier.Const, {literal: true}),
-        opt('calc_bars_count', IntType, Qualifier.Const, {literal: true}),
-      ],
-      VoidType,
-      Qualifier.Const,
-      Effect.Declaration,
-    ),
-    func(
-      'strategy',
-      [
-        req('title', StringType, Qualifier.Const, {literal: true}),
-        opt('shorttitle', StringType, Qualifier.Const, {literal: true}),
-        opt('overlay', BoolType, Qualifier.Const, {literal: true}),
-      ],
       VoidType,
       Qualifier.Const,
       Effect.Declaration,
@@ -819,122 +769,6 @@ function buildFuncs(): NativeFunc[] {
     genericScalarInput(ColorType, 'none'),
     sourceInput('input'),
   );
-
-  // Declarative outputs.
-  funcs.push(
-    func(
-      'hline',
-      [
-        req('price', FloatType, Qualifier.Input),
-        opt('title', StringType, Qualifier.Const, {literal: true}),
-        opt('color', ColorType, Qualifier.Input),
-        opt('linestyle', StringType, Qualifier.Const),
-        opt('linewidth', IntType, Qualifier.Input),
-        opt('editable', BoolType, Qualifier.Const),
-        opt('display', StringType, Qualifier.Const),
-      ],
-      HlineType,
-      Qualifier.Const,
-      Effect.Output,
-    ),
-    func(
-      'plotshape',
-      [
-        req('series', BoolType, Qualifier.Series),
-        opt('title', StringType, Qualifier.Const, {literal: true}),
-        opt('style', StringType, Qualifier.Const),
-        opt('location', StringType, Qualifier.Const),
-        opt('color', ColorType, Qualifier.Series),
-        opt('offset', IntType, Qualifier.Input),
-        opt('text', StringType, Qualifier.Const),
-        opt('textcolor', ColorType, Qualifier.Series),
-        opt('size', StringType, Qualifier.Const),
-        opt('editable', BoolType, Qualifier.Const),
-        opt('show_last', IntType, Qualifier.Input),
-        opt('display', StringType, Qualifier.Const),
-      ],
-      VoidType,
-      Qualifier.Const,
-      Effect.Output,
-    ),
-    func(
-      'plotchar',
-      [
-        req('series', BoolType, Qualifier.Series),
-        opt('title', StringType, Qualifier.Const, {literal: true}),
-        opt('char', StringType, Qualifier.Const),
-        opt('location', StringType, Qualifier.Const),
-        opt('color', ColorType, Qualifier.Series),
-        opt('offset', IntType, Qualifier.Input),
-        opt('text', StringType, Qualifier.Const),
-        opt('textcolor', ColorType, Qualifier.Series),
-        opt('size', StringType, Qualifier.Const),
-        opt('editable', BoolType, Qualifier.Const),
-        opt('show_last', IntType, Qualifier.Input),
-        opt('display', StringType, Qualifier.Const),
-      ],
-      VoidType,
-      Qualifier.Const,
-      Effect.Output,
-    ),
-    func(
-      'bgcolor',
-      [
-        req('color', ColorType, Qualifier.Series),
-        opt('title', StringType, Qualifier.Const, {literal: true}),
-        opt('offset', IntType, Qualifier.Input),
-        opt('editable', BoolType, Qualifier.Const),
-        opt('show_last', IntType, Qualifier.Input),
-        opt('display', StringType, Qualifier.Const),
-      ],
-      VoidType,
-      Qualifier.Const,
-      Effect.Output,
-    ),
-    func(
-      'barcolor',
-      [
-        req('color', ColorType, Qualifier.Series),
-        opt('title', StringType, Qualifier.Const, {literal: true}),
-        opt('offset', IntType, Qualifier.Input),
-        opt('editable', BoolType, Qualifier.Const),
-        opt('show_last', IntType, Qualifier.Input),
-        opt('display', StringType, Qualifier.Const),
-      ],
-      VoidType,
-      Qualifier.Const,
-      Effect.Output,
-    ),
-    func(
-      'alertcondition',
-      [
-        req('condition', BoolType, Qualifier.Series),
-        opt('title', StringType, Qualifier.Const, {literal: true}),
-        opt('message', StringType, Qualifier.Const, {literal: true}),
-      ],
-      VoidType,
-      Qualifier.Const,
-      Effect.Output,
-    ),
-  );
-  for (const refType of [PlotType, HlineType]) {
-    funcs.push(
-      func(
-        'fill',
-        [
-          req('plot1', refType, Qualifier.Const),
-          req('plot2', refType, Qualifier.Const),
-          opt('color', ColorType, Qualifier.Series),
-          opt('title', StringType, Qualifier.Const, {literal: true}),
-          opt('editable', BoolType, Qualifier.Const),
-          opt('display', StringType, Qualifier.Const),
-        ],
-        VoidType,
-        Qualifier.Const,
-        Effect.Output,
-      ),
-    );
-  }
 
   // math.* — intrinsics only; aggregations over time (ta.*) are prelude.
   funcs.push(

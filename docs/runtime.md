@@ -48,7 +48,7 @@ run and receive only future Datums. Unsubscribing removes one observer;
 ```ts
 const node = tea`
 length = input.int(20)
-plot(ta.sma(close, length))
+emit "average" ta.sma(close, length)
 `;
 
 node.bind({length: 10});
@@ -117,7 +117,7 @@ typed empty value. Contextual builtins never become another `Node.bind()` form.
 
 ## Compiled modules and binding
 
-Runtime ABI 11 exposes one `Module<Context>` with mutable configuration. There is
+Runtime ABI 12 exposes one `Module<Context>` with mutable configuration. There is
 no public manifest or separate preparation operation:
 
 ```text
@@ -131,7 +131,7 @@ module
     frames             frame templates and retention
   outputs
     schema             sole owner of output names, types and write modes
-    declarations       prepared arguments and runtime snapshot descriptors
+    declarations       one snapshot layout ID per column
   requests[]           each context/policy beside its child module
   bind                 the one parameter-binding operation
   main                 ordinary typed entry function
@@ -142,7 +142,7 @@ module
 The module constructor copies the ordinary Arrow schemas and keeps the binding
 calculation function private. `module.bind()` validates a named patch,
 preserves existing values, fills usable defaults only for still-unset parameters,
-and recomputes dependent depths, output arguments and request contexts. It updates
+and recomputes dependent depths, parameter activity and request contexts. It updates
 the existing module and returns that same object. Request-child module identities
 also stay stable. A failed binding leaves the entire tree unchanged.
 
@@ -150,7 +150,7 @@ also stay stable. A failed binding leaves the entire tree unchanged.
 const module = tea`
 length = input.int(20)
 enabled = input.bool(true)
-plot(enabled ? close[length] : close)
+emit "price" enabled ? close[length] : close
 `.module;
 
 const same = module.bind({length: 20, enabled: false});
@@ -208,7 +208,7 @@ These library types have separate responsibilities:
 | ----------------------------------------- | --------------------------------------------------------------------------------- |
 | `Value<T, K>`                             | Captured value and Tea arithmetic; `K` preserves numeric kind or nominal identity |
 | `Input<T, K>`                             | Read-only history through `.hist(offset)`                                         |
-| `Series<T, K>`                            | One state binding, adding staged `.set()` and lazy `.init()`                      |
+| `Series<T, K>`                            | One state binding, adding staged `.set()` and lazy initialization                 |
 | `Frame<Locals, Calls>`                    | Named local series and independent written call sites                             |
 | `Context<Params, Inputs, State, Outputs>` | One execution's values, storage and transaction lifecycle                         |
 | `Module<Context>`                         | Schemas, storage requirements, binding calculations and `main()`                  |
@@ -249,6 +249,10 @@ The calls `accumulate(ctx.state.calls.close, close)` and
 survives steps. Repeated execution of one written call inside a loop reuses that
 call's state.
 
+Generated persistent initialization uses a `needsInit()` guard followed by
+`initialize(value)`. This keeps a Tea `return` inside an initializer in its
+containing function; the handwritten `.init()` convenience remains lazy.
+
 Struct captures keep their managed reference identity. Reading a field captures
 its current value. A write captures and validates its receiver before evaluating
 the right-hand side:
@@ -269,6 +273,7 @@ a previously captured collection still has its old immutable header.
 `tea build indicator.tea -o indicator.ts` checks the emitted TypeScript before
 writing it. The generated module contains its exact Context types, readable Arrow
 schema constructors, storage requirements, binding calculations and ordinary functions.
+Generated lexical parameters are prefixed so source names cannot shadow runtime helpers.
 Execution JavaScript comes from transpiling that same source; there is no second
 semantic emitter. Tagged `tea` templates use synchronous transpilation without
 running the TypeScript checker on each template construction. Build and CI checks
@@ -311,8 +316,9 @@ One step is transactional:
 4. validate and commit after `main()` returns normally;
 5. abort state, Heap changes and buffered outputs if execution throws.
 
-The wrapper owns the transaction, so an early return from `main()` is a successful
-step. Its `using` scope aborts any uncommitted Heap transaction on exit. Functions
+The wrapper owns the transaction, so an early return from a handwritten `main()` is a successful
+step. Tea entry source simply falls through; source `return` belongs to functions.
+Its `using` scope aborts any uncommitted Heap transaction on exit. Functions
 called by `main()` participate in the same step; they do not commit independently.
 `step()` returns a `StepResult` directly and throws on failure.
 
@@ -346,8 +352,8 @@ allocating a RecordBatch at every step.
 
 Tea integers deliberately retain their current JavaScript number representation,
 including finite arithmetic outside the safe-integer range and numeric `NaN`.
-Arrow Int64 would change that contract. Numeric `NaN`, signed zero, empty lists,
-null references and absent emissions remain distinct. Nominal IDs come from the
+Arrow Int64 would change that contract. Numeric `NaN`, signed zero and empty lists remain distinct. An absent set emission
+and an explicitly emitted null share the column's null value. Nominal IDs come from the
 checker; metadata never re-encodes a recursive structural schema. Internal recursive
 structs are valid, but unrepresentable recursive exports produce a compiler error.
 Resource records contain kind/id and remain scoped to their producing runtime.
@@ -355,8 +361,8 @@ Resource records contain kind/id and remain scoped to their producing runtime.
 For this program (with `close` bound to 10):
 
 ```tea
-plot(close)
-effect.emit("buy")
+emit "price" close
+emit.append "fills" "buy"
 ```
 
 Node publishes:
@@ -366,21 +372,25 @@ Node publishes:
   index: 0,
   timed: false,
   provisional: false,
-  output0: {series: 10},
-  effect0: [{ordinal: 0, payload: 'buy'}],
+  price: 10,
+  fills: ['buy'],
 }
 ```
 
-`module.outputs.schema` owns every data field. Each field records `tea:write`
-(`set` or `append`) and `tea:kind` metadata; one declaration array carries only
-arguments and snapshot layout IDs. There is one output ID space and no separate
-effect schema or emission table. The historical outputN/effectN row names remain
-stable.
+`module.outputs.schema` owns every named field in declaration order. Each field
+records `tea:write` (`set` or `append`); the aligned declaration array contains one
+`{layout}` snapshot descriptor per column. Consumers use schema order, including
+for integer-like column names whose JavaScript property enumeration order differs.
 
-`output0` has Arrow type `Struct<series: Float64>`. It is null when that declaration
-was not emitted. `effect0` is a List of records; its ordinal preserves global
-execution order across all event declarations. Assignment outputs keep the final
-write per channel; event lists retain every emission.
+`price` is a nullable Arrow Float64 field. A skipped emission and an explicitly
+emitted null both produce null; emitting numeric NA produces NaN. `fills` is a
+non-null `List<Utf8>`; a step with no appends produces an empty list. Each list
+retains its own emission order. There is no global event ordinal or payload wrapper.
+
+Tea rejects duplicate set writers and repeated set execution at compilation.
+The runtime also rejects duplicate sets from handwritten modules and aborts the
+whole attempt. Set and append may not target the same column even when their
+Arrow shapes match; the checker validates this language rule before projection.
 
 Both paths snapshot aggregates **at emission**. Mutating a struct later in the same
 step cannot change an earlier event. Published records, arrays and Maps contain
@@ -396,9 +406,9 @@ Inspect the schema with Arrow itself:
 
 ```ts
 const field = node.module.outputs.schema.fields.find(
-  field => field.name === 'output0',
+  field => field.name === 'price',
 );
-console.log(field?.type.toString()); // Struct<{series:Float64}>
+console.log(field?.type.toString()); // Float64
 ```
 
 Batch builders and Arrow IPC can consume these values later. The observer chooses
@@ -442,7 +452,10 @@ CLI uses no source registry, backend union, or generic execution wrapper.
 
 ## GPU bindings and physical allocation
 
-WGSL lowering produces one bind-independent `CompiledWgslProgram`. The GPU
+WGSL lowering produces one bind-independent `CompiledWgslProgram` at GPU ABI 8,
+embedding its Runtime ABI 12 module. Set result cells carry separate presence and
+value-validity words, so skipped outputs and numeric NA remain distinguishable.
+Older runtime and GPU artifacts are rejected. The GPU
 runtime accepts concrete bindings:
 
 ```ts

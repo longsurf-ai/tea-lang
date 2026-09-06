@@ -30,8 +30,14 @@ contract rather than incidental source that merely has to typecheck.
 The `aggregate-values` compile-through case is also the executable lock for
 struct-reference aliasing and rebinding, collection-header copying, historical
 references, in-place mutable methods, shallow `const`, and transaction rollback.
-Its expected rows are Tea-owned contract values derived from
+Its named output rows are Tea-owned contract values derived from
 [memory-model.md](memory-model.md), not copied runtime output.
+
+References identify scalar columns by their declared names and Tea types, and
+each expected emission supplies one value. The conditional cases require lazy
+ternary evaluation: unselected-arm mutations do not execute. The former ordered
+two-channel observation is now an ordinary tuple-returning function followed by
+two named scalar emissions, preserving its independently calculated values.
 
 The `typed-execution-range` compile-through case locks the finite Node path
 contract for `time`, `time_close`, `bar_index`, `last_bar_index`, `timenow`,

@@ -36,7 +36,7 @@ test('reference-struct strategies fail closed before Dawn execution', () => {
   const result = compileProgramToWgsl(
     mustBuild(
       [
-        'strategy("GPU struct boundary")',
+        '',
         'import broker',
         'import portfolio',
         'import trade',
@@ -49,7 +49,7 @@ test('reference-struct strategies fail closed before Dawn execution', () => {
 });
 
 test('Dawn consumes concrete bindings and preserves outputs and time', async () => {
-  const program = mustBuild('plot(close)');
+  const program = mustBuild('emit "output0" close');
   const bindings = [
     binding({close: [10, 20, 30, 40]}, {}, [100, 200, 300, 400]),
   ];
@@ -65,7 +65,7 @@ test('Dawn consumes concrete bindings and preserves outputs and time', async () 
 });
 
 test('empty GPU bindings declare outputs without delivering rows', async () => {
-  const artifact = compiledArtifact(mustBuild('plot(close)'));
+  const artifact = compiledArtifact(mustBuild('emit "output0" close'));
   const calls: string[] = [];
   const {device} = await dawn();
   const execution = await createGpuExecution(device, artifact, [
@@ -103,32 +103,66 @@ test('empty GPU bindings declare outputs without delivering rows', async () => {
   }
 });
 
-test('Dawn preserves Arrow enum payloads, missing values and global event order', async () => {
+test('Dawn preserves Arrow enum payloads, missing values and per-column append order', async () => {
   const program = mustBuild(
     [
       'enum Side',
       '    buy = "Buy"',
       '    sell = "Sell"',
       'for i = 0 to 2',
-      '    effect.emit(close)',
-      '    effect.emit(Side.buy)',
-      'plot(close)',
+      '    emit.append "effect0" close',
+      '    emit.append "effect1" Side.buy',
+      'emit "output0" close',
     ].join('\n'),
   );
   const {gpuSinks} = await assertParity(program, [
     binding({close: [10, NaN, -0]}),
   ]);
   const row = gpuSinks[0]!.publications[0]!;
-  assert.deepEqual(row.effect0, [
-    {ordinal: 0, payload: 10},
-    {ordinal: 2, payload: 10},
-    {ordinal: 4, payload: 10},
+  assert.deepEqual(row.effect0, [10, 10, 10]);
+  assert.deepEqual(row.effect1, ['buy', 'buy', 'buy']);
+});
+
+test('Dawn preserves conditional set presence, lazy branches and helper returns', async () => {
+  const program = mustBuild(
+    [
+      'publish(const string id, float value) =>',
+      '    emit id value',
+      '    return value',
+      'choose(int value) =>',
+      '    emit.append "choices" value',
+      '    return value',
+      'run(float value) =>',
+      '    var int count = 0',
+      '    count += 1',
+      '    if value > 0',
+      '        publish("positive", value)',
+      '    emit "missing" float(na)',
+      '    selected = value > 0 ? choose(1) : choose(2)',
+      '    if value < 0',
+      '        return count',
+      '    emit "count" count',
+      '    return count',
+      'run(close)',
+    ].join('\n'),
+  );
+  const {gpuSinks} = await assertParity(program, [
+    binding({close: [1, -1, 2]}),
   ]);
-  assert.deepEqual(row.effect1, [
-    {ordinal: 1, payload: 'buy'},
-    {ordinal: 3, payload: 'buy'},
-    {ordinal: 5, payload: 'buy'},
-  ]);
+  const rows = gpuSinks[0]!.publications;
+  assert.deepEqual(
+    rows.map(row => row.positive),
+    [1, null, 2],
+  );
+  assert.deepEqual(
+    rows.map(row => row.count),
+    [1, null, 3],
+  );
+  assert.deepEqual(
+    rows.map(row => row.choices),
+    [[1], [2], [1]],
+  );
+  assert.ok(rows.every(row => Number.isNaN(row.missing)));
 });
 
 test('Dawn keeps bound history and persistent state separate for every binding', async () => {
@@ -140,7 +174,7 @@ test('Dawn keeps bound history and persistent state separate for every binding',
       'total += close',
       'left = previous(close)',
       'right = previous(open)',
-      'plot(left + right + total)',
+      'emit "output0" left + right + total',
     ].join('\n'),
   );
   const {gpuSinks} = await assertParity(program, [
@@ -156,14 +190,38 @@ test('Dawn keeps bound history and persistent state separate for every binding',
   );
 });
 
+test('Dawn applies concrete native and ordinary function argument conversions', async () => {
+  const program = mustBuild(
+    [
+      'rounded(float value) =>',
+      '    return math.floor(value)',
+      'emit "maximum" math.max(close, 2)',
+      'emit "rounded" rounded(2)',
+      'emit "absolute" math.abs(close)',
+    ].join('\n'),
+  );
+  const {gpuSinks} = await assertParity(program, [binding({close: [-1, 3]})]);
+  assert.deepEqual(
+    gpuSinks[0]!.publications.map(row => [
+      row.maximum,
+      row.rounded,
+      row.absolute,
+    ]),
+    [
+      [2, 2, 1],
+      [3, 2, 3],
+    ],
+  );
+});
+
 test('Dawn captures Arrow schema ownership before observer mutation', async () => {
   const artifact = compiledArtifact(
     mustBuild(
       [
         'enum Side',
         '    buy = "Buy"',
-        'effect.emit(Side.buy)',
-        'plot(close)',
+        'emit.append "effect0" Side.buy',
+        'emit "output0" close',
       ].join('\n'),
     ),
   );
@@ -179,10 +237,7 @@ test('Dawn captures Arrow schema ownership before observer mutation', async () =
         first.declare(declaration);
         outputFields(declaration.schema)
           .find(field => field.name === 'effect0')!
-          .type.children[0]!.type.children[1]!.metadata.set(
-            'tea:members',
-            '[{"name":"wrong"}]',
-          );
+          .type.children[0]!.metadata.set('tea:members', '[{"name":"wrong"}]');
       },
       next: row => first.publish(row),
     },
@@ -199,7 +254,7 @@ test('Dawn captures Arrow schema ownership before observer mutation', async () =
     assert.equal(
       second.fields
         .find(field => field.name === 'effect0')!
-        .type.children[0]!.type.children[1]!.metadata.get('tea:members'),
+        .type.children[0]!.metadata.get('tea:members'),
       '[{"name":"buy","title":"Buy"}]',
     );
     assert.equal(first.effectEmissions[0]!.payload, 'buy');

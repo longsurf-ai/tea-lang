@@ -91,7 +91,9 @@ async function execute(source: string, csv: string) {
 
 function valuesFor(sink: OutputCapture, oid: number): readonly unknown[] {
   return sink.emissions
-    .filter(emission => emission.outputId === oid)
+    .filter(
+      emission => sink.fields[emission.outputId].name === `output${oid - 1}`,
+    )
     .sort((left, right) => left.row - right.row)
     .map(emission => emission.channels[0]);
 }
@@ -107,12 +109,23 @@ function expectNumbersClose(
 }
 
 function effectName(program: Program, emission: SparseEmission): string {
-  const type =
-    program.effects[emission.outputId - program.outputs.length]?.payloadType;
+  const type = program.outputs[emission.outputId]?.valueType;
   if (type?.kind !== TypeKind.Struct) {
     throw new Error(`effect ${emission.outputId} has no nominal payload`);
   }
   return type.name;
+}
+
+function effectCounts(
+  program: Program,
+  sink: OutputCapture,
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const emission of sink.effectEmissions) {
+    const name = effectName(program, emission);
+    counts[name] = (counts[name] ?? 0) + 1;
+  }
+  return counts;
 }
 
 function effectField(
@@ -139,7 +152,7 @@ function effectField(
 describe('canonical bounded lot trade components', () => {
   test('matches immediate long and short stops without consuming ids on misses', async () => {
     const source = [
-      'strategy("immediate stop ownership")',
+      '',
       'import broker',
       'var emulator = broker.new()',
       'longAccount = broker.Account.new(1000.0, 1.0, 1, 10, 0.0, 0.0)',
@@ -156,9 +169,9 @@ describe('canonical bounded lot trade components', () => {
       'invalidStop = emulator.execute_if_stop_touched(invalidCommand, 10.0, 10.0, -2.0, -1.0, longAccount, bar_index)',
       'shortTouch = emulator.execute_if_stop_touched(shortCommand, 10.0, 11.0, 9.5, 11.0, shortAccount, bar_index)',
       'shortGap = emulator.execute_if_stop_touched(shortGapCommand, 12.0, 13.0, 11.5, 11.0, shortAccount, bar_index)',
-      'plot(na(longMiss) ? 1 : 0)',
-      'plot(na(shortMiss) ? 1 : 0)',
-      'plot(na(invalidStop) ? 1 : 0)',
+      'emit "output0" na(longMiss) ? 1 : 0',
+      'emit "output1" na(shortMiss) ? 1 : 0',
+      'emit "output2" na(invalidStop) ? 1 : 0',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -168,19 +181,11 @@ describe('canonical bounded lot trade components', () => {
     expect(valuesFor(sink, 1)).toEqual([1]);
     expect(valuesFor(sink, 2)).toEqual([1]);
     expect(valuesFor(sink, 3)).toEqual([1]);
-    expect(
-      sink.effectEmissions.map(emission => effectName(program, emission)),
-    ).toEqual([
-      'OrderSubmitted',
-      'FillExecuted',
-      'OrderSubmitted',
-      'FillExecuted',
-      'OrderRejected',
-      'OrderSubmitted',
-      'FillExecuted',
-      'OrderSubmitted',
-      'FillExecuted',
-    ]);
+    expect(effectCounts(program, sink)).toEqual({
+      OrderSubmitted: 4,
+      FillExecuted: 4,
+      OrderRejected: 1,
+    });
 
     const submitted = sink.effectEmissions.filter(
       emission => effectName(program, emission) === 'OrderSubmitted',
@@ -219,7 +224,7 @@ describe('canonical bounded lot trade components', () => {
 
   test('keeps trailing policy through activation and a miss before a gap fill', async () => {
     const source = [
-      'strategy("lot trailing policy")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -251,12 +256,12 @@ describe('canonical bounded lot trade components', () => {
       '        trailDistance := 1.0',
       'strat.mark()',
       'metrics = strat.snapshot()',
-      'plot(trailingArmed ? 1 : 0)',
-      'plot(na(trailExtreme) ? 0.0 : trailExtreme)',
-      'plot(stopReference)',
-      'plot(metrics.openTradeCount)',
-      'plot(metrics.fillCount)',
-      'plot(metrics.positionQuantity)',
+      'emit "output0" trailingArmed ? 1 : 0',
+      'emit "output1" na(trailExtreme) ? 0.0 : trailExtreme',
+      'emit "output2" stopReference',
+      'emit "output3" metrics.openTradeCount',
+      'emit "output4" metrics.fillCount',
+      'emit "output5" metrics.positionQuantity',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -276,17 +281,17 @@ describe('canonical bounded lot trade components', () => {
     expect(valuesFor(sink, 4)).toEqual([1, 1, 1, 0]);
     expect(valuesFor(sink, 5)).toEqual([1, 1, 1, 2]);
     expect(valuesFor(sink, 6)).toEqual([1, 1, 1, 0]);
-    expect(sink.effectEmissions.map(emission => emission.row)).toEqual([
-      0, 0, 3, 3,
-    ]);
-    expect(
-      sink.effectEmissions.map(emission => effectName(program, emission)),
-    ).toEqual([
-      'OrderSubmitted',
-      'FillExecuted',
-      'OrderSubmitted',
-      'FillExecuted',
-    ]);
+    for (const type of ['OrderSubmitted', 'FillExecuted']) {
+      expect(
+        sink.effectEmissions
+          .filter(emission => effectName(program, emission) === type)
+          .map(emission => emission.row),
+      ).toEqual([0, 3]);
+    }
+    expect(effectCounts(program, sink)).toEqual({
+      OrderSubmitted: 2,
+      FillExecuted: 2,
+    });
     expect(
       sink.effectEmissions
         .filter(emission => effectName(program, emission) === 'FillExecuted')
@@ -296,7 +301,7 @@ describe('canonical bounded lot trade components', () => {
 
   test('fails closed when stop intent direction disagrees with the stable lot', async () => {
     const source = [
-      'strategy("lot stop direction")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -311,9 +316,9 @@ describe('canonical bounded lot trade components', () => {
       '    strat.close_trade_at_stop("Correct long intent", activeTradeId, broker.Side.buy, open, high, low, 9.0)',
       'strat.mark()',
       'metrics = strat.snapshot()',
-      'plot(metrics.positionQuantity)',
-      'plot(metrics.openTradeCount)',
-      'plot(metrics.fillCount)',
+      'emit "output0" metrics.positionQuantity',
+      'emit "output1" metrics.openTradeCount',
+      'emit "output2" metrics.fillCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -323,15 +328,11 @@ describe('canonical bounded lot trade components', () => {
     expect(valuesFor(sink, 1)).toEqual([1, 0]);
     expect(valuesFor(sink, 2)).toEqual([1, 0]);
     expect(valuesFor(sink, 3)).toEqual([1, 2]);
-    expect(
-      sink.effectEmissions.map(emission => effectName(program, emission)),
-    ).toEqual([
-      'OrderSubmitted',
-      'FillExecuted',
-      'OrderRejected',
-      'OrderSubmitted',
-      'FillExecuted',
-    ]);
+    expect(effectCounts(program, sink)).toEqual({
+      OrderSubmitted: 2,
+      FillExecuted: 2,
+      OrderRejected: 1,
+    });
     expect(
       sink.effectEmissions
         .filter(emission => effectName(program, emission) === 'OrderSubmitted')
@@ -348,7 +349,7 @@ describe('canonical bounded lot trade components', () => {
 
   test('closes exact lots newest-first before an immediate reversal', async () => {
     const source = [
-      'strategy("bounded lots")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -369,16 +370,16 @@ describe('canonical bounded lot trade components', () => {
       '    strat.entry("Short A", "Long reversal close", trade.Direction.short, notional = 10.0)',
       'strat.mark()',
       'metrics = strat.snapshot()',
-      'plot(metrics.cash)',
-      'plot(metrics.positionQuantity)',
-      'plot(metrics.equity)',
-      'plot(metrics.realizedPnl)',
-      'plot(metrics.totalFees)',
-      'plot(metrics.fillCount)',
-      'plot(metrics.roundTripCount)',
-      'plot(metrics.openTradeCount)',
-      'plot(metrics.maxLongStack)',
-      'plot(metrics.maxShortStack)',
+      'emit "output0" metrics.cash',
+      'emit "output1" metrics.positionQuantity',
+      'emit "output2" metrics.equity',
+      'emit "output3" metrics.realizedPnl',
+      'emit "output4" metrics.totalFees',
+      'emit "output5" metrics.fillCount',
+      'emit "output6" metrics.roundTripCount',
+      'emit "output7" metrics.openTradeCount',
+      'emit "output8" metrics.maxLongStack',
+      'emit "output9" metrics.maxShortStack',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -421,7 +422,7 @@ describe('canonical bounded lot trade components', () => {
 
   test('rejects capacity overflow before publishing a fill', async () => {
     const source = [
-      'strategy("lot capacity")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -434,8 +435,8 @@ describe('canonical bounded lot trade components', () => {
       'strat.entry("Overflow", "Cover", trade.Direction.long, qty = 1.0)',
       'strat.mark()',
       'metrics = strat.snapshot()',
-      'plot(metrics.openTradeCount)',
-      'plot(metrics.fillCount)',
+      'emit "output0" metrics.openTradeCount',
+      'emit "output1" metrics.fillCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -444,14 +445,16 @@ describe('canonical bounded lot trade components', () => {
 
     expect(valuesFor(sink, 1)).toEqual([1]);
     expect(valuesFor(sink, 2)).toEqual([1]);
-    expect(
-      sink.effectEmissions.map(emission => effectName(program, emission)),
-    ).toEqual(['OrderSubmitted', 'FillExecuted', 'OrderRejected']);
+    expect(effectCounts(program, sink)).toEqual({
+      OrderSubmitted: 1,
+      FillExecuted: 1,
+      OrderRejected: 1,
+    });
   });
 
   test('rejects scheduled APIs for the immediate-only lot policy statically', async () => {
     const source = [
-      'strategy("lot policy boundary")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -470,7 +473,7 @@ describe('canonical bounded lot trade components', () => {
 
   test('rejects an unknown stable lot id before execution', async () => {
     const source = [
-      'strategy("immediate policy boundary")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -479,9 +482,9 @@ describe('canonical bounded lot trade components', () => {
       'lots.close_trade("Invalid id", 404)',
       'lots.mark()',
       'metrics = lots.snapshot()',
-      'plot(metrics.positionQuantity)',
-      'plot(metrics.fillCount)',
-      'plot(metrics.openTradeCount)',
+      'emit "output0" metrics.positionQuantity',
+      'emit "output1" metrics.fillCount',
+      'emit "output2" metrics.openTradeCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -491,14 +494,12 @@ describe('canonical bounded lot trade components', () => {
     expect(valuesFor(sink, 1)).toEqual([0]);
     expect(valuesFor(sink, 2)).toEqual([0]);
     expect(valuesFor(sink, 3)).toEqual([0]);
-    expect(
-      sink.effectEmissions.map(emission => effectName(program, emission)),
-    ).toEqual(['OrderRejected']);
+    expect(effectCounts(program, sink)).toEqual({OrderRejected: 1});
   });
 
   test('does not liquidate before an invalid or failed immediate reversal', async () => {
     const source = [
-      'strategy("reversal failure atomicity")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -516,9 +517,9 @@ describe('canonical bounded lot trade components', () => {
       '    strat.entry("Rejected short", "Rejected long close", trade.Direction.short, qty = 1.0)',
       'strat.mark()',
       'metrics = strat.snapshot()',
-      'plot(strat.position_quantity())',
-      'plot(metrics.openTradeCount)',
-      'plot(metrics.fillCount)',
+      'emit "output0" strat.position_quantity()',
+      'emit "output1" metrics.openTradeCount',
+      'emit "output2" metrics.fillCount',
     ].join('\n');
     const {program, sink} = await execute(
       source,
@@ -528,19 +529,16 @@ describe('canonical bounded lot trade components', () => {
     expect(valuesFor(sink, 1)).toEqual([1, 1, 1]);
     expect(valuesFor(sink, 2)).toEqual([1, 1, 1]);
     expect(valuesFor(sink, 3)).toEqual([1, 1, 1]);
-    expect(
-      sink.effectEmissions.map(emission => effectName(program, emission)),
-    ).toEqual([
-      'OrderSubmitted',
-      'FillExecuted',
-      'OrderRejected',
-      'OrderRejected',
-    ]);
+    expect(effectCounts(program, sink)).toEqual({
+      OrderSubmitted: 1,
+      FillExecuted: 1,
+      OrderRejected: 2,
+    });
   });
 
   test('keeps strategy policy keyed by the returned stable trade id', async () => {
     const source = [
-      'strategy("lot accounting ownership")',
+      '',
       'import broker',
       'import portfolio',
       'import trade',
@@ -556,10 +554,10 @@ describe('canonical bounded lot trade components', () => {
       'policyTarget := 12.0',
       'strat.mark()',
       'metrics = strat.snapshot()',
-      'plot(policyTradeId == execution.tradeId ? 1 : 0)',
-      'plot(strat.position_quantity())',
-      'plot(metrics.equity)',
-      'plot(policyTarget)',
+      'emit "output0" policyTradeId == execution.tradeId ? 1 : 0',
+      'emit "output1" strat.position_quantity()',
+      'emit "output2" metrics.equity',
+      'emit "output3" policyTarget',
     ].join('\n');
     const {sink} = await execute(
       source,

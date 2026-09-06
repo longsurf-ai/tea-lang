@@ -4,8 +4,8 @@ import {Bool, Field, Float64, Schema, TimestampMillisecond} from 'apache-arrow';
 
 /**
  * A detached row matching the module's Arrow output schema. Assignment fields
- * are nullable records; append fields are lists carrying global event ordinals.
- * @example `{index: 0, timed: false, provisional: false, output0: {series: 10}}`.
+ * are nullable values; append fields contain values in per-column execution order.
+ * @example `{index: 0, timed: false, provisional: false, price: 10, fills: []}`.
  */
 export interface Datum extends Readonly<Record<string, unknown>> {
   readonly index: number;
@@ -33,7 +33,7 @@ export function outputSchema(fields: readonly Field[]): Schema {
  * Return fields written by the program, excluding execution coordinates.
  * Write mode is explicit: a List may be assigned as a value or appended to.
  * @example `outputFields(module.outputs.schema)[0].metadata.get('tea:write')`
- * is `set` for a plot and `append` for an event list.
+ * is `set` for a price and `append` for an event list.
  */
 export function outputFields(schema: Schema): readonly Field[] {
   return schema.fields.filter(field => field.metadata.has('tea:write'));
@@ -42,8 +42,7 @@ export function outputFields(schema: Schema): readonly Field[] {
 /**
  * Attach execution coordinates to detached output cells. No output schema or
  * payload conversion is reconstructed here; cells already match their fields.
- * @example An append cell `[{ordinal: 0, payload: 'buy'}]` becomes the value
- * of the corresponding effect0 field in the published row.
+ * @example An append cell `['buy']` becomes the value of its named column.
  */
 export function createDatum(
   schema: Schema,

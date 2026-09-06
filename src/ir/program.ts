@@ -92,40 +92,15 @@ export interface BuiltinInput {
 }
 
 /**
- * A source declaration whose per-step channels use assignment semantics.
- * Codegen publishes its structure in Arrow and combines static and bound
- * arguments into one declaration; these source partitions preserve evaluation
- * order without becoming separate public reporting contracts.
- *
- * @example In `plot(close, title="Close", linewidth=width)`, title is static,
- * width is resolved by binding, and close is emitted through the series channel.
+ * One named output column. All writes agree on its mode and value type.
+ * Arrow publishes valueType directly for set, or List<valueType> for append.
+ * @example `emit "price" close` declares a set column named price.
  */
 export interface OutputDecl {
-  readonly effect: string; // catalog primitive, e.g. 'plot', 'hline'
-  readonly staticArgs: readonly {
-    readonly name: string;
-    readonly value: ConstValue;
-  }[];
-  // input-qualified declarative args (hline price, plot linewidth,
-  // plotshape offset) plus output references (fill's plot/hline operands as
-  // const OutputRef exprs). Static references fold during generation; late
-  // arguments are evaluated by module.bind and combined with staticArgs.
-  readonly bindArgs: readonly {
-    readonly name: string;
-    readonly expr: IrExpr;
-  }[];
-  // Canonical bindArgs indices in source evaluation order. Bind lowering
-  // captures in this order, then reports values to the host by canonical name.
-  readonly bindArgumentEvaluationOrder: readonly number[];
-  readonly channels: readonly {readonly name: string; readonly type: Type}[];
-}
-
-// One statically-known sparse effect call site. Unlike OutputDecl, an effect
-// has no dense row channel: each execution of its EmitEffectStmt appends one
-// payload record, and repeated executions preserve source execution order.
-export interface EffectDecl {
-  readonly payloadType: Type;
-  readonly sourcePosition: Pos;
+  readonly name: string;
+  readonly mode: 'set' | 'append';
+  readonly valueType: Type;
+  readonly pos: Pos;
 }
 
 // How a child Program's bars project onto the parent axis.
@@ -261,7 +236,6 @@ export interface Program {
   readonly params: readonly ParamInput[];
   readonly requests: readonly RequestEdge[];
   readonly outputs: readonly OutputDecl[];
-  readonly effects: readonly EffectDecl[];
   // Reachable imported-package runtime globals in deterministic initializer
   // order. Each is an ordinary program-frame Name with a non-null init.
   readonly packageGlobals: readonly Name[];

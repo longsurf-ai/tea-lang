@@ -1,5 +1,5 @@
 //@version=1
-indicator("Input family compile-through")
+
 
 enum Mode
 	fast = "Fast"
@@ -14,6 +14,6 @@ source = input.source(close, "Source", active=enabled, confirm=true)
 mode = input.enum(Mode.fast, "Mode", options=[Mode.fast, Mode.slow], active=enabled)
 auto = input(2, "Auto", active=enabled)
 
-plot(source * scale + length + auto, "Result", color=tone)
-plot(close > 0 ? math.exp(1000) : 0, "Folded overflow")
-plot(math.exp(close * 1000), "Dynamic overflow")
+emit "output0" source * scale + length + auto
+emit "output1" close > 0 ? math.exp(1000) : 0
+emit "output2" math.exp(close * 1000)

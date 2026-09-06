@@ -48,12 +48,12 @@ describe('reference pilot information architecture', () => {
       'operators',
       'annotations',
     ]);
-    expect(PILOT_REFERENCE_ENTRIES).toHaveLength(7);
-    expect(PILOT_REFERENCE_ENTRIES.map(item => item.category).sort()).toEqual(
-      [...REFERENCE_CATEGORIES].sort(),
-    );
+    expect(PILOT_REFERENCE_ENTRIES).toHaveLength(9);
+    expect(
+      [...new Set(PILOT_REFERENCE_ENTRIES.map(item => item.category))].sort(),
+    ).toEqual([...REFERENCE_CATEGORIES].sort());
     expect(new Set(PILOT_REFERENCE_ENTRIES.map(item => item.route)).size).toBe(
-      7,
+      9,
     );
 
     const outputs = referenceOutputs(ROOT);
@@ -102,9 +102,12 @@ describe('reference pilot information architecture', () => {
     ].sort();
     expect(Object.keys(func.arguments).sort()).toEqual(supportedParams);
 
-    const keyword = entry('keyword') as KeywordEntry;
-    for (const token of keyword.compilerKeywords) {
-      expect((KEYWORDS as readonly string[]).includes(token)).toBe(true);
+    for (const keyword of PILOT_REFERENCE_ENTRIES.filter(
+      item => item.kind === 'keyword',
+    )) {
+      for (const token of keyword.compilerKeywords) {
+        expect((KEYWORDS as readonly string[]).includes(token)).toBe(true);
+      }
     }
   });
 

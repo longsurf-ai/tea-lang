@@ -7,70 +7,102 @@
       "https://www.tradingview.com/pine-script-docs/language/type-system/#na-value"
     ]
   },
-  "tolerance": {"absolute": 0, "relative": 0},
+  "tolerance": {
+    "absolute": 0,
+    "relative": 0
+  },
   "outputs": [
     {
-      "oid": 0,
-      "effect": "indicator",
-      "staticArgs": [["title", "na comparisons"]],
-      "boundArgs": [],
-      "channels": []
+      "name": "output0",
+      "type": "int"
     },
     {
-      "oid": 1,
-      "effect": "plot",
-      "staticArgs": [["title", "runtime na equals const"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output1",
+      "type": "int"
     },
     {
-      "oid": 2,
-      "effect": "plot",
-      "staticArgs": [["title", "runtime na differs from const"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output2",
+      "type": "int"
     },
     {
-      "oid": 3,
-      "effect": "plot",
-      "staticArgs": [["title", "series na equals const"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
-    },
-    {
-      "oid": 4,
-      "effect": "plot",
-      "staticArgs": [["title", "series na differs from const"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output3",
+      "type": "int"
     }
   ],
   "rows": [
     {
       "row": 0,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [0]},
-        {"oid": 2, "provisional": false, "channels": [0]},
-        {"oid": 3, "provisional": false, "channels": [1]},
-        {"oid": 4, "provisional": false, "channels": [0]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 1
+        },
+        {
+          "name": "output3",
+          "provisional": false,
+          "value": 0
+        }
       ]
     },
     {
       "row": 1,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [1]},
-        {"oid": 2, "provisional": false, "channels": [0]},
-        {"oid": 3, "provisional": false, "channels": [0]},
-        {"oid": 4, "provisional": false, "channels": [0]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 1
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output3",
+          "provisional": false,
+          "value": 0
+        }
       ]
     },
     {
       "row": 2,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [0]},
-        {"oid": 2, "provisional": false, "channels": [0]},
-        {"oid": 3, "provisional": false, "channels": [0]},
-        {"oid": 4, "provisional": false, "channels": [1]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output3",
+          "provisional": false,
+          "value": 1
+        }
       ]
     }
   ],

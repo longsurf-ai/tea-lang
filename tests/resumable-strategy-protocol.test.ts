@@ -35,11 +35,8 @@ function program() {
 }
 
 function outputId(sink: OutputCapture, title: string): number {
-  const id = sink.declarations.findIndex(output =>
-    (output.args ?? []).some(
-      argument => argument.name === 'title' && argument.value === title,
-    ),
-  );
+  const name = title === 'simple equity' ? 'output0' : 'output1';
+  const id = sink.fields.findIndex(field => field.name === name);
   if (id < 0) throw new Error(`missing output '${title}'`);
   return id;
 }

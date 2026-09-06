@@ -10,12 +10,12 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   static description — it never encodes Time Machine mechanics (ring buffers,
   copy-on-write, rollback, provisional overlays), which are runtime-owned.
 - `Program` is the only post-check static program contract for every source
-  kind and backend. Indicator and strategy declarations remain ordinary
-  `Program.outputs` facts. Do not introduce an execution-mode wrapper,
+  kind and backend. Named emissions remain ordinary `Program.outputs` facts.
+  Do not introduce an execution-mode wrapper,
   strategy-specific Program, copied result schema, or paired compiler artifact;
   JS and WGSL codegen consume the same Program directly.
 - `Program.nominalIds` carries checker-owned declaration identities for Arrow
-  metadata. Effects retain their payload Type and source position; Program
+  metadata. Outputs retain their value Type, write mode and source position; Program
   never duplicates the recursive payload structure as a transport schema.
 - One type system. Checker, IR, and Program all share `type.ts`; no parallel
   spec-vs-backend type representations. Qualifiers
@@ -56,13 +56,17 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   materialize child frames lazily, while WGSL uses a fixed frame prefix plus
   bind-sized history payloads. The topology is identical for user functions
   and Tea prelude code.
-- Free functions, const methods, and mutable methods are an exhaustive
-  Program union. A method owns one hidden receiver Name separate from every
-  source-visible param. Both method call forms carry the receiver expression;
-  mutable calls return only their declared result because the shared struct
-  reference is mutated in place. `StoreField` owns reference-property writes,
-  while a collection mutator carries exactly one `CollectionLocation` (Name
-  or captured struct field) for its replacement header.
+- A single `CallFunc` refers to free functions or methods; the callee owns
+  receiver mode and each method owns a hidden receiver Name separate from
+  source-visible params. Mutable calls validate the receiver before arguments.
+  `Assign` and native writable receivers reuse `WritableExpr`: a current Name
+  read or a field selection. Their destination is captured before later
+  effects; compound assignment captures the old value once. Native calls
+  carry concrete intrinsic signatures/effects and never allocate call slots.
+- `Read` observes a current binding; `HistRead` always carries an explicit
+  offset. Only direct readable bindings admit history. Ternary syntax lowers
+  to lazy `IfExpr`; `Return` exits the enclosing function, including when it
+  occurs within a persistent initializer. `InitName` remains lexical and lazy.
 - `visit.ts` owns canonical lexical child enumeration and recursive IR
   traversal; specialized analyses add only semantic edges such as function
   bodies, request metadata, or history-depth expressions. Its switches are
@@ -70,7 +74,7 @@ Program contract (`program.ts`). Design doc: `../../docs/ir.md`.
   `frames.ts` derives the one target-neutral Name ownership and call-site frame
   topology consumed by every backend. Program fields are
   the external-needs interface (params, requests) plus dense and sparse
-  emissions (outputs, effects)
+  emissions (one outputs array with set/append modes)
   — explicit even where derivable, so codegen/runtime never walk trees to
   learn what a program needs. Numeric context data uses `SeriesInput`; typed
   builtins use `BuiltinInput`, whose closed `BuiltinSource.domain` is only

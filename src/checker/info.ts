@@ -1,6 +1,7 @@
 // Purpose: Per-semantic-context syntax facts and resolved calls produced by the checker and consumed by noding.
 
-import type {Qualifier, Type, TypeAndValue} from '../ir/type';
+import type {ConstValue, Qualifier, Type, TypeAndValue} from '../ir/type';
+import type {Pos} from '../base/pos';
 import type * as syntax from '../syntax/nodes';
 import type {NativeFunc} from './catalog';
 import type {
@@ -18,7 +19,6 @@ export const CallKind = {
   Function: 'function',
   Constructor: 'constructor',
   Request: 'request',
-  Output: 'output',
 } as const;
 
 export interface CheckedExpression {
@@ -28,6 +28,14 @@ export interface CheckedExpression {
 }
 
 export type SemanticDependency = BuiltinObject | VariableObject;
+
+/** A statically named column shared by reachable writes in one compilation. */
+export interface OutputColumn {
+  readonly name: string;
+  readonly mode: 'set' | 'append';
+  readonly valueType: Type;
+  readonly pos: Pos;
+}
 
 export interface CheckedDefaultExpression extends CheckedExpression {
   readonly dependencies: ReadonlySet<SemanticDependency>;
@@ -82,30 +90,11 @@ export interface RequestCall {
   readonly resultType: Type;
 }
 
-export interface OutputArgument {
-  readonly name: string;
-  readonly value: CheckedExpression;
-}
-
-// One checked output declaration intrinsic. The contextual argument object is
-// exploded here so noder consumes exact per-field facts without re-checking or
-// treating it as a runtime record value. Canonical operand 0 is the primary
-// value; fields occupy 1..n in object order.
-export interface OutputCall {
-  readonly kind: typeof CallKind.Output;
-  readonly outputKind: string;
-  readonly value: CheckedExpression;
-  readonly args: readonly OutputArgument[];
-  readonly argumentEvaluationOrder: readonly number[];
-  readonly resultType: Type;
-}
-
 export type CallResolution =
   | NativeCall
   | FunctionCall
   | ConstructorCall
-  | RequestCall
-  | OutputCall;
+  | RequestCall;
 
 export const SelectionKind = {
   Field: 'field',
@@ -156,13 +145,12 @@ export type MethodReceiver =
     };
 
 export interface Info {
+  readonly emits: Map<syntax.EmitStmt, OutputColumn>;
+  readonly returns: Map<syntax.ReturnStmt, TypeAndValue>;
   readonly types: Map<syntax.Expr, TypeAndValue>;
   readonly uses: Map<syntax.Name | syntax.ThisExpr, Object>;
   readonly defs: Map<syntax.Name, Object>;
   readonly reassigned: Set<VariableObject>;
-  // Variables used as direct history operands must retain their own runtime
-  // name state even when their initializer would otherwise fold or alias.
-  readonly historyBindings: Set<VariableObject>;
   readonly calls: Map<syntax.CallExpr, CallResolution>;
   readonly updates: Map<syntax.AssignStmt, StructFieldStore>;
   readonly selections: Map<syntax.SelectorExpr, Selection>;
@@ -177,11 +165,12 @@ export interface Info {
 
 export function newInfo(): Info {
   return {
+    emits: new Map(),
+    returns: new Map(),
     types: new Map(),
     uses: new Map(),
     defs: new Map(),
     reassigned: new Set(),
-    historyBindings: new Set(),
     calls: new Map(),
     updates: new Map(),
     selections: new Map(),
@@ -196,6 +185,7 @@ export interface FunctionInstance {
   readonly signature: readonly ({
     readonly type: Type;
     readonly qualifier: Qualifier;
+    readonly value: ConstValue | null;
   } | null)[];
   // Compiler-only method receiver. It is not a source parameter and therefore
   // never appears in signature/params/defaults or call argument ordering.
@@ -206,13 +196,6 @@ export interface FunctionInstance {
   // Exact non-local semantic dependencies. Builtins reproject into each
   // Program; outer variables are checked against request capture policy.
   readonly dependencies: Set<SemanticDependency>;
-  // A direct-tail output declaration body is elaborated at each caller so
-  // caller sites own distinct OutputDecls. Null means an ordinary runtime
-  // function instance.
-  output: {
-    readonly call: syntax.CallExpr;
-    readonly resolution: OutputCall;
-  } | null;
   resultType: Type;
   resultQualifier: Qualifier;
 }

@@ -1,15 +1,6 @@
 // Concise Arrow-backed fixtures for execution tests; binding tests compile real Tea.
 
-import {
-  Bool,
-  DataType,
-  Field,
-  Float64,
-  List,
-  Schema,
-  Struct,
-  Utf8,
-} from 'apache-arrow';
+import {Bool, DataType, Field, Float64, List, Schema, Utf8} from 'apache-arrow';
 import type {Builtin} from './module-abi';
 import {Module} from './module-binding';
 import type {Step, WorkspaceFrame} from './js/state-update';
@@ -54,27 +45,22 @@ export function testModule(code: Fixture): Module {
   const declarations =
     code.outputs.declarations ??
     fields.map(field => {
-      const channels: readonly Field[] =
+      const value: Field =
         field.metadata.get('tea:write') === 'append'
-          ? [field.type.children[0].type.children[1]]
-          : field.type.children;
+          ? field.type.children[0]
+          : field;
       return {
-        args: [],
-        layouts: channels.map(field =>
-          code.state.layout.findIndex(layout => {
-            if (DataType.isFloat(field.type)) return layout.kind === 'number';
-            if (DataType.isBool(field.type)) return layout.kind === 'boolean';
-            if (DataType.isUtf8(field.type))
-              return (
-                layout.kind === 'nullable-scalar' || layout.kind === 'enum'
-              );
-            return (
-              layout.kind === field.metadata.get('tea:type') &&
-              (!('name' in layout) ||
-                layout.name === field.metadata.get('tea:name'))
-            );
-          }),
-        ),
+        layout: code.state.layout.findIndex(layout => {
+          if (DataType.isFloat(value.type)) return layout.kind === 'number';
+          if (DataType.isBool(value.type)) return layout.kind === 'boolean';
+          if (DataType.isUtf8(value.type))
+            return layout.kind === 'nullable-scalar' || layout.kind === 'enum';
+          return (
+            layout.kind === value.metadata.get('tea:type') &&
+            (!('name' in layout) ||
+              layout.name === value.metadata.get('tea:name'))
+          );
+        }),
       };
     });
   return new Module(
@@ -121,25 +107,14 @@ export function scalar(name: string, kind = 'float'): Field {
 
 /**
  * Describe a fixture output with ordinary Arrow types and explicit write mode.
- * @example `output('output0', [scalar('series')])` is an assignment field;
- * `output('effect0', [scalar('payload')], true)` is an event list.
+ * @example `output('price', scalar('price'))` is an assignment field;
+ * `output('fills', scalar('fill'), true)` is an append list.
  */
-export function output(
-  name: string,
-  fields: readonly Field[],
-  append = false,
-): Field {
+export function output(name: string, value: Field, append = false): Field {
   return new Field(
     name,
-    append
-      ? new List(
-          new Field('item', new Struct([scalar('ordinal'), ...fields]), false),
-        )
-      : new Struct([...fields]),
+    append ? new List(value.clone({name: 'item'})) : value.type,
     !append,
-    new Map([
-      ['tea:write', append ? 'append' : 'set'],
-      ['tea:kind', append ? 'event' : 'probe'],
-    ]),
+    new Map([...value.metadata, ['tea:write', append ? 'append' : 'set']]),
   );
 }

@@ -71,17 +71,9 @@ describe('canonical EMA crossover example', () => {
     expect(sink.publications).toHaveLength(3_283);
     expect(sink.effectEmissions).toHaveLength(416);
 
-    const roundTrips = sink.declarations.findIndex(output =>
-      (output.args ?? []).some(
-        arg => arg.name === 'title' && arg.value === 'round trips',
-      ),
-    );
+    const roundTrips = outputWithTitle(sink, 'round trips');
     expect(roundTrips).toBeGreaterThanOrEqual(0);
-    expect(
-      sink.emissions.find(
-        emission => emission.row === 3_282 && emission.outputId === roundTrips,
-      )?.channels,
-    ).toEqual([104]);
+    expect(finalScalar(sink, roundTrips)).toBe(104);
 
     const totalReturn = outputWithTitle(sink, 'total return');
     const maxDrawdown = outputWithTitle(sink, 'maximum drawdown');
@@ -205,7 +197,7 @@ describe('canonical component migration regressions', () => {
     const fillEffectIds = new Set(
       sink.fields.flatMap((field, effectId) =>
         field.metadata.get('tea:write') === 'append' &&
-        field.type.children[0]!.type.children[1]!.metadata.get('tea:typeId') ===
+        field.type.children[0]!.metadata.get('tea:typeId') ===
           'broker.FillExecuted'
           ? [effectId]
           : [],
@@ -247,23 +239,20 @@ describe('canonical component migration regressions', () => {
     expect(
       createHash('sha256').update(JSON.stringify(fills)).digest('hex'),
     ).toBe('54aabe9d33f400c7bbeea86c6fd2becba3f501d1baf8ff77ab35e86a8035dc09');
-  });
+  }, 15_000);
 });
 
 function outputWithTitle(sink: OutputCapture, title: string): number {
-  const output = sink.declarations.findIndex(candidate =>
-    (candidate.args ?? []).some(
-      argument => argument.name === 'title' && argument.value === title,
-    ),
-  );
+  const output = sink.fields.findIndex(field => field.name === title);
   expect(output).toBeGreaterThanOrEqual(0);
   return output;
 }
 
 function finalScalar(sink: OutputCapture, outputId: number): number {
-  const value = sink.emissions.findLast(
+  const plot = sink.emissions.findLast(
     emission => emission.outputId === outputId,
-  )?.channels[0];
+  )?.channels[0] as {series: number} | undefined;
+  const value = plot?.series;
   expect(typeof value).toBe('number');
   return value as number;
 }

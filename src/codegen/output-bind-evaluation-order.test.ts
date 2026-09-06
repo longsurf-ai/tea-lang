@@ -1,28 +1,46 @@
 import type {Module} from '../runtime/module-binding';
-// Purpose: Output bind lowering preserves source evaluation order while assembling canonical host arguments.
+// Purpose: Visual output values use ordinary call evaluation; binding retains only parameter/request/history facts.
 
 import {describe, expect, test} from 'vitest';
-import {buildText, mustBuild} from '../noder/testing';
+import {mustBuild} from '../noder/testing';
+import {Schema} from 'apache-arrow';
+import {executeTestProgram, finiteStream} from '../testing/batch';
+import {OutputCapture} from '../testing/output';
 import {generate} from './codegen';
 
 import type {Scalar} from '../runtime/value';
 import {loadModule} from '../runtime/load';
 
-const SOURCE = [
-  'indicator("output bind order")',
-  'colors = matrix.new<color>()',
-  'values = array.new<int>()',
-  'plot(color = colors.get(0, 0), series = values.first())',
-].join('\n');
-
-describe('output bind evaluation order', () => {
-  test('rejects aggregate-dependent declaration arguments before loading', () => {
-    const result = buildText(SOURCE);
-
-    expect(result.program).toBeNull();
-    expect(result.errors.map(error => error.msg)).toContain(
-      'module configuration must depend only on constants, scalar parameters, and non-allocating simple expressions',
-    );
+describe('ordinary visual output evaluation', () => {
+  test('captures named arguments in source order and applies ordinary defaults', async () => {
+    const program = mustBuild(`
+struct Counter
+    int value
+    int next() =>
+        this.value += 1
+        this.value
+    color nextColor() =>
+        this.value += 1
+        color.red
+counter = Counter.new(0)
+p = plot("p", color=counter.nextColor(), series=counter.next())
+q = plot("q", counter.next())
+emit "count" counter.value
+`);
+    const sink = new OutputCapture();
+    await executeTestProgram(program, {
+      stream: finiteStream(new Schema([]), [{}]),
+      sink,
+      timeNow: 0,
+    });
+    expect(sink.publications[0]).toMatchObject({
+      p: {series: 2, linewidth: 1},
+      q: {series: 3, title: '', linewidth: 1},
+      count: 3,
+    });
+    expect(
+      sink.declarations.every(declaration => !('args' in declaration)),
+    ).toBe(true);
   });
 });
 
@@ -36,10 +54,10 @@ test('binding clears all late facts before a missing-context read or incomplete 
         'stock = syminfo.type == "stock"',
         'remote = request.security("X", "D", close, fill=stock ? "sparse" : "carry", calc_bars_count=length)',
         'value = close + 0.0',
-        'plot(value[length], title="Value", linewidth=weight)',
-        'plot(remote[length])',
-        'plot(close[length])',
-        'output(syminfo.type[length], kind="type", args={})',
+        'emit "output0" value[length]',
+        'emit "output1" remote[length]',
+        'emit "output2" close[length]',
+        'emit "type" syminfo.type[length]',
       ].join('\n'),
     ),
   );
@@ -68,7 +86,6 @@ test('binding clears all late facts before a missing-context read or incomplete 
   const late = depths().map(depth => depth.kind === 'bound');
   expect(late.filter(Boolean).length).toBeGreaterThanOrEqual(4);
   const active = raw.parameters.map(parameter => parameter.active === null);
-  const args = raw.outputs.declarations.map(output => output.args === null);
   raw.parameters.forEach(parameter =>
     Object.assign(parameter, {value: parameter.defaultValue}),
   );
@@ -79,14 +96,6 @@ test('binding clears all late facts before a missing-context read or incomplete 
   depths().forEach((depth, index) => {
     if (late[index]) expect(depth).toEqual({kind: 'const', bars: 2});
   });
-  expect(raw.outputs.declarations[0].args).toContainEqual({
-    name: 'title',
-    value: 'Value',
-  });
-  expect(raw.outputs.declarations[0].args).toContainEqual({
-    name: 'linewidth',
-    value: 2,
-  });
   expect(raw.requests[0].context?.fill).toBe('sparse');
   Object.assign(raw.parameters[0], {value: 7});
   expect(() => calculate(raw, new Map())).toThrow('not bind-visible');
@@ -95,9 +104,6 @@ test('binding clears all late facts before a missing-context read or incomplete 
   });
   raw.parameters.forEach((parameter, index) => {
     if (active[index]) expect(parameter.active).toBeNull();
-  });
-  raw.outputs.declarations.forEach((output, index) => {
-    if (args[index]) expect(output.args).toBeNull();
   });
   expect(raw.requests[0].context).toBeNull();
   Object.assign(raw.parameters[0], {value: undefined});

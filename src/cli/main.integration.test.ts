@@ -51,8 +51,8 @@ describe('CLI Batch Recipe', () => {
     expect(output).toContain('# Parameters');
     expect(output).toContain('scale');
     expect(output).toContain('# Outputs');
-    expect(output).toContain('scaled close');
-    expect(output).toContain('@entry.Sample');
+    expect(output).toContain('output0');
+    expect(output).toContain('effect0');
     expect(output).toContain('{"value":6}');
   });
 

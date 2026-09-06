@@ -27,7 +27,6 @@ describe('tea', () => {
     const fastWindow = 14;
     const node = tea`
       //@version=1
-      indicator("EMA crossover")
 
       fast_window = input.int(${fastWindow}, "Fast window")
       slow_window = input.int(28, "Slow window")
@@ -35,9 +34,9 @@ describe('tea', () => {
       slow_ema = ta.ema(close, slow_window)
       crossed = ta.crossover(fast_ema, slow_ema)
 
-      plot(fast_ema, "Fast EMA")
-      plot(slow_ema, "Slow EMA")
-      plotshape(crossed, "Crossover")
+      emit "output0" fast_ema
+      emit "output1" slow_ema
+      emit "output2" crossed
     `;
 
     expect(node.module.parameters.map(param => param.name)).toEqual([
@@ -47,8 +46,8 @@ describe('tea', () => {
     expect(
       node.module.outputs.schema.fields
         .filter(field => field.metadata.has('tea:write'))
-        .map(field => field.metadata.get('tea:kind')),
-    ).toEqual(['indicator', 'plot', 'plot', 'plotshape']);
+        .map(field => field.name),
+    ).toEqual(['output0', 'output1', 'output2']);
   });
 
   test('reports compiler diagnostics with a stable virtual filename', () => {
@@ -78,7 +77,7 @@ describe('tea', () => {
   test('keeps the same Node and module while binding', () => {
     const node = tea`
       length = input.int(14)
-      plot(close + length)
+      emit "output0" close + length
     `;
     const source = new DataStream(numericSchema, of({close: 1}));
 
@@ -103,7 +102,7 @@ describe('tea', () => {
   });
 
   test('rejects duplicate named streams without changing module configuration', () => {
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     node.bind({close: numericSource(1)});
     const before = node.module;
     expect(() => node.bind({close: numericSource(2)})).toThrow(
@@ -118,7 +117,7 @@ describe('tea', () => {
     async owner => {
       const node = tea`
       source = input.source(close)
-      plot(source)
+      emit "output0" source
     `;
       node.bind(numericSource(10));
       expect(node.ready()).toBe(true);
@@ -142,7 +141,7 @@ describe('tea', () => {
   );
 
   test('is ready at creation when the Program has no binding requirements', () => {
-    const node = tea`plot(1)`;
+    const node = tea`emit "output0" 1`;
 
     expect(node.module.ready()).toBe(true);
     expect(node.module.remaining()).toEqual([]);
@@ -153,7 +152,7 @@ describe('tea', () => {
     const source = new DataStream(numericSchema, of({close: 1}, {close: 2}));
     const node = tea`
       length = input.int(14)
-      plot(close + length)
+      emit "output0" close + length
     `;
     node.bind(source);
     node.bind({length: 20});
@@ -166,7 +165,7 @@ describe('tea', () => {
   });
 
   test('publishes lossless outputs with Node index and source time', async () => {
-    const node = tea`plot(close[1])`;
+    const node = tea`emit "output0" close[1]`;
     node.bind(
       timedNumericSource({time: 100n, close: 10}, {time: 200n, close: 20}),
     );
@@ -179,14 +178,14 @@ describe('tea', () => {
       {
         index: 0,
         time: 100,
-        output0: {series: Number.NaN},
+        output0: Number.NaN,
         timed: true,
         provisional: false,
       },
       {
         index: 1,
         time: 200,
-        output0: {series: 10},
+        output0: 10,
         timed: true,
         provisional: false,
       },
@@ -196,7 +195,7 @@ describe('tea', () => {
   });
 
   test('rejects inexact event time before executing a step', async () => {
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     node.bind(timedNumericSource({time: 9_007_199_254_740_993n, close: 10}));
     const sink = new StepSink();
 
@@ -209,7 +208,7 @@ describe('tea', () => {
   });
 
   test('rejects interval close times that move backward', async () => {
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     node.bind(
       intervalNumericSource(
         {time: 0n, time_close: 3n, close: 10},
@@ -227,7 +226,7 @@ describe('tea', () => {
   });
 
   test('validates a finite DataStream index count', async () => {
-    const shortNode = tea`plot(close)`;
+    const shortNode = tea`emit "output0" close`;
     shortNode.bind(new DataStream(numericSchema, of({close: 1}), i, 2));
     const shortSink = new StepSink();
     shortNode.to(shortSink);
@@ -235,7 +234,7 @@ describe('tea', () => {
       'DataStream emitted 1 values for 2 declared indices',
     );
 
-    const longNode = tea`plot(close)`;
+    const longNode = tea`emit "output0" close`;
     longNode.bind(
       new DataStream(numericSchema, of({close: 1}, {close: 2}), i, 1),
     );
@@ -263,7 +262,7 @@ describe('tea', () => {
         };
       }),
     );
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     node.bind(source);
     const failure = new Error('delivery failed');
     const errors: unknown[] = [];
@@ -289,7 +288,7 @@ describe('tea', () => {
       numericSchema.fields,
       new Map([['test:source', 'once']]),
     );
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     node.bind(new DataStream(schema, of({close: 1}, {close: 2})));
     const sink = new StepSink();
     try {
@@ -321,7 +320,7 @@ describe('tea', () => {
       ]),
     ];
     for (const schema of cases) {
-      const node = tea`plot(close)`;
+      const node = tea`emit "output0" close`;
       const before = node.module.remaining();
       const stream = new DataStream(
         schema,
@@ -337,7 +336,7 @@ describe('tea', () => {
   });
 
   test('accepts compatible Arrow numeric fields and millisecond timestamps', async () => {
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     const schema = new Schema([
       new Field('time', new TimestampMillisecond(), false),
       new Field('close', new Int32(), false),
@@ -364,7 +363,7 @@ describe('tea', () => {
   });
 
   test('preserves absent and present-null source time in Arrow rows', async () => {
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     const schema = new Schema([
       new Field('time', new TimestampMillisecond(), true),
       ...numericSchema.fields,
@@ -380,18 +379,18 @@ describe('tea', () => {
   });
 
   test('captures execution schemas once while exposing the same mutable module', async () => {
-    const supplied = tea`plot(close)`.module;
+    const supplied = tea`emit "output0" close`.module;
     supplied.inputs.schema.fields[0]!.metadata.set('test:owner', 'original');
     supplied.outputs.schema.fields
       .find(field => field.name === 'output0')!
-      .type.children[0]!.metadata.set('test:owner', 'original');
+      .metadata.set('test:owner', 'original');
     const node = createNode(supplied);
     const rows = new Subject<{close: number}>();
     node.bind(new DataStream(numericSchema, rows));
     supplied.inputs.schema.fields[0]!.metadata.set('test:owner', 'caller');
     supplied.outputs.schema.fields
       .find(field => field.name === 'output0')!
-      .type.children[0]!.metadata.set('test:owner', 'caller');
+      .metadata.set('test:owner', 'caller');
     const sink = new StepSink();
     node.to(sink);
     rows.next({close: 10});
@@ -399,7 +398,7 @@ describe('tea', () => {
     exposed.inputs.schema.fields[0]!.metadata.set('test:owner', 'reader');
     exposed.outputs.schema.fields
       .find(field => field.name === 'output0')!
-      .type.children[0]!.metadata.set('test:owner', 'reader');
+      .metadata.set('test:owner', 'reader');
     exposed.inputs.schema.metadata.set('test:owner', 'reader');
     exposed.outputs.schema.metadata.set('test:owner', 'reader');
     exposed.outputs.schema.fields
@@ -417,12 +416,12 @@ describe('tea', () => {
     const output = node.module.outputs.schema.fields.find(
       field => field.name === 'output0',
     )!;
-    expect(DataType.isStruct(output.type)).toBe(true);
-    expect(output.type.children[0]!.metadata.get('test:owner')).toBe('reader');
+    expect(DataType.isFloat(output.type)).toBe(true);
+    expect(output.metadata.get('test:owner')).toBe('reader');
   });
 
   test('does not treat Pine contextual builtins as a third binding kind', () => {
-    const node = tea`plot(bar_index)`;
+    const node = tea`emit "output0" bar_index`;
 
     expect(() => node.bind({bar_index: numericSource(0)})).toThrow(
       "no bind-known root series or static request child matches 'bar_index'",
@@ -431,9 +430,9 @@ describe('tea', () => {
 
   test('supplies root contextual builtins from Node construction', async () => {
     const node = tea`
-      plot(bar_index)
-      plot(last_bar_index)
-      plot(barstate.islast ? 1 : 0)
+      emit "output0" bar_index
+      emit "output1" last_bar_index
+      emit "output2" barstate.islast ? 1 : 0
     `;
     node.bind(numericSource(10, 20, 30));
     const sink = new StepSink();
@@ -451,7 +450,7 @@ describe('tea', () => {
   test('gives every request child its own contextual builtin index', async () => {
     const node = tea`
       requested = request.security("X", "D", bar_index)
-      plot(requested)
+      emit "output0" requested
     `;
     node.bind(numericSource(10, 20, 30));
     node.bind({requested: numericSource(1, 2, 3)});
@@ -467,7 +466,7 @@ describe('tea', () => {
     const node = tea`
       daily = request.security("X", "D", close)
       weekly = request.security("X", "W", close)
-      plot(daily + weekly)
+      emit "output0" daily + weekly
     `;
 
     expect(node.module.requests.map(request => request.name)).toEqual([
@@ -497,7 +496,7 @@ describe('tea', () => {
     const node = tea`
       period = input.timeframe("D")
       requested = request.security("X", period, close)
-      plot(requested)
+      emit "output0" requested
     `;
     node.bind({
       requested: new DataStream(
@@ -520,7 +519,7 @@ describe('tea', () => {
   });
 
   test('rejects conflicting root clocks before changing binding state', () => {
-    const node = tea`plot(close + open)`;
+    const node = tea`emit "output0" close + open`;
     const initial = node.module;
 
     expect(() =>
@@ -544,7 +543,7 @@ describe('tea', () => {
   test('rejects a count-window ratio outside JavaScript safe integers', () => {
     const node = tea`
       lower = request.security_lower_tf("X", "", close)
-      plot(close + lower.size())
+      emit "output0" close + lower.size()
     `;
     node.bind({
       close: clockedNumericSource(y, 10),
@@ -558,7 +557,7 @@ describe('tea', () => {
     const node = tea`
       symbol = input.symbol("X")
       requested = request.security(symbol, "D", close)
-      plot(requested)
+      emit "output0" requested
     `;
     node.bind({symbol: 'X'});
 
@@ -577,7 +576,7 @@ describe('tea', () => {
     const node = tea`
       length = input.int(3)
       requested = request.security("X", "D", close[length])
-      plot(requested)
+      emit "output0" requested
     `;
     node.bind({length: 6});
     node.bind({requested: numericSource(1)});
@@ -594,12 +593,12 @@ describe('tea', () => {
 
   test('rejects inline, function-owned, and nested request calls', () => {
     const inline = () => tea`
-      plot(request.security("X", "D", close))
+      emit "output0" request.security("X", "D", close)
     `;
     const inFunction = () => tea`
       fetch() => request.security("X", "D", close)
       requested = fetch()
-      plot(requested)
+      emit "output0" requested
     `;
     const nested = () => tea`
       requested = request.security(
@@ -607,7 +606,7 @@ describe('tea', () => {
         "D",
         request.security("Y", "W", close)
       )
-      plot(requested)
+      emit "output0" requested
     `;
 
     for (const compile of [inline, inFunction, nested]) {
@@ -620,7 +619,7 @@ describe('tea', () => {
   test('executes scalar requests one-to-one', async () => {
     const node = tea`
       requested = request.security("X", "D", close)
-      plot(close + requested)
+      emit "output0" close + requested
     `;
     node.bind({
       close: numericSource(10, 20),
@@ -666,7 +665,7 @@ describe('tea', () => {
           availability = "${availability}",
           fill = "${fill}"
         )
-        plot(requested)
+        emit "output0" requested
       `;
       node.bind(
         intervalNumericSource(
@@ -701,7 +700,7 @@ describe('tea', () => {
     ) => {
       const node = tea`
         requested = request.security("X", "2", close)
-        plot(requested)
+        emit "output0" requested
       `;
       node.bind(main);
       node.bind({requested: child});
@@ -737,7 +736,7 @@ describe('tea', () => {
     const childRows = new Subject<IntervalNumericDatum>();
     const node = tea`
       requested = request.security("X", "2", close)
-      plot(requested)
+      emit "output0" requested
     `;
     node.bind(intervalNumericSubject(mainRows));
     node.bind({requested: intervalNumericSubject(childRows)});
@@ -761,7 +760,7 @@ describe('tea', () => {
     const childRows = new Subject<IntervalNumericDatum>();
     const node = tea`
       requested = request.security("X", "2", close)
-      plot(requested)
+      emit "output0" requested
     `;
     node.bind(intervalNumericSubject(mainRows));
     node.bind({requested: intervalNumericSubject(childRows)});
@@ -787,7 +786,7 @@ describe('tea', () => {
     const node = tea`
       policy = input.string("end")
       requested = request.security("X", "2", close, availability=policy)
-      plot(requested)
+      emit "output0" requested
     `;
 
     expect(() => node.bind({policy: 'middle'})).toThrow(
@@ -797,7 +796,7 @@ describe('tea', () => {
     const fillNode = tea`
       policy = input.string("carry")
       requested = request.security("X", "2", close, fill=policy)
-      plot(requested)
+      emit "output0" requested
     `;
     expect(() => fillNode.bind({policy: 'forward'})).toThrow(
       'request 0 has invalid concrete context',
@@ -808,10 +807,10 @@ describe('tea', () => {
     const twoMinutes = (2n * m) as Clock;
     const node = tea`
       lower = request.security_lower_tf("X", "1", close)
-      plot(close)
-      plot(lower.size())
-      plot(lower.first())
-      plot(lower.last())
+      emit "output0" close
+      emit "output1" lower.size()
+      emit "output2" lower.first()
+      emit "output3" lower.last()
     `;
     node.bind({
       close: clockedNumericSource(twoMinutes, 10, 20),
@@ -832,10 +831,10 @@ describe('tea', () => {
     const twoMinutes = (2n * m) as Clock;
     const node = tea`
       lower = request.security_lower_tf("X", "1", close)
-      plot(close)
-      plot(lower.size())
-      plot(lower.first())
-      plot(lower.last())
+      emit "output0" close
+      emit "output1" lower.size()
+      emit "output2" lower.first()
+      emit "output3" lower.last()
     `;
     node.bind({
       close: clockedIntervalNumericSource(
@@ -865,8 +864,8 @@ describe('tea', () => {
   test('collects event-time windows including empty windows', async () => {
     const node = tea`
       lower = request.security_lower_tf("X", "", close)
-      plot(close)
-      plot(lower.size())
+      emit "output0" close
+      emit "output1" lower.size()
     `;
     node.bind({
       close: timedNumericSource(
@@ -895,7 +894,7 @@ describe('tea', () => {
   test('uses typed empty for an explicitly empty timed request stream', async () => {
     const node = tea`
       requested = request.security("X", "D", 42)
-      plot(requested)
+      emit "output0" requested
     `;
     node.bind(
       intervalNumericSource(
@@ -919,9 +918,9 @@ describe('tea', () => {
     const childRows = new Subject<TimedNumericDatum>();
     const node = tea`
       lower = request.security_lower_tf("X", "", close)
-      plot(close)
-      plot(lower.size())
-      plot(lower.first())
+      emit "output0" close
+      emit "output1" lower.size()
+      emit "output2" lower.first()
     `;
     node.bind({
       close: timedNumericSubject(mainRows),
@@ -952,9 +951,9 @@ describe('tea', () => {
   test('falls back to one-to-one arrays without clocks or event time', async () => {
     const node = tea`
       lower = request.security_lower_tf("X", "D", close)
-      plot(close)
-      plot(lower.size())
-      plot(lower.first())
+      emit "output0" close
+      emit "output1" lower.size()
+      emit "output2" lower.first()
     `;
     node.bind({
       close: numericSource(10, 20),
@@ -975,7 +974,7 @@ describe('tea', () => {
     const node = tea`
       x = request.security("X", "D", close)
       y = request.security("Y", "D", close)
-      plot(x + y)
+      emit "output0" x + y
     `;
     const initial = node.module;
     const source = numericSource(1);
@@ -997,7 +996,7 @@ describe('tea', () => {
     const node = tea`
       x = request.security("X", "D", close)
       y = request.security("Y", "D", close)
-      plot(x + y)
+      emit "output0" x + y
     `;
     const initial = node.module;
     const invalid = new DataStream(
@@ -1021,7 +1020,7 @@ describe('tea', () => {
         return rows.subscribe(subscriber);
       }),
     );
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     node.bind(source);
     const first = new StepSink();
     const second = new StepSink();
@@ -1054,7 +1053,7 @@ describe('tea', () => {
   test('rejects binding after execution starts', async () => {
     const rows = new Subject<{close: number}>();
     const source = new DataStream(numericSchema, rows);
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     node.bind(source);
     const sink = new StepSink();
 
@@ -1079,7 +1078,7 @@ describe('tea', () => {
         };
       }),
     );
-    const node = tea`plot(close)`;
+    const node = tea`emit "output0" close`;
     node.bind(source);
     const sink = new StepSink();
     const sinkSubscription = node.to(sink);
@@ -1096,9 +1095,7 @@ describe('tea', () => {
 });
 
 function values(sink: StepSink): readonly unknown[] {
-  return sink.values.map(
-    result => (result.output0 as {series: unknown} | null)?.series,
-  );
+  return sink.values.map(result => result.output0);
 }
 
 function outputValues(sink: StepSink): readonly (readonly unknown[])[] {
@@ -1106,7 +1103,7 @@ function outputValues(sink: StepSink): readonly (readonly unknown[])[] {
     Object.keys(result)
       .filter(name => /^output\d+$/.test(name))
       .sort((left, right) => Number(left.slice(6)) - Number(right.slice(6)))
-      .map(name => (result[name] as {series: unknown} | null)?.series),
+      .map(name => result[name]),
   );
 }
 

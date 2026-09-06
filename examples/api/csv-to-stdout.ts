@@ -17,7 +17,7 @@ const node = tea`
   else
       adjusted := 0 - close
 
-  plot(adjusted, "Adjusted close")
+  plot("Adjusted close", adjusted, "Adjusted close")
 `;
 
 node.bind(source);

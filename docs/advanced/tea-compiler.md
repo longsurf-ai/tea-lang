@@ -31,7 +31,7 @@ For example:
 factor = input.int(2)
 var float total = 0
 total += close * factor
-plot(total, title="Total")
+emit "total" total
 ```
 
 The generated TypeScript contains a program-specific `ProgramContext` and an
@@ -46,13 +46,13 @@ function main(ctx: ProgramContext): void {
   const factor = ctx.params.factor;
   ctx.state.locals.total.set(before.add(close.mul(factor)));
 
-  ctx.outputs.output0.set({series: ctx.state.locals.total.hist(0)});
+  ctx.outputs.total.set(ctx.state.locals.total.hist(0));
 }
 ```
 
 `ProgramContext` identifies `factor` as an integer value, `close` as a readable
-float input, and `total` as writable float state. Its output accepts the plot's
-exact channel names and types. Unknown inputs, writes to input series, and
+float input, and `total` as writable float state. Its output accepts one captured
+float value. Unknown inputs, writes to input series, and
 incompatible output values fail TypeScript checking.
 
 `hist()` returns a captured value. Later assignment cannot change that capture.

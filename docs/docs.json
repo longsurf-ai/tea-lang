@@ -74,7 +74,11 @@
               {
                 "group": "Keywords",
                 "root": "reference/keywords",
-                "pages": ["reference/keywords/for-in"]
+                "pages": [
+                  "reference/keywords/for-in",
+                  "reference/keywords/emit",
+                  "reference/keywords/return"
+                ]
               },
               {
                 "group": "Operators",

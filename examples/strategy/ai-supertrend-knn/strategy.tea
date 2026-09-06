@@ -1,7 +1,7 @@
 //@version=1
 // Clean-room conversion of the inspected AI Volume SuperTrend strategy. This
 // example pins its published WMA source and Long trading-direction modes.
-strategy("AI SuperTrend KNN — WMA long mode", shorttitle="AI ST KNN Long", overlay=true)
+
 
 import broker
 import portfolio
@@ -149,18 +149,18 @@ if long_exit_condition and not na(long_stop) and (strat.position_quantity() > 0.
 strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(supertrend, "volume supertrend")
-plot(classification, "KNN classification")
-plot(long_stop, "long stop candidate")
-plot(display_active_stop, "active stop")
-plot(long_signal ? 1.0 : 0.0, "long signal")
-plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(metrics.positionQuantity, "position quantity")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("volume supertrend", supertrend, "volume supertrend")
+plot("KNN classification", classification, "KNN classification")
+plot("long stop candidate", long_stop, "long stop candidate")
+plot("active stop", display_active_stop, "active stop")
+plot("long signal", long_signal ? 1.0 : 0.0, "long signal")
+plot("short signal", short_signal ? 1.0 : 0.0, "short signal")
+plot("position quantity", metrics.positionQuantity, "position quantity")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("total fees", metrics.totalFees, "total fees")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

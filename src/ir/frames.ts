@@ -82,11 +82,7 @@ export function frameTopologyOf(program: Program): FrameTopology {
   for (const owner of [null, ...funcs]) {
     const children = new Map<number, IrFunc>();
     const noteCall = (expr: IrExpr): void => {
-      if (
-        expr.kind !== IrKind.CallFunc &&
-        expr.kind !== IrKind.CallConstMethod &&
-        expr.kind !== IrKind.CallMutableMethod
-      ) {
+      if (expr.kind !== IrKind.CallFunc) {
         return;
       }
       const existing = children.get(expr.slot);
@@ -167,9 +163,6 @@ function walkRootFrame(
     walkExpr(param.active);
     walkDepth(param.depth);
   });
-  program.outputs.forEach(output =>
-    output.bindArgs.forEach(arg => walkExpr(arg.expr)),
-  );
   names.forEach(name => walkDepth(name.depth));
   seriesInputsOf(program).forEach(series => walkDepth(series.depth));
   builtinInputsOf(program).forEach(builtin => walkDepth(builtin.depth));
@@ -210,8 +203,7 @@ function visitFrameExpr(
 ): void {
   visitExpr(expr);
   if (
-    expr.kind !== IrKind.HistRead ||
-    expr.offset !== null ||
+    expr.kind !== IrKind.Read ||
     expr.place.kind !== PlaceKind.Request ||
     !expr.place.request.dynamic
   ) {

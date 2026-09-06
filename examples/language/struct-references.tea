@@ -1,5 +1,5 @@
 //@version=1
-indicator("struct references demo")
+
 
 struct Portfolio
     array<int> lots
@@ -22,15 +22,15 @@ alias = base
 // Assignment copies the struct reference. The method mutates the shared body.
 alias.add(10)
 
-plot(base.size(), "base size")
-plot(alias.size(), "alias size")
-plot(base.total, "base total")
-plot(alias.total, "alias total")
+plot("base size", base.size(), "base size")
+plot("alias size", alias.size(), "alias size")
+plot("base total", base.total, "base total")
+plot("alias total", alias.total, "alias total")
 
 // Rebinding alias does not change the body still referenced by base.
 alias := Portfolio.new(array.new<int>(1), 100)
-plot(base.total, "base after alias rebind")
-plot(alias.total, "replacement total")
+plot("base after alias rebind", base.total, "base after alias rebind")
+plot("replacement total", alias.total, "replacement total")
 
 // History versions the binding. With no rebind, prior cells contain the same
 // live reference and therefore observe its current body.
@@ -41,5 +41,5 @@ historicalTotal = if bar_index > 0
 else
     -1
 
-plot(state.total, "current live total")
-plot(historicalTotal, "historical reference live total")
+plot("current live total", state.total, "current live total")
+plot("historical reference live total", historicalTotal, "historical reference live total")

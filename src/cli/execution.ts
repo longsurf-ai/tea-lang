@@ -84,7 +84,8 @@ export async function runCommand(
     result = await batchRecipe(node, [stream], {
       next: datum => {
         if (options.trace) {
-          for (const line of traceDatum(datum)) host.print(line);
+          for (const line of traceDatum(datum, declaration.schema))
+            host.print(line);
         } else {
           publications.push(datum);
         }

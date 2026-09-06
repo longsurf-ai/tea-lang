@@ -6,7 +6,7 @@ import type {Storage} from '../ir/type';
 import type {Module} from './module-binding';
 import type {CollectionValue, Scalar, Stored} from './value';
 
-export const RUNTIME_ABI_VERSION = 11 as const;
+export const RUNTIME_ABI_VERSION = 12 as const;
 
 /** True when a value can address or retain committed history. */
 export function isHistoryOffset(offset: number): boolean {

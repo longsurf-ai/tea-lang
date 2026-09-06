@@ -45,10 +45,10 @@ const mixed = [
   'labels.put("price", close)',
   'sample = Sample.new(values, grid, labels)',
   'saved := sample',
-  'output(sample, kind="sample", args={})',
-  'effect.emit(sample)',
+  'emit "output0" sample',
+  'emit.append "effect0" sample',
   'sample.values.push(42.0)',
-  'effect.emit(sample.values)',
+  'emit.append "effect1" sample.values',
 ].join('\n');
 
 function compile(source: string) {
@@ -183,9 +183,9 @@ function runMixed(count: number, retainAll: boolean) {
       index,
       timed: false,
       provisional: false,
-      output0: {value: sample},
-      effect0: [{ordinal: 0, payload: sample}],
-      effect1: [{ordinal: 1, payload: [value, previous, 42]}],
+      output0: sample,
+      effect0: [sample],
+      effect1: [[value, previous, 42]],
     };
     source.next({close: value});
     history.push(value);
@@ -225,12 +225,12 @@ test('retained mixed results remain exact after subsequent steps and disposal', 
   assert.equal(runMixed(count, true), count);
 }, 120_000);
 
-test('interleaved declarations retain all events and one global order', () => {
+test('interleaved declarations retain all events in per-column order', () => {
   const started = performance.now();
   const count = stress ? 10_000 : 64;
   const node = createNode(
     compile(
-      `for index = 0 to ${count / 2 - 1}\n    effect.emit(index)\n    effect.emit(-index)`,
+      `for index = 0 to ${count / 2 - 1}\n    emit.append "effect0" index\n    emit.append "effect1" -index`,
     ),
   );
   node.bind(new DataStream(new Schema([]), of({}), i, 1));
@@ -247,15 +247,12 @@ test('interleaved declarations retain all events and one global order', () => {
   node.dispose();
   if (failure !== undefined) throw failure;
   assert.ok(result);
-  const first = result.effect0 as {ordinal: number; payload: number}[];
-  const second = result.effect1 as {ordinal: number; payload: number}[];
+  const first = result.effect0 as number[];
+  const second = result.effect1 as number[];
   assert.equal(first.length + second.length, count);
   for (let index = 0; index < count / 2; index += 1) {
-    assert.deepStrictEqual(first[index], {ordinal: index * 2, payload: index});
-    assert.deepStrictEqual(second[index], {
-      ordinal: index * 2 + 1,
-      payload: -index,
-    });
+    assert.equal(first[index], index);
+    assert.equal(second[index], -index);
   }
   detached(result);
   report('interleaved-events', started, count);
@@ -264,7 +261,7 @@ test('interleaved declarations retain all events and one global order', () => {
 test('independent bindings preserve source schemas and parameter-derived history', () => {
   const started = performance.now();
   const module = compile(
-    'lag = input.int(1, minval=0)\noutput(close[lag], kind="lag", args={})',
+    'lag = input.int(1, minval=0)\nemit "output0" close[lag]',
   );
   const count = stress ? 1_000 : 16;
   const rows = Array.from({length: 8}, (_, close) => ({close}));
@@ -279,19 +276,14 @@ test('independent bindings preserve source schemas and parameter-derived history
     let failure: unknown;
     node.to({
       next: datum => {
-        assert.deepStrictEqual(datum.output0, {
-          value: seen < lag ? NaN : seen - lag,
-        });
+        assert.deepStrictEqual(datum.output0, seen < lag ? NaN : seen - lag);
         seen += 1;
       },
       error: error => {
         failure = error;
       },
     });
-    outputFields(copy.outputs.schema)[0].type.children[0].metadata.set(
-      'tea:type',
-      'forged',
-    );
+    outputFields(copy.outputs.schema)[0].metadata.set('tea:type', 'forged');
     for (const row of rows) source.next(row);
     source.complete();
     node.dispose();
@@ -300,9 +292,7 @@ test('independent bindings preserve source schemas and parameter-derived history
     assert.equal(copy.parameters[0].value, lag);
     assert.equal(module.parameters[0].value, undefined);
     assert.equal(
-      outputFields(module.outputs.schema)[0].type.children[0].metadata.get(
-        'tea:type',
-      ),
+      outputFields(module.outputs.schema)[0].metadata.get('tea:type'),
       'float',
     );
   }
@@ -317,7 +307,7 @@ test('Tea map publication normalizes zero keys and retains NaN values', () => {
         'values.put(close, 1.0)',
         'values.put(0.0, 2.0)',
         'values.put(1.0, float(na))',
-        'output(values, kind="map", args={})',
+        'emit "output0" values',
       ].join('\n'),
     ),
   );
@@ -335,12 +325,13 @@ test('Tea map publication normalizes zero keys and retains NaN values', () => {
   node.dispose();
   if (failure !== undefined) throw failure;
   assert.ok(result);
-  assert.deepStrictEqual(result.output0, {
-    value: new Map([
+  assert.deepStrictEqual(
+    result.output0,
+    new Map([
       [0, 2],
       [1, NaN],
     ]),
-  });
+  );
   detached(result);
 });
 
@@ -349,8 +340,8 @@ test('a failed step publishes neither its early output nor its early effect', ()
     compile(
       [
         'values = array.from(close)',
-        'output(values, kind="values", args={})',
-        'effect.emit(values)',
+        'emit "output0" values',
+        'emit.append "effect0" values',
         'values.get(2)',
       ].join('\n'),
     ),
@@ -455,14 +446,14 @@ test('seeded nested values round-trip through Arrow to depth 32', () => {
 test('scalar Node execution keeps one result per input', () => {
   const started = performance.now();
   const count = process.env.TEA_STRESS_SCALAR === '1' ? 1_000_000 : 256;
-  const node = createNode(compile('output(close + 1, kind="value", args={})'));
+  const node = createNode(compile('emit "output0" close + 1'));
   const source = new Subject<{close: number}>();
   node.bind(new DataStream(prices, source, i, count));
   let seen = 0;
   let failure: unknown;
   node.to({
     next: datum => {
-      assert.deepStrictEqual(datum.output0, {value: (seen % 256) + 1});
+      assert.deepStrictEqual(datum.output0, (seen % 256) + 1);
       seen += 1;
     },
     error: error => {

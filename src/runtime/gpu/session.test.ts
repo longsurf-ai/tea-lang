@@ -20,12 +20,12 @@ function strategyArtifact(): CompiledWgslProgram {
   const result = compileProgramToWgsl(
     mustBuild(
       [
-        'strategy("GPU session")',
+        '',
         'for i = 0 to 19',
-        '    effect.emit(open + i)',
+        '    emit.append "effect0" open + i',
         'var float sum = 0',
         'sum := sum + close',
-        'plot(sum)',
+        'emit "output0" sum',
       ].join('\n'),
     ),
   );
@@ -39,7 +39,7 @@ function parameterArtifact(): CompiledWgslProgram {
   const result = compileProgramToWgsl(
     mustBuild(
       [
-        'strategy("parameters")',
+        '',
         'enum Mode',
         '    fast = "Fast"',
         '    slow = "Slow"',
@@ -47,7 +47,7 @@ function parameterArtifact(): CompiledWgslProgram {
         'scale = input.float(1.5)',
         'enabled = input.bool(true)',
         'mode = input.enum(Mode.fast)',
-        'plot(enabled and mode == Mode.fast ? close * length + scale : 0)',
+        'emit "output0" enabled and mode == Mode.fast ? close * length + scale : 0',
       ].join('\n'),
     ),
   );
@@ -77,16 +77,15 @@ describe('GPU execution preparation', () => {
     const fields = outputFields(
       loadModule(artifact.bindingModule.source).outputs.schema,
     );
-    const field = fields[1]!.type.children[0]!;
+    const field = fields[1]!;
     expect(artifact.abi).toBe(GPU_ARTIFACT_ABI_VERSION);
     expect(field).toBeInstanceOf(Field);
     expect(DataType.isFloat(field.type)).toBe(true);
     expect(field.type.toString()).toBe('Float64');
     expect(field.metadata.get('tea:type')).toBe('float');
-    expect(
-      fields[artifact.events[0]!.outputId]!.type.children[0]!.type.children[1]!
-        .name,
-    ).toBe('payload');
+    expect(fields[artifact.events[0]!.outputId]!.type.children[0]!.name).toBe(
+      'item',
+    );
     await expect(
       prepareGpuExecutionInputs(artifact, [binding({open: [1], close: [2]})]),
     ).resolves.toMatchObject({chunkRows: 1});
@@ -96,7 +95,7 @@ describe('GPU execution preparation', () => {
     const artifact = strategyArtifact();
     await expect(
       prepareGpuExecutionInputs(
-        {...artifact, abi: 4} as unknown as CompiledWgslProgram,
+        {...artifact, abi: 7} as unknown as CompiledWgslProgram,
         [],
       ),
     ).rejects.toThrow(/ABI|abi/);
@@ -104,12 +103,11 @@ describe('GPU execution preparation', () => {
       loadModule(artifact.bindingModule.source).outputs.schema,
     );
     const output = fields[1]!;
-    const channel = output.type.children[0]!;
     const schema = outputSchema(
       fields.map((field, id) =>
         id === 1
           ? output.clone({
-              type: new Struct([channel.clone({type: new Utf8()})]),
+              type: new Utf8(),
             })
           : field,
       ),
@@ -198,7 +196,7 @@ export default subject;`,
           'total += close',
           'left = previous(close)',
           'right = previous(open)',
-          'plot(left + right + total)',
+          'emit "output0" left + right + total',
         ].join('\n'),
       ),
     );

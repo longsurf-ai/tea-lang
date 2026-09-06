@@ -23,8 +23,8 @@ imports.
 - `broker`, `portfolio`, and `trade` are explicit imports. Policy-specific
   trade coordinators own concrete broker and portfolio values; lifecycle
   methods are ordinary calls and no package global hides execution state. The
-  native `strategy()` declaration is not a library and does not construct one
-  of these values.
+  entry source uses the same Program whether it computes indicators or trades.
+  There are no indicator/strategy declaration headers.
 - `trade.nextOpen`, `trade.ohlc`, `trade.path`, and `trade.lots` are direct
   families, not modes of a universal wrapper. Broker interfaces own matching
   and order lifecycle; portfolio interfaces own fill application and

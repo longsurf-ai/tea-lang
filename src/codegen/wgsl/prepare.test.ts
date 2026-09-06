@@ -30,10 +30,10 @@ describe('generic WGSL capability boundary', () => {
       seriesInputCount: 2,
       builtinInputCount: 2,
       persistentRootCount: 1,
-      functionCount: 37,
-      mutableMethodCount: 14,
+      functionCount: 38,
+      mutableMethodCount: 15,
       callSiteSlotCount: 14,
-      outputCount: 10,
+      outputCount: 14,
       resultChannelCount: 9,
     });
     expect(report.eligible).toBe(false);
@@ -43,9 +43,7 @@ describe('generic WGSL capability boundary', () => {
   });
 
   test('is the same authoritative result returned by compilation', () => {
-    const program = mustBuild(
-      'strategy("parameterized")\nlength = input.int(2)\nplot(length)',
-    );
+    const program = mustBuild('\nlength = input.int(2)\nemit "output0" length');
     expect(analyzeWgslEligibility(program)).toEqual(
       compileProgramToWgsl(program).eligibility,
     );
@@ -54,12 +52,11 @@ describe('generic WGSL capability boundary', () => {
   test('fails closed for unsupported target requirements', () => {
     const cases = [
       {
-        source:
-          'strategy("parameterized")\nlabel = input.string("x")\nplot(close)',
+        source: '\nlabel = input.string("x")\nemit "output0" close',
         code: 'parameter-packing-unimplemented',
       },
       {
-        source: 'strategy("no series")\nvar float keep = 1.0\nplot(keep)',
+        source: '\nvar float keep = 1.0\nemit "output1" keep',
         code: 'series-row-count-unavailable',
       },
     ] as const;
@@ -73,7 +70,7 @@ describe('generic WGSL capability boundary', () => {
 
   test('accepts declaration-site persistent initialization from the first active row', () => {
     const result = compileProgramToWgsl(
-      mustBuild('strategy("row init")\nvar float x = close\nplot(x)'),
+      mustBuild('\nvar float x = close\nemit "output0" x'),
     );
     expect(result.status).toBe('compiled');
   });
@@ -82,12 +79,12 @@ describe('generic WGSL capability boundary', () => {
     const result = compileProgramToWgsl(
       mustBuild(
         [
-          'strategy("parameterized")',
+          '',
           'length = input.int(2)',
           'scale = input.float(1.5)',
           'enabled = input.bool(true)',
           'var float keep = length + scale',
-          'plot(enabled ? close * length + keep : 0)',
+          'emit "output0" enabled ? close * length + keep : 0',
         ].join('\n'),
       ),
     );
@@ -103,12 +100,8 @@ describe('generic WGSL capability boundary', () => {
   });
 
   test('does not require a dense result or a user persistent root', () => {
-    const resultless = compileProgramToWgsl(
-      mustBuild('strategy("resultless")\nclose'),
-    );
-    const stateless = compileProgramToWgsl(
-      mustBuild('strategy("stateless")\nplot(close)'),
-    );
+    const resultless = compileProgramToWgsl(mustBuild('\nclose'));
+    const stateless = compileProgramToWgsl(mustBuild('\nemit "output0" close'));
 
     expect(resultless.status).toBe('compiled');
     expect(stateless.status).toBe('compiled');
@@ -118,12 +111,12 @@ describe('generic WGSL capability boundary', () => {
     const oneLevel = compileProgramToWgsl(
       mustBuild(
         [
-          'strategy("rooted")',
+          '',
           'type Point',
           '    float x',
           'var Point p = Point.new(0.0)',
           'p.x := close',
-          'plot(p.x)',
+          'emit "output0" p.x',
         ].join('\n'),
       ),
     );
@@ -135,14 +128,14 @@ describe('generic WGSL capability boundary', () => {
     const deeper = compileProgramToWgsl(
       mustBuild(
         [
-          'strategy("nested")',
+          '',
           'type Point',
           '    float x',
           'type Holder',
           '    Point p',
           'var Holder h = Holder.new(Point.new(0.0))',
           'h.p.x := close',
-          'plot(h.p.x)',
+          'emit "output0" h.p.x',
         ].join('\n'),
       ),
     );

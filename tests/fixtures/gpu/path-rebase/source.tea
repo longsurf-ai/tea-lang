@@ -1,5 +1,5 @@
 //@version=1
-strategy("rooted update rebase")
+
 
 type Pair
 	float left
@@ -11,5 +11,5 @@ type Pair
 
 var Pair pair = Pair.new(0.0, 0.0)
 pair.left := pair.touch(close)
-plot(pair.left)
-plot(pair.right)
+emit "output0" pair.left
+emit "output1" pair.right

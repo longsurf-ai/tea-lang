@@ -8,23 +8,20 @@
 import type {Pos} from '../base/pos';
 import {fatal, type Errors} from '../base/print';
 import {
-  CollectionLocationKind,
   DepthKind,
   IrKind,
   IrOp,
   PlaceKind,
   Storage,
   type IrBinaryOp,
-  type EmitEffectStmt,
   type IrExpr,
   type IrStmt,
-  type CollectionLocation as IrCollectionLocation,
   type IrUnaryOp,
   type BlockExpr,
-  type HistReadExpr,
+  type ReadExpr,
+  type WritableExpr,
   type HistoryDepth,
   type Name as IrName,
-  type OutputRefExpr,
   type Place,
   type SwitchArm,
 } from '../ir/node';
@@ -33,7 +30,6 @@ import {
   ParamConstraintKind,
   ParamDefaultKind,
   type BuiltinInput,
-  type EffectDecl,
   type IrFunc,
   type MergePolicy,
   type OutputDecl,
@@ -74,19 +70,18 @@ import {
 import {ASSIGN_BASE_OP, AssignOp, Mode, NodeKind} from '../syntax/nodes';
 import type * as syntax from '../syntax/nodes';
 import {Op} from '../syntax/tokens';
-import {Effect, TypeRef, type NativeParam} from '../checker/catalog';
+import {Effect} from '../checker/catalog';
 import {
   CallKind,
   SelectionKind,
   type CheckedExpression,
   type CollectionLocation as CheckedCollectionLocation,
   type FunctionInstance,
-  type FunctionCall,
   type Info,
   type NativeCall,
-  type OutputCall,
   type RequestCall,
   type StructFieldStore,
+  type OutputColumn,
 } from '../checker/info';
 import {
   ObjectKind,
@@ -135,11 +130,8 @@ class ProgramLoweringContext {
   readonly series = new Map<BuiltinObject, SeriesInput>();
   readonly builtin = new Map<BuiltinObject, BuiltinInput>();
   readonly funcs = new Map<FunctionInstance, IrFunc>();
-  readonly outputRefs = new Map<VariableObject, OutputDecl>();
   readonly aliasRefs = new Map<VariableObject, Place>();
   readonly requests: RequestEdge[] = [];
-  readonly effects: EffectDecl[] = [];
-  readonly effectsByCall = new Map<NativeCall, EffectDecl>();
   readonly requestsByCall = new Map<RequestCall, RequestEdge>();
   readonly rootFrame: FrameLoweringContext;
 
@@ -159,25 +151,19 @@ class ProgramLoweringContext {
 class Noder {
   private readonly params: ParamInput[] = [];
   private readonly outputs: OutputDecl[] = [];
-  // One ParamInput / OutputDecl per call site, deduped by the syntax node.
+  private readonly outputOf = new Map<OutputColumn, OutputDecl>();
+  private returnType: Type = VoidType;
+  // Parameters remain call-site declarations; output columns are name-owned.
   private readonly paramOf = new Map<syntax.CallExpr, ParamInput>();
-  // Compile-time reference bindings: `len = input.int(...)` and
-  // `p = plot(...)` bind the name to the param/output instead of emitting a
+  // Compile-time reference bindings: `len = input.int(...)` binds to its
+  // parameter instead of emitting a
   // per-bar write (only when the name is never reassigned).
   private readonly paramRefs = new Map<VariableObject, ParamInput>();
-  // Per-top-statement queue: output Emits follow the statement that evaluates
-  // their arguments.
-  private emitted: IrStmt[] = [];
   private nesting = 0;
   private version = 1;
   private info: Info;
   private program: ProgramLoweringContext;
   private frame: FrameLoweringContext;
-  private outputSubstitutions: ReadonlyMap<
-    VariableObject,
-    CheckedExpression
-  > | null = null;
-
   constructor(
     private readonly checked: CheckedPackage,
     private readonly errors: Errors,
@@ -198,9 +184,7 @@ class Noder {
     this.version = Number.isFinite(versionNumber) ? versionNumber : 1;
     const body: IrStmt[] = [];
     for (const stmt of file.stmtList) {
-      this.emitted = [];
-      const stmts = this.nodeStmt(stmt);
-      body.push(...stmts, ...this.emitted);
+      body.push(...this.nodeStmt(stmt));
     }
     const packageGlobals: IrName[] = [];
     const program: Program = {
@@ -209,7 +193,6 @@ class Noder {
       params: this.params,
       requests: this.program.requests,
       outputs: this.outputs,
-      effects: this.program.effects,
       packageGlobals,
       // Hoisting const/input/simple work out of the bar loop is a later
       // optimization; everything runs in the per-bar body for now.
@@ -411,12 +394,18 @@ class Noder {
     const visitProgram = (current: Program): void => {
       const writes = new Map<IrName, IrExpr>();
       for (const stmt of [...current.init, ...current.body]) {
+        const name =
+          stmt.kind === IrKind.InitName
+            ? stmt.name
+            : stmt.kind === IrKind.Assign && stmt.target.kind === IrKind.Read
+              ? stmt.target.place.name
+              : null;
         if (
-          (stmt.kind === IrKind.InitName || stmt.kind === IrKind.WriteName) &&
-          !writes.has(stmt.name)
-        ) {
-          writes.set(stmt.name, stmt.value);
-        }
+          name !== null &&
+          !writes.has(name) &&
+          (stmt.kind === IrKind.InitName || stmt.kind === IrKind.Assign)
+        )
+          writes.set(name, stmt.value);
       }
 
       const supported = (root: IrExpr): boolean => {
@@ -429,15 +418,15 @@ class Noder {
         ): void => {
           walkIrExpr(expr, {
             stmt: stmt => {
-              if (stmt.kind === IrKind.InitName) valid = false;
+              if (stmt.kind === IrKind.InitName || stmt.kind === IrKind.Emit)
+                valid = false;
             },
             expr: nested => {
               switch (nested.kind) {
                 case IrKind.HistRead:
-                  if (nested.offset !== null) {
-                    valid = false;
-                    return;
-                  }
+                  valid = false;
+                  return;
+                case IrKind.Read:
                   if (
                     nested.place.kind === PlaceKind.Series ||
                     nested.place.kind === PlaceKind.Request
@@ -465,6 +454,10 @@ class Noder {
                   }
                   return;
                 case IrKind.CallFunc:
+                  if (nested.func.callMode !== 'free') {
+                    valid = false;
+                    return;
+                  }
                   if (!funcs.has(nested.func)) {
                     funcs.add(nested.func);
                     scan(
@@ -473,9 +466,6 @@ class Noder {
                     );
                   }
                   return;
-                case IrKind.CallConstMethod:
-                case IrKind.CallMutableMethod:
-                case IrKind.MutateCollection:
                 case IrKind.NewStruct:
                 case IrKind.MakeTuple:
                 case IrKind.TupleGet:
@@ -484,11 +474,7 @@ class Noder {
                   valid = false;
                   return;
                 case IrKind.CallNative:
-                  if (
-                    nested.native.startsWith('array.') ||
-                    nested.native.startsWith('matrix.') ||
-                    nested.native.startsWith('map.')
-                  ) {
+                  if (nested.native.effect !== 'pure') {
                     valid = false;
                   }
                   return;
@@ -521,9 +507,6 @@ class Noder {
         check(param.active);
         checkDepth(param.depth);
       });
-      current.outputs.forEach(output =>
-        output.bindArgs.forEach(argument => check(argument.expr)),
-      );
       requestsOf(current).forEach(request => {
         checkDepth(request.depth);
         if (request.dynamic) return;
@@ -618,21 +601,25 @@ class Noder {
   private collectionLocation(
     location: CheckedCollectionLocation,
     receiver: CheckedExpression,
-  ): IrCollectionLocation {
+  ): WritableExpr {
     if (location.kind === 'name') {
       if (!typesEqual(location.name.type, receiver.tv.type)) {
         return fatal('collection name location disagrees with receiver fact');
       }
-      return {
-        kind: CollectionLocationKind.Name,
-        name: this.nameOf(location.name),
-      };
+      return this.read(this.nameOf(location.name), receiver.expr.pos);
     }
     const field = this.structFieldStore(location);
     if (!typesEqual(location.field.type, receiver.tv.type)) {
       return fatal('collection field location disagrees with receiver fact');
     }
-    return {kind: CollectionLocationKind.StructField, ...field};
+    return {
+      kind: IrKind.FieldGet,
+      pos: receiver.expr.pos,
+      type: location.field.type,
+      qualifier: receiver.tv.qualifier,
+      x: field.object,
+      fieldIndex: field.fieldIndex,
+    };
   }
 
   private builtinOf(
@@ -693,14 +680,16 @@ class Noder {
     return expr;
   }
 
-  private read(name: IrName, pos: Pos): HistReadExpr {
+  private read(
+    name: IrName,
+    pos: Pos,
+  ): ReadExpr & {place: Extract<Place, {kind: typeof PlaceKind.Name}>} {
     return {
-      kind: IrKind.HistRead,
+      kind: IrKind.Read,
       pos,
       type: name.type,
       qualifier: name.qualifier,
       place: {kind: PlaceKind.Name, name},
-      offset: null,
     };
   }
 
@@ -721,40 +710,6 @@ class Noder {
     return this.constExpr(pos, type, NA_VALUE);
   }
 
-  private nativeExpectedType(
-    param: NativeParam,
-    resultType: Type,
-    nativeName: string | null = null,
-  ): Type | null {
-    if (typeof param.type !== 'string') {
-      if (
-        param.type.kind === 'type-param' ||
-        param.type.kind === 'array' ||
-        param.type.kind === 'matrix' ||
-        param.type.kind === 'map'
-      ) {
-        return null;
-      }
-      return param.type;
-    }
-    if (param.type === TypeRef.Num) {
-      return resultType.kind === TypeKind.Int ||
-        resultType.kind === TypeKind.Float
-        ? resultType
-        : FloatType;
-    }
-    if (param.type === TypeRef.Enum) {
-      return resultType.kind === TypeKind.Enum ? resultType : null;
-    }
-    if (param.type === TypeRef.Nullable) {
-      return FloatType;
-    }
-    if (param.type === TypeRef.Any && nativeName === 'str.tostring') {
-      return FloatType;
-    }
-    return null;
-  }
-
   // ---- statements -----------------------------------------------------------
 
   private nodeStmt(stmt: syntax.Stmt): IrStmt[] {
@@ -765,6 +720,37 @@ class Noder {
         return this.nodeDecl(stmt);
       case NodeKind.AssignStmt:
         return this.nodeAssign(stmt);
+      case NodeKind.EmitStmt: {
+        const column = this.info.emits.get(stmt);
+        if (column === undefined)
+          return fatal('unchecked emission reached the noder');
+        let output = this.outputOf.get(column);
+        if (output === undefined) {
+          this.checkExport(column.valueType, stmt.pos);
+          output = {...column};
+          this.outputOf.set(column, output);
+          this.outputs.push(output);
+        }
+        return [
+          {
+            kind: IrKind.Emit,
+            pos: stmt.pos,
+            output,
+            value: this.nodeExpr(stmt.value, output.valueType),
+          },
+        ];
+      }
+      case NodeKind.ReturnStmt:
+        return [
+          {
+            kind: IrKind.Return,
+            pos: stmt.pos,
+            value:
+              stmt.value === null
+                ? null
+                : this.nodeExpr(stmt.value, this.returnType),
+          },
+        ];
       case NodeKind.FuncDecl:
       case NodeKind.InterfaceDecl:
       case NodeKind.StructDecl:
@@ -789,31 +775,12 @@ class Noder {
       const resolved = this.info.calls.get(call);
       if (resolved?.kind === CallKind.Native) {
         if (resolved.native.effect === Effect.Declaration) {
-          this.nodeDeclarationCall(resolved);
-          return [];
-        }
-        if (resolved.native.effect === Effect.Output) {
-          this.nodeOutputCall(call, resolved);
           return [];
         }
         if (resolved.native.effect === Effect.Param) {
           this.ensureParam(call, resolved, null);
           return [];
         }
-        if (resolved.native.effect === Effect.Emit) {
-          return [this.nodeEffectCall(call, resolved)];
-        }
-      }
-      if (resolved?.kind === CallKind.Output) {
-        this.nodeOutput(call, resolved);
-        return [];
-      }
-      if (
-        resolved?.kind === CallKind.Function &&
-        resolved.instance.output !== null
-      ) {
-        this.nodeOutputTemplate(call, resolved);
-        return [];
       }
     }
     const tv = this.tvOf(stmt.x);
@@ -859,16 +826,8 @@ class Noder {
 
     const init = this.nodeExpr(d.init, name.type);
 
-    // `p = plot(...)` (or an alias of it) binds the name to the output
-    // declaration: refs resolve at bind time, never per bar.
-    if (init.kind === IrKind.OutputRef && rebindable && d.mode === Mode.None) {
-      this.program.outputRefs.set(object, init.output);
-      return [];
-    }
-
     if (
-      init.kind === IrKind.HistRead &&
-      init.offset === null &&
+      init.kind === IrKind.Read &&
       init.place.kind !== PlaceKind.Name &&
       // Keep an unsupported dynamic request materialized until the recursive
       // fail-closed support check reports it; never project it as an alias.
@@ -883,7 +842,15 @@ class Noder {
     if (name.storage === Storage.Var || name.storage === Storage.Varip) {
       return [{kind: IrKind.InitName, pos: d.pos, name, value: init}];
     }
-    return [{kind: IrKind.WriteName, pos: d.pos, name, value: init}];
+    return [
+      {
+        kind: IrKind.Assign,
+        pos: d.pos,
+        target: this.read(name, d.pos),
+        value: init,
+        op: null,
+      },
+    ];
   }
 
   private nodeTupleDecl(
@@ -907,18 +874,20 @@ class Noder {
     };
     const stmts: IrStmt[] = [
       {
-        kind: IrKind.WriteName,
+        kind: IrKind.Assign,
         pos: d.pos,
-        name: temp,
+        target: this.read(temp, d.pos),
+        op: null,
         value: this.nodeExpr(d.init, initTv.type),
       },
     ];
     pattern.elems.forEach((elem, i) => {
       const name = this.nameOf(this.variableDef(elem));
       stmts.push({
-        kind: IrKind.WriteName,
+        kind: IrKind.Assign,
         pos: elem.pos,
-        name,
+        target: this.read(name, elem.pos),
+        op: null,
         value: {
           kind: IrKind.TupleGet,
           pos: elem.pos,
@@ -933,40 +902,33 @@ class Noder {
   }
 
   private nodeAssign(a: syntax.AssignStmt): IrStmt[] {
-    if (a.target.kind === NodeKind.Name) {
-      const name = this.nameOf(this.variableUse(a.target));
-      const value = this.nodeExpr(a.value, name.type);
-      const base = ASSIGN_BASE_OP[a.op];
-      const written =
-        a.op === AssignOp.Define || base === undefined
-          ? value
-          : ({
-              kind: IrKind.Binary,
-              pos: a.pos,
-              type: name.type,
-              qualifier: joinQualifiers(name.qualifier, value.qualifier),
-              op: mapBinaryOp(base),
-              x: this.read(name, a.pos),
-              y: value,
-            } as const);
-      return [{kind: IrKind.WriteName, pos: a.pos, name, value: written}];
-    }
-    if (a.target.kind === NodeKind.SelectorExpr) {
-      const target = this.info.updates.get(a);
-      if (target === undefined) {
-        return fatal('unchecked struct field store reached the noder');
-      }
-      const field = this.structFieldStore(target);
-      return [
-        {
-          kind: IrKind.StoreField,
-          pos: a.pos,
-          ...field,
-          value: this.nodeExpr(a.value, target.field.type),
-        },
-      ];
-    }
-    return fatal('invalid assignment target reached the noder');
+    const base = ASSIGN_BASE_OP[a.op];
+    let target: WritableExpr;
+    if (a.target.kind === NodeKind.Name)
+      target = this.read(this.nameOf(this.variableUse(a.target)), a.target.pos);
+    else if (a.target.kind === NodeKind.SelectorExpr) {
+      const checked = this.info.updates.get(a);
+      if (checked === undefined)
+        return fatal('unchecked assignment target reached the noder');
+      const field = this.structFieldStore(checked);
+      target = {
+        kind: IrKind.FieldGet,
+        pos: a.target.pos,
+        type: checked.field.type,
+        qualifier: Qualifier.Series,
+        x: field.object,
+        fieldIndex: field.fieldIndex,
+      };
+    } else return fatal('invalid assignment target reached the noder');
+    return [
+      {
+        kind: IrKind.Assign,
+        pos: a.pos,
+        target,
+        value: this.nodeExpr(a.value, target.type),
+        op: base === undefined ? null : mapBinaryOp(base),
+      },
+    ];
   }
 
   // ---- expressions ----------------------------------------------------------
@@ -1035,13 +997,13 @@ class Noder {
       }
       case NodeKind.CondExpr:
         return {
-          kind: IrKind.Cond,
+          kind: IrKind.IfExpr,
           pos: e.pos,
           type: tv.type,
           qualifier: tv.qualifier,
           cond: this.nodeExpr(e.cond),
-          then: this.nodeExpr(e.then, tv.type),
-          else: this.nodeExpr(e.else, tv.type),
+          then: this.blockify(e.then, tv.type),
+          else: this.blockify(e.else, tv.type),
         };
       case NodeKind.CallExpr:
         return this.nodeCall(e, tv);
@@ -1060,8 +1022,6 @@ class Noder {
             ),
           ),
         };
-      case NodeKind.ArgumentObjectExpr:
-        return fatal('contextual argument object reached ordinary noding');
       case NodeKind.ParenExpr:
         return this.nodeExpr(e.x, tv.type);
       case NodeKind.IfExpr:
@@ -1142,7 +1102,7 @@ class Noder {
     }
   }
 
-  // A Name or Selector read: context builtin, param/output reference binding,
+  // A Name or Selector read: context builtin, parameter binding,
   // struct-value field, or a plain name read.
   private nodePlaceRead(
     e: syntax.Name | syntax.SelectorExpr,
@@ -1160,50 +1120,33 @@ class Noder {
               }
             : fatal(`constant builtin '${builtin.name}' reached place noding`);
       return {
-        kind: IrKind.HistRead,
+        kind: IrKind.Read,
         pos: e.pos,
         type: tv.type,
         qualifier: tv.qualifier,
         place,
-        offset: null,
       };
     }
     if (e.kind === NodeKind.Name) {
       const object = this.variableUse(e);
-      const substitution = this.outputSubstitutions?.get(object);
-      if (substitution !== undefined) {
-        return this.nodeChecked(substitution, tv.type);
-      }
       const param = this.paramRefs.get(object);
       if (param !== undefined) {
         return {
-          kind: IrKind.HistRead,
+          kind: IrKind.Read,
           pos: e.pos,
           type: tv.type,
           qualifier: tv.qualifier,
           place: {kind: PlaceKind.Param, param},
-          offset: null,
-        };
-      }
-      const output = this.program.outputRefs.get(object);
-      if (output !== undefined) {
-        return {
-          kind: IrKind.OutputRef,
-          pos: e.pos,
-          type: tv.type,
-          qualifier: tv.qualifier,
-          output,
         };
       }
       const alias = this.program.aliasRefs.get(object);
       if (alias !== undefined) {
         return {
-          kind: IrKind.HistRead,
+          kind: IrKind.Read,
           pos: e.pos,
           type: tv.type,
           qualifier: tv.qualifier,
           place: alias,
-          offset: null,
         };
       }
       return this.read(this.nameOf(object), e.pos);
@@ -1253,9 +1196,6 @@ class Noder {
       };
     }
     if (resolved.kind === CallKind.Function) {
-      if (resolved.instance.output !== null) {
-        return this.nodeOutputTemplate(c, resolved);
-      }
       const func = this.funcOf(resolved.instance);
       const args = resolved.instance.params.map((param, i) => {
         const provided = resolved.args[i];
@@ -1271,53 +1211,18 @@ class Noder {
         args,
         argumentEvaluationOrder: resolved.argumentEvaluationOrder,
       };
-      switch (func.callMode) {
-        case 'free':
-          if (resolved.receiver !== null) {
-            return fatal(
-              `free function '${func.name}' has a checked method receiver`,
-            );
-          }
-          return {kind: IrKind.CallFunc, ...base, func};
-        case 'const-method': {
-          if (resolved.receiver?.mode !== 'const') {
-            return fatal(
-              `const method '${func.name}' lacks a checked const receiver`,
-            );
-          }
-          return {
-            kind: IrKind.CallConstMethod,
-            ...base,
-            func,
-            receiver: this.nodeChecked(
-              resolved.receiver.value,
-              func.receiver.type,
-            ),
-          };
-        }
-        case 'mutable-method': {
-          if (resolved.receiver?.mode !== 'mutable') {
-            return fatal(
-              `mutable method '${func.name}' lacks a checked receiver`,
-            );
-          }
-          return {
-            kind: IrKind.CallMutableMethod,
-            ...base,
-            func,
-            receiver: this.nodeChecked(
-              resolved.receiver.value,
-              func.receiver.type,
-            ),
-          };
-        }
-      }
+      return {
+        kind: IrKind.CallFunc,
+        ...base,
+        func,
+        receiver:
+          resolved.receiver === null
+            ? null
+            : this.nodeChecked(resolved.receiver.value),
+      };
     }
     if (resolved.kind === CallKind.Request) {
       return this.nodeRequest(c, resolved, tv);
-    }
-    if (resolved.kind === CallKind.Output) {
-      return this.nodeOutput(c, resolved);
     }
     if (!typesEqual(resolved.resultType, tv.type)) {
       return fatal(
@@ -1348,15 +1253,20 @@ class Noder {
       }
       const lowered = this.nodeNativeArgs(c, resolved, 1);
       return {
-        kind: IrKind.MutateCollection,
+        kind: IrKind.CallNative,
         pos: c.pos,
         type: tv.type,
         qualifier: tv.qualifier,
-        location: this.collectionLocation(
+        receiver: this.collectionLocation(
           resolved.receiver.location,
           resolved.receiver.value,
         ),
-        operation: resolved.native.name,
+        native: {
+          name: resolved.native.name,
+          argTypes: resolved.argTypes.slice(1, lowered.args.length + 1),
+          resultType: resolved.resultType,
+          effect: resolved.native.runtimeEffect,
+        },
         args: lowered.args,
         argumentEvaluationOrder: lowered.argumentEvaluationOrder,
       };
@@ -1365,16 +1275,13 @@ class Noder {
       case Effect.Param: {
         const param = this.ensureParam(c, resolved, null);
         return {
-          kind: IrKind.HistRead,
+          kind: IrKind.Read,
           pos: c.pos,
           type: tv.type,
           qualifier: tv.qualifier,
           place: {kind: PlaceKind.Param, param},
-          offset: null,
         };
       }
-      case Effect.Output:
-        return this.nodeOutputCall(c, resolved);
       case Effect.Request:
         return fatal('request native lacks request semantics');
       case Effect.Emit:
@@ -1390,8 +1297,13 @@ class Noder {
           pos: c.pos,
           type: tv.type,
           qualifier: tv.qualifier,
-          native: resolved.native.name,
-          slot: resolved.native.stateful ? this.mintSlot() : null,
+          native: {
+            name: resolved.native.name,
+            argTypes: resolved.argTypes.slice(0, lowered.args.length),
+            resultType: resolved.resultType,
+            effect: resolved.native.runtimeEffect,
+          },
+          receiver: null,
           args: lowered.args,
           argumentEvaluationOrder: lowered.argumentEvaluationOrder,
         };
@@ -1450,10 +1362,17 @@ class Noder {
   // the noder never invents a hidden Name for a computed expression.
   private nodeHistory(e: syntax.HistoryExpr, tv: TypeAndValue): IrExpr {
     const offset = this.nodeExpr(e.offset, IntType);
-    const x = this.nodeExpr(e.x, tv.type);
+    const binding = unwrapExpr(e.x);
     if (
-      x.kind === IrKind.HistRead &&
-      x.offset === null &&
+      binding.kind !== NodeKind.Name &&
+      binding.kind !== NodeKind.SelectorExpr
+    )
+      return fatal('non-binding history operand reached the noder');
+    // A specialized parameter's current value may fold, but its history still
+    // belongs to the binding and retains the callee's independently written state.
+    const x = this.nodePlaceRead(binding, this.tvOf(binding));
+    if (
+      x.kind === IrKind.Read &&
       // Keep an unsupported dynamic request materialized until the recursive
       // fail-closed support check reports it; never project history past it.
       !(x.place.kind === PlaceKind.Request && x.place.request.dynamic)
@@ -1725,9 +1644,10 @@ class Noder {
     const childPackageGlobals: IrName[] = [];
     const childBody: IrStmt[] = [
       {
-        kind: IrKind.WriteName,
+        kind: IrKind.Assign,
         pos: captureExpr.pos,
-        name: resultName,
+        target: this.read(resultName, captureExpr.pos),
+        op: null,
         value: childValue,
       },
     ];
@@ -1739,7 +1659,6 @@ class Noder {
       params: [],
       requests: childContext.requests,
       outputs: [],
-      effects: childContext.effects,
       packageGlobals: childPackageGlobals,
       init: [],
       body: childBody,
@@ -1781,14 +1700,13 @@ class Noder {
     c: syntax.CallExpr,
     edge: RequestEdge,
     tv: TypeAndValue,
-  ): HistReadExpr {
+  ): ReadExpr {
     return {
-      kind: IrKind.HistRead,
+      kind: IrKind.Read,
       pos: c.pos,
       type: tv.type,
       qualifier: tv.qualifier,
       place: {kind: PlaceKind.Request, request: edge},
-      offset: null,
     };
   }
 
@@ -1821,6 +1739,8 @@ class Noder {
     const savedInfo = this.info;
     const savedFrame = this.frame;
     const savedNesting = this.nesting;
+    const savedReturnType = this.returnType;
+    this.returnType = instance.resultType;
     this.info = instance.info;
     const paramSet = new Set(instance.params);
     const localObjects = [...new Set(instance.info.defs.values())].filter(
@@ -1858,6 +1778,7 @@ class Noder {
       resultQualifier: instance.resultQualifier,
       body,
     };
+    this.returnType = savedReturnType;
     const declarationReceiver = instance.template.receiver;
     let func: IrFunc;
     if (declarationReceiver === null) {
@@ -1896,7 +1817,7 @@ class Noder {
     return this.nodeChecked(dflt, expectedType);
   }
 
-  // ---- params and outputs ---------------------------------------------------
+  // ---- parameters ----------------------------------------------------------
 
   private ensureParam(
     c: syntax.CallExpr,
@@ -2032,267 +1953,6 @@ class Noder {
     return param;
   }
 
-  // indicator()/strategy(): script metadata is an emission to the host,
-  // modeled as an OutputDecl with the declaration's effect name.
-  private nodeDeclarationCall(resolved: NativeCall): void {
-    this.outputs.push(this.partitionOutput(resolved).output);
-  }
-
-  private nodeOutputCall(
-    c: syntax.CallExpr,
-    resolved: NativeCall,
-  ): OutputRefExpr {
-    const {output, emitArgs, emitArgumentEvaluationOrder} =
-      this.partitionOutput(resolved);
-    this.outputs.push(output);
-    if (emitArgs.length > 0) {
-      this.emitted.push({
-        kind: IrKind.Emit,
-        pos: c.pos,
-        output,
-        args: emitArgs,
-        argumentEvaluationOrder: emitArgumentEvaluationOrder,
-      });
-    }
-    const tv = this.tvOf(c);
-    return {
-      kind: IrKind.OutputRef,
-      pos: c.pos,
-      type: tv.type,
-      qualifier: Qualifier.Const,
-      output,
-    };
-  }
-
-  private nodeOutput(c: syntax.CallExpr, resolved: OutputCall): OutputRefExpr {
-    const primary = this.outputOperand(resolved.value);
-    this.checkExport(primary.tv.type, c.pos);
-    const staticArgs: {name: string; value: ConstValue}[] = [];
-    const bindArgs: {name: string; expr: IrExpr}[] = [];
-    const channels: {name: string; type: Type}[] = [];
-    const emitArgs: IrExpr[] = [];
-    const bindIndexByOperand = new Map<number, number>();
-    const channelIndexByOperand = new Map<number, number>();
-    const primaryName = resolved.outputKind === 'plot' ? 'series' : 'value';
-
-    if (primary.tv.value !== null) {
-      staticArgs.push({name: primaryName, value: primary.tv.value});
-    } else {
-      const expr = this.nodeChecked(primary, resolved.value.tv.type);
-      if (
-        expr.kind === IrKind.OutputRef ||
-        qualifierLE(primary.tv.qualifier, Qualifier.Input)
-      ) {
-        bindIndexByOperand.set(0, bindArgs.length);
-        bindArgs.push({name: primaryName, expr});
-      } else {
-        channelIndexByOperand.set(0, emitArgs.length);
-        channels.push({name: primaryName, type: resolved.value.tv.type});
-        emitArgs.push(expr);
-      }
-    }
-
-    resolved.args.forEach((arg, index) => {
-      const operand = index + 1;
-      const value = this.outputOperand(arg.value);
-      this.checkExport(value.tv.type, c.pos);
-      const tv = value.tv;
-      if (tv.value !== null) {
-        staticArgs.push({name: arg.name, value: tv.value});
-        return;
-      }
-      const expr = this.nodeChecked(value, arg.value.tv.type);
-      if (
-        expr.kind === IrKind.OutputRef ||
-        qualifierLE(tv.qualifier, Qualifier.Input)
-      ) {
-        bindIndexByOperand.set(operand, bindArgs.length);
-        bindArgs.push({name: arg.name, expr});
-        return;
-      }
-      channelIndexByOperand.set(operand, emitArgs.length);
-      channels.push({name: arg.name, type: arg.value.tv.type});
-      emitArgs.push(expr);
-    });
-
-    const bindArgumentEvaluationOrder = resolved.argumentEvaluationOrder
-      .map(index => bindIndexByOperand.get(index))
-      .filter((index): index is number => index !== undefined);
-    const emitArgumentEvaluationOrder = resolved.argumentEvaluationOrder
-      .map(index => channelIndexByOperand.get(index))
-      .filter((index): index is number => index !== undefined);
-    if (bindArgumentEvaluationOrder.length !== bindArgs.length) {
-      return fatal(
-        `output '${resolved.outputKind}' lost a bind-argument evaluation-order entry`,
-      );
-    }
-    if (emitArgumentEvaluationOrder.length !== emitArgs.length) {
-      return fatal(
-        `output '${resolved.outputKind}' lost a channel evaluation-order entry`,
-      );
-    }
-
-    const output: OutputDecl = {
-      effect: resolved.outputKind,
-      staticArgs,
-      bindArgs,
-      bindArgumentEvaluationOrder,
-      channels,
-    };
-    this.outputs.push(output);
-    if (emitArgs.length > 0) {
-      this.emitted.push({
-        kind: IrKind.Emit,
-        pos: c.pos,
-        output,
-        args: emitArgs,
-        argumentEvaluationOrder: emitArgumentEvaluationOrder,
-      });
-    }
-    return {
-      kind: IrKind.OutputRef,
-      pos: c.pos,
-      type: resolved.resultType,
-      qualifier: Qualifier.Const,
-      output,
-    };
-  }
-
-  private outputOperand(checked: CheckedExpression): CheckedExpression {
-    if (this.outputSubstitutions === null) {
-      return checked;
-    }
-    const expr = unwrapExpr(checked.expr);
-    if (expr.kind !== NodeKind.Name) {
-      return checked;
-    }
-    const object = checked.info.uses.get(expr);
-    return object?.kind === ObjectKind.Variable
-      ? (this.outputSubstitutions.get(object) ?? checked)
-      : checked;
-  }
-
-  private nodeOutputTemplate(
-    c: syntax.CallExpr,
-    resolved: FunctionCall,
-  ): OutputRefExpr {
-    const template = resolved.instance.output;
-    if (template === null) {
-      return fatal(
-        `function '${resolved.instance.name}' has no output template`,
-      );
-    }
-    const substitutions = new Map<VariableObject, CheckedExpression>();
-    resolved.instance.params.forEach((parameter, index) => {
-      const provided = resolved.args[index];
-      if (provided !== null) {
-        substitutions.set(parameter, {
-          expr: provided,
-          info: this.info,
-          tv: this.tvOf(provided),
-        });
-        return;
-      }
-      const dflt = resolved.instance.defaults.get(index);
-      if (dflt === undefined) {
-        return fatal(
-          `output wrapper '${resolved.instance.name}' lacks default ${index}`,
-        );
-      }
-      substitutions.set(parameter, dflt);
-    });
-
-    const parameterIndex = new Map(
-      resolved.instance.params.map((parameter, index) => [parameter, index]),
-    );
-    const includedArgs = template.resolution.args.filter(arg => {
-      if (arg.value.tv.value !== null) {
-        return true;
-      }
-      const expr = unwrapExpr(arg.value.expr);
-      if (expr.kind !== NodeKind.Name) {
-        return fatal('non-parameter output template operand reached noder');
-      }
-      const object = arg.value.info.uses.get(expr);
-      if (object?.kind !== ObjectKind.Variable) {
-        return fatal('non-parameter output template binding reached noder');
-      }
-      const index = parameterIndex.get(object);
-      return index === undefined
-        ? fatal('output template parameter lacks a caller index')
-        : resolved.args[index] !== null;
-    });
-    const operandByParameter = new Map<VariableObject, number>();
-    const operands = [
-      template.resolution.value,
-      ...includedArgs.map(arg => arg.value),
-    ];
-    operands.forEach((operand, index) => {
-      if (operand.tv.value !== null) {
-        return;
-      }
-      const expr = unwrapExpr(operand.expr);
-      if (expr.kind !== NodeKind.Name) {
-        return fatal('non-parameter output template operand reached noder');
-      }
-      const object = operand.info.uses.get(expr);
-      if (
-        object?.kind !== ObjectKind.Variable ||
-        !resolved.instance.params.includes(object)
-      ) {
-        return fatal('non-parameter output template binding reached noder');
-      }
-      operandByParameter.set(object, index);
-    });
-    const argumentEvaluationOrder = resolved.argumentEvaluationOrder
-      .map(index => operandByParameter.get(resolved.instance.params[index]))
-      .filter((index): index is number => index !== undefined);
-
-    const saved = this.outputSubstitutions;
-    this.outputSubstitutions = substitutions;
-    const output = this.nodeOutput(c, {
-      ...template.resolution,
-      args: includedArgs,
-      argumentEvaluationOrder,
-    });
-    this.outputSubstitutions = saved;
-    return output;
-  }
-
-  private nodeEffectCall(
-    c: syntax.CallExpr,
-    resolved: NativeCall,
-  ): EmitEffectStmt {
-    let effect = this.program.effectsByCall.get(resolved);
-    if (effect === undefined) {
-      const payloadType = resolved.argTypes[0];
-      if (payloadType === undefined) {
-        return fatal('effect.emit lacks its checked payload type');
-      }
-      this.checkExport(payloadType, c.pos);
-      effect = {
-        payloadType,
-        sourcePosition: c.pos,
-      };
-      this.program.effectsByCall.set(resolved, effect);
-      this.program.effects.push(effect);
-    }
-    const lowered = this.nodeNativeArgs(c, resolved);
-    if (
-      lowered.args.length !== 1 ||
-      lowered.argumentEvaluationOrder.length !== 1 ||
-      lowered.argumentEvaluationOrder[0] !== 0
-    ) {
-      return fatal('effect.emit lost its single payload evaluation contract');
-    }
-    return {
-      kind: IrKind.EmitEffect,
-      pos: c.pos,
-      effect,
-      payload: lowered.args[0],
-    };
-  }
-
   // Arrow schemas are finite trees. Recursive references remain valid inside
   // the program, but exporting one must fail before a backend is selected.
   private checkExport(type: Type, pos: Pos): void {
@@ -2327,77 +1987,6 @@ class Noder {
       );
     }
   }
-
-  // Split a declarative call's provided args into the three buckets:
-  // compile-time constants (staticArgs), bind-time exprs (bindArgs: at most
-  // input-qualified, plus output refs), and per-bar channels fed by Emit.
-  private partitionOutput(resolved: NativeCall): {
-    output: OutputDecl;
-    emitArgs: IrExpr[];
-    emitArgumentEvaluationOrder: number[];
-  } {
-    const staticArgs: {name: string; value: ConstValue}[] = [];
-    const bindArgs: {name: string; expr: IrExpr}[] = [];
-    const channels: {
-      name: string;
-      type: OutputDecl['channels'][number]['type'];
-    }[] = [];
-    const emitArgs: IrExpr[] = [];
-    const bindIndexByArgument = new Map<number, number>();
-    const channelIndexByArgument = new Map<number, number>();
-    resolved.args.forEach((arg, i) => {
-      if (arg === null) {
-        return;
-      }
-      const param =
-        resolved.native.params[Math.min(i, resolved.native.params.length - 1)];
-      const tv = this.tvOf(arg);
-      this.checkExport(tv.type, arg.pos);
-      if (tv.value !== null) {
-        staticArgs.push({name: param.name, value: tv.value});
-        return;
-      }
-      const expr = this.nodeExpr(arg, this.nativeExpectedType(param, tv.type));
-      if (
-        expr.kind === IrKind.OutputRef ||
-        qualifierLE(tv.qualifier, Qualifier.Input)
-      ) {
-        bindIndexByArgument.set(i, bindArgs.length);
-        bindArgs.push({name: param.name, expr});
-        return;
-      }
-      channels.push({name: param.name, type: tv.type});
-      channelIndexByArgument.set(i, emitArgs.length);
-      emitArgs.push(expr);
-    });
-    const bindArgumentEvaluationOrder = resolved.argumentEvaluationOrder
-      .map(index => bindIndexByArgument.get(index))
-      .filter((index): index is number => index !== undefined);
-    if (bindArgumentEvaluationOrder.length !== bindArgs.length) {
-      return fatal(
-        `output '${resolved.native.name}' lost a bind-argument evaluation-order entry`,
-      );
-    }
-    const emitArgumentEvaluationOrder = resolved.argumentEvaluationOrder
-      .map(index => channelIndexByArgument.get(index))
-      .filter((index): index is number => index !== undefined);
-    if (emitArgumentEvaluationOrder.length !== emitArgs.length) {
-      return fatal(
-        `output '${resolved.native.name}' lost a channel evaluation-order entry`,
-      );
-    }
-    return {
-      output: {
-        effect: resolved.native.name,
-        staticArgs,
-        bindArgs,
-        bindArgumentEvaluationOrder,
-        channels,
-      },
-      emitArgs,
-      emitArgumentEvaluationOrder,
-    };
-  }
 }
 
 // A static request nested in a UDF may read compilation-global bind-known
@@ -2413,9 +2002,8 @@ function rootNameBindEvaluable(
     return true;
   }
   switch (expr.kind) {
-    case IrKind.HistRead:
+    case IrKind.Read:
       return (
-        expr.offset === null &&
         expr.place.kind === PlaceKind.Name &&
         !frameNames.has(expr.place.name) &&
         qualifierLE(expr.place.name.qualifier, Qualifier.Simple)
@@ -2427,14 +2015,22 @@ function rootNameBindEvaluable(
       );
     case IrKind.Unary:
       return rootNameBindEvaluable(expr.x, frameNames);
-    case IrKind.Cond:
+    case IrKind.IfExpr:
       return (
         rootNameBindEvaluable(expr.cond, frameNames) &&
         rootNameBindEvaluable(expr.then, frameNames) &&
-        rootNameBindEvaluable(expr.else, frameNames)
+        (expr.else === null || rootNameBindEvaluable(expr.else, frameNames))
+      );
+    case IrKind.BlockExpr:
+      return (
+        expr.stmts.length === 0 &&
+        (expr.value === null || rootNameBindEvaluable(expr.value, frameNames))
       );
     case IrKind.CallNative:
-      return expr.args.every(arg => rootNameBindEvaluable(arg, frameNames));
+      return (
+        expr.native.effect === 'pure' &&
+        expr.args.every(arg => rootNameBindEvaluable(arg, frameNames))
+      );
     default:
       return false;
   }

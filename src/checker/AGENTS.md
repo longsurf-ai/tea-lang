@@ -49,20 +49,10 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   or such a direct struct field. Mutating a struct body never marks a syntactic
   root Name reassigned. The checker owns these semantic locations but no Heap
   slot, transaction, or persistence policy.
-- The catalog lists a builtin only if it is inexpressible in Tea. All of
-  `ta.*` and the flattened visual `plot` wrapper are Tea source compiled by
-  the ordinary pipeline; only generic `output(value, kind, args={...})` owns
-  dense-output declaration semantics. `OutputCall` preserves per-field facts,
-  and direct-tail output wrappers elaborate at their callers so written calls
-  own distinct declarations. A new builtin family is a catalog entry plus at
-  most a noding policy, never new checker architecture.
-- `strategy(title, shorttitle?, overlay?)` is a script header: when present it
-  is the first source statement, appears exactly once, and excludes
-  `indicator()` and `library()`. Its arguments stay ordinary declaration
-  catalog policy; broker and portfolio configuration never enters this call.
-  The execution package is named `trade`, so the header needs no import-name
-  exception. No lifecycle call order is checker policy.
-- Qualifier propagation takes the later-known operand: expression results
+- The catalog lists a builtin only if it is inexpressible in Tea. Visual functions are ordinary Tea source that build nominal values and emit them under explicit const-string IDs. The only header is `library()`; `indicator()`, `strategy()`, `output()`, and `effect.emit()` have no special function definitions.
+- `Info.emits` records each checked emission's column facts. A post-check reachable-call walk canonicalizes names and checks Tea type identity and fixed set/append mode before Arrow. Plain columns have exactly one static writer path and cannot repeat within a step; multiple append writers are permitted. Each call occurrence counts independently, including omitted defaults and loops. Validation-only method instances do not create columns and defer unknown const name values.
+- Explicit returns and retained tail-return sugar share one function result. Check every returned value and reachable fallthrough; returning branches do not contribute a value to their surrounding expression. Main has no required return; source return statements belong to functions.
+- Qualifier propagation- Qualifier propagation takes the later-known operand: expression results
   join their operands, native results follow the catalog (`'join'` or a
   fixed qualifier), control structures yield series, and writes join the
   enclosing flow qualifier (loop bodies join series). Struct construction,
@@ -99,13 +89,13 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   separate scopes may reuse the same spelling.
 - User-function and nested-method declarations bind as semantic templates;
   calls stencil one `FunctionInstance` per
-  `(FunctionObject, concrete type + qualifier signature)` (memoized),
+  `(FunctionObject, concrete type + qualifier + folded constant value signature)` (memoized),
   independent of any physical Program. Imported polymorphic free-function
   bodies follow this same lazy rule: package elaboration predeclares the
   canonical templates and resolves every written parameter annotation as part
   of the complete public type API, but does not invent a body instance before
   a concrete call signature exists. Each instance
-  owns its explicit source-parameter objects and `Info`. A method instance also
+  owns its explicit source-parameter objects and `Info`; unmodified parameters retain folded const scalar arguments for ordinary constant-name forwarding. A method instance also
   owns exactly one synthetic `this` receiver object, separate from its source
   signature, params, defaults, and argument order. `this` is valid only as the
   receiver base of field/method selection. Mutable methods accept any struct

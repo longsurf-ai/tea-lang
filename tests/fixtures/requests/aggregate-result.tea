@@ -1,7 +1,7 @@
 // Purpose: Checker-rejection fixture for a Heap-backed request result that cannot cross an isolated child-Heap boundary.
 
 //@version=1
-indicator("aggregate request result")
+
 
 type ChildSnapshot
     array<int> values
@@ -29,7 +29,7 @@ historicalChildRow = if bar_index > 1
 else
     -1
 
-plot(currentValue, "current array value")
-plot(historicalValue, "historical array value")
-plot(currentChildRow, "current struct field")
-plot(historicalChildRow, "historical struct field")
+emit "output0" currentValue
+emit "output1" historicalValue
+emit "output2" currentChildRow
+emit "output3" historicalChildRow

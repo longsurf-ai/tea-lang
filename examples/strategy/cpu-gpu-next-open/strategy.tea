@@ -1,7 +1,7 @@
 //@version=1
 // A deterministic next-open strategy for the JavaScript runtime. The
 // deliberately large rates keep the three-bar result easy to verify by hand.
-strategy("Next-open strategy", shorttitle="Next open", overlay=false)
+
 
 import broker
 import portfolio
@@ -38,12 +38,12 @@ if bar_index == 2
 expired = strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
-plot(metrics.cash, "cash")
-plot(metrics.positionQuantity, "position quantity")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.totalFees, "total fees")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round-trip count")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(na(expired) or na(expired.pending) ? 0 : expired.pending.id, "expired order id")
+plot("cash", metrics.cash, "cash")
+plot("position quantity", metrics.positionQuantity, "position quantity")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("total fees", metrics.totalFees, "total fees")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round-trip count", metrics.roundTripCount, "round-trip count")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("expired order id", na(expired) or na(expired.pending) ? 0 : expired.pending.id, "expired order id")

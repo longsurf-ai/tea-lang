@@ -1,7 +1,7 @@
 // Purpose: Aggregate-layout projection tests — layouts remain exact, nominal, deterministic, and finite through collection recursion.
 
 import {describe, expect, test} from 'vitest';
-import {DepthKind, IrKind, Storage, type Name} from '../ir/node';
+import {DepthKind, IrKind, PlaceKind, Storage, type Name} from '../ir/node';
 import type {Program} from '../ir/program';
 import {RUNTIME_ABI_VERSION} from '../runtime/module-abi';
 import {
@@ -84,14 +84,20 @@ describe('aggregate layout projection', () => {
       params: [],
       requests: [],
       outputs: [],
-      effects: [],
       packageGlobals: [],
       init: [],
       body: [
         {
-          kind: IrKind.WriteName,
+          kind: IrKind.Assign,
           pos,
-          name: root,
+          target: {
+            kind: IrKind.Read,
+            pos,
+            type: root.type,
+            qualifier: root.qualifier,
+            place: {kind: PlaceKind.Name, name: root},
+          },
+          op: null,
           value: {
             kind: IrKind.NewStruct,
             pos,

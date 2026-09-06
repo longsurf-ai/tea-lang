@@ -18,7 +18,7 @@ describe('WGSL numeric ranges', () => {
   test('accepts compile-, bind-, and row-time bounds with both directions', () => {
     const artifact = compile(
       [
-        'indicator("runtime ranges")',
+        '',
         'limit = input.int(4)',
         'step = input.int(1)',
         'defaulted = for i = 0 to 2',
@@ -34,7 +34,7 @@ describe('WGSL numeric ranges', () => {
         '    i',
         'rowBound = for i = bar_index to bar_index',
         '    i',
-        'plot(close + defaulted + bound + descending + rowBound)',
+        'emit "output0" close + defaulted + bound + descending + rowBound',
       ].join('\n'),
     );
     const source = artifact.module.source;
@@ -52,11 +52,11 @@ describe('WGSL numeric ranges', () => {
     const effectFree = compileProgramToWgsl(
       mustBuild(
         [
-          'strategy("dynamic effect-free loop")',
+          '',
           'var int total = 0',
           'for i = 0 to bar_index',
           '    total += i',
-          'plot(close + total)',
+          'emit "output0" close + total',
         ].join('\n'),
       ),
     );
@@ -65,10 +65,10 @@ describe('WGSL numeric ranges', () => {
     const boundedEffect = compileProgramToWgsl(
       mustBuild(
         [
-          'strategy("bounded effect loop")',
+          '',
           'for i = 0 to 2',
-          '    effect.emit(i)',
-          'plot(close)',
+          '    emit.append "effect0" i',
+          'emit "output0" close',
         ].join('\n'),
       ),
     );
@@ -77,10 +77,10 @@ describe('WGSL numeric ranges', () => {
     const dynamicEffect = compileProgramToWgsl(
       mustBuild(
         [
-          'strategy("dynamic effect loop")',
+          '',
           'for i = 0 to bar_index',
-          '    effect.emit(i)',
-          'plot(close)',
+          '    emit.append "effect0" i',
+          'emit "output0" close',
         ].join('\n'),
       ),
     );
@@ -95,7 +95,7 @@ describe('WGSL core math natives', () => {
   test('lowers nullable int/float abs, max, min, and floor', () => {
     const artifact = compile(
       [
-        'indicator("core math")',
+        '',
         'minimum = input.int(-2147483648)',
         'huge = input.float(2147483648.0)',
         'float missing = na',
@@ -106,7 +106,7 @@ describe('WGSL core math natives', () => {
         'floorInt = math.floor(bar_index)',
         'floorFloat = math.floor(close)',
         'floorHuge = math.floor(huge)',
-        'plot(close + absoluteInt + absoluteFloat + maximum + minimumValue + floorInt + floorFloat + floorHuge)',
+        'emit "output0" close + absoluteInt + absoluteFloat + maximum + minimumValue + floorInt + floorFloat + floorHuge',
       ].join('\n'),
     );
     const source = artifact.module.source;

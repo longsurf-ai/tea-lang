@@ -17,8 +17,8 @@ const node = tea`
   if na(peak) or close > peak
       peak := close
 
-  plot(peak, "Peak")
-  plot(close - peak, "Drawdown")
+  plot("Peak", peak, "Peak")
+  plot("Drawdown", close - peak, "Drawdown")
 `;
 
 node.bind(source);

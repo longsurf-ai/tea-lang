@@ -10,7 +10,9 @@ import {
   IrOp,
   PlaceKind,
   Storage,
-  type WriteNameStmt,
+  type AssignStmt,
+  type ReadExpr,
+  type Place,
 } from '../ir/node';
 import {MergeMode, ParamConstraintKind, ParamDefaultKind} from '../ir/program';
 import {TypeKind, isNaValue} from '../ir/type';
@@ -30,6 +32,10 @@ import {parse} from '../syntax/syntax';
 import {buildProgram} from './noder';
 import {buildText, mustBuild} from './testing';
 import {DEFAULT_MAX_BARS_BACK} from './depth';
+
+type NameAssign = AssignStmt & {
+  target: ReadExpr & {place: Extract<Place, {kind: typeof PlaceKind.Name}>};
+};
 
 function mustBuildWithLibraries(
   source: string,
@@ -79,13 +85,13 @@ describe('declarations', () => {
     const program = mustBuild('x = close + 1\nvar acc = 0.0\nacc := acc + x');
     // Persistent initialization stays at the declaration's lexical site.
     expect(program.body.map(stmt => stmt.kind)).toEqual([
-      IrKind.WriteName,
+      IrKind.Assign,
       IrKind.InitName,
-      IrKind.WriteName,
+      IrKind.Assign,
     ]);
-    const write = program.body[0] as WriteNameStmt;
-    expect(write.kind).toBe(IrKind.WriteName);
-    expect(write.name.name).toBe('x');
+    const write = program.body[0] as NameAssign;
+    expect(write.kind).toBe(IrKind.Assign);
+    expect(write.target.place.name.name).toBe('x');
     const acc = namesOf(program).find(n => n.name === 'acc');
     expect(acc).toBeDefined();
     expect(acc!.storage).toBe(Storage.Var);
@@ -98,7 +104,7 @@ describe('declarations', () => {
   test('const declarations vanish; reads fold', () => {
     const program = mustBuild('const k = 4\nx = close * k');
     expect(namesOf(program).map(n => n.name)).toEqual(['x']);
-    const write = program.body[0] as WriteNameStmt;
+    const write = program.body[0] as NameAssign;
     const mul = write.value;
     expect(mul.kind).toBe(IrKind.Binary);
     if (mul.kind === IrKind.Binary) {
@@ -108,26 +114,23 @@ describe('declarations', () => {
 
   test('compound assignment desugars to the binary op', () => {
     const program = mustBuild('a = 0.0\na += close');
-    const write = program.body[1] as WriteNameStmt;
-    expect(write.kind).toBe(IrKind.WriteName);
-    const value = write.value;
-    expect(value.kind).toBe(IrKind.Binary);
-    if (value.kind === IrKind.Binary) {
-      expect(value.op).toBe(IrOp.Add);
-      expect(value.x.kind).toBe(IrKind.HistRead);
-    }
+    const write = program.body[1] as NameAssign;
+    expect(write.kind).toBe(IrKind.Assign);
+    expect(write.op).toBe(IrOp.Add);
+    expect(write.target.kind).toBe(IrKind.Read);
+    expect(write.value.kind).toBe(IrKind.Read);
   });
 
   test('tuple declarations desugar through a temp and TupleGet', () => {
     const program = mustBuild('[a, b] = [close, open]\ns = a + b');
     const kinds = program.body.map(s => s.kind);
     expect(kinds).toEqual([
-      IrKind.WriteName, // $tuple temp
-      IrKind.WriteName, // a
-      IrKind.WriteName, // b
-      IrKind.WriteName, // s
+      IrKind.Assign, // $tuple temp
+      IrKind.Assign, // a
+      IrKind.Assign, // b
+      IrKind.Assign, // s
     ]);
-    const second = program.body[1] as WriteNameStmt;
+    const second = program.body[1] as NameAssign;
     expect(second.value.kind).toBe(IrKind.TupleGet);
   });
 
@@ -143,10 +146,11 @@ describe('declarations', () => {
       ].join('\n'),
     );
     const writes = program.body.filter(
-      (stmt): stmt is WriteNameStmt => stmt.kind === IrKind.WriteName,
+      (stmt): stmt is NameAssign =>
+        stmt.kind === IrKind.Assign && stmt.target.kind === IrKind.Read,
     );
     const xValues = writes
-      .filter(write => write.name.name === 'x')
+      .filter(write => write.target.place.name.name === 'x')
       .map(write => write.value);
     expect(xValues).toHaveLength(2);
     for (const value of xValues) {
@@ -157,13 +161,15 @@ describe('declarations', () => {
       }
     }
 
-    const y = writes.find(write => write.name.name === 'y')!.value;
-    expect(y.kind).toBe(IrKind.Cond);
-    if (y.kind === IrKind.Cond) {
+    const y = writes.find(write => write.target.place.name.name === 'y')!.value;
+    expect(y.kind).toBe(IrKind.IfExpr);
+    if (y.kind === IrKind.IfExpr) {
       expect(y.then.type.kind).toBe(TypeKind.Float);
     }
     for (const name of ['z', 'isMissing', 'asText']) {
-      const call = writes.find(write => write.name.name === name)!.value;
+      const call = writes.find(
+        write => write.target.place.name.name === name,
+      )!.value;
       expect(call.kind).toBe(IrKind.CallNative);
       if (call.kind === IrKind.CallNative) {
         expect(call.args[0].type.kind).toBe(TypeKind.Float);
@@ -193,7 +199,8 @@ describe('structs', () => {
     );
 
     const writes = program.body.filter(
-      (stmt): stmt is WriteNameStmt => stmt.kind === IrKind.WriteName,
+      (stmt): stmt is NameAssign =>
+        stmt.kind === IrKind.Assign && stmt.target.kind === IrKind.Read,
     );
     expect(writes[0].value.kind).toBe(IrKind.NewStruct);
     expect(
@@ -227,7 +234,7 @@ describe('structs', () => {
       ].join('\n'),
     );
     expect(program.requests[0].child.body[0]).toMatchObject({
-      kind: IrKind.WriteName,
+      kind: IrKind.Assign,
       value: {
         kind: IrKind.FieldGet,
         fieldIndex: 0,
@@ -252,18 +259,16 @@ describe('structs', () => {
       ].join('\n'),
     );
     expect(program.body[1]).toMatchObject({
-      kind: IrKind.StoreField,
-      object: {
+      kind: IrKind.Assign,
+      target: {
         kind: IrKind.FieldGet,
+        x: {kind: IrKind.FieldGet, fieldIndex: 0, x: {kind: IrKind.Read}},
         fieldIndex: 0,
-        x: {kind: IrKind.HistRead},
       },
-      owner: {name: 'Point'},
-      fieldIndex: 0,
       value: {kind: IrKind.Const, value: 3},
     });
     expect(program.body[2]).toMatchObject({
-      kind: IrKind.WriteName,
+      kind: IrKind.Assign,
       value: {
         kind: IrKind.FieldGet,
         fieldIndex: 0,
@@ -279,19 +284,25 @@ describe('structs', () => {
     expect(program.body[1]).toMatchObject({
       kind: IrKind.ExprStmt,
       x: {
-        kind: IrKind.MutateCollection,
-        operation: 'array.push',
-        location: {kind: 'name', name: {name: 'xs'}},
+        kind: IrKind.CallNative,
+        native: {name: 'array.push', effect: 'write'},
+        receiver: {
+          kind: IrKind.Read,
+          place: {kind: PlaceKind.Name, name: {name: 'xs'}},
+        },
         args: [{kind: IrKind.Const, value: 3}],
       },
     });
     expect(program.body[2]).toMatchObject({
-      kind: IrKind.WriteName,
-      name: {name: 'last'},
+      kind: IrKind.Assign,
+      target: {kind: IrKind.Read, place: {name: {name: 'last'}}},
       value: {
-        kind: IrKind.MutateCollection,
-        operation: 'array.pop',
-        location: {kind: 'name', name: {name: 'xs'}},
+        kind: IrKind.CallNative,
+        native: {name: 'array.pop', effect: 'write'},
+        receiver: {
+          kind: IrKind.Read,
+          place: {kind: PlaceKind.Name, name: {name: 'xs'}},
+        },
         args: [],
       },
     });
@@ -313,12 +324,11 @@ describe('structs', () => {
       receiver: {name: 'this'},
       params: [{name: 'value'}],
       body: {
-        kind: IrKind.MutateCollection,
-        operation: 'array.push',
-        location: {
-          kind: 'struct-field',
-          object: {kind: IrKind.HistRead},
-          owner: {name: 'Foo'},
+        kind: IrKind.CallNative,
+        native: {name: 'array.push', effect: 'write'},
+        receiver: {
+          kind: IrKind.FieldGet,
+          x: {kind: IrKind.Read},
           fieldIndex: 0,
         },
       },
@@ -329,9 +339,9 @@ describe('structs', () => {
     expect(program.body[1]).toMatchObject({
       kind: IrKind.ExprStmt,
       x: {
-        kind: IrKind.CallMutableMethod,
+        kind: IrKind.CallFunc,
         func: append,
-        receiver: {kind: IrKind.HistRead},
+        receiver: {kind: IrKind.Read},
         args: [{kind: IrKind.Const, value: 2}],
       },
     });
@@ -357,11 +367,11 @@ describe('structs', () => {
       expect(inspect.params).not.toContain(inspect.receiver);
     }
     expect(program.body[1]).toMatchObject({
-      kind: IrKind.WriteName,
+      kind: IrKind.Assign,
       value: {
-        kind: IrKind.CallConstMethod,
+        kind: IrKind.CallFunc,
         func: inspect,
-        receiver: {kind: IrKind.HistRead},
+        receiver: {kind: IrKind.Read},
         args: [
           {kind: IrKind.Const, value: 1},
           {kind: IrKind.Const, value: 2},
@@ -449,7 +459,7 @@ describe('params and outputs', () => {
       options: [1, 2],
     });
     expect(count.active).toMatchObject({
-      kind: IrKind.HistRead,
+      kind: IrKind.Read,
       place: {kind: PlaceKind.Param, param: enabled},
     });
     expect(ratio.constraints).toEqual({
@@ -476,145 +486,65 @@ describe('params and outputs', () => {
     });
   });
 
-  test('outputs partition into static, bind, and channel args', () => {
+  test('plain emit preserves raw scalar type and named column identity', () => {
     const program = mustBuild(
-      'p1 = plot(high, "High")\np2 = plot(low, "Low")\nfill(p1, p2)',
+      'emit "value" close\nemit.append "events" 1\nemit.append "events" 2',
     );
-    expect(program.outputs.length).toBe(3);
-    const [high, , fill] = program.outputs;
-    expect(high.staticArgs).toEqual([{name: 'title', value: 'High'}]);
-    expect(high.channels).toEqual([{name: 'series', type: {kind: 'Float'}}]);
-    // fill's plot refs resolve through the bound names into bindArgs.
-    expect(fill.bindArgs.map(b => b.name)).toEqual(['plot1', 'plot2']);
-    expect(fill.bindArgs[0].expr.kind).toBe(IrKind.OutputRef);
-    // Each plotted series emits per bar.
-    const emits = program.body.filter(s => s.kind === IrKind.Emit);
-    expect(emits.length).toBe(2);
+    expect(
+      program.outputs.map(output => [
+        output.name,
+        output.mode,
+        output.valueType.kind,
+      ]),
+    ).toEqual([
+      ['value', 'set', TypeKind.Float],
+      ['events', 'append', TypeKind.Int],
+    ]);
+    const emits = program.body.filter(stmt => stmt.kind === IrKind.Emit);
+    expect(emits).toHaveLength(3);
+    expect(emits[1].output).toBe(emits[2].output);
   });
 
-  test('generic output preserves declaration refs and partitions object fields', () => {
+  test('plot and fill are ordinary functions producing visual values', () => {
     const program = mustBuild(
-      [
-        'width = input.int(2)',
-        'tone = close > open ? color.green : color.red',
-        'p = output(',
-        '    close,',
-        '    kind="plot",',
-        '    args={title: "Close", color: tone, linewidth: width})',
-        'fill(p, p)',
-      ].join('\n'),
+      'p = plot("high", high)\nq = plot("low", low)\nfill("area", p, q)',
     );
-
-    expect(program.outputs).toHaveLength(2);
-    const [plot, fill] = program.outputs;
-    expect(plot.effect).toBe('plot');
-    expect(plot.staticArgs).toEqual([{name: 'title', value: 'Close'}]);
-    expect(plot.bindArgs.map(arg => arg.name)).toEqual(['linewidth']);
-    expect(plot.channels).toEqual([
-      {name: 'series', type: {kind: TypeKind.Float}},
-      {name: 'color', type: {kind: TypeKind.Color}},
-    ]);
-    expect(fill.bindArgs.map(arg => arg.expr.kind)).toEqual([
-      IrKind.OutputRef,
-      IrKind.OutputRef,
-    ]);
-    expect(program.body.filter(stmt => stmt.kind === IrKind.Emit)).toHaveLength(
-      1,
-    );
-  });
-
-  test('Tea output wrappers elaborate one caller-owned declaration per call site', () => {
-    const program = mustBuild(
-      [
-        'draw(series float value, const string title) =>',
-        '    output(value, kind="plot", args={title: title})',
-        'first = draw(close, "Close")',
-        'second = draw(open, "Open")',
-        'fill(first, second)',
-      ].join('\n'),
-    );
-
-    expect(program.outputs.map(output => output.effect)).toEqual([
-      'plot',
-      'plot',
-      'fill',
+    expect(program.outputs.map(output => output.name)).toEqual([
+      'high',
+      'low',
+      'area',
     ]);
     expect(
-      program.outputs.slice(0, 2).map(output => output.staticArgs),
-    ).toEqual([
-      [{name: 'title', value: 'Close'}],
-      [{name: 'title', value: 'Open'}],
-    ]);
-    expect(program.outputs[2].bindArgs.map(arg => arg.expr.kind)).toEqual([
-      IrKind.OutputRef,
-      IrKind.OutputRef,
-    ]);
-    expect(funcsOf(program).some(func => func.name === 'draw')).toBe(false);
-  });
-
-  test('output channels retain named-argument source evaluation order', () => {
-    const program = mustBuild(
-      [
-        'type Counter',
-        '    array<int> values',
-        '    int next() =>',
-        '        value = this.values.size()',
-        '        this.values.push(value)',
-        '        value',
-        '    color nextColor() =>',
-        '        this.values.push(9)',
-        '        color.red',
-        'counter = Counter.new(array.new<int>())',
-        'plot(color = counter.nextColor(), series = counter.next())',
-      ].join('\n'),
+      program.outputs.every(
+        output =>
+          output.mode === 'set' && output.valueType.kind === TypeKind.Struct,
+      ),
+    ).toBe(true);
+    expect(funcsOf(program).filter(func => func.name === 'plot')).toHaveLength(
+      2,
     );
-    const emit = program.body.find(stmt => stmt.kind === IrKind.Emit);
-    expect(emit?.kind).toBe(IrKind.Emit);
-    if (emit?.kind === IrKind.Emit) {
-      expect(emit.output.channels.map(channel => channel.name)).toEqual([
-        'series',
-        'color',
-      ]);
-      expect(emit.argumentEvaluationOrder).toEqual([1, 0]);
-    }
+    expect(program.body.every(stmt => stmt.kind !== IrKind.Emit)).toBe(true);
   });
 
-  test('simple context-builtin output values remain per-bar channels', () => {
-    const program = mustBuild('plot(timeframe.multiplier)');
-    const [plot] = program.outputs;
-    expect(plot.bindArgs).toEqual([]);
-    expect(plot.channels).toEqual([
-      {name: 'series', type: {kind: TypeKind.Int}},
+  test('constant and simple emitted values still have execution statements', () => {
+    const program = mustBuild(
+      'emit "literal" 1\nemit "context" timeframe.multiplier',
+    );
+    expect(program.outputs.map(output => output.valueType.kind)).toEqual([
+      TypeKind.Int,
+      TypeKind.Int,
     ]);
     expect(program.body.filter(stmt => stmt.kind === IrKind.Emit)).toHaveLength(
-      1,
+      2,
     );
-  });
-
-  test('a shadowed write does not disable an outer output reference', () => {
-    const program = mustBuild(
-      [
-        'p = plot(high)',
-        'q = plot(low)',
-        'shadow = if true',
-        '    p = 0',
-        '    p := 1',
-        '    p',
-        'fill(p, q)',
-      ].join('\n'),
-    );
-    const fill = program.outputs[2];
-    expect(fill.bindArgs.map(arg => arg.expr.kind)).toEqual([
-      IrKind.OutputRef,
-      IrKind.OutputRef,
-    ]);
-    expect(namesOf(program).filter(name => name.name === 'p')).toHaveLength(1);
   });
 });
 
 describe('history', () => {
   test('history uses a direct binding without synthesizing a hidden name', () => {
-    const program = mustBuild('source = high + low\nx = source[2]\nplot(x)');
+    const program = mustBuild(
+      'source = high + low\nx = source[2]\nemit "output0" x',
+    );
     const source = namesOf(program).find(name => name.name === 'source');
     expect(source?.depth).toEqual({kind: DepthKind.Const, bars: 2});
     expect(namesOf(program).some(name => name.name.startsWith('$hist@'))).toBe(
@@ -623,11 +553,14 @@ describe('history', () => {
   });
 
   test('history forces otherwise-foldable and typed-na variables into state', () => {
-    const literal = mustBuild('source = 1\nx = source[1]\nplot(x)');
+    const literal = mustBuild('source = 1\nx = source[1]\nemit "output0" x');
     expect(namesOf(literal).some(name => name.name === 'source')).toBe(true);
     expect(
       literal.body.some(
-        stmt => stmt.kind === IrKind.WriteName && stmt.name.name === 'source',
+        stmt =>
+          stmt.kind === IrKind.Assign &&
+          stmt.target.kind === IrKind.Read &&
+          stmt.target.place.name.name === 'source',
       ),
     ).toBe(true);
 
@@ -660,7 +593,7 @@ describe('history', () => {
         '    src := 1.0',
         '    src',
         'prev = src[1]',
-        'plot(prev)',
+        'emit "output0" prev',
       ].join('\n'),
     );
     const close = seriesInputsOf(program).find(series => series.id === 'close');
@@ -675,12 +608,12 @@ describe('depth resolution', () => {
   test('const, bound, dynamic, and mixed demands resolve per place', () => {
     const program = mustBuild(
       [
-        'indicator("d", max_bars_back=300)',
+        '',
         'lookback = input.int(20)',
         'a = high[3]',
         'b = low[lookback]',
         'c = open[bar_index % 5]',
-        'plot(a + b + c)',
+        'emit "output0" a + b + c',
       ].join('\n'),
     );
     const byId = new Map(seriesInputsOf(program).map(s => [s.id, s]));
@@ -690,7 +623,7 @@ describe('depth resolution', () => {
     const open = byId.get('open')!.depth;
     expect(open.kind).toBe(DepthKind.Capped);
     if (open.kind === DepthKind.Capped) {
-      expect(open.bars).toMatchObject({kind: IrKind.Const, value: 300});
+      expect(open.bars).toMatchObject({kind: IrKind.Const, value: 500});
     }
   });
 
@@ -701,7 +634,7 @@ describe('depth resolution', () => {
         'len = input.int(1000)',
         'alias = identity(len) + 0',
         'base = close * 1',
-        'plot(base[alias])',
+        'emit "output0" base[alias]',
       ].join('\n'),
     );
     const base = namesOf(program).find(name => name.name === 'base');
@@ -710,13 +643,15 @@ describe('depth resolution', () => {
 
   test('a simple builtin remains an exact bound depth', () => {
     const program = mustBuild(
-      ['length = timeframe.multiplier', 'plot(close[length])'].join('\n'),
+      ['length = timeframe.multiplier', 'emit "output0" close[length]'].join(
+        '\n',
+      ),
     );
     const close = seriesInputsOf(program).find(series => series.id === 'close');
     expect(close?.depth).toMatchObject({
       kind: DepthKind.Bound,
       expr: {
-        kind: IrKind.HistRead,
+        kind: IrKind.Read,
         place: {kind: PlaceKind.Builtin},
       },
     });
@@ -732,7 +667,7 @@ describe('depth resolution', () => {
         '    base[alias]',
         'else',
         '    na',
-        'plot(value)',
+        'emit "output0" value',
       ].join('\n'),
     );
     const base = namesOf(program).find(name => name.name === 'base')!;
@@ -740,7 +675,7 @@ describe('depth resolution', () => {
     if (base.depth.kind === DepthKind.Bound) {
       expect(base.depth.expr).toMatchObject({
         kind: IrKind.Binary,
-        x: {kind: IrKind.HistRead, place: {kind: PlaceKind.Param}},
+        x: {kind: IrKind.Read, place: {kind: PlaceKind.Param}},
       });
     }
   });
@@ -750,7 +685,7 @@ describe('depth resolution', () => {
       [
         'offset(int value) => value',
         'len = input.int(1000)',
-        'plot(close[offset(len)])',
+        'emit "output0" close[offset(len)]',
       ].join('\n'),
     );
     const close = seriesInputsOf(program).find(
@@ -771,7 +706,7 @@ describe('depth resolution', () => {
         'sample(int length) =>',
         '    alias = length + 0',
         '    close[alias]',
-        'plot(sample(input.int(2)) + sample(input.int(1000)))',
+        'emit "output0" sample(input.int(2)) + sample(input.int(1000))',
       ].join('\n'),
     );
     const close = seriesInputsOf(program).find(
@@ -781,11 +716,11 @@ describe('depth resolution', () => {
     if (close.depth.kind === DepthKind.Bound) {
       expect(close.depth.expr).toMatchObject({
         kind: IrKind.CallNative,
-        native: 'math.max',
+        native: {name: 'math.max'},
         args: expect.arrayContaining([
           expect.objectContaining({
             kind: IrKind.CallNative,
-            native: '$historyDepth',
+            native: expect.objectContaining({name: '$historyDepth'}),
           }),
         ]),
       });
@@ -799,14 +734,14 @@ describe('depth resolution', () => {
         'sample(int length) =>',
         '    base = close * 1',
         '    base[offset(length)]',
-        'plot(sample(input.int(1000)))',
+        'emit "output0" sample(input.int(1000))',
       ].join('\n'),
     );
     const base = namesOf(program).find(name => name.name === 'base')!;
     expect(base.depth.kind).toBe(DepthKind.Bound);
     if (base.depth.kind === DepthKind.Bound) {
       expect(base.depth.expr).toMatchObject({
-        kind: IrKind.HistRead,
+        kind: IrKind.Read,
         place: {kind: PlaceKind.Param},
       });
     }
@@ -827,7 +762,7 @@ describe('depth resolution', () => {
     expect(close?.depth.kind).toBe(DepthKind.Bound);
     if (close?.depth.kind === DepthKind.Bound) {
       expect(close.depth.expr).toMatchObject({
-        kind: IrKind.HistRead,
+        kind: IrKind.Read,
         place: {kind: PlaceKind.Param, param: {name: 'length'}},
       });
     }
@@ -839,7 +774,7 @@ describe('depth resolution', () => {
         'short = input.int(2)',
         'long = input.int(1000)',
         'base = close * 1',
-        'plot(base[short] + base[long] + base[1200])',
+        'emit "output0" base[short] + base[long] + base[1200]',
       ].join('\n'),
     );
     const base = namesOf(program).find(name => name.name === 'base')!;
@@ -847,13 +782,13 @@ describe('depth resolution', () => {
     if (base.depth.kind === DepthKind.Bound) {
       expect(base.depth.expr).toMatchObject({
         kind: IrKind.CallNative,
-        native: 'math.max',
+        native: {name: 'math.max'},
       });
       expect(JSON.stringify(base.depth.expr)).toContain('1200');
     }
 
     const invalid = mustBuild(
-      'base = close * 1\nplot(base[2] + base[9007199254740992])',
+      'base = close * 1\nemit "output0" base[2] + base[9007199254740992]',
     );
     const invalidBase = namesOf(invalid).find(name => name.name === 'base')!;
     expect(invalidBase.depth).toEqual({kind: DepthKind.Const, bars: 2});
@@ -865,8 +800,8 @@ describe('depth resolution', () => {
         'length = input.int(1000)',
         'base = close * 1',
         'other = close * 1',
-        'plot(base[length] + base[bar_index % 2])',
-        'plot(other[1200] + other[bar_index % 2])',
+        'emit "output0" base[length] + base[bar_index % 2]',
+        'emit "output1" other[1200] + other[bar_index % 2]',
       ].join('\n'),
     );
     const base = namesOf(program).find(name => name.name === 'base')!;
@@ -874,7 +809,7 @@ describe('depth resolution', () => {
     if (base.depth.kind === DepthKind.Bound) {
       expect(base.depth.expr).toMatchObject({
         kind: IrKind.CallNative,
-        native: 'math.max',
+        native: {name: 'math.max'},
       });
       expect(JSON.stringify(base.depth.expr)).toContain(
         String(DEFAULT_MAX_BARS_BACK),
@@ -888,7 +823,7 @@ describe('depth resolution', () => {
   });
 
   test('the engine default cap applies without a declaration cap', () => {
-    const program = mustBuild('c = close[bar_index % 5]\nplot(c)');
+    const program = mustBuild('c = close[bar_index % 5]\nemit "output0" c');
     const close = seriesInputsOf(program).find(s => s.id === 'close')!;
     expect(close.depth).toMatchObject({
       kind: DepthKind.Capped,
@@ -903,7 +838,7 @@ describe('depth resolution', () => {
         'deep = request.security("A", "D", length[100])',
         'shallow = request.security("B", "D", length[20])',
         'root = length[2]',
-        'plot(deep + shallow + root)',
+        'emit "output0" deep + shallow + root',
       ].join('\n'),
     );
     expect(program.params[0].depth).toEqual({
@@ -916,17 +851,17 @@ describe('depth resolution', () => {
 describe('function stencils', () => {
   test('one func per signature; each call site mints its own slot', () => {
     const program = mustBuild(
-      'fast = ta.ema(close, 9)\nslow = ta.ema(close, 21)\nplot(fast - slow)',
+      'fast = ta.ema(close, 9)\nslow = ta.ema(close, 21)\nemit "output0" fast - slow',
     );
     const funcs = funcsOf(program);
-    expect(funcs.map(f => f.name)).toEqual(['ta.ema']);
+    expect(funcs.map(f => f.name)).toEqual(['ta.ema', 'ta.ema']);
     // Two ema call sites in the program frame → slots 0 and 1.
     expect(slotCountOf(program)).toBe(2);
   });
 
   test('different signatures stencil separately', () => {
     const program = mustBuild(
-      'a = ta.sma(close, 10)\nb = ta.sma(close, input.int(10))\nplot(a + b)',
+      'a = ta.sma(close, 10)\nb = ta.sma(close, input.int(10))\nemit "output0" a + b',
     );
     // (series float, const int) and (series float, input int).
     expect(funcsOf(program).map(f => f.name)).toEqual(['ta.sma', 'ta.sma']);
@@ -934,7 +869,7 @@ describe('function stencils', () => {
 
   test('var locals and param history are frame state', () => {
     const program = mustBuild(
-      'x = ta.ema(close, 9)\ny = ta.sma(close, 10)\nplot(x + y)',
+      'x = ta.ema(close, 9)\ny = ta.sma(close, 10)\nemit "output0" x + y',
     );
     const varLocals = namesOf(program).filter(n => n.storage === Storage.Var);
     expect(varLocals.map(n => n.name)).toEqual(['e']);
@@ -952,7 +887,7 @@ describe('function stencils', () => {
         '    for i = 0 to length - 1',
         '        total += source[length - 1 - i]',
         '    total',
-        'plot(reverse_sum(close, input.int(5)))',
+        'emit "output0" reverse_sum(close, input.int(5))',
       ].join('\n'),
     );
     const func = funcsOf(program).find(f => f.name === 'reverse_sum')!;
@@ -968,7 +903,7 @@ describe('function stencils', () => {
         '        i := length + 10',
         '        total += source[i]',
         '    total',
-        'plot(mutated_index(close, input.int(5)))',
+        'emit "output0" mutated_index(close, input.int(5))',
       ].join('\n'),
     );
     const func = funcsOf(program).find(f => f.name === 'mutated_index')!;
@@ -976,7 +911,7 @@ describe('function stencils', () => {
   });
 
   test('prelude functions call each other through the prelude scope', () => {
-    const program = mustBuild('r = ta.rsi(close, 14)\nplot(r)');
+    const program = mustBuild('r = ta.rsi(close, 14)\nemit "output0" r');
     const names = funcsOf(program)
       .map(f => f.name)
       .sort();
@@ -989,12 +924,12 @@ describe('function stencils', () => {
         'clamp(float value, float lo = 0.0, float hi = 100.0) =>',
         '\tmath.min(math.max(value, lo), hi)',
         'c = clamp(close)',
-        'plot(c)',
+        'emit "output0" c',
       ].join('\n'),
     );
     const clamp = funcsOf(program)[0];
     expect(clamp.params.map(p => p.name)).toEqual(['value', 'lo', 'hi']);
-    const write = program.body[0] as WriteNameStmt;
+    const write = program.body[0] as NameAssign;
     expect(write.value.kind).toBe(IrKind.CallFunc);
     if (write.value.kind === IrKind.CallFunc) {
       expect(write.value.args.length).toBe(3);
@@ -1010,7 +945,7 @@ describe('requests', () => {
         'root = time + time_close + bar_index',
         'ticker = syminfo.tickerid',
         'child = request.security(ticker, "D", time)',
-        'plot(root + child)',
+        'emit "output0" root + child',
       ].join('\n'),
     );
     expect(seriesInputsOf(program)).toEqual([]);
@@ -1030,14 +965,14 @@ describe('requests', () => {
 
   test('a request compiles its expression into a child Program', () => {
     const program = mustBuild(
-      'd = request.security("AAPL", "D", close)\nplot(d)',
+      'd = request.security("AAPL", "D", close)\nemit "output0" d',
     );
     expect(program.requests.length).toBe(1);
     const edge = program.requests[0];
     expect(edge.merge.mode).toBe(MergeMode.Sample);
     expect(edge.resultName.name).toBe('$result');
     expect(edge.child.body.length).toBe(1);
-    expect(edge.child.body[0].kind).toBe(IrKind.WriteName);
+    expect(edge.child.body[0].kind).toBe(IrKind.Assign);
     // Context isolation: the child owns its close; the parent never reads
     // close directly here.
     expect(seriesInputsOf(edge.child).map(s => s.id)).toEqual(['close']);
@@ -1072,7 +1007,7 @@ describe('requests', () => {
     const edge = program.requests[0];
     expect(edge.optionArgumentEvaluationOrder).toEqual([3, 1, 0, 2]);
     expect(edge.merge.fill).toMatchObject({
-      kind: IrKind.HistRead,
+      kind: IrKind.Read,
       place: {kind: PlaceKind.Param},
     });
     expect(edge.merge.availability).toMatchObject({
@@ -1084,14 +1019,14 @@ describe('requests', () => {
       value: false,
     });
     expect(edge.merge.calcBarsCount).toMatchObject({
-      kind: IrKind.HistRead,
+      kind: IrKind.Read,
       place: {kind: PlaceKind.Param},
     });
   });
 
   test('parent history on the request result annotates the edge depth', () => {
     const program = mustBuild(
-      'd = request.security("AAPL", "D", close)\np = d[2]\nplot(p)',
+      'd = request.security("AAPL", "D", close)\np = d[2]\nemit "output0" p',
     );
     expect(program.requests[0].depth).toEqual({kind: DepthKind.Const, bars: 2});
   });
@@ -1101,7 +1036,7 @@ describe('requests', () => {
       [
         'len = input.int(9)',
         'd = request.security("AAPL", "D", ta.ema(close, len))',
-        'plot(d)',
+        'emit "output0" d',
       ].join('\n'),
     );
     expect(program.params.map(p => p.name)).toEqual(['len']);
@@ -1118,7 +1053,7 @@ describe('requests', () => {
         'read() => close[length]',
         'root = read()',
         'child = request.security("X", "D", read())',
-        'plot(root + child)',
+        'emit "output0" root + child',
       ].join('\n'),
     );
     const root = funcsOf(program).find(func => func.name === 'read');
@@ -1142,7 +1077,7 @@ describe('requests', () => {
         '\tbase[length]',
         'child = request.security("AAPL", "D", sample(close, input.int(1000)))',
         'root = sample(close, input.int(2))',
-        'plot(child + root)',
+        'emit "output0" child + root',
       ].join('\n'),
     );
     const parent = funcsOf(program).find(func => func.name === 'sample')!;
@@ -1156,7 +1091,7 @@ describe('requests', () => {
     expect(parent.locals[0].depth).toMatchObject({
       kind: DepthKind.Bound,
       expr: {
-        kind: IrKind.HistRead,
+        kind: IrKind.Read,
         place: {
           kind: PlaceKind.Param,
           param: {defaultValue: {kind: ParamDefaultKind.Const, value: 2}},
@@ -1166,7 +1101,7 @@ describe('requests', () => {
     expect(child.locals[0].depth).toMatchObject({
       kind: DepthKind.Bound,
       expr: {
-        kind: IrKind.HistRead,
+        kind: IrKind.Read,
         place: {
           kind: PlaceKind.Param,
           param: {defaultValue: {kind: ParamDefaultKind.Const, value: 1000}},
@@ -1197,7 +1132,7 @@ describe('requests', () => {
     expect(
       program.requests.map(edge => {
         const result = edge.child.body[0];
-        return result.kind === IrKind.WriteName ? result.value.type.kind : null;
+        return result.kind === IrKind.Assign ? result.value.type.kind : null;
       }),
     ).toEqual([TypeKind.Float, TypeKind.Int]);
   });
@@ -1216,7 +1151,7 @@ describe('requests', () => {
       [
         'fetch(string symbol) => request.security(symbol, "D", close)',
         'sym = input.string("X")',
-        'plot(fetch(sym))',
+        'emit "output0" fetch(sym)',
       ].join('\n'),
     );
     expect(local.program).toBeNull();
@@ -1230,7 +1165,7 @@ describe('requests', () => {
   test('request binding rejects series contexts but keeps simple builtins static', () => {
     const dynamic = buildText(
       [
-        'indicator("t", dynamic_requests=true)',
+        '',
         'rowSymbol = barstate.isfirst ? "X" : "Y"',
         'inline = request.security(barstate.isfirst ? "X" : "Y", "D", close)',
         'aliased = request.security(rowSymbol, "D", close)',
@@ -1268,7 +1203,7 @@ describe('requests', () => {
 
   test('script series variables cannot cross into captures', () => {
     const {program, errors} = buildText(
-      'x = close * 2\nd = request.security("A", "D", x)\nplot(d)',
+      'x = close * 2\nd = request.security("A", "D", x)\nemit "output0" d',
     );
     expect(program).toBeNull();
     expect(
@@ -1286,35 +1221,9 @@ describe('requests', () => {
 });
 
 describe('program surface', () => {
-  test('indicator() becomes a declaration output, not a body statement', () => {
-    const program = mustBuild('indicator("T", overlay=true)\nplot(close)');
-    expect(program.outputs[0].effect).toBe('indicator');
-    expect(program.outputs[0].staticArgs).toEqual([
-      {name: 'title', value: 'T'},
-      {name: 'overlay', value: true},
-    ]);
-    expect(program.body.every(s => s.kind === IrKind.Emit)).toBe(true);
-  });
-
-  test('strategy() reuses declaration noding with only minimal metadata', () => {
-    const program = mustBuild(
-      'strategy("Strategy", shorttitle="Short", overlay=true)',
-    );
-    expect(program.outputs).toHaveLength(1);
-    expect(program.outputs[0]).toMatchObject({
-      effect: 'strategy',
-      staticArgs: [
-        {name: 'title', value: 'Strategy'},
-        {name: 'shorttitle', value: 'Short'},
-        {name: 'overlay', value: true},
-      ],
-    });
-    expect(program.body).toEqual([]);
-  });
-
   test('version comes from the declared //@version', () => {
-    expect(mustBuild('//@version=1\nplot(close)').version).toBe(1);
-    expect(mustBuild('plot(close)').version).toBe(1);
+    expect(mustBuild('//@version=1\nemit "output0" close').version).toBe(1);
+    expect(mustBuild('emit "output0" close').version).toBe(1);
   });
 });
 
@@ -1323,23 +1232,23 @@ describe('sparse effects', () => {
     const program = mustBuild(
       [
         'emitValue(int value) =>',
-        '    effect.emit(value)',
+        '    emit.append "effect0" value',
         '    value',
         'first = emitValue(1)',
         'second = emitValue(2)',
       ].join('\n'),
     );
 
-    expect(program.effects).toHaveLength(1);
-    expect(program.effects[0].payloadType.kind).toBe(TypeKind.Int);
+    expect(program.outputs).toHaveLength(1);
+    expect(program.outputs[0].valueType.kind).toBe(TypeKind.Int);
     const emitters = funcsOf(program).filter(func => func.name === 'emitValue');
-    expect(emitters).toHaveLength(1);
+    expect(emitters).toHaveLength(2);
     expect(emitters[0].body.kind).toBe(IrKind.BlockExpr);
     if (emitters[0].body.kind === IrKind.BlockExpr) {
       const emission = emitters[0].body.stmts[0];
-      expect(emission.kind).toBe(IrKind.EmitEffect);
-      if (emission.kind === IrKind.EmitEffect) {
-        expect(emission.effect).toBe(program.effects[0]);
+      expect(emission.kind).toBe(IrKind.Emit);
+      if (emission.kind === IrKind.Emit) {
+        expect(emission.output).toBe(program.outputs[0]);
       }
     }
   });
@@ -1358,18 +1267,18 @@ describe('sparse effects', () => {
           '    string commandId',
           '    int barIndex',
           '    int publish() const =>',
-          '        effect.emit(Event.new(this.commandId, this.barIndex))',
+          '        emit.append "effect0" Event.new(this.commandId, this.barIndex)',
           '        this.barIndex',
         ].join('\n'),
       },
     );
 
-    expect(program.effects).toHaveLength(1);
-    expect(program.effects[0].payloadType.kind).toBe(TypeKind.Struct);
-    if (program.effects[0].payloadType.kind === TypeKind.Struct) {
-      expect(program.effects[0].payloadType.name).toBe('Event');
+    expect(program.outputs).toHaveLength(1);
+    expect(program.outputs[0].valueType.kind).toBe(TypeKind.Struct);
+    if (program.outputs[0].valueType.kind === TypeKind.Struct) {
+      expect(program.outputs[0].valueType.name).toBe('Event');
     }
-    expect(program.nominalIds.get(program.effects[0].payloadType)).toBe(
+    expect(program.nominalIds.get(program.outputs[0].valueType)).toBe(
       'events.Event',
     );
     const publish = funcsOf(program).find(
@@ -1378,7 +1287,7 @@ describe('sparse effects', () => {
     expect(publish?.callMode).toBe('const-method');
     expect(publish?.body.kind).toBe(IrKind.BlockExpr);
     if (publish?.body.kind === IrKind.BlockExpr) {
-      expect(publish.body.stmts[0].kind).toBe(IrKind.EmitEffect);
+      expect(publish.body.stmts[0].kind).toBe(IrKind.Emit);
     }
   });
 
@@ -1393,11 +1302,11 @@ describe('sparse effects', () => {
         'type Envelope<T: Identified>',
         '    T value',
         'event = Envelope.new(Order.new(7))',
-        'effect.emit(event)',
+        'emit.append "effect0" event',
       ].join('\n'),
     );
 
-    const payload = program.effects[0].payloadType;
+    const payload = program.outputs[0].valueType;
     expect(program.nominalIds.get(payload)).toBe(
       '@entry.Envelope<@entry.Order>',
     );
@@ -1412,16 +1321,14 @@ describe('sparse effects', () => {
     const source = [
       'type Event',
       '    int id',
-      'effect.emit(Event.new(1))',
+      'emit.append "effect0" Event.new(1)',
     ].join('\n');
     const ids = ['strategy.tea', './strategy.tea', '/tmp/strategy.tea'].map(
       filename => {
         const result = buildText(source, filename);
         expect(result.errors).toEqual([]);
         const program = result.program;
-        return (
-          program && program.nominalIds.get(program.effects[0].payloadType)
-        );
+        return program && program.nominalIds.get(program.outputs[0].valueType);
       },
     );
 
@@ -1438,8 +1345,8 @@ describe('Arrow export boundaries', () => {
     ].join('\n');
     expect(buildText(source).errors).toEqual([]);
     for (const emission of [
-      'effect.emit(branch)',
-      'output(branch, kind="tree", args={})',
+      'emit.append "effect0" branch',
+      'emit "tree" branch',
     ]) {
       expect(
         buildText(`${source}\n${emission}`).errors.map(error => error.msg),

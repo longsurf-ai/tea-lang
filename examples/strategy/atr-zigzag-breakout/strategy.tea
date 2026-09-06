@@ -1,7 +1,7 @@
 //@version=1
 // Clean-room ATR ZigZag breakout using Tea's canonical scalar broker,
 // portfolio, and deterministic OHLC path replay.
-strategy("ATR ZigZag breakout", shorttitle="ATR ZigZag", overlay=true)
+
 
 import broker
 import portfolio
@@ -196,16 +196,16 @@ if strat.position_quantity() == 0.0 and valid_profile
 strat.end_bar(close, barstate.islast)
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(base_long ? last_high_level : na, "candidate long")
-plot(base_short ? last_low_level : na, "candidate short")
-plot(metrics.positionQuantity != 0.0 ? active_stop : na, "active stop")
-plot(metrics.positionQuantity != 0.0 ? active_target : na, "active target")
-plot(metrics.positionQuantity, "signed position")
-plot(metrics.positionAveragePrice, "entry price")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("candidate long", base_long ? last_high_level : na, "candidate long")
+plot("candidate short", base_short ? last_low_level : na, "candidate short")
+plot("active stop", metrics.positionQuantity != 0.0 ? active_stop : na, "active stop")
+plot("active target", metrics.positionQuantity != 0.0 ? active_target : na, "active target")
+plot("signed position", metrics.positionQuantity, "signed position")
+plot("entry price", metrics.positionAveragePrice, "entry price")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

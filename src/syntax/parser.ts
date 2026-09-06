@@ -302,6 +302,30 @@ export class Parser {
       case Tok.Continue:
         this.next();
         return {kind: NodeKind.ContinueStmt, pos};
+      case Tok.Return:
+        this.next();
+        return {
+          kind: NodeKind.ReturnStmt,
+          pos,
+          value: [Tok.Newline, Tok.Dedent, Tok.Eof, Tok.Comma].includes(
+            this.tok() as never,
+          )
+            ? null
+            : this.expr(),
+        };
+      case Tok.Emit: {
+        this.next();
+        let append = false;
+        if (this.got(Tok.Dot)) {
+          const modifier = this.name();
+          if (modifier.value !== 'append')
+            this.error("expected 'append' after 'emit.'", modifier.pos);
+          append = true;
+        }
+        const name = this.primary();
+        const value = this.expr();
+        return {kind: NodeKind.EmitStmt, pos, name, value, append};
+      }
       case Tok.Lbrack:
         // `[a, b] = f()` declares; a bare `[a, b]` (a block's tuple value)
         // is an expression statement.
@@ -761,24 +785,6 @@ export class Parser {
         } while (this.got(Tok.Comma));
         this.want(Tok.Rbrack);
         return {kind: NodeKind.TupleExpr, pos, elems};
-      }
-      case Tok.Lbrace: {
-        this.next();
-        const fields: import('./nodes').ArgumentObjectField[] = [];
-        if (this.tok() !== Tok.Rbrace) {
-          do {
-            const name = this.name();
-            this.want(Tok.Colon);
-            fields.push({
-              kind: NodeKind.ArgumentObjectField,
-              pos: name.pos,
-              name,
-              value: this.expr(),
-            });
-          } while (this.got(Tok.Comma));
-        }
-        this.want(Tok.Rbrace);
-        return {kind: NodeKind.ArgumentObjectExpr, pos, fields};
       }
       default:
         this.error(`expected expression, found '${this.tok()}'`);

@@ -1,10 +1,10 @@
 //@version=1
-indicator("Request")
+
 
 len = input.int(9, "Length")
 
 daily = request.security(syminfo.tickerid, "D", ta.ema(close, len))
 gap = close - daily
 prev = daily[1]
-plot(gap, "Gap")
-plot(prev, "PrevDaily")
+emit "output0" gap
+emit "output1" prev

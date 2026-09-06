@@ -5,52 +5,63 @@
     "description": "Compile-through contract for the supported input family; the expected values follow directly from the committed defaults in source.tea.",
     "references": ["../../../../../docs/conformance.md"]
   },
-  "tolerance": {"absolute": 0, "relative": 0},
+  "tolerance": {
+    "absolute": 0,
+    "relative": 0
+  },
   "outputs": [
     {
-      "oid": 0,
-      "effect": "indicator",
-      "staticArgs": [["title", "Input family compile-through"]],
-      "boundArgs": [],
-      "channels": []
+      "name": "output0",
+      "type": "float"
     },
     {
-      "oid": 1,
-      "effect": "plot",
-      "staticArgs": [["title", "Result"]],
-      "boundArgs": [["color", "#2196F3"]],
-      "channels": [["series", "float"]]
+      "name": "output1",
+      "type": "float"
     },
     {
-      "oid": 2,
-      "effect": "plot",
-      "staticArgs": [["title", "Folded overflow"]],
-      "boundArgs": [],
-      "channels": [["series", "float"]]
-    },
-    {
-      "oid": 3,
-      "effect": "plot",
-      "staticArgs": [["title", "Dynamic overflow"]],
-      "boundArgs": [],
-      "channels": [["series", "float"]]
+      "name": "output2",
+      "type": "float"
     }
   ],
   "rows": [
     {
       "row": 0,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [8.5]},
-        {"oid": 2, "provisional": false, "channels": [null]},
-        {"oid": 3, "provisional": false, "channels": [null]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 8.5
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": null
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": null
+        }
       ]
     },
     {
       "row": 1,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [10]},
-        {"oid": 2, "provisional": false, "channels": [null]},
-        {"oid": 3, "provisional": false, "channels": [null]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 10
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": null
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": null
+        }
       ]
     }
   ],
@@ -198,8 +209,14 @@
             "enumType": {
               "name": "Mode",
               "members": [
-                {"name": "fast", "title": "Fast"},
-                {"name": "slow", "title": "Slow"}
+                {
+                  "name": "fast",
+                  "title": "Fast"
+                },
+                {
+                  "name": "slow",
+                  "title": "Slow"
+                }
               ]
             },
             "group": null,
@@ -379,8 +396,14 @@
             "enumType": {
               "name": "Mode",
               "members": [
-                {"name": "fast", "title": "Fast"},
-                {"name": "slow", "title": "Slow"}
+                {
+                  "name": "fast",
+                  "title": "Fast"
+                },
+                {
+                  "name": "slow",
+                  "title": "Slow"
+                }
               ]
             },
             "group": null,

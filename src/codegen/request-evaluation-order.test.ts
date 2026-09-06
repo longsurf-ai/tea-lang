@@ -13,7 +13,7 @@ describe('request context evaluation order', () => {
         '    timeframe = "TIMEFRAME_SENTINEL",',
         '    expression = close,',
         '    symbol = "SYMBOL_SENTINEL")',
-        'plot(d)',
+        'emit "output0" d',
       ].join('\n'),
     );
     const js = generate(program);
@@ -37,7 +37,7 @@ describe('request context evaluation order', () => {
           [
             'scalar = request.security("X", "D", close)',
             'window = request.security_lower_tf("X", "1", close)',
-            'plot(scalar + window.size())',
+            'emit "output0" scalar + window.size()',
           ].join('\n'),
         ),
       ),
@@ -76,7 +76,7 @@ describe('request context evaluation order', () => {
         '    ignore_invalid_symbol = ignore,',
         '    symbol = "SYMBOL_SENTINEL",',
         '    fill = fillValue)',
-        'plot(d)',
+        'emit "output0" d',
       ].join('\n'),
     );
     const edge = program.requests[0];
@@ -118,7 +118,7 @@ describe('request context evaluation order', () => {
       [
         'contextFill = syminfo.type == "stock" ? "sparse" : "carry"',
         'd = request.security("X", "D", close, fill = contextFill)',
-        'plot(d)',
+        'emit "output0" d',
       ].join('\n'),
     );
 
@@ -142,7 +142,7 @@ describe('request context evaluation order', () => {
     const valid = mustBuild(
       [
         'd = request.security(symbol = "X", timeframe = "D", expression = close)',
-        'plot(d)',
+        'emit "output0" d',
       ].join('\n'),
     );
     const invalidEdge = valid.requests[0] as unknown as {
@@ -159,7 +159,7 @@ describe('request context evaluation order', () => {
     const valid = mustBuild(
       [
         'd = request.security(symbol = "X", timeframe = "D", expression = close)',
-        'plot(d)',
+        'emit "output0" d',
       ].join('\n'),
     );
     const invalidEdge = valid.requests[0] as unknown as {
@@ -180,7 +180,7 @@ test('binding computes history retained by the parent request result', () => {
         [
           'length = input.int(2, minval=0)',
           'remote = request.security("X", "D", close)',
-          'plot(remote[length])',
+          'emit "output0" remote[length]',
         ].join('\n'),
       ),
     ),

@@ -36,7 +36,7 @@ reactive graph and each runtime it creates. `collections/`, `struct-storage.ts`,
   Frame locals/calls and output destinations. Generated functions use Value and
   Series methods; numeric storage IDs and concrete Step remain library internals.
 - Value captures before later operand effects. Arithmetic temporaries own no
-  history. Series.init is lazy, Series.set stages a write, and function calls
+  history. Series.init is lazy; needsInit/initialize allow a statement-level guard preserving a Tea return's function scope. Series.set stages a write, and function calls
   receive captured values. A history-bearing formal is copied into its own
   written call frame; separate written calls never share local state.
 - Struct field writes call require() before evaluating their right-hand side.
@@ -45,4 +45,4 @@ reactive graph and each runtime it creates. `collections/`, `struct-storage.ts`,
 
 - Ordinary outputs and events share Arrow-directed detached snapshots taken at emission. Public values use named records, Lists and Maps; mutable Heap identity remains internal. Successful provisional Heap behavior is unchanged.
 
-- StepResult contains one output-cell array aligned with the module Arrow schema. emit assigns record channels; append adds an ordinal/payload entry. Fixed builtin values replace the current input vector before normal history reads and commits, so the first historical read remains typed-empty.
+- StepResult contains one output-cell array aligned with the module Arrow schema. emit assigns one raw nullable value at most once; append adds one raw value in that column's execution order. Absence and explicit null share null; numeric NaN remains distinct. Fixed builtin values replace the current input vector before normal history reads and commits, so the first historical read remains typed-empty.

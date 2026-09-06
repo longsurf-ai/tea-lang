@@ -301,11 +301,11 @@ export type BrokerEmulator
 		stopValid = command.kind != CommandKind.entry or na(command.stop) or command.stop > 0.0
 		targetValid = command.kind != CommandKind.rebalance or not na(command.positionTarget) and not na(command.positionTarget.value) and (command.positionTarget.kind == PositionTargetKind.quantity or command.positionTarget.kind == PositionTargetKind.percentOfEquity and math.abs(command.positionTarget.value) <= 100.0)
 		if not kindValid or not sideValid
-			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidAccountState))
+			emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidAccountState)
 		else if not stopValid or not targetValid
-			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidPrice))
+			emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidPrice)
 		else if command.kind == CommandKind.entry and not na(this.activeEntryId) and command.side == this.activeEntrySide and command.commandId != this.activeEntryId
-			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.entryIdMismatch))
+			emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.entryIdMismatch)
 		else
 			canReplacePendingStop = not na(this.pending) and command.kind == CommandKind.entry and this.pending.kind == CommandKind.entry and command.commandId == this.pending.commandId and not na(command.stop) and this.pending.orderType == OrderType.stop
 			canReplaceTarget = not na(this.pending) and command.kind == CommandKind.rebalance and this.pending.kind == CommandKind.rebalance and command.commandId == this.pending.commandId
@@ -316,10 +316,10 @@ export type BrokerEmulator
 				this.nextOrderId := this.nextOrderId + 1
 				this.pending := order
 				if not na(replaced)
-					effect.emit(OrderCancelled.new(replaced))
-				effect.emit(OrderSubmitted.new(order))
+					emit.append "broker.OrderCancelled" OrderCancelled.new(replaced)
+				emit.append "broker.OrderSubmitted" OrderSubmitted.new(order)
 			else
-				effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.pendingOrder))
+				emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.pendingOrder)
 		order
 
 	Order submit_exit(Command command) =>
@@ -339,13 +339,13 @@ export type BrokerEmulator
 		pricesValid = (stopPresent or targetPresent or trailPresent) and trailPricePresent == trailOffsetPresent and (not stopPresent or command.stop > 0.0) and (not targetPresent or command.target > 0.0) and (not trailPresent or command.trailPrice > 0.0 and command.trailOffset > 0.0) and orderedPrices
 		canReplace = na(this.attachedExit) or this.attachedExit.commandId == command.commandId and this.attachedExit.fromEntry == command.fromEntry
 		if command.kind != CommandKind.exit
-			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidAccountState))
+			emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidAccountState)
 		else if not pricesValid
-			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidPrice))
+			emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidPrice)
 		else if not entryMatches
-			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidAccountState))
+			emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.invalidAccountState)
 		else if not canReplace
-			effect.emit(OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.pendingOrder))
+			emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, command.signalBarIndex, Rejection.pendingOrder)
 		else
 			replaced = this.attachedExit
 			orderType = targetPresent and (stopPresent or trailPresent) ? OrderType.bracket : targetPresent ? OrderType.target : OrderType.stop
@@ -354,8 +354,8 @@ export type BrokerEmulator
 			this.attachedExit := order
 			this.reset_trail()
 			if not na(replaced)
-				effect.emit(OrderCancelled.new(replaced))
-			effect.emit(OrderSubmitted.new(order))
+				emit.append "broker.OrderCancelled" OrderCancelled.new(replaced)
+			emit.append "broker.OrderSubmitted" OrderSubmitted.new(order)
 		order
 
 	int cancel(string commandId) =>
@@ -368,26 +368,26 @@ export type BrokerEmulator
 			this.reversalReferencePrice := na
 			this.reversalAtClose := false
 			this.reversalOrderFeePaid := false
-			effect.emit(OrderCancelled.new(cancelledPending))
+			emit.append "broker.OrderCancelled" OrderCancelled.new(cancelledPending)
 			cancelled := cancelled + 1
 			if cancelledPending.kind == CommandKind.entry and na(this.activeEntryId) and not na(this.attachedExit) and this.attachedExit.fromEntry == cancelledPending.commandId
 				cancelledExit = this.attachedExit
 				Order noDependentExit = na
 				this.attachedExit := noDependentExit
 				this.reset_trail()
-				effect.emit(OrderCancelled.new(cancelledExit))
+				emit.append "broker.OrderCancelled" OrderCancelled.new(cancelledExit)
 				cancelled := cancelled + 1
 		if not na(this.attachedExit) and this.attachedExit.commandId == commandId
 			cancelledExit = this.attachedExit
 			Order noExit = na
 			this.attachedExit := noExit
 			this.reset_trail()
-			effect.emit(OrderCancelled.new(cancelledExit))
+			emit.append "broker.OrderCancelled" OrderCancelled.new(cancelledExit)
 			cancelled := cancelled + 1
 		cancelled
 
 	int reject(string commandId, Side side, int barIndex, Rejection reason) =>
-		effect.emit(OrderRejected.new(commandId, side, barIndex, reason))
+		emit.append "broker.OrderRejected" OrderRejected.new(commandId, side, barIndex, reason)
 		0
 
 	bool stop_touched(Side closeSide, float highPrice, float lowPrice, float stopPrice) const =>
@@ -414,11 +414,11 @@ export type BrokerEmulator
 		hasExplicitNotional = not na(command.notional)
 		sizeValid = (hasExplicitQuantity ? 1 : 0) + (hasExplicitNotional ? 1 : 0) == 1 and (not hasExplicitQuantity or command.quantity > 0.0) and (not hasExplicitNotional or command.notional > 0.0)
 		if not kindValid or not sideValid
-			effect.emit(OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidAccountState))
+			emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidAccountState)
 		else if not sizeValid
-			effect.emit(OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidQuantity))
+			emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidQuantity)
 		else if not this.configuration_valid() or not account.configurationValid
-			effect.emit(OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidConfiguration))
+			emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidConfiguration)
 		else
 			price = this.execution_price(closePrice, command.side)
 			quantityPrice = price > 0.0 ? price : 1.0
@@ -438,12 +438,12 @@ export type BrokerEmulator
 					this.nextTradeId := this.nextTradeId + 1
 				order = Order.new(this.nextOrderId, command.commandId, command.side, command.signalBarIndex, command.kind, command.quantity, command.notional, command.fromEntry, command.stop, command.activateOnEntryBar, command.target, command.cashBudget, OrderType.market, command.equityPercent, command.commissionIncluded, command.positionTarget, command.trailPrice, command.trailOffset, tradeId)
 				this.nextOrderId := this.nextOrderId + 1
-				effect.emit(OrderSubmitted.new(order))
+				emit.append "broker.OrderSubmitted" OrderSubmitted.new(order)
 				execution := Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, closePrice, price, quantity, notional, fee, OrderType.market, command.kind, tradeId)
 				this.nextFillId := this.nextFillId + 1
-				effect.emit(FillExecuted.new(execution))
+				emit.append "broker.FillExecuted" FillExecuted.new(execution)
 			else
-				effect.emit(OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidAccountState))
+				emit.append "broker.OrderRejected" OrderRejected.new(command.commandId, command.side, barIndex, Rejection.invalidAccountState)
 		execution
 
 	Fill execute(float referencePrice, Account account, int barIndex, bool atClose, bool priceTriggered = true, bool reversalContinuation = false) =>
@@ -459,7 +459,7 @@ export type BrokerEmulator
 			eligible = atClose ? this.processOrdersOnClose and barIndex >= order.signalBarIndex : barIndex > order.signalBarIndex
 			if eligible and priceTriggered and this.fillsThisBar < 2
 				if not this.configuration_valid() or not account.configurationValid
-					effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidConfiguration))
+					emit.append "broker.OrderRejected" OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidConfiguration)
 				else if order.kind == CommandKind.rebalance
 					referenceEquity = this.equity_at(referencePrice, account)
 					percentTargetValid = order.positionTarget.kind != PositionTargetKind.percentOfEquity or referencePrice > 0.0 and referenceEquity > 0.0
@@ -467,7 +467,7 @@ export type BrokerEmulator
 					targetQuantity = order.positionTarget.kind == PositionTargetKind.quantity ? order.positionTarget.value : referenceEquity * math.abs(order.positionTarget.value) / 100.0 / targetPrice * (order.positionTarget.value < 0.0 ? -1.0 : 1.0)
 					delta = targetQuantity - account.positionQuantity
 					if not percentTargetValid
-						effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState))
+						emit.append "broker.OrderRejected" OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState)
 					else if math.abs(delta) > 0.0000001
 						fillSide = delta > 0.0 ? Side.buy : Side.sell
 						price = this.execution_price(referencePrice, fillSide)
@@ -508,13 +508,13 @@ export type BrokerEmulator
 								this.activeEntryId := order.commandId
 								this.activeEntrySide := projectedQuantity > 0.0 ? Side.buy : Side.sell
 								this.activeEntryBar := barIndex
-							effect.emit(FillExecuted.new(execution))
+							emit.append "broker.FillExecuted" FillExecuted.new(execution)
 							if not na(cancelledExit)
-								effect.emit(OrderCancelled.new(cancelledExit))
+								emit.append "broker.OrderCancelled" OrderCancelled.new(cancelledExit)
 						else
-							effect.emit(OrderRejected.new(order.commandId, fillSide, barIndex, Rejection.invalidAccountState))
+							emit.append "broker.OrderRejected" OrderRejected.new(order.commandId, fillSide, barIndex, Rejection.invalidAccountState)
 					else
-						effect.emit(OrderCancelled.new(order))
+						emit.append "broker.OrderCancelled" OrderCancelled.new(order)
 				else
 					hasExplicitQuantity = not na(order.quantity)
 					hasExplicitNotional = not na(order.notional)
@@ -523,7 +523,7 @@ export type BrokerEmulator
 					sizeKinds = (hasExplicitQuantity ? 1 : 0) + (hasExplicitNotional ? 1 : 0) + (hasCashBudget ? 1 : 0) + (hasEquityPercent ? 1 : 0)
 					sizeValid = order.kind != CommandKind.entry or sizeKinds <= 1 and (not hasExplicitQuantity or order.quantity > 0.0) and (not hasExplicitNotional or order.notional > 0.0) and (not hasCashBudget or order.cashBudget > 0.0) and (not hasEquityPercent or order.equityPercent > 0.0 and order.equityPercent <= 100.0)
 					if not sizeValid
-						effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidQuantity))
+						emit.append "broker.OrderRejected" OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidQuantity)
 					else
 						entryDirection = order.side == Side.buy ? 1.0 : -1.0
 						isReversal = order.kind == CommandKind.entry and account.positionQuantity * entryDirection < 0.0
@@ -577,18 +577,18 @@ export type BrokerEmulator
 									this.reversalAtClose := atClose
 									this.reversalOrderFeePaid := this.commissionKind == CommissionKind.cashPerOrder
 								this.activeEntryBar := -1
-							effect.emit(FillExecuted.new(execution))
+							emit.append "broker.FillExecuted" FillExecuted.new(execution)
 							if not na(cancelledExit)
-								effect.emit(OrderCancelled.new(cancelledExit))
+								emit.append "broker.OrderCancelled" OrderCancelled.new(cancelledExit)
 						else
-							effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState))
+							emit.append "broker.OrderRejected" OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState)
 				hasLiveMatchingEntry = not na(this.activeEntryId) and this.activeEntryId == order.commandId and account.positionQuantity != 0.0
 				if order.kind == CommandKind.entry and na(execution) and not hasLiveMatchingEntry and not this.reversalPending and not na(this.attachedExit) and this.attachedExit.fromEntry == order.commandId
 					orphanedExit = this.attachedExit
 					Order noOrphanedExit = na
 					this.attachedExit := noOrphanedExit
 					this.reset_trail()
-					effect.emit(OrderCancelled.new(orphanedExit))
+					emit.append "broker.OrderCancelled" OrderCancelled.new(orphanedExit)
 				if not this.reversalPending
 					Order empty = na
 					this.pending := empty
@@ -720,7 +720,7 @@ export type BrokerEmulator
 					referencePrice := order.target
 					matchedType := OrderType.target
 				if not this.configuration_valid() or not account.configurationValid
-					effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidConfiguration))
+					emit.append "broker.OrderRejected" OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidConfiguration)
 				else
 					unclampedPrice = this.execution_price(referencePrice, order.side)
 					price = this.slippageKind == SlippageKind.ticks ? math.max(unclampedPrice, this.tickSize) : unclampedPrice
@@ -731,9 +731,9 @@ export type BrokerEmulator
 						execution := Fill.new(this.nextFillId, order.id, order.commandId, order.side, barIndex, referencePrice, price, quantity, notional, fee, matchedType, CommandKind.exit)
 						this.nextFillId := this.nextFillId + 1
 						this.fillsThisBar := this.fillsThisBar + 1
-						effect.emit(FillExecuted.new(execution))
+						emit.append "broker.FillExecuted" FillExecuted.new(execution)
 					else
-						effect.emit(OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState))
+						emit.append "broker.OrderRejected" OrderRejected.new(order.commandId, order.side, barIndex, Rejection.invalidAccountState)
 				Order noExit = na
 				this.attachedExit := noExit
 				this.reset_trail()
@@ -813,9 +813,9 @@ export type BrokerEmulator
 		this.reversalOrderFeePaid := false
 		this.matchingPathExit := false
 		if not na(expired)
-			effect.emit(OrderExpired.new(expired))
+			emit.append "broker.OrderExpired" OrderExpired.new(expired)
 		if not na(expiredExit)
-			effect.emit(OrderExpired.new(expiredExit))
+			emit.append "broker.OrderExpired" OrderExpired.new(expiredExit)
 		FinishResult.new(expired, expiredExit)
 
 export commissionRate(float rate = 0.0) =>

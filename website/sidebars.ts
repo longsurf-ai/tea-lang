@@ -57,7 +57,11 @@ const sidebars: SidebarsConfig = {
     referenceCategory('Functions', 'functions', [
       'reference/functions/array/push',
     ]),
-    referenceCategory('Keywords', 'keywords', ['reference/keywords/for-in']),
+    referenceCategory('Keywords', 'keywords', [
+      'reference/keywords/for-in',
+      'reference/keywords/emit',
+      'reference/keywords/return',
+    ]),
     referenceCategory('Operators', 'operators', [
       'reference/operators/history',
     ]),

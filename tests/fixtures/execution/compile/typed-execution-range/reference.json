@@ -8,136 +8,268 @@
       "../../../../../docs/requests.md"
     ]
   },
-  "tolerance": {"absolute": 0, "relative": 0},
+  "tolerance": {
+    "absolute": 0,
+    "relative": 0
+  },
   "outputs": [
     {
-      "oid": 0,
-      "effect": "indicator",
-      "staticArgs": [["title", "typed execution and bounded request"]],
-      "boundArgs": [],
-      "channels": []
+      "name": "output0",
+      "type": "int"
     },
     {
-      "oid": 1,
-      "effect": "plot",
-      "staticArgs": [["title", "bar open time"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output1",
+      "type": "int"
     },
     {
-      "oid": 2,
-      "effect": "plot",
-      "staticArgs": [["title", "bar close time"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output2",
+      "type": "int"
     },
     {
-      "oid": 3,
-      "effect": "plot",
-      "staticArgs": [["title", "parent bar index"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output3",
+      "type": "int"
     },
     {
-      "oid": 4,
-      "effect": "plot",
-      "staticArgs": [["title", "parent last bar index"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output4",
+      "type": "int"
     },
     {
-      "oid": 5,
-      "effect": "plot",
-      "staticArgs": [["title", "historical execution clock"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output5",
+      "type": "int"
     },
     {
-      "oid": 6,
-      "effect": "plot",
-      "staticArgs": [["title", "historical bar state"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output6",
+      "type": "int"
     },
     {
-      "oid": 7,
-      "effect": "plot",
-      "staticArgs": [["title", "previous historical bar state"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
-    },
-    {
-      "oid": 8,
-      "effect": "plot",
-      "staticArgs": [["title", "bounded child position"]],
-      "boundArgs": [],
-      "channels": [["series", "int"]]
+      "name": "output7",
+      "type": "int"
     }
   ],
   "rows": [
     {
       "row": 0,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [1000]},
-        {"oid": 2, "provisional": false, "channels": [2000]},
-        {"oid": 3, "provisional": false, "channels": [0]},
-        {"oid": 4, "provisional": false, "channels": [4]},
-        {"oid": 5, "provisional": false, "channels": [1700000000000]},
-        {"oid": 6, "provisional": false, "channels": [53]},
-        {"oid": 7, "provisional": false, "channels": [-1]},
-        {"oid": 8, "provisional": false, "channels": [null]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 1000
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 2000
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 0
+        },
+        {
+          "name": "output3",
+          "provisional": false,
+          "value": 4
+        },
+        {
+          "name": "output4",
+          "provisional": false,
+          "value": 1700000000000
+        },
+        {
+          "name": "output5",
+          "provisional": false,
+          "value": 53
+        },
+        {
+          "name": "output6",
+          "provisional": false,
+          "value": -1
+        },
+        {
+          "name": "output7",
+          "provisional": false,
+          "value": null
+        }
       ]
     },
     {
       "row": 1,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [2000]},
-        {"oid": 2, "provisional": false, "channels": [3000]},
-        {"oid": 3, "provisional": false, "channels": [1]},
-        {"oid": 4, "provisional": false, "channels": [4]},
-        {"oid": 5, "provisional": false, "channels": [1700000000000]},
-        {"oid": 6, "provisional": false, "channels": [52]},
-        {"oid": 7, "provisional": false, "channels": [53]},
-        {"oid": 8, "provisional": false, "channels": [null]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 2000
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 3000
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 1
+        },
+        {
+          "name": "output3",
+          "provisional": false,
+          "value": 4
+        },
+        {
+          "name": "output4",
+          "provisional": false,
+          "value": 1700000000000
+        },
+        {
+          "name": "output5",
+          "provisional": false,
+          "value": 52
+        },
+        {
+          "name": "output6",
+          "provisional": false,
+          "value": 53
+        },
+        {
+          "name": "output7",
+          "provisional": false,
+          "value": null
+        }
       ]
     },
     {
       "row": 2,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [3000]},
-        {"oid": 2, "provisional": false, "channels": [4000]},
-        {"oid": 3, "provisional": false, "channels": [2]},
-        {"oid": 4, "provisional": false, "channels": [4]},
-        {"oid": 5, "provisional": false, "channels": [1700000000000]},
-        {"oid": 6, "provisional": false, "channels": [52]},
-        {"oid": 7, "provisional": false, "channels": [52]},
-        {"oid": 8, "provisional": false, "channels": [null]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 3000
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 4000
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 2
+        },
+        {
+          "name": "output3",
+          "provisional": false,
+          "value": 4
+        },
+        {
+          "name": "output4",
+          "provisional": false,
+          "value": 1700000000000
+        },
+        {
+          "name": "output5",
+          "provisional": false,
+          "value": 52
+        },
+        {
+          "name": "output6",
+          "provisional": false,
+          "value": 52
+        },
+        {
+          "name": "output7",
+          "provisional": false,
+          "value": null
+        }
       ]
     },
     {
       "row": 3,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [4000]},
-        {"oid": 2, "provisional": false, "channels": [5000]},
-        {"oid": 3, "provisional": false, "channels": [3]},
-        {"oid": 4, "provisional": false, "channels": [4]},
-        {"oid": 5, "provisional": false, "channels": [1700000000000]},
-        {"oid": 6, "provisional": false, "channels": [52]},
-        {"oid": 7, "provisional": false, "channels": [52]},
-        {"oid": 8, "provisional": false, "channels": [1]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 4000
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 5000
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 3
+        },
+        {
+          "name": "output3",
+          "provisional": false,
+          "value": 4
+        },
+        {
+          "name": "output4",
+          "provisional": false,
+          "value": 1700000000000
+        },
+        {
+          "name": "output5",
+          "provisional": false,
+          "value": 52
+        },
+        {
+          "name": "output6",
+          "provisional": false,
+          "value": 52
+        },
+        {
+          "name": "output7",
+          "provisional": false,
+          "value": 1
+        }
       ]
     },
     {
       "row": 4,
       "emissions": [
-        {"oid": 1, "provisional": false, "channels": [5000]},
-        {"oid": 2, "provisional": false, "channels": [6000]},
-        {"oid": 3, "provisional": false, "channels": [4]},
-        {"oid": 4, "provisional": false, "channels": [4]},
-        {"oid": 5, "provisional": false, "channels": [1700000000000]},
-        {"oid": 6, "provisional": false, "channels": [54]},
-        {"oid": 7, "provisional": false, "channels": [52]},
-        {"oid": 8, "provisional": false, "channels": [11]}
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 5000
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 6000
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 4
+        },
+        {
+          "name": "output3",
+          "provisional": false,
+          "value": 4
+        },
+        {
+          "name": "output4",
+          "provisional": false,
+          "value": 1700000000000
+        },
+        {
+          "name": "output5",
+          "provisional": false,
+          "value": 54
+        },
+        {
+          "name": "output6",
+          "provisional": false,
+          "value": 52
+        },
+        {
+          "name": "output7",
+          "provisional": false,
+          "value": 11
+        }
       ]
     }
   ],

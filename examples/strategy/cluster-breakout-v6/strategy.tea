@@ -2,7 +2,7 @@
 // Clean-room implementation pinned to the publication's original v6 logic.
 // Fixed-size long/short positions and persistent stop orders run through Tea's
 // canonical trade, broker, and portfolio components.
-strategy("Cluster breakout v6", shorttitle="Cluster v6", overlay=true)
+
 
 import broker
 import portfolio
@@ -221,17 +221,17 @@ strat.mark(close)
 strat.finish(barstate.islast)
 metrics = strat.snapshot()
 
-plot(close, "close")
-plot(box_top, "cluster top")
-plot(box_bottom, "cluster bottom")
-plot(metrics.positionQuantity != 0.0 ? current_stop : na, "active stop")
-plot(metrics.positionQuantity != 0.0 ? target_line : na, "target line")
-plot(long_signal ? 1.0 : 0.0, "long signal")
-plot(short_signal ? 1.0 : 0.0, "short signal")
-plot(metrics.positionQuantity, "signed position")
-plot(metrics.equity, "equity")
-plot(metrics.realizedPnl, "realized pnl")
-plot(metrics.fillCount, "fill count")
-plot(metrics.roundTripCount, "round trips")
-plot(metrics.maxDrawdown, "maximum drawdown")
-plot(metrics.totalReturn, "total return")
+plot("close", close, "close")
+plot("cluster top", box_top, "cluster top")
+plot("cluster bottom", box_bottom, "cluster bottom")
+plot("active stop", metrics.positionQuantity != 0.0 ? current_stop : na, "active stop")
+plot("target line", metrics.positionQuantity != 0.0 ? target_line : na, "target line")
+plot("long signal", long_signal ? 1.0 : 0.0, "long signal")
+plot("short signal", short_signal ? 1.0 : 0.0, "short signal")
+plot("signed position", metrics.positionQuantity, "signed position")
+plot("equity", metrics.equity, "equity")
+plot("realized pnl", metrics.realizedPnl, "realized pnl")
+plot("fill count", metrics.fillCount, "fill count")
+plot("round trips", metrics.roundTripCount, "round trips")
+plot("maximum drawdown", metrics.maxDrawdown, "maximum drawdown")
+plot("total return", metrics.totalReturn, "total return")

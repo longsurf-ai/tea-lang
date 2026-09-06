@@ -1,10 +1,26 @@
 //@version=1
-// visual: compiler-shipped declarative visual wrappers. Every exported
-// function is ordinary Tea source over the generic output intrinsic.
+// Visual descriptions are ordinary values. Each explicit ID names one output.
 library("visual")
 
+struct Plot
+    string id
+    float series
+    string title
+    color color
+    int linewidth
+    string style
+    bool trackprice
+    float histbase
+    int offset
+    bool editable
+    int show_last
+    string display
+    string format
+    int precision
+
 export plot(
-    series,
+    const string id,
+    series float series,
     const string title = "",
     series color color = na,
     input int linewidth = 1,
@@ -18,21 +34,111 @@ export plot(
     const string format = "inherit",
     const int precision = 0
 ) =>
-    output(
-        series,
-        kind="plot",
-        args={
-            title: title,
-            color: color,
-            linewidth: linewidth,
-            style: style,
-            trackprice: trackprice,
-            histbase: histbase,
-            offset: offset,
-            editable: editable,
-            show_last: show_last,
-            display: display,
-            format: format,
-            precision: precision
-        }
-    )
+    p = Plot.new(id, series, title, color, linewidth, style, trackprice, histbase, offset, editable, show_last, display, format, precision)
+    emit id p
+    return p
+
+struct Hline
+    string id
+    float price
+    string title
+    color color
+    string linestyle
+    int linewidth
+    bool editable
+    string display
+
+export hline(const string id, input float price, const string title = "", input color color = na, const string linestyle = "solid", input int linewidth = 1, const bool editable = true, const string display = "all") =>
+    p = Hline.new(id, price, title, color, linestyle, linewidth, editable, display)
+    emit id p
+    return p
+
+struct Fill
+    string id
+    string first
+    string second
+    color color
+    string title
+    bool editable
+    string display
+
+export fill(const string id, plot1, plot2, series color color = na, const string title = "", const bool editable = true, const string display = "all") =>
+    p = Fill.new(id, plot1.id, plot2.id, color, title, editable, display)
+    emit id p
+    return p
+
+struct Shape
+    string id
+    bool series
+    string title
+    string style
+    string location
+    color color
+    int offset
+    string text
+    color textcolor
+    string size
+    bool editable
+    int show_last
+    string display
+
+export plotshape(const string id, series bool series, const string title = "", const string style = "circle", const string location = "abovebar", series color color = na, input int offset = 0, const string text = "", series color textcolor = na, const string size = "auto", const bool editable = true, input int show_last = 0, const string display = "all") =>
+    p = Shape.new(id, series, title, style, location, color, offset, text, textcolor, size, editable, show_last, display)
+    emit id p
+    return p
+
+struct Character
+    string id
+    bool series
+    string title
+    string char
+    string location
+    color color
+    int offset
+    string text
+    color textcolor
+    string size
+    bool editable
+    int show_last
+    string display
+
+export plotchar(const string id, series bool series, const string title = "", const string char = "", const string location = "abovebar", series color color = na, input int offset = 0, const string text = "", series color textcolor = na, const string size = "auto", const bool editable = true, input int show_last = 0, const string display = "all") =>
+    p = Character.new(id, series, title, char, location, color, offset, text, textcolor, size, editable, show_last, display)
+    emit id p
+    return p
+
+struct Background
+    string id
+    color color
+    string title
+    int offset
+    bool editable
+    int show_last
+    string display
+
+export bgcolor(const string id, series color color, const string title = "", input int offset = 0, const bool editable = true, input int show_last = 0, const string display = "all") =>
+    p = Background.new(id, color, title, offset, editable, show_last, display)
+    emit id p
+    return p
+
+struct BarColor
+    string id
+    color color
+    string title
+    int offset
+    bool editable
+    int show_last
+    string display
+
+export barcolor(const string id, series color color, const string title = "", input int offset = 0, const bool editable = true, input int show_last = 0, const string display = "all") =>
+    p = BarColor.new(id, color, title, offset, editable, show_last, display)
+    emit id p
+    return p
+
+struct Alert
+    string title
+    string message
+
+export alertcondition(const string id, series bool condition, const string title = "", const string message = "") =>
+    if condition
+        emit.append id Alert.new(title, message)

@@ -1,5 +1,5 @@
 //@version=1
-indicator("aggregate reference semantics")
+
 
 struct Point
     int x
@@ -39,6 +39,7 @@ bump(Point point) => point.bump()
 pack(Point point) => [point, point.x]
 observeMarker(Holder first, int ignored) => first.marker
 combine(int first, int second) => first * 10 + second
+captureOutput(int series, color tint) => [series, tint]
 
 // Collection assignment and history retain value-semantic headers.
 base = array.from(bar_index)
@@ -48,25 +49,25 @@ previousPeer = if bar_index > 0
     peer[1].get(1)
 else
     -1
-plot(base.size(), "array original size")
-plot(peer.get(1), "array peer append")
-plot(previousPeer, "array historical value")
+emit "output0" base.size()
+emit "output1" peer.get(1)
+emit "output2" previousPeer
 
 // Struct assignment aliases the body; rebinding one Name leaves other aliases.
 point = Point.new(bar_index)
 alias = point
 alias.bump()
-plot(point.x, "struct alias shared x")
+emit "output3" point.x
 alias := Point.new(100)
-plot(point.x, "original after alias rebind")
-plot(alias.x, "rebound struct x")
+emit "output4" point.x
+emit "output5" alias.x
 
 // Current and historical collection headers contain the same struct refs.
 points = array.from(point)
 pointsPeer = points
 pointsPeer.get(0).x := point.x + 10
-plot(point.x, "collection element shared x")
-plot(points.get(0).x, "collection original header shared x")
+emit "output6" point.x
+emit "output7" points.get(0).x
 
 // A struct field captures a collection header independently of another Name.
 values = array.new<int>(1)
@@ -74,28 +75,28 @@ holder = Holder.new(values, 0)
 holder.values.set(0, bar_index)
 values.push(7)
 values.push(8)
-plot(holder.values.size(), "struct collection field size")
-plot(values.size(), "collection name size")
-plot(holder.values.get(0), "struct collection field value")
+emit "output8" holder.values.size()
+emit "output9" values.size()
+emit "output10" holder.values.get(0)
 
 // const is shallow: the direct child field cannot be replaced, but its target
 // remains a mutable reference.
 child = Point.new(bar_index)
 parent = Parent.new(child)
 parent.bumpChild()
-plot(child.x, "shallow const child mutation")
+emit "output11" child.x
 
 // Arguments and returns carry references; scalar results remain values.
 functionPoint = Point.new(bar_index)
 functionResult = bump(functionPoint)
-plot(functionPoint.x, "function argument shared x")
-plot(functionResult, "function result")
+emit "output12" functionPoint.x
+emit "output13" functionResult
 
 tuplePoint = Point.new(bar_index)
 [transported, capturedScalar] = pack(tuplePoint)
 transported.bump()
-plot(tuplePoint.x, "tuple struct shared x")
-plot(capturedScalar, "tuple scalar value")
+emit "output14" tuplePoint.x
+emit "output15" capturedScalar
 
 // Struct history stores references. With no rebind, history sees the current
 // body of the same storage identity.
@@ -105,8 +106,8 @@ historicalState = if bar_index > 0
     state[1].read()
 else
     -1
-plot(state.x, "struct history current body")
-plot(historicalState, "struct history live body")
+emit "output16" state.x
+emit "output17" historicalState
 
 // Rebinding creates a distinct identity; later unchanged history aliases it.
 var switched = Point.new(0)
@@ -117,49 +118,49 @@ historicalSwitched = if bar_index > 0
     switched[1].read()
 else
     -1
-plot(switched.x, "rebound history current body")
-plot(historicalSwitched, "rebound history prior reference")
+emit "output18" switched.x
+emit "output19" historicalSwitched
 
 // Sized construction defaults each element to its exact typed empty.
 missing = array.new<float>(2)
-plot(missing.size() + bar_index * 0, "typed empty array size")
-plot((na(missing.get(0)) ? 1 : 0) + bar_index * 0, "typed empty array value")
+emit "output20" missing.size() + bar_index * 0
+emit "output21" (na(missing.get(0)) ? 1 : 0) + bar_index * 0
 
 // A historical reference is a live mutation target.
 var historicalTarget = Point.new(0)
 if bar_index > 0
     historicalTarget[1].bump()
-plot(historicalTarget.x, "historical reference mutation")
+emit "output22" historicalTarget.x
 
 // Source evaluation order remains separate from canonical destination order.
 constructorCounter = Holder.new(array.new<int>(), 0)
 namedPoint = Point.new(y = constructorCounter.next(), x = constructorCounter.next())
-plot(namedPoint.x * 10 + namedPoint.y, "named constructor evaluation order")
+emit "output23" namedPoint.x * 10 + namedPoint.y
 
 functionCounter = Holder.new(array.new<int>(), 0)
 namedFunction = combine(second = functionCounter.next(), first = functionCounter.next())
-plot(namedFunction, "named function evaluation order")
+emit "output24" namedFunction
 
 nativeCounter = Holder.new(array.new<int>(), 0)
 nativeValues = array.from(-1, -1)
 nativeValues.set(value = nativeCounter.next(), index = nativeCounter.next())
-plot(nativeValues.get(0) * 10 + nativeValues.get(1), "named native evaluation order")
+emit "output25" nativeValues.get(0) * 10 + nativeValues.get(1)
 
 // Eager operands capture earlier scalar observations before later mutations.
 binaryHolder = Holder.new(array.new<int>(), 1)
 binaryValue = binaryHolder.marker + binaryHolder.setMarker(9)
-plot(binaryValue, "binary left value before right mutation")
-plot(binaryHolder.marker, "binary right mutation")
+emit "output26" binaryValue
+emit "output27" binaryHolder.marker
 
 ternaryHolder = Holder.new(array.new<int>(), 1)
 ternaryValue = bar_index >= 0 ? ternaryHolder.marker : ternaryHolder.setMarker(9)
-plot(ternaryValue, "eager ternary selected value")
-plot(ternaryHolder.marker, "eager ternary unselected mutation")
+emit "output28" ternaryValue
+emit "output29" ternaryHolder.marker
 
 constTernaryHolder = Holder.new(array.new<int>(), 0)
 constTernaryValue = true ? 1 : constTernaryHolder.setMarker(9)
-plot(constTernaryValue, "constant eager ternary result")
-plot(constTernaryHolder.marker, "constant eager ternary mutation")
+emit "output30" constTernaryValue
+emit "output31" constTernaryHolder.marker
 
 // Switch, range, and output schedules preserve their source evaluation rules.
 switchCounter = Holder.new(array.new<int>(), 0)
@@ -167,23 +168,25 @@ switchValue = switch switchCounter.next()
     1 => 10
     2 => 20
     => 30
-plot(switchValue, "switch subject evaluated once")
-plot(switchCounter.values.size(), "switch subject effect count")
+emit "output32" switchValue
+emit "output33" switchCounter.values.size()
 
 patternCounter = Holder.new(array.new<int>(), 0)
 patternValue = switch 1
     patternCounter.next() => 10
     patternCounter.next() => 20
     => 30
-plot(patternValue, "switch effectful pattern result")
-plot(patternCounter.values.size(), "switch effectful pattern count")
+emit "output34" patternValue
+emit "output35" patternCounter.values.size()
 
 forCounter = Holder.new(array.new<int>(), 0)
 forIterations = 0
 for loopIndex = forCounter.values.size() to forCounter.next()
     forIterations := forIterations + 1
-plot(forIterations, "for range operand evaluation order")
+emit "output36" forIterations
 
 outputCounter = Holder.new(array.new<int>(), 0)
-plot(color = outputCounter.pushRed(), series = outputCounter.next(), title = "output channel evaluation order")
-plot(outputCounter.values.size(), "output channel effect count")
+[outputSeries, outputColor] = captureOutput(tint = outputCounter.pushRed(), series = outputCounter.next())
+emit "output37" outputSeries
+emit "output_color" outputColor
+emit "output38" outputCounter.values.size()

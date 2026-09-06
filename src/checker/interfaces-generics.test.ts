@@ -280,7 +280,7 @@ describe('constrained generic structs', () => {
         'type Box<T: Reader>',
         '    T value',
         '    int read() const => this.value.read()',
-        'plot(1)',
+        'emit "output0" 1',
       ].join('\n'),
     );
 
@@ -538,7 +538,7 @@ describe('constrained generic structs', () => {
       '    int read() const => this.source.read()',
       'box = Box.new(Source.new(7))',
       'value = box.read()',
-      'plot(value)',
+      'emit "output0" value',
     ].join('\n');
     const program = mustBuild(source);
 

@@ -58,9 +58,7 @@ const COMMON_IMPLEMENTATION = [
 
 describe('broker policy contracts', () => {
   test('exports honest structural views satisfied by BrokerEmulator', () => {
-    const result = checkText(
-      ['indicator("broker policy contracts")', 'import broker'].join('\n'),
-    );
+    const result = checkText(['', 'import broker'].join('\n'));
     expect(result.errors).toEqual([]);
 
     const emulator = exportedStruct(result, 'BrokerEmulator');
@@ -94,7 +92,7 @@ describe('broker policy contracts', () => {
 
   test('specializes every capability view through the noder', () => {
     const source = [
-      'indicator("broker policy specialization")',
+      '',
       'import broker',
       'type CommandView<B: broker.BrokerCommands>',
       '    B value',
@@ -127,7 +125,7 @@ describe('broker policy contracts', () => {
       'stop_command = broker.Command.new("stop", broker.CommandKind.close, broker.Side.sell, 1.0, bar_index, tradeId = 1)',
       'stop_fill = immediate.execute_stop(stop_command, open, high, low, close, account, bar_index)',
       'stop_touched = immediate.stop_touched(broker.Side.sell, high, low, close)',
-      'plot(commands.pending() ? 1 : 0)',
+      'emit "output0" commands.pending() ? 1 : 0',
     ].join('\n');
 
     expect(checkText(source).errors).toEqual([]);
@@ -154,7 +152,7 @@ describe('broker policy contracts', () => {
   test('rejects a common command view with the wrong receiver mode', () => {
     const result = checkText(
       [
-        'indicator("bad command broker")',
+        '',
         'import broker',
         'type BadCommands',
         '    int marker',
@@ -174,7 +172,7 @@ describe('broker policy contracts', () => {
   test('rejects a next-open broker with the wrong matching result', () => {
     const result = checkText(
       [
-        'indicator("bad next-open broker")',
+        '',
         'import broker',
         'type BadNextOpen',
         '    int marker',
@@ -194,7 +192,7 @@ describe('broker policy contracts', () => {
   test('rejects an immediate broker with the wrong execution arity', () => {
     const result = checkText(
       [
-        'indicator("bad immediate broker")',
+        '',
         'import broker',
         'type BadImmediate',
         '    int marker',

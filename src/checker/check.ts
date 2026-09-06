@@ -13,7 +13,6 @@ import {
   ColorType,
   FloatType,
   formatType,
-  HlineType,
   isAggregateType,
   isMapKeyType,
   isStorableType,
@@ -25,7 +24,6 @@ import {
   NaType,
   qualifierLE,
   NA_VALUE,
-  PlotType,
   Qualifier,
   StringType,
   Storage,
@@ -75,6 +73,7 @@ import {
   type NativeReceiver,
   type SemanticDependency,
   type StructFieldStore,
+  type OutputColumn,
 } from './info';
 import {
   ObjectKind,
@@ -235,6 +234,8 @@ class Checker {
   // concrete instance still gets its own Info.
   private activeMethod: MethodObject | null = null;
   private methodErrorAttempts = 0;
+  private validatingMethod = false;
+  private returnValues: TypeAndValue[] | null = null;
   private readonly reportedMethodDiagnostics = new Map<
     MethodObject,
     Set<string>
@@ -405,7 +406,6 @@ class Checker {
   checkPackage(): CheckedPackage {
     const file = this.rootState.pkg.files[0];
     this.withPackage(this.rootState, () => {
-      this.checkStrategyDeclaration(file);
       this.checkImports(file);
       this.predeclareNominalTypes(file);
       this.predeclareFunctions(file);
@@ -424,6 +424,7 @@ class Checker {
       ]);
       this.validateUnusedGenericTemplates();
     });
+    if (this.errors.count === 0) this.checkEmissions(file);
     this.rootState.phase = this.errors.count === 0 ? 'checked' : 'failed';
     return {
       pkg: this.rootState.pkg,
@@ -495,43 +496,6 @@ class Checker {
       }
     }
     return ids;
-  }
-
-  // A strategy declaration is the script header, not an ordinary top-level
-  // effect call. Imports may follow it, but no source statement may precede
-  // it, and one script cannot claim two declaration kinds.
-  private checkStrategyDeclaration(file: syntax.File): void {
-    const declarations = file.stmtList.flatMap(stmt => {
-      const name = scriptDeclarationName(stmt);
-      return name === null ? [] : [{name, stmt}];
-    });
-    const strategies = declarations.filter(
-      declaration => declaration.name === 'strategy',
-    );
-    const header = strategies[0];
-    if (header === undefined) {
-      return;
-    }
-    if (file.stmtList[0] !== header.stmt) {
-      this.error(
-        header.stmt.pos,
-        'strategy() declaration must be the first statement in a strategy script',
-      );
-    }
-    for (const duplicate of strategies.slice(1)) {
-      this.error(duplicate.stmt.pos, 'duplicate strategy() declaration');
-    }
-    for (const declaration of declarations) {
-      if (
-        declaration.name !== 'strategy' &&
-        (declaration.name === 'indicator' || declaration.name === 'library')
-      ) {
-        this.error(
-          declaration.stmt.pos,
-          `strategy() cannot be combined with ${declaration.name}()`,
-        );
-      }
-    }
   }
 
   private checkLibraryFile(
@@ -707,13 +671,6 @@ class Checker {
       );
       return;
     }
-    if (call.kind === CallKind.Output) {
-      this.error(
-        global.packageGlobal!.decl.init.pos,
-        `package global '${global.name}' initializer cannot declare outputs`,
-      );
-      return;
-    }
     if (call.kind === CallKind.Constructor) {
       for (const arg of call.args) {
         if (!arg.supplied) {
@@ -732,6 +689,11 @@ class Checker {
       return;
     }
     seen.add(instance);
+    if (instance.info.emits.size > 0)
+      this.error(
+        global.packageGlobal!.decl.init.pos,
+        `package global '${global.name}' initializer cannot emit outputs`,
+      );
     if (call.receiver?.mode === 'mutable') {
       this.error(
         global.packageGlobal!.decl.init.pos,
@@ -1235,6 +1197,13 @@ class Checker {
         case NodeKind.ExprStmt:
           visitExpr(stmt.x);
           return;
+        case NodeKind.EmitStmt:
+          visitExpr(stmt.name);
+          visitExpr(stmt.value);
+          return;
+        case NodeKind.ReturnStmt:
+          if (stmt.value !== null) visitExpr(stmt.value);
+          return;
         case NodeKind.DeclStmt:
           visitExpr(stmt.init);
           return;
@@ -1343,11 +1312,6 @@ class Checker {
             visitExpr(elem);
           }
           return;
-        case NodeKind.ArgumentObjectExpr:
-          for (const field of current.fields) {
-            visitExpr(field.value);
-          }
-          return;
         case NodeKind.IfExpr:
           visitExpr(current.cond);
           visitBlock(current.then);
@@ -1415,6 +1379,240 @@ class Checker {
 
   // ---- statements -----------------------------------------------------------
 
+  private checkEmit(stmt: syntax.EmitStmt): TypeAndValue {
+    const name = this.checkExpr(stmt.name);
+    const value = this.checkExpr(stmt.value);
+    if (
+      name.type.kind !== TypeKind.Invalid &&
+      (name.type.kind !== TypeKind.String || name.qualifier !== Qualifier.Const)
+    ) {
+      this.error(
+        stmt.name.pos,
+        'output name must be a compile-time constant string',
+      );
+    } else if (
+      name.type.kind !== TypeKind.Invalid &&
+      typeof name.value !== 'string'
+    ) {
+      if (!this.validatingMethod)
+        this.error(
+          stmt.name.pos,
+          'output name must have a known constant string value',
+        );
+    } else if (typeof name.value === 'string') {
+      if (name.value.length === 0)
+        this.error(stmt.name.pos, 'output name cannot be empty');
+      if (['index', 'time', 'timed', 'provisional'].includes(name.value))
+        this.error(
+          stmt.name.pos,
+          `output name '${name.value}' is reserved for execution coordinates`,
+        );
+      this.info.emits.set(stmt, {
+        name: name.value,
+        mode: stmt.append ? 'append' : 'set',
+        valueType: value.type,
+        pos: stmt.pos,
+      });
+    }
+    if (
+      value.type.kind !== TypeKind.Invalid &&
+      !isOutputValueType(value.type)
+    ) {
+      this.error(
+        stmt.value.pos,
+        `output value needs a concrete exportable type, got ${formatType(value.type)}`,
+      );
+    }
+    if (this.captureDepth > 0)
+      this.error(stmt.pos, "'emit' cannot execute inside a request expression");
+    return {...VOID_TV, qualifier: Qualifier.Series};
+  }
+
+  /** Resolve the reachable output namespace and reject multiple static set writers.
+   * Each caller path is visited independently: sharing a checked body does not
+   * make two calls into one execution. Loop bounds conservatively prove at most
+   * one iteration; append writers intentionally permit arbitrary repetition.
+   */
+  private checkEmissions(file: syntax.File): void {
+    const columns = new Map<string, OutputColumn>();
+    const writers = new Map<string, Pos>();
+    const active = new Set<FunctionInstance>();
+    const visitStmt = (
+      stmt: syntax.Stmt,
+      info: Info,
+      repeated: boolean,
+      site: Pos | null,
+    ): void => {
+      switch (stmt.kind) {
+        case NodeKind.EmitStmt: {
+          const output = info.emits.get(stmt);
+          if (output !== undefined) {
+            const previous = columns.get(output.name);
+            if (
+              previous !== undefined &&
+              (previous.mode !== output.mode ||
+                !typesEqual(previous.valueType, output.valueType))
+            ) {
+              this.error(
+                site ?? stmt.pos,
+                `output '${output.name}' must keep one write mode and Tea type (${previous.mode} ${formatType(previous.valueType)})`,
+              );
+            } else {
+              if (previous === undefined) columns.set(output.name, output);
+              else info.emits.set(stmt, previous);
+            }
+            if (output.mode === 'set') {
+              if (writers.has(output.name))
+                this.error(
+                  site ?? stmt.pos,
+                  `output '${output.name}' has more than one plain emit writer`,
+                );
+              else writers.set(output.name, site ?? stmt.pos);
+              if (repeated)
+                this.error(
+                  site ?? stmt.pos,
+                  `plain emit '${output.name}' may execute more than once per step`,
+                );
+            }
+          }
+          visitExpr(stmt.name, info, repeated, site);
+          visitExpr(stmt.value, info, repeated, site);
+          return;
+        }
+        case NodeKind.ReturnStmt:
+          if (stmt.value !== null) visitExpr(stmt.value, info, repeated, site);
+          return;
+        case NodeKind.ExprStmt:
+          visitExpr(stmt.x, info, repeated, site);
+          return;
+        case NodeKind.DeclStmt:
+          visitExpr(stmt.init, info, repeated, site);
+          return;
+        case NodeKind.AssignStmt:
+          visitExpr(stmt.target, info, repeated, site);
+          visitExpr(stmt.value, info, repeated, site);
+          return;
+        default:
+          return;
+      }
+    };
+    const visitBody = (
+      body: syntax.Expr | syntax.Block,
+      info: Info,
+      repeated: boolean,
+      site: Pos | null,
+    ): void => {
+      if (body.kind === NodeKind.Block)
+        for (const stmt of body.stmtList) visitStmt(stmt, info, repeated, site);
+      else visitExpr(body, info, repeated, site);
+    };
+    const visitExpr = (
+      expr: syntax.Expr,
+      info: Info,
+      repeated: boolean,
+      site: Pos | null,
+    ): void => {
+      const sub = (value: syntax.Expr): void =>
+        visitExpr(value, info, repeated, site);
+      switch (expr.kind) {
+        case NodeKind.CallExpr: {
+          sub(expr.fun);
+          for (const arg of expr.args) sub(arg.value);
+          const call = info.calls.get(expr);
+          if (call?.kind === CallKind.Function && !active.has(call.instance)) {
+            const instance = call.instance;
+            active.add(instance);
+            for (const [index, arg] of call.args.entries()) {
+              const dflt =
+                arg === null ? instance.defaults.get(index) : undefined;
+              if (dflt !== undefined)
+                visitExpr(dflt.expr, dflt.info, repeated, expr.pos);
+            }
+            visitBody(
+              instance.template.decl.body,
+              instance.info,
+              repeated,
+              site ?? expr.pos,
+            );
+            active.delete(instance);
+          } else if (call?.kind === CallKind.Constructor) {
+            for (const arg of call.args)
+              if (!arg.supplied)
+                visitExpr(arg.value.expr, arg.value.info, repeated, site);
+          }
+          return;
+        }
+        case NodeKind.UnaryExpr:
+        case NodeKind.ParenExpr:
+          sub(expr.x);
+          return;
+        case NodeKind.SelectorExpr:
+          sub(expr.x);
+          return;
+        case NodeKind.BinaryExpr:
+          sub(expr.x);
+          sub(expr.y);
+          return;
+        case NodeKind.CondExpr:
+          sub(expr.cond);
+          sub(expr.then);
+          sub(expr.else);
+          return;
+        case NodeKind.HistoryExpr:
+          sub(expr.x);
+          sub(expr.offset);
+          return;
+        case NodeKind.TupleExpr:
+          for (const value of expr.elems) sub(value);
+          return;
+        case NodeKind.IfExpr:
+          sub(expr.cond);
+          visitBody(expr.then, info, repeated, site);
+          if (expr.else !== null) visitBody(expr.else, info, repeated, site);
+          return;
+        case NodeKind.SwitchExpr:
+          if (expr.subject !== null) sub(expr.subject);
+          for (const arm of expr.arms) {
+            if (arm.pattern !== null) sub(arm.pattern);
+            visitBody(arm.body, info, repeated, site);
+          }
+          return;
+        case NodeKind.ForExpr: {
+          sub(expr.from);
+          sub(expr.to);
+          if (expr.step !== null) sub(expr.step);
+          const from = info.types.get(expr.from)?.value;
+          const to = info.types.get(expr.to)?.value;
+          const step =
+            expr.step === null ? 1 : info.types.get(expr.step)?.value;
+          const induction = info.defs.get(expr.index);
+          const once =
+            induction?.kind === ObjectKind.Variable &&
+            !info.reassigned.has(induction) &&
+            typeof from === 'number' &&
+            typeof to === 'number' &&
+            typeof step === 'number' &&
+            step !== 0 &&
+            Math.abs(to - from) < Math.abs(step);
+          visitBody(expr.body, info, repeated || !once, site);
+          return;
+        }
+        case NodeKind.ForInExpr:
+          sub(expr.x);
+          visitBody(expr.body, info, true, site);
+          return;
+        case NodeKind.WhileExpr:
+          visitExpr(expr.cond, info, true, site);
+          visitBody(expr.body, info, true, site);
+          return;
+        default:
+          return;
+      }
+    };
+    for (const stmt of file.stmtList)
+      visitStmt(stmt, this.rootState.info, false, null);
+  }
+
   // Returns the statement's value when it can serve as a block result
   // (expression, declaration, or assignment as the last line), else null.
   private checkStmt(stmt: syntax.Stmt): TypeAndValue | null {
@@ -1425,6 +1623,17 @@ class Checker {
         return this.checkDecl(stmt);
       case NodeKind.AssignStmt:
         return this.checkAssign(stmt);
+      case NodeKind.EmitStmt:
+        return this.checkEmit(stmt);
+      case NodeKind.ReturnStmt: {
+        const value =
+          stmt.value === null ? VOID_TV : this.checkExpr(stmt.value);
+        if (this.returnValues === null)
+          this.error(stmt.pos, "'return' outside a function");
+        else this.returnValues.push(value);
+        this.info.returns.set(stmt, value);
+        return {...VOID_TV, qualifier: value.qualifier};
+      }
       case NodeKind.FuncDecl:
         this.checkFuncDecl(stmt);
         return null;
@@ -1481,7 +1690,7 @@ class Checker {
     ) {
       this.error(
         d.init.pos,
-        `'effect.emit' cannot execute from a persistent variable initializer`,
+        `'emit' cannot execute from a persistent variable initializer`,
       );
     }
     afterInit?.(initTv);
@@ -1607,9 +1816,7 @@ class Checker {
     // Fold values travel through names only when reassignment is impossible.
     const foldable =
       d.mode === Mode.Const ||
-      (d.mode === Mode.None &&
-        !this.info.reassigned.has(name) &&
-        !this.info.historyBindings.has(name));
+      (d.mode === Mode.None && !this.info.reassigned.has(name));
     const constValue =
       foldable && initTv.qualifier === Qualifier.Const ? initTv.value : null;
     return {type, qualifier, constValue};
@@ -1760,14 +1967,6 @@ class Checker {
         );
       }
     }
-    if (
-      entry.type.kind === TypeKind.Plot ||
-      entry.type.kind === TypeKind.Hline
-    ) {
-      // Output references are compile-time ids consumed at bind (fill);
-      // a reassignable ref could not be resolved before the first bar.
-      this.error(target.pos, 'cannot reassign a plot reference');
-    }
     const name = entry;
     if (this.info.uses.get(target) !== name) {
       return fatal(`assignment binding changed for '${target.value}'`);
@@ -1811,22 +2010,23 @@ class Checker {
     if (targetTv.type.kind === TypeKind.Invalid) {
       return null;
     }
-    if (a.op !== AssignOp.Define) {
-      this.error(a.pos, 'compound assignment to a field is not supported');
-      return null;
-    }
+    const base = ASSIGN_BASE_OP[a.op];
+    const written =
+      base === undefined
+        ? valueTv
+        : this.binaryTv(base, targetTv, valueTv, a.pos);
     const store = this.checkedStructFieldStore(target);
     if (store === null) {
       return null;
     }
-    if (!assignable(valueTv.type, targetTv.type)) {
+    if (!assignable(written.type, targetTv.type)) {
       this.error(
         a.value.pos,
-        `cannot assign ${formatType(valueTv.type)} to field '${target.sel.value}' of type ${formatType(targetTv.type)}`,
+        `cannot assign ${formatType(written.type)} to field '${target.sel.value}' of type ${formatType(targetTv.type)}`,
       );
     }
     this.info.updates.set(a, store);
-    return {...valueTv, qualifier: Qualifier.Series, value: null};
+    return {...written, qualifier: Qualifier.Series, value: null};
   }
 
   private checkedStructFieldStore(
@@ -2073,6 +2273,7 @@ class Checker {
           method.declaredParams.map(param => ({
             type: param.type,
             qualifier: param.qualifier ?? Qualifier.Const,
+            value: null,
           }));
         let variants = this.instances.get(method);
         if (variants === undefined) {
@@ -2093,6 +2294,8 @@ class Checker {
           qualifier: param?.qualifier ?? Qualifier.Const,
           value: null,
         }));
+        const savedValidation = this.validatingMethod;
+        this.validatingMethod = true;
         const instance = this.instantiate(
           method,
           method.displayName,
@@ -2101,6 +2304,7 @@ class Checker {
           argTvs,
           receiverQualifier,
         );
+        this.validatingMethod = savedValidation;
         variants.push(instance);
       }
     }
@@ -2610,15 +2814,6 @@ class Checker {
         return this.historyTv(e);
       case NodeKind.TupleExpr:
         return this.tupleTv(e);
-      case NodeKind.ArgumentObjectExpr:
-        for (const field of e.fields) {
-          this.checkExpr(field.value);
-        }
-        this.error(
-          e.pos,
-          'argument objects are valid only as the args argument to output()',
-        );
-        return INVALID_TV;
       case NodeKind.ParenExpr:
         return this.checkExpr(e.x);
       case NodeKind.IfExpr:
@@ -3181,8 +3376,7 @@ class Checker {
       qualifier === Qualifier.Const &&
       condTv.value !== null &&
       typeof condTv.value === 'boolean' &&
-      thenTv.value !== null &&
-      elseTv.value !== null
+      (condTv.value ? thenTv : elseTv).value !== null
     ) {
       const branch = condTv.value ? thenTv : elseTv;
       return {type, qualifier, value: branch.value};
@@ -3220,10 +3414,6 @@ class Checker {
         this.error(e.x.pos, 'const bindings do not have runtime history');
         return INVALID_TV;
       }
-    }
-    if (xTv.type.kind === TypeKind.Plot || xTv.type.kind === TypeKind.Hline) {
-      this.error(e.x.pos, 'output references do not have runtime history');
-      return INVALID_TV;
     }
     if (xTv.type.kind === TypeKind.Tuple) {
       this.error(
@@ -3302,8 +3492,15 @@ class Checker {
     this.flowQualifier = savedFlowQualifier;
     // Mismatched branch types are legal in statement position; the structure
     // then simply has no value, and value-position consumers report that.
-    const type =
-      elseType === null ? thenTv.type : unifyOrVoid(thenTv.type, elseType);
+    const thenReturns = alwaysReturns(e.then);
+    const elseReturns = e.else !== null && alwaysReturns(e.else);
+    const type = thenReturns
+      ? elseReturns
+        ? VoidType
+        : (elseType ?? VoidType)
+      : elseReturns || elseType === null
+        ? thenTv.type
+        : unifyOrVoid(thenTv.type, elseType);
     return {type, qualifier: Qualifier.Series, value: null};
   }
 
@@ -3467,7 +3664,8 @@ class Checker {
         arm.body.kind === NodeKind.Block
           ? this.checkBlock(arm.body)
           : this.checkExpr(arm.body);
-      type = type === null ? armTv.type : unifyOrVoid(type, armTv.type);
+      if (!alwaysReturns(arm.body))
+        type = type === null ? armTv.type : unifyOrVoid(type, armTv.type);
     }
     this.flowQualifier = savedFlowQualifier;
     return {type: type ?? VoidType, qualifier: Qualifier.Series, value: null};
@@ -3505,19 +3703,13 @@ class Checker {
     // Argument values are checked exactly once, up front; overload matching
     // reads their recorded TypeAndValue.
     let seenNamed = false;
-    const contextualOutput =
-      c.fun.kind === NodeKind.Name &&
-      c.fun.value === 'output' &&
-      this.scope.lookup(c.fun.value) === null;
     for (const arg of c.args) {
       if (arg.name !== null) {
         seenNamed = true;
       } else if (seenNamed) {
         this.error(arg.pos, 'positional argument after named argument');
       }
-      if (!contextualOutput || arg.value.kind !== NodeKind.ArgumentObjectExpr) {
-        this.checkExpr(arg.value);
-      }
+      this.checkExpr(arg.value);
     }
     const fun = c.fun;
     if (fun.kind === NodeKind.Name) {
@@ -3931,7 +4123,13 @@ class Checker {
       return INVALID_TV;
     }
     const signature = argTvs.map(tv =>
-      tv === null ? null : {type: tv.type, qualifier: tv.qualifier},
+      tv === null
+        ? null
+        : {
+            type: tv.type,
+            qualifier: tv.qualifier,
+            value: tv.qualifier === Qualifier.Const ? tv.value : null,
+          },
     );
     let variants = this.instances.get(template);
     if (variants === undefined) {
@@ -3963,7 +4161,7 @@ class Checker {
     ) {
       this.error(
         c.pos,
-        `'${displayName}' cannot call 'effect.emit' inside a request expression`,
+        `'${displayName}' cannot call 'emit' inside a request expression`,
       );
     }
     const dependencies = new Set(instance.dependencies);
@@ -3983,62 +4181,6 @@ class Checker {
       !this.checkRequestDependencies(c, displayName, dependencies)
     ) {
       return INVALID_TV;
-    }
-    if (
-      instance.output !== null &&
-      (this.blockDepth > 0 ||
-        this.funcBoundary !== null ||
-        this.captureDepth > 0)
-    ) {
-      this.error(
-        c.pos,
-        `'${displayName}' declares an output and can only be called at the top level of the script`,
-      );
-    }
-    if (instance.output !== null) {
-      const primary = instance.output.resolution.value;
-      if (
-        instance.output.resolution.outputKind === 'plot' &&
-        primary.tv.type.kind !== TypeKind.Int &&
-        primary.tv.type.kind !== TypeKind.Float &&
-        primary.tv.type.kind !== TypeKind.Invalid
-      ) {
-        const parameter = directOutputParameter(primary, instance.params);
-        const index =
-          parameter === null ? -1 : instance.params.indexOf(parameter);
-        const actual = index === -1 ? null : aligned[index];
-        this.error(
-          actual?.pos ?? c.pos,
-          `argument '${parameter?.name ?? 'value'}' to '${displayName}': cannot use ${formatType(primary.tv.type)} as a numeric value`,
-        );
-      }
-      const operands = [
-        instance.output.resolution.value,
-        ...instance.output.resolution.args.map(arg => arg.value),
-      ];
-      for (const operand of operands) {
-        if (
-          operand.tv.value !== null ||
-          !qualifierLE(operand.tv.qualifier, Qualifier.Input)
-        ) {
-          continue;
-        }
-        const parameter = directOutputParameter(operand, instance.params);
-        if (parameter === null) {
-          continue;
-        }
-        const index = instance.params.indexOf(parameter);
-        const actual = aligned[index];
-        if (
-          actual !== null &&
-          this.expressionCallsEffect(actual, this.info, Effect.Emit)
-        ) {
-          this.error(
-            actual.pos,
-            `'effect.emit' cannot execute from bind-time argument '${parameter.name}'`,
-          );
-        }
-      }
     }
     this.info.calls.set(c, {
       kind: CallKind.Function,
@@ -4195,6 +4337,10 @@ class Checker {
       name.qualifier = this.info.reassigned.has(name)
         ? joinQualifiers(tv.qualifier, Qualifier.Series)
         : tv.qualifier;
+      name.constValue =
+        !this.info.reassigned.has(name) && tv.qualifier === Qualifier.Const
+          ? tv.value
+          : null;
       if (
         template.receiver !== null &&
         template.substitutions !== null &&
@@ -4218,16 +4364,44 @@ class Checker {
       defaults,
       info,
       dependencies: new Set(),
-      output: null,
       resultType: InvalidType,
       resultQualifier: Qualifier.Const,
     };
     this.instanceStack.push(instance);
-    const bodyTv =
+    const savedReturns = this.returnValues;
+    this.returnValues = [];
+    let bodyTv =
       decl.body.kind === NodeKind.Block
         ? this.checkBlock(decl.body)
         : this.checkExpr(decl.body);
+    const returned = this.returnValues;
+    this.returnValues = savedReturns;
     this.instanceStack.pop();
+    if (returned.length > 0) {
+      const candidates = [...returned];
+      if (!alwaysReturns(decl.body)) candidates.push(bodyTv);
+      let result = candidates[0] ?? VOID_TV;
+      for (const value of candidates.slice(1)) {
+        const type = unifyTypes(result.type, value.type);
+        if (type === null) {
+          this.error(
+            decl.pos,
+            `function '${displayName}' has incompatible return or fallthrough types (${formatType(result.type)} and ${formatType(value.type)})`,
+          );
+          result = INVALID_TV;
+          break;
+        }
+        result = {
+          type,
+          qualifier: joinQualifiers(result.qualifier, value.qualifier),
+          value: null,
+        };
+      }
+      bodyTv = {
+        ...result,
+        qualifier: joinQualifiers(bodyTv.qualifier, result.qualifier),
+      };
+    }
     if (template.receiver === null) {
       if (bodyTv.type.kind === TypeKind.Na) {
         this.error(
@@ -4250,77 +4424,6 @@ class Checker {
       instance.resultType = template.declaredResult;
     }
     instance.resultQualifier = bodyTv.qualifier;
-
-    const directOutput = directOutputCall(decl.body);
-    const outputCalls = [...instance.info.calls.entries()].filter(
-      (entry): entry is [syntax.CallExpr, import('./info').OutputCall] =>
-        entry[1].kind === CallKind.Output,
-    );
-    if (outputCalls.length > 0) {
-      const directResolution =
-        directOutput === null
-          ? undefined
-          : instance.info.calls.get(directOutput);
-      if (
-        outputCalls.length !== 1 ||
-        directOutput === null ||
-        directResolution?.kind !== CallKind.Output
-      ) {
-        for (const [call] of outputCalls) {
-          this.error(
-            call.pos,
-            'output-declaring functions must consist of one direct tail output() call',
-          );
-        }
-      } else {
-        const operands = [
-          directResolution.value,
-          ...directResolution.args.map(arg => arg.value),
-        ];
-        const uses = new Map<VariableObject, number>();
-        let valid = true;
-        for (const operand of operands) {
-          if (operand.tv.value !== null) {
-            continue;
-          }
-          const parameter = directOutputParameter(operand, instance.params);
-          if (parameter === null) {
-            valid = false;
-            this.error(
-              operand.expr.pos,
-              'output wrapper operands must be constants or direct parameters',
-            );
-            continue;
-          }
-          uses.set(parameter, (uses.get(parameter) ?? 0) + 1);
-        }
-        for (const parameter of instance.params) {
-          const count = uses.get(parameter) ?? 0;
-          if (count !== 1) {
-            valid = false;
-            this.error(
-              directOutput.pos,
-              `output wrapper parameter '${parameter.name}' must be used exactly once, got ${count}`,
-            );
-          }
-        }
-        for (const dflt of instance.defaults.values()) {
-          if (dflt.tv.value === null) {
-            valid = false;
-            this.error(
-              dflt.expr.pos,
-              'output wrapper defaults must be compile-time constants',
-            );
-          }
-        }
-        if (valid) {
-          instance.output = {
-            call: directOutput,
-            resolution: directResolution,
-          };
-        }
-      }
-    }
 
     if (this.methodErrorAttempts > errorAttemptsBefore) {
       this.invalidInstances.add(instance);
@@ -4366,13 +4469,6 @@ class Checker {
       return INVALID_TV;
     }
     if (
-      name === 'output' &&
-      candidates.length === 1 &&
-      candidates[0].effect === Effect.Output
-    ) {
-      return this.checkOutput(c, candidates[0]);
-    }
-    if (
       (methodReceiver !== null &&
         methodReceiver.tv.type.kind === TypeKind.Invalid) ||
       c.args.some(arg => this.tvOf(arg.value).type.kind === TypeKind.Invalid)
@@ -4399,10 +4495,7 @@ class Checker {
       );
       if (outcome.ok) {
         this.checkPlacement(candidate, c.pos);
-        if (
-          candidate.effect === Effect.Declaration ||
-          candidate.effect === Effect.Output
-        ) {
+        if (candidate.effect === Effect.Declaration) {
           outcome.args.forEach((arg, index) => {
             if (arg === null || this.tvOf(arg).value !== null) {
               return;
@@ -4416,7 +4509,7 @@ class Checker {
               if (this.expressionCallsEffect(arg, this.info, Effect.Emit)) {
                 this.error(
                   arg.pos,
-                  `'effect.emit' cannot execute from bind-time argument '${candidate.params[index]?.name ?? index}'`,
+                  `'emit' cannot execute from bind-time argument '${candidate.params[index]?.name ?? index}'`,
                 );
               }
             }
@@ -4491,176 +4584,6 @@ class Checker {
       this.error(pos, `no matching overload for '${name}'`);
     }
     return INVALID_TV;
-  }
-
-  private checkOutput(c: syntax.CallExpr, _native: NativeFunc): TypeAndValue {
-    if (c.typeArgs !== null) {
-      this.error(c.pos, "'output' does not accept type arguments");
-      return INVALID_TV;
-    }
-
-    const names = ['value', 'kind', 'args'] as const;
-    const aligned: Array<syntax.Expr | null> = [null, null, null];
-    let position = 0;
-    for (const arg of c.args) {
-      let index: number;
-      if (arg.name === null) {
-        index = position;
-        position += 1;
-        if (index >= aligned.length) {
-          this.error(arg.pos, "too many arguments in call to 'output'");
-          return INVALID_TV;
-        }
-      } else {
-        index = names.indexOf(arg.name.value as (typeof names)[number]);
-        if (index === -1) {
-          this.error(
-            arg.pos,
-            `unknown argument '${arg.name.value}' in call to 'output'`,
-          );
-          return INVALID_TV;
-        }
-      }
-      if (aligned[index] !== null) {
-        this.error(arg.pos, `duplicate argument '${names[index]}'`);
-        return INVALID_TV;
-      }
-      aligned[index] = arg.value;
-    }
-
-    for (const [index, name] of names.entries()) {
-      if (aligned[index] === null) {
-        this.error(c.pos, `missing argument '${name}' in call to 'output'`);
-        return INVALID_TV;
-      }
-    }
-
-    const valueExpr = aligned[0]!;
-    const kindExpr = aligned[1]!;
-    const argsExpr = aligned[2]!;
-    if (valueExpr.kind === NodeKind.ArgumentObjectExpr) {
-      this.checkExpr(valueExpr);
-      return INVALID_TV;
-    }
-    if (kindExpr.kind === NodeKind.ArgumentObjectExpr) {
-      this.checkExpr(kindExpr);
-      return INVALID_TV;
-    }
-    const valueTv = this.tvOf(valueExpr);
-    const kindTv = this.tvOf(kindExpr);
-    if (valueTv.type.kind === TypeKind.Void) {
-      this.error(valueExpr.pos, 'output value has no value');
-    }
-    if (valueTv.type.kind === TypeKind.Na) {
-      this.error(valueExpr.pos, 'output value needs a concrete type');
-    }
-    if (kindTv.value === null || typeof kindTv.value !== 'string') {
-      this.error(kindExpr.pos, 'output kind must be a constant string');
-      return INVALID_TV;
-    }
-    if (kindTv.value.length === 0) {
-      this.error(kindExpr.pos, 'output kind cannot be empty');
-      return INVALID_TV;
-    }
-    if (
-      kindTv.value === 'plot' &&
-      valueTv.type.kind !== TypeKind.Int &&
-      valueTv.type.kind !== TypeKind.Float &&
-      valueTv.type.kind !== TypeKind.Invalid &&
-      this.funcBoundary === null
-    ) {
-      this.error(
-        valueExpr.pos,
-        `output kind 'plot' requires a numeric value, got ${formatType(valueTv.type)}`,
-      );
-      return INVALID_TV;
-    }
-    if (argsExpr.kind !== NodeKind.ArgumentObjectExpr) {
-      this.error(argsExpr.pos, 'output args must be an argument object');
-      return INVALID_TV;
-    }
-
-    const args: import('./info').OutputArgument[] = [];
-    const seen = new Set<string>();
-    for (const field of argsExpr.fields) {
-      if (seen.has(field.name.value)) {
-        this.error(
-          field.name.pos,
-          `duplicate output argument '${field.name.value}'`,
-        );
-        continue;
-      }
-      seen.add(field.name.value);
-      const tv = this.checkExpr(field.value);
-      if (tv.type.kind === TypeKind.Void) {
-        this.error(
-          field.value.pos,
-          `output argument '${field.name.value}' has no value`,
-        );
-      } else if (tv.type.kind === TypeKind.Na) {
-        this.error(
-          field.value.pos,
-          `output argument '${field.name.value}' needs a concrete type`,
-        );
-      }
-      args.push({
-        name: field.name.value,
-        value: {expr: field.value, info: this.info, tv},
-      });
-    }
-    this.info.types.set(argsExpr, VOID_TV);
-
-    if (this.captureDepth > 0) {
-      this.error(
-        c.pos,
-        "'output' cannot be called inside a request expression",
-      );
-    } else if (this.funcBoundary === null && this.blockDepth > 0) {
-      this.error(
-        c.pos,
-        "'output' can only be called at the top level of the script",
-      );
-    }
-
-    const fieldIndex = new Map(
-      argsExpr.fields.map((field, index) => [field, index + 1]),
-    );
-    const argumentEvaluationOrder: number[] = [];
-    for (const arg of c.args) {
-      const name = arg.name?.value;
-      const index =
-        name === null || name === undefined
-          ? c.args.indexOf(arg)
-          : names.indexOf(name as (typeof names)[number]);
-      if (index === 0) {
-        argumentEvaluationOrder.push(0);
-      } else if (
-        index === 2 &&
-        arg.value.kind === NodeKind.ArgumentObjectExpr
-      ) {
-        for (const field of arg.value.fields) {
-          const canonical = fieldIndex.get(field);
-          if (canonical !== undefined) argumentEvaluationOrder.push(canonical);
-        }
-      }
-    }
-
-    const resultType =
-      kindTv.value === 'plot'
-        ? PlotType
-        : kindTv.value === 'hline'
-          ? HlineType
-          : VoidType;
-    const resolution: import('./info').OutputCall = {
-      kind: CallKind.Output,
-      outputKind: kindTv.value,
-      value: {expr: valueExpr, info: this.info, tv: valueTv},
-      args,
-      argumentEvaluationOrder,
-      resultType,
-    };
-    this.info.calls.set(c, resolution);
-    return {type: resultType, qualifier: Qualifier.Const, value: null};
   }
 
   private matchOverload(
@@ -4800,9 +4723,7 @@ class Checker {
       }
       if (
         (param.constraint === 'storable' && !isStorableType(binding.type)) ||
-        (param.constraint === 'map-key' && !isMapKeyType(binding.type)) ||
-        (param.constraint === 'effect-payload' &&
-          !isEffectPayloadType(binding.type))
+        (param.constraint === 'map-key' && !isMapKeyType(binding.type))
       ) {
         return fail(
           c.pos,
@@ -4937,7 +4858,7 @@ class Checker {
       ) {
         this.error(
           option.pos,
-          `'effect.emit' cannot execute from request option '${optionName}'`,
+          `'emit' cannot execute from request option '${optionName}'`,
         );
       }
       if (option !== null && this.bindExpressionNeedsUnavailableFrame(option)) {
@@ -5058,10 +4979,7 @@ class Checker {
   private checkPlacement(native: NativeFunc, pos: Pos): void {
     if (native.effect === Effect.Emit) {
       if (this.captureDepth > 0) {
-        this.error(
-          pos,
-          `'effect.emit' cannot be called inside a request expression`,
-        );
+        this.error(pos, `'emit' cannot be called inside a request expression`);
       }
       return;
     }
@@ -5084,8 +5002,7 @@ class Checker {
       return;
     }
     if (
-      (native.effect === Effect.Output ||
-        native.effect === Effect.Declaration) &&
+      native.effect === Effect.Declaration &&
       (this.blockDepth > 0 ||
         this.funcBoundary !== null ||
         this.captureDepth > 0)
@@ -5108,9 +5025,6 @@ class Checker {
     if (resolution.kind === CallKind.Request) {
       return this.infoCallsEffect(resolution.capture, effect, seen);
     }
-    if (resolution.kind === CallKind.Output) {
-      return effect === Effect.Output;
-    }
     if (resolution.kind === CallKind.Constructor) {
       return resolution.args.some(
         arg =>
@@ -5128,6 +5042,7 @@ class Checker {
       return false;
     }
     seen.add(instance);
+    if (effect === Effect.Emit && instance.info.emits.size > 0) return true;
 
     // Method defaults are declaration-scope expressions checked into the
     // same Info as the body. Keep their syntax occurrences out of the body
@@ -5167,6 +5082,9 @@ class Checker {
   ): boolean {
     let found = false;
     walkExpression(expr, {
+      emit: () => {
+        if (effect === Effect.Emit) found = true;
+      },
       call: call => {
         const resolution = info.calls.get(call);
         if (
@@ -5186,6 +5104,7 @@ class Checker {
     effect: NativeEffect,
     seen: Set<FunctionInstance>,
   ): boolean {
+    if (effect === Effect.Emit && info.emits.size > 0) return true;
     for (const resolution of info.calls.values()) {
       if (this.resolutionCallsEffect(resolution, effect, seen)) {
         return true;
@@ -5218,7 +5137,7 @@ class Checker {
       ) {
         this.error(
           expr.pos,
-          `'effect.emit' cannot execute from an input binding expression`,
+          `'emit' cannot execute from an input binding expression`,
         );
       }
     }
@@ -5439,10 +5358,6 @@ class Checker {
       case NodeKind.TupleExpr:
         return expr.elems.some(elem =>
           this.bindExpressionNeedsUnavailableFrame(elem),
-        );
-      case NodeKind.ArgumentObjectExpr:
-        return expr.fields.some(field =>
-          this.bindExpressionNeedsUnavailableFrame(field.value),
         );
       case NodeKind.IfExpr:
       case NodeKind.ForExpr:
@@ -6020,23 +5935,15 @@ class Checker {
 // ---- pure helpers -----------------------------------------------------------
 
 function isLibraryDeclaration(stmt: syntax.Stmt): stmt is syntax.ExprStmt {
-  return scriptDeclarationName(stmt) === 'library';
-}
-
-function scriptDeclarationName(
-  stmt: syntax.Stmt,
-): 'indicator' | 'strategy' | 'library' | null {
   if (stmt.kind !== NodeKind.ExprStmt) {
-    return null;
+    return false;
   }
   const expr = unwrapParens(stmt.x);
-  if (expr.kind !== NodeKind.CallExpr || expr.fun.kind !== NodeKind.Name) {
-    return null;
-  }
-  const name = expr.fun.value;
-  return name === 'indicator' || name === 'strategy' || name === 'library'
-    ? name
-    : null;
+  return (
+    expr.kind === NodeKind.CallExpr &&
+    expr.fun.kind === NodeKind.Name &&
+    expr.fun.value === 'library'
+  );
 }
 
 function libraryDeclarationName(stmt: syntax.ExprStmt): string | null {
@@ -6064,10 +5971,10 @@ function isSourcePackageName(name: string): boolean {
 
 // Emission accepts ordinary values. The noder separately rejects recursive
 // exports because finite Arrow schemas cannot encode reference cycles.
-function isEffectPayloadType(type: Type): boolean {
+function isOutputValueType(type: Type): boolean {
   return (
     isStorableType(type) ||
-    (type.kind === TypeKind.Tuple && type.elems.every(isEffectPayloadType))
+    (type.kind === TypeKind.Tuple && type.elems.every(isOutputValueType))
   );
 }
 
@@ -6251,7 +6158,9 @@ function functionSignaturesEqual(
         return left === right;
       }
       return (
-        left.qualifier === right.qualifier && typesEqual(left.type, right.type)
+        left.qualifier === right.qualifier &&
+        typesEqual(left.type, right.type) &&
+        Object.is(left.value, right.value)
       );
     })
   );
@@ -6263,6 +6172,32 @@ function unwrapParens(e: syntax.Expr): syntax.Expr {
     x = x.x;
   }
   return x;
+}
+
+// Structured termination is sufficient here: loops are not assumed to execute,
+// and ordinary callee returns never terminate the caller.
+function alwaysReturns(body: syntax.Expr | syntax.Block): boolean {
+  if (body.kind === NodeKind.Block) {
+    return body.stmtList.some(stmt => {
+      if (stmt.kind === NodeKind.ReturnStmt) return true;
+      if (stmt.kind === NodeKind.ExprStmt) return alwaysReturns(stmt.x);
+      if (stmt.kind === NodeKind.DeclStmt) return alwaysReturns(stmt.init);
+      return false;
+    });
+  }
+  if (body.kind === NodeKind.ParenExpr) return alwaysReturns(body.x);
+  if (body.kind === NodeKind.IfExpr)
+    return (
+      body.else !== null && alwaysReturns(body.then) && alwaysReturns(body.else)
+    );
+  if (body.kind === NodeKind.CondExpr)
+    return alwaysReturns(body.then) && alwaysReturns(body.else);
+  if (body.kind === NodeKind.SwitchExpr)
+    return (
+      body.arms.some(arm => arm.pattern === null) &&
+      body.arms.every(arm => alwaysReturns(arm.body))
+    );
+  return false;
 }
 
 function constValuesEqual(a: ConstValue, b: ConstValue): boolean {
@@ -6398,37 +6333,6 @@ function unquoteString(lit: string): string {
   return out;
 }
 
-function directOutputCall(
-  body: syntax.Expr | syntax.Block,
-): syntax.CallExpr | null {
-  const expr =
-    body.kind === NodeKind.Block
-      ? body.stmtList.length === 1 &&
-        body.stmtList[0].kind === NodeKind.ExprStmt
-        ? body.stmtList[0].x
-        : null
-      : body;
-  if (expr === null) {
-    return null;
-  }
-  const current = unwrapParens(expr);
-  return current.kind === NodeKind.CallExpr ? current : null;
-}
-
-function directOutputParameter(
-  operand: CheckedExpression,
-  parameters: readonly VariableObject[],
-): VariableObject | null {
-  const expr = unwrapParens(operand.expr);
-  if (expr.kind !== NodeKind.Name) {
-    return null;
-  }
-  const object = operand.info.uses.get(expr);
-  return object?.kind === ObjectKind.Variable && parameters.includes(object)
-    ? object
-    : null;
-}
-
 function foldBinary(
   op: Op,
   x: TypeAndValue,
@@ -6543,7 +6447,6 @@ const CONST_ARG_RANGES: Record<
   string,
   Record<string, readonly [number, number]>
 > = {
-  indicator: {max_bars_back: [0, 5000]},
   'request.security': {calc_bars_count: [0, Number.MAX_SAFE_INTEGER]},
   'color.new': {transp: [0, 100]},
   'color.rgb': {
@@ -6657,6 +6560,7 @@ function walkExpression(
   visitor: {
     readonly call: (call: syntax.CallExpr) => void;
     readonly assignment: (assignment: syntax.AssignStmt) => void;
+    readonly emit?: (stmt: syntax.EmitStmt) => void;
   },
 ): void {
   const block = (value: syntax.Block): void => {
@@ -6664,6 +6568,14 @@ function walkExpression(
       switch (stmt.kind) {
         case NodeKind.ExprStmt:
           walkExpression(stmt.x, visitor);
+          break;
+        case NodeKind.EmitStmt:
+          visitor.emit?.(stmt);
+          walkExpression(stmt.name, visitor);
+          walkExpression(stmt.value, visitor);
+          break;
+        case NodeKind.ReturnStmt:
+          if (stmt.value !== null) walkExpression(stmt.value, visitor);
           break;
         case NodeKind.DeclStmt:
           walkExpression(stmt.init, visitor);
@@ -6738,11 +6650,6 @@ function walkExpression(
     case NodeKind.TupleExpr:
       for (const elem of expr.elems) {
         walkExpression(elem, visitor);
-      }
-      return;
-    case NodeKind.ArgumentObjectExpr:
-      for (const field of expr.fields) {
-        walkExpression(field.value, visitor);
       }
       return;
     case NodeKind.IfExpr:
