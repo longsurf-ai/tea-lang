@@ -50,35 +50,35 @@ export interface Name {
 }
 
 export const IrKind = {
-  Const: 'Const',
-  OutputRef: 'OutputRef',
-  HistRead: 'HistRead',
-  Binary: 'Binary',
-  Unary: 'Unary',
-  Cond: 'Cond',
-  CallFunc: 'CallFunc',
-  CallConstMethod: 'CallConstMethod',
-  CallMutableMethod: 'CallMutableMethod',
-  CallNative: 'CallNative',
-  MutateCollection: 'MutateCollection',
-  NewStruct: 'NewStruct',
-  MakeTuple: 'MakeTuple',
-  TupleGet: 'TupleGet',
-  FieldGet: 'FieldGet',
-  IfExpr: 'IfExpr',
-  SwitchExpr: 'SwitchExpr',
-  ForExpr: 'ForExpr',
-  ForInExpr: 'ForInExpr',
-  WhileExpr: 'WhileExpr',
-  BlockExpr: 'BlockExpr',
-  ExprStmt: 'ExprStmt',
-  InitName: 'InitName',
-  WriteName: 'WriteName',
-  StoreField: 'StoreField',
-  Emit: 'Emit',
-  EmitEffect: 'EmitEffect',
-  Break: 'Break',
-  Continue: 'Continue',
+  Const: 'Const', // Literal or folded constant, e.g. `42` or folded `1 + 2`.
+  OutputRef: 'OutputRef', // Declarative output handle, e.g. `p` in `p = plot(close)`.
+  HistRead: 'HistRead', // Current or historical read, e.g. `close` or `close[1]`.
+  Binary: 'Binary', // Binary operation, e.g. `x + y`.
+  Unary: 'Unary', // Unary operation, e.g. `-x` or `not ready`.
+  Cond: 'Cond', // Ternary conditional, e.g. `ready ? x : y`.
+  CallFunc: 'CallFunc', // Free Tea function call, e.g. `average(x, y)`.
+  CallConstMethod: 'CallConstMethod', // Read-only Tea method call, e.g. `portfolio.size()`.
+  CallMutableMethod: 'CallMutableMethod', // Mutable Tea method call, e.g. `portfolio.add(1)`.
+  CallNative: 'CallNative', // Native catalog call, e.g. `math.abs(x)`.
+  MutateCollection: 'MutateCollection', // Collection mutation with header write-back, e.g. `xs.push(x)`.
+  NewStruct: 'NewStruct', // New struct value, e.g. `Point.new(x, y)`.
+  MakeTuple: 'MakeTuple', // Tuple value, e.g. `[x, y]`.
+  TupleGet: 'TupleGet', // Tuple element from destructuring, e.g. `x` in `[x, y] = pair()`.
+  FieldGet: 'FieldGet', // Struct-field read, e.g. `point.x`.
+  IfExpr: 'IfExpr', // Block-form conditional, e.g. `if ready ... else ...`.
+  SwitchExpr: 'SwitchExpr', // Value-producing switch, e.g. `switch side`.
+  ForExpr: 'ForExpr', // Counted range loop, e.g. `for i = 0 to 9`.
+  ForInExpr: 'ForInExpr', // Collection iteration, e.g. `for x in xs`.
+  WhileExpr: 'WhileExpr', // Condition-controlled loop, e.g. `while ready`.
+  BlockExpr: 'BlockExpr', // Indented block with an optional trailing value, e.g. an `if` body.
+  ExprStmt: 'ExprStmt', // Expression evaluated only for effects, e.g. `counter.add(1)`.
+  InitName: 'InitName', // Persistent name initialization, e.g. `var x = 0`.
+  WriteName: 'WriteName', // Per-bar name write, e.g. `x = close` or `x := close`.
+  StoreField: 'StoreField', // Struct-field write, e.g. `point.x := 1`.
+  Emit: 'Emit', // Per-bar output-channel write, e.g. the `close` in `plot(close)`.
+  EmitEffect: 'EmitEffect', // Sparse effect append, e.g. `effect.emit(fill)`.
+  Break: 'Break', // Exit from the nearest loop, e.g. `break`.
+  Continue: 'Continue', // Jump to the next loop iteration, e.g. `continue`.
 } as const;
 
 // The IR's operation vocabulary: semantic operations, never surface lexemes.
