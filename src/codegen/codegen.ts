@@ -755,7 +755,6 @@ class Generator {
       if (staticRequestContext(edge) !== null) {
         captureArguments(
           [
-            edge.merge.availability,
             edge.merge.fill,
             edge.merge.ignoreInvalidSymbol,
             edge.merge.calcBarsCount,
@@ -775,19 +774,17 @@ class Generator {
         return;
       }
       resets.push(`module.requests[${rid}].context = null;`);
-      const [availability, fill, ignoreInvalidSymbol, calcBarsCount] =
-        captureArguments(
-          [
-            edge.merge.availability,
-            edge.merge.fill,
-            edge.merge.ignoreInvalidSymbol,
-            edge.merge.calcBarsCount,
-          ],
-          edge.optionArgumentEvaluationOrder,
-          lines,
-          ctx,
-          'request options',
-        );
+      const [fill, ignoreInvalidSymbol, calcBarsCount] = captureArguments(
+        [
+          edge.merge.fill,
+          edge.merge.ignoreInvalidSymbol,
+          edge.merge.calcBarsCount,
+        ],
+        edge.optionArgumentEvaluationOrder,
+        lines,
+        ctx,
+        'request options',
+      );
       const [symbol, timeframe] = captureArguments(
         [edge.symbol, edge.timeframe],
         edge.contextArgumentEvaluationOrder,
@@ -796,7 +793,7 @@ class Generator {
         'request context',
       );
       lines.push(
-        `module.requests[${rid}].context = {symbol: (${symbol}).value!, timeframe: (${timeframe}).value!, availability: (${availability}).value as "start" | "end", fill: (${fill}).value as "carry" | "sparse", ignoreInvalidSymbol: (${ignoreInvalidSymbol}).value, calcBarsCount: (${calcBarsCount}).value};`,
+        `module.requests[${rid}].context = {symbol: (${symbol}).value!, timeframe: (${timeframe}).value!, fill: (${fill}).value as "carry" | "sparse", ignoreInvalidSymbol: (${ignoreInvalidSymbol}).value, calcBarsCount: (${calcBarsCount}).value};`,
       );
     });
     const missing = this.globalParams.map(
@@ -831,7 +828,6 @@ class Generator {
       noteDepth(edge.depth);
       if (staticRequestContext(edge) === null) {
         expressions.push(
-          edge.merge.availability,
           edge.merge.fill,
           edge.merge.ignoreInvalidSymbol,
           edge.merge.calcBarsCount,
@@ -1138,7 +1134,6 @@ function staticRequestContext(
   edge: RequestEdge,
 ): NonNullable<Request['context']> | null {
   const expressions = [
-    edge.merge.availability,
     edge.merge.fill,
     edge.merge.ignoreInvalidSymbol,
     edge.merge.calcBarsCount,
@@ -1152,16 +1147,8 @@ function staticRequestContext(
     }
     return constValue(expr.value);
   });
-  const [
-    availability,
-    fill,
-    ignoreInvalidSymbol,
-    calcBarsCount,
-    symbol,
-    timeframe,
-  ] = values;
+  const [fill, ignoreInvalidSymbol, calcBarsCount, symbol, timeframe] = values;
   if (
-    (availability !== 'start' && availability !== 'end') ||
     (fill !== 'carry' && fill !== 'sparse') ||
     typeof ignoreInvalidSymbol !== 'boolean' ||
     typeof calcBarsCount !== 'number' ||
@@ -1175,7 +1162,6 @@ function staticRequestContext(
   return {
     symbol,
     timeframe,
-    availability,
     fill,
     ignoreInvalidSymbol,
     calcBarsCount,

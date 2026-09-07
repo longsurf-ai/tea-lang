@@ -9,7 +9,7 @@ Clean-room Tea conversion of the current public source behind TradingView's [Mul
 - Source defaults are stop loss enabled at 1%, take profit disabled at 2%, and trailing stop disabled at 0.5%. Those exact enable settings are pinned in the sweep; the optional inputs and branches remain directly runnable.
 - The source calculates stop/target state before its entry blocks, but then resets all exit state to `na` on every true long or short condition — including redundant same-direction entries rejected by `pyramiding=0`. Under the default higher-only condition one side is normally true on every usable bar, so the nominally enabled stop is usually inert. This Tea code preserves that control-flow bug instead of silently repairing it.
 - Enabling the published trailing option also cannot bootstrap its state: the source applies `max(na, candidate)` or `min(na, candidate)`, which remains `na`. Tea preserves this too.
-- The publication prose says the higher-timeframe request waits for completion, while the current Pine source explicitly uses `lookahead_on`. Tea represents that choice as `availability="start"`. This example pins the source, so its results are a deliberate future-data warning and runtime stress case, not deployable out-of-sample evidence.
+- The publication prose says the higher-timeframe request waits for completion, while the current Pine source explicitly uses `lookahead_on`. Tea request sampling is always start-available, so the port keeps that choice. This example pins the source, so its results are a deliberate future-data warning and runtime stress case, not deployable out-of-sample evidence.
 
 Execution and accounting use Tea's canonical `broker.new`, `portfolio.new`,
 and `trade.nextOpen` components. Fill-time percent sizing and ordered

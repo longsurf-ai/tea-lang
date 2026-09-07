@@ -4832,7 +4832,6 @@ class Checker {
       );
     }
     for (const optionName of [
-      'availability',
       'fill',
       'ignore_invalid_symbol',
       'calc_bars_count',
@@ -4842,11 +4841,9 @@ class Checker {
       if (option !== null) {
         const value = this.info.types.get(option)?.value;
         const allowed =
-          optionName === 'availability'
-            ? value === 'start' || value === 'end'
-            : optionName === 'fill'
-              ? value === 'carry' || value === 'sparse'
-              : true;
+          optionName === 'fill'
+            ? value === 'carry' || value === 'sparse'
+            : true;
         if (value !== null && value !== undefined && !allowed) {
           this.error(
             option.pos,

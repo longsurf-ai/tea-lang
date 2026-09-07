@@ -170,7 +170,6 @@ describe('Module.bind', () => {
       symbol: 'X',
       timeframe: 'D',
       fill: 'carry',
-      availability: 'end',
       ignoreInvalidSymbol: false,
       calcBarsCount: 0,
     });

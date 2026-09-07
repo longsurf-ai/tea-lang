@@ -216,7 +216,6 @@ function noteRequest(request: RequestEdge, reach: Reach): void {
   visitExpr(request.symbol, reach);
   visitExpr(request.timeframe, reach);
   for (const option of [
-    request.merge.availability,
     request.merge.fill,
     request.merge.ignoreInvalidSymbol,
     request.merge.calcBarsCount,

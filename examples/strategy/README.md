@@ -115,8 +115,8 @@ remain outside this interface.
   contexts. Their primary CSV is hash-pinned, but their full results can change
   with upstream history. Other measured profiles use only checked-in data.
 - MTF PSAR intentionally preserves the inspectable Pine source's
-  higher-timeframe `lookahead_on`, represented in Tea as
-  `availability="start"`, despite contradictory publication prose. Its extreme
+  higher-timeframe `lookahead_on`, which is how every Tea request samples,
+  despite contradictory publication prose. Its extreme
   result is a future-data warning, not evidence of performance.
 - Cluster's page title still says v6 while the current page serves later v8
   logic; the Tea example pins the original v6 behavior. Cowabunga likewise

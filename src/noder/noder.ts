@@ -513,7 +513,6 @@ class Noder {
         check(request.symbol);
         check(request.timeframe);
         check(request.merge.fill);
-        check(request.merge.availability);
         check(request.merge.ignoreInvalidSymbol);
         check(request.merge.calcBarsCount);
       });
@@ -1554,7 +1553,6 @@ class Noder {
       this.tvOf(timeframeExpr).type,
     );
     const optionNames = [
-      'availability',
       'fill',
       'ignore_invalid_symbol',
       'calc_bars_count',
@@ -1595,13 +1593,11 @@ class Noder {
         resolved.native.name === 'request.security_lower_tf'
           ? MergeMode.Collect
           : MergeMode.Sample,
-      availability: optionExpr('availability', StringType, 'end'),
       fill: optionExpr('fill', StringType, 'carry'),
       ignoreInvalidSymbol: optionExpr('ignore_invalid_symbol', BoolType, false),
       calcBarsCount: optionExpr('calc_bars_count', IntType, 0),
     };
     for (const [name, option] of [
-      ['availability', merge.availability],
       ['fill', merge.fill],
       ['ignore_invalid_symbol', merge.ignoreInvalidSymbol],
       ['calc_bars_count', merge.calcBarsCount],

@@ -49,7 +49,7 @@ two-channel observation is now an ordinary tuple-returning function followed by
 two named scalar emissions, preserving its independently calculated values.
 
 The `typed-execution-range` compile-through case locks the finite Node path
-contract for `time`, `time_close`, `bar_index`, `last_bar_index`, `timenow`,
+contract for `time`, `bar_index`, `last_bar_index`, `timenow`,
 and every `barstate.*` flag, including one-bar historical reads. The harness
 binds a deterministic `timenow` value of `1700000000000`. Its empty
 `request.security` declaration is bound explicitly to a child DataStream over

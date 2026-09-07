@@ -323,7 +323,6 @@ const COLLECT_REQUEST_MODULE: Module = testModule({
         symbol: 'X',
         timeframe: '1m',
         fill: 'carry',
-        availability: 'end',
         ignoreInvalidSymbol: false,
         calcBarsCount: 0,
       },

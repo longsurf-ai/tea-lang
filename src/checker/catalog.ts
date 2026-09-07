@@ -413,10 +413,6 @@ function buildVars(): NativeVar[] {
       domain: 'time',
       field: 'time',
     }),
-    builtinVariable('time_close', IntType, Qualifier.Series, {
-      domain: 'time',
-      field: 'time_close',
-    }),
     builtinVariable('timenow', IntType, Qualifier.Series, {
       domain: 'time',
       field: 'timenow',
@@ -874,7 +870,6 @@ function buildFuncs(): NativeFunc[] {
         req('symbol', StringType, Qualifier.Series, {acceptsNa: false}),
         req('timeframe', StringType, Qualifier.Series, {acceptsNa: false}),
         req('expression', TypeRef.Any, Qualifier.Series, {capture: true}),
-        opt('availability', StringType, Qualifier.Simple, {acceptsNa: false}),
         opt('fill', StringType, Qualifier.Simple, {acceptsNa: false}),
         opt('ignore_invalid_symbol', BoolType, Qualifier.Simple, {
           acceptsNa: false,

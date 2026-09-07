@@ -83,7 +83,6 @@ export interface Request {
   readonly context?: {
     readonly symbol: string;
     readonly timeframe: string;
-    readonly availability: 'start' | 'end';
     readonly fill: 'carry' | 'sparse';
     readonly ignoreInvalidSymbol: boolean;
     readonly calcBarsCount: number;

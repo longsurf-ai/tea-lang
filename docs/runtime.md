@@ -83,12 +83,11 @@ import {DataStream} from 'tea';
 const prices = new DataStream(
   new Schema([
     new Field('time', new TimestampMillisecond(), false),
-    new Field('time_close', new TimestampMillisecond(), false),
     new Field('close', new Float64(), false),
   ]),
-  of({time: -1n, time_close: 0n, close: 10}),
+  of({time: -1n, close: 10}),
 );
-// One row: close = 10 over the interval [-1, 0) epoch milliseconds.
+// One row: close = 10 at epoch millisecond -1.
 ```
 
 Timestamp values may be numbers or bigints, but must fit an exact safe integer
@@ -108,7 +107,7 @@ Pine is statically enabled while it is Tea's only Extension. It derives:
 
 - `bar_index` from the Node's committed index;
 - `last_bar_index` and `barstate.islast` from `DataStream.indices`;
-- `time` and `time_close` from the current input datum;
+- `time` from the current input datum;
 - one fixed historical `timenow` value from the Node's host clock;
 - historical bar-state flags from finite execution semantics.
 

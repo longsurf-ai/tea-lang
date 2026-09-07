@@ -207,24 +207,6 @@ describe('tea', () => {
     expect(sink.values).toEqual([]);
   });
 
-  test('rejects interval close times that move backward', async () => {
-    const node = tea`emit "output0" close`;
-    node.bind(
-      intervalNumericSource(
-        {time: 0n, time_close: 3n, close: 10},
-        {time: 1n, time_close: 2n, close: 20},
-      ),
-    );
-    const sink = new StepSink();
-
-    node.to(sink);
-
-    await expect(sink.completion).rejects.toThrow(
-      'DataStream time_close must be nondecreasing',
-    );
-    expect(values(sink)).toEqual([10]);
-  });
-
   test('validates a finite DataStream index count', async () => {
     const shortNode = tea`emit "output0" close`;
     shortNode.bind(new DataStream(numericSchema, of({close: 1}), i, 2));
@@ -634,54 +616,30 @@ describe('tea', () => {
   });
 
   test.each([
-    {
-      availability: 'end',
-      fill: 'carry',
-      expected: [NaN, 100, 100, 200, 200, 300],
-    },
-    {
-      availability: 'start',
-      fill: 'carry',
-      expected: [100, 100, 200, 200, 300, 300],
-    },
-    {
-      availability: 'end',
-      fill: 'sparse',
-      expected: [NaN, 100, NaN, 200, NaN, 300],
-    },
-    {
-      availability: 'start',
-      fill: 'sparse',
-      expected: [100, NaN, 200, NaN, 300, NaN],
-    },
+    {fill: 'carry', expected: [100, 100, 200, 200, 300, 300]},
+    {fill: 'sparse', expected: [100, NaN, 200, NaN, 300, NaN]},
   ] as const)(
-    'synchronizes timed scalar requests with $availability availability and $fill fill',
-    async ({availability, fill, expected}) => {
+    'synchronizes timed scalar requests with $fill fill',
+    async ({fill, expected}) => {
       const node = tea`
-        requested = request.security(
-          "X",
-          "2",
-          close,
-          availability = "${availability}",
-          fill = "${fill}"
-        )
+        requested = request.security("X", "2", close, fill = "${fill}")
         emit "output0" requested
       `;
       node.bind(
-        intervalNumericSource(
-          {time: 0n, time_close: 1n, close: 0},
-          {time: 1n, time_close: 2n, close: 0},
-          {time: 2n, time_close: 3n, close: 0},
-          {time: 3n, time_close: 4n, close: 0},
-          {time: 4n, time_close: 5n, close: 0},
-          {time: 5n, time_close: 6n, close: 0},
+        timedNumericSource(
+          {time: 0n, close: 0},
+          {time: 1n, close: 0},
+          {time: 2n, close: 0},
+          {time: 3n, close: 0},
+          {time: 4n, close: 0},
+          {time: 5n, close: 0},
         ),
       );
       node.bind({
-        requested: intervalNumericSource(
-          {time: 0n, time_close: 2n, close: 100},
-          {time: 2n, time_close: 4n, close: 200},
-          {time: 4n, time_close: 6n, close: 300},
+        requested: timedNumericSource(
+          {time: 0n, close: 100},
+          {time: 2n, close: 200},
+          {time: 4n, close: 300},
         ),
       });
       const sink = new StepSink();
@@ -693,7 +651,7 @@ describe('tea', () => {
     },
   );
 
-  test('falls back to positional scalar matching without complete interval times', async () => {
+  test('falls back to positional scalar matching without event times', async () => {
     const execute = async (
       main: DataStream<unknown>,
       child: DataStream<unknown>,
@@ -709,44 +667,31 @@ describe('tea', () => {
       await sink.completion;
       return values(sink);
     };
-    const interval = () =>
-      intervalNumericSource(
-        {time: 0n, time_close: 1n, close: 1},
-        {time: 1n, time_close: 2n, close: 2},
-      );
     const timed = () =>
       timedNumericSource({time: 0n, close: 10}, {time: 1n, close: 20});
-    const closeOnly = () =>
-      new DataStream(
-        new Schema([
-          new Field('time_close', new Int64(), false),
-          ...numericSchema.fields,
-        ]),
-        of({time_close: 1n, close: 10}, {time_close: 2n, close: 20}),
-      );
+    const untimed = () => numericSource(1, 2);
 
-    expect(await execute(interval(), timed())).toEqual([10, 20]);
-    expect(await execute(timed(), interval())).toEqual([1, 2]);
-    expect(await execute(timed(), timed())).toEqual([10, 20]);
-    expect(await execute(closeOnly(), closeOnly())).toEqual([10, 20]);
+    expect(await execute(timed(), untimed())).toEqual([1, 2]);
+    expect(await execute(untimed(), timed())).toEqual([10, 20]);
+    expect(await execute(untimed(), untimed())).toEqual([1, 2]);
   });
 
-  test('drops scalar child intervals that arrive after their parent boundary', async () => {
-    const mainRows = new Subject<IntervalNumericDatum>();
-    const childRows = new Subject<IntervalNumericDatum>();
+  test('drops scalar children that open before an already served main time', async () => {
+    const mainRows = new Subject<TimedNumericDatum>();
+    const childRows = new Subject<TimedNumericDatum>();
     const node = tea`
       requested = request.security("X", "2", close)
       emit "output0" requested
     `;
-    node.bind(intervalNumericSubject(mainRows));
-    node.bind({requested: intervalNumericSubject(childRows)});
+    node.bind(timedNumericSubject(mainRows));
+    node.bind({requested: timedNumericSubject(childRows)});
     const sink = new StepSink();
     node.to(sink);
 
-    mainRows.next({time: 0n, time_close: 10n, close: 0});
+    mainRows.next({time: 10n, close: 0});
     await sink.waitFor(1);
-    childRows.next({time: 0n, time_close: 5n, close: 100});
-    mainRows.next({time: 10n, time_close: 20n, close: 0});
+    childRows.next({time: 5n, close: 100});
+    mainRows.next({time: 20n, close: 0});
     await sink.waitFor(2);
     childRows.complete();
     mainRows.complete();
@@ -755,25 +700,25 @@ describe('tea', () => {
     expect(values(sink)).toEqual([NaN, NaN]);
   });
 
-  test('drops repeated late child intervals after retaining a current value', async () => {
-    const mainRows = new Subject<IntervalNumericDatum>();
-    const childRows = new Subject<IntervalNumericDatum>();
+  test('drops repeated late children after retaining a current value', async () => {
+    const mainRows = new Subject<TimedNumericDatum>();
+    const childRows = new Subject<TimedNumericDatum>();
     const node = tea`
       requested = request.security("X", "2", close)
       emit "output0" requested
     `;
-    node.bind(intervalNumericSubject(mainRows));
-    node.bind({requested: intervalNumericSubject(childRows)});
+    node.bind(timedNumericSubject(mainRows));
+    node.bind({requested: timedNumericSubject(childRows)});
     const sink = new StepSink();
     node.to(sink);
 
-    childRows.next({time: 0n, time_close: 5n, close: 100});
-    mainRows.next({time: 0n, time_close: 10n, close: 0});
+    childRows.next({time: 5n, close: 100});
+    mainRows.next({time: 10n, close: 0});
     await sink.waitFor(1);
-    childRows.next({time: 5n, time_close: 7n, close: 200});
-    childRows.next({time: 7n, time_close: 8n, close: 300});
-    mainRows.next({time: 10n, time_close: 20n, close: 0});
-    mainRows.next({time: 20n, time_close: 30n, close: 0});
+    childRows.next({time: 6n, close: 200});
+    childRows.next({time: 8n, close: 300});
+    mainRows.next({time: 20n, close: 0});
+    mainRows.next({time: 30n, close: 0});
     await sink.waitFor(3);
     childRows.complete();
     mainRows.complete();
@@ -783,16 +728,6 @@ describe('tea', () => {
   });
 
   test('rejects an invalid input-bound request policy before execution', () => {
-    const node = tea`
-      policy = input.string("end")
-      requested = request.security("X", "2", close, availability=policy)
-      emit "output0" requested
-    `;
-
-    expect(() => node.bind({policy: 'middle'})).toThrow(
-      'request 0 has invalid concrete context',
-    );
-
     const fillNode = tea`
       policy = input.string("carry")
       requested = request.security("X", "2", close, fill=policy)
@@ -824,40 +759,6 @@ describe('tea', () => {
     expect(outputValues(sink)).toEqual([
       [10, 2, 1, 2],
       [20, 2, 3, 4],
-    ]);
-  });
-
-  test('prefers exact interval containment over an unphased clock ratio', async () => {
-    const twoMinutes = (2n * m) as Clock;
-    const node = tea`
-      lower = request.security_lower_tf("X", "1", close)
-      emit "output0" close
-      emit "output1" lower.size()
-      emit "output2" lower.first()
-      emit "output3" lower.last()
-    `;
-    node.bind({
-      close: clockedIntervalNumericSource(
-        twoMinutes,
-        {time: 0n, time_close: 120_000n, close: 1},
-        {time: 120_000n, time_close: 240_000n, close: 2},
-      ),
-      lower: clockedIntervalNumericSource(
-        m,
-        {time: 60_000n, time_close: 120_000n, close: 10},
-        {time: 120_000n, time_close: 180_000n, close: 20},
-        {time: 180_000n, time_close: 240_000n, close: 30},
-        {time: 240_000n, time_close: 300_000n, close: 40},
-      ),
-    });
-    const sink = new StepSink();
-
-    node.to(sink);
-    await sink.completion;
-
-    expect(outputValues(sink)).toEqual([
-      [1, 1, 10, 10],
-      [2, 2, 20, 30],
     ]);
   });
 
@@ -896,14 +797,9 @@ describe('tea', () => {
       requested = request.security("X", "D", 42)
       emit "output0" requested
     `;
-    node.bind(
-      intervalNumericSource(
-        {time: 0n, time_close: 1n, close: 1},
-        {time: 1n, time_close: 2n, close: 2},
-      ),
-    );
+    node.bind(timedNumericSource({time: 0n, close: 1}, {time: 1n, close: 2}));
     node.bind({
-      requested: new DataStream(intervalNumericSchema, of(), i, 0),
+      requested: new DataStream(timedNumericSchema, of(), i, 0),
     });
     const sink = new StepSink();
 
@@ -1135,17 +1031,9 @@ interface TimedNumericDatum {
   readonly close: number;
 }
 
-type IntervalNumericDatum = TimedNumericDatum & {
-  readonly time_close: bigint;
-};
-
 const timedNumericSchema = new Schema([
   new Field('time', new Int64(), false),
   ...numericSchema.fields,
-]);
-const intervalNumericSchema = new Schema([
-  ...timedNumericSchema.fields,
-  new Field('time_close', new Int64(), false),
 ]);
 
 function timedNumericSource(
@@ -1158,30 +1046,6 @@ function timedNumericSubject(
   source: Subject<TimedNumericDatum>,
 ): DataStream<TimedNumericDatum> {
   return new DataStream(timedNumericSchema, source);
-}
-
-function intervalNumericSource(
-  ...values: readonly IntervalNumericDatum[]
-): DataStream<IntervalNumericDatum> {
-  return new DataStream(intervalNumericSchema, of(...values), i, values.length);
-}
-
-function clockedIntervalNumericSource(
-  clock: Clock,
-  ...values: readonly IntervalNumericDatum[]
-): DataStream<IntervalNumericDatum> {
-  return new DataStream(
-    intervalNumericSchema,
-    of(...values),
-    clock,
-    values.length,
-  );
-}
-
-function intervalNumericSubject(
-  source: Subject<IntervalNumericDatum>,
-): DataStream<IntervalNumericDatum> {
-  return new DataStream(intervalNumericSchema, source);
 }
 
 class StepSink {

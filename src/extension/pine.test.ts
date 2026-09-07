@@ -16,7 +16,6 @@ describe('Pine Extension', () => {
     const node = pineNode(
       [
         'emit "output0" time',
-        'emit "output1" time_close',
         'emit "output2" timenow',
         'emit "output3" bar_index',
         'emit "output4" last_bar_index',
@@ -27,15 +26,8 @@ describe('Pine Extension', () => {
     );
     node.bind(
       new DataStream(
-        new Schema([
-          new Field('time', new TimestampMillisecond(), false),
-          new Field('time_close', new TimestampMillisecond(), false),
-        ]),
-        of(
-          {time: 100n, time_close: 110n},
-          {time: 110n, time_close: 120n},
-          {time: 120n, time_close: 130n},
-        ),
+        new Schema([new Field('time', new TimestampMillisecond(), false)]),
+        of({time: 100n}, {time: 110n}, {time: 120n}),
         i,
         3,
       ),
@@ -46,9 +38,9 @@ describe('Pine Extension', () => {
     await sink.completion;
 
     expect(values(sink)).toEqual([
-      [100, 110, 1_777_777_777_777, 0, 2, 1, 0],
-      [110, 120, 1_777_777_777_777, 1, 2, 0, 0],
-      [120, 130, 1_777_777_777_777, 2, 2, 0, 1],
+      [100, 1_777_777_777_777, 0, 2, 1, 0],
+      [110, 1_777_777_777_777, 1, 2, 0, 0],
+      [120, 1_777_777_777_777, 2, 2, 0, 1],
     ]);
   });
 

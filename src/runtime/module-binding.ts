@@ -434,7 +434,6 @@ function validateContext(request: Request, id: number): void {
     context == null ||
     typeof context.symbol !== 'string' ||
     typeof context.timeframe !== 'string' ||
-    !['start', 'end'].includes(context.availability) ||
     !['carry', 'sparse'].includes(context.fill) ||
     typeof context.ignoreInvalidSymbol !== 'boolean' ||
     !Number.isSafeInteger(context.calcBarsCount) ||

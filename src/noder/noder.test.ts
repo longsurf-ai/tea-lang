@@ -965,7 +965,7 @@ describe('requests', () => {
   test('typed builtins use builtin places and reproject in request children', () => {
     const program = mustBuild(
       [
-        'root = time + time_close + bar_index',
+        'root = time + bar_index',
         'ticker = syminfo.tickerid',
         'child = request.security(ticker, "D", time)',
         'emit "output0" root + child',
@@ -976,7 +976,6 @@ describe('requests', () => {
     const childInputs = builtinInputsOf(program.requests[0].child);
     expect(rootInputs.map(input => input.source)).toEqual([
       {domain: 'time', field: 'time'},
-      {domain: 'time', field: 'time_close'},
       {domain: 'bar', field: 'bar_index'},
       {domain: 'syminfo', field: 'tickerid'},
     ]);
@@ -1028,14 +1027,10 @@ describe('requests', () => {
       ].join('\n'),
     );
     const edge = program.requests[0];
-    expect(edge.optionArgumentEvaluationOrder).toEqual([3, 1, 0, 2]);
+    expect(edge.optionArgumentEvaluationOrder).toEqual([2, 0, 1]);
     expect(edge.merge.fill).toMatchObject({
       kind: IrKind.Read,
       place: {kind: PlaceKind.Param},
-    });
-    expect(edge.merge.availability).toMatchObject({
-      kind: IrKind.Const,
-      value: 'end',
     });
     expect(edge.merge.ignoreInvalidSymbol).toMatchObject({
       kind: IrKind.Const,

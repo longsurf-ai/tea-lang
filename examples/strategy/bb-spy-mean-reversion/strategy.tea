@@ -44,17 +44,8 @@ type ConfirmedMonthlyAtr
 	float seedSum = 0.0
 	int samples = 0
 
-	float update(float currentKey, float nextKey, float barHigh, float barLow, float barClose, int length) =>
-		if na(this.key) or currentKey != this.key
-			this.key := currentKey
-			this.monthHigh := barHigh
-			this.monthLow := barLow
-			this.monthClose := barClose
-		else
-			this.monthHigh := math.max(this.monthHigh, barHigh)
-			this.monthLow := math.min(this.monthLow, barLow)
-			this.monthClose := barClose
-		if nextKey != currentKey
+	float update(float currentKey, float barHigh, float barLow, float barClose, int length) =>
+		if not na(this.key) and currentKey != this.key
 			monthlyRange = this.monthHigh - this.monthLow
 			monthlyTr = na(this.previousClose) ? monthlyRange : math.max(monthlyRange, math.abs(this.monthHigh - this.previousClose), math.abs(this.monthLow - this.previousClose))
 			nextSamples = this.samples + 1
@@ -66,6 +57,15 @@ type ConfirmedMonthlyAtr
 				this.value := (this.value * (length - 1.0) + monthlyTr) / length
 			this.samples := nextSamples
 			this.previousClose := this.monthClose
+		if na(this.key) or currentKey != this.key
+			this.key := currentKey
+			this.monthHigh := barHigh
+			this.monthLow := barLow
+			this.monthClose := barClose
+		else
+			this.monthHigh := math.max(this.monthHigh, barHigh)
+			this.monthLow := math.min(this.monthLow, barLow)
+			this.monthClose := barClose
 		this.value
 
 month_key(int epochMs) =>
@@ -131,10 +131,10 @@ var int entry_bar = na
 float missing_float = na
 int missing_int = na
 
-// The CSV axis exposes each bar's close boundary. A transition in that
-// boundary identifies the month's final daily row, matching Pine's
-// end-available higher-timeframe publication without implicit resampling.
-monthly_atr = monthly_atr_state.update(month_key(time), month_key(time_close), high, low, close, atr_length)
+// A change in the bar's month key means the previous month has completed. The
+// completed monthly value is published on the first daily row of the new month,
+// matching Pine's lookahead_off publication without implicit resampling.
+monthly_atr = monthly_atr_state.update(month_key(time), high, low, close, atr_length)
 
 // Resolve the one pending market-or-buy-stop command, then the atomic bracket.
 matches = strat.begin_bar(open, high, low, bar_index)

@@ -112,8 +112,8 @@ rebound_average = ta.sma(close, rebound_sma_length)
 deep_rsi = deep_rsi_state.update(close, deep_rsi_length)
 shallow_rsi = shallow_rsi_state.update(close, shallow_rsi_length)
 average_dollar_volume = ta.sma(close * volume, 20)
-benchmark_close = request.security(benchmark_symbol, "D", close, availability="end")
-benchmark_average = request.security(benchmark_symbol, "D", ta.sma(close, regime_length), availability="end")
+benchmark_close = request.security(benchmark_symbol, "D", close)
+benchmark_average = request.security(benchmark_symbol, "D", ta.sma(close, regime_length))
 
 date_open = time >= start_time and time <= end_time
 liquidity_open = use_liquidity_filter == 0 or average_dollar_volume >= minimum_dollar_volume_millions * 1000000.0

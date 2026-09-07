@@ -189,7 +189,6 @@ const edge: RequestEdge = {
   optionArgumentEvaluationOrder: [0, 1, 2, 3],
   merge: {
     mode: MergeMode.Sample,
-    availability: text('end'),
     fill: text('carry'),
     ignoreInvalidSymbol: bool(false),
     calcBarsCount: int(0),

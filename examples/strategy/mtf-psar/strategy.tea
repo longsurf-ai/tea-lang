@@ -49,11 +49,11 @@ if strat.position_quantity() == 0.0
 current_sar = ta.sar(sar_start, sar_increment, sar_maximum)
 // The inspected v2.0 source makes the higher interval available from its
 // start, despite the page describing a strategy that waits for completion.
+// Tea request sampling is always start-available, so no option is needed.
 higher_sar = request.security(
 	request_symbol,
 	higher_timeframe,
-	ta.sar(sar_start, sar_increment, sar_maximum),
-	availability = "start"
+	ta.sar(sar_start, sar_increment, sar_maximum)
 )
 
 higher_long = close > higher_sar

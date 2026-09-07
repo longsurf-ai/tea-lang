@@ -23,7 +23,6 @@ describe('request context evaluation order', () => {
       symbol: 'SYMBOL_SENTINEL',
       timeframe: 'TIMEFRAME_SENTINEL',
       fill: 'carry',
-      availability: 'end',
       ignoreInvalidSymbol: false,
       calcBarsCount: 0,
     });
@@ -64,13 +63,11 @@ describe('request context evaluation order', () => {
     const program = mustBuild(
       [
         'count = input.int(7)',
-        'availability = input.string("start")',
         'ignore = input.bool(true)',
         'fillValue = input.string("sparse")',
         'd = request.security(',
         '    calc_bars_count = count,',
         '    timeframe = "TIMEFRAME_SENTINEL",',
-        '    availability = availability,',
         '    expression = close,',
         '    ignore_invalid_symbol = ignore,',
         '    symbol = "SYMBOL_SENTINEL",',
@@ -79,26 +76,22 @@ describe('request context evaluation order', () => {
       ].join('\n'),
     );
     const edge = program.requests[0];
-    expect(edge.optionArgumentEvaluationOrder).toEqual([3, 0, 2, 1]);
+    expect(edge.optionArgumentEvaluationOrder).toEqual([2, 1, 0]);
     expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
 
     const js = generate(program);
     const binding = js.slice(js.lastIndexOf('(module, contextConstants) =>'));
     const assignment = binding.match(
-      /module\.requests\[0\]\.context = \{\s*symbol: \((t\d+)\)\.value!, timeframe: \((t\d+)\)\.value!, availability: \((t\d+)\)\.value as "start" \| "end", fill: \((t\d+)\)\.value as "carry" \| "sparse", ignoreInvalidSymbol: \((t\d+)\)\.value, calcBarsCount: \((t\d+)\)\.value\s*\};/,
+      /module\.requests\[0\]\.context = \{\s*symbol: \((t\d+)\)\.value!, timeframe: \((t\d+)\)\.value!, fill: \((t\d+)\)\.value as "carry" \| "sparse", ignoreInvalidSymbol: \((t\d+)\)\.value, calcBarsCount: \((t\d+)\)\.value\s*\};/,
     );
     expect(assignment).not.toBeNull();
     if (assignment === null) {
       return;
     }
-    const [, , , availability, fill, ignoreInvalidSymbol, calcBarsCount] =
-      assignment;
-    const captures = [
-      calcBarsCount,
-      availability,
-      ignoreInvalidSymbol,
-      fill,
-    ].map(temp => binding.indexOf(`const ${temp} =`));
+    const [, , , fill, ignoreInvalidSymbol, calcBarsCount] = assignment;
+    const captures = [calcBarsCount, ignoreInvalidSymbol, fill].map(temp =>
+      binding.indexOf(`const ${temp} =`),
+    );
     expect(captures.every(index => index >= 0)).toBe(true);
     expect(captures).toEqual([...captures].sort((a, b) => a - b));
 
@@ -164,7 +157,7 @@ describe('request context evaluation order', () => {
     const invalidEdge = valid.requests[0] as unknown as {
       optionArgumentEvaluationOrder: number[];
     };
-    invalidEdge.optionArgumentEvaluationOrder = [0, 0, 2, 3];
+    invalidEdge.optionArgumentEvaluationOrder = [0, 0, 2];
 
     expect(() => generate(valid)).toThrow(
       'request options has an invalid argument evaluation order',

@@ -500,7 +500,6 @@ describe('context builtins', () => {
       ['bar_index', {domain: 'bar', field: 'bar_index'}],
       ['last_bar_index', {domain: 'bar', field: 'last_bar_index'}],
       ['time', {domain: 'time', field: 'time'}],
-      ['time_close', {domain: 'time', field: 'time_close'}],
       ['timenow', {domain: 'time', field: 'timenow'}],
       ['syminfo.tickerid', {domain: 'syminfo', field: 'tickerid'}],
       ['syminfo.ticker', {domain: 'syminfo', field: 'ticker'}],
@@ -560,7 +559,6 @@ describe('context builtins', () => {
       [
         'price = close',
         'opened = time',
-        'closed = time_close',
         'index = bar_index',
         'first = barstate.isfirst',
         'symbol = syminfo.tickerid',
@@ -583,10 +581,6 @@ describe('context builtins', () => {
     expect(bindings.get('time')).toEqual({
       kind: 'builtin',
       source: {domain: 'time', field: 'time'},
-    });
-    expect(bindings.get('time_close')).toEqual({
-      kind: 'builtin',
-      source: {domain: 'time', field: 'time_close'},
     });
     expect(bindings.get('bar_index')).toEqual({
       kind: 'builtin',
@@ -799,7 +793,7 @@ describe('calls', () => {
       ['x = input.int(1, display=display.pane)', 'display must be'],
       ['x = input.source(volume)', 'source default must be'],
       ['x = input.source(time)', 'source default must be'],
-      ['x = input.source(time_close)', 'source default must be'],
+      ['x = input.source(time)', 'source default must be'],
       ['x = input.source(bar_index)', 'source default must be'],
       ['x = input.source(close + 1)', 'source default must be'],
       ['x = input.int(1, active=close > 0)', 'accepts at most input'],
@@ -831,10 +825,6 @@ describe('calls', () => {
       [
         'x = request.security("X", "D", close, calc_bars_count=int(na))',
         'cannot be na',
-      ],
-      [
-        'x = request.security("X", "D", close, availability="middle")',
-        'request option \'availability\' has invalid value "middle"',
       ],
       [
         'x = request.security("X", "D", close, fill="forward")',

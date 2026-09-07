@@ -84,14 +84,14 @@ export function csvStream(
       : all.slice(all.length - trailingIndices);
   const names =
     parsed.length === 0 ? csvHeaders(text) : Object.keys(parsed[0]!);
-  const rows = parsed.map((input, index) => {
+  const rows = parsed.map(input => {
     const row: Record<string, number> = {};
     for (const name of names) {
       const raw = input[name];
       if (raw === undefined) {
         throw new Error(`CSV input has no value for '${name}'`);
       }
-      if (name === 'time' || name === 'time_close') {
+      if (name === 'time') {
         if (raw === '') throw new Error(`CSV input has no value for '${name}'`);
         row[name] = epoch(raw);
       } else {
@@ -103,18 +103,6 @@ export function csvStream(
       }
     }
     derivePrices(row);
-    if ('time' in row && !('time_close' in row)) {
-      const time = row.time!;
-      const next = parsed[index + 1]?.['time'];
-      const previous = parsed[index - 1]?.['time'];
-      const span =
-        next !== undefined
-          ? epoch(next) - time
-          : previous !== undefined
-            ? time - epoch(previous)
-            : 0;
-      row.time_close = time + span;
-    }
     return Object.freeze(row);
   });
   const schema = new Schema(
@@ -122,9 +110,7 @@ export function csvStream(
       name =>
         new Field(
           name,
-          name === 'time' || name === 'time_close'
-            ? new TimestampMillisecond()
-            : new Float64(),
+          name === 'time' ? new TimestampMillisecond() : new Float64(),
           false,
         ),
     ),
@@ -172,13 +158,6 @@ export function arrayStream(
     );
     if (time !== undefined) {
       row.time = time[index]!;
-      const span =
-        index + 1 < time.length
-          ? time[index + 1]! - time[index]!
-          : index > 0
-            ? time[index]! - time[index - 1]!
-            : 0;
-      row.time_close = time[index]! + span;
     }
     return Object.freeze(row);
   });
@@ -187,7 +166,6 @@ export function arrayStream(
   );
   if (time !== undefined) {
     fields.push(new Field('time', new TimestampMillisecond(), false));
-    fields.push(new Field('time_close', new TimestampMillisecond(), false));
   }
   return new DataStream(new Schema(fields), from(rows), i, indices);
 }

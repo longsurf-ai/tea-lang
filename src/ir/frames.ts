@@ -174,7 +174,6 @@ function walkRootFrame(
       walkExpr(request.symbol);
       walkExpr(request.timeframe);
     }
-    walkExpr(request.merge.availability);
     walkExpr(request.merge.fill);
     walkExpr(request.merge.ignoreInvalidSymbol);
     walkExpr(request.merge.calcBarsCount);

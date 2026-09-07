@@ -149,8 +149,7 @@ places to its depth pass for annotation.
   builtin in each Program. `input.source` is restricted to this closed
   vocabulary. Neither noder nor runtime classifies a builtin by parsing its
   spelling.
-- **typed builtins** (also a projection): `time`, `time_close`,
-  `timenow`, `bar_index`, `last_bar_index`, `barstate.*`, `syminfo.*`, and
+- **typed builtins** (also a projection): `time`, `timenow`, `bar_index`, `last_bar_index`, `barstate.*`, `syminfo.*`, and
   `timeframe.*` are typed values supplied by the runtime context rather than
   numeric series columns. They project to `BuiltinInput`, which carries
   source, type, qualifier, and depth. Its source is a closed `{domain, field}`
@@ -208,10 +207,10 @@ places to its depth pass for annotation.
   (`RequestEdge.resultName`, written each child bar) whose type is the scalar
   `captureType`. `request.security` exposes the same `T` as `resultType` with
   Sample mode; `request.security_lower_tf` exposes `array<T>` as `resultType`
-  with Collect mode. The edge retains four concrete bind-time option
-  expressions (`availability`, `fill`, `ignore_invalid_symbol`, and
-  `calc_bars_count`) plus their source evaluation order; omitted options
-  normalize to `"end"`, `"carry"`, `false`, and `0`. Currency remains a
+  with Collect mode. The edge retains three concrete bind-time option
+  expressions (`fill`, `ignore_invalid_symbol`, and `calc_bars_count`) plus
+  their source evaluation order; omitted options normalize to `"carry"`,
+  `false`, and `0`. Currency remains a
   positional but staged source parameter and does not enter the Program until
   its FX/unit model exists. One Program ↔ one context; composition is by
   recursion, never by multi-context Programs. Context arguments must be known

@@ -218,7 +218,7 @@ describe('module binding', () => {
     const module = loadModule(
       generate(
         mustBuild(
-          'length = input.int(2)\npolicy = input.string("end")\nr = request.security("X", "D", close[length], availability=policy)\nemit "output0" r',
+          'length = input.int(2)\npolicy = input.string("carry")\nr = request.security("X", "D", close[length], fill=policy)\nemit "output0" r',
         ),
       ),
     ).bind();
@@ -231,7 +231,7 @@ describe('module binding', () => {
     expect(child.inputs).toBe(inputs);
     expect(child.parameters[0]!.value).toBe(2);
     expect(child.inputs.series[0]!.depth).toEqual({kind: 'const', bars: 2});
-    expect(module.requests[0]!.context?.availability).toBe('end');
+    expect(module.requests[0]!.context?.fill).toBe('carry');
   });
 
   test('execution closes binding while an explicit copy can configure another run', () => {

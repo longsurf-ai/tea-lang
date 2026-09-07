@@ -99,7 +99,6 @@ export function exprChildren(
     children.push(
       edge.symbol,
       edge.timeframe,
-      edge.merge.availability,
       edge.merge.fill,
       edge.merge.ignoreInvalidSymbol,
       edge.merge.calcBarsCount,

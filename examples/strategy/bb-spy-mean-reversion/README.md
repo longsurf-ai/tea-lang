@@ -20,9 +20,10 @@ in the canonical libraries rather than in a strategy-local fill factory. The
 Tea port omits the publication's display-only bias-history collection because
 only the current scalar bias affects orders. Confirmed monthly ATR is built
 from the checked-in daily bars
-instead of issuing an external higher-timeframe request: the CSV `time_close`
-boundary identifies the month's final daily row, so the completed value is
-published on the same lower-timeframe bar as Pine's `lookahead_off` merge. Its
+instead of issuing an external higher-timeframe request: a change in the bar's
+month identifies the first daily row of a new month, so the completed value is
+published one bar after the month's final row, as Pine's `lookahead_off` merge
+does. Its
 Wilder smoothing is seeded with the simple average of the first 14 completed
 monthly true ranges. The short-side ADX gate likewise uses local
 Pine-compatible SMA-seeded DMI/ADX smoothing so the selected historical

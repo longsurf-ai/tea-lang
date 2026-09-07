@@ -18,10 +18,6 @@
       "type": "int"
     },
     {
-      "name": "output1",
-      "type": "int"
-    },
-    {
       "name": "output2",
       "type": "int"
     },
@@ -54,11 +50,6 @@
           "name": "output0",
           "provisional": false,
           "value": 1000
-        },
-        {
-          "name": "output1",
-          "provisional": false,
-          "value": 2000
         },
         {
           "name": "output2",
@@ -101,11 +92,6 @@
           "value": 2000
         },
         {
-          "name": "output1",
-          "provisional": false,
-          "value": 3000
-        },
-        {
           "name": "output2",
           "provisional": false,
           "value": 1
@@ -144,11 +130,6 @@
           "name": "output0",
           "provisional": false,
           "value": 3000
-        },
-        {
-          "name": "output1",
-          "provisional": false,
-          "value": 4000
         },
         {
           "name": "output2",
@@ -191,11 +172,6 @@
           "value": 4000
         },
         {
-          "name": "output1",
-          "provisional": false,
-          "value": 5000
-        },
-        {
           "name": "output2",
           "provisional": false,
           "value": 3
@@ -234,11 +210,6 @@
           "name": "output0",
           "provisional": false,
           "value": 5000
-        },
-        {
-          "name": "output1",
-          "provisional": false,
-          "value": 6000
         },
         {
           "name": "output2",

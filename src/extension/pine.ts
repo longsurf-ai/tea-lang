@@ -48,9 +48,6 @@ function builtinValue(
         case 'time':
           value = eventTime(datum.time, 'time');
           break;
-        case 'time_close':
-          value = eventTime(datum.time_close, 'time_close');
-          break;
         case 'timenow':
           value = timeNow;
           break;
@@ -89,7 +86,7 @@ function builtinValue(
   return value;
 }
 
-function eventTime(value: unknown, field: 'time' | 'time_close'): number {
+function eventTime(value: unknown, field: 'time'): number {
   if (value === undefined || value === null) {
     throw new BindError(
       `Pine ${field} requires an exact bigint epoch-ms input`,

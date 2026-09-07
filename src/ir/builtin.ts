@@ -6,7 +6,7 @@
 export type BuiltinSource =
   | {
       readonly domain: 'time';
-      readonly field: 'time' | 'time_close' | 'timenow';
+      readonly field: 'time' | 'timenow';
     }
   | {
       readonly domain: 'bar';

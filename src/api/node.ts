@@ -146,7 +146,6 @@ class TeaNode implements Node {
   private clock: Clock = i;
   private indices: number | null = null;
   private timed = false;
-  private intervalTimed = false;
   private readonly results = new Subject<Datum>();
   private readonly deliveryFailure = new Subject<never>();
   private runtime: Context | null = null;
@@ -413,7 +412,6 @@ class TeaNode implements Node {
       this.data = this.combineData(this.data, this.sourceData(stream, names));
       names.forEach(name => this.connected.add(name));
       this.timed ||= this.hasTime(stream);
-      this.intervalTimed ||= this.hasTime(stream) && this.hasTimeClose(stream);
     }
     this.clock = clocks[0] ?? i;
     this.indices = extents[0] ?? null;
@@ -470,7 +468,6 @@ class TeaNode implements Node {
       this.clock = i;
       this.indices = null;
       this.timed = false;
-      this.intervalTimed = false;
     }
     this.requests.forEach(request => request.refresh());
   }
@@ -512,7 +509,6 @@ class TeaNode implements Node {
     const timed = this.hasTime(source);
     let observed = 0;
     let previousTime: bigint | null = null;
-    let previousClose: bigint | null = null;
     return source.asObservable().pipe(
       map(value => {
         observed += 1;
@@ -536,19 +532,6 @@ class TeaNode implements Node {
             }
             previousTime = time;
             entries.push(['time', time]);
-            if (Object.hasOwn(parsed, 'time_close')) {
-              const close = this.inputTime(parsed.time_close, 'time_close');
-              if (close < time) {
-                throw new Error(
-                  'DataStream time_close must be a bigint at or after time',
-                );
-              }
-              if (previousClose !== null && close < previousClose) {
-                throw new Error('DataStream time_close must be nondecreasing');
-              }
-              previousClose = close;
-              entries.push(['time_close', close]);
-            }
           } else if (timed && Object.hasOwn(parsed, 'time')) {
             entries.push(['time', null]);
           }
@@ -570,7 +553,7 @@ class TeaNode implements Node {
   }
 
   /** Validates one exact epoch-millisecond input time before execution. */
-  private inputTime(value: unknown, field: 'time' | 'time_close'): bigint {
+  private inputTime(value: unknown, field: 'time'): bigint {
     if (typeof value !== 'bigint' && typeof value !== 'number') {
       throw new Error(`DataStream ${field} must be an exact epoch-ms integer`);
     }
@@ -616,13 +599,6 @@ class TeaNode implements Node {
         ) {
           throw new Error('synchronized DataStream times disagree');
         }
-        if (
-          Object.hasOwn(left, 'time_close') &&
-          Object.hasOwn(right, 'time_close') &&
-          left.time_close !== right.time_close
-        ) {
-          throw new Error('synchronized DataStream close times disagree');
-        }
         return [Object.freeze({...left, ...right}), 1];
       }),
     );
@@ -637,17 +613,6 @@ class TeaNode implements Node {
   private hasTime(stream: DataStream<unknown>): boolean {
     const type = stream.schema.fields.find(
       field => field.name === 'time',
-    )?.type;
-    return (
-      (DataType.isTimestamp(type) && type.unit === TimeUnit.MILLISECOND) ||
-      (DataType.isInt(type) && type.bitWidth === 64)
-    );
-  }
-
-  /** Reports whether a DataStream schema declares interval close time. */
-  private hasTimeClose(stream: DataStream<unknown>): boolean {
-    const type = stream.schema.fields.find(
-      field => field.name === 'time_close',
     )?.type;
     return (
       (DataType.isTimestamp(type) && type.unit === TimeUnit.MILLISECOND) ||
@@ -783,12 +748,9 @@ class TeaNode implements Node {
     );
   }
 
-  /** Retains only interval coordinates while a child result is buffered. */
+  /** Retains only the event time while a child result is buffered. */
   private requestTiming(datum: InputDatum): InputDatum {
-    return Object.freeze({
-      ...(datum.time === undefined ? {} : {time: datum.time}),
-      ...(datum.time_close === undefined ? {} : {time_close: datum.time_close}),
-    });
+    return Object.freeze(datum.time === undefined ? {} : {time: datum.time});
   }
 
   /** Copies one scalar or tuple across a child runtime boundary. */
@@ -823,13 +785,10 @@ class TeaNode implements Node {
    * Adds one request child's results to the main input stream through the first
    * applicable synchronization policy:
    *
-   * - A timed scalar request selects one child interval through its
-   *   `availability` and `fill` policies; an untimed scalar request pairs one
-   *   child result with one main input.
-   * - A collect request with exact intervals selects child intervals fully
-   *   contained by each main interval.
-   * - Otherwise, timed main and child streams use main event times as window
-   *   boundaries.
+   * - A timed scalar request selects the newest child opened at or before the
+   *   main event time and applies its `fill` policy; an untimed scalar
+   *   request pairs one child result with one main input.
+   * - A timed collect request uses main event times as window boundaries.
    * - Without usable event times, a collect request with divisible clocks
    *   groups a fixed number of child results for each main input.
    * - A collect request with neither clock nor time information falls back to
@@ -847,19 +806,12 @@ class TeaNode implements Node {
    * output   | A+1 | B+2 | C+3
    * ```
    *
-   * @example End-available scalar request with carried fill:
+   * @example Timed scalar request with carried fill:
    * ```text
-   * interval | [0,1] | [1,2] | [2,3]
-   * main     | A     | B     | C
-   * child    |       | 1     |
-   * output   | A+na  | B+1   | C+1
-   * ```
-   *
-   * @example Collect child intervals contained by each main interval:
-   * ```text
-   * main interval  | [0,2]    | [2,4]
-   * child interval | [1,2]    | [2,3] [3,4]
-   * output         | A+[1]    | B+[2,3]
+   * event time | 0    | 1   | 2
+   * main       | A    | B   | C
+   * child      |      | 1   |
+   * output     | A+na | B+1 | C+1
    * ```
    *
    * @example Collect request with a two-to-one clock ratio:
@@ -895,15 +847,9 @@ class TeaNode implements Node {
     let continueAfterSourceComplete = false;
     let project: RequestProjector;
     if (spec.mode === 'sample') {
-      const timed =
-        spec.context?.availability === 'start'
-          ? this.timed && child.timed
-          : this.intervalTimed && child.intervalTimed;
+      const timed = this.timed && child.timed;
       project = timed ? this.sample(spec) : this.oneToOne(spec.name, false);
       continueAfterSourceComplete = timed;
-    } else if (this.intervalTimed && child.intervalTimed) {
-      project = this.containedWindow(spec.name);
-      continueAfterSourceComplete = true;
     } else if (this.timed && child.timed) {
       project = this.eventWindow(spec.name);
       continueAfterSourceComplete = true;
@@ -920,8 +866,8 @@ class TeaNode implements Node {
   }
 
   /**
-   * Selects one timed child result through the request's generic interval
-   * availability and fill policies.
+   * Selects the newest child result opened at or before the main event time
+   * and applies the request's fill policy.
    *
    * The selected child remains buffered so a completed finite child stream can
    * continue serving later parent inputs. Older child values are consumed once
@@ -936,11 +882,7 @@ class TeaNode implements Node {
     let selected: RequestOutput | null = null;
     let previousBoundary: bigint | null = null;
     return (datum, buffered) => {
-      const boundary = this.intervalBoundary(
-        datum,
-        context.availability,
-        'parent',
-      );
+      const boundary = this.eventTime(datum, 'parent');
       if (previousBoundary !== null && boundary < previousBoundary) {
         return fatal('parent request interval boundary moved backward');
       }
@@ -948,11 +890,7 @@ class TeaNode implements Node {
       let latePrefix = 0;
       for (let index = 0; index < buffered.length; index += 1) {
         const candidate = buffered[index]!;
-        const available = this.intervalBoundary(
-          candidate[0],
-          context.availability,
-          'child',
-        );
+        const available = this.eventTime(candidate[0], 'child');
         if (
           candidate !== selected &&
           previousBoundary !== null &&
@@ -981,18 +919,11 @@ class TeaNode implements Node {
     };
   }
 
-  /** Reads the start or end of one timed input interval. */
-  private intervalBoundary(
-    datum: InputDatum,
-    availability: 'start' | 'end',
-    owner: 'parent' | 'child',
-  ): bigint {
-    const field = availability === 'start' ? 'time' : 'time_close';
-    const value = datum[field];
+  /** Reads the event time of one timed input. */
+  private eventTime(datum: InputDatum, owner: 'parent' | 'child'): bigint {
+    const value = datum.time;
     if (typeof value !== 'bigint') {
-      return fatal(
-        `${owner} request input requires bigint ${field} for ${availability} availability`,
-      );
+      return fatal(`${owner} request input requires a bigint time`);
     }
     return value;
   }
@@ -1094,28 +1025,6 @@ class TeaNode implements Node {
         buffered.slice(0, count).map(([, value]) => value),
       );
       return [Object.freeze({...datum, [name]: values}), count];
-    };
-  }
-
-  /** Collects child intervals fully contained by one parent interval. */
-  private containedWindow(name: string): RequestProjector {
-    return (datum, buffered) => {
-      const parentStart = this.intervalBoundary(datum, 'start', 'parent');
-      const parentEnd = this.intervalBoundary(datum, 'end', 'parent');
-      const values: Stored[] = [];
-      let consume = 0;
-      for (const [childDatum, value] of buffered) {
-        const childStart = this.intervalBoundary(childDatum, 'start', 'child');
-        const childEnd = this.intervalBoundary(childDatum, 'end', 'child');
-        if (childEnd > parentEnd) break;
-        consume += 1;
-        if (childStart < parentStart) continue;
-        values.push(value);
-      }
-      return [
-        Object.freeze({...datum, [name]: Object.freeze(values)}),
-        consume,
-      ];
     };
   }
 

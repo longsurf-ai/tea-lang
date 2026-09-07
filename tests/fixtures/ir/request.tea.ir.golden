@@ -4,10 +4,9 @@ series close: series float depth=none
 builtin syminfo.tickerid: simple string depth=none
 output[0] "output0" set: float @ request.tea:9:1
 output[1] "output1" set: float @ request.tea:10:1
-request[0] name="daily" mode=sample context_order=0,1 option_order=0,1,2,3 capture=float result=float depth=const(1)
+request[0] name="daily" mode=sample context_order=0,1 option_order=0,1,2 capture=float result=float depth=const(1)
   symbol: Read builtin:syminfo.tickerid: simple string
   timeframe: Const "D": const string
-  availability: Const "end": const string
   fill: Const "carry": const string
   ignore_invalid_symbol: Const false: const bool
   calc_bars_count: Const 0: const int

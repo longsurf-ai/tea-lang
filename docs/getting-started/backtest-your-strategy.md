@@ -50,8 +50,8 @@ time,open,high,low,close,volume
 1704153600000,102,104,100,103,980
 ```
 
-`time` is exact epoch milliseconds. The CLI derives `time_close` from the next
-open and gives the resulting DataStream an exact finite `indices` count.
+`time` is exact epoch milliseconds. The CLI gives the resulting DataStream an
+exact finite `indices` count.
 
 Embedding applications can construct the same input directly:
 
@@ -63,7 +63,6 @@ import {DataStream, d} from 'tea';
 const values = [
   {
     time: 1704067200000n,
-    time_close: 1704153600000n,
     open: 100,
     high: 103,
     low: 99,
@@ -71,7 +70,6 @@ const values = [
   },
   {
     time: 1704153600000n,
-    time_close: 1704240000000n,
     open: 102,
     high: 104,
     low: 100,
@@ -81,7 +79,6 @@ const values = [
 const bars = new DataStream(
   new Schema([
     new Field('time', new TimestampMillisecond(), false),
-    new Field('time_close', new TimestampMillisecond(), false),
     ...['open', 'high', 'low', 'close'].map(
       name => new Field(name, new Float64(), false),
     ),

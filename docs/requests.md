@@ -75,18 +75,16 @@ import {Field, Float64, Schema, TimestampMillisecond} from 'apache-arrow';
 
 const schema = new Schema([
   new Field('time', new TimestampMillisecond(), false),
-  new Field('time_close', new TimestampMillisecond(), false),
   new Field('close', new Float64(), false),
 ]);
-// {time: 0n, time_close: 60000n, close: 10} covers [0, 60000) epoch ms.
+// {time: 0n, close: 10} opens at epoch millisecond 0.
 ```
 
 These fields do not enter Tea numeric series. Timestamp values may be numbers
-or bigints; Node requires exact safe epoch-ms integers, nondecreasing opens and
-closes, and `time_close >= time`. Arrow `Int64` also supports existing bigint
-sources. A close field is interval metadata only when the same schema declares
-`time`. Use non-nullable times for timed request synchronization; nullable time
-fields can represent absent or explicitly null event metadata.
+or bigints; Node requires exact safe epoch-ms integers in nondecreasing order.
+Arrow `Int64` also supports existing bigint sources. Use non-nullable times for
+timed request synchronization; nullable time fields can represent absent or
+explicitly null event metadata.
 
 For finite execution, `DataStream.indices` is the exact number of emissions.
 Node validates it and the Pine Extension uses it for `last_bar_index` and
@@ -98,25 +96,22 @@ extent-dependent Pine builtins.
 Node folds request edges in dense request-id order. The parent does not step
 until every edge has supplied a value for the current parent input.
 
-`request.security` uses two generic fields:
+A child value is eligible for a parent input once the child's event time is at
+or before the parent's event time. `request.security` uses one generic field:
 
-- `availability="start" | "end"` chooses when a child interval becomes
-  eligible;
 - `fill="carry" | "sparse"` chooses whether the last eligible value continues
   across later parent inputs.
 
 Tea intentionally does not expose Pine's `barmerge.gaps_*` or
-`barmerge.lookahead_*` vocabulary.
+`barmerge.lookahead_*` vocabulary, and it has no end-of-interval availability.
 
-| Request policy             | Required metadata                               | Parent value                                         |
-| -------------------------- | ----------------------------------------------- | ---------------------------------------------------- |
-| start-available scalar     | `time` on both streams                          | child selected at interval start, with chosen fill   |
-| end-available scalar       | `time` and `time_close` on both streams         | child selected at interval end, with chosen fill     |
-| scalar positional          | otherwise                                       | next child scalar                                    |
-| contained interval collect | `time` and `time_close` on both streams         | child intervals fully contained by parent interval   |
-| event-time collect         | `time` on both streams                          | child opens between consecutive parent opens         |
-| fixed-count collect        | divisible known clocks and no usable event time | next `parentClock / childClock` child values         |
-| positional collect         | otherwise                                       | next child scalar wrapped as a one-element Tea array |
+| Request policy      | Required metadata                               | Parent value                                         |
+| ------------------- | ----------------------------------------------- | ---------------------------------------------------- |
+| timed scalar        | `time` on both streams                          | newest child opened at or before the parent, filled  |
+| scalar positional   | otherwise                                       | next child scalar                                    |
+| event-time collect  | `time` on both streams                          | child opens between consecutive parent opens         |
+| fixed-count collect | divisible known clocks and no usable event time | next `parentClock / childClock` child values         |
+| positional collect  | otherwise                                       | next child scalar wrapped as a one-element Tea array |
 
 Observed event boundaries outrank clock ratios because duration alone does not
 prove phase alignment or the absence of missing observations.

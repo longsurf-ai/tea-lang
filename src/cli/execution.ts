@@ -111,17 +111,13 @@ async function csvBatchStream(
   const discovered = await CSVSource.open(path);
   const fields = discovered.schema.fields.map(
     ({name}) =>
-      new Field(
-        name,
-        name === 'time' || name === 'time_close' ? new Int64() : new Float64(),
-        false,
-      ),
+      new Field(name, name === 'time' ? new Int64() : new Float64(), false),
   );
   const source = new CSVSource(path, new Schema(fields), i, discovered.indices);
   const input = await firstValueFrom(
     source.stream().asObservable().pipe(toArray()),
   );
-  const rows = input.map((value, index) => {
+  const rows = input.map(value => {
     const row = {...value} as Record<string, unknown>;
     derivePrice(row, 'hl2', ['high', 'low'], values => divide(sum(values), 2));
     derivePrice(row, 'hlc3', ['high', 'low', 'close'], values =>
@@ -133,26 +129,8 @@ async function csvBatchStream(
     derivePrice(row, 'hlcc4', ['high', 'low', 'close'], values =>
       divide(sum(values) + values[2]!, 4),
     );
-    if (Object.hasOwn(row, 'time') && !Object.hasOwn(row, 'time_close')) {
-      const time = row.time as bigint;
-      const next = input[index + 1]?.time;
-      const previous = input[index - 1]?.time;
-      const span =
-        typeof next === 'bigint'
-          ? next - time
-          : typeof previous === 'bigint'
-            ? time - previous
-            : 0n;
-      row.time_close = time + span;
-    }
     return Object.freeze(row);
   });
-  if (
-    fields.some(field => field.name === 'time') &&
-    !fields.some(field => field.name === 'time_close')
-  ) {
-    fields.push(new Field('time_close', new Int64(), false));
-  }
   for (const name of ['hl2', 'hlc3', 'ohlc4', 'hlcc4']) {
     if (
       !fields.some(field => field.name === name) &&

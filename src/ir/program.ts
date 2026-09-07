@@ -113,8 +113,6 @@ export type MergeMode = (typeof MergeMode)[keyof typeof MergeMode];
 
 export interface MergePolicy {
   readonly mode: MergeMode;
-  // When a child interval becomes eligible for a parent interval.
-  readonly availability: IrExpr;
   // Whether an eligible child value carries forward between child updates.
   readonly fill: IrExpr;
   // Invalid symbols yield na instead of a runtime error.
@@ -142,7 +140,7 @@ export interface RequestEdge {
   // source evaluation order. The captured expression is child-context code
   // and is deliberately absent from this parent schedule.
   readonly contextArgumentEvaluationOrder: readonly number[];
-  // Canonical option indices (availability=0, fill=1, ignore=2, bars=3) in
+  // Canonical option indices (fill=0, ignore=1, bars=2) in
   // source evaluation order. Omitted defaults follow supplied options in
   // canonical order so module.bind evaluates each option exactly once.
   readonly optionArgumentEvaluationOrder: readonly number[];

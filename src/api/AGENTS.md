@@ -58,10 +58,10 @@ runtime semantics remain in their existing packages.
   for its bounded send queue and `bufferedAmount` to drain.
 - Node execution supports numeric series, parameters, scalar `security`
   requests, and `security_lower_tf` arrays. Untimed scalar requests consume one
-  child result per parent input; timed scalar requests apply the request's
-  `availability` and `fill` policies. Collect requests select
-  contained-interval, event-time-window, count-window, then one-to-one-array
-  synchronization in that order; the exact clock, boundary, completion, error, and cancellation
+  child result per parent input; timed scalar requests select the newest child
+  opened at or before the parent event time and apply the request's `fill`
+  policy. Collect requests select event-time-window, count-window, then
+  one-to-one-array synchronization in that order; the exact clock, boundary, completion, error, and cancellation
   policies belong to `docs/requests.md`. Collect batches cross the API/runtime seam only as frozen
   scalar arrays and become ordinary Tea arrays inside the parent Heap
   transaction. This collect path is Node-only. The statically enabled Pine
