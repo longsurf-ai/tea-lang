@@ -29,7 +29,7 @@ import {Value, unwrap} from '../runtime/js/value';
 import {Color} from '../runtime/color';
 import {i, timeframeClock, type Clock} from './clock';
 import {DataStream} from './stream';
-import {sync} from './sync';
+import {sync, type Wait} from './sync';
 
 export type {Datum} from '../runtime/output';
 
@@ -39,11 +39,15 @@ type InputDatum = Readonly<Record<string, unknown>>;
 /** One child input paired with the Tea value computed from it. */
 type RequestOutput = readonly [InputDatum, Stored];
 
-/** Decides whether one main input has enough child results to move forward. */
+/**
+ * Decides whether one main input has enough child results to move forward,
+ * returning `wait()` when it does not.
+ */
 type RequestProjector = (
   datum: InputDatum,
   buffered: readonly RequestOutput[],
-) => readonly [InputDatum, number] | undefined;
+  wait: () => Wait,
+) => readonly [InputDatum, number] | Wait;
 
 /** Supplies the contextual builtin vector for one Node in the request tree. */
 type BuiltinSupplier = (
@@ -602,9 +606,9 @@ class TeaNode implements Node {
     if (current === null) return next;
     if (next === null) return current;
     return current.pipe(
-      sync(next, (right, buffered) => {
+      sync(next, (right, buffered, wait) => {
         const left = buffered[0];
-        if (left === undefined) return undefined;
+        if (left === undefined) return wait();
         if (
           Object.hasOwn(left, 'time') &&
           Object.hasOwn(right, 'time') &&
@@ -1056,9 +1060,9 @@ class TeaNode implements Node {
    * ```
    */
   private oneToOne(name: string, array: boolean): RequestProjector {
-    return (datum, buffered) => {
+    return (datum, buffered, wait) => {
       const first = buffered[0];
-      if (first === undefined) return undefined;
+      if (first === undefined) return wait();
       const value = array ? Object.freeze([first[1]]) : first[1];
       return [Object.freeze({...datum, [name]: value}), 1];
     };
@@ -1084,8 +1088,8 @@ class TeaNode implements Node {
    * ```
    */
   private countWindow(name: string, count: number): RequestProjector {
-    return (datum, buffered) => {
-      if (buffered.length < count) return undefined;
+    return (datum, buffered, wait) => {
+      if (buffered.length < count) return wait();
       const values = Object.freeze(
         buffered.slice(0, count).map(([, value]) => value),
       );

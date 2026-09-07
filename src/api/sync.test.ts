@@ -58,9 +58,9 @@ describe('sync', () => {
 
     source
       .pipe(
-        sync(target, (name, buffered) => {
+        sync(target, (name, buffered, wait) => {
           const first = buffered[0];
-          return first === undefined ? undefined : [`${name}:${first}`, 1];
+          return first === undefined ? wait() : [`${name}:${first}`, 1];
         }),
       )
       .subscribe({next: value => values.push(value), complete});
@@ -82,8 +82,8 @@ describe('sync', () => {
 
     source
       .pipe(
-        sync(target, (_, buffered) =>
-          buffered.length < 2 ? undefined : [buffered.slice(0, 2), 2],
+        sync(target, (_, buffered, wait) =>
+          buffered.length < 2 ? wait() : [buffered.slice(0, 2), 2],
         ),
       )
       .subscribe({next: value => values.push(value), complete});
@@ -109,9 +109,9 @@ describe('sync', () => {
 
     source
       .pipe(
-        sync(target, (_, buffered) => {
+        sync(target, (_, buffered, wait) => {
           const first = buffered[0];
-          return first === undefined ? undefined : [first, 1];
+          return first === undefined ? wait() : [first, 1];
         }),
       )
       .subscribe({next: value => values.push(value), complete});
@@ -208,9 +208,9 @@ describe('sync', () => {
 
     source
       .pipe(
-        sync(target, (name, buffered) =>
+        sync(target, (name, buffered, wait) =>
           buffered.length < 2
-            ? undefined
+            ? wait()
             : [`${name}:${buffered.join(',')}`, buffered.length],
         ),
       )
@@ -261,6 +261,14 @@ describe('sync', () => {
     source.next(1);
     expect(values).toEqual([1]);
     expect(complete).toHaveBeenCalledOnce();
+  });
+
+  test('a projector waits only through its wait argument', () => {
+    const source = new Subject<number>();
+    const target = new Subject<void>();
+
+    // @ts-expect-error `undefined` is not a projector result.
+    source.pipe(sync(target, () => undefined));
   });
 
   test('rejects invalid buffer consumption', () => {
