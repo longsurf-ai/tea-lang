@@ -38,9 +38,7 @@ emit "count" counter.value
       q: {series: 3, title: '', linewidth: 1},
       count: 3,
     });
-    expect(
-      sink.declarations.every(declaration => !('args' in declaration)),
-    ).toBe(true);
+    expect(sink.fields.map(field => field.name)).toEqual(['p', 'q', 'count']);
   });
 });
 

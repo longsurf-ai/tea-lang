@@ -1,4 +1,4 @@
-import type {Module} from '../runtime/module-binding';
+import {Module} from '../runtime/module-binding';
 // Purpose: Aggregate codegen contract tests — layouts, reference field stores, and collection locations preserve exact types and evaluation order.
 
 import {describe, expect, test} from 'vitest';
@@ -38,8 +38,8 @@ import {
 } from '../ir/type';
 
 import {loadModule} from '../runtime/load';
-import {capture, unwrap, type Value} from '../runtime/js/value';
-import {StorageTypes} from '../runtime/storage-types';
+import {unwrap, type Value} from '../runtime/js/value';
+import {Context} from '../runtime/js/context';
 import {generate} from './codegen';
 
 const pos = {base: {filename: 'aggregate-lowering.test.tea'}, line: 1, col: 1};
@@ -150,14 +150,10 @@ function structType(name: string, fields: readonly StructField[]): StructType {
 }
 
 interface TestStructValue {
-  readonly kind: 'storage-ref';
-  readonly layout: number;
   readonly fields: unknown[];
 }
 
 interface TestCollectionValue {
-  readonly kind: 'array';
-  readonly layout: number;
   readonly values: readonly unknown[];
 }
 
@@ -166,131 +162,80 @@ interface TestFrame {
   readonly subs: Map<number, TestFrame>;
 }
 
-function executionRuntime(
-  module: Module,
-  root: TestFrame,
-  events: string[],
-): Record<string, unknown> {
-  const isStruct = (value: unknown): value is TestStructValue =>
-    typeof value === 'object' &&
-    value !== null &&
-    (value as {kind?: unknown}).kind === 'storage-ref';
-  const requireStruct = (value: unknown, layout: number): TestStructValue => {
-    events.push(`require:${layout}`);
-    if (!isStruct(value) || value.layout !== layout) {
-      throw new Error('invalid struct reference');
-    }
-    return value;
-  };
-  const storage = {
-    root: () => root,
-    read: (frame: TestFrame, slot: number, offset: number) => {
-      expect(offset).toBe(0);
-      return frame.values[slot];
-    },
-    write: (frame: TestFrame, slot: number, value: unknown) => {
-      events.push(frame === root ? `write-root:${slot}` : `write-func:${slot}`);
-      frame.values[slot] = value;
-    },
-    frame: (frame: TestFrame, slot: number) => {
-      let child = frame.subs.get(slot);
-      if (child === undefined) {
-        child = {values: [], subs: new Map()};
-        frame.subs.set(slot, child);
-      }
-      return child;
-    },
-    newStruct: (
-      layout: number,
-      fields: readonly unknown[],
-    ): TestStructValue => ({
-      kind: 'storage-ref',
-      layout,
-      fields: [...fields],
-    }),
-    requireStruct,
-    structField: (value: unknown, layout: number, index: number) => {
-      events.push(`field:${layout}:${index}`);
-      return requireStruct(value, layout).fields[index];
-    },
-    storeStructField: (
-      value: unknown,
-      layout: number,
-      fieldIndex: number,
-      replacement: unknown,
-    ) => {
-      events.push(`store:${layout}:${fieldIndex}`);
-      requireStruct(value, layout).fields[fieldIndex] = replacement;
-    },
-    callCollection: (
-      operation: string,
-      resultLayout: number,
-      args: readonly unknown[],
-    ) => {
-      events.push(`call:${operation}:${resultLayout}`);
-      if (operation === 'array.from') {
-        return {
-          kind: 'array',
-          layout: resultLayout,
-          values: [...args],
-        } satisfies TestCollectionValue;
-      }
-      if (operation === 'array.size') {
-        return (args[0] as TestCollectionValue).values.length;
-      }
-      throw new Error(`unexpected collection call ${operation}`);
-    },
-    mutateCollection: (
-      operation: string,
-      _layout: number,
-      receiver: TestCollectionValue,
-      args: readonly unknown[],
-    ) => {
+// Execute actual generated code and storage; only observe method order and values.
+function execute(module: Module, root: TestFrame, events: string[]): void {
+  const instrumented = new Module(module, context => {
+    const step = context.storage;
+    const write = step.write.bind(step);
+    step.write = (frame, slot, value) => {
+      events.push(
+        frame === step.rootFrame ? `write-root:${slot}` : `write-func:${slot}`,
+      );
+      write(frame, slot, value);
+    };
+    const field = step.structField.bind(step);
+    step.structField = (value, ctor, name, empty) => {
+      events.push(`field:${name}`);
+      return field(value, ctor, name, empty);
+    };
+    const store = step.storeStructField.bind(step);
+    step.storeStructField = (value, ctor, name, replacement) => {
+      events.push(`store:${name}`);
+      store(value, ctor, name, replacement);
+    };
+    const call = step.callCollection.bind(step);
+    step.callCollection = (operation, empty, args) => {
+      events.push(`call:${operation}`);
+      return call(operation, empty, args);
+    };
+    const mutate = step.mutateCollection.bind(step);
+    step.mutateCollection = (operation, receiver, args) => {
       events.push(`mutate:${operation}`);
-      if (operation !== 'array.push') {
-        throw new Error(`unexpected mutation ${operation}`);
+      return mutate(operation, receiver, args);
+    };
+    const snapshot = (value: Value<unknown>): unknown => {
+      const raw = unwrap(value);
+      if (raw === null) return null;
+      if (value.ctor !== undefined) {
+        const defaults = Reflect.construct(value.ctor, []) as Record<
+          string,
+          Value<unknown>
+        >;
+        return {
+          fields: Object.entries(defaults).map(([name, empty]) =>
+            snapshot(step.structField(raw, value.ctor!, name, empty)),
+          ),
+        };
       }
-      return {
-        replacement: {...receiver, values: [...receiver.values, args[0]]},
-        result: null,
-      };
-    },
-  };
-  const context = {
-    storage,
-    layouts: new StorageTypes(module.state.layout),
-    capture: (raw: unknown, layout: number): Value<unknown> =>
-      capture(context as never, raw as never, layout),
-    state: {} as unknown,
-  };
-  const frameOf = (frame: TestFrame, id: number): unknown => ({
-    locals: Object.fromEntries(
-      module.state.frames[id].locals.map((local, slot) => [
-        local.name,
-        {
-          hist: (offset: number) =>
-            context.capture(storage.read(frame, slot, offset), local.layout),
-          set: (value: Value<unknown>) =>
-            storage.write(frame, slot, unwrap(value)),
-          init: (value: () => Value<unknown>) => {
-            if (frame.values[slot] === undefined)
-              storage.write(frame, slot, unwrap(value()));
-          },
-        },
-      ]),
-    ),
-    calls: Object.defineProperties(
-      {},
-      Object.fromEntries(
-        module.state.frames[id].subs.map((child, slot) => [
-          child.name!,
-          {get: () => frameOf(storage.frame(frame, slot), child.fid)},
-        ]),
-      ),
-    ),
+      if (value.kind === 'array') {
+        return {
+          values: (
+            step.collectionEntries(raw) as readonly Value<unknown>[]
+          ).map(snapshot),
+        };
+      }
+      return raw;
+    };
+    try {
+      module.main(context);
+    } finally {
+      root.values.splice(
+        0,
+        root.values.length,
+        ...module.state.frames[0].locals.map((local, slot) =>
+          snapshot(
+            local.empty.withStored(step.read(step.rootFrame, slot, 0), context),
+          ),
+        ),
+      );
+    }
   });
-  context.state = frameOf(root, 0);
-  return context;
+  const context = new Context(instrumented.bind());
+  try {
+    context.step({series: [], builtins: [], requests: [], provisional: false});
+  } finally {
+    context.dispose();
+  }
 }
 
 describe('aggregate expression and reference-store lowering', () => {
@@ -312,7 +257,7 @@ describe('aggregate expression and reference-store lowering', () => {
       ]),
     );
     const frame: TestFrame = {values: [], subs: new Map()};
-    module.main(executionRuntime(module, frame, []) as never);
+    execute(module, frame, []);
 
     expect(frame.values[0]).toBeNull();
     expect(Number.isNaN(frame.values[1] as number)).toBe(true);
@@ -349,13 +294,13 @@ describe('aggregate expression and reference-store lowering', () => {
       ]),
     );
     const frame: TestFrame = {values: [], subs: new Map()};
-    module.main(executionRuntime(module, frame, []) as never);
+    execute(module, frame, []);
 
     expect((frame.values[0] as TestStructValue).fields).toEqual([5, 9]);
     expect(frame.values[1]).toBe(9);
   });
 
-  test('uses collection result layouts and a captured field location after argument writes', () => {
+  test('uses typed collection results and a captured field location after argument writes', () => {
     const arrayType: ArrayType = {kind: TypeKind.Array, elem: IntType};
     const holder = structType('Holder', [
       {name: 'values', type: arrayType},
@@ -428,16 +373,16 @@ describe('aggregate expression and reference-store lowering', () => {
     );
     const frame: TestFrame = {values: [], subs: new Map()};
     const events: string[] = [];
-    module.main(executionRuntime(module, frame, events) as never);
+    execute(module, frame, events);
 
     const result = frame.values[0] as TestStructValue;
     expect((result.fields[0] as TestCollectionValue).values).toEqual([1, 2]);
     expect(result.fields[1]).toBe(9);
     expect(frame.values[1]).toBe(2);
-    expect(events).toContain('call:array.from:0');
-    expect(events).toContain('call:array.size:1');
-    const receiverRead = events.indexOf('field:2:0');
-    const argumentWrite = events.indexOf('store:2:1', receiverRead + 1);
+    expect(events).toContain('call:array.from');
+    expect(events).toContain('call:array.size');
+    const receiverRead = events.indexOf('field:values');
+    const argumentWrite = events.indexOf('store:marker', receiverRead + 1);
     expect(receiverRead).toBeLessThan(argumentWrite);
     expect(argumentWrite).toBeLessThan(events.indexOf('mutate:array.push'));
   });
@@ -512,14 +457,14 @@ describe('aggregate expression and reference-store lowering', () => {
     const module = compile(ir);
     const frame: TestFrame = {values: [], subs: new Map()};
     const events: string[] = [];
-    module.main(executionRuntime(module, frame, events) as never);
+    execute(module, frame, events);
 
     expect(frame.values[1]).toBe(6);
     const result = frame.values[0] as TestStructValue;
     expect((result.fields[0] as TestStructValue).fields).toEqual([1]);
     expect(result.fields[1]).toBe(9);
-    const receiverRead = events.indexOf('field:2:0');
-    const argumentWrite = events.indexOf('store:2:1', receiverRead + 1);
+    const receiverRead = events.indexOf('field:point');
+    const argumentWrite = events.indexOf('store:marker', receiverRead + 1);
     expect(receiverRead).toBeGreaterThanOrEqual(0);
     expect(receiverRead).toBeLessThan(argumentWrite);
     expect(events).not.toContain('write-func:0');
@@ -592,15 +537,15 @@ describe('aggregate expression and reference-store lowering', () => {
     const module = compile(ir);
     const frame: TestFrame = {values: [], subs: new Map()};
     const events: string[] = [];
-    module.main(executionRuntime(module, frame, events) as never);
+    execute(module, frame, events);
 
     const result = frame.values[0] as TestStructValue;
     expect((result.fields[0] as TestStructValue).fields[0]).toBe(5);
     expect(result.fields[1]).toBe(9);
     expect(frame.values[1]).toBe(5);
-    const receiverRead = events.indexOf('field:2:0');
-    const argumentWrite = events.indexOf('store:2:1');
-    const receiverWrite = events.indexOf('store:0:0', argumentWrite + 1);
+    const receiverRead = events.indexOf('field:point');
+    const argumentWrite = events.indexOf('store:sibling');
+    const receiverWrite = events.indexOf('store:x', argumentWrite + 1);
     expect(receiverRead).toBeGreaterThanOrEqual(0);
     expect(receiverRead).toBeLessThan(argumentWrite);
     expect(argumentWrite).toBeLessThan(receiverWrite);
@@ -663,7 +608,7 @@ describe('aggregate expression and reference-store lowering', () => {
     const js = generate(ir);
     const module = compile(ir);
     const frame: TestFrame = {values: [], subs: new Map()};
-    module.main(executionRuntime(module, frame, []) as never);
+    execute(module, frame, []);
 
     expect((frame.values[0] as TestStructValue).fields).toEqual([5]);
     expect(frame.values[1]).toBe(5);
@@ -784,7 +729,7 @@ describe('aggregate expression and reference-store lowering', () => {
     const js = generate(ir);
     const module = compile(ir);
     const frame: TestFrame = {values: [], subs: new Map()};
-    module.main(executionRuntime(module, frame, []) as never);
+    execute(module, frame, []);
 
     expect(js).not.toContain('rebuild');
     expect(js).toContain('.field("x")');
@@ -823,7 +768,7 @@ describe('aggregate expression and reference-store lowering', () => {
               resultType: VoidType,
               effect: 'write',
             },
-            args: [constant(IntType, 0), constant(IntType, 2)],
+            args: [constant(IntType, 99), constant(IntType, 2)],
             argumentEvaluationOrder: [0, 1],
           },
         ],
@@ -871,12 +816,9 @@ describe('aggregate expression and reference-store lowering', () => {
       ]),
     );
     const frame: TestFrame = {values: [], subs: new Map()};
-    expect(() =>
-      module.main(executionRuntime(module, frame, []) as never),
-    ).toThrow('unexpected mutation array.set');
-    // This minimal ABI mock has no HeapTransaction. Generated code performs
-    // the in-place store before the later throw; the real StructStorageRuntime
-    // stages a whole replacement payload that abort can discard.
+    expect(() => execute(module, frame, [])).toThrow(/outside/);
+    // Observe the pending write before the bounds failure unwinds execution.
+    // The real Context aborts the Heap transaction after this observation.
     expect((frame.values[0] as TestStructValue).fields[1]).toBe(9);
   });
 });

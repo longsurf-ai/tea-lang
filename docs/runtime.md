@@ -112,12 +112,12 @@ Pine is statically enabled while it is Tea's only Extension. It derives:
 - one fixed historical `timenow` value from the Node's host clock;
 - historical bar-state flags from finite execution semantics.
 
-Missing application symbol/timeframe metadata becomes the builtin layout's
-typed empty value. Contextual builtins never become another `Node.bind()` form.
+Missing application symbol/timeframe metadata becomes the builtin's declared
+empty Value. Contextual builtins never become another `Node.bind()` form.
 
 ## Compiled modules and binding
 
-Runtime ABI 12 exposes one `Module<Context>` with mutable configuration. There is
+Runtime ABI 13 exposes one `Module<Context>` with mutable configuration. There is
 no public manifest or separate preparation operation:
 
 ```text
@@ -127,11 +127,9 @@ module
     series / builtins  history and fixed-context requirements
   parameters           declarations and bound values
   state
-    layout             shared runtime descriptors
-    frames             frame templates and retention
+    frames             local empty Values, persistence, history and call sites
   outputs
     schema             sole owner of output names, types and write modes
-    declarations       one snapshot layout ID per column
   requests[]           each context/policy beside its child module
   bind                 the one parameter-binding operation
   main                 ordinary typed entry function
@@ -202,6 +200,7 @@ supplies the four exact type arguments to `Context`: parameters, inputs, root
 state and outputs. Functions are lexical TypeScript functions; written call sites
 have named state under `frame.calls`.
 
+Each generated state type directly declares its `locals` and `calls` properties.
 These library types have separate responsibilities:
 
 | Type                                      | Responsibility                                                                    |
@@ -209,7 +208,7 @@ These library types have separate responsibilities:
 | `Value<T, K>`                             | Captured value and Tea arithmetic; `K` preserves numeric kind or nominal identity |
 | `Input<T, K>`                             | Read-only history through `.hist(offset)`                                         |
 | `Series<T, K>`                            | One state binding, adding staged `.set()` and lazy initialization                 |
-| `Frame<Locals, Calls>`                    | Named local series and independent written call sites                             |
+| `Frame`                                  | Static binding requirements and written call-site definitions                             |
 | `Context<Params, Inputs, State, Outputs>` | One execution's values, storage and transaction lifecycle                         |
 | `Module<Context>`                         | Schemas, storage requirements, binding calculations and `main()`                  |
 
@@ -234,7 +233,7 @@ an ordinary TypeScript local:
 ```ts
 import {float, type Frame, type Series, type Value} from 'tea/runtime';
 
-type Sum = Frame<{total: Series<number, 'float'>}>;
+type Sum = {locals: {total: Series<number, 'float'>}; calls: {}};
 
 function accumulate(frame: Sum, value: Value<number, 'float'>) {
   const total = frame.locals.total;
@@ -267,6 +266,56 @@ field.set(replacement);
 rejects an NA write before `calculate()` runs. Array, matrix and map mutators return
 `{replacement, result}`. The caller stores that replacement in its Series or field;
 a previously captured collection still has its old immutable header.
+
+## Generated classes and generic values
+
+Lowering uses TypeScript declarations directly. Each Tea enum becomes a string
+enum; each nominal struct becomes a class with named, typed fields. A unique
+symbol key gives the class nominal typing without emitting a field or using
+JavaScript private slots:
+
+```ts
+const PointTag = Symbol('Point');
+class Point {
+  declare readonly [PointTag]: void;
+  x: Value<number, 'float'> = float(NaN);
+
+  constructor(fields?: Omit<Point, typeof PointTag>) {
+    if (fields) Object.assign(this, fields);
+  }
+}
+```
+
+A managed allocation stores a class instance in the Context's Heap. Captured
+struct values carry its `Ref<Point>` and constructor identity. Field operations
+use the instance's named fields; they never convert a field name to a numeric
+layout entry. Heap transaction views preserve the prototype and shared reference
+identity while recording writes. The Heap's `TypeInfo` owns allocation,
+reference tracing and logical-byte accounting.
+
+Collections retain captured elements and an empty exemplar of their generic
+argument. A read returns the stored Value directly, including its numeric kind
+or managed reference. An empty collection therefore needs no element type ID:
+
+```ts
+const Integers = array(int(NaN));
+const items = Integers.new(ctx, int(2));
+items.get(int(0)); // Value<number, 'int'> containing NaN
+```
+
+`ArrayValue`, `MatrixValue` and `MapValue` are frozen header classes over
+persistent Heap backing. Array and matrix elements, map keys and values, and
+tuple members are captured Values. Mutations allocate replacement backing;
+copying a collection does not deep-copy referenced structs. Bounds, ownership,
+nominal identity and logical memory limits remain runtime checks.
+
+`Color` is an immutable class with four byte fields (`r`, `g`, `b`, `a`), with
+255 meaning opaque alpha. Color operators compare channel values; separately
+constructed instances of the same color are equal. `Color.parse('#ff0000ff')`
+and `new Color(255, 0, 0)` both format as `#FF0000`. Color parameter metadata
+continues to use canonical hex strings; execution captures a Color. Publication
+produces a detached `{r: 255, g: 0, b: 0, a: 255}` record matching its Arrow Struct.
+NA remains null.
 
 ## Builds and handwritten TypeScript
 
@@ -304,14 +353,20 @@ Handwritten TypeScript is a CPU entry path; WGSL continues to consume the Tea Pr
 ## Context and transactions
 
 `Context` owns committed state, same-index values, and one Heap.
-The module's frame and history depths determine fixed runtime arrays directly.
-No workspace preflight, state-storage lease, or duplicated fixed-byte budget is
-needed.
+`Step` keeps a sparse **write set** keyed by retained binding identity. A read
+first checks that write set, then applies the binding's persistence and history
+rules. Calls open lazily. Execution does not construct a parallel mutable copy
+of the local/call tree.
+
+Struct-field writes use Heap transaction views of the generated class instances.
+Aliases observe the transaction's pending writes. These views and the local
+write set participate in the same attempt; generated functions never own a
+separate commit operation.
 
 One step is transactional:
 
 1. read committed history and same-index values;
-2. call `main(context)` against tentative frame and Heap changes;
+2. call `main(context)` with read-your-writes access to local and Heap changes;
 3. capture output values at each `.set()` or `.append()`;
 4. validate and commit after `main()` returns normally;
 5. abort state, Heap changes and buffered outputs if execution throws.
@@ -321,6 +376,13 @@ step. Tea entry source simply falls through; source `return` belongs to function
 Its `using` scope aborts any uncommitted Heap transaction on exit. Functions
 called by `main()` participate in the same step; they do not commit independently.
 `step()` returns a `StepResult` directly and throws on failure.
+
+For example, after `total.set(int(12))`, `total.hist(0)` returns 12 within this
+attempt. If a later operation throws, rollback drops that write and the buffered
+outputs. No committed history has changed. Successful final execution prepares
+new histories before the Heap commit, and Context adopts them only on success.
+History advancement still visits retained calls; sparse writes eliminate the
+working-tree copy, not the required history updates.
 
 Provisional success replaces same-index values and commits its Heap transaction;
 it does not advance committed binding/input history. Final success advances
@@ -333,22 +395,24 @@ execution inputs or user configuration.
 
 ## Arrow schemas and published rows
 
-Arrow owns the recursive I/O type system. Tea's compiler types and execution
-state descriptors retain their separate roles. There is no second output/event
-payload type language, and using an Arrow schema does not require serializing or
+Arrow owns the recursive I/O type system. Checked Tea types project once into
+Arrow fields; generated TypeScript classes, enums and generic runtime operations
+carry execution values. There is no runtime structural type table or separate
+output declaration table. Using a schema does not require serializing or
 allocating a RecordBatch at every step.
 
-| Value                 | Arrow type                                               |
-| --------------------- | -------------------------------------------------------- |
-| Tea int / float       | Float64, with `tea:type` distinguishing them             |
-| bool / string / color | Bool / Utf8 / Utf8 with color metadata                   |
-| enum                  | Utf8 with nominal identity and member metadata           |
-| struct / tuple        | Struct with named / positional fields                    |
-| array                 | List of a typed child field                              |
-| matrix                | Struct with rows, columns and a flat values List         |
-| map                   | Map with typed non-null keys, preserving insertion order |
-| host binary           | Binary; this does not add binary operations to Tea       |
-| event time            | TimestampMillisecond                                     |
+| Value           | Arrow type                                               |
+| --------------- | -------------------------------------------------------- |
+| Tea int / float | Float64, with `tea:type` distinguishing them             |
+| bool / string   | Bool / Utf8                                              |
+| color           | nullable Struct with non-null r/g/b/a Uint8 fields       |
+| enum            | Utf8 with nominal identity and member metadata           |
+| struct / tuple  | Struct with named / positional fields                    |
+| array           | List of a typed child field                              |
+| matrix          | Struct with rows, columns and a flat values List         |
+| map             | Map with typed non-null keys, preserving insertion order |
+| host binary     | Binary; this does not add binary operations to Tea       |
+| event time      | TimestampMillisecond                                     |
 
 Tea integers deliberately retain their current JavaScript number representation,
 including finite arithmetic outside the safe-integer range and numeric `NaN`.
@@ -378,8 +442,8 @@ Node publishes:
 ```
 
 `module.outputs.schema` owns every named field in declaration order. Each field
-records `tea:write` (`set` or `append`); the aligned declaration array contains one
-`{layout}` snapshot descriptor per column. Consumers use schema order, including
+records `tea:write` (`set` or `append`). Runtime snapshots walk these Arrow fields
+and the captured value directly. Consumers use schema order, including
 for integer-like column names whose JavaScript property enumeration order differs.
 
 `price` is a nullable Arrow Float64 field. A skipped emission and an explicitly
@@ -452,8 +516,8 @@ CLI uses no source registry, backend union, or generic execution wrapper.
 
 ## GPU bindings and physical allocation
 
-WGSL lowering produces one bind-independent `CompiledWgslProgram` at GPU ABI 8,
-embedding its Runtime ABI 12 module. Set result cells carry separate presence and
+WGSL lowering produces one bind-independent `CompiledWgslProgram` at GPU ABI 9,
+embedding its Runtime ABI 13 module. Set result cells carry separate presence and
 value-validity words, so skipped outputs and numeric NA remain distinguishable.
 Older runtime and GPU artifacts are rejected. The GPU
 runtime accepts concrete bindings:
@@ -508,4 +572,6 @@ artifact and concrete bindings.
 - dynamic or nested requests;
 - Sweep and live Recipes;
 - optional application source registries;
-- broader GPU support for structs, resources, requests, strings, and colors.
+- broader GPU support for structs, resources, requests and non-scalar operations.
+  Existing append codecs support literal strings and packed colors; that does not
+  imply arbitrary string/color operations or user-defined struct execution.

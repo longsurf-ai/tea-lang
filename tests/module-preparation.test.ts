@@ -279,7 +279,7 @@ test('deep artifacts retain global parameters, child requirements and schema own
       current.parameters.map(parameter => parameter.value),
       [5, 'DEEP'],
     );
-    assert.equal(current.state.layout, prepared.state.layout);
+    assert.equal(Object.hasOwn(current.state, 'layout'), false);
     assert.equal(
       current.requests.every(request => request.context?.symbol === 'DEEP'),
       true,

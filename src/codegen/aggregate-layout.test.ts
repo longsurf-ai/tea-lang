@@ -1,4 +1,4 @@
-// Purpose: Aggregate-layout projection tests — layouts remain exact, nominal, deterministic, and finite through collection recursion.
+// Purpose: Generated aggregate classes retain nominal identities and recursive collection types.
 
 import {describe, expect, test} from 'vitest';
 import {DepthKind, IrKind, PlaceKind, Storage, type Name} from '../ir/node';
@@ -24,6 +24,10 @@ import {
 } from '../ir/type';
 import {generate} from './codegen';
 import {loadModule} from '../runtime/load';
+import type {Value} from '../runtime/js/value';
+import {Context} from '../runtime/js/context';
+import {mustBuild} from '../noder/testing';
+import {checkGenerated} from './check';
 
 const pos = {base: {filename: 'aggregate-layout.test.tea'}, line: 1, col: 1};
 
@@ -31,8 +35,85 @@ function structType(name: string, fields: readonly StructField[]): StructType {
   return {kind: TypeKind.Struct, name, fields};
 }
 
-describe('aggregate layout projection', () => {
-  test('emits exact, nominal, collision-free layouts', () => {
+describe('aggregate class projection', () => {
+  test('symbol brands reject structurally equal classes and preserve field types', () => {
+    const source = generate(
+      mustBuild(`
+struct Left
+    float value
+struct Right
+    float value
+left = Left.new(close)
+right = Right.new(close)
+emit "left" left.value
+emit "right" right.value
+`),
+    );
+    const left = /class (Left\d+) \{/.exec(source)![1];
+    const right = /class (Right\d+) \{/.exec(source)![1];
+    expect(source).toContain('declare readonly [');
+    expect(source).not.toMatch(/const layouts|StorageType/);
+    expect(() => checkGenerated(source)).not.toThrow();
+    expect(() =>
+      checkGenerated(`${source}\nconst wrong: ${left} = new ${right}();`),
+    ).toThrow(/missing.*required/s);
+    expect(() =>
+      checkGenerated(
+        `${source}\nimport {text as wrongText} from 'tea/runtime';\nnew ${left}({value: wrongText('wrong')});`,
+      ),
+    ).toThrow(/not assignable/);
+  });
+
+  test('reserved JavaScript names remain ordinary Tea fields and enum members', () => {
+    const source = generate(
+      mustBuild(`
+enum Status
+    __proto__
+    normal
+struct Item
+    int constructor
+    int __proto__
+item = Item.new(7, 11)
+item.constructor += 1
+item.__proto__ += 2
+emit "constructor" item.constructor
+emit "__proto__" item.__proto__
+emit "status" Status.__proto__
+`),
+    );
+    expect(() => checkGenerated(source)).not.toThrow();
+    const context = new Context(loadModule(source).bind());
+    expect(
+      context.step({series: [], builtins: [], requests: [], provisional: false})
+        .outputs,
+    ).toEqual([8, 13, '__proto__']);
+    context.dispose();
+  });
+
+  test('nested missing class values retain their owner through reads and iteration', () => {
+    const source = generate(
+      mustBuild(`
+struct Leaf
+    float value
+struct Branch
+    Leaf leaf
+branches = array.new<Branch>(1)
+branch = branches.get(0)
+emit "read" branch.leaf.value
+for item in branches
+    emit.append "items" item.leaf.value
+`),
+    );
+    expect(() => checkGenerated(source)).not.toThrow();
+    const context = new Context(loadModule(source).bind());
+    expect(
+      context.step({series: [], builtins: [], requests: [], provisional: false})
+        .outputs,
+    ).toEqual([NaN, [NaN]]);
+    context.dispose();
+  });
+
+  test('emits exact, nominal, collision-free classes and enums', () => {
     const left: EnumType = {
       kind: TypeKind.Enum,
       name: 'Mode',
@@ -120,100 +201,50 @@ describe('aggregate layout projection', () => {
     };
 
     const source = generate(ir);
+    expect(() => checkGenerated(source)).not.toThrow();
     const module = loadModule(source);
 
+    const enumNames = [...source.matchAll(/enum (ModeEnum\d+) \{/g)].map(
+      match => match[1],
+    );
+    expect(enumNames).toHaveLength(2);
+    expect(new Set(enumNames).size).toBe(2);
+
     expect(module.abi).toBe(RUNTIME_ABI_VERSION);
-    // Factory setup may discover a descriptor before its enclosing struct.
-    // Compare the complete graph in root-first order, preserving distinct ids.
-    const order: number[] = [];
-    const visit = (id: number): void => {
-      if (order.includes(id)) return;
-      order.push(id);
-      const layout = module.state.layout[id];
-      if (layout.kind === 'struct')
-        layout.fields.forEach(field => visit(field.layout));
-      else if (layout.kind === 'array') visit(layout.element);
-      else if (layout.kind === 'matrix') visit(layout.element);
-      else if (layout.kind === 'map') {
-        visit(layout.key);
-        visit(layout.value);
-      }
-    };
-    const rootLayout = module.state.frames[0].locals[0].layout;
-    visit(rootLayout);
-    const layouts = order.map(id => {
-      const layout = module.state.layout[id];
-      switch (layout.kind) {
-        case 'struct':
-          return {
-            ...layout,
-            fields: layout.fields.map(field => ({
-              ...field,
-              layout: order.indexOf(field.layout),
-            })),
-          };
-        case 'array':
-        case 'matrix':
-          return {...layout, element: order.indexOf(layout.element)};
-        case 'map':
-          return {
-            ...layout,
-            key: order.indexOf(layout.key),
-            value: order.indexOf(layout.value),
-          };
-        default:
-          return layout;
-      }
+    expect(module.state).not.toHaveProperty('layout');
+    const local = module.state.frames[0].locals[0];
+    expect(local).toMatchObject({
+      name: 'root',
+      storage: Storage.PerBar,
+      depth: {kind: 'none'},
     });
-    expect(order).toHaveLength(module.state.layout.length);
-    expect(module.state.frames[0].locals).toEqual([
-      {
-        name: 'root',
-        storage: Storage.PerBar,
-        depth: {kind: 'none'},
-        layout: rootLayout,
-      },
-    ]);
-    expect(layouts).toEqual([
-      {
-        kind: 'struct',
-        name: 'Envelope',
-        fields: [
-          {name: 'integer', layout: 1},
-          {name: 'decimal', layout: 2},
-          {name: 'flag', layout: 3},
-          {name: 'text', layout: 4},
-          {name: 'color', layout: 5},
-          {name: 'leftMode', layout: 6},
-          {name: 'rightMode', layout: 7},
-          {name: 'line', layout: 8},
-          {name: 'label', layout: 9},
-          {name: 'ints', layout: 10},
-          {name: 'floats', layout: 11},
-          {name: 'nodes', layout: 12},
-        ],
-      },
-      {kind: 'number', numeric: 'int'},
-      {kind: 'number', numeric: 'float'},
-      {kind: 'boolean'},
-      {kind: 'nullable-scalar', scalar: 'string'},
-      {kind: 'nullable-scalar', scalar: 'color'},
-      {kind: 'enum', name: 'Mode', members: ['on']},
-      {kind: 'enum', name: 'Mode', members: ['on']},
-      {kind: 'resource', handle: TypeKind.Line},
-      {kind: 'resource', handle: TypeKind.Label},
-      {kind: 'array', element: 1},
-      {kind: 'matrix', element: 2},
-      {kind: 'map', key: 4, value: 13},
-      {
-        kind: 'struct',
-        name: 'Node',
-        fields: [
-          {name: 'value', layout: 1},
-          {name: 'children', layout: 14},
-        ],
-      },
-      {kind: 'array', element: 13},
-    ]);
+    const body = Reflect.construct(local.empty.ctor!, []) as Record<
+      string,
+      Value<unknown>
+    >;
+    expect(Object.keys(body)).toEqual(envelope.fields.map(field => field.name));
+    expect(
+      Object.values(body)
+        .slice(0, 5)
+        .map(value => value.kind),
+    ).toEqual(['int', 'float', 'bool', 'string', 'color']);
+    expect(body.integer.value).toBeNaN();
+    expect(body.flag.value).toBe(false);
+    expect(body.color.value).toBeNull();
+    expect(body.leftMode.enumValues).toEqual(['on']);
+    expect(body.leftMode.sameType(body.rightMode)).toBe(false);
+    expect(body.line.kind).toBe(TypeKind.Line);
+    expect(body.label.kind).toBe(TypeKind.Label);
+    expect(body.ints.element?.kind).toBe('int');
+    expect(body.floats.element?.kind).toBe('float');
+    expect(body.nodes.key?.kind).toBe('string');
+    const node = body.nodes.element!;
+    const nodeBody = Reflect.construct(node.ctor!, []) as Record<
+      string,
+      Value<unknown>
+    >;
+    expect(nodeBody.value.kind).toBe('int');
+    expect(nodeBody.children.element?.ctor).toBe(node.ctor);
+    expect(generate(ir)).toBe(source);
   });
 });

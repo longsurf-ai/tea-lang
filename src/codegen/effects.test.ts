@@ -93,17 +93,9 @@ describe('generic sparse effect lowering', () => {
       timeNow: 0,
     });
 
-    expect(module.outputs.declarations).toEqual([{layout: 0}]);
+    expect(Object.keys(module.outputs)).toEqual(['schema']);
     expect(sink.fields[0].type.children[0]).toEqual(eventSchema);
-    expect(module.state.layout[0]).toEqual({
-      kind: 'struct',
-      name: 'OrderSubmitted',
-      typeId: 'effects.test.OrderSubmitted',
-      fields: [
-        {name: 'commandId', layout: 1},
-        {name: 'barIndex', layout: 2},
-      ],
-    });
+    expect(module.state).not.toHaveProperty('layout');
     expect(sink.publications).toHaveLength(1);
     expect(sink.emissions).toEqual([]);
     expect(sink.effectEmissions).toEqual([
@@ -201,7 +193,7 @@ describe('generic sparse effect lowering', () => {
       sink: new OutputCapture(),
       timeNow: 0,
     });
-    await expect(execution).rejects.toThrow(/schema|layout|identity/);
+    await expect(execution).rejects.toThrow('does not match its Arrow field');
   });
 
   test('WGSL fails closed for struct effect payloads', () => {

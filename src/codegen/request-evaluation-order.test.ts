@@ -30,7 +30,7 @@ describe('request context evaluation order', () => {
     expect(js).not.toContain('module.requests[0].context =');
   });
 
-  test('publishes named scalar and collect result layouts', () => {
+  test('publishes named scalar and collect result values', () => {
     const module = loadModule(
       generate(
         mustBuild(
@@ -47,18 +47,17 @@ describe('request context evaluation order', () => {
       {
         name: 'scalar',
         mode: 'sample',
-        resultLayout: module.requests[0]!.layout,
       },
       {
         name: 'window',
         mode: 'collect',
       },
     ]);
+    const scalar = module.requests[0]!;
+    expect(scalar.empty.sameType(scalar.resultEmpty)).toBe(true);
     const window = module.requests[1]!;
-    expect(module.state.layout[window.layout]).toEqual({
-      kind: 'array',
-      element: window.resultLayout,
-    });
+    expect(window.empty.kind).toBe('array');
+    expect(window.empty.element?.sameType(window.resultEmpty)).toBe(true);
   });
 
   test('binds every option once in its independent source order', () => {

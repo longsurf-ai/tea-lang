@@ -8,6 +8,7 @@ import {
   Map_ as ArrowMap,
   Struct,
   Utf8,
+  Uint8,
   DataType,
   Schema,
   Precision,
@@ -57,8 +58,18 @@ export function fieldOf(
         case TypeKind.Bool:
           return new Field(name, new Bool(), false, metadata);
         case TypeKind.String:
-        case TypeKind.Color:
           return new Field(name, new Utf8(), true, metadata);
+        case TypeKind.Color:
+          return new Field(
+            name,
+            new Struct(
+              ['r', 'g', 'b', 'a'].map(
+                name => new Field(name, new Uint8(), false),
+              ),
+            ),
+            true,
+            metadata,
+          );
         case TypeKind.Enum:
           nominal();
           metadata.set('tea:members', JSON.stringify(type.members));
@@ -158,6 +169,8 @@ export function schemaSource(schema: Schema): string {
   const type = (value: DataType): string => {
     if (DataType.isFloat(value) && value.precision === Precision.DOUBLE)
       return 'new Float64()';
+    if (DataType.isInt(value) && !value.isSigned && value.bitWidth === 8)
+      return 'new Uint8()';
     if (DataType.isBool(value)) return 'new Bool()';
     if (DataType.isUtf8(value)) return 'new Utf8()';
     if (DataType.isList(value)) return `new List(${field(value.children[0])})`;

@@ -50,7 +50,6 @@ export interface LowerCtx {
   readonly bindFuncRefs?: ReadonlyMap<IrFunc, string>;
   // Root ModuleEmitter-owned projection. Request children share the same
   // layout namespace; no semantic Type is ever mutated with a backend id.
-  layoutOf(type: Type): number;
   // Which typed frame owns the currently lowered function.
   currentFid: number;
   readonly currentResultType?: Type;
@@ -753,7 +752,6 @@ function lowerNative(
   ).map((arg, index) => coerce(arg, argExprs[index].type, argTypes[index]));
   if (native === '$historyDepth') return `historyDepth(${args[0]})`;
   if (/^(array|matrix|map)\./.test(native)) {
-    ctx.layoutOf(resultType);
     if (ctx.binding === true)
       return fatal(`module binding cannot call aggregate native '${native}'`);
     const method = native

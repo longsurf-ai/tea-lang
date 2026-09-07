@@ -137,8 +137,8 @@ b.push(2)
 // a contains [1]; b contains [1, 2].
 ```
 
-The sized array constructor may omit its initial value. The element layout's
-typed empty is used:
+The sized array constructor may omit its initial value. Its declared element
+type's empty value is used:
 
 ```tea
 array.new<float>(3) // [na, na, na]
@@ -221,7 +221,7 @@ oldX = x[1]
 ```
 
 An offset must be a non-negative safe integer. Invalid or unavailable offsets
-return the binding layout's typed empty value.
+return the binding's declared empty value.
 
 ## Conditional evaluation and function return
 
@@ -257,6 +257,12 @@ One execution transaction owns tentative storage allocation, struct-field
 mutation, same-row local candidates, frame activation, and buffered emissions.
 An execution error aborts the transaction; successful execution commits it.
 
+Local assignment records a pending write under that binding's identity. A later
+read in the same attempt sees it immediately. The runtime opens calls lazily
+and retains only changed local values in the write set, instead of building a
+second mutable frame tree. Rollback discards those writes and buffered outputs;
+accepted histories and intermediate values are replaced only after success.
+
 Successful provisional ticks commit struct-body mutations. Consequently, a
 shared reference supports natural realtime accumulation:
 
@@ -287,7 +293,7 @@ retains neither its value nor its initialized state.
 ## Runtime storage boundary
 
 Within one runtime context, all source-hidden memory identities use the same
-typed `Ref<V>` and Heap framework. Collection backing and struct field storage
+typed `Ref<V>` and Heap framework. Collection backing and generated class bodies
 have different `TypeInfo<A, V>` policies over the same reference, transaction,
 version guard, limits, reachability graph, and garbage collector.
 
@@ -296,24 +302,30 @@ history and same-index values. `Context` owns and disposes the Heap and supplies
 the active transaction to value operations. A successful step replaces its
 state without transferring storage ownership to the caller.
 
-Collection operations allocate persistent replacement backing. A struct field
-write stages a complete replacement body for the existing `Ref`; transactional
-reads see that overlay, commit installs it, and abort discards it. This physical
-distinction does not introduce two source reference kinds or require an
-edit/undo journal.
+Generated nominal structs are TypeScript classes with named captured-Value
+fields and an erased unique-symbol brand. Their class constructor supplies
+nominal identity and missing field values. Collection headers are frozen
+generic classes, and their backing retains captured Values directly. There is
+no parallel runtime structural type table.
 
-Effect emission snapshots permitted struct fields at call time. It never hands
-a live struct reference to a sink. Each request child owns an independent Heap,
+Collection operations allocate persistent replacement backing. A struct field
+write goes through the Heap transaction view and stages a replacement body for
+the existing Ref. Transactional reads see pending writes, commit installs them,
+and rollback discards them. The common transaction mechanism preserves class
+prototypes and shared aliases; generated classes do not implement separate
+transaction engines.
+
+Output emission snapshots permitted struct fields at call time. It never hands
+a live struct reference to an observer. Each request child owns an independent Heap,
 and child request results are restricted to scalars copied by value into the
 parent adapter. A `Ref` never crosses that boundary. For the Node-only
 `security_lower_tf` path, a frozen scalar batch enters the parent step and is
-materialized as an ordinary Tea array inside the parent Heap transaction;
-Batch collect remains unsupported. Detailed synchronization belongs to
+materialized as an ordinary Tea array inside the parent Heap transaction. Detailed synchronization belongs to
 [Requests](requests.md).
 
 ## Empty values and errors
 
 Tea keeps typed-empty semantics rather than Go zero initialization. `na`
 collections and struct references are distinct from valid empty collections or
-allocated structs. Bounds, shape, key, type-info, layout, stale-reference,
-and configured storage-limit failures use stable runtime error codes.
+allocated structs. Bounds, shape, key, nominal-type, stale-reference, and configured storage-limit
+failures use stable runtime error codes.

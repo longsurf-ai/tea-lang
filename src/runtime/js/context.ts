@@ -6,31 +6,24 @@ import {fatal} from '../../base/print';
 import {requireConcreteModule} from '../module-binding';
 import {outputFields} from '../output';
 import type {Stored} from '../value';
-import {StorageTypes} from '../storage-types';
 import {ArenaHeap} from './heap';
 import {StructStorageRuntime} from './struct-storage';
 import {CollectionRuntime} from './collections';
 import {
   Step,
   initialRoot,
-  initialIntermediateFrame,
+  initialIntermediateState,
   discoverRoots,
-  validateIoSchemas,
   type RootState,
-  type IntermediateFrame,
-  type WorkspaceFrame,
+  type IntermediateState,
+  type FrameState,
   type StepInput,
 } from './state-update';
 import {Input, Series} from './series';
-import {Value, capture, unwrap} from './value';
+import {Value, capture} from './value';
+import {Color} from '../color';
 
 export type {StepInput} from './state-update';
-
-/** Named local bindings and independent written call sites in one frame. */
-export interface Frame<L extends object = object, C extends object = object> {
-  readonly locals: L;
-  readonly calls: C;
-}
 
 /** Detached output cells from one accepted attempt. */
 export interface StepResult {
@@ -49,50 +42,45 @@ export interface StepResult {
 export class Context<
   P extends object = object,
   I extends object = object,
-  S extends Frame = Frame,
+  S extends object = object,
   O extends object = object,
 > {
   readonly params: P;
   readonly inputs: I;
   readonly outputs: O;
-  /** @internal Physical descriptors are never a second I/O schema. */
-  readonly layouts: StorageTypes;
   private readonly heap = new ArenaHeap();
   private readonly structs: StructStorageRuntime;
   private readonly collections: CollectionRuntime;
   private committed: RootState;
-  private intermediate: IntermediateFrame;
+  private intermediate: IntermediateState;
   private active: Step | null = null;
-  private frames = new Map<WorkspaceFrame, Frame>();
+  private frames = new Map<FrameState, object>();
   private rootValues: readonly Stored[] | null = null;
   private disposed = false;
   private readonly module: Module;
 
-  constructor(module: Module) {
+  constructor(module: Module<Context<P, I, S, O>>) {
     requireConcreteModule(module);
     this.module = module.clone();
     Object.freeze(module);
-    this.layouts = new StorageTypes(this.module.state.layout);
-    validateIoSchemas(this.module, this.layouts);
-    this.structs = new StructStorageRuntime(this.heap, this.layouts);
-    this.collections = new CollectionRuntime(
-      this.heap,
-      this.layouts,
-      100_000,
-      this.structs,
-    );
+    this.structs = new StructStorageRuntime(this.heap);
+    this.collections = new CollectionRuntime(this.heap, 100_000);
     this.committed = initialRoot(this.module);
-    this.intermediate = initialIntermediateFrame(this.module, 0, true);
+    this.intermediate = initialIntermediateState(this.module, 0, true);
     this.params = Object.fromEntries(
       this.module.parameters.map(parameter => [
         parameter.name,
         new Value(
-          parameter.value!,
+          parameter.type === 'color' && typeof parameter.value === 'string'
+            ? Color.parse(parameter.value)
+            : parameter.value!,
           parameter.type === 'enum'
             ? (parameter.enumType!.typeId ?? parameter.enumType!.name)
             : parameter.type === 'source'
               ? 'string'
               : parameter.type,
+          undefined,
+          {enumValues: parameter.enumType?.members.map(member => member.name)},
         ),
       ]),
     ) as P;
@@ -111,7 +99,7 @@ export class Context<
         this.module.inputs.builtins.map((input, id) => [
           `${input.source.domain}.${input.source.field}`,
           new Input(offset =>
-            this.capture(this.storage.builtin(id, offset), input.layout),
+            this.capture(this.storage.builtin(id, offset), input.empty),
           ),
         ]),
       ),
@@ -119,7 +107,7 @@ export class Context<
         this.module.requests.map((request, id) => [
           request.name,
           new Input(offset =>
-            this.capture(this.storage.request(id, offset), request.layout),
+            this.capture(this.storage.request(id, offset), request.empty),
           ),
         ]),
       ),
@@ -129,12 +117,10 @@ export class Context<
         field.name,
         field.metadata.get('tea:write') === 'append'
           ? {
-              append: (value: Value<unknown>) =>
-                this.storage.append(id, unwrap(value)),
+              append: (value: Value<unknown>) => this.storage.append(id, value),
             }
           : {
-              set: (value: Value<unknown>) =>
-                this.storage.emit(id, unwrap(value)),
+              set: (value: Value<unknown>) => this.storage.emit(id, value),
             },
       ]),
     ) as O;
@@ -155,12 +141,13 @@ export class Context<
   /** @internal Attach the correct semantic kind and owner to a stored carrier. */
   capture<T, K extends string = string>(
     value: Stored,
-    layout: number,
+    empty: Value<T, K>,
   ): Value<T, K> {
-    return capture<T, K>(this, value, layout);
+    return capture<T, K>(this, value, empty);
   }
 
-  private frame(frame: WorkspaceFrame): Frame {
+  /** Typed bindings consult the current transaction rather than copying local state. */
+  private frame(frame: FrameState): object {
     const existing = this.frames.get(frame);
     if (existing !== undefined) return existing;
     const template = this.module.state.frames[frame.fid];
@@ -169,14 +156,14 @@ export class Context<
         local.name ?? `local${slot}`,
         new Series(
           offset =>
-            this.capture(this.storage.read(frame, slot, offset), local.layout),
-          value => this.storage.write(frame, slot, unwrap(value)),
+            this.capture(this.storage.read(frame, slot, offset), local.empty),
+          value => this.storage.write(frame, slot, value),
           () => this.storage.needsInit(frame, slot),
-          value => this.storage.initialize(frame, slot, unwrap(value)),
+          value => this.storage.initialize(frame, slot, value),
         ),
       ]),
     );
-    const calls = Object.create(null) as Record<string, Frame>;
+    const calls = Object.create(null) as Record<string, object>;
     const result = {locals, calls};
     this.frames.set(frame, result);
     template.subs.forEach((child, slot) =>
@@ -198,20 +185,11 @@ export class Context<
     this.assertLive();
     if (this.active !== null)
       return fatal('a Context cannot execute a nested step');
-    this.heap.replaceRoots(
-      discoverRoots(
-        this.module,
-        this.layouts,
-        this.structs,
-        this.committed,
-        this.intermediate,
-      ),
-    );
+    this.heap.replaceRoots(discoverRoots(this.committed, this.intermediate));
     this.heap.collect();
     this.frames = new Map();
     const step = new Step(
       this.module,
-      this.layouts,
       this.heap,
       this.committed,
       this.intermediate,
@@ -233,15 +211,15 @@ export class Context<
   }
 
   /** @internal A request result is valid until this Context's next step. */
-  readResult(slot: number, layout: number): Stored {
+  readResult(slot: number, empty: Value<unknown>): Stored {
     this.assertLive();
     const local = this.module.state.frames[0]?.locals[slot];
-    if (local?.layout !== layout)
+    if (local === undefined || !local.empty.sameType(empty))
       return fatal(`invalid request result slot ${slot}`);
     const value = this.rootValues?.[slot];
     if (value === undefined)
       return fatal(`request result ${slot} is unavailable before step`);
-    this.layouts.assertValue(layout, value, 'request result');
+    empty.assertStored(value, this.heap);
     return value;
   }
 

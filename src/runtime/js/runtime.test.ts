@@ -11,30 +11,26 @@ import {Module} from '../module-binding';
 import {testModule, scalar, output} from '../testing';
 import {outputSchema} from '../output';
 import type {Stored} from '../value';
-import type {StorageType} from '../storage-types';
+import {array, bool, int, struct, Value} from './value';
 
-const NUMBER = 0;
-const ARRAY = 1;
-const COUNTER = 2;
-const ENVELOPE = 3;
-const BOOLEAN = 4;
-const LAYOUTS = [
-  {kind: 'number', numeric: 'int'},
-  {kind: 'array', element: NUMBER},
-  {
-    kind: 'struct',
-    name: 'Counter',
-    typeId: 'test.Counter',
-    fields: [{name: 'value', layout: NUMBER}],
-  },
-  {
-    kind: 'struct',
-    name: 'Envelope',
-    typeId: 'test.Envelope',
-    fields: [{name: 'counter', layout: COUNTER}],
-  },
-  {kind: 'boolean'},
-] as const satisfies readonly StorageType[];
+// Step exposes raw payloads; fixture empties validate their domains at that boundary.
+const NUMBER: Value<unknown> = int(NaN);
+const ARRAY: Value<unknown> = array(NUMBER).empty();
+const BOOLEAN: Value<unknown> = bool(false);
+class Counter {
+  value = NUMBER;
+  constructor(fields?: {value: typeof NUMBER}) {
+    Object.assign(this, fields);
+  }
+}
+const COUNTER: Value<unknown> = struct(Counter, 'test.Counter', 24).empty();
+class Envelope {
+  counter = COUNTER;
+  constructor(fields?: {counter: typeof COUNTER}) {
+    Object.assign(this, fields);
+  }
+}
+const ENVELOPE: Value<unknown> = struct(Envelope, 'test.Envelope', 24).empty();
 
 function input(value: number, provisional: boolean): StepInput {
   return {series: [value], builtins: [], requests: [], provisional};
@@ -43,22 +39,21 @@ function input(value: number, provisional: boolean): StepInput {
 const PROVISIONAL_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
   main(ctx, root) {
-    if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
-    if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, 0);
-    ctx.write(root, 0, Number(ctx.read(root, 0, 0)) + ctx.series(0, 0));
-    ctx.write(root, 1, Number(ctx.read(root, 1, 0)) + 1);
-    ctx.emit(0, ctx.read(root, 0, 0));
-    ctx.emit(1, ctx.read(root, 1, 0));
+    if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, int(0));
+    if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, int(0));
+    ctx.write(root, 0, int(Number(ctx.read(root, 0, 0)) + ctx.series(0, 0)));
+    ctx.write(root, 1, int(Number(ctx.read(root, 1, 0)) + 1));
+    ctx.emit(0, NUMBER.withStored(ctx.read(root, 0, 0)));
+    ctx.emit(1, NUMBER.withStored(ctx.read(root, 1, 0)));
   },
   inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
   parameters: [],
   state: {
-    layout: LAYOUTS,
     frames: [
       {
         locals: [
-          {storage: Storage.Var, depth: {kind: 'none'}, layout: NUMBER},
-          {storage: Storage.Varip, depth: {kind: 'none'}, layout: NUMBER},
+          {storage: Storage.Var, depth: {kind: 'none'}, empty: NUMBER},
+          {storage: Storage.Varip, depth: {kind: 'none'}, empty: NUMBER},
         ],
         subs: [],
       },
@@ -79,22 +74,26 @@ function structModule(shouldFail: () => boolean): Module {
     abi: RUNTIME_ABI_VERSION,
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
-        ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
+        ctx.initialize(
+          root,
+          0,
+          COUNTER.withStored(ctx.newStruct(new Counter({value: int(0)}), 24)),
+        );
       }
-      const counter = ctx.requireStruct(ctx.read(root, 0, 0), COUNTER);
-      const value = Number(ctx.structField(counter, COUNTER, 0)) + 1;
-      ctx.storeStructField(counter, COUNTER, 0, value);
+      const counter = ctx.requireStruct(ctx.read(root, 0, 0), Counter);
+      const value =
+        Number(ctx.structField(counter, Counter, 'value', NUMBER).value) + 1;
+      ctx.storeStructField(counter, Counter, 'value', int(value));
       if (shouldFail()) throw new Error('step failed');
-      ctx.emit(0, value);
+      ctx.emit(0, int(value));
     },
     inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
     parameters: [],
     state: {
-      layout: LAYOUTS,
       frames: [
         {
           locals: [
-            {storage: Storage.Var, depth: {kind: 'none'}, layout: COUNTER},
+            {storage: Storage.Var, depth: {kind: 'none'}, empty: COUNTER},
           ],
           subs: [],
         },
@@ -114,24 +113,31 @@ function structEffectModule(shouldFail: () => boolean): Module {
     abi: RUNTIME_ABI_VERSION,
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
-        ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
+        ctx.initialize(
+          root,
+          0,
+          COUNTER.withStored(ctx.newStruct(new Counter({value: int(0)}), 24)),
+        );
       }
-      const counter = ctx.requireStruct(ctx.read(root, 0, 0), COUNTER);
-      const next = Number(ctx.structField(counter, COUNTER, 0)) + 1;
-      ctx.storeStructField(counter, COUNTER, 0, next);
-      const envelope = ctx.newStruct(ENVELOPE, [counter]);
-      ctx.append(0, envelope);
-      ctx.storeStructField(counter, COUNTER, 0, next + 100);
+      const counter = ctx.requireStruct(ctx.read(root, 0, 0), Counter);
+      const next =
+        Number(ctx.structField(counter, Counter, 'value', NUMBER).value) + 1;
+      ctx.storeStructField(counter, Counter, 'value', int(next));
+      const envelope = ctx.newStruct(
+        new Envelope({counter: COUNTER.withStored(counter)}),
+        24,
+      );
+      ctx.append(0, ENVELOPE.withStored(envelope));
+      ctx.storeStructField(counter, Counter, 'value', int(next + 100));
       if (shouldFail()) throw new Error('effect step failed');
     },
     inputs: {series: [], builtins: []},
     parameters: [],
     state: {
-      layout: LAYOUTS,
       frames: [
         {
           locals: [
-            {storage: Storage.Var, depth: {kind: 'none'}, layout: COUNTER},
+            {storage: Storage.Var, depth: {kind: 'none'}, empty: COUNTER},
           ],
           subs: [],
         },
@@ -174,17 +180,20 @@ const WRONG_NOMINAL_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
   main(ctx, root) {
     if (ctx.needsInit(root, 0)) {
-      ctx.initialize(root, 0, ctx.newStruct(COUNTER, [0]));
+      ctx.initialize(
+        root,
+        0,
+        COUNTER.withStored(ctx.newStruct(new Counter({value: int(0)}), 24)),
+      );
     }
   },
   inputs: {series: [], builtins: []},
   parameters: [],
   state: {
-    layout: LAYOUTS,
     frames: [
       {
         locals: [
-          {storage: Storage.Var, depth: {kind: 'none'}, layout: ENVELOPE},
+          {storage: Storage.Var, depth: {kind: 'none'}, empty: ENVELOPE},
         ],
         subs: [],
       },
@@ -198,25 +207,26 @@ const GC_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
   main(ctx, root) {
     const close = ctx.series(0, 0);
-    ctx.write(root, 0, ctx.callCollection('array.from', ARRAY, [close]));
+    ctx.write(root, 0, ctx.callCollection('array.from', ARRAY, [int(close)]));
     ctx.emit(
       0,
       close < 3
-        ? 0
-        : ctx.callCollection('array.size', NUMBER, [ctx.read(root, 0, 2)]),
+        ? int(0)
+        : ctx.callCollection('array.size', NUMBER, [
+            ARRAY.withStored(ctx.read(root, 0, 2)),
+          ]),
     );
   },
   inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
   parameters: [],
   state: {
-    layout: LAYOUTS,
     frames: [
       {
         locals: [
           {
             storage: Storage.PerBar,
             depth: {kind: 'const', bars: 2},
-            layout: ARRAY,
+            empty: ARRAY,
           },
         ],
         subs: [],
@@ -234,16 +244,15 @@ const GC_MODULE: Module = testModule({
 const COLLECT_CHILD_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
   main(ctx, root) {
-    ctx.write(root, 0, 0);
+    ctx.write(root, 0, int(0));
   },
   inputs: {series: [], builtins: []},
   parameters: [],
   state: {
-    layout: LAYOUTS,
     frames: [
       {
         locals: [
-          {storage: Storage.PerBar, depth: {kind: 'none'}, layout: NUMBER},
+          {storage: Storage.PerBar, depth: {kind: 'none'}, empty: NUMBER},
         ],
         subs: [],
       },
@@ -256,32 +265,40 @@ const COLLECT_CHILD_MODULE: Module = testModule({
 const COLLECT_REQUEST_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
   main(ctx) {
-    const current = ctx.request(0, 0);
-    const prior = ctx.request(0, 1);
-    const size = Number(ctx.callCollection('array.size', NUMBER, [current]));
+    const current = ARRAY.withStored(ctx.request(0, 0));
+    const prior = ARRAY.withStored(ctx.request(0, 1));
+    const size = Number(
+      ctx.callCollection('array.size', NUMBER, [current]).value,
+    );
     const priorSize =
-      prior === null
+      prior.value === null
         ? -1
-        : Number(ctx.callCollection('array.size', NUMBER, [prior]));
-    ctx.emit(0, size);
+        : Number(ctx.callCollection('array.size', NUMBER, [prior]).value);
+    ctx.emit(0, int(size));
     ctx.emit(1, ctx.callCollection('array.is_empty', BOOLEAN, [current]));
     ctx.emit(
       2,
-      size === 0 ? -1 : ctx.callCollection('array.first', NUMBER, [current]),
+      size === 0
+        ? int(-1)
+        : ctx.callCollection('array.first', NUMBER, [current]),
     );
     ctx.emit(
       3,
-      size === 0 ? -1 : ctx.callCollection('array.last', NUMBER, [current]),
+      size === 0
+        ? int(-1)
+        : ctx.callCollection('array.last', NUMBER, [current]),
     );
-    ctx.emit(4, priorSize);
+    ctx.emit(4, int(priorSize));
     ctx.emit(
       5,
-      priorSize <= 0 ? -1 : ctx.callCollection('array.first', NUMBER, [prior]),
+      priorSize <= 0
+        ? int(-1)
+        : ctx.callCollection('array.first', NUMBER, [prior]),
     );
   },
   inputs: {series: [], builtins: []},
   parameters: [],
-  state: {layout: LAYOUTS, frames: [{locals: [], subs: []}]},
+  state: {frames: [{locals: [], subs: []}]},
   outputs: {
     schema: outputSchema([
       ...[
@@ -300,8 +317,8 @@ const COLLECT_REQUEST_MODULE: Module = testModule({
       mode: 'collect',
       depth: {kind: 'const', bars: 1},
       resultSlot: 0,
-      resultLayout: NUMBER,
-      layout: ARRAY,
+      resultEmpty: NUMBER,
+      empty: ARRAY,
       context: {
         symbol: 'X',
         timeframe: '1m',
@@ -315,7 +332,10 @@ const COLLECT_REQUEST_MODULE: Module = testModule({
   ],
 });
 
-function collectInput(values: Stored, provisional = false): StepInput {
+function collectInput(
+  values: Stored | readonly Stored[],
+  provisional = false,
+): StepInput {
   return {series: [], builtins: [], requests: [values], provisional};
 }
 
@@ -329,21 +349,20 @@ describe('Context', () => {
     const module = testModule({
       abi: RUNTIME_ABI_VERSION,
       main(step, root) {
-        if (step.needsInit(root, 0)) step.initialize(root, 0, 0);
-        step.write(root, 0, Number(step.read(root, 0, 0)) + 1);
-        step.emit(0, step.read(root, 0, 0));
-        step.emit(1, null);
-        if (duplicate) step.emit(1, null);
+        if (step.needsInit(root, 0)) step.initialize(root, 0, int(0));
+        step.write(root, 0, int(Number(step.read(root, 0, 0)) + 1));
+        step.emit(0, NUMBER.withStored(step.read(root, 0, 0)));
+        step.emit(1, COUNTER);
+        if (duplicate) step.emit(1, COUNTER);
       },
       inputs: {series: [], builtins: []},
       parameters: [],
       requests: [],
       state: {
-        layout: LAYOUTS,
         frames: [
           {
             locals: [
-              {storage: Storage.Var, depth: {kind: 'none'}, layout: NUMBER},
+              {storage: Storage.Var, depth: {kind: 'none'}, empty: NUMBER},
             ],
             subs: [],
           },
@@ -443,7 +462,7 @@ describe('Context', () => {
         requests: [],
         provisional: false,
       }),
-    ).toThrow("references 'Counter', expected 'Envelope'");
+    ).toThrow('initializer has a different type');
     runtime.dispose();
   });
 
@@ -471,7 +490,7 @@ describe('Context', () => {
       main() {},
       inputs: {series: [], builtins: []},
       parameters: [],
-      state: {layout: LAYOUTS, frames: [{locals: [], subs: []}]},
+      state: {frames: [{locals: [], subs: []}]},
       outputs: {
         schema: outputSchema([
           ...[scalar('value', 'int')].map(field => output(field.name, field)),
@@ -536,10 +555,10 @@ describe('Context', () => {
     const runtime = new Context(COLLECT_REQUEST_MODULE.clone().bind());
 
     expect(() => runtime.step(collectInput(7))).toThrow(
-      'request 0 collect input is not an array',
+      'collect request requires an array',
     );
     expect(() => runtime.step(collectInput([1, 'bad']))).toThrow(
-      'request 0 element 1 does not match number layout 0',
+      'value does not match int',
     );
     expect(channels(runtime.step(collectInput([5])))).toEqual([
       1,
@@ -575,19 +594,19 @@ describe('Context', () => {
     runtime.dispose();
   });
 
-  test('rejects a collect request whose parent layout is not its Tea array layout', () => {
+  test('rejects a collect request with a scalar parent value', () => {
     const mismatched = Object.assign(COLLECT_REQUEST_MODULE.clone(), {
       inputs: {...COLLECT_REQUEST_MODULE.inputs},
       requests: [
         {
           ...COLLECT_REQUEST_MODULE.requests[0]!,
-          layout: NUMBER,
+          empty: NUMBER,
           module: COLLECT_REQUEST_MODULE.requests[0].module,
         },
       ],
     });
     expect(() => new Context(mismatched.bind())).toThrow(
-      'request 0 has inconsistent collect layouts',
+      'request 0 has inconsistent collect values',
     );
   });
 });

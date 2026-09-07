@@ -15,6 +15,7 @@ import {BoolType, IntType, Qualifier, StringType, type Type} from '../ir/type';
 import {mustBuild} from '../noder/testing';
 import {RUNTIME_ABI_VERSION} from '../runtime/module-abi';
 import {loadModule} from '../runtime/load';
+import {bool, int, text} from '../runtime/js/value';
 import {generate} from './codegen';
 
 const pos = {
@@ -95,19 +96,19 @@ describe('typed builtin lowering', () => {
       {
         source: {domain: 'time', field: 'time'},
         constant: false,
-        layout: 0,
+        empty: int(NaN),
         depth: {kind: 'const', bars: 3},
       },
       {
         source: {domain: 'barstate', field: 'isfirst'},
         constant: false,
-        layout: 1,
+        empty: bool(false),
         depth: {kind: 'none'},
       },
       {
         source: {domain: 'syminfo', field: 'tickerid'},
         constant: true,
-        layout: 2,
+        empty: text(null),
         depth: {kind: 'none'},
       },
     ]);
@@ -129,7 +130,7 @@ describe('typed builtin lowering', () => {
 
     expect(module.inputs.builtins).toEqual([]);
     expect(module.requests[0].module.abi).toBe(RUNTIME_ABI_VERSION);
-    expect(module.requests[0].module.state.layout).toBe(module.state.layout);
+    expect(module.requests[0].module.state).not.toHaveProperty('layout');
     expect(module.requests[0].module.inputs.series).toEqual([]);
     expect(module.requests[0].module.inputs.builtins).toMatchObject([
       {source: {domain: 'bar', field: 'bar_index'}},

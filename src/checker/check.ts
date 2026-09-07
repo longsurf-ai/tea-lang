@@ -3,7 +3,7 @@
 // Reassignment binding is scope-sensitive and deliberately flow-insensitive:
 // a binding written anywhere in one checking context never carries fold values.
 
-import {applyTransparency, rgbColor} from '../base/color';
+import {applyTransparency, canonicalColor, rgbColor} from '../base/color';
 import {fatal, type Errors} from '../base/print';
 import type {Pos} from '../base/pos';
 import {unimplemented} from '../base/unimplemented';
@@ -3203,7 +3203,9 @@ class Checker {
         return {
           type: ColorType,
           qualifier: Qualifier.Const,
-          value: lit.value.toUpperCase(),
+          value:
+            canonicalColor(lit.value) ??
+            fatal('invalid color literal reached checker'),
         };
       case LitKind.Path:
         return INVALID_TV; // import paths never reach expression position

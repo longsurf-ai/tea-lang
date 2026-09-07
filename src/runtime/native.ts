@@ -1,7 +1,7 @@
 // Purpose: Scalar Tea intrinsics shared by handwritten and generated programs.
 
 import {fatal} from '../base/print';
-import {applyTransparency, rgbColor} from '../base/color';
+import {Color} from './color';
 import type {Scalar} from './value';
 import {Value, bool, color, float, int, text, type Numeric} from './js/value';
 
@@ -62,17 +62,17 @@ export const math = {
 
 /**
  * Colors reuse the canonical encoding also used by constant folding.
- * @example `colors.rgb(int(255), int(0), int(0)).value` is '#FF0000'.
+ * @example `colors.rgb(int(255), int(0), int(0)).value?.toString()` is '#FF0000'.
  */
 export const colors = {
   new(
-    value: Value<string | null, 'color'>,
+    value: Value<Color | null, 'color'>,
     transparency: Value<number, Numeric>,
   ) {
     return color(
       value.value === null || !Number.isFinite(transparency.value)
         ? null
-        : applyTransparency(value.value, transparency.value),
+        : value.value.withTransparency(transparency.value),
     );
   },
   rgb(
@@ -84,7 +84,7 @@ export const colors = {
     const channels = [r.value, g.value, b.value, transparency?.value ?? 0];
     return color(
       channels.every(Number.isFinite)
-        ? rgbColor(r.value, g.value, b.value, transparency?.value ?? null)
+        ? Color.rgb(r.value, g.value, b.value, transparency?.value ?? 0)
         : null,
     );
   },
@@ -122,7 +122,7 @@ export function nz<T, K extends string>(
       : value.kind === 'string'
         ? ''
         : value.kind === 'color'
-          ? '#00000000'
+          ? new Color(0, 0, 0, 0)
           : fatal(`nz requires a replacement for ${value.kind}`);
   return new Value(raw as T, value.kind);
 }

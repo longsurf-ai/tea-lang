@@ -1,26 +1,24 @@
-// Purpose: Insertion-ordered immutable maps with static-domain key canonicalization and sealed eager-copy backing.
+// Ordered persistent maps; keys compare by Tea value, including Color channels.
 
 import {fatal} from '../../../base/print';
 import {ExecutionError} from '../../errors';
 import type {CollectionMutation} from '../../module-abi';
-import {isMapValue, type MapValue, type Stored} from '../../value';
+import {MapValue, isMapValue, visitValueRefs, type Stored} from '../../value';
 import type {TypeInfo} from '../heap';
-import {visitRuntimeValueRefs, type StorageType} from '../../storage-types';
+import {Value, int, bool} from '../value';
 import {createArray} from './array';
 import {
+  assertType,
   assertLimit,
-  assertExactLayout,
-  assertScalarResultLayout,
-  collectionLayout,
-  mapValue,
+  requireArgs,
   requireCollection,
   type CollectionContext,
   type CollectionReadContext,
 } from './common';
 
 export interface MapEntry {
-  readonly key: Stored;
-  readonly value: Stored;
+  readonly key: Value<unknown>;
+  readonly value: Value<unknown>;
 }
 
 export interface MapStorage {
@@ -31,150 +29,120 @@ export interface MapStorage {
 export const MAP_STORAGE: TypeInfo<MapStorage, MapStorage> = {
   id: Symbol('tea.map.storage'),
   name: 'map storage',
-  bytesFor(args) {
-    return args.logicalBytes;
-  },
-  create(args) {
-    return Object.freeze({
+  bytesFor: args => args.logicalBytes,
+  create: args =>
+    Object.freeze({
       entries: Object.freeze(
         args.entries.map(entry =>
           Object.freeze({key: entry.key, value: entry.value}),
         ),
       ),
       logicalBytes: args.logicalBytes,
-    });
-  },
+    }),
   trace(payload, visit) {
     payload.entries.forEach(entry => {
-      visitRuntimeValueRefs(entry.key, visit);
-      visitRuntimeValueRefs(entry.value, visit);
+      visitValueRefs(entry.key, visit);
+      visitValueRefs(entry.value, visit);
     });
   },
-  bytesOf(payload) {
-    return payload.logicalBytes;
-  },
+  bytesOf: payload => payload.logicalBytes,
 };
 
 export function mapCall(
   ctx: CollectionContext,
   operation: string,
-  resultLayout: number,
-  args: readonly Stored[],
-): Stored {
+  result: Value<unknown>,
+  args: readonly Value<unknown>[],
+): Stored | Value<unknown> {
   if (operation === 'map.new') {
-    if (args.length !== 0) {
-      return fatal(`map.new received ${args.length} arguments`);
-    }
-    return createMap(ctx, resultLayout, []);
+    requireArgs(operation, args, 0);
+    const key = result.key ?? fatal('map constructor requires an empty key');
+    const element =
+      result.element ?? fatal('map constructor requires an empty element');
+    assertKeyType(key);
+    return new MapValue(
+      key,
+      element,
+      allocateStorage(ctx, key, element, []),
+      0,
+    );
   }
-  const receiver = requireMapArg(ctx, args, operation);
-  const layout = collectionLayout(ctx.layouts, receiver.layout, 'map');
+  const receiver = requireCollection(ctx, args[0], 'map');
   const stored = entries(ctx, receiver);
   switch (operation) {
     case 'map.size':
       requireArgs(operation, args, 1);
-      assertScalarResultLayout(ctx.layouts, resultLayout, 'int', operation);
-      return receiver.size;
+      return int(receiver.size);
     case 'map.is_empty':
       requireArgs(operation, args, 1);
-      assertScalarResultLayout(ctx.layouts, resultLayout, 'boolean', operation);
-      return receiver.size === 0;
-    case 'map.contains': {
+      return bool(receiver.size === 0);
+    case 'map.contains':
       requireArgs(operation, args, 2);
-      assertScalarResultLayout(ctx.layouts, resultLayout, 'boolean', operation);
-      const key = canonicalKey(ctx, layout.key, args[1]);
-      return find(stored, key) >= 0;
-    }
+      return bool(find(stored, canonicalKey(ctx, receiver.key, args[1])) >= 0);
     case 'map.get': {
       requireArgs(operation, args, 2);
-      assertExactLayout(resultLayout, layout.value, operation);
-      const key = canonicalKey(ctx, layout.key, args[1]);
-      const at = find(stored, key);
-      return at < 0 ? ctx.layouts.empty(layout.value) : stored[at].value;
+      const at = find(stored, canonicalKey(ctx, receiver.key, args[1]));
+      return at < 0 ? receiver.element : stored[at].value;
     }
     case 'map.keys':
       requireArgs(operation, args, 1);
-      assertArrayElementLayout(ctx, resultLayout, layout.key, operation);
       return createArray(
         ctx,
-        resultLayout,
+        receiver.key,
         stored.map(entry => entry.key),
       );
     case 'map.values':
       requireArgs(operation, args, 1);
-      assertArrayElementLayout(ctx, resultLayout, layout.value, operation);
       return createArray(
         ctx,
-        resultLayout,
+        receiver.element,
         stored.map(entry => entry.value),
       );
     case 'map.copy':
       requireArgs(operation, args, 1);
-      assertExactLayout(resultLayout, receiver.layout, operation);
-      return mapValue(receiver.layout, receiver.storage, receiver.size);
+      return new MapValue(
+        receiver.key,
+        receiver.element,
+        receiver.storage,
+        receiver.size,
+      );
     default:
       return fatal(`unknown non-mutating map operation '${operation}'`);
   }
 }
 
-function assertArrayElementLayout(
-  ctx: CollectionContext,
-  resultLayout: number,
-  elementLayout: number,
-  operation: string,
-): void {
-  const result = collectionLayout(ctx.layouts, resultLayout, 'array');
-  assertExactLayout(result.element, elementLayout, operation);
-}
-
 export function mapMutate(
   ctx: CollectionContext,
   operation: string,
-  layoutId: number,
-  receiverValue: Stored,
-  args: readonly Stored[],
+  value: Value<unknown>,
+  args: readonly Value<unknown>[],
 ): CollectionMutation {
-  const receiver = requireCollection(ctx, receiverValue, layoutId, 'map');
-  const layout = collectionLayout(ctx.layouts, layoutId, 'map');
+  const receiver = requireCollection(ctx, value, 'map');
   const old = entries(ctx, receiver);
   switch (operation) {
     case 'map.put': {
       requireArgs(operation, args, 2);
-      const key = canonicalKey(ctx, layout.key, args[0]);
-      ctx.assertValue(layout.value, args[1], 'map.put value');
+      const key = canonicalKey(ctx, receiver.key, args[0]);
+      assertType(ctx, receiver.element, args[1], 'map.put value');
       const at = find(old, key);
-      if (at < 0) {
-        assertLimit(receiver.size + 1, ctx.maxElements);
-      }
+      if (at < 0) assertLimit(receiver.size + 1, ctx.maxElements);
       const next = [...old];
-      if (at < 0) {
-        next.push({key, value: args[1]});
-      } else {
-        next[at] = {key: old[at].key, value: args[1]};
-      }
+      if (at < 0) next.push({key, value: args[1]});
+      else next[at] = {key: old[at].key, value: args[1]};
       return {replacement: replace(ctx, receiver, next), result: undefined};
     }
     case 'map.remove': {
       requireArgs(operation, args, 1);
-      const key = canonicalKey(ctx, layout.key, args[0]);
-      const at = find(old, key);
-      if (at < 0) {
-        return {
-          replacement: mapValue(
-            receiver.layout,
-            receiver.storage,
-            receiver.size,
-          ),
-          result: ctx.layouts.empty(layout.value),
-        };
-      }
-      return {
-        replacement: replace(ctx, receiver, [
-          ...old.slice(0, at),
-          ...old.slice(at + 1),
-        ]),
-        result: old[at].value,
-      };
+      const at = find(old, canonicalKey(ctx, receiver.key, args[0]));
+      return at < 0
+        ? {replacement: receiver, result: receiver.element}
+        : {
+            replacement: replace(ctx, receiver, [
+              ...old.slice(0, at),
+              ...old.slice(at + 1),
+            ]),
+            result: old[at].value,
+          };
     }
     case 'map.clear':
       requireArgs(operation, args, 0);
@@ -187,11 +155,9 @@ export function mapMutate(
 export function mapSnapshot(
   ctx: CollectionReadContext,
   value: Stored,
-): readonly (readonly [Stored, Stored])[] {
-  if (!isMapValue(value)) {
+): readonly (readonly [Value<unknown>, Value<unknown>])[] {
+  if (!isMapValue(value))
     throw new ExecutionError('NA_COLLECTION', 'map iteration on na');
-  }
-  ctx.assertValue(value.layout, value, 'map iteration');
   return Object.freeze(
     entries(ctx, value).map(entry =>
       Object.freeze([entry.key, entry.value] as const),
@@ -199,132 +165,79 @@ export function mapSnapshot(
   );
 }
 
-function createMap(
-  ctx: CollectionContext,
-  layoutId: number,
-  items: readonly MapEntry[],
-): MapValue {
-  const layout = collectionLayout(ctx.layouts, layoutId, 'map');
-  assertMapKeyLayout(ctx.layouts.layout(layout.key));
-  assertLimit(items.length, ctx.maxElements);
-  items.forEach((entry, at) => {
-    canonicalKey(ctx, layout.key, entry.key);
-    ctx.assertValue(layout.value, entry.value, `map value ${at}`);
-  });
-  const storage = allocateStorage(ctx, layout.key, layout.value, items);
-  return mapValue(layoutId, storage, items.length);
-}
-
 function replace(
   ctx: CollectionContext,
   receiver: MapValue,
   items: readonly MapEntry[],
 ): MapValue {
-  const layout = collectionLayout(ctx.layouts, receiver.layout, 'map');
-  const storage = allocateStorage(ctx, layout.key, layout.value, items);
-  return mapValue(receiver.layout, storage, items.length);
+  return new MapValue(
+    receiver.key,
+    receiver.element,
+    allocateStorage(ctx, receiver.key, receiver.element, items),
+    items.length,
+  );
 }
 
 function entries(
-  ctx: Pick<CollectionReadContext, 'transaction'>,
+  ctx: CollectionReadContext,
   receiver: MapValue,
 ): readonly MapEntry[] {
   const payload = ctx.transaction.read(receiver.storage);
-  if (payload.entries.length !== receiver.size) {
+  if (
+    !Number.isSafeInteger(receiver.size) ||
+    receiver.size < 0 ||
+    payload.entries.length !== receiver.size
+  )
     return fatal(
       `map header size ${receiver.size} disagrees with storage ${payload.entries.length}`,
     );
-  }
   return payload.entries;
 }
 
 function allocateStorage(
   ctx: CollectionContext,
-  keyLayout: number,
-  valueLayout: number,
+  key: Value<unknown>,
+  element: Value<unknown>,
   entries: readonly MapEntry[],
 ): MapValue['storage'] {
-  const entryBytes =
-    ctx.layouts.shallowBytes(keyLayout) + ctx.layouts.shallowBytes(valueLayout);
   return ctx.transaction.allocate(MAP_STORAGE, {
     entries,
-    logicalBytes: 16 + entries.length * entryBytes,
+    logicalBytes: 16 + entries.length * (key.byteSize + element.byteSize),
   });
 }
 
 function canonicalKey(
   ctx: CollectionContext,
-  layoutId: number,
-  value: Stored,
-): Stored {
-  const layout = ctx.layouts.layout(layoutId);
-  assertMapKeyLayout(layout);
-  if (
-    value === null ||
-    (typeof value === 'number' && !Number.isFinite(value))
-  ) {
+  empty: Value<unknown>,
+  value: Value<unknown>,
+): Value<unknown> {
+  assertKeyType(empty);
+  const raw = value.value;
+  if (raw === null || (typeof raw === 'number' && !Number.isFinite(raw)))
     throw new ExecutionError('INVALID_MAP_KEY', 'map key cannot be na');
-  }
-  ctx.assertValue(layoutId, value, 'map key');
+  assertType(ctx, empty, value, 'map key');
   if (
-    layout.kind === 'number' &&
-    layout.numeric === 'int' &&
-    typeof value === 'number' &&
-    !Number.isSafeInteger(value)
-  ) {
+    value.kind === 'int' &&
+    typeof raw === 'number' &&
+    !Number.isSafeInteger(raw)
+  )
     throw new ExecutionError(
       'INVALID_MAP_KEY',
       'int map key must be a safe integer',
     );
-  }
-  if (typeof value === 'number' && Object.is(value, -0)) {
-    return 0;
-  }
-  return value;
+  return typeof raw === 'number' && Object.is(raw, -0)
+    ? value.withStored(0)
+    : value;
 }
 
-function assertMapKeyLayout(layout: StorageType): void {
+function assertKeyType(value: Value<unknown>): void {
   if (
-    layout.kind !== 'number' &&
-    layout.kind !== 'boolean' &&
-    layout.kind !== 'nullable-scalar' &&
-    layout.kind !== 'enum'
-  ) {
-    fatal(`layout kind ${layout.kind} cannot be a map key`);
-  }
+    !['int', 'float', 'bool', 'string', 'color'].includes(value.kind) &&
+    value.enumValues === undefined
+  )
+    fatal(`${value.kind} cannot be a map key`);
 }
 
-function find(entries: readonly MapEntry[], key: Stored): number {
-  return entries.findIndex(entry => entry.key === key);
-}
-
-function requireMapArg(
-  ctx: CollectionContext,
-  args: readonly Stored[],
-  operation: string,
-): MapValue {
-  if (args.length === 0) {
-    return fatal(`${operation} is missing its receiver`);
-  }
-  const value = args[0];
-  if (!isMapValue(value)) {
-    if (value === null) {
-      throw new ExecutionError('NA_COLLECTION', `${operation} on na`);
-    }
-    return fatal(`${operation} received a non-map receiver`);
-  }
-  ctx.assertValue(value.layout, value, `${operation} receiver`);
-  return value;
-}
-
-function requireArgs(
-  operation: string,
-  args: readonly Stored[],
-  expected: number,
-): void {
-  if (args.length !== expected) {
-    fatal(
-      `${operation} received ${args.length} arguments, expected ${expected}`,
-    );
-  }
+function find(entries: readonly MapEntry[], key: Value<unknown>): number {
+  return entries.findIndex(entry => entry.key.eq(key).value);
 }

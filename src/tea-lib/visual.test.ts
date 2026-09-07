@@ -52,7 +52,12 @@ describe('visual prelude', () => {
     expect(sink.publications[0]).toMatchObject({
       close: {id: 'close', series: 10, title: 'Close'},
       open: {id: 'open', series: 8, title: 'Open'},
-      band: {id: 'band', first: 'close', second: 'open', color: '#2196F3'},
+      band: {
+        id: 'band',
+        first: 'close',
+        second: 'open',
+        color: {r: 33, g: 150, b: 243, a: 255},
+      },
     });
   });
 

@@ -1,574 +1,353 @@
-// Purpose: Observable array, matrix, ordered-map, nesting, struct-reference, snapshot, and eager-copy-model conformance tests.
-
-import {describe, expect, test} from 'vitest';
-import {ExecutionError} from '../../errors';
-import type {CollectionValue, Stored} from '../../value';
-import {ArenaHeap, type HeapTransaction, type Ref} from '../heap';
-import {StructStorageRuntime, type StructStorage} from '../struct-storage';
+// Persistent backing, exact generic values, ownership, and transaction failures.
+import {expect, test} from 'vitest';
+import {Value, bool, color, enumeration, float, int, text} from '../value';
+import {ArrayValue, MatrixValue, MapValue, type Stored} from '../../value';
+import type {Ref} from '../heap';
 import {
-  StorageTypes,
-  visitRuntimeValueRefs,
-  type StorageType,
-} from '../../storage-types';
-import {CollectionRuntime} from './index';
+  array,
+  matrix,
+  map,
+  harness,
+  call,
+  mutate,
+  arrayValues,
+  mapValues,
+  roots,
+} from './testing';
 
-const INT = 0;
-const FLOAT = 1;
-const BOOL = 2;
-const STRING = 3;
-const POINT = 4;
-const INTS = 5;
-const POINTS = 6;
-const MATRIX = 7;
-const MAP = 8;
-const STRINGS = 9;
-const ARRAYS = 10;
-const HOLDER = 11;
+const integer = int(NaN);
+const integers = array(integer);
+const strings = array(text(null));
+const grid = matrix(integer);
+const dictionary = map(text(null), integer);
 
-const MANIFEST = [
-  {kind: 'number', numeric: 'int'},
-  {kind: 'number', numeric: 'float'},
-  {kind: 'boolean'},
-  {kind: 'nullable-scalar', scalar: 'string'},
-  {
-    kind: 'struct',
-    name: 'Point',
-    fields: [
-      {name: 'x', layout: INT},
-      {name: 'y', layout: INT},
-    ],
-  },
-  {kind: 'array', element: INT},
-  {kind: 'array', element: POINT},
-  {kind: 'matrix', element: INT},
-  {kind: 'map', key: STRING, value: INT},
-  {kind: 'array', element: STRING},
-  {kind: 'array', element: INTS},
-  {
-    kind: 'struct',
-    name: 'Holder',
-    fields: [{name: 'values', layout: INTS}],
-  },
-] as const satisfies readonly StorageType[];
+class Point {
+  constructor(
+    readonly x: Value<number, 'int'>,
+    readonly y: Value<number, 'int'>,
+  ) {}
+}
+const pointType = new Value<Ref<Point> | null>(null, 'Point', undefined, {
+  ctor: Point,
+});
 
-interface Harness {
-  readonly heap: ArenaHeap;
-  readonly layouts: StorageTypes;
-  readonly collections: CollectionRuntime;
-  readonly structs: StructStorageRuntime;
+function point(h: ReturnType<typeof harness>, x = 1, y = 2) {
+  using tx = h.heap.begin('point');
+  const ref = h.structs.newStruct(tx, new Point(int(x), int(y)), 32);
+  tx.commit();
+  return pointType.withStored(ref);
 }
 
-function harness(maxElements = 100): Harness {
-  const heap = new ArenaHeap();
-  const layouts = new StorageTypes(MANIFEST);
-  const structs = new StructStorageRuntime(heap, layouts);
-  return {
-    heap,
-    layouts,
-    structs,
-    collections: new CollectionRuntime(heap, layouts, maxElements, structs),
-  };
-}
+test('empty collection element values survive construction and reads', () => {
+  const h = harness();
+  const value = call(h, 'array.new', integers, [int(2)]);
+  expect(arrayValues(h, value)).toEqual([NaN, NaN]);
+  expect(call(h, 'array.get', integer, [value, int(0)]).kind).toBe('int');
+  const points = call(h, 'array.new', array(pointType), [int(2)]);
+  expect(arrayValues(h, points)).toEqual([null, null]);
+  expect(() => h.collections.entries(null)).toThrow('NA_COLLECTION');
+});
 
-function constructStruct(
-  h: Harness,
-  layout: number,
-  fields: readonly Stored[],
-): Ref<StructStorage> {
-  const transaction = h.heap.begin(`struct:${layout}`);
-  const value = h.structs.newStruct(transaction, layout, fields);
-  commit(transaction, [value]);
-  return value;
-}
+test('array mutations and copies preserve previous headers and iteration snapshots', () => {
+  const h = harness();
+  const original = call(h, 'array.from', integers, [int(1), int(2)]);
+  const snapshot = h.collections.entries(original.value!);
+  const pushed = mutate(h, 'array.push', original, [int(99)]).replacement;
+  const copied = call(h, 'array.copy', integers, [pushed]);
+  const popped = mutate(h, 'array.pop', copied);
+  expect(popped.result?.value).toBe(99);
+  const cleared = mutate(h, 'array.clear', popped.replacement).replacement;
+  expect(arrayValues(h, original)).toEqual([1, 2]);
+  expect(arrayValues(h, pushed)).toEqual([1, 2, 99]);
+  expect(arrayValues(h, popped.replacement)).toEqual([1, 2]);
+  expect(arrayValues(h, cleared)).toEqual([]);
+  expect(snapshot).toEqual([int(1), int(2)]);
+  expect(Object.isFrozen(snapshot)).toBe(true);
+  expect(Object.isFrozen(original.value)).toBe(true);
+});
 
-function roots(values: readonly Stored[]): Ref[] {
-  const result: Ref[] = [];
-  values.forEach(value =>
-    visitRuntimeValueRefs(value, ref => result.push(ref)),
+test('generic result checks cover empty projections as well as populated values', () => {
+  const h = harness();
+  const values = call(h, 'array.from', integers, [int(1)]);
+  expect(() => call(h, 'array.get', float(NaN), [values, int(0)])).toThrow(
+    'VALUE_LAYOUT_MISMATCH',
   );
-  return result;
-}
-
-function commit(transaction: HeapTransaction, values: readonly Stored[]): void {
-  void values;
-  transaction.commit();
-}
-
-function construct(
-  h: Harness,
-  operation: 'array.from' | 'array.new' | 'matrix.new' | 'map.new',
-  layout: number,
-  args: readonly Stored[],
-): CollectionValue {
-  const transaction = h.heap.begin(operation);
-  const value = h.collections.call(transaction, operation, layout, args);
-  commit(transaction, [value]);
-  return value as CollectionValue;
-}
-
-function read(
-  h: Harness,
-  operation:
-    | 'array.size'
-    | 'array.get'
-    | 'matrix.get'
-    | 'matrix.row'
-    | 'map.get'
-    | 'map.keys'
-    | 'map.values',
-  layout: number,
-  args: readonly Stored[],
-): Stored {
-  const transaction = h.heap.begin(operation);
-  const value = h.collections.call(transaction, operation, layout, args);
-  transaction.abort();
-  return value;
-}
-
-describe('array values', () => {
-  test('iterating a typed-empty collection reports NA_COLLECTION', () => {
-    const h = harness();
-    expect(() => h.collections.entries(null)).toThrow(
-      expect.objectContaining({code: 'NA_COLLECTION'}),
-    );
-  });
-
-  test('array.new(size) fills with the element layout typed empty', () => {
-    const h = harness();
-    const ints = construct(h, 'array.new', INTS, [2]);
-    const points = construct(h, 'array.new', POINTS, [2]);
-    const intValues = h.collections.entries(ints);
-    expect(intValues).toHaveLength(2);
-    expect(intValues.every(value => Number.isNaN(value as number))).toBe(true);
-    expect(h.collections.entries(points)).toEqual([null, null]);
-  });
-
-  test('assignment and retained history headers stay isolated', () => {
-    const h = harness();
-    const a = construct(h, 'array.from', INTS, [1, 2]);
-    const transaction = h.heap.begin('push');
-    const pushed = h.collections.mutate(
-      transaction,
-      'array.push',
-      INTS,
-      a,
-      [3],
-    );
-    const b = pushed.replacement;
-    commit(transaction, [a, b]);
-
-    expect(h.collections.entries(a)).toEqual([1, 2]);
-    expect(h.collections.entries(b)).toEqual([1, 2, 3]);
-    expect(read(h, 'array.size', INT, [a])).toBe(2);
-    expect(read(h, 'array.size', INT, [b])).toBe(3);
-  });
-
-  test('element access guards the exact generated result layout', () => {
-    const h = harness();
-    const array = construct(h, 'array.from', INTS, [1]);
-    const transaction = h.heap.begin('wrong result layout');
-    expect(() =>
-      h.collections.call(transaction, 'array.get', FLOAT, [array, 0]),
-    ).toThrow('expected 0');
-    transaction.abort();
-  });
-
-  test('pop and clear remove logical high-water slots', () => {
-    const h = harness();
-    const original = construct(h, 'array.from', INTS, [1, 2, 99]);
-    const popTransaction = h.heap.begin('pop');
-    const popped = h.collections.mutate(
-      popTransaction,
-      'array.pop',
-      INTS,
-      original,
-      [],
-    );
-    commit(popTransaction, [original, popped.replacement]);
-    expect(popped.result).toBe(99);
-    expect(h.collections.entries(popped.replacement)).toEqual([1, 2]);
-
-    const pushTransaction = h.heap.begin('push');
-    const pushed = h.collections.mutate(
-      pushTransaction,
-      'array.push',
-      INTS,
-      popped.replacement,
-      [3],
-    );
-    commit(pushTransaction, [original, pushed.replacement]);
-    expect(h.collections.entries(pushed.replacement)).toEqual([1, 2, 3]);
-
-    const clearTransaction = h.heap.begin('clear');
-    const cleared = h.collections.mutate(
-      clearTransaction,
-      'array.clear',
-      INTS,
-      pushed.replacement,
-      [],
-    );
-    commit(clearTransaction, [original, cleared.replacement]);
-    expect(h.collections.entries(cleared.replacement)).toEqual([]);
-    expect(h.collections.entries(original)).toEqual([1, 2, 99]);
-  });
-
-  test('snapshot iteration is complete-header stable', () => {
-    const h = harness();
-    const value = construct(h, 'array.from', INTS, [1, 2]);
-    const snapshot = h.collections.entries(value);
-    const transaction = h.heap.begin('push');
-    const mutation = h.collections.mutate(
-      transaction,
-      'array.push',
-      INTS,
-      value,
-      [3],
-    );
-    commit(transaction, [value, mutation.replacement]);
-    expect(snapshot).toEqual([1, 2]);
-    expect(Object.isFrozen(snapshot)).toBe(true);
-  });
-
-  test('random mutations match an eager-copy reference and preserve every version', () => {
-    const h = harness(1_000);
-    let current = construct(h, 'array.from', INTS, []);
-    const model: number[] = [];
-    const versions: {value: CollectionValue; model: number[]}[] = [];
-    let seed = 17;
-    for (let step = 0; step < 80; step += 1) {
-      versions.push({value: current, model: [...model]});
-      seed = (seed * 48_271) % 2_147_483_647;
-      const transaction = h.heap.begin(step);
-      if (model.length === 0 || seed % 3 === 0) {
-        const value = seed % 97;
-        const mutation = h.collections.mutate(
-          transaction,
-          'array.push',
-          INTS,
-          current,
-          [value],
-        );
-        current = mutation.replacement;
-        model.push(value);
-      } else if (seed % 3 === 1) {
-        const at = seed % model.length;
-        const value = (seed + step) % 101;
-        const mutation = h.collections.mutate(
-          transaction,
-          'array.set',
-          INTS,
-          current,
-          [at, value],
-        );
-        current = mutation.replacement;
-        model[at] = value;
-      } else {
-        const mutation = h.collections.mutate(
-          transaction,
-          'array.pop',
-          INTS,
-          current,
-          [],
-        );
-        expect(mutation.result).toBe(model.pop());
-        current = mutation.replacement;
-      }
-      commit(transaction, [...versions.map(version => version.value), current]);
-    }
-    expect(h.collections.entries(current)).toEqual(model);
-    versions.forEach(version =>
-      expect(h.collections.entries(version.value)).toEqual(version.model),
-    );
-  });
+  const emptyGrid = call(h, 'matrix.new', grid, [int(1), int(0), int(0)]);
+  expect(() => call(h, 'matrix.row', strings, [emptyGrid, int(0)])).toThrow(
+    'VALUE_LAYOUT_MISMATCH',
+  );
+  const emptyMap = call(h, 'map.new', dictionary);
+  expect(() => call(h, 'map.keys', integers, [emptyMap])).toThrow(
+    'VALUE_LAYOUT_MISMATCH',
+  );
+  expect(() => mutate(h, 'array.push', values, [text('wrong')])).toThrow(
+    'VALUE_LAYOUT_MISMATCH',
+  );
 });
 
-describe('matrix values', () => {
-  test('shape is fixed and row projections are independent arrays', () => {
-    const h = harness();
-    const matrix = construct(h, 'matrix.new', MATRIX, [2, 2, 1]);
-    const transaction = h.heap.begin('matrix.set');
-    const changed = h.collections.mutate(
-      transaction,
-      'matrix.set',
-      MATRIX,
-      matrix,
-      [0, 1, 9],
-    );
-    commit(transaction, [matrix, changed.replacement]);
-    expect(read(h, 'matrix.get', INT, [matrix, 0, 1])).toBe(1);
-    expect(read(h, 'matrix.get', INT, [changed.replacement, 0, 1])).toBe(9);
+test('concrete headers reject invalid shapes before read-only operations can observe them', () => {
+  const h = harness();
+  const value = call(h, 'array.from', integers, [int(1)]).value!;
+  expect(() => new ArrayValue(integer, value.storage, -1)).toThrow(
+    'VALUE_LAYOUT_MISMATCH',
+  );
+  expect(() => new ArrayValue(integer, value.storage, 1, 0)).toThrow(
+    'VALUE_LAYOUT_MISMATCH',
+  );
+  const m = call(h, 'matrix.new', grid, [int(1), int(1), int(0)]).value!;
+  expect(() => new MatrixValue(integer, m.storage, 1.5, 1)).toThrow(
+    'VALUE_LAYOUT_MISMATCH',
+  );
+  const d = call(h, 'map.new', dictionary).value!;
+  expect(() => new MapValue(text(null), integer, d.storage, -1)).toThrow(
+    'VALUE_LAYOUT_MISMATCH',
+  );
+});
 
-    const rowTransaction = h.heap.begin('matrix.row');
-    const row = h.collections.call(rowTransaction, 'matrix.row', INTS, [
-      changed.replacement,
-      0,
-    ]);
-    commit(rowTransaction, [changed.replacement, row]);
-    expect(h.collections.entries(row)).toEqual([1, 9]);
-  });
+test('matrix shape and independent projections survive later mutations', () => {
+  const h = harness();
+  const original = call(h, 'matrix.new', grid, [int(2), int(2), int(1)]);
+  const changed = mutate(h, 'matrix.set', original, [
+    int(0),
+    int(1),
+    int(9),
+  ]).replacement;
+  const row = call(h, 'matrix.row', integers, [changed, int(0)]);
+  const column = call(h, 'matrix.column', integers, [changed, int(1)]);
+  const filled = mutate(h, 'matrix.fill', changed, [int(7)]).replacement;
+  expect(call(h, 'matrix.get', integer, [original, int(0), int(1)]).value).toBe(
+    1,
+  );
+  expect(call(h, 'matrix.get', integer, [changed, int(0), int(1)]).value).toBe(
+    9,
+  );
+  expect(call(h, 'matrix.get', integer, [filled, int(0), int(1)]).value).toBe(
+    7,
+  );
+  expect(arrayValues(h, row)).toEqual([1, 9]);
+  expect(arrayValues(h, column)).toEqual([9, 1]);
+});
 
-  test('invalid shapes and bounds use stable codes', () => {
-    const h = harness();
-    const transaction = h.heap.begin('bad shape');
-    expect(() =>
-      h.collections.call(transaction, 'matrix.new', MATRIX, [-1, 2, 0]),
-    ).toThrow('INVALID_SHAPE');
-    transaction.abort();
-    const matrix = construct(h, 'matrix.new', MATRIX, [1, 1, 0]);
-    expect(() => read(h, 'matrix.get', INT, [matrix, 1, 0])).toThrow(
+test('map replacement preserves order and reinsertion moves to the end', () => {
+  const h = harness();
+  let value = call(h, 'map.new', dictionary);
+  for (const [key, item] of [
+    ['a', 1],
+    ['b', 2],
+    ['c', 3],
+  ] as const)
+    value = mutate(h, 'map.put', value, [text(key), int(item)]).replacement;
+  const original = value;
+  value = mutate(h, 'map.put', value, [text('b'), int(20)]).replacement;
+  expect(mapValues(h, value)).toEqual([
+    ['a', 1],
+    ['b', 20],
+    ['c', 3],
+  ]);
+  const removed = mutate(h, 'map.remove', value, [text('b')]);
+  expect(removed.result?.value).toBe(20);
+  value = mutate(h, 'map.put', removed.replacement, [
+    text('b'),
+    int(21),
+  ]).replacement;
+  expect(mapValues(h, value)).toEqual([
+    ['a', 1],
+    ['c', 3],
+    ['b', 21],
+  ]);
+  expect(mapValues(h, original)).toEqual([
+    ['a', 1],
+    ['b', 2],
+    ['c', 3],
+  ]);
+  expect(arrayValues(h, call(h, 'map.keys', strings, [value]))).toEqual([
+    'a',
+    'c',
+    'b',
+  ]);
+  expect(arrayValues(h, call(h, 'map.values', integers, [value]))).toEqual([
+    1, 3, 21,
+  ]);
+});
+
+test('map keys use color value equality and preserve stored null versus absence', () => {
+  const h = harness();
+  let colors = call(h, 'map.new', map(color(null), integer));
+  colors = mutate(h, 'map.put', colors, [
+    color('#ff0000ff'),
+    int(1),
+  ]).replacement;
+  colors = mutate(h, 'map.put', colors, [color('#FF0000'), int(2)]).replacement;
+  expect(call(h, 'map.size', integer, [colors]).value).toBe(1);
+  expect(call(h, 'map.get', integer, [colors, color('#FF0000')]).value).toBe(2);
+  let value = call(h, 'map.new', map(text(null), text(null)));
+  expect(call(h, 'map.get', text(null), [value, text('key')]).value).toBeNull();
+  expect(call(h, 'map.contains', bool(false), [value, text('key')]).value).toBe(
+    false,
+  );
+  value = mutate(h, 'map.put', value, [text('key'), text(null)]).replacement;
+  expect(call(h, 'map.get', text(null), [value, text('key')]).value).toBeNull();
+  expect(call(h, 'map.contains', bool(false), [value, text('key')]).value).toBe(
+    true,
+  );
+});
+
+test('map key validation uses the declared enum domain and safe integer range', () => {
+  const h = harness();
+  enum Side {
+    Buy = 'buy',
+    Sell = 'sell',
+  }
+  let sides = call(h, 'map.new', map(enumeration(null, 'Side', Side), integer));
+  sides = mutate(h, 'map.put', sides, [
+    enumeration(Side.Buy, 'Side', Side),
+    int(1),
+  ]).replacement;
+  expect(
+    call(h, 'map.get', integer, [sides, enumeration(Side.Buy, 'Side', Side)])
+      .value,
+  ).toBe(1);
+  const forged = enumeration('other', 'Side', {Other: 'other'});
+  expect(() => mutate(h, 'map.put', sides, [forged, int(2)])).toThrow(
+    'VALUE_LAYOUT_MISMATCH',
+  );
+  const numbers = call(h, 'map.new', map(integer, integer));
+  expect(() =>
+    mutate(h, 'map.put', numbers, [int(Number.MAX_SAFE_INTEGER + 1), int(1)]),
+  ).toThrow('INVALID_MAP_KEY');
+});
+
+test('precondition failures retain stable codes and do not publish replacements', () => {
+  const h = harness(1);
+  const empty = call(h, 'array.new', integers);
+  const full = call(h, 'array.from', integers, [int(1)]);
+  const one = call(h, 'matrix.new', grid, [int(1), int(1), int(0)]);
+  const lookup = call(h, 'map.new', map(float(NaN), integer));
+  const failures = [
+    ['NA_COLLECTION', () => call(h, 'array.size', integer, [integers])],
+    [
       'INDEX_OUT_OF_BOUNDS',
-    );
-  });
-
-  test('empty projections still guard their array element layout', () => {
-    const h = harness();
-    const matrix = construct(h, 'matrix.new', MATRIX, [1, 0, 0]);
-    const transaction = h.heap.begin('wrong projection layout');
-    expect(() =>
-      h.collections.call(transaction, 'matrix.row', STRINGS, [matrix, 0]),
-    ).toThrow('expected 0');
-    transaction.abort();
-  });
+      () => call(h, 'array.get', integer, [full, int(1)]),
+    ],
+    [
+      'INDEX_OUT_OF_BOUNDS',
+      () => call(h, 'matrix.get', integer, [one, int(-1), int(0)]),
+    ],
+    ['EMPTY_COLLECTION', () => mutate(h, 'array.pop', empty)],
+    [
+      'INVALID_SHAPE',
+      () => call(h, 'array.new', integers, [float(1.5), int(0)]),
+    ],
+    [
+      'INVALID_SHAPE',
+      () => call(h, 'matrix.new', grid, [int(-1), int(1), int(0)]),
+    ],
+    [
+      'INVALID_SHAPE',
+      () =>
+        call(h, 'matrix.new', grid, [
+          int(Number.MAX_SAFE_INTEGER),
+          int(2),
+          int(0),
+        ]),
+    ],
+    [
+      'INVALID_MAP_KEY',
+      () => mutate(h, 'map.put', lookup, [float(NaN), int(1)]),
+    ],
+    [
+      'COLLECTION_LIMIT_EXCEEDED',
+      () => mutate(h, 'array.push', full, [int(2)]),
+    ],
+    [
+      'VALUE_LAYOUT_MISMATCH',
+      () => mutate(h, 'array.push', empty, [text('wrong')]),
+    ],
+  ] as const;
+  for (const [code, action] of failures) expect(action).toThrow(code);
+  expect(arrayValues(h, empty)).toEqual([]);
+  expect(arrayValues(h, full)).toEqual([1]);
 });
 
-describe('ordered map values', () => {
-  test('empty key/value projections guard their exact element layout', () => {
-    const h = harness();
-    const map = construct(h, 'map.new', MAP, []);
-    const transaction = h.heap.begin('wrong map projection layout');
-    expect(() =>
-      h.collections.call(transaction, 'map.keys', INTS, [map]),
-    ).toThrow(`expected ${STRING}`);
-    transaction.abort();
-  });
-
-  test('replacement keeps order; remove and reinsert moves to the end', () => {
-    const h = harness();
-    let value = construct(h, 'map.new', MAP, []);
-    for (const [key, item] of [
-      ['a', 1],
-      ['b', 2],
-      ['c', 3],
-    ] as const) {
-      const transaction = h.heap.begin(`put ${key}`);
-      const mutation = h.collections.mutate(
-        transaction,
-        'map.put',
-        MAP,
-        value,
-        [key, item],
-      );
-      value = mutation.replacement;
-      commit(transaction, [value]);
-    }
-    const replace = h.heap.begin('replace');
-    value = h.collections.mutate(replace, 'map.put', MAP, value, [
-      'b',
-      20,
-    ]).replacement;
-    commit(replace, [value]);
-    expect(h.collections.entries(value)).toEqual([
-      ['a', 1],
-      ['b', 20],
-      ['c', 3],
-    ]);
-
-    const remove = h.heap.begin('remove');
-    const removed = h.collections.mutate(remove, 'map.remove', MAP, value, [
-      'b',
-    ]);
-    value = removed.replacement;
-    commit(remove, [value]);
-    expect(removed.result).toBe(20);
-    const reinsert = h.heap.begin('reinsert');
-    value = h.collections.mutate(reinsert, 'map.put', MAP, value, [
-      'b',
-      21,
-    ]).replacement;
-    commit(reinsert, [value]);
-    expect(h.collections.entries(value)).toEqual([
-      ['a', 1],
-      ['c', 3],
-      ['b', 21],
-    ]);
-  });
-
-  test('missing values are typed empty and keys/values are aligned snapshots', () => {
-    const h = harness();
-    const map = construct(h, 'map.new', MAP, []);
-    expect(
-      Number.isNaN(read(h, 'map.get', INT, [map, 'missing']) as number),
-    ).toBe(true);
-    const put = h.heap.begin('put');
-    const filled = h.collections.mutate(put, 'map.put', MAP, map, [
-      'a',
-      1,
-    ]).replacement;
-    commit(put, [map, filled]);
-
-    const keysTransaction = h.heap.begin('keys');
-    const keys = h.collections.call(keysTransaction, 'map.keys', STRINGS, [
-      filled,
-    ]);
-    const values = h.collections.call(keysTransaction, 'map.values', INTS, [
-      filled,
-    ]);
-    commit(keysTransaction, [filled, keys, values]);
-    expect(h.collections.entries(keys)).toEqual(['a']);
-    expect(h.collections.entries(values)).toEqual([1]);
-  });
-
-  test('na keys and na collections fail with stable codes', () => {
-    const h = harness();
-    const map = construct(h, 'map.new', MAP, []);
-    const transaction = h.heap.begin('bad key');
-    expect(() =>
-      h.collections.mutate(transaction, 'map.put', MAP, map, [null, 1]),
-    ).toThrow('INVALID_MAP_KEY');
-    transaction.abort();
-    const readTransaction = h.heap.begin('na collection');
-    expect(() =>
-      h.collections.call(readTransaction, 'array.size', INT, [null]),
-    ).toThrow('NA_COLLECTION');
-    readTransaction.abort();
-  });
+test('collections retain shared struct identity with exact Heap byte accounting', () => {
+  const h = harness();
+  const p = point(h);
+  const points = call(h, 'array.from', array(pointType), [p, p]);
+  const first = call(h, 'array.get', pointType, [points, int(0)]);
+  using tx = h.heap.begin('shared field');
+  h.structs.storeField(tx, first.value as Stored, Point, 'x', int(9));
+  tx.commit();
+  expect(h.structs.field(p.value as Stored, Point, 'x', integer).value).toBe(9);
+  expect(call(h, 'array.get', pointType, [points, int(1)]).value).toBe(p.value);
+  h.heap.replaceRoots(roots([points]));
+  h.heap.collect();
+  expect(h.heap.stats().retainedLogicalBytes).toBe(64); // 32-byte Point + 16 + two 8-byte refs.
 });
 
-describe('struct references and collection nesting', () => {
-  test('Heap bytes charge struct bodies and fixed-width references', () => {
-    const pointsHarness = harness();
-    const point = constructStruct(pointsHarness, POINT, [1, 2]);
-    const points = construct(pointsHarness, 'array.from', POINTS, [point]);
-    pointsHarness.heap.replaceRoots(roots([points]));
-    pointsHarness.heap.collect();
-    // Point body: 16 + 2 ints; array backing: 16 + one Ref.
-    expect(pointsHarness.heap.stats().retainedLogicalBytes).toBe(56);
-
-    const nestedHarness = harness();
-    const inner = construct(nestedHarness, 'array.from', INTS, [1]);
-    const nested = construct(nestedHarness, 'array.from', ARRAYS, [inner]);
-    nestedHarness.heap.replaceRoots(roots([nested]));
-    nestedHarness.heap.collect();
-    // inner: 16 + int(8); outer: 16 + array header(32).
-    expect(nestedHarness.heap.stats().retainedLogicalBytes).toBe(72);
-  });
-
-  test('collections and historical headers share contained struct refs', () => {
-    const h = harness();
-    const point = constructStruct(h, POINT, [1, 2]);
-    const points = construct(h, 'array.from', POINTS, [point]);
-    const got = read(h, 'array.get', POINT, [points, 0]);
-    const transaction = h.heap.begin('writeback');
-    h.structs.storeField(transaction, got, POINT, 0, 9);
-    commit(transaction, [points]);
-    expect(h.structs.field(point, POINT, 0)).toBe(9);
-    expect(
-      h.structs.field(read(h, 'array.get', POINT, [points, 0]), POINT, 0),
-    ).toBe(9);
-  });
-
-  test('a struct field keeps a collection header by value', () => {
-    const h = harness();
-    const values = construct(h, 'array.from', INTS, [1]);
-    const holder = constructStruct(h, HOLDER, [values]);
-    const before = h.structs.field(holder, HOLDER, 0);
-    const push = h.heap.begin('nested push');
-    const changed = h.collections.mutate(push, 'array.push', INTS, before, [2]);
-    h.structs.storeField(push, holder, HOLDER, 0, changed.replacement);
-    commit(push, [holder, before]);
-    expect(h.collections.entries(before)).toEqual([1]);
-    expect(h.collections.entries(h.structs.field(holder, HOLDER, 0))).toEqual([
-      1, 2,
-    ]);
-  });
-
-  test('nested collection headers store values without a boxing boundary', () => {
-    const h = harness();
-    const inner = construct(h, 'array.from', INTS, [1]);
-    const outer = construct(h, 'array.from', ARRAYS, [inner]);
-    const nested = read(h, 'array.get', INTS, [outer, 0]);
-    const push = h.heap.begin('nested');
-    const changed = h.collections.mutate(push, 'array.push', INTS, nested, [2]);
-    commit(push, [outer, changed.replacement]);
-    expect(
-      h.collections.entries(read(h, 'array.get', INTS, [outer, 0])),
-    ).toEqual([1]);
-    expect(h.collections.entries(changed.replacement)).toEqual([1, 2]);
-  });
-
-  test('removed nested storage is collected and aborted appends cannot resurrect it', () => {
-    const h = harness();
-    const oldChild = construct(h, 'array.from', INTS, [1]);
-    const oldOuter = construct(h, 'array.from', ARRAYS, [oldChild]);
-
-    const replace = h.heap.begin('replace nested child');
-    const currentChild = h.collections.call(replace, 'array.from', INTS, [2]);
-    const currentOuter = h.collections.mutate(
-      replace,
-      'array.set',
-      ARRAYS,
-      oldOuter,
-      [0, currentChild],
-    ).replacement;
-    commit(replace, [currentOuter]);
-    h.heap.replaceRoots(roots([currentOuter]));
-    h.heap.collect();
-
-    // The outer storage traces its nested collection header. The replacement
-    // stays live while both removed backing stores are now unreachable.
-    expect(h.collections.entries(currentChild)).toEqual([2]);
-    expect(() => h.collections.entries(oldChild)).toThrow('stale Ref');
-    expect(() => h.collections.entries(oldOuter)).toThrow('stale Ref');
-
-    const failed = h.heap.begin('aborted high-water append');
-    const highWater = h.collections.mutate(
-      failed,
-      'array.push',
-      INTS,
-      currentChild,
-      [99],
-    ).replacement;
-    failed.abort();
-    expect(() => h.collections.entries(highWater)).toThrow('stale Ref');
-
-    const retry = h.heap.begin('retry append');
-    const retriedChild = h.collections.mutate(
-      retry,
-      'array.push',
-      INTS,
-      currentChild,
-      [3],
-    ).replacement;
-    const retriedOuter = h.collections.mutate(
-      retry,
-      'array.set',
-      ARRAYS,
-      currentOuter,
-      [0, retriedChild],
-    ).replacement;
-    commit(retry, [retriedOuter]);
-    h.heap.replaceRoots(roots([retriedOuter]));
-    h.heap.collect();
-
-    const nested = read(h, 'array.get', INTS, [retriedOuter, 0]);
-    expect(h.collections.entries(nested)).toEqual([2, 3]);
-    expect(h.heap.stats()).toMatchObject({
-      committedCells: 2,
-      retainedCells: 2,
-    });
-  });
-
-  test('collection element limits fail before a replacement is published', () => {
-    const h = harness(1);
-    const array = construct(h, 'array.from', INTS, [1]);
-    const transaction = h.heap.begin('overflow');
-    expect(() =>
-      h.collections.mutate(transaction, 'array.push', INTS, array, [2]),
-    ).toThrow(ExecutionError);
-    transaction.abort();
-    expect(h.collections.entries(array)).toEqual([1]);
-  });
+test('nested arrays retain snapshots, trace backing, and discard aborted versions', () => {
+  const h = harness();
+  const oldChild = call(h, 'array.from', integers, [int(1)]);
+  const nested = array(integers);
+  const oldOuter = call(h, 'array.from', nested, [oldChild]);
+  h.heap.replaceRoots(roots([oldOuter]));
+  h.heap.collect();
+  expect(h.heap.stats().retainedLogicalBytes).toBe(72); // 24-byte inner + 48-byte outer.
+  const child = call(h, 'array.from', integers, [int(2)]);
+  const outer = mutate(h, 'array.set', oldOuter, [int(0), child]).replacement;
+  h.heap.replaceRoots(roots([outer]));
+  h.heap.collect();
+  expect(() => arrayValues(h, oldChild)).toThrow('stale Ref');
+  expect(() => arrayValues(h, oldOuter)).toThrow('stale Ref');
+  using failed = h.heap.begin('aborted append');
+  const aborted = h.collections.mutate(failed, 'array.push', child, [
+    int(99),
+  ]).replacement;
+  failed.abort();
+  expect(() => h.collections.entries(aborted)).toThrow('stale Ref');
+  const nextChild = mutate(h, 'array.push', child, [int(3)]).replacement;
+  const nextOuter = mutate(h, 'array.set', outer, [
+    int(0),
+    nextChild,
+  ]).replacement;
+  const retrieved = call(h, 'array.get', integers, [nextOuter, int(0)]);
+  expect(arrayValues(h, retrieved)).toEqual([2, 3]);
+  expect(
+    arrayValues(h, call(h, 'array.get', integers, [outer, int(0)])),
+  ).toEqual([2]);
+  h.heap.replaceRoots(roots([nextOuter]));
+  h.heap.collect();
+  expect(h.heap.stats().retainedCells).toBe(2);
 });
 
-void FLOAT;
-void BOOL;
+test('foreign and stale struct references cannot enter typed collection backing', () => {
+  const h = harness();
+  const foreign = point(harness());
+  expect(() => call(h, 'array.from', array(pointType), [foreign])).toThrow();
+  const stale = point(h);
+  h.heap.replaceRoots([]);
+  h.heap.collect();
+  expect(() => call(h, 'array.from', array(pointType), [stale])).toThrow(
+    'stale Ref',
+  );
+});
+
+test('tuple elements retain their captured types and trace nested references without a table', () => {
+  const h = harness();
+  const p = point(h);
+  const values = call(h, 'array.from', integers, [int(7)]);
+  const empty = new Value<readonly Value<unknown>[] | null, 'tuple'>(
+    null,
+    'tuple',
+    undefined,
+    {elements: [pointType, integers]},
+  );
+  const pair = empty.withStored(Object.freeze([p, values]));
+  const outer = call(h, 'array.from', array(empty), [pair]);
+  const captured = call(h, 'array.get', empty, [outer, int(0)]);
+  expect(captured.value![0]).toBe(p);
+  expect(captured.value![1]).toBe(values);
+  h.heap.replaceRoots(roots([outer]));
+  h.heap.collect();
+  expect(h.heap.stats().retainedCells).toBe(3);
+  expect(h.heap.stats().retainedLogicalBytes).toBe(128);
+});

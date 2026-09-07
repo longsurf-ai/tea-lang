@@ -1,10 +1,18 @@
 // Concise Arrow-backed fixtures for execution tests; binding tests compile real Tea.
 
-import {Bool, DataType, Field, Float64, List, Schema, Utf8} from 'apache-arrow';
+import {
+  Bool,
+  Field,
+  Float64,
+  List,
+  Schema,
+  Struct,
+  Uint8,
+  Utf8,
+} from 'apache-arrow';
 import type {Builtin} from './module-abi';
 import {Module} from './module-binding';
-import type {Step, WorkspaceFrame} from './js/state-update';
-import {outputFields, outputSchema} from './output';
+import type {Step, FrameState} from './js/state-update';
 
 type Fixture = Omit<
   Module,
@@ -17,7 +25,7 @@ type Fixture = Omit<
   | 'outputs'
   | 'parameters'
 > & {
-  main(step: Step, frame: WorkspaceFrame): void;
+  main(step: Step, frame: FrameState): void;
   readonly inputs: Omit<Module['inputs'], 'schema' | 'builtins'> & {
     readonly schema?: Schema;
     readonly builtins: readonly (Omit<Builtin, 'constant'> & {
@@ -30,7 +38,6 @@ type Fixture = Omit<
   > & {readonly active?: boolean | null})[];
   readonly outputs: {
     readonly schema: Schema;
-    readonly declarations?: Module['outputs']['declarations'];
   };
 };
 
@@ -41,28 +48,6 @@ type Fixture = Omit<
  * creates a module with no program output fields.
  */
 export function testModule(code: Fixture): Module {
-  const fields = outputFields(code.outputs.schema);
-  const declarations =
-    code.outputs.declarations ??
-    fields.map(field => {
-      const value: Field =
-        field.metadata.get('tea:write') === 'append'
-          ? field.type.children[0]
-          : field;
-      return {
-        layout: code.state.layout.findIndex(layout => {
-          if (DataType.isFloat(value.type)) return layout.kind === 'number';
-          if (DataType.isBool(value.type)) return layout.kind === 'boolean';
-          if (DataType.isUtf8(value.type))
-            return layout.kind === 'nullable-scalar' || layout.kind === 'enum';
-          return (
-            layout.kind === value.metadata.get('tea:type') &&
-            (!('name' in layout) ||
-              layout.name === value.metadata.get('tea:name'))
-          );
-        }),
-      };
-    });
   return new Module(
     {
       ...code,
@@ -84,7 +69,7 @@ export function testModule(code: Fixture): Module {
         ...parameter,
         active: parameter.active ?? true,
       })),
-      outputs: {schema: code.outputs.schema, declarations},
+      outputs: {schema: code.outputs.schema},
       requests: code.requests,
     },
     ctx => code.main(ctx.storage, ctx.storage.rootFrame),
@@ -97,9 +82,15 @@ export function scalar(name: string, kind = 'float'): Field {
     name,
     kind === 'bool'
       ? new Bool()
-      : kind === 'string' || kind === 'color'
-        ? new Utf8()
-        : new Float64(),
+      : kind === 'color'
+        ? new Struct(
+            ['r', 'g', 'b', 'a'].map(
+              name => new Field(name, new Uint8(), false),
+            ),
+          )
+        : kind === 'string'
+          ? new Utf8()
+          : new Float64(),
     kind === 'string' || kind === 'color',
     new Map([['tea:type', kind]]),
   );

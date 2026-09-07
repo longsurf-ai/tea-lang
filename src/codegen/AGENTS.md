@@ -10,7 +10,7 @@ supported GPU subset. `docs/runtime.md` owns execution contracts.
   parameters, devices, jobs, runtime buffers, or application policy objects.
   No strategy wrapper IR, parallel frontend, or trade/broker/portfolio name
   recognition belongs here.
-- The CPU artifact is TypeScript ESM exporting one ABI-12 `Module<Context>`.
+- The CPU artifact is TypeScript ESM exporting one ABI-13 `Module<Context>`.
   Its Context type describes exact parameters, inputs, named frame state, and
   output destinations. `main` and ordinary lexical functions use the same
   runtime library available to handwritten TypeScript. There is no second JS
@@ -24,8 +24,9 @@ supported GPU subset. `docs/runtime.md` owns execution contracts.
   hidden receiver; each function owns its arguments and locals. The program
   frame owns the remaining Names. Reuse that projection rather than inferring
   ownership from reachability or copying its address map.
-- Generated setup metadata retains physical layout ids and slots, alongside
-  stable names for inputs, locals, and call sites. Execution uses named
+- Generated setup metadata retains slots and captured empty Values alongside
+  stable names for inputs, locals, and call sites. It emits no runtime structural
+  type table or numeric value-layout IDs. Execution uses named
   properties such as `ctx.state.locals.total` and `frame.calls.accumulate`.
   Repeated written calls have independent state; repeated execution of one
   written call reuses that state.
@@ -46,7 +47,9 @@ supported GPU subset. `docs/runtime.md` owns execution contracts.
 - Numeric loops capture bounds once, preserve ascending/descending inclusive
   ranges and index writes, and stop zero or non-progressing updates. Sparse
   output bounds are a separate transport constraint, not a general loop limit.
-- Struct factories carry nominal identity and exact field types. A field write
+- Generated structs are classes with named captured-Value fields and erased
+  unique-symbol brands. Their factories retain constructor identity and logical
+  byte size. Tea enums are generated string enums; Color uses the runtime class. A field write
   captures `receiver.require().field(name)` before evaluating its RHS. A
   collection mutator captures its receiver before arguments and stores only the
   replacement header afterward. Copying a reference never clones its body.
@@ -60,13 +63,14 @@ supported GPU subset. `docs/runtime.md` owns execution contracts.
   Builtin constancy comes from qualifiers. Parameter enum identity comes from
   Program.nominalIds, shared by JS and WGSL projection.
 - Each request record keeps its direct declaration name, context/policy,
-  child Module, and parent/child result layouts together. Node computes and
+  child Module, and parent/child captured empty Values together. Node computes and
   synchronizes children before main reads `ctx.inputs.children.name.hist()`.
   Dynamic request contexts fail before codegen. Option and context arguments
   each retain their independent source evaluation order.
 - `schema.ts` is the sole Type-to-Arrow projection. Both backends use it and
-  Program.nominalIds. Generated Schema/Field/DataType constructors reproduce those Arrow objects;
-  private storage descriptions are not a parallel I/O schema.
+  Program.nominalIds. Generated Schema/Field/DataType constructors reproduce
+  those Arrow objects; no second output declaration table exists. Do not change
+  the Program interface without explicit user approval.
 - One output schema owns named value types and write modes in source declaration
   order. Generated destinations use `.set(value)` or `.append(value)` and capture
   detached values at that point. Set fields hold nullable T; append fields hold

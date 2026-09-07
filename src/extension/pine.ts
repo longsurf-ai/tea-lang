@@ -4,7 +4,6 @@ import type {Module} from '../runtime/module-binding';
 import {BindError} from '../runtime/errors';
 import type {Builtin} from '../runtime/module-abi';
 import type {Stored} from '../runtime/value';
-import {StorageTypes} from '../runtime/storage-types';
 
 /**
  * Supply per-step Pine values from the Node's position, extent, and source time.
@@ -15,7 +14,6 @@ import {StorageTypes} from '../runtime/storage-types';
  */
 export function pineBuiltinSupplier(now: () => number = Date.now) {
   let timeNow: number | null = null;
-  const layouts = new WeakMap<object, StorageTypes>();
   return (
     _path: readonly number[],
     module: Module,
@@ -29,13 +27,8 @@ export function pineBuiltinSupplier(now: () => number = Date.now) {
         throw new BindError('Pine timenow must be an exact epoch-ms integer');
       }
     }
-    let registry = layouts.get(module.state.layout);
-    if (registry === undefined) {
-      registry = new StorageTypes(module.state.layout);
-      layouts.set(module.state.layout, registry);
-    }
     return module.inputs.builtins.map(spec =>
-      builtinValue(spec, index, indices, datum, timeNow!, registry),
+      builtinValue(spec, index, indices, datum, timeNow!),
     );
   };
 }
@@ -46,9 +39,7 @@ function builtinValue(
   indices: number | null,
   datum: Readonly<Record<string, unknown>>,
   timeNow: number,
-  layouts: StorageTypes,
 ): Stored {
-  layouts.layout(spec.layout);
   const source = spec.source;
   let value: Stored;
   switch (source.domain) {
@@ -91,10 +82,10 @@ function builtinValue(
       break;
     case 'syminfo':
     case 'timeframe':
-      value = layouts.empty(spec.layout);
+      value = spec.empty.value as Stored;
       break;
   }
-  layouts.assertValue(spec.layout, value, `builtin '${builtinName(spec)}'`);
+  spec.empty.assertStored(value);
   return value;
 }
 
@@ -123,17 +114,4 @@ function finiteIndices(indices: number | null, builtin: string): number {
     );
   }
   return indices;
-}
-
-function builtinName(spec: Builtin): string {
-  const source = spec.source;
-  switch (source.domain) {
-    case 'time':
-    case 'bar':
-      return source.field;
-    case 'barstate':
-    case 'syminfo':
-    case 'timeframe':
-      return `${source.domain}.${source.field}`;
-  }
 }

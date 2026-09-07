@@ -9,18 +9,18 @@ device resources, dispatch, readback, decoding, and publication.
 
 - `createGpuExecution()` is the only public GPU execution entry. It accepts an
   injected `GPUDevice`, one compiled artifact, and ordered `GpuBinding[]`.
-- GPU preparation loads the artifact's ordinary JS module and copies it for each
+- GPU preparation loads the artifact's ordinary ABI-13 TypeScript module and copies it for each
   binding before calling its synchronous mutable `bind()` method. The module is flat: inputs,
   parameters, state, outputs, and request records containing child modules.
   State capacities are derived here from prepared frame depths and finite
   extents. No shared binding-layout wrapper or parallel binder exists.
-- The embedded module owns the only Arrow output schema and declaration list.
+- The embedded module owns the only Arrow output schema.
   Set and append outputs use one index space; physical event records carry the
   unified output ID. The runtime decodes scalar bytes into cells aligned with
-  that declaration list and calls shared `createDatum()` for publication.
+  the output fields and calls shared `createDatum()` for publication.
 - Fixed buffer groups, descriptor offsets, strides, and artifact ABI constants
   come only from `src/gpu/contract.ts`; runtime code must not duplicate them.
-- Each binding has private state, concrete series arrays, output sink, buffer slices, and
+- Each binding has private state, concrete series arrays, publication callbacks, buffer slices, and
   progress. Caller order is execution identity; no GPU-specific job wrapper or
   physical-plan layer exists.
 - `runChunk()` keeps resumable state on-device and publishes decoded absolute
@@ -38,3 +38,5 @@ device resources, dispatch, readback, decoding, and publication.
   separate presence and value-validity words; skipped sets decode to null and emitted
   numeric NA remains NaN. Lists preserve per-column order without global ordinals. GPU supports its existing
   scalar subset only; Arrow lists and structs do not imply GPU execution support.
+
+- GPU artifact ABI 9 embeds the ABI-13 module; physical buffers and strides are unchanged. The existing color append codec unpacks RGBA bytes into detached records matching the Arrow Color Struct. Color metadata must contain exactly four non-null Uint8 fields. This special codec does not add GPU lowering for user-defined structs or arbitrary color operations.

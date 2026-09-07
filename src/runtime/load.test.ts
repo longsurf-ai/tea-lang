@@ -3,7 +3,7 @@
 import {expect, test} from 'vitest';
 import {generate} from '../codegen/codegen';
 import {mustBuild} from '../noder/testing';
-import {Module} from './index';
+import {Module, RUNTIME_ABI_VERSION} from './index';
 import {loadModule} from './load';
 
 test('loads a TypeScript module synchronously and keeps binding mutable', () => {
@@ -25,9 +25,12 @@ test('requires a runtime module default export', () => {
   ).toThrow("cannot import 'node:fs'");
 });
 
-test('rejects the prior runtime ABI before using its output layout', () => {
+test('rejects the prior runtime ABI before using its schemas', () => {
   const source = generate(mustBuild('emit "price" close'));
-  expect(() => loadModule(source.replace(/abi:\s*12/, 'abi: 11'))).toThrow(
-    /ABI/,
+  const stale = source.replace(
+    new RegExp(`abi:\\s*${RUNTIME_ABI_VERSION}`),
+    `abi: ${RUNTIME_ABI_VERSION - 1}`,
   );
+  expect(stale).not.toBe(source);
+  expect(() => loadModule(stale)).toThrow(/ABI/);
 });

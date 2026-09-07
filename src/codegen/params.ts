@@ -1,6 +1,7 @@
 // Purpose: Project Program parameter declarations into the target-neutral host schema.
 
 import {fatal} from '../base/print';
+import {IrKind} from '../ir/node';
 import {
   ParamConstraintKind,
   ParamDefaultKind,
@@ -30,6 +31,11 @@ export function parametersOf(
     confirm: param.confirm,
     display: param.display,
     defaultValue: paramDefault(param),
+    active:
+      param.active.kind === IrKind.Const &&
+      typeof param.active.value === 'boolean'
+        ? param.active.value
+        : null,
     constraints: paramConstraints(param),
     enumType:
       param.type.kind === TypeKind.Enum

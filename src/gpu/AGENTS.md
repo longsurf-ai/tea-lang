@@ -19,9 +19,10 @@ runtime consumes it.
 - Reference structs have no GPU lowering yet. The WGSL producer must return a
   stable staged-unsupported issue before emitting an artifact containing a
   struct value or physical event codec.
-- ABI 8 embeds the ordinary TypeScript module and retains the common output
-  ID space. Arrow fields remain canonical; set result cells carry bits, validity and presence in 12 bytes. Older artifact ABIs are rejected.
-- The ABI carries the ordinary generated Runtime-ABI-12 Module. GPU
+- ABI 9 embeds the ordinary TypeScript module and retains the common output
+  ID space. Color append payloads decode to Arrow RGBA Struct records; their packed
+  GPU representation remains unchanged. Arrow fields remain canonical; set result cells carry bits, validity and presence in 12 bytes. Older artifact ABIs are rejected.
+- The ABI carries the ordinary generated Runtime-ABI-13 Module. GPU
   preparation calls `module.clone().bind(values)` for each binding, reads
   concrete `state.frames`, and derives capacities from depths and the binding's extent.
   Codegen never accepts input datasets, devices, or runtime memory payloads.

@@ -18,6 +18,7 @@ function spec(
     type,
     control: type,
     defaultValue,
+    active: true,
     constraints,
     enumType:
       type === 'enum'

@@ -1,15 +1,25 @@
 // Parameter declarations and validation of host-supplied scalar values.
 
 import {fatal} from '../base/print';
+import {canonicalColor} from '../base/color';
 import {BindError} from './errors';
 import type {ParamDisplay} from '../ir/program';
 import type {Scalar} from './value';
 
 /**
- * One named parameter's input contract, independent of its bound value.
- * Constraints and display metadata come from the checked Tea declaration.
- * @example For `length = input.int(14, minval=1)`, name is length,
- * defaultValue is 14 and constraints.minval is 1.
+ * One named parameter's declaration and current binding status. Constraints and
+ * display metadata come from Tea; Module.bind validates and supplies the value.
+ * A successful bind replaces parameter records atomically, so read the module's
+ * current record when displaying newly bound values.
+ *
+ * @example
+ * For `length = input.int(14, minval=1)`:
+ * ```ts
+ * module.parameters[0].defaultValue; // 14
+ * module.parameters[0].value;        // undefined before binding
+ * module.bind({length: 20});
+ * module.parameters[0].value;        // 20
+ * ```
  */
 export interface Parameter {
   readonly name: string;
@@ -24,6 +34,10 @@ export interface Parameter {
     | 'enum';
   readonly control: string;
   readonly defaultValue: Scalar;
+  /** Validated supplied value or applied default; absent before binding. */
+  readonly value?: Scalar;
+  /** Whether the control is active; null until its binding expression resolves. */
+  readonly active: boolean | null;
   readonly constraints:
     | {
         readonly kind: 'range';
@@ -88,7 +102,7 @@ export function resolveParamValues(
       if (typeof candidate !== 'string') {
         throw new BindError(`parameter '${spec.name}' expects a color`);
       }
-      const color = canonicalInputColor(candidate);
+      const color = canonicalColor(candidate);
       if (color === null) {
         throw new BindError(
           `parameter '${spec.name}' expects #RRGGBB or #RRGGBBAA`,
@@ -143,12 +157,4 @@ export function resolveParamValues(
     values.push(value);
   }
   return values;
-}
-
-function canonicalInputColor(value: string): string | null {
-  const match = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(value);
-  if (match === null) return null;
-  const base = `#${match[1].toUpperCase()}`;
-  const alpha = match[2]?.toUpperCase();
-  return alpha === undefined || alpha === 'FF' ? base : `${base}${alpha}`;
 }

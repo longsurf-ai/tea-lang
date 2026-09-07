@@ -25,7 +25,8 @@ import {cloneSchema} from '../runtime/io';
 import type {Request} from '../runtime/module-abi';
 import {createDatum, type Datum} from '../runtime/output';
 import {isTupleValue, type Stored} from '../runtime/value';
-import {StorageTypes} from '../runtime/storage-types';
+import {Value, unwrap} from '../runtime/js/value';
+import {Color} from '../runtime/color';
 import {i, timeframeClock, type Clock} from './clock';
 import {DataStream} from './stream';
 import {sync} from './sync';
@@ -149,7 +150,6 @@ class TeaNode implements Node {
   private committedIndices = 0;
   private started = false;
   private disposed = false;
-  private readonly layouts: StorageTypes;
 
   /**
    * Creates one Node for this module and one child Node for every Tea request.
@@ -162,7 +162,6 @@ class TeaNode implements Node {
     private readonly builtinSupplier: BuiltinSupplier,
     private readonly path: readonly number[] = [],
   ) {
-    this.layouts = new StorageTypes(module.state.layout);
     this.data = null;
     this.requests = module.requests.map(
       (request, requestId) =>
@@ -772,8 +771,8 @@ class TeaNode implements Node {
         return [
           this.requestTiming(datum),
           this.copyRequestResult(
-            spec.resultLayout,
-            runtime.readResult(spec.resultSlot, spec.resultLayout),
+            spec.resultEmpty,
+            runtime.readResult(spec.resultSlot, spec.resultEmpty),
           ),
         ] as const;
       }),
@@ -789,36 +788,31 @@ class TeaNode implements Node {
   }
 
   /** Copies one scalar or tuple across a child runtime boundary. */
-  private copyRequestResult(layoutId: number, value: Stored): Stored {
-    this.layouts.assertValue(layoutId, value, 'request result transport');
-    if (value === null) return null;
-    const layout = this.layouts.layout(layoutId);
-    switch (layout.kind) {
-      case 'number':
-      case 'boolean':
-      case 'nullable-scalar':
-      case 'enum':
-        return value;
-      case 'tuple':
-        if (!isTupleValue(value)) {
-          return fatal(
-            `validated request tuple layout ${layoutId} lost its tuple shape`,
-          );
-        }
-        return Object.freeze(
-          layout.elements.map((element, index) =>
-            this.copyRequestResult(element, value[index]!),
+  private copyRequestResult(expected: Value<unknown>, value: Stored): Stored {
+    expected.assertStored(value);
+    if (
+      value === null ||
+      typeof value === 'number' ||
+      typeof value === 'boolean' ||
+      typeof value === 'string' ||
+      value instanceof Color
+    )
+      return value;
+    if (expected.kind === 'tuple' && isTupleValue(value)) {
+      return Object.freeze(
+        expected.elements!.map((element, index) =>
+          element.withStored(
+            this.copyRequestResult(
+              element,
+              unwrap(value[index] as Value<unknown>),
+            ),
           ),
-        );
-      case 'resource':
-      case 'struct':
-      case 'array':
-      case 'matrix':
-      case 'map':
-        throw new Error(
-          `request result layout ${layoutId} (${layout.kind}) cannot cross a Node boundary`,
-        );
+        ),
+      );
     }
+    throw new Error(
+      `request result '${expected.kind}' cannot cross a Node boundary`,
+    );
   }
 
   /**
@@ -934,7 +928,7 @@ class TeaNode implements Node {
     if (context === null || context === undefined) {
       return fatal(`request '${spec.name}' has no concrete context`);
     }
-    const empty = this.layouts.empty(spec.layout);
+    const empty = spec.empty.value as Stored;
     let selected: RequestOutput | null = null;
     let previousBoundary: bigint | null = null;
     return (datum, buffered) => {

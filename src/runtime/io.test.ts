@@ -16,12 +16,14 @@ import {
   Table,
   TimestampMillisecond,
   Utf8,
+  Uint8,
   tableFromIPC,
   tableToIPC,
   vectorFromArray,
   type DataType,
 } from 'apache-arrow';
 import {describe, expect, test} from 'vitest';
+import {Color} from './color';
 import {
   cloneSchema,
   decodeSchema,
@@ -42,6 +44,41 @@ const named = new Field(
 const schema = new Schema([blob, named], new Map([['title', 'Original']]));
 
 describe('Arrow I/O ownership and validation', () => {
+  test('validates and serializes Color through ordinary Arrow struct fields', () => {
+    const field = new Field(
+      'color',
+      new Struct(
+        ['r', 'g', 'b', 'a'].map(name => new Field(name, new Uint8(), false)),
+      ),
+      true,
+      new Map([['tea:type', 'color']]),
+    );
+    const colors = [new Color(255, 0, 128), new Color(1, 2, 3, 0), null];
+    for (const value of colors) validateValue(field, value);
+    for (const value of [
+      '#FF0080',
+      {r: 255, g: 0, b: 128},
+      {r: 256, g: 0, b: 128, a: 255},
+      {r: 255, g: -1, b: 128, a: 255},
+      {r: 255, g: 0, b: 128, a: 0.5},
+    ])
+      expect(() => validateValue(field, value)).toThrow();
+    const schema = new Schema([field]);
+    const table = new Table(schema, {
+      color: vectorFromArray(colors, field.type),
+    });
+    const restored = tableFromIPC(tableToIPC(table));
+    expect(restored.schema).toEqual(schema);
+    expect(restored.get(0)!.color.toJSON()).toEqual({
+      r: 255,
+      g: 0,
+      b: 128,
+      a: 255,
+    });
+    expect(restored.get(1)!.color.toJSON()).toEqual({r: 1, g: 2, b: 3, a: 0});
+    expect(restored.get(2)!.color).toBe(null);
+  });
+
   test('clones nested Arrow classes and metadata without sharing mutable Maps', () => {
     const copy = cloneSchema(schema);
     expect(copy).toEqual(schema);

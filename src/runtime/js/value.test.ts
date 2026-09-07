@@ -18,6 +18,7 @@ import {
   bool,
   color,
   enumeration,
+  resource,
   float,
   int,
   text,
@@ -92,18 +93,57 @@ test('history captures values and initialization remains lazy', () => {
   }
 });
 
+test('captured domains validate enum, tuple, and opaque resource payloads', () => {
+  enum Status {
+    ready = 'ready',
+    done = 'done',
+  }
+  const status = enumeration<Status, 'Status'>(null, 'Status', Status);
+  expect(status.withStored(Status.ready).value).toBe(Status.ready);
+  expect(() => status.assertStored('other')).toThrow('VALUE_LAYOUT_MISMATCH');
+  expect(status.sameType(enumeration(null, 'Status', {ready: 'ready'}))).toBe(
+    false,
+  );
+  const pair = tuple([status]).empty();
+  expect(() =>
+    pair.assertStored([new Value('other', 'Status', undefined, status)]),
+  ).toThrow('VALUE_LAYOUT_MISMATCH');
+
+  const line = resource(null, 'Line');
+  expect(() => line.assertStored('wrong')).toThrow('VALUE_LAYOUT_MISMATCH');
+  expect(() =>
+    line.withStored({kind: 'resource', handle: 'Label', id: 1}),
+  ).toThrow('VALUE_LAYOUT_MISMATCH');
+  expect(
+    resource({kind: 'resource', handle: 'Line', id: 1}, 'Line').value,
+  ).toEqual({kind: 'resource', handle: 'Line', id: 1});
+  if (false) {
+    // @ts-expect-error resource identities retain their declared kind
+    resource({kind: 'resource', handle: 'Label', id: 1}, 'Line');
+  }
+});
+
 test('native methods share numeric, color, missing-value, and progress rules', () => {
   expect(math.floor(float(-1.1)).value).toBe(-2);
   expect(math.round(float(1.235), int(2)).value).toBe(1.24);
   expect(math.sqrt(float(-1)).value).toBeNaN();
   expect(math.avg(int(2), float(4)).value).toBe(3);
   expect(math.max(int(2), float(4)).kind).toBe('float');
-  expect(colors.rgb(int(255), int(0), int(0)).value).toBe('#FF0000');
-  expect(colors.new(color('#FF0000'), float(50)).value).toBe('#FF00007F');
+  expect(colors.rgb(int(255), int(0), int(0)).value?.toString()).toBe(
+    '#FF0000',
+  );
+  expect(colors.new(color('#FF0000'), float(50)).value?.toString()).toBe(
+    '#FF00007F',
+  );
   expect(colors.rgb(float(NaN), int(0), int(0)).value).toBeNull();
   expect(na(bool(false)).value).toBe(false);
   expect(nz(float(NaN)).value).toBe(0);
-  expect(nz(color(null)).value).toBe('#00000000');
+  expect(nz(color(null)).value?.toString()).toBe('#00000000');
+  expect(color('#ff0000ff').eq(color('#FF0000')).value).toBe(true);
+  expect(color('#FF0000').ne(color('#FF000080')).value).toBe(true);
+  expect(color(null).eq(color(null)).value).toBe(false);
+  expect(color(null).ne(color('#FF0000')).value).toBe(false);
+  expect(str.tostring(color('#ff0000ff')).value).toBe('#FF0000');
   expect(
     str.tostring(enumeration('up', 'Direction'), [['up', 'Up']]).value,
   ).toBe('Up');
@@ -116,11 +156,11 @@ test('native methods share numeric, color, missing-value, and progress rules', (
 test('aggregate APIs preserve exact field, element, key, and tuple types', () => {
   if (false) {
     const context = null! as Context;
-    const floats = array<Value<number, 'float'>>(0).new(context);
+    const floats = array<Value<number, 'float'>>(float(NaN)).new(context);
     expectTypeOf(floats.get(int(0))).toEqualTypeOf<Value<number, 'float'>>();
     // @ts-expect-error array writes require their declared element kind
     floats.push(text('wrong'));
-    const grid = matrix<Value<number, 'float'>>(0).new(
+    const grid = matrix<Value<number, 'float'>>(float(NaN)).new(
       context,
       int(1),
       int(1),
@@ -130,15 +170,21 @@ test('aggregate APIs preserve exact field, element, key, and tuple types', () =>
       Value<number, 'float'>
     >();
     // @ts-expect-error matrix construction requires a complete shape and initial value
-    matrix<Value<number, 'float'>>(0).new(context, int(1));
+    matrix<Value<number, 'float'>>(float(NaN)).new(context, int(1));
     const lookup = map<Value<string | null, 'string'>, Value<number, 'int'>>(
-      0,
+      text(null),
+      int(NaN),
     ).new(context);
     expectTypeOf(lookup.get(text('key'))).toEqualTypeOf<Value<number, 'int'>>();
     // @ts-expect-error map lookup requires the declared key type
     lookup.get(int(0));
-    type Point = {x: Value<number, 'float'>};
-    const point = struct<Point, 'Point'>(0, 'Point').empty(context);
+    class Point {
+      x = float(NaN);
+      constructor(fields?: {x: Value<number, 'float'>}) {
+        if (fields) Object.assign(this, fields);
+      }
+    }
+    const point = struct<Point, 'Point'>(Point, 'Point', 24).empty(context);
     expectTypeOf(point.require().field('x').get()).toEqualTypeOf<
       Value<number, 'float'>
     >();
@@ -146,39 +192,37 @@ test('aggregate APIs preserve exact field, element, key, and tuple types', () =>
     point.field('x').set(text('wrong'));
     const pair = tuple<
       readonly [Value<number, 'int'>, Value<string | null, 'string'>]
-    >(0).create(context, [int(1), text('a')]);
+    >([int(NaN), text(null)]).create(context, [int(1), text('a')]);
     expectTypeOf(pair.get(1)).toEqualTypeOf<Value<string | null, 'string'>>();
   }
 });
 
 test('handwritten typed aggregates reuse transactional storage and captured headers', () => {
-  const Point = struct<{x: Value<number, 'float'>}, 'Point'>(4, 'Point');
-  const Floats = array<Value<number, 'float'>>(2);
-  const Grid = matrix<Value<number, 'float'>>(3);
-  const Lookup = map<Value<string | null, 'string'>, Value<number, 'float'>>(6);
-  const Pair =
-    tuple<readonly [Value<number, 'int'>, Value<string | null, 'string'>]>(8);
+  class PointBody {
+    x = float(NaN);
+    constructor(fields?: {x: Value<number, 'float'>}) {
+      if (fields) Object.assign(this, fields);
+    }
+  }
+  const Point = struct(PointBody, 'Point', 24);
+  const Floats = array<Value<number, 'float'>>(float(NaN));
+  const Grid = matrix<Value<number, 'float'>>(float(NaN));
+  const Lookup = map<Value<string | null, 'string'>, Value<number, 'float'>>(
+    text(null),
+    float(NaN),
+  );
+  const Pair = tuple<
+    readonly [Value<number, 'int'>, Value<string | null, 'string'>]
+  >([int(NaN), text(null)]);
   const module = new Module(
     {
       abi: RUNTIME_ABI_VERSION,
       inputs: {schema: new Schema([]), series: [], builtins: []},
       parameters: [],
       state: {
-        layout: [
-          {kind: 'number', numeric: 'int'},
-          {kind: 'number', numeric: 'float'},
-          {kind: 'array', element: 1},
-          {kind: 'matrix', element: 1},
-          {kind: 'struct', name: 'Point', fields: [{name: 'x', layout: 1}]},
-          {kind: 'nullable-scalar', scalar: 'string'},
-          {kind: 'map', key: 5, value: 1},
-          {kind: 'array', element: 5},
-          {kind: 'tuple', elements: [0, 5]},
-          {kind: 'boolean'},
-        ],
         frames: [{locals: [], subs: []}],
       },
-      outputs: {schema: outputSchema([]), declarations: []},
+      outputs: {schema: outputSchema([])},
       requests: [],
     },
     context => {

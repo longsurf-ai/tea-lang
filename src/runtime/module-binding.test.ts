@@ -15,10 +15,39 @@ import {generate} from '../codegen/codegen';
 import {mustBuild} from '../noder/testing';
 import {BindError} from './errors';
 import {loadModule} from './load';
+import {parametersOf} from '../codegen/params';
 
 import {Context} from './js/context';
 
 describe('module binding', () => {
+  test('parameter records expose declaration, pending activity and atomic binding status', () => {
+    const program = mustBuild(
+      [
+        'enabled = input.bool(true)',
+        'length = input.int(3, minval=1, active=enabled)',
+        'emit "value" close[length]',
+      ].join('\n'),
+    );
+    expect(
+      parametersOf(program.params, program.nominalIds).map(p => p.active),
+    ).toEqual([true, null]);
+    const module = loadModule(generate(program));
+    expect(module.parameters[1].value).toBeUndefined();
+    expect(module.parameters[1].active).toBeNull();
+    module.bind();
+    expect(module.parameters[1]).toMatchObject({
+      defaultValue: 3,
+      value: 3,
+      active: true,
+    });
+    const parameters = module.parameters;
+    expect(() => module.bind({enabled: false, length: 0})).toThrow(BindError);
+    expect(module.parameters).toBe(parameters);
+    expect(module.parameters[1].active).toBe(true);
+    module.bind({enabled: false});
+    expect(module.parameters[1]).toMatchObject({value: 3, active: false});
+  });
+
   test('rejects malformed binding containers through the one error contract', () => {
     const module = loadModule(
       generate(
@@ -41,6 +70,10 @@ describe('module binding', () => {
     );
     const context = original.requests[0]!.context!;
     const module = original.clone();
+    expect(module.requests[0].empty).toBe(original.requests[0].empty);
+    expect(module.requests[0].resultEmpty).toBe(
+      original.requests[0].resultEmpty,
+    );
     expect(module.requests[0]!.context).not.toBe(context);
     expect(Object.isFrozen(context)).toBe(false);
     Object.assign(context, {symbol: 'changed'});
@@ -245,7 +278,7 @@ describe('module binding', () => {
       expect(module.inputs.series[0]!.depth).toEqual({kind: 'bound'});
     },
   );
-  test('runtime admission rejects mismatched set layouts and missing declarations', () => {
+  test('output writes validate values against the sole schema', () => {
     const module = loadModule(
       generate(mustBuild('emit "output0" close')),
     ).bind();
@@ -258,47 +291,51 @@ describe('module binding', () => {
           : field,
       ),
     );
-    expect(
-      () =>
-        new Context(
-          Object.assign(module.clone(), {outputs: {...module.outputs, schema}}),
-        ),
-    ).toThrow('disagrees with Arrow field');
-    expect(
-      () =>
-        new Context(
-          Object.assign(module.clone(), {
-            outputs: {...module.outputs, declarations: []},
-          }),
-        ),
-    ).toThrow('output fields and declarations disagree');
+    const context = new Context(
+      Object.assign(module.clone(), {outputs: {schema}}),
+    );
+    expect(() =>
+      context.step({
+        series: [1],
+        builtins: [],
+        requests: [],
+        provisional: false,
+      }),
+    ).toThrow();
+    context.dispose();
+    expect(Object.keys(module.outputs)).toEqual(['schema']);
   });
 
-  test.each([new Float32(), new Utf8(), new Struct([])])(
-    'runtime admission rejects mismatched append payload %s',
-    type => {
-      const module = loadModule(
-        generate(
-          mustBuild('type E\n    float value\nemit.append "events" E.new(1)'),
-        ),
-      ).bind();
-      const schema = new Schema(
-        module.outputs.schema.fields.map(field =>
-          field.metadata.get('tea:write') === 'append'
-            ? field.clone({type: new List(new Field('item', type, true))})
-            : field,
-        ),
-      );
-      expect(
-        () =>
-          new Context(
-            Object.assign(module.clone(), {
-              outputs: {...module.outputs, schema},
-            }),
-          ),
-      ).toThrow('disagrees with Arrow field');
-    },
-  );
+  test.each([
+    new Float32(),
+    new Utf8(),
+    new Struct([new Field('missing', new Float64(), false)]),
+  ])('append writes reject values incompatible with schema %s', type => {
+    const module = loadModule(
+      generate(
+        mustBuild('type E\n    float value\nemit.append "events" E.new(1)'),
+      ),
+    ).bind();
+    const schema = new Schema(
+      module.outputs.schema.fields.map(field =>
+        field.metadata.get('tea:write') === 'append'
+          ? field.clone({type: new List(new Field('item', type, true))})
+          : field,
+      ),
+    );
+    const context = new Context(
+      Object.assign(module.clone(), {outputs: {schema}}),
+    );
+    expect(() =>
+      context.step({
+        series: [],
+        builtins: [],
+        requests: [],
+        provisional: false,
+      }),
+    ).toThrow();
+    context.dispose();
+  });
 
   test('runtime admission rejects changed execution coordinate fields', () => {
     const module = loadModule(

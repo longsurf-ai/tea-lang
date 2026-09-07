@@ -86,6 +86,24 @@ export interface HeapTransaction extends Disposable {
   allocate<A, V>(info: TypeInfo<A, V>, args: A): Ref<V>;
   /** Read this transaction's replacement first, then committed state. */
   read<V>(ref: Ref<V>): Readonly<V>;
+  /**
+   * Access a managed class instance through the Heap's current transaction.
+   * Aliases share one view across attempts. Each field write replaces the stored
+   * body through `write()`, preserving accounting, tracing, and rollback.
+   *
+   * Views support existing own data fields and prototype methods; accessors,
+   * structural mutations, native containers, and JavaScript private fields are
+   * unsupported. Nested immutable values are returned unchanged; the runtime
+   * supplies managed views for nested struct access.
+   *
+   * @example
+   * ```ts
+   * const counter = transaction.view(counterRef);
+   * counter.total += 2; // reads its pending write on the next access
+   * transaction.commit(); // or dispose the transaction to discard the write
+   * ```
+   */
+  view<V extends object>(ref: Ref<V>): V;
   /** Stage a complete replacement payload for the referenced identity. */
   write<V>(ref: Ref<V>, value: V): void;
   commit(): void;
@@ -109,6 +127,8 @@ interface Cell {
   bytes: number;
   state: CellState;
   transactionId: number | null;
+  /** Cached access identity, released with the cell at collection or abort. */
+  view?: object;
 }
 
 interface PendingWrite {
@@ -124,6 +144,19 @@ interface ErasedTypeInfo {
 }
 
 const REFS = new WeakMap<object, RefRecord>();
+
+function unsupportedView(): never {
+  return fatal('managed view supports only existing data-field writes');
+}
+
+function dataField(
+  object: object,
+  key: PropertyKey,
+): PropertyDescriptor | undefined {
+  const field = Reflect.getOwnPropertyDescriptor(object, key);
+  if (field && !('value' in field)) unsupportedView();
+  return field;
+}
 
 function limit(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -146,6 +179,39 @@ export class ArenaHeap implements Heap {
   private readonly cells: (Cell | null)[] = [];
   private readonly versions: number[] = [];
   private readonly free: number[] = [];
+  // All managed objects share these traps; targets identify their own Heap cell.
+  private readonly viewHandler: ProxyHandler<object> = {
+    get: (target, key) => {
+      let owner: object | null = this.readView(target);
+      while (owner !== null) {
+        const field = dataField(owner, key);
+        if (field) return field.value;
+        owner = Reflect.getPrototypeOf(owner);
+      }
+      return undefined;
+    },
+    set: (target, key, value) => {
+      const body = this.readView(target);
+      const field = dataField(body, key);
+      if (!field) unsupportedView();
+      const fields = Object.getOwnPropertyDescriptors(body);
+      Reflect.set(fields, key, {...field, value});
+      const next = Object.create(Reflect.getPrototypeOf(body), fields);
+      this.write(this.viewTransaction(), target as Ref<object>, next);
+      return true;
+    },
+    has: (target, key) => Reflect.has(this.readView(target), key),
+    ownKeys: target => Reflect.ownKeys(this.readView(target)),
+    getOwnPropertyDescriptor: (target, key) => {
+      const field = dataField(this.readView(target), key);
+      return field ? {...field, configurable: true, writable: true} : undefined;
+    },
+    getPrototypeOf: target => Reflect.getPrototypeOf(this.readView(target)),
+    defineProperty: unsupportedView,
+    deleteProperty: unsupportedView,
+    setPrototypeOf: unsupportedView,
+    preventExtensions: unsupportedView,
+  };
   private roots: readonly Ref<unknown>[] = [];
   private rootsFresh = true;
   private transaction: TransactionImpl | null = null;
@@ -353,6 +419,46 @@ export class ArenaHeap implements Heap {
     }
     const pending = transaction.writes.get(record.slot);
     return (pending?.payload ?? cell.payload) as Readonly<V>;
+  }
+
+  /** @internal One identity-preserving view backed by the ordinary Heap write set. */
+  view<V extends object>(transaction: TransactionImpl, ref: Ref<V>): V {
+    const payload = this.readTransaction(transaction, ref);
+    const record = this.refRecord(ref);
+    const cell = this.cell(record);
+    if (cell.view) return cell.view as V;
+    if (
+      payload === null ||
+      typeof payload !== 'object' ||
+      Object.prototype.toString.call(payload) !== '[object Object]'
+    ) {
+      return fatal(
+        'managed view requires an ordinary object or class instance',
+      );
+    }
+    // An empty target preserves the class prototype without exposing frozen
+    // payload descriptors as Proxy invariants that prohibit pending values.
+    const target = Object.create(Reflect.getPrototypeOf(payload));
+    REFS.set(target, record);
+    const view = new Proxy<V>(target, this.viewHandler);
+    // A managed view and its opaque Ref identify the same cell. Generic tracing
+    // can retain views without traversing their fields or changing identity.
+    REFS.set(view, record);
+    cell.view = view;
+    return view;
+  }
+
+  private viewTransaction(): TransactionImpl {
+    this.assertLive();
+    const active = this.transaction;
+    if (active === null || active.terminal) {
+      return fatal('managed view requires an active Heap transaction');
+    }
+    return active;
+  }
+
+  private readView(target: object): object {
+    return this.readTransaction(this.viewTransaction(), target as Ref<object>);
   }
 
   write<V>(transaction: TransactionImpl, ref: Ref<V>, payload: V): void {
@@ -564,6 +670,10 @@ class TransactionImpl implements HeapTransaction {
 
   read<V>(ref: Ref<V>): Readonly<V> {
     return this.arena.readTransaction(this, ref);
+  }
+
+  view<V extends object>(ref: Ref<V>): V {
+    return this.arena.view(this, ref);
   }
 
   write<V>(ref: Ref<V>, value: V): void {

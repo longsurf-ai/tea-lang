@@ -95,7 +95,10 @@ describe('GPU execution preparation', () => {
     const artifact = strategyArtifact();
     await expect(
       prepareGpuExecutionInputs(
-        {...artifact, abi: 7} as unknown as CompiledWgslProgram,
+        {
+          ...artifact,
+          abi: GPU_ARTIFACT_ABI_VERSION - 1,
+        } as unknown as CompiledWgslProgram,
         [],
       ),
     ).rejects.toThrow(/ABI|abi/);
@@ -125,6 +128,32 @@ export default subject;`,
     await expect(prepareGpuExecutionInputs(broken, [])).rejects.toThrow(
       'disagrees with result cell',
     );
+  });
+
+  test('color append codecs require the exact Arrow RGBA byte shape', async () => {
+    const compiled = compileProgramToWgsl(
+      mustBuild('emit.append "colors" #01020380\nemit "price" close'),
+    );
+    if (compiled.status !== 'compiled')
+      throw new Error(JSON.stringify(compiled.eligibility.issues));
+    const artifact = compiled.artifact;
+    await expect(
+      prepareGpuExecutionInputs(artifact, [binding({close: [1]})]),
+    ).resolves.toMatchObject({chunkRows: 1});
+    const source = artifact.bindingModule.source.replace(
+      'new Uint8()',
+      'new Float64()',
+    );
+    expect(source).not.toBe(artifact.bindingModule.source);
+    await expect(
+      prepareGpuExecutionInputs(
+        {
+          ...artifact,
+          bindingModule: {...artifact.bindingModule, source},
+        },
+        [],
+      ),
+    ).rejects.toThrow('disagrees with its physical payload');
   });
 
   test('packs concrete series in binding and artifact order', async () => {
@@ -224,7 +253,7 @@ export default subject;`,
     const artifact = parameterArtifact();
     const stale = artifact.bindingModule.source.replace(
       `abi: ${RUNTIME_ABI_VERSION}`,
-      'abi: 8',
+      `abi: ${RUNTIME_ABI_VERSION - 1}`,
     );
     expect(stale).not.toBe(artifact.bindingModule.source);
     await expect(

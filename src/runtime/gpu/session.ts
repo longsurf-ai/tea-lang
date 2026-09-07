@@ -1054,9 +1054,15 @@ function decodeValue(
   }
 }
 
-function decodeColor(value: number): string {
-  const hex = value.toString(16).padStart(8, '0').toUpperCase();
-  return hex.endsWith('FF') ? `#${hex.slice(0, 6)}` : `#${hex}`;
+function decodeColor(
+  value: number,
+): Readonly<Record<'r' | 'g' | 'b' | 'a', number>> {
+  return Object.freeze({
+    r: value >>> 24,
+    g: (value >>> 16) & 255,
+    b: (value >>> 8) & 255,
+    a: value & 255,
+  });
 }
 
 function dataView(bytes: Uint8Array, owner: string): DataView {
@@ -1782,7 +1788,12 @@ function validateBindingModule(
     module.abi !== RUNTIME_ABI_VERSION ||
     module.requests.length !== 0 ||
     module.state.frames.length !== artifact.state.frames.length ||
-    JSON.stringify(parameterSchema) !== JSON.stringify(artifact.params) ||
+    JSON.stringify(parameterSchema) !==
+      JSON.stringify(
+        artifact.params.map(
+          ({value: _value, active: _active, ...spec}) => spec,
+        ),
+      ) ||
     module.inputs.series.length !== artifact.requiredSeries.length ||
     module.inputs.series.some(
       (series, sid) => series.id !== artifact.requiredSeries[sid]?.id,
@@ -2528,8 +2539,20 @@ function fieldMatchesCodec(field: Field, kind: WgslCodec['kind']): boolean {
       );
     }
     case 'string':
-    case 'color':
       return DataType.isUtf8(field.type);
+    case 'color':
+      return (
+        DataType.isStruct(field.type) &&
+        field.type.children.length === 4 &&
+        field.type.children.every(
+          (channel, i) =>
+            channel.name === ['r', 'g', 'b', 'a'][i] &&
+            !channel.nullable &&
+            DataType.isInt(channel.type) &&
+            !channel.type.isSigned &&
+            channel.type.bitWidth === 8,
+        )
+      );
   }
 }
 

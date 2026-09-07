@@ -1,0 +1,14 @@
+// Tea source equivalent to the handwritten typed-runtime.ts runtime example.
+lag = input.int(1, minval=0, maxval=10)
+
+accumulate(float x) =>
+    var float total = 0
+    total := total + x
+    total
+
+a = accumulate(close)
+b = accumulate(open)
+
+emit "output0" a
+emit "output1" b
+emit "output2" close[lag]

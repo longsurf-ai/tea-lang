@@ -16,7 +16,6 @@ const scalar = (name: string) =>
     ]),
   );
 const declaration: Module['outputs'] = {
-  declarations: [{layout: 0}, {layout: 1}],
   schema: outputSchema([
     scalar('equity'),
     new Field(

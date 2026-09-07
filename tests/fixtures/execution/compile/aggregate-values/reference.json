@@ -368,7 +368,7 @@
         {
           "name": "output_color",
           "provisional": false,
-          "value": "#FF5252"
+          "value": {"r": 255, "g": 82, "b": 82, "a": 255}
         },
         {
           "name": "output38",
@@ -573,7 +573,7 @@
         {
           "name": "output_color",
           "provisional": false,
-          "value": "#FF5252"
+          "value": {"r": 255, "g": 82, "b": 82, "a": 255}
         },
         {
           "name": "output38",
@@ -778,7 +778,7 @@
         {
           "name": "output_color",
           "provisional": false,
-          "value": "#FF5252"
+          "value": {"r": 255, "g": 82, "b": 82, "a": 255}
         },
         {
           "name": "output38",

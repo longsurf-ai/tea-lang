@@ -12,12 +12,13 @@ import {
 } from './module-abi';
 import {outputFields, outputSchema} from './output';
 import type {Scalar} from './value';
-import {StorageTypes, type StorageType} from './storage-types';
+import {Value} from './js/value';
 import type {Context} from './js/context';
 import type {Parameter} from './params';
-import type {Builtin, FrameLayout} from './module-abi';
+import type {Builtin, Frame} from './module-abi';
 
 const coordinates = cloneSchema(outputSchema([])).fields;
+declare const contextType: unique symbol;
 
 /**
  * A compiled program's configuration and ordinary TypeScript entry function.
@@ -26,6 +27,8 @@ const coordinates = cloneSchema(outputSchema([])).fields;
  * Use `program.clone()` for a separate run with different parameters.
  */
 export class Module<C extends Context = Context> {
+  /** Type-only link lets Context infer this program's fields without inventing new ones. */
+  declare private readonly [contextType]: C;
   declare readonly abi: typeof RUNTIME_ABI_VERSION;
   declare readonly inputs: {
     readonly schema: Schema;
@@ -36,22 +39,14 @@ export class Module<C extends Context = Context> {
     }[];
     readonly builtins: readonly Builtin[];
   };
-  declare readonly parameters: readonly (Parameter & {
-    readonly value?: Scalar;
-    readonly active: boolean | null;
-  })[];
-  /** Static storage descriptions, not live execution state. */
+  declare readonly parameters: readonly Parameter[];
+  /** Binding persistence, history requirements and independent written call sites. */
   declare readonly state: {
-    readonly layout: readonly StorageType[];
-    readonly frames: readonly FrameLayout[];
+    readonly frames: readonly Frame[];
   };
   /** The schema is the sole owner of output fields, names and write modes. */
   declare readonly outputs: {
     readonly schema: Schema;
-    readonly declarations: readonly {
-      /** Private storage descriptor used to detach each written value. */
-      readonly layout: number;
-    }[];
   };
   declare readonly requests: readonly Request[];
 
@@ -71,7 +66,6 @@ export class Module<C extends Context = Context> {
     this.execute = execute as (context: Context) => void;
     currentAbi(data);
     Object.assign(this, copyData(data));
-    freeze(this.state.layout);
   }
 
   /** Validate a patch and update this module tree only after all calculations pass. */
@@ -131,7 +125,6 @@ export class Module<C extends Context = Context> {
         });
       });
       if (context.size > 0) {
-        const layouts = new StorageTypes(data.state.layout);
         for (const [id, value] of context) {
           const builtin = data.inputs.builtins[id];
           if (!Number.isSafeInteger(id) || builtin?.constant !== true) {
@@ -139,10 +132,8 @@ export class Module<C extends Context = Context> {
           }
           if (!scalar(value))
             throw new BindError(`builtin ${id} requires a scalar value`);
-          const layout = layouts.layout(builtin.layout);
           if (
-            layout.kind === 'number' &&
-            layout.numeric === 'int' &&
+            builtin.empty.kind === 'int' &&
             typeof value === 'number' &&
             !Number.isNaN(value) &&
             !Number.isSafeInteger(value)
@@ -152,7 +143,7 @@ export class Module<C extends Context = Context> {
             );
           }
           try {
-            layouts.assertValue(builtin.layout, value, `binding builtin ${id}`);
+            builtin.empty.assertStored(value);
           } catch (error) {
             throw new BindError(
               error instanceof Error ? error.message : String(error),
@@ -204,8 +195,8 @@ export class Module<C extends Context = Context> {
         data.state.frames.length !== target.state.frames.length ||
         data.inputs.series.length !== target.inputs.series.length ||
         data.inputs.builtins.length !== target.inputs.builtins.length ||
-        data.outputs.declarations.length !==
-          target.outputs.declarations.length ||
+        data.outputs.schema.fields.length !==
+          target.outputs.schema.fields.length ||
         data.requests.length !== target.requests.length
       ) {
         throw new BindError('generated binding changed module structure');
@@ -276,16 +267,21 @@ function copyData(
     inputs: {
       schema: copySchemas ? cloneSchema(schema) : schema,
       series: series.map(series => ({...structuredClone(series)})),
-      builtins: builtins.map(builtin => ({...structuredClone(builtin)})),
+      builtins: builtins.map(({empty, ...builtin}) => ({
+        ...structuredClone(builtin),
+        empty,
+      })),
     },
     parameters: module.parameters.map(parameter => ({
       ...structuredClone(parameter),
     })),
     state: {
-      layout: module.state.layout,
       frames: module.state.frames.map(frame => ({
         ...frame,
-        locals: frame.locals.map(local => ({...structuredClone(local)})),
+        locals: frame.locals.map(({empty, ...local}) => ({
+          ...structuredClone(local),
+          empty,
+        })),
         subs: frame.subs.map(child => ({...child})),
       })),
     },
@@ -293,14 +289,15 @@ function copyData(
       schema: copySchemas
         ? cloneSchema(module.outputs.schema)
         : module.outputs.schema,
-      declarations: module.outputs.declarations.map(output => ({
-        ...structuredClone(output),
-      })),
     },
-    requests: module.requests.map(({module: child, ...request}) => ({
-      ...structuredClone(request),
-      module: child,
-    })),
+    requests: module.requests.map(
+      ({module: child, empty, resultEmpty, ...request}) => ({
+        ...structuredClone(request),
+        module: child,
+        empty,
+        resultEmpty,
+      }),
+    ),
   };
 }
 
@@ -377,10 +374,7 @@ export function requireConcreteModule(module: Module): Module {
   ) {
     throw new BindError('invalid output coordinates');
   }
-  if (fields.length !== module.outputs.declarations.length)
-    throw new BindError('output fields and declarations disagree');
-  const layouts = new StorageTypes(module.state.layout);
-  fields.forEach((field, id) => {
+  fields.forEach(field => {
     if (field.metadata.get('tea:write') === 'set') {
       if (!field.nullable) {
         throw new BindError(
@@ -394,18 +388,28 @@ export function requireConcreteModule(module: Module): Module {
         );
       }
     } else throw new BindError(`output '${field.name}' has no write mode`);
-    layouts.layout(module.outputs.declarations[id].layout);
   });
+  for (const empty of [
+    ...module.state.frames.flatMap(frame =>
+      frame.locals.map(local => local.empty),
+    ),
+    ...module.inputs.builtins.map(builtin => builtin.empty),
+  ]) {
+    if (!(empty instanceof Value))
+      throw new BindError('binding requires a captured missing value');
+  }
   module.requests.forEach((request, id) => {
-    const layout = layouts.layout(request.layout);
-    layouts.layout(request.resultLayout);
     if (
-      (request.mode === 'sample' && request.layout !== request.resultLayout) ||
+      !(request.empty instanceof Value) ||
+      !(request.resultEmpty instanceof Value) ||
+      (request.mode === 'sample' &&
+        !request.empty.sameType(request.resultEmpty)) ||
       (request.mode === 'collect' &&
-        (layout.kind !== 'array' || layout.element !== request.resultLayout))
+        (request.empty.kind !== 'array' ||
+          !request.empty.element?.sameType(request.resultEmpty)))
     ) {
       throw new BindError(
-        `request ${id} has inconsistent ${request.mode} layouts`,
+        `request ${id} has inconsistent ${request.mode} values`,
       );
     }
     validateContext(request, id);
@@ -455,19 +459,4 @@ function scalar(value: unknown): value is Scalar {
     (typeof value === 'number' &&
       (Number.isFinite(value) || Number.isNaN(value)))
   );
-}
-
-function freeze<T>(value: T): T {
-  if (
-    value === null ||
-    (typeof value !== 'object' && typeof value !== 'function') ||
-    Object.isFrozen(value)
-  )
-    return value;
-  for (const property of Object.values(
-    Object.getOwnPropertyDescriptors(value),
-  )) {
-    if (property.enumerable && 'value' in property) freeze(property.value);
-  }
-  return Object.freeze(value);
 }

@@ -1,8 +1,16 @@
 // Purpose: Captured Tea values and their arithmetic; expressions never retain a writable series.
 
 import {fatal} from '../../base/print';
+import {Color} from '../color';
 import type {Context} from './context';
-import type {Ref} from './heap';
+import {isRef, type Ref, type Heap} from './heap';
+import {ExecutionError} from '../errors';
+import {
+  isArrayValue,
+  isMatrixValue,
+  isMapValue,
+  isResourceHandle,
+} from '../value';
 import type {
   CollectionOperation,
   CollectionMutationOperation,
@@ -11,9 +19,10 @@ import type {
   ArrayValue,
   MatrixValue,
   MapValue,
+  ResourceHandle,
   Stored as RawValue,
 } from '../value';
-import type {StorageType} from '../storage-types';
+const emptyObjects = new WeakMap<Function, object>();
 
 /** Tea's numeric kind controls promotion and integer division. */
 export type Numeric = 'int' | 'float';
@@ -26,12 +35,164 @@ export type Numeric = 'int' | 'float';
  * @example `int(7).div(int(2)).value` is 3; dividing by float(2) produces 3.5.
  */
 export class Value<T, K extends string = string> {
+  declare readonly ctor?: Function;
+  declare readonly element?: Value<unknown>;
+  declare readonly key?: Value<unknown>;
+  declare readonly elements?: readonly Value<unknown>[];
+  declare readonly enumValues?: readonly string[];
+
+  /** @internal Public callers construct values through int, color, struct, etc. */
   constructor(
     readonly value: T,
     readonly kind: K,
     private readonly context?: Context,
-    private readonly layout?: number,
-  ) {}
+    metadata?: Pick<
+      Value<unknown>,
+      'ctor' | 'element' | 'key' | 'elements' | 'enumValues'
+    >,
+  ) {
+    if (metadata?.ctor) this.ctor = metadata.ctor;
+    if (metadata?.element) this.element = metadata.element;
+    if (metadata?.key) this.key = metadata.key;
+    if (metadata?.elements)
+      this.elements = Object.freeze([...metadata.elements]);
+    if (metadata?.enumValues)
+      this.enumValues = Object.freeze([...metadata.enumValues]);
+    Object.freeze(this);
+  }
+
+  /** Logical size of this value's carrier; child allocations are counted separately. */
+  get byteSize(): number {
+    if (this.kind === 'array' || this.kind === 'matrix') return 32;
+    if (this.kind === 'map') return 24;
+    if (this.kind === 'tuple')
+      return (
+        16 +
+        (this.elements ?? []).reduce((sum, value) => sum + value.byteSize, 0)
+      );
+    return 8;
+  }
+
+  /** Compare declared value domains without a numeric descriptor lookup. */
+  sameType(other: Value<unknown>): boolean {
+    return (
+      other instanceof Value &&
+      this.kind === other.kind &&
+      this.ctor === other.ctor &&
+      (this.enumValues === undefined
+        ? other.enumValues === undefined
+        : other.enumValues !== undefined &&
+          this.enumValues.length === other.enumValues.length &&
+          this.enumValues.every(
+            (member, i) => member === other.enumValues![i],
+          )) &&
+      (this.element === undefined
+        ? other.element === undefined
+        : other.element !== undefined &&
+          this.element.sameType(other.element)) &&
+      (this.key === undefined
+        ? other.key === undefined
+        : other.key !== undefined && this.key.sameType(other.key)) &&
+      (this.elements === undefined
+        ? other.elements === undefined
+        : other.elements !== undefined &&
+          this.elements.length === other.elements.length &&
+          this.elements.every((item, i) => item.sameType(other.elements![i])))
+    );
+  }
+
+  /** Validate raw values where they enter a declared binding or managed collection. */
+  assertStored(value: RawValue, reader?: Pick<Heap, 'read'>): void {
+    const bad = (): never => {
+      throw new ExecutionError(
+        'VALUE_LAYOUT_MISMATCH',
+        `value does not match ${this.kind}`,
+      );
+    };
+    if (value === null) {
+      if (this.kind === 'int' || this.kind === 'float' || this.kind === 'bool')
+        bad();
+      return;
+    }
+    if (this.kind === 'int' || this.kind === 'float') {
+      if (
+        typeof value !== 'number' ||
+        (!Number.isFinite(value) && !Number.isNaN(value))
+      )
+        bad();
+    } else if (this.kind === 'bool') {
+      if (typeof value !== 'boolean') bad();
+    } else if (this.kind === 'color') {
+      if (!(value instanceof Color)) bad();
+    } else if (this.kind === 'string' || this.enumValues !== undefined) {
+      if (
+        typeof value !== 'string' ||
+        (this.enumValues !== undefined && !this.enumValues.includes(value))
+      )
+        bad();
+    } else if (this.ctor !== undefined) {
+      if (!isRef(value)) bad();
+      if (
+        reader &&
+        Object.getPrototypeOf(reader.read(value as Ref<object>)) !==
+          this.ctor.prototype
+      )
+        bad();
+    } else if (
+      this.kind === 'array' ||
+      this.kind === 'matrix' ||
+      this.kind === 'map'
+    ) {
+      const valid =
+        this.kind === 'array'
+          ? isArrayValue(value)
+          : this.kind === 'matrix'
+            ? isMatrixValue(value)
+            : isMapValue(value);
+      if (!valid) bad();
+      const collection = value as ArrayValue | MatrixValue | MapValue;
+      if (!this.element?.sameType(collection.element)) bad();
+      if (isMapValue(collection) && !this.key?.sameType(collection.key)) bad();
+      if (reader) reader.read(collection.storage as Ref<unknown>);
+    } else if (this.kind === 'tuple') {
+      if (!Array.isArray(value) || value.length !== this.elements?.length)
+        bad();
+      this.elements!.forEach((empty, i) => {
+        const item = (value as readonly Value<unknown>[])[i];
+        if (!empty.sameType(item)) bad();
+        empty.assertStored(unwrap(item), reader);
+      });
+    } else if (
+      [
+        'Line',
+        'Label',
+        'Box',
+        'Table',
+        'Polyline',
+        'Linefill',
+        'line',
+        'label',
+        'box',
+        'table',
+        'polyline',
+        'linefill',
+      ].includes(this.kind)
+    ) {
+      if (!isResourceHandle(value) || value.handle !== this.kind) bad();
+    } else if (typeof value !== 'string') bad();
+  }
+
+  /** @internal Replace a payload while retaining its concrete generic value domain. */
+  withStored(value: T, context = this.context): Value<T, K> {
+    if (
+      Object.is(value, this.value) &&
+      (context === this.context ||
+        (!this.ctor && !this.element && !this.elements))
+    )
+      return this;
+    this.assertStored(value as RawValue);
+    return new Value(value, this.kind, context, this);
+  }
 
   /**
    * Add captured numbers. A float operand promotes the result; neither operand changes.
@@ -112,7 +273,9 @@ export class Value<T, K extends string = string> {
     return bool(
       !missing(this.value) &&
         !missing(other.value) &&
-        this.value === other.value,
+        (this.value instanceof Color && other.value instanceof Color
+          ? this.value.equals(other.value)
+          : this.value === other.value),
     );
   }
 
@@ -126,7 +289,9 @@ export class Value<T, K extends string = string> {
     return bool(
       !missing(this.value) &&
         !missing(other.value) &&
-        this.value !== other.value,
+        (this.value instanceof Color && other.value instanceof Color
+          ? !this.value.equals(other.value)
+          : this.value !== other.value),
     );
   }
 
@@ -161,45 +326,59 @@ export class Value<T, K extends string = string> {
   not(this: Value<boolean, 'bool'>): Value<boolean, 'bool'> {
     return bool(!this.value);
   }
-  /** Capture the receiver before evaluating arguments to a mutating Tea method. */
+  /** Validate the captured receiver before evaluating mutating method arguments. */
   require(this: Value<Ref<unknown> | null, K>): Value<T, K> {
-    const {context, layout} = this.owner();
-    context.storage.requireStruct(unwrap(this), layout);
+    this.owner().storage.requireStruct(
+      unwrap(this),
+      this.ctor ?? fatal('struct has no constructor'),
+    );
     return this as unknown as Value<T, K>;
   }
 
   /**
-   * A field location captures reference identity, not the current field value.
-   * Reads on NA return the field's typed empty. For writes, call require() before
-   * evaluating the right-hand side, then write through this location.
-   * @example `const x = point.require().field('x'); x.set(float(2));`
+   * Capture a named field location. Null reads use the generated class's empty
+   * field value; mutation requires a non-null receiver before RHS evaluation.
+   * @example `point.require().field('x').set(float(2))` stages a field write.
    */
-  field<N extends keyof (NonNullable<T> extends Ref<infer S> ? S : never)>(
+  field<
+    N extends Extract<
+      keyof (NonNullable<T> extends Ref<infer S> ? S : never),
+      string
+    >,
+  >(
     name: N,
   ): {
     get(): (NonNullable<T> extends Ref<infer S> ? S : never)[N];
     set(value: (NonNullable<T> extends Ref<infer S> ? S : never)[N]): void;
   } {
-    const {context, layout} = this.owner();
-    const descriptor = context.layouts.layout(layout);
-    if (descriptor.kind !== 'struct')
-      return fatal('field receiver is not a struct');
-    const index = descriptor.fields.findIndex(field => field.name === name);
-    if (index < 0) return fatal(`unknown field '${String(name)}'`);
+    const context = this.owner();
+    const ctor = this.ctor ?? fatal('field receiver has no constructor');
+    let defaults = emptyObjects.get(ctor);
+    if (defaults === undefined) {
+      defaults = Reflect.construct(ctor, []);
+      emptyObjects.set(ctor, defaults!);
+    }
+    const empty = (defaults as Record<PropertyKey, Value<unknown>>)[name];
+    if (!(empty instanceof Value))
+      return fatal(`unknown field '${String(name)}'`);
     const raw = unwrap(this);
-    if (raw !== null) context.storage.requireStruct(raw, layout);
+    if (raw !== null) context.storage.requireStruct(raw, ctor);
     return {
-      get: () =>
-        context.capture(
-          context.storage.structField(raw, layout, index),
-          descriptor.fields[index].layout,
-        ),
+      get: () => {
+        const value = context.storage.structField(
+          raw,
+          ctor,
+          String(name),
+          empty,
+        );
+        return value.withStored(unwrap(value), context);
+      },
       set: value =>
         context.storage.storeStructField(
           raw,
-          layout,
-          index,
-          unwrap(value as Value<unknown>),
+          ctor,
+          String(name),
+          value as Value<unknown>,
         ),
     } as {
       get(): (NonNullable<T> extends Ref<infer S> ? S : never)[N];
@@ -225,27 +404,22 @@ export class Value<T, K extends string = string> {
     ? T[I]
     : T extends ArrayValue<infer E> | MatrixValue<infer E>
       ? E
-      : T extends MapValue<unknown, infer E>
+      : T extends MapValue<Value<unknown>, infer E>
         ? E
         : never {
-    const {context, layout} = this.owner();
-    const descriptor = context.layouts.layout(layout);
-    if (descriptor.kind === 'tuple') {
+    if (this.kind === 'tuple') {
       const index = args[0] as number;
       if (
         !Number.isSafeInteger(index) ||
         index < 0 ||
-        index >= descriptor.elements.length
+        index >= (this.elements?.length ?? 0)
       )
         return fatal('invalid tuple index');
-      return (
+      const value =
         this.value === null
-          ? context.capture(
-              context.layouts.empty(descriptor.elements[index]),
-              descriptor.elements[index],
-            )
-          : (this.value as readonly unknown[])[index]
-      ) as never;
+          ? this.elements![index]
+          : (this.value as readonly Value<unknown>[])[index];
+      return value.withStored(unwrap(value), this.owner()) as never;
     }
     return this.collection('get', args as readonly Value<unknown>[]) as never;
   }
@@ -323,7 +497,7 @@ export class Value<T, K extends string = string> {
 
   values(
     this: Value<MapValue | null, K>,
-  ): T extends MapValue<unknown, infer Item>
+  ): T extends MapValue<Value<unknown>, infer Item>
     ? Value<ArrayValue<Item> | null, 'array'>
     : never {
     return this.collection('values', []) as never;
@@ -377,7 +551,7 @@ export class Value<T, K extends string = string> {
 
   remove(key: T extends MapValue<infer Key> ? Key : never): {
     replacement: Value<T, K>;
-    result: T extends MapValue<unknown, infer Item> ? Item : never;
+    result: T extends MapValue<Value<unknown>, infer Item> ? Item : never;
   } {
     return this.mutate('remove', [key as Value<unknown>]) as never;
   }
@@ -388,98 +562,56 @@ export class Value<T, K extends string = string> {
     : T extends MapValue<infer Key, infer Item>
       ? readonly [Key, Item]
       : never)[] {
-    const {context, layout} = this.owner();
-    const descriptor = context.layouts.layout(layout);
-    const entries = context.storage.collectionEntries(unwrap(this));
-    if (descriptor.kind === 'array') {
-      return entries.map(value =>
-        context.capture(value as RawValue, descriptor.element),
+    const context = this.owner();
+    return context.storage
+      .collectionEntries(unwrap(this))
+      .map(item =>
+        item instanceof Value
+          ? item.withStored(unwrap(item), context)
+          : item.map(value => value.withStored(unwrap(value), context)),
       ) as never;
-    }
-    if (descriptor.kind === 'map') {
-      return (entries as readonly (readonly [RawValue, RawValue])[]).map(
-        ([key, value]) =>
-          [
-            context.capture(key, descriptor.key),
-            context.capture(value, descriptor.value),
-          ] as const,
-      ) as never;
-    }
-    return fatal('iteration receiver is not an array or map');
   }
 
-  private owner(): {context: Context; layout: number} {
-    if (this.context === undefined || this.layout === undefined)
-      return fatal('aggregate value has no execution owner');
-    return {context: this.context, layout: this.layout};
+  private owner(): Context {
+    return this.context ?? fatal('aggregate value has no execution owner');
   }
 
   private collection(
     operation: string,
     args: readonly Value<unknown>[],
   ): Value<unknown> {
-    const {context, layout} = this.owner();
-    const descriptor = context.layouts.layout(layout);
-    if (
-      descriptor.kind !== 'array' &&
-      descriptor.kind !== 'matrix' &&
-      descriptor.kind !== 'map'
-    )
-      return fatal('collection receiver has invalid storage type');
-    let result: number;
-    if (operation === 'copy') result = layout;
-    else if (['size', 'rows', 'columns', 'elements_count'].includes(operation))
-      result = findLayout(
-        context,
-        item => item.kind === 'number' && item.numeric === 'int',
-      );
+    const context = this.owner();
+    let empty: Value<unknown> = this;
+    if (['size', 'rows', 'columns', 'elements_count'].includes(operation))
+      empty = int(NaN);
     else if (operation === 'is_empty' || operation === 'contains')
-      result = findLayout(context, item => item.kind === 'boolean');
-    else {
+      empty = bool(false);
+    else if (operation !== 'copy') {
       const element =
-        descriptor.kind === 'map'
-          ? operation === 'keys'
-            ? descriptor.key
-            : descriptor.value
-          : descriptor.element;
-      result = ['row', 'column', 'keys', 'values'].includes(operation)
-        ? findLayout(
-            context,
-            item => item.kind === 'array' && item.element === element,
-          )
+        (operation === 'keys' ? this.key : this.element) ??
+        fatal('collection has no element value');
+      empty = ['row', 'column', 'keys', 'values'].includes(operation)
+        ? array(element).empty(context)
         : element;
     }
-    const raw = context.storage.callCollection(
-      `${descriptor.kind}.${operation}` as CollectionOperation,
-      result,
-      [unwrap(this), ...args.map(unwrap)],
+    const result = context.storage.callCollection(
+      `${this.kind}.${operation}` as CollectionOperation,
+      empty,
+      [this, ...args],
     );
-    return context.capture(raw, result);
+    return result.withStored(unwrap(result), context);
   }
 
   private mutate(operation: string, args: readonly Value<unknown>[]) {
-    const {context, layout} = this.owner();
-    const descriptor = context.layouts.layout(layout);
-    if (
-      descriptor.kind !== 'array' &&
-      descriptor.kind !== 'matrix' &&
-      descriptor.kind !== 'map'
-    )
-      return fatal('mutation receiver has invalid storage type');
+    const context = this.owner();
     const changed = context.storage.mutateCollection(
-      `${descriptor.kind}.${operation}` as CollectionMutationOperation,
-      layout,
-      unwrap(this),
-      args.map(unwrap),
+      `${this.kind}.${operation}` as CollectionMutationOperation,
+      this,
+      args,
     );
-    const element =
-      descriptor.kind === 'map' ? descriptor.value : descriptor.element;
     return {
-      replacement: context.capture(changed.replacement, layout),
-      result:
-        changed.result === undefined
-          ? undefined
-          : context.capture(changed.result, element),
+      replacement: capture(context, changed.replacement, this),
+      result: changed.result?.withStored(unwrap(changed.result), context),
     };
   }
 }
@@ -539,157 +671,134 @@ export function text(value: string | null): Value<string | null, 'string'> {
   return new Value(value, 'string');
 }
 
-export function color(value: string | null): Value<string | null, 'color'> {
-  return new Value(value, 'color');
+export function color(
+  value: string | Color | null,
+): Value<Color | null, 'color'> {
+  return new Value(
+    typeof value === 'string' ? Color.parse(value) : value,
+    'color',
+  );
 }
 
-/** Nominal enum identity is carried by K, independently of its string members. */
+/** Preserve a generated string enum's identity and accepted member values. */
 export function enumeration<T extends string, K extends string>(
   value: T | null,
   kind: K,
+  members?: Readonly<Record<string, T>>,
 ): Value<T | null, K> {
-  return new Value(value, kind);
-}
-
-/** @internal Capture the runtime carrier without copying managed reference bodies. */
-export function capture<T, K extends string>(
-  context: Context,
-  raw: RawValue,
-  layout: number,
-): Value<T, K> {
-  const descriptor = context.layouts.layout(layout);
-  const kind =
-    descriptor.kind === 'number'
-      ? descriptor.numeric
-      : descriptor.kind === 'boolean'
-        ? 'bool'
-        : descriptor.kind === 'nullable-scalar'
-          ? descriptor.scalar
-          : descriptor.kind === 'enum' || descriptor.kind === 'struct'
-            ? (descriptor.typeId ?? descriptor.name)
-            : descriptor.kind === 'resource'
-              ? descriptor.handle
-              : descriptor.kind;
-  const value =
-    descriptor.kind === 'tuple' && raw !== null
-      ? (raw as readonly RawValue[]).map((item, index) =>
-          capture(context, item, descriptor.elements[index]),
-        )
-      : raw;
-  const retained =
-    descriptor.kind === 'struct' ||
-    descriptor.kind === 'tuple' ||
-    descriptor.kind === 'array' ||
-    descriptor.kind === 'matrix' ||
-    descriptor.kind === 'map';
-  return new Value(
-    value,
-    kind,
-    retained ? context : undefined,
-    retained ? layout : undefined,
-  ) as Value<T, K>;
-}
-
-/** @internal Convert a captured value to the existing Heap/history carrier. */
-export function unwrap(value: Value<unknown>): RawValue {
-  return Array.isArray(value.value)
-    ? value.value.map(item =>
-        item instanceof Value ? unwrap(item) : (item as RawValue),
-      )
-    : (value.value as RawValue);
-}
-
-function findLayout(
-  context: Context,
-  matches: (layout: StorageType) => boolean,
-): number {
-  for (let id = 0; id < context.layouts.length; id += 1) {
-    if (matches(context.layouts.layout(id))) return id;
-  }
-  return fatal('collection result storage type is absent');
+  return new Value(value, kind, undefined, {
+    enumValues: members && Object.values(members),
+  });
 }
 
 /**
- * A typed constructor for one nominal struct in the program's storage table.
- * @example `const Point = struct<Point, 'Point'>(4, 'Point'); Point.create(ctx, {x: float(1)});`
+ * Capture an opaque resource identity, or its typed missing value. This does
+ * not allocate a drawing resource; a host or supported intrinsic owns it.
+ * @example `resource(null, 'Line')` is a missing line, distinct from a missing label.
  */
-export function struct<
-  S extends {[P in keyof S]: Value<unknown>},
-  K extends string,
->(layout: number, kind: K) {
+export function resource<K extends string>(
+  value: (ResourceHandle & {readonly handle: NoInfer<K>}) | null,
+  kind: K,
+): Value<ResourceHandle | null, K> {
+  const captured = new Value(
+    value === null ? null : Object.freeze({...value}),
+    kind,
+  );
+  captured.assertStored(captured.value);
+  return captured;
+}
+
+/** @internal Attach the execution owner to a value using its existing empty exemplar. */
+export function capture<T, K extends string>(
+  context: Context,
+  raw: RawValue,
+  empty: Value<T, K>,
+): Value<T, K> {
+  return empty.withStored(raw as T, context);
+}
+
+/** @internal The raw payload retains typed tuple elements and managed identities. */
+export function unwrap(value: Value<unknown>): RawValue {
+  return value.value as RawValue;
+}
+
+/**
+ * Register generated class instances with the Context's managed Heap.
+ * @example `struct(Point, 'Point', 24).create(ctx, {x: float(1)})` allocates one Point.
+ */
+export function struct<S extends object, K extends string>(
+  constructor: new (fields?: Omit<S, symbol>) => S,
+  kind: K,
+  byteSize: number,
+) {
   return {
-    create(context: Context, fields: S): Value<Ref<S> | null, K> {
-      const descriptor = context.layouts.layout(layout);
-      if (descriptor.kind !== 'struct')
-        return fatal('struct constructor has invalid storage type');
-      const raw = context.storage.newStruct(
-        layout,
-        descriptor.fields.map(field => unwrap(fields[field.name as keyof S])),
-      );
-      return new Value(raw as Ref<S>, kind, context, layout);
+    create(context: Context, fields: Omit<S, symbol>): Value<Ref<S> | null, K> {
+      const raw = context.storage.newStruct(new constructor(fields), byteSize);
+      return new Value(raw, kind, context, {ctor: constructor});
     },
-    empty(context: Context): Value<Ref<S> | null, K> {
-      return new Value(null, kind, context, layout);
+    empty(context?: Context): Value<Ref<S> | null, K> {
+      return new Value(null, kind, context, {ctor: constructor});
     },
   };
 }
 
-/** Construct a captured tuple; element captures remain independent of later writes. */
-export function tuple<T extends readonly Value<unknown>[]>(layout: number) {
+/** A tuple retains captured elements; missing tuples supply the same typed empties. */
+export function tuple<T extends readonly Value<unknown>[]>(elements: T) {
   return {
     create(context: Context, values: T): Value<T | null, 'tuple'> {
       return new Value(
         Object.freeze([...values]) as unknown as T,
         'tuple',
         context,
-        layout,
+        {elements},
       );
     },
-    empty(context: Context): Value<T | null, 'tuple'> {
-      return new Value(null, 'tuple', context, layout);
+    empty(context?: Context): Value<T | null, 'tuple'> {
+      return new Value(null, 'tuple', context, {elements});
     },
   };
 }
 
-/**
- * Array constructors keep element typing while sharing the existing persistent backing.
- * @example `array<Value<number, 'float'>>(layout).from(ctx, float(1), float(2))`.
- */
-export function array<E extends Value<unknown>>(layout: number) {
+/** Array operations reuse one typed missing element; no type registry is consulted. */
+export function array<E extends Value<unknown>>(element: E) {
+  const empty = (context?: Context): Value<ArrayValue<E> | null, 'array'> =>
+    new Value(null, 'array', context, {element});
   return {
     new(
       context: Context,
       size?: Value<number, 'int'>,
       initial?: E,
     ): Value<ArrayValue<E> | null, 'array'> {
-      const args =
+      const result = context.storage.callCollection(
+        'array.new',
+        empty(context),
         size === undefined
           ? []
           : initial === undefined
-            ? [unwrap(size)]
-            : [unwrap(size), unwrap(initial)];
-      return context.capture(
-        context.storage.callCollection('array.new', layout, args),
-        layout,
+            ? [size]
+            : [size, initial],
       );
+      return capture(context, unwrap(result), empty(context));
     },
     from(
       context: Context,
       ...items: readonly E[]
     ): Value<ArrayValue<E> | null, 'array'> {
-      return context.capture(
-        context.storage.callCollection('array.from', layout, items.map(unwrap)),
-        layout,
+      const result = context.storage.callCollection(
+        'array.from',
+        empty(context),
+        items,
       );
+      return capture(context, unwrap(result), empty(context));
     },
-    empty(context: Context): Value<ArrayValue<E> | null, 'array'> {
-      return context.capture(null, layout);
-    },
+    empty,
   };
 }
 
-/** Matrix construction uses the same element validation and size limits as Tea. */
-export function matrix<E extends Value<unknown>>(layout: number) {
+/** Matrix construction shares the array element contract and checks dimensions. */
+export function matrix<E extends Value<unknown>>(element: E) {
+  const empty = (context?: Context): Value<MatrixValue<E> | null, 'matrix'> =>
+    new Value(null, 'matrix', context, {element});
   return {
     new(
       context: Context,
@@ -701,31 +810,33 @@ export function matrix<E extends Value<unknown>>(layout: number) {
             initial: E,
           ]
     ): Value<MatrixValue<E> | null, 'matrix'> {
-      const args = shape.map(unwrap);
-      return context.capture(
-        context.storage.callCollection('matrix.new', layout, args),
-        layout,
+      const result = context.storage.callCollection(
+        'matrix.new',
+        empty(context),
+        shape,
       );
+      return capture(context, unwrap(result), empty(context));
     },
-    empty(context: Context): Value<MatrixValue<E> | null, 'matrix'> {
-      return context.capture(null, layout);
-    },
+    empty,
   };
 }
 
-/** Ordered-map constructors preserve the declared key and item domains. */
+/** Ordered maps retain typed keys and missing values alongside persistent backing. */
 export function map<Key extends Value<unknown>, Item extends Value<unknown>>(
-  layout: number,
+  key: Key,
+  element: Item,
 ) {
+  const empty = (context?: Context): Value<MapValue<Key, Item> | null, 'map'> =>
+    new Value(null, 'map', context, {key, element});
   return {
     new(context: Context): Value<MapValue<Key, Item> | null, 'map'> {
-      return context.capture(
-        context.storage.callCollection('map.new', layout, []),
-        layout,
+      const result = context.storage.callCollection(
+        'map.new',
+        empty(context),
+        [],
       );
+      return capture(context, unwrap(result), empty(context));
     },
-    empty(context: Context): Value<MapValue<Key, Item> | null, 'map'> {
-      return context.capture(null, layout);
-    },
+    empty,
   };
 }

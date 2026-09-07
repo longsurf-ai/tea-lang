@@ -21,7 +21,7 @@ import {encodeSchema, decodeSchema} from '../runtime/io';
 import {generate} from './codegen';
 import {mustBuild} from '../noder/testing';
 import {outputFields} from '../runtime/output';
-import {fieldOf} from './schema';
+import {fieldOf, schemaSource} from './schema';
 
 const mode: EnumType = {
   kind: TypeKind.Enum,
@@ -62,6 +62,27 @@ function moduleFor(types: readonly Type[]) {
 }
 
 describe('Arrow I/O projection', () => {
+  test('projects colors as nullable RGBA structs with byte channels', () => {
+    const field = fieldOf('color', ColorType, new Map());
+    expect(field.nullable).toBe(true);
+    expect(field.metadata.get('tea:type')).toBe('color');
+    expect(
+      field.type.children.map((channel: Field) => [
+        channel.name,
+        channel.type.toString(),
+        channel.nullable,
+      ]),
+    ).toEqual([
+      ['r', 'Uint8', false],
+      ['g', 'Uint8', false],
+      ['b', 'Uint8', false],
+      ['a', 'Uint8', false],
+    ]);
+    const schema = new Schema([field]);
+    expect(decodeSchema(encodeSchema(schema))).toEqual(schema);
+    expect(schemaSource(schema)).toContain('new Uint8()');
+  });
+
   test('retains scalar semantics, nullability and canonical nominal identities', () => {
     const module = moduleFor([
       IntType,
@@ -79,7 +100,7 @@ describe('Arrow I/O projection', () => {
       'Float64',
       'Bool',
       'Utf8',
-      'Utf8',
+      'Struct<{r:Uint8, g:Uint8, b:Uint8, a:Uint8}>',
       'Utf8',
       'Struct<{prices:List<Float64>, mode:Utf8}>',
     ]);
@@ -100,11 +121,7 @@ describe('Arrow I/O projection', () => {
     expect(JSON.parse(fields[5].metadata.get('tea:members')!)).toEqual([
       {name: 'fast', title: 'Fast'},
     ]);
-    expect(
-      module.state.layout[module.outputs.declarations[6].layout],
-    ).toMatchObject({
-      typeId: 'user.Mode',
-    });
+    expect(module.state).not.toHaveProperty('layout');
   });
 
   test('projects complete list, tuple, matrix, map and resource fields through IPC', () => {
@@ -224,9 +241,7 @@ test('one Arrow schema owns set and append declarations and their unified IDs', 
     ['effect0', 'append'],
     ['output0', 'set'],
   ]);
-  expect(
-    module.outputs.declarations.map(output => Object.keys(output).sort()),
-  ).toEqual([['layout'], ['layout']]);
+  expect(Object.keys(module.outputs)).toEqual(['schema']);
   expect(source).toContain('ctx.outputs.effect0.append(');
   expect(source).toContain('ctx.outputs.output0.set(');
   expect(source.indexOf('ctx.outputs.effect0.append(')).toBeLessThan(

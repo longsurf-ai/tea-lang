@@ -16,8 +16,8 @@ import {csvStream, executeTestModule} from './batch';
 import {
   type CorpusCase,
   type ExpectedBinding,
+  type ExpectedEmission,
   type ExpectedReference,
-  type JsonScalar,
   parseDeviations,
   parseManifest,
   parseReference,
@@ -119,7 +119,7 @@ function expectInputs(
 
 function expectValue(
   actual: unknown,
-  expected: JsonScalar,
+  expected: ExpectedEmission['value'],
   channelType: string,
   tolerance: ExpectedReference['tolerance'],
   label: string,
@@ -143,7 +143,7 @@ function expectValue(
     expect(Math.abs(n - expected), label).toBeLessThanOrEqual(limit);
     return;
   }
-  expect(actual, label).toBe(expected);
+  expect(actual, label).toEqual(expected);
 }
 
 async function runCase(entry: CorpusCase): Promise<{
@@ -288,6 +288,43 @@ async function runCase(entry: CorpusCase): Promise<{
 }
 
 describe('execution conformance corpus', () => {
+  test('color references require exact RGBA byte records', () => {
+    const reference = {
+      version: 1,
+      oracle: {kind: 'tea-contract', description: 'RGBA bytes', references: []},
+      tolerance: {absolute: 0, relative: 0},
+      outputs: [{name: 'color', type: 'color'}],
+      rows: [
+        {
+          row: 0,
+          emissions: [
+            {name: 'color', provisional: false, value: null as unknown},
+          ],
+        },
+      ],
+      deviations: [],
+    };
+    const emission = reference.rows[0].emissions[0];
+    for (const value of [null, {r: 255, g: 82, b: 82, a: 255}]) {
+      emission.value = value;
+      expect(
+        parseReference(reference, 'color').rows[0].emissions[0].value,
+      ).toEqual(value);
+    }
+    for (const value of [
+      '#FF5252',
+      {r: 255, g: 82, b: 82},
+      {r: 255, g: 82, b: 82, a: 256},
+      {r: 255, g: 82, b: 82, a: -1},
+      {r: 255, g: 82, b: 82, a: 0.5},
+      {r: 255, g: 82, b: 82, a: NaN},
+      {r: 255, g: 82, b: 82, a: 255, extra: true},
+    ]) {
+      emission.value = value;
+      expect(() => parseReference(reference, 'color')).toThrow();
+    }
+  });
+
   test('raw finite-or-na checks distinguish numeric values from strings', () => {
     expectFiniteOrNa(['Infinity', '-Infinity', NaN, [0]], 'nested');
     expect(() => expectFiniteOrNa(Infinity, 'positive')).toThrow(

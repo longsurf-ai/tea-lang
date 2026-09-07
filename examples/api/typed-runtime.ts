@@ -1,10 +1,10 @@
+// Handwritten runtime example, equivalent to typed-runtime.tea; not compiler output.
 // Run after `npm run build:package`: node examples/api/typed-runtime.ts
 import {Field, Float64, Schema} from 'apache-arrow';
 import {from} from 'rxjs';
 import {createNode, DataStream} from 'tea';
 import {
   type Context,
-  type Frame,
   type Input,
   Module,
   RUNTIME_ABI_VERSION,
@@ -14,11 +14,11 @@ import {
   outputSchema,
 } from 'tea/runtime';
 
-type Sum = Frame<{total: Series<number, 'float'>}>;
+type Sum = {locals: {total: Series<number, 'float'>}; calls: {}};
 type Program = Context<
   {lag: Value<number, 'int'>},
   {series: {close: Input<number, 'float'>; open: Input<number, 'float'>}},
-  Frame<{}, {close: Sum; open: Sum}>,
+  {locals: {}; calls: {close: Sum; open: Sum}},
   {
     output0: {set(value: Value<number, 'float'>): void};
     output1: {set(value: Value<number, 'float'>): void};
@@ -78,7 +78,6 @@ export const program = new Module<Program>(
       },
     ],
     state: {
-      layout: [{kind: 'number', numeric: 'float'}],
       frames: [
         {
           locals: [],
@@ -89,7 +88,12 @@ export const program = new Module<Program>(
         },
         {
           locals: [
-            {name: 'total', storage: 'var', depth: {kind: 'none'}, layout: 0},
+            {
+              name: 'total',
+              storage: 'var',
+              depth: {kind: 'none'},
+              empty: float(NaN),
+            },
           ],
           subs: [],
         },
@@ -110,7 +114,6 @@ export const program = new Module<Program>(
             ),
         ),
       ),
-      declarations: [{layout: 0}, {layout: 0}, {layout: 0}],
     },
     requests: [],
   },

@@ -39,6 +39,7 @@ import {
   TypeKind,
   typesEqual,
   type ConstValue,
+  type EnumType,
   type Type,
 } from '../ir/type';
 import {
@@ -48,9 +49,8 @@ import {
   walkIrExpr,
 } from '../ir/visit';
 import {isHistoryOffset, RUNTIME_ABI_VERSION} from '../runtime/module-abi';
-import type {Builtin, Depth, FrameLayout, Request} from '../runtime/module-abi';
+import type {Depth, Request} from '../runtime/module-abi';
 import type {Scalar} from '../runtime/value';
-import type {StorageType} from '../runtime/storage-types';
 import {
   captureArguments,
   coerce,
@@ -86,8 +86,7 @@ export function generate(program: Program): string {
   const root = new Generator(program, 'program', emitter).moduleBody();
   const body = [
     ...emitter.types.values(),
-    `const layouts = ${json(emitter.layouts)} as const;`,
-    ...emitter.factories.values(),
+    ...emitter.factoryLines,
     ...emitter.childDecls,
     ...root,
     'export default program;',
@@ -95,13 +94,14 @@ export function generate(program: Program): string {
   ].join('\n');
   const values = [
     'Module',
-    'Value',
+    'Color',
     'int',
     'float',
     'bool',
     'text',
     'color',
     'enumeration',
+    'resource',
     'struct',
     'array',
     'matrix',
@@ -118,6 +118,7 @@ export function generate(program: Program): string {
     'Schema',
     'Field',
     'Float64',
+    'Uint8',
     'Bool',
     'Utf8',
     'List',
@@ -126,8 +127,8 @@ export function generate(program: Program): string {
     'TimestampMillisecond',
   ];
   const types = [
+    'Value',
     'Context',
-    'Frame',
     'Input',
     'Series',
     'Ref',
@@ -152,15 +153,27 @@ export function generate(program: Program): string {
     .createPrinter(
       {newLine: ts.NewLineKind.LineFeed},
       {
-        substituteNode: (_, node) =>
-          ts.isStringLiteral(node) &&
-          node.parent !== undefined &&
-          (ts.isPropertyAssignment(node.parent) ||
-            ts.isPropertySignature(node.parent)) &&
-          node.parent.name === node &&
-          /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(node.text)
+        substituteNode: (_, node) => {
+          if (
+            ts.isStringLiteral(node) &&
+            node.text === '__proto__' &&
+            node.parent !== undefined &&
+            ts.isPropertyAssignment(node.parent) &&
+            node.parent.name === node
+          )
+            return ts.factory.createComputedPropertyName(
+              ts.factory.createStringLiteral(node.text),
+            );
+          return ts.isStringLiteral(node) &&
+            node.parent !== undefined &&
+            (ts.isPropertyAssignment(node.parent) ||
+              ts.isPropertySignature(node.parent) ||
+              ts.isEnumMember(node.parent)) &&
+            node.parent.name === node &&
+            /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(node.text)
             ? ts.factory.createIdentifier(node.text)
-            : node,
+            : node;
+        },
       },
     )
     .printFile(source);
@@ -168,17 +181,40 @@ export function generate(program: Program): string {
 
 class ModuleEmitter {
   readonly childDecls: string[] = [];
-  readonly layouts: StorageType[] = [];
   readonly types = new Map<Type, string>();
   readonly factories = new Map<number, string>();
-  private readonly layoutTypes: Type[] = [];
+  private readonly namedTypes: Type[] = [];
   private childCounter = 0;
 
-  constructor(private readonly nominalIds: ReadonlyMap<Type, string>) {}
+  readonly nominalIds: Map<Type, string>;
+
+  constructor(nominalIds: ReadonlyMap<Type, string>) {
+    this.nominalIds = new Map(nominalIds);
+  }
+
+  get factoryLines(): string[] {
+    const depth = (type: Type): number => {
+      if (type.kind === TypeKind.Array || type.kind === TypeKind.Matrix)
+        return 1 + depth(type.elem);
+      if (type.kind === TypeKind.Map)
+        return 1 + Math.max(depth(type.key), depth(type.value));
+      if (type.kind === TypeKind.Tuple)
+        return 1 + Math.max(0, ...type.elems.map(depth));
+      return 0;
+    };
+    return [...this.factories.entries()]
+      .sort(([a], [b]) => depth(this.namedTypes[a]) - depth(this.namedTypes[b]))
+      .map(([, source]) => source);
+  }
 
   kindOf(type: Type): string {
+    if (
+      (type.kind === TypeKind.Enum || type.kind === TypeKind.Struct) &&
+      !this.nominalIds.has(type)
+    )
+      this.nominalIds.set(type, `${type.name}#${this.nameId(type)}`);
     return type.kind === TypeKind.Enum || type.kind === TypeKind.Struct
-      ? (this.nominalIds.get(type) ?? type.name)
+      ? (this.nominalIds.get(type) ?? `${type.name}#${this.nameId(type)}`)
       : [
             TypeKind.Line,
             TypeKind.Label,
@@ -204,17 +240,24 @@ class ModuleEmitter {
       case TypeKind.Bool:
         return 'boolean';
       case TypeKind.String:
-      case TypeKind.Color:
         return 'string | null';
+      case TypeKind.Color:
+        return 'Color | null';
       case TypeKind.Enum:
-        return `${type.members.map(member => json(member.name)).join(' | ')} | null`;
+        return `${this.enumOf(type)} | null`;
       case TypeKind.Struct: {
-        const name = `${identifier(type.name)}Shape${this.layoutOf(type)}`;
+        const name = `${identifier(type.name)}${this.nameId(type)}`;
+        const brand = `${name}Tag`;
         if (!this.types.has(type)) {
           this.types.set(type, '');
           this.types.set(
             type,
-            `type ${name} = {${type.fields.map(field => `readonly ${json(field.name)}: ${this.typeOf(field.type)}`).join('; ')}};`,
+            `const ${brand} = Symbol(${json(type.name)});
+class ${name} {
+  declare readonly [${brand}]: void;
+  ${type.fields.map(field => `${field.name === 'constructor' ? `[${json(field.name)}]` : json(field.name)}: ${this.typeOf(field.type)} = ${this.emptyOf(field.type, 'undefined')};`).join('\n')}
+  constructor(fields?: Omit<${name}, typeof ${brand}>) { if (fields) Object.assign(this, fields); }
+}`,
           );
         }
         return `Ref<${name}> | null`;
@@ -234,7 +277,6 @@ class ModuleEmitter {
       case TypeKind.Polyline:
       case TypeKind.Linefill:
         return 'ResourceHandle | null';
-        return 'number';
       default:
         return fatal(
           `non-runtime type ${type.kind} reached TypeScript projection`,
@@ -254,15 +296,33 @@ class ModuleEmitter {
         return `text(${raw})`;
       case TypeKind.Color:
         return `color(${raw})`;
-      case TypeKind.Enum:
-        return `enumeration<${type.members.map(member => json(member.name)).join(' | ')}, ${json(this.kindOf(type))}>(${raw} as ${this.rawType(type)}, ${json(this.kindOf(type))})`;
-        return `int(${raw})`;
+      case TypeKind.Enum: {
+        const name = this.enumOf(type);
+        const member = type.members.find(member => json(member.name) === raw);
+        const value =
+          member === undefined
+            ? `${raw} as ${name} | null`
+            : property(name, member.name);
+        return `enumeration<${name}, ${json(this.kindOf(type))}>(${value}, ${json(this.kindOf(type))}, ${this.enumOf(type)})`;
+      }
       default:
-        return `new ${this.typeOf(type)}(${raw}, ${json(this.kindOf(type))})`;
+        return `resource(${raw}, ${json(this.kindOf(type))})`;
     }
   }
 
-  emptyOf(type: Type): string {
+  private enumOf(type: EnumType): string {
+    const name = `${identifier(type.name)}Enum${this.nameId(type)}`;
+    if (!this.types.has(type)) {
+      this.types.set(
+        type,
+        `enum ${name} {${type.members.map(member => `${json(member.name)} = ${json(member.name)}`).join(', ')}}
+${type.members.some(member => member.name === '__proto__') ? `Object.defineProperty(${name}, "__proto__", {value: "__proto__", enumerable: true});` : ''}`,
+      );
+    }
+    return name;
+  }
+
+  emptyOf(type: Type, context = 'ctx'): string {
     switch (type.kind) {
       case TypeKind.Void:
         return 'undefined';
@@ -276,33 +336,34 @@ class ModuleEmitter {
       case TypeKind.Matrix:
       case TypeKind.Map:
       case TypeKind.Tuple:
-        return `${this.factoryOf(type)}.empty(ctx)`;
+        return `${this.factoryOf(type)}.empty(${context})`;
       default:
         return this.valueOf(type, 'null');
     }
   }
 
   factoryOf(type: Type): string {
-    const id = this.layoutOf(type);
+    const id = this.nameId(type);
     const name = `${type.kind === TypeKind.Struct ? identifier(type.name) : type.kind}Type${id}`;
     if (!this.factories.has(id)) {
+      this.factories.set(id, '');
       let expression: string;
       switch (type.kind) {
         case TypeKind.Struct:
           this.rawType(type);
-          expression = `struct<${identifier(type.name)}Shape${id}, ${json(this.kindOf(type))}>(${id}, ${json(this.kindOf(type))})`;
+          expression = `struct<${identifier(type.name)}${id}, ${json(this.kindOf(type))}>(${identifier(type.name)}${id}, ${json(this.kindOf(type))}, ${16 + type.fields.reduce((sum, field) => sum + this.byteSize(field.type), 0)})`;
           break;
         case TypeKind.Array:
-          expression = `array<${this.typeOf(type.elem)}>(${id})`;
+          expression = `array<${this.typeOf(type.elem)}>(${this.emptyOf(type.elem, 'undefined')})`;
           break;
         case TypeKind.Matrix:
-          expression = `matrix<${this.typeOf(type.elem)}>(${id})`;
+          expression = `matrix<${this.typeOf(type.elem)}>(${this.emptyOf(type.elem, 'undefined')})`;
           break;
         case TypeKind.Map:
-          expression = `map<${this.typeOf(type.key)}, ${this.typeOf(type.value)}>(${id})`;
+          expression = `map<${this.typeOf(type.key)}, ${this.typeOf(type.value)}>(${this.emptyOf(type.key, 'undefined')}, ${this.emptyOf(type.value, 'undefined')})`;
           break;
         case TypeKind.Tuple:
-          expression = `tuple<readonly [${type.elems.map(type => this.typeOf(type)).join(', ')}]>(${id})`;
+          expression = `tuple<readonly [${type.elems.map(type => this.typeOf(type)).join(', ')}]>([${type.elems.map(type => this.emptyOf(type, 'undefined')).join(', ')}])`;
           break;
         default:
           return fatal(`no aggregate factory for ${type.kind}`);
@@ -312,89 +373,25 @@ class ModuleEmitter {
     return name;
   }
 
-  layoutOf(type: Type): number {
-    const existing = this.layoutTypes.findIndex(candidate =>
+  private nameId(type: Type): number {
+    const existing = this.namedTypes.findIndex(candidate =>
       typesEqual(candidate, type),
     );
-    if (existing >= 0) {
-      return existing;
-    }
-
-    const id = this.layouts.length;
-    this.layoutTypes.push(type);
-    // Reserve before recursion: Node { array<Node> children } is finite at
-    // runtime even though its static layout graph has a collection cycle.
-    this.layouts.push({kind: 'boolean'});
-    this.layouts[id] = this.buildLayout(type);
-    return id;
+    if (existing >= 0) return existing;
+    this.namedTypes.push(type);
+    return this.namedTypes.length - 1;
   }
 
-  private buildLayout(type: Type): StorageType {
-    switch (type.kind) {
-      case TypeKind.Int:
-      case TypeKind.Float:
-        return {
-          kind: 'number',
-          numeric: type.kind === TypeKind.Int ? 'int' : 'float',
-        };
-      case TypeKind.Bool:
-        return {kind: 'boolean'};
-      case TypeKind.String:
-      case TypeKind.Color:
-        return {
-          kind: 'nullable-scalar',
-          scalar: type.kind === TypeKind.String ? 'string' : 'color',
-        };
-      case TypeKind.Enum:
-        return {
-          kind: 'enum',
-          name: type.name,
-          ...(this.nominalIds.has(type)
-            ? {typeId: this.nominalIds.get(type)}
-            : {}),
-          members: type.members.map(member => member.name),
-        };
-      case TypeKind.Line:
-      case TypeKind.Label:
-      case TypeKind.Box:
-      case TypeKind.Table:
-      case TypeKind.Polyline:
-      case TypeKind.Linefill:
-        return {kind: 'resource', handle: type.kind};
-      case TypeKind.Struct:
-        return {
-          kind: 'struct',
-          name: type.name,
-          ...(this.nominalIds.has(type)
-            ? {typeId: this.nominalIds.get(type)}
-            : {}),
-          fields: type.fields.map(field => ({
-            name: field.name,
-            layout: this.layoutOf(field.type),
-          })),
-        };
-      case TypeKind.Array:
-        return {kind: 'array', element: this.layoutOf(type.elem)};
-      case TypeKind.Matrix:
-        return {kind: 'matrix', element: this.layoutOf(type.elem)};
-      case TypeKind.Map:
-        return {
-          kind: 'map',
-          key: this.layoutOf(type.key),
-          value: this.layoutOf(type.value),
-        };
-      case TypeKind.Tuple:
-        return {
-          kind: 'tuple',
-          elements: type.elems.map(element => this.layoutOf(element)),
-        };
-      case TypeKind.Na:
-        return fatal('uncontextualized na type reached layout projection');
-      case TypeKind.Invalid:
-      case TypeKind.Void:
-      case TypeKind.Func:
-        return fatal(`non-runtime type ${type.kind} reached layout projection`);
-    }
+  private byteSize(type: Type): number {
+    if (type.kind === TypeKind.Array || type.kind === TypeKind.Matrix)
+      return 32;
+    if (type.kind === TypeKind.Map) return 24;
+    if (type.kind === TypeKind.Tuple)
+      return (
+        16 +
+        type.elems.reduce((sum, element) => sum + this.byteSize(element), 0)
+      );
+    return 8;
   }
 
   emitChild(
@@ -514,7 +511,6 @@ class Generator {
       outputIds: this.outputIds,
       funcIds: this.funcIds,
       requestIds: this.requestIds,
-      layoutOf: type => this.emitter.layoutOf(type),
       currentFid: fid,
       noteCallSite: (siteFid, slot, callee) => {
         const frame = this.topology.frames[siteFid];
@@ -552,11 +548,10 @@ class Generator {
   }
 
   // The module object's body lines (between the braces). Every node is a
-  // complete Module; the request tree shares the one emitted layout table.
+  // complete Module; request children share the emitted class/enum declarations.
   moduleBody(): string[] {
     // Frame ownership and call sites already come from frameTopologyOf().
-    // Lower code first to collect its helpers and physical value layouts,
-    // then assemble the preparation description using those same IDs.
+    // Lower code first so module construction can reference its declarations.
     const bindLines = this.lowerBind();
     const funcBodies = this.lowerFuncs();
     const mainLines: string[] = [];
@@ -580,17 +575,15 @@ class Generator {
     );
     out.push(`  abi: ${RUNTIME_ABI_VERSION},`);
     out.push(
-      `  inputs: {\n    schema: ${schemaSource(data.inputs.schema)},\n    series: ${json(data.inputs.series)},\n    builtins: ${json(data.inputs.builtins)},\n  },`,
+      `  inputs: {\n    schema: ${schemaSource(data.inputs.schema)},\n    series: ${json(data.inputs.series)},\n    builtins: [${data.inputs.builtins.join(', ')}],\n  },`,
     );
     out.push(`  parameters: ${json(data.parameters)},`);
+    out.push(`  state: {\n    frames: [${data.frames.join(', ')}],\n  },`);
     out.push(
-      `  state: {\n    layout: layouts,\n    frames: ${json(data.frames)},\n  },`,
+      `  outputs: {\n    schema: ${schemaSource(data.outputs.schema)},\n  },`,
     );
     out.push(
-      `  outputs: {\n    schema: ${schemaSource(data.outputs.schema)},\n    declarations: ${json(data.outputs.declarations)},\n  },`,
-    );
-    out.push(
-      `  requests: [${data.requests.map((request, id) => `${json(request).slice(0, -1)}, "module": ${children[id].ref}}`).join(', ')}],`,
+      `  requests: [${data.requests.map((request, id) => `${request.slice(0, -1)}, "module": ${children[id].ref}}`).join(', ')}],`,
     );
     out.push(
       `}, ${this.moduleRef}_main, (module, contextConstants) => {`,
@@ -616,7 +609,7 @@ class Generator {
   private declarations(): string[] {
     const out = this.topology.frames.map(
       frame =>
-        `type ${this.frameName(frame.id)} = Frame<{${frame.locals.map(name => `readonly ${json(this.localKeys.get(name))}: ${this.emitter.typeOf(name.type, 'Series')}`).join('; ')}}, {${frame.children.map(child => `readonly ${json(this.callKeys.get(`${frame.id}:${child.slot}`))}: ${this.frameName(child.frameId)}`).join('; ')}}>;`,
+        `type ${this.frameName(frame.id)} = {readonly locals: {${frame.locals.map(name => `readonly ${json(this.localKeys.get(name))}: ${this.emitter.typeOf(name.type, 'Series')}`).join('; ')}}; readonly calls: {${frame.children.map(child => `readonly ${json(this.callKeys.get(`${frame.id}:${child.slot}`))}: ${this.frameName(child.frameId)}`).join('; ')}}};`,
     );
     const params = this.globalParams.map(
       param =>
@@ -644,7 +637,7 @@ class Generator {
         `readonly ${json(output.name)}: {${output.mode}(value: ${this.emitter.typeOf(output.valueType)}): void}`,
     );
     out.push(
-      `export type ${this.contextName()} = Context<{${params.join('; ')}}, {readonly series: {${series.join('; ')}}; readonly builtins: {${builtins.join('; ')}}; readonly children: {${children.join('; ')}}}, ${this.frameName(0)}, {${outputs.join('; ')}}>;`,
+      `export type ${this.contextName()} = Context<{${params.join('; ')}}, {readonly series: {${series.join('; ')}}; readonly builtins: {${builtins.join('; ')}}; readonly children: {${children.join('; ')}}}, ${this.frameName(0)}, {${outputs.join('; ')}}};`,
     );
     return out;
   }
@@ -1027,16 +1020,14 @@ class Generator {
       }
     }
 
-    const builtins: Builtin[] = this.builtins.map(input => ({
-      source: input.source,
-      constant: qualifierLE(input.qualifier, Qualifier.Simple),
-      layout: this.emitter.layoutOf(input.type),
-      depth: depthOf(input.depth),
-    }));
+    const builtins = this.builtins.map(
+      input =>
+        `{source:${json(input.source)},constant:${qualifierLE(input.qualifier, Qualifier.Simple)},empty:${this.emitter.emptyOf(input.type, 'undefined')},depth:${json(depthOf(input.depth))}}`,
+    );
 
     const parameters = parametersOf(
       this.globalParams,
-      this.program.nominalIds,
+      this.emitter.nominalIds,
     ).map((parameter, pid) => {
       const param = this.globalParams[pid];
       if (param === undefined) return fatal(`missing global parameter ${pid}`);
@@ -1053,18 +1044,14 @@ class Generator {
         output.mode === 'append'
           ? {kind: TypeKind.Array, elem: output.valueType}
           : output.valueType,
-        this.program.nominalIds,
+        this.emitter.nominalIds,
       );
       return value.clone({
         nullable: output.mode === 'set',
         metadata: new Map([...value.metadata, ['tea:write', output.mode]]),
       });
     });
-    const declarations = this.program.outputs.map(output => ({
-      layout: this.emitter.layoutOf(output.valueType),
-    }));
-
-    const state: FrameLayout[] = this.topology.frames.map(frame => {
+    const state = this.topology.frames.map(frame => {
       const slotCount =
         frame.children.length === 0
           ? 0
@@ -1082,28 +1069,13 @@ class Generator {
           name: this.callKeys.get(`${frame.id}:${slot}`)!,
         });
       }
-      return {
-        locals: frame.locals.map(name => ({
-          name: this.localKeys.get(name)!,
-          storage: name.storage,
-          depth: depthOf(name.depth),
-          layout: this.emitter.layoutOf(name.type),
-        })),
-        subs,
-      };
+      return `{locals:[${frame.locals.map(name => `{name:${json(this.localKeys.get(name)!)},storage:${json(name.storage)},depth:${json(depthOf(name.depth))},empty:${this.emitter.emptyOf(name.type, 'undefined')}}`).join(', ')}],subs:${json(subs)}}`;
     });
 
-    const requests = this.requests.map((edge, rid) => {
-      return {
-        name: edge.name,
-        mode: edge.merge.mode,
-        depth: depthOf(edge.depth),
-        resultSlot: children[rid].resultSlot,
-        resultLayout: this.emitter.layoutOf(edge.captureType),
-        layout: this.emitter.layoutOf(edge.resultType),
-        context: staticRequestContext(edge),
-      };
-    });
+    const requests = this.requests.map(
+      (edge, rid) =>
+        `{name:${json(edge.name)},mode:${json(edge.merge.mode)},depth:${json(depthOf(edge.depth))},resultSlot:${children[rid].resultSlot},resultEmpty:${this.emitter.emptyOf(edge.captureType, 'undefined')},empty:${this.emitter.emptyOf(edge.resultType, 'undefined')},context:${json(staticRequestContext(edge))}}`,
+    );
 
     const schema = new Schema(
       [
@@ -1112,13 +1084,13 @@ class Generator {
             .map(input => input.id)
             .filter((id): id is string => id !== null),
         ),
-      ].map(name => fieldOf(name, FloatType, this.program.nominalIds)),
+      ].map(name => fieldOf(name, FloatType, this.emitter.nominalIds)),
     );
     return {
       inputs: {schema, series, builtins},
       parameters,
       frames: state,
-      outputs: {schema: outputSchema(fields), declarations},
+      outputs: {schema: outputSchema(fields)},
       requests,
     };
   }

@@ -53,7 +53,6 @@ describe('finite-or-na helpers', () => {
       outputIds: new Map(),
       funcIds: new Map(),
       requestIds: new Map(),
-      layoutOf: () => 0,
       currentFid: 0,
       noteCallSite() {},
       typeOf: () => '',

@@ -1,4 +1,4 @@
-// Purpose: Shared collection runtime guards, deterministic limits, and sealed-payload tracing helpers.
+// Shared bounds and ownership checks for typed collection operations.
 
 import {fatal} from '../../../base/print';
 import {ExecutionError} from '../../errors';
@@ -6,19 +6,14 @@ import {
   isArrayValue,
   isMapValue,
   isMatrixValue,
-  type ArrayValue,
   type CollectionValue,
-  type MapValue,
-  type MatrixValue,
   type Stored,
 } from '../../value';
 import type {Heap, HeapTransaction} from '../heap';
-import {type StorageType, StorageTypes} from '../../storage-types';
+import type {Value} from '../value';
 
 export interface CollectionReadContext {
   readonly transaction: Pick<Heap, 'read'>;
-  readonly layouts: StorageTypes;
-  readonly assertValue: (layout: number, value: Stored, where: string) => void;
 }
 
 export interface CollectionContext extends CollectionReadContext {
@@ -26,138 +21,82 @@ export interface CollectionContext extends CollectionReadContext {
   readonly maxElements: number;
 }
 
-export function count(value: Stored, what: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+export function count(value: Value<unknown>, what: string): number {
+  if (typeof value.value !== 'number' || !Number.isSafeInteger(value.value))
     throw new ExecutionError('INVALID_SHAPE', `${what} must be a safe integer`);
-  }
-  return value;
+  return value.value;
 }
 
-export function shape(value: Stored, what: string): number {
+export function shape(value: Value<unknown>, what: string): number {
   const size = count(value, what);
-  if (size < 0) {
+  if (size < 0)
     throw new ExecutionError('INVALID_SHAPE', `${what} must be non-negative`);
-  }
   return size;
 }
 
-export function index(value: Stored, size: number, what = 'index'): number {
+export function index(
+  value: Value<unknown>,
+  size: number,
+  what = 'index',
+): number {
   const result = count(value, what);
-  if (result < 0 || result >= size) {
+  if (result < 0 || result >= size)
     throw new ExecutionError(
       'INDEX_OUT_OF_BOUNDS',
       `${what} ${result} is outside [0, ${size})`,
     );
-  }
   return result;
 }
 
 export function assertLimit(size: number, max: number): void {
-  if (!Number.isSafeInteger(size) || size < 0 || size > max) {
+  if (!Number.isSafeInteger(size) || size < 0 || size > max)
     throw new ExecutionError(
       'COLLECTION_LIMIT_EXCEEDED',
       `collection size ${size} exceeds limit ${max}`,
     );
-  }
 }
 
-export function assertExactLayout(
-  actual: number,
-  expected: number,
-  what: string,
+export function assertType(
+  ctx: CollectionReadContext,
+  expected: Value<unknown>,
+  value: Value<unknown>,
+  where: string,
 ): void {
-  if (actual !== expected) {
-    fatal(`${what} uses result layout ${actual}, expected ${expected}`);
-  }
-}
-
-export function assertScalarResultLayout(
-  layouts: StorageTypes,
-  id: number,
-  expected: 'int' | 'boolean',
-  what: string,
-): void {
-  const layout = layouts.layout(id);
-  const matches =
-    expected === 'boolean'
-      ? layout.kind === 'boolean'
-      : layout.kind === 'number' && layout.numeric === 'int';
-  if (!matches) {
-    fatal(
-      `${what} uses ${layout.kind} result layout ${id}, expected ${expected}`,
+  if (!expected.sameType(value))
+    throw new ExecutionError(
+      'VALUE_LAYOUT_MISMATCH',
+      `${where} expects ${expected.kind}, received ${value.kind}`,
     );
-  }
-}
-
-export function collectionLayout(
-  layouts: StorageTypes,
-  id: number,
-  kind: 'array',
-): Extract<StorageType, {kind: 'array'}>;
-export function collectionLayout(
-  layouts: StorageTypes,
-  id: number,
-  kind: 'matrix',
-): Extract<StorageType, {kind: 'matrix'}>;
-export function collectionLayout(
-  layouts: StorageTypes,
-  id: number,
-  kind: 'map',
-): Extract<StorageType, {kind: 'map'}>;
-export function collectionLayout(
-  layouts: StorageTypes,
-  id: number,
-  kind: 'array' | 'matrix' | 'map',
-): Extract<StorageType, {kind: 'array' | 'matrix' | 'map'}> {
-  const layout = layouts.layout(id);
-  if (layout.kind !== kind) {
-    return fatal(`layout ${id} is ${layout.kind}, expected ${kind}`);
-  }
-  return layout;
+  expected.assertStored(value.value as Stored, ctx.transaction);
 }
 
 export function requireCollection<C extends CollectionValue['kind']>(
-  ctx: Pick<CollectionContext, 'layouts' | 'assertValue'>,
-  value: Stored,
-  id: number,
+  ctx: CollectionReadContext,
+  value: Value<unknown> | undefined,
   kind: C,
 ): Extract<CollectionValue, {kind: C}> {
-  if (value === null) {
+  if (value === undefined)
+    return fatal(`${kind} operation is missing its receiver`);
+  if (value.value === null)
     throw new ExecutionError('NA_COLLECTION', `${kind} operation on na`);
-  }
-  ctx.assertValue(id, value, `${kind} receiver`);
+  const raw = value.value;
   const matches =
-    (kind === 'array' && isArrayValue(value)) ||
-    (kind === 'matrix' && isMatrixValue(value)) ||
-    (kind === 'map' && isMapValue(value));
-  if (!matches) {
-    return fatal(`layout ${id} validated a non-${kind} collection`);
-  }
-  return value as Extract<CollectionValue, {kind: C}>;
+    (kind === 'array' && isArrayValue(raw)) ||
+    (kind === 'matrix' && isMatrixValue(raw)) ||
+    (kind === 'map' && isMapValue(raw));
+  if (!matches)
+    return fatal(`${kind} operation received a non-${kind} receiver`);
+  value.assertStored(raw as Stored, ctx.transaction);
+  return raw as Extract<CollectionValue, {kind: C}>;
 }
 
-export function arrayValue(
-  layout: number,
-  storage: ArrayValue['storage'],
-  length: number,
-  capacity: number,
-): ArrayValue {
-  return Object.freeze({kind: 'array', layout, storage, length, capacity});
-}
-
-export function matrixValue(
-  layout: number,
-  storage: MatrixValue['storage'],
-  rows: number,
-  columns: number,
-): MatrixValue {
-  return Object.freeze({kind: 'matrix', layout, storage, rows, columns});
-}
-
-export function mapValue(
-  layout: number,
-  storage: MapValue['storage'],
-  size: number,
-): MapValue {
-  return Object.freeze({kind: 'map', layout, storage, size});
+export function requireArgs(
+  operation: string,
+  args: readonly Value<unknown>[],
+  expected: number,
+): void {
+  if (args.length !== expected)
+    fatal(
+      `${operation} received ${args.length} arguments, expected ${expected}`,
+    );
 }

@@ -33,6 +33,15 @@ references, in-place mutable methods, shallow `const`, and transaction rollback.
 Its named output rows are Tea-owned contract values derived from
 [memory-model.md](memory-model.md), not copied runtime output.
 
+On 2026-09-06, the Color output contract changed from hex strings to Arrow RGBA
+structs. The three `aggregate-values.output_color` expectations were explicitly
+converted from `#FF5252` to `{r: 255, g: 82, b: 82, a: 255}`: FF is 255, 52 is
+82, and omitted hex alpha is opaque. Only those three values and the reference
+hash changed; numeric expectations, source/data hashes, and parameter hex
+metadata are unchanged. This is a Tea-owned wire-format migration, not a
+differential language deviation. Color references require exactly four byte
+channels and compare exactly, independently of numeric tolerances.
+
 References identify scalar columns by their declared names and Tea types, and
 each expected emission supplies one value. The conditional cases require lazy
 ternary evaluation: unselected-arm mutations do not execute. The former ordered

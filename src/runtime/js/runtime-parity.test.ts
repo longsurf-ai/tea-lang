@@ -11,25 +11,21 @@ import {Context, type StepInput, type StepResult} from './context';
 import {RUNTIME_ABI_VERSION} from '../module-abi';
 import {testModule, scalar, output} from '../testing';
 import {outputSchema} from '../output';
-import type {Step, WorkspaceFrame} from './state-update';
-import type {StorageType} from '../storage-types';
+import type {Step, FrameState} from './state-update';
+import {array, bool, int, struct, text, unwrap, Value} from './value';
 
-const NUMBER = 0;
-const BOOLEAN = 1;
-const STRING = 2;
-const ARRAY = 3;
-const HOLDER = 4;
-const LAYOUTS = [
-  {kind: 'number', numeric: 'int'},
-  {kind: 'boolean'},
-  {kind: 'nullable-scalar', scalar: 'string'},
-  {kind: 'array', element: NUMBER},
-  {
-    kind: 'struct',
-    name: 'Holder',
-    fields: [{name: 'values', layout: ARRAY}],
-  },
-] as const satisfies readonly StorageType[];
+// Step exposes raw payloads; fixture empties validate their domains at that boundary.
+const NUMBER: Value<unknown> = int(NaN);
+const BOOLEAN: Value<unknown> = bool(false);
+const STRING: Value<unknown> = text(null);
+const ARRAY: Value<unknown> = array(NUMBER).empty();
+class Holder {
+  values = ARRAY;
+  constructor(fields?: {values: typeof ARRAY}) {
+    Object.assign(this, fields);
+  }
+}
+const HOLDER: Value<unknown> = struct(Holder, 'Holder', 48).empty();
 
 function runtime(module: Module): Context {
   return new Context(module.clone().bind());
@@ -55,10 +51,10 @@ function channels(result: StepResult): readonly unknown[] {
   return result.outputs;
 }
 
-function counter(ctx: Step, frame: WorkspaceFrame): Stored {
-  if (ctx.needsInit(frame, 0)) ctx.initialize(frame, 0, 0);
-  ctx.write(frame, 0, Number(ctx.read(frame, 0, 0)) + 1);
-  return ctx.read(frame, 0, 0);
+function counter(ctx: Step, frame: FrameState): Value<unknown> {
+  if (ctx.needsInit(frame, 0)) ctx.initialize(frame, 0, int(0));
+  ctx.write(frame, 0, int(Number(ctx.read(frame, 0, 0)) + 1));
+  return NUMBER.withStored(ctx.read(frame, 0, 0));
 }
 
 const COUNTER_MODULE: Module = testModule({
@@ -70,11 +66,10 @@ const COUNTER_MODULE: Module = testModule({
   inputs: {series: [], builtins: []},
   parameters: [],
   state: {
-    layout: LAYOUTS,
     frames: [
       {locals: [], subs: [{fid: 1}, {fid: 1}]},
       {
-        locals: [{storage: Storage.Var, depth: {kind: 'none'}, layout: NUMBER}],
+        locals: [{storage: Storage.Var, depth: {kind: 'none'}, empty: NUMBER}],
         subs: [],
       },
     ],
@@ -92,34 +87,33 @@ const COUNTER_MODULE: Module = testModule({
 const TYPED_HISTORY_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
   main(ctx, root) {
-    ctx.write(root, 0, 7);
-    ctx.write(root, 1, true);
-    ctx.write(root, 2, 'present');
-    ctx.emit(0, ctx.read(root, 0, 2));
-    ctx.emit(1, ctx.read(root, 1, 2));
-    ctx.emit(2, ctx.read(root, 2, 2));
+    ctx.write(root, 0, int(7));
+    ctx.write(root, 1, bool(true));
+    ctx.write(root, 2, text('present'));
+    ctx.emit(0, NUMBER.withStored(ctx.read(root, 0, 2)));
+    ctx.emit(1, BOOLEAN.withStored(ctx.read(root, 1, 2)));
+    ctx.emit(2, STRING.withStored(ctx.read(root, 2, 2)));
   },
   inputs: {series: [], builtins: []},
   parameters: [],
   state: {
-    layout: LAYOUTS,
     frames: [
       {
         locals: [
           {
             storage: Storage.PerBar,
             depth: {kind: 'const', bars: 2},
-            layout: NUMBER,
+            empty: NUMBER,
           },
           {
             storage: Storage.PerBar,
             depth: {kind: 'const', bars: 2},
-            layout: BOOLEAN,
+            empty: BOOLEAN,
           },
           {
             storage: Storage.PerBar,
             depth: {kind: 'const', bars: 2},
-            layout: STRING,
+            empty: STRING,
           },
         ],
         subs: [],
@@ -141,26 +135,25 @@ const TYPED_HISTORY_MODULE: Module = testModule({
 const TICK_MODULE: Module = testModule({
   abi: RUNTIME_ABI_VERSION,
   main(ctx, root) {
-    if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, 0);
-    if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, 0);
+    if (ctx.needsInit(root, 0)) ctx.initialize(root, 0, int(0));
+    if (ctx.needsInit(root, 1)) ctx.initialize(root, 1, int(0));
     const close = ctx.series(0, 0);
-    ctx.write(root, 0, Number(ctx.read(root, 0, 0)) + close);
-    ctx.write(root, 1, Number(ctx.read(root, 1, 0)) + 1);
-    ctx.write(root, 2, close);
-    ctx.emit(0, ctx.read(root, 0, 0));
-    ctx.emit(1, ctx.read(root, 1, 0));
-    ctx.emit(2, ctx.read(root, 2, 0));
+    ctx.write(root, 0, int(Number(ctx.read(root, 0, 0)) + close));
+    ctx.write(root, 1, int(Number(ctx.read(root, 1, 0)) + 1));
+    ctx.write(root, 2, int(close));
+    ctx.emit(0, NUMBER.withStored(ctx.read(root, 0, 0)));
+    ctx.emit(1, NUMBER.withStored(ctx.read(root, 1, 0)));
+    ctx.emit(2, NUMBER.withStored(ctx.read(root, 2, 0)));
   },
   inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
   parameters: [],
   state: {
-    layout: LAYOUTS,
     frames: [
       {
         locals: [
-          {storage: Storage.Var, depth: {kind: 'none'}, layout: NUMBER},
-          {storage: Storage.Varip, depth: {kind: 'none'}, layout: NUMBER},
-          {storage: Storage.PerBar, depth: {kind: 'none'}, layout: NUMBER},
+          {storage: Storage.Var, depth: {kind: 'none'}, empty: NUMBER},
+          {storage: Storage.Varip, depth: {kind: 'none'}, empty: NUMBER},
+          {storage: Storage.PerBar, depth: {kind: 'none'}, empty: NUMBER},
         ],
         subs: [],
       },
@@ -183,34 +176,43 @@ function arrayStateModule(): Module {
     abi: RUNTIME_ABI_VERSION,
     main(ctx, root) {
       if (ctx.needsInit(root, 0)) {
-        ctx.initialize(root, 0, ctx.callCollection('array.from', ARRAY, [0]));
+        ctx.initialize(
+          root,
+          0,
+          ctx.callCollection('array.from', ARRAY, [int(0)]),
+        );
       }
       if (ctx.needsInit(root, 1)) {
-        ctx.initialize(root, 1, ctx.callCollection('array.from', ARRAY, [0]));
+        ctx.initialize(
+          root,
+          1,
+          ctx.callCollection('array.from', ARRAY, [int(0)]),
+        );
       }
       for (let slot = 0; slot < 2; slot += 1) {
         const mutation = ctx.mutateCollection(
           'array.push',
-          ARRAY,
-          ctx.read(root, slot, 0),
-          [ctx.series(0, 0)],
+          ARRAY.withStored(ctx.read(root, slot, 0)),
+          [int(ctx.series(0, 0))],
         );
-        ctx.write(root, slot, mutation.replacement);
+        ctx.write(root, slot, ARRAY.withStored(mutation.replacement));
         ctx.emit(
           slot,
-          ctx.callCollection('array.size', NUMBER, [mutation.replacement]),
+
+          ctx.callCollection('array.size', NUMBER, [
+            ARRAY.withStored(mutation.replacement),
+          ]),
         );
       }
     },
     inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
     parameters: [],
     state: {
-      layout: LAYOUTS,
       frames: [
         {
           locals: [
-            {storage: Storage.Var, depth: {kind: 'none'}, layout: ARRAY},
-            {storage: Storage.Varip, depth: {kind: 'none'}, layout: ARRAY},
+            {storage: Storage.Var, depth: {kind: 'none'}, empty: ARRAY},
+            {storage: Storage.Varip, depth: {kind: 'none'}, empty: ARRAY},
           ],
           subs: [],
         },
@@ -255,7 +257,7 @@ describe('Context core parity', () => {
     target.dispose();
   });
 
-  test('early local history returns each layout typed empty', () => {
+  test("early local history returns each binding's declared empty", () => {
     const target = runtime(TYPED_HISTORY_MODULE);
     const values = channels(run(target, input()));
     expect(Number.isNaN(values[0] as number)).toBe(true);
@@ -292,12 +294,11 @@ describe('Context core parity', () => {
         if (invoke) ctx.emit(0, counter(ctx, ctx.frame(root, 0)));
       },
       state: {
-        layout: COUNTER_MODULE.state.layout,
         frames: [
           {locals: [], subs: [{fid: 1}]},
           {
             locals: [
-              {storage: Storage.Varip, depth: {kind: 'none'}, layout: NUMBER},
+              {storage: Storage.Varip, depth: {kind: 'none'}, empty: NUMBER},
             ],
             subs: [],
           },
@@ -324,17 +325,16 @@ describe('Context core parity', () => {
       abi: RUNTIME_ABI_VERSION,
       main(ctx, root) {
         if (!invoke) {
-          ctx.emit(0, NaN);
+          ctx.emit(0, int(NaN));
           return;
         }
         const child = ctx.frame(root, 0);
-        ctx.write(child, 0, ctx.series(0, 0));
-        ctx.emit(0, ctx.read(child, 0, 1));
+        ctx.write(child, 0, int(ctx.series(0, 0)));
+        ctx.emit(0, NUMBER.withStored(ctx.read(child, 0, 1)));
       },
       inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
       parameters: [],
       state: {
-        layout: LAYOUTS,
         frames: [
           {locals: [], subs: [{fid: 1}]},
           {
@@ -342,7 +342,7 @@ describe('Context core parity', () => {
               {
                 storage: Storage.PerBar,
                 depth: {kind: 'const', bars: 1},
-                layout: NUMBER,
+                empty: NUMBER,
               },
             ],
             subs: [],
@@ -382,24 +382,44 @@ describe('Context core parity', () => {
           ctx.initialize(
             root,
             0,
-            ctx.newStruct(HOLDER, [
-              ctx.callCollection('array.from', ARRAY, [0]),
-            ]),
+            HOLDER.withStored(
+              ctx.newStruct(
+                new Holder({
+                  values: ARRAY.withStored(
+                    unwrap(ctx.callCollection('array.from', ARRAY, [int(0)])),
+                  ),
+                }),
+                48,
+              ),
+            ),
           );
         }
         const holder = ctx.read(root, 0, 0);
         const current = ctx.mutateCollection(
           'array.push',
-          ARRAY,
-          ctx.structField(holder, HOLDER, 0),
-          [Number(ctx.builtin(0, 0)) + 1],
+          ctx.structField(holder, Holder, 'values', ARRAY),
+          [int(Number(ctx.builtin(0, 0)) + 1)],
         ).replacement;
-        ctx.storeStructField(holder, HOLDER, 0, current);
-        ctx.emit(0, ctx.callCollection('array.size', NUMBER, [current]));
+        ctx.storeStructField(
+          holder,
+          Holder,
+          'values',
+          ARRAY.withStored(current),
+        );
+        ctx.emit(
+          0,
+
+          ctx.callCollection('array.size', NUMBER, [ARRAY.withStored(current)]),
+        );
         if (Number(ctx.builtin(0, 0)) === 0) {
-          ctx.emit(1, NaN);
+          ctx.emit(1, int(NaN));
         } else {
-          const prior = ctx.structField(ctx.read(root, 0, 1), HOLDER, 0);
+          const prior = ctx.structField(
+            ctx.read(root, 0, 1),
+            Holder,
+            'values',
+            ARRAY,
+          );
           ctx.emit(1, ctx.callCollection('array.size', NUMBER, [prior]));
         }
       },
@@ -408,21 +428,20 @@ describe('Context core parity', () => {
         builtins: [
           {
             source: {domain: 'bar', field: 'bar_index'},
-            layout: NUMBER,
+            empty: NUMBER,
             depth: {kind: 'none'},
           },
         ],
       },
       parameters: [],
       state: {
-        layout: LAYOUTS,
         frames: [
           {
             locals: [
               {
                 storage: Storage.Var,
                 depth: {kind: 'const', bars: 1},
-                layout: HOLDER,
+                empty: HOLDER,
               },
             ],
             subs: [],
@@ -452,5 +471,109 @@ describe('Context core parity', () => {
     expect(channels(run(target, input({series: [1]})))).toEqual([2, 3]);
     expect(channels(run(target, input({series: [2]})))).toEqual([3, 4]);
     target.dispose();
+  });
+
+  test('nested skipped calls retain only accepted counters and final array histories', () => {
+    let selected = -1;
+    let fail = false;
+    const module = testModule({
+      abi: RUNTIME_ABI_VERSION,
+      main(step, root) {
+        if (selected < 0) return;
+        const inner = step.frame(step.frame(root, selected), 0);
+        if (step.needsInit(inner, 0)) step.initialize(inner, 0, int(0));
+        if (step.needsInit(inner, 1)) step.initialize(inner, 1, int(0));
+        const value = step.series(0, 0);
+        step.write(inner, 0, int(Number(step.read(inner, 0, 0)) + value));
+        step.write(inner, 1, int(Number(step.read(inner, 1, 0)) + 1));
+        step.write(
+          inner,
+          2,
+          step.callCollection('array.from', ARRAY, [int(value)]),
+        );
+        const previous = step.read(inner, 2, 1);
+        step.emit(0, NUMBER.withStored(step.read(inner, 0, 0)));
+        step.emit(1, NUMBER.withStored(step.read(inner, 1, 0)));
+        step.emit(
+          2,
+          previous === null
+            ? NUMBER
+            : step.callCollection('array.first', NUMBER, [
+                ARRAY.withStored(previous),
+              ]),
+        );
+        if (fail) throw new Error('nested attempt failed');
+      },
+      inputs: {series: [{id: 'close', depth: {kind: 'none'}}], builtins: []},
+      parameters: [],
+      requests: [],
+      outputs: {
+        schema: outputSchema(
+          ['total', 'ticks', 'previous'].map(name =>
+            output(name, scalar(name, 'int')),
+          ),
+        ),
+      },
+      state: {
+        frames: [
+          {locals: [], subs: [{fid: 1}, {fid: 1}]},
+          {locals: [], subs: [{fid: 2}]},
+          {
+            locals: [
+              {storage: Storage.Var, depth: {kind: 'none'}, empty: NUMBER},
+              {storage: Storage.Varip, depth: {kind: 'none'}, empty: NUMBER},
+              {
+                storage: Storage.PerBar,
+                depth: {kind: 'const', bars: 1},
+                empty: ARRAY,
+              },
+            ],
+            subs: [],
+          },
+        ],
+      },
+    });
+    const target = runtime(module);
+    // Independent arithmetic oracle: only final attempts change total/history;
+    // every accepted call increments ticks, and failed attempts do neither.
+    const expected = [0, 1].map(() => ({total: 0, ticks: 0, previous: NaN}));
+    const attempt = (
+      call: number,
+      value: number,
+      provisional: boolean,
+      failed = false,
+    ) => {
+      selected = call;
+      fail = failed;
+      const update = input({series: [value], provisional});
+      if (failed) {
+        expect(() => target.step(update)).toThrow('nested attempt failed');
+        return;
+      }
+      const state = expected[call];
+      expect(target.step(update).outputs).toEqual(
+        state
+          ? [state.total + value, state.ticks + 1, state.previous]
+          : [null, null, null],
+      );
+      if (state) state.ticks++;
+      if (!provisional) {
+        for (const item of expected) item.previous = NaN;
+        if (state) {
+          state.total += value;
+          state.previous = value;
+        }
+      }
+    };
+    try {
+      for (let row = 0; row < 256; row++) {
+        attempt(row % 2, row * 10 + 1, true);
+        attempt(1 - (row % 2), row * 10 + 2, true, true);
+        if (row % 3 === 0) attempt(1 - (row % 2), row * 10 + 3, true);
+        attempt(row % 4 === 0 ? -1 : row % 2, row * 10 + 4, false);
+      }
+    } finally {
+      target.dispose();
+    }
   });
 });

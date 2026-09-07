@@ -145,9 +145,8 @@ describe('Module.bind', () => {
       kind: 'const',
       bars: 4,
     });
-    expect(module.outputs.declarations[0]).toEqual({
-      layout: expect.any(Number),
-    });
+    expect(Object.keys(module.outputs)).toEqual(['schema']);
+    expect(module.outputs.schema.fields.at(-1)?.name).toBe('output0');
   });
 
   test('Node owns the given module and delegates parameter patches to it', () => {

@@ -7,7 +7,6 @@ import {outputFields, type Datum} from '../runtime/output';
 export class OutputCapture {
   schema = new Schema([]);
   fields: readonly Field[] = [];
-  declarations: Module['outputs']['declarations'] = [];
   readonly publications: Datum[] = [];
   readonly emissions: {
     readonly row: number;
@@ -25,7 +24,6 @@ export class OutputCapture {
   declare(declaration: Module['outputs']): void {
     this.schema = declaration.schema;
     this.fields = outputFields(declaration.schema);
-    this.declarations = declaration.declarations;
   }
 
   publish(datum: Datum): void {

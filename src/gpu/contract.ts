@@ -2,7 +2,7 @@
 
 import type {Parameter} from '../runtime/params';
 
-export const GPU_ARTIFACT_ABI_VERSION = 8 as const;
+export const GPU_ARTIFACT_ABI_VERSION = 9 as const;
 export const GPU_WORKGROUP_SIZE_OVERRIDE = 'tea_workgroup_size';
 
 export const GPU_BUFFER_GROUP = 0;
@@ -73,7 +73,7 @@ export interface WgslModule {
 }
 
 export interface WgslResultChannel {
-  /** Index in the embedded module's one output declaration list. */
+  /** Index among the embedded module's Arrow output fields. */
   readonly outputId: number;
   readonly scalar: 'float' | 'int' | 'bool' | 'enum';
   readonly rowCell: number;
@@ -108,7 +108,7 @@ export type WgslCodec =
 
 /**
  * Physical encoding of one append output. Its logical payload field belongs to
- * the embedded JavaScript module's Arrow schema, alongside every set output.
+ * the embedded TypeScript module's Arrow schema, alongside every set output.
  * @example `event.outputId` addresses the same slot passed to runtime.append().
  */
 export interface WgslEvent {

@@ -1,12 +1,12 @@
-// Purpose: Collection ABI dispatcher — routes catalog operations into array, matrix, and ordered-map value implementations under the current Heap transaction.
+// Typed collection operations execute inside the caller's Heap transaction.
 
 import {fatal} from '../../../base/print';
 import {ExecutionError} from '../../errors';
-import {
-  type CollectionEntries,
-  type CollectionMutation,
-  type CollectionMutationOperation,
-  type CollectionOperation,
+import type {
+  CollectionEntries,
+  CollectionMutation,
+  CollectionMutationOperation,
+  CollectionOperation,
 } from '../../module-abi';
 import {
   isArrayValue,
@@ -15,103 +15,93 @@ import {
   type Stored,
 } from '../../value';
 import type {Heap, HeapTransaction} from '../heap';
-import {StructStorageRuntime} from '../struct-storage';
-import {StorageTypes} from '../../storage-types';
+import {Value} from '../value';
 import {arrayCall, arrayMutate, arraySnapshot} from './array';
-import type {CollectionContext} from './common';
+import {assertType, type CollectionContext} from './common';
 import {mapCall, mapMutate, mapSnapshot} from './map';
 import {matrixCall, matrixMutate} from './matrix';
 
+/**
+ * Persistent arrays, matrices and maps share the execution's Heap transaction.
+ * Backing stores captured Values, so reads retain their types and reference
+ * identity without reconstructing wrappers from a descriptor table.
+ * @example A successful push returns a new header; aborting its transaction
+ * discards the new backing while the original header remains readable.
+ */
 export class CollectionRuntime {
   constructor(
     private readonly heap: Heap,
-    private readonly layouts: StorageTypes,
     private readonly maxElements: number,
-    private readonly structs: StructStorageRuntime = new StructStorageRuntime(
-      heap,
-      layouts,
-    ),
   ) {
-    if (!Number.isSafeInteger(maxElements) || maxElements < 0) {
+    if (!Number.isSafeInteger(maxElements) || maxElements < 0)
       fatal(`invalid collection element limit ${maxElements}`);
-    }
   }
 
+  /**
+   * Execute a read or constructor using the result's existing empty Value.
+   * Element reads return the stored capture; construction allocates backing in
+   * this transaction. Invalid types, bounds, and references fail before commit.
+   * @example `call(tx, 'array.get', int(NaN), [prices, int(0)])` reads item zero.
+   */
   call(
     transaction: HeapTransaction,
     operation: CollectionOperation,
-    resultLayout: number,
-    args: readonly Stored[],
-  ): Stored {
+    empty: Value<unknown>,
+    args: readonly Value<unknown>[],
+  ): Value<unknown> {
     const ctx = this.context(transaction);
     const result = operation.startsWith('array.')
-      ? arrayCall(ctx, operation, resultLayout, args)
+      ? arrayCall(ctx, operation, empty, args)
       : operation.startsWith('matrix.')
-        ? matrixCall(ctx, operation, resultLayout, args)
-        : mapCall(ctx, operation, resultLayout, args);
-    this.structs.assertValue(
-      resultLayout,
-      result,
-      `${operation} result`,
-      transaction,
-    );
-    return result;
+        ? matrixCall(ctx, operation, empty, args)
+        : mapCall(ctx, operation, empty, args);
+    const value = result instanceof Value ? result : empty.withStored(result);
+    assertType(ctx, empty, value, `${operation} result`);
+    return value;
   }
 
+  /**
+   * Return replacement backing without rebinding or changing the receiver.
+   * The caller rebinds its Series or field; transaction rollback discards the
+   * replacement allocation. Pop/remove also return the removed captured Value.
+   * @example `mutate(tx, 'array.push', prices, [int(7)])` leaves prices unchanged.
+   */
   mutate(
     transaction: HeapTransaction,
     operation: CollectionMutationOperation,
-    collectionLayout: number,
-    receiver: Stored,
-    args: readonly Stored[],
+    receiver: Value<unknown>,
+    args: readonly Value<unknown>[],
   ): CollectionMutation {
     const ctx = this.context(transaction);
     const result = operation.startsWith('array.')
-      ? arrayMutate(ctx, operation, collectionLayout, receiver, args)
+      ? arrayMutate(ctx, operation, receiver, args)
       : operation.startsWith('matrix.')
-        ? matrixMutate(ctx, operation, collectionLayout, receiver, args)
-        : mapMutate(ctx, operation, collectionLayout, receiver, args);
-    this.structs.assertValue(
-      collectionLayout,
-      result.replacement,
-      `${operation} replacement`,
-      transaction,
-    );
+        ? matrixMutate(ctx, operation, receiver, args)
+        : mapMutate(ctx, operation, receiver, args);
+    receiver.assertStored(result.replacement, transaction);
     return result;
   }
 
+  /**
+   * Capture stable iteration order. Later mutations cannot change the returned
+   * array, but contained struct references retain their shared live identity.
+   * @example `entries(prices.value!)` returns the array's captured elements.
+   */
   entries(
     value: Stored,
     reader: Pick<Heap, 'read'> = this.heap,
   ): CollectionEntries {
-    const ctx = {
-      transaction: reader,
-      layouts: this.layouts,
-      assertValue: (layout: number, item: Stored, where: string) =>
-        this.structs.assertValue(layout, item, where, reader),
-    };
-    if (value === null) {
+    const ctx = {transaction: reader};
+    if (value === null)
       throw new ExecutionError('NA_COLLECTION', 'collection iteration on na');
-    }
-    if (isArrayValue(value)) {
-      return arraySnapshot(ctx, value);
-    }
-    if (isMapValue(value)) {
-      return mapSnapshot(ctx, value);
-    }
-    if (isMatrixValue(value)) {
+    if (isArrayValue(value)) return arraySnapshot(ctx, value);
+    if (isMapValue(value)) return mapSnapshot(ctx, value);
+    if (isMatrixValue(value))
       return fatal('matrix iteration is not supported in V1');
-    }
     return fatal('collectionEntries received a non-collection object');
   }
 
   private context(transaction: HeapTransaction): CollectionContext {
-    return {
-      transaction,
-      layouts: this.layouts,
-      assertValue: (layout, value, where) =>
-        this.structs.assertValue(layout, value, where, transaction),
-      maxElements: this.maxElements,
-    };
+    return {transaction, maxElements: this.maxElements};
   }
 }

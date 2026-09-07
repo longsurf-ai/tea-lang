@@ -31,10 +31,10 @@ interface ExpectedOutput {
   readonly type: string;
 }
 
-interface ExpectedEmission {
+export interface ExpectedEmission {
   readonly name: string;
   readonly provisional: boolean;
-  readonly value: JsonScalar;
+  readonly value: JsonScalar | Readonly<Record<'r' | 'g' | 'b' | 'a', number>>;
 }
 
 type ExpectedInputConstraint =
@@ -199,6 +199,22 @@ function scalar(value: unknown, label: string): JsonScalar {
     throw new Error(`${label} must be finite or null (na)`);
   }
   return value;
+}
+
+function emissionValue(
+  value: unknown,
+  type: string | undefined,
+  label: string,
+): ExpectedEmission['value'] {
+  if (type !== 'color' || value === null) return scalar(value, label);
+  const color = object(value, label);
+  keys(color, ['r', 'g', 'b', 'a'], label);
+  const channel = (name: string): number => {
+    const byte = integer(color[name], `${label}.${name}`);
+    if (byte > 255) throw new Error(`${label}.${name} must be a byte`);
+    return byte;
+  };
+  return {r: channel('r'), g: channel('g'), b: channel('b'), a: channel('a')};
 }
 
 export function sha256(path: string): string {
@@ -519,17 +535,19 @@ export function parseReference(raw: unknown, label: string): ExpectedReference {
         ['name', 'provisional', 'value'],
         `${label}.rows[${i}].emissions[${e}]`,
       );
+      const name = string(
+        emission['name'],
+        `${label}.rows[${i}].emissions[${e}].name`,
+      );
       return {
-        name: string(
-          emission['name'],
-          `${label}.rows[${i}].emissions[${e}].name`,
-        ),
+        name,
         provisional: boolean(
           emission['provisional'],
           `${label}.rows[${i}].emissions[${e}].provisional`,
         ),
-        value: scalar(
+        value: emissionValue(
           emission['value'],
+          outputs.find(output => output.name === name)?.type,
           `${label}.rows[${i}].emissions[${e}].value`,
         ),
       };

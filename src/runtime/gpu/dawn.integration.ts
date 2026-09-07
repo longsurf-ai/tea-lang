@@ -123,6 +123,23 @@ test('Dawn preserves Arrow enum payloads, missing values and per-column append o
   assert.deepEqual(row.effect1, ['buy', 'buy', 'buy']);
 });
 
+test('Dawn decodes Color append payloads as detached RGBA structs', async () => {
+  const program = mustBuild(
+    [
+      'emit.append "opaque" #FF5252',
+      'emit.append "partial" #01020380',
+      'color missing = na',
+      'emit.append "missing" missing',
+      'emit "price" close',
+    ].join('\n'),
+  );
+  const {gpuSinks} = await assertParity(program, [binding({close: [1, 2]})]);
+  const row = gpuSinks[0]!.publications[0]!;
+  assert.deepEqual(row.opaque, [{r: 255, g: 82, b: 82, a: 255}]);
+  assert.deepEqual(row.partial, [{r: 1, g: 2, b: 3, a: 128}]);
+  assert.deepEqual(row.missing, [null]);
+});
+
 test('Dawn preserves conditional set presence, lazy branches and helper returns', async () => {
   const program = mustBuild(
     [
@@ -347,7 +364,6 @@ async function dawn(): Promise<{readonly device: GPUDevice}> {
 function normalize(sink: OutputCapture): unknown {
   return {
     schema: sink.schema,
-    declarations: sink.declarations,
     publications: sink.publications,
   };
 }
