@@ -42,7 +42,8 @@ export interface FrameNameLocation {
 export interface FrameTopology {
   readonly frames: readonly FrameTemplate[];
   readonly root: FrameTemplate;
-  readonly frameByFunc: ReadonlyMap<IrFunc, FrameTemplate>;
+  // @codex: why do we need the frames if we already have frameByFunc? possible duplication?
+  readonly frameByFunc: ReadonlyMap<IrFunc, FrameTemplate>; 
   readonly nameLocations: ReadonlyMap<Name, FrameNameLocation>;
 }
 

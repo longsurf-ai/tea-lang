@@ -363,6 +363,7 @@ class TeaNode implements Node {
     const names = this.bindingSeriesNames();
     const root: (readonly [readonly string[], DataStream<unknown>])[] = [];
     const children: (readonly [TeaNode, DataStream<unknown>])[] = [];
+    /* Handling name-stream bindings */
     if (input instanceof DataStream) {
       root.push([names.filter(name => !this.connected.has(name)), input]);
     } else {
@@ -392,6 +393,7 @@ class TeaNode implements Node {
       );
       if (error !== undefined) throw error;
     }
+    /* find all clocks that are not irregular (i) and check if they are all the same */
     const clocks = [
       this.clock,
       ...root.map(([, stream]) => stream.clock),
