@@ -220,7 +220,7 @@ if strat.position_quantity() != 0.0
 		active_stop := direction == 1 ? math.max(active_stop, strat.position_avg_price()) : math.min(active_stop, strat.position_avg_price())
 	strat.exit("VWAP Bracket", fromEntry = "VWAP Position", stop = active_stop, target = active_target)
 
-strat.finish(barstate.islast)
+strat.finish(false)
 metrics = strat.snapshot()
 
 plot("close", close, "close")

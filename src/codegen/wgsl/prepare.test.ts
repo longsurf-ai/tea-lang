@@ -28,13 +28,13 @@ describe('generic WGSL capability boundary', () => {
       parameterCount: 0,
       requestCount: 0,
       seriesInputCount: 2,
-      builtinInputCount: 2,
+      builtinInputCount: 1,
       persistentRootCount: 1,
       functionCount: 38,
       mutableMethodCount: 15,
       callSiteSlotCount: 14,
-      outputCount: 14,
-      resultChannelCount: 9,
+      outputCount: 13,
+      resultChannelCount: 8,
     });
     expect(report.eligible).toBe(false);
     expect(report.issues[0]?.code).toBe(

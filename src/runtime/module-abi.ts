@@ -48,7 +48,7 @@ export interface Frame {
  * A language-provided input and its retention requirement. Node supplies row
  * values; bind() may supply constant contextual values. Missing history uses
  * empty, preserving false, null and numeric NaN as different value domains.
- * @example `timeframe.multiplier` can be fixed during binding; `barstate.islast`
+ * @example `timeframe.multiplier` can be fixed during binding; `barstate.isfirst`
  * changes with the row and is delivered by Node.
  */
 export interface Builtin {

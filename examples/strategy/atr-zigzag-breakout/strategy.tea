@@ -193,7 +193,7 @@ if strat.position_quantity() == 0.0 and valid_profile
 		strat.entry("Short Open", trade.Direction.short, qty = 1.0, stop = last_low_level)
 		strat.exit("Short Bracket", fromEntry = "Short Open", stop = pending_stop, target = pending_target, activateOnEntryBar = true)
 
-strat.end_bar(close, barstate.islast)
+strat.end_bar(close, false)
 metrics = strat.snapshot()
 
 plot("close", close, "close")

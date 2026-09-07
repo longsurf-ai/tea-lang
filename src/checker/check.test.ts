@@ -498,7 +498,6 @@ describe('context builtins', () => {
     );
     expect(builtins).toEqual([
       ['bar_index', {domain: 'bar', field: 'bar_index'}],
-      ['last_bar_index', {domain: 'bar', field: 'last_bar_index'}],
       ['time', {domain: 'time', field: 'time'}],
       ['timenow', {domain: 'time', field: 'timenow'}],
       ['syminfo.tickerid', {domain: 'syminfo', field: 'tickerid'}],
@@ -520,7 +519,6 @@ describe('context builtins', () => {
       ['timeframe.ismonthly', {domain: 'timeframe', field: 'ismonthly'}],
       ['timeframe.isdwm', {domain: 'timeframe', field: 'isdwm'}],
       ['barstate.isfirst', {domain: 'barstate', field: 'isfirst'}],
-      ['barstate.islast', {domain: 'barstate', field: 'islast'}],
       ['barstate.ishistory', {domain: 'barstate', field: 'ishistory'}],
       ['barstate.isrealtime', {domain: 'barstate', field: 'isrealtime'}],
       ['barstate.isconfirmed', {domain: 'barstate', field: 'isconfirmed'}],

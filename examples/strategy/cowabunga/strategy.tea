@@ -123,7 +123,7 @@ if short_signal
 		strat.cancel("Cowabunga Long")
 		strat.rebalance("Cowabunga Short", trade.targetQuantity(-fixed_quantity))
 
-strat.end_bar(close, barstate.islast)
+strat.end_bar(close, false)
 metrics = strat.snapshot()
 
 plot("close", close, "close")

@@ -32,15 +32,11 @@ test('validates Arrow rows and keeps explicit coercion in the producer', async (
   ).rejects.toBeInstanceOf(TypeError);
 });
 
-test('retains an optional finite index count and one-field scalar streams', async () => {
-  const stream = new DataStream(schema, of(1, 2), i, 2);
-  expect(stream.indices).toBe(2);
+test('accepts one-field scalar streams', async () => {
+  const stream = new DataStream(schema, of(1, 2), i);
   await expect(
     firstValueFrom(stream.asObservable().pipe(toArray())),
   ).resolves.toEqual([1, 2]);
-  expect(() => new DataStream(schema, of(), i, -1)).toThrow(
-    'DataStream indices must be a non-negative safe integer',
-  );
 });
 
 test('owns schema copies without losing Arrow types or metadata', async () => {

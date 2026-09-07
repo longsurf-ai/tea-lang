@@ -28,7 +28,6 @@ describe('CSVSource', () => {
   test('discovers Arrow string fields from the header', async () => {
     const source = await CSVSource.open(CLI_DATA);
 
-    expect(source.indices).toBe(2);
     expect(source.schema).toBeInstanceOf(Schema);
     expect(source.schema.fields.map(field => field.name)).toEqual([
       'time',
@@ -54,8 +53,6 @@ describe('CSVSource', () => {
       new Field('close', new Float64(), false),
     ]);
     const stream = await fromCSV(CLI_DATA, schema);
-
-    expect(stream.indices).toBe(2);
 
     await expect(
       firstValueFrom(stream.asObservable().pipe(toArray())),

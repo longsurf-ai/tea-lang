@@ -10,13 +10,12 @@ export type BuiltinSource =
     }
   | {
       readonly domain: 'bar';
-      readonly field: 'bar_index' | 'last_bar_index';
+      readonly field: 'bar_index';
     }
   | {
       readonly domain: 'barstate';
       readonly field:
         | 'isfirst'
-        | 'islast'
         | 'ishistory'
         | 'isrealtime'
         | 'isconfirmed'

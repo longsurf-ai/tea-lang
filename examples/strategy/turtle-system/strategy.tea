@@ -146,7 +146,7 @@ if exit_long
 	strat.process_close(close)
 
 strat.mark(close)
-strat.finish(barstate.islast)
+strat.finish(false)
 metrics = strat.snapshot()
 
 plot("close", close, "close")

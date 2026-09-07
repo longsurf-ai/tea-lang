@@ -40,7 +40,7 @@ if valid_lengths and crossed_above and strat.position_quantity() == 0.0 and not 
 if valid_lengths and crossed_below and strat.position_quantity() > 0.0 and not strat.has_pending()
 	strat.close("EMA Long")
 
-strat.end_bar(close, barstate.islast)
+strat.end_bar(close, false)
 metrics = strat.snapshot()
 
 plot("close", close, "close")

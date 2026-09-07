@@ -86,11 +86,6 @@ Arrow `Int64` also supports existing bigint sources. Use non-nullable times for
 timed request synchronization; nullable time fields can represent absent or
 explicitly null event metadata.
 
-For finite execution, `DataStream.indices` is the exact number of emissions.
-Node validates it and the Pine Extension uses it for `last_bar_index` and
-`barstate.islast`. Live streams leave `indices` null and cannot use
-extent-dependent Pine builtins.
-
 ## Synchronization policies
 
 Node folds request edges in dense request-id order. The parent does not step

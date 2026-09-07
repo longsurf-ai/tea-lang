@@ -51,7 +51,7 @@ if enter_long and strat.position_quantity() == 0.0 and not strat.has_pending()
 if exit_long and strat.position_quantity() > 0.0 and not strat.has_pending()
 	strat.close("Spread Long")
 
-strat.end_bar(close, barstate.islast)
+strat.end_bar(close, false)
 metrics = strat.snapshot()
 
 plot("spread", spread, "spread")

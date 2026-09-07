@@ -89,7 +89,7 @@ describe('chunked sparse-effect WGSL emitter', () => {
         '',
         'var int seen = 0',
         'seen := bar_index',
-        'emit "output0" close + (barstate.islast ? seen : -1)',
+        'emit "output0" close + (bar_index > 0 ? seen : -1)',
       ].join('\n'),
     );
 

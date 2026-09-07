@@ -223,7 +223,7 @@ if strat.position_quantity() > 0.0 and not na(monthly_atr)
 	// target leg while omitting that inert stop until its computed level is valid.
 	strat.exit("BB ATR exit", fromEntry = "BB long", stop = active_stop > 0.0 ? active_stop : na, target = active_target)
 
-strat.finish(barstate.islast)
+strat.finish(false)
 metrics = strat.snapshot()
 
 plot("close", close, "close")

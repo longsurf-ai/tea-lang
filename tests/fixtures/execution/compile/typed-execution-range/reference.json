@@ -22,10 +22,6 @@
       "type": "int"
     },
     {
-      "name": "output3",
-      "type": "int"
-    },
-    {
       "name": "output4",
       "type": "int"
     },
@@ -55,11 +51,6 @@
           "name": "output2",
           "provisional": false,
           "value": 0
-        },
-        {
-          "name": "output3",
-          "provisional": false,
-          "value": 4
         },
         {
           "name": "output4",
@@ -97,11 +88,6 @@
           "value": 1
         },
         {
-          "name": "output3",
-          "provisional": false,
-          "value": 4
-        },
-        {
           "name": "output4",
           "provisional": false,
           "value": 1700000000000
@@ -135,11 +121,6 @@
           "name": "output2",
           "provisional": false,
           "value": 2
-        },
-        {
-          "name": "output3",
-          "provisional": false,
-          "value": 4
         },
         {
           "name": "output4",
@@ -177,11 +158,6 @@
           "value": 3
         },
         {
-          "name": "output3",
-          "provisional": false,
-          "value": 4
-        },
-        {
           "name": "output4",
           "provisional": false,
           "value": 1700000000000
@@ -199,7 +175,7 @@
         {
           "name": "output7",
           "provisional": false,
-          "value": 1
+          "value": 0
         }
       ]
     },
@@ -217,11 +193,6 @@
           "value": 4
         },
         {
-          "name": "output3",
-          "provisional": false,
-          "value": 4
-        },
-        {
           "name": "output4",
           "provisional": false,
           "value": 1700000000000
@@ -229,7 +200,7 @@
         {
           "name": "output5",
           "provisional": false,
-          "value": 54
+          "value": 52
         },
         {
           "name": "output6",
@@ -239,7 +210,7 @@
         {
           "name": "output7",
           "provisional": false,
-          "value": 11
+          "value": 10
         }
       ]
     }

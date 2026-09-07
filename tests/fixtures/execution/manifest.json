@@ -32,9 +32,9 @@
       "data": "compile/typed-execution-range/data.csv",
       "reference": "compile/typed-execution-range/reference.json",
       "sha256": {
-        "source": "d22ca5446f61d7b1caf31191589e3dd71d10be445e61a0b2b2193bb6db61e3a6",
+        "source": "6d9d6d81eca99e211be4076d026a1e3b9dea491b81f06eba9c4adc94d426f2a3",
         "data": "8730fbf989456c0374879b32ca59c411fface63b3b84c5b09a39fcbd9bf1921a",
-        "reference": "94780c2e43414913e32d4e1d08fedf507fcec6bb516f2662bceab4cd4a963fc4"
+        "reference": "4dea34f1da06aa047658ca3d04cb256294540981fa46686ec2780e3d864ea736"
       }
     },
     {
@@ -44,9 +44,9 @@
       "data": "compile/strategy-components/data.csv",
       "reference": "compile/strategy-components/reference.json",
       "sha256": {
-        "source": "12cb9539b416d27bc831f4a56a41b60cd8f0b847897a6ee7eecc2c6b2a53a4b7",
+        "source": "6738c8ea014ac482ea8043900b91b1a79eb9c0d144c3f608eb191d87f411bbce",
         "data": "e1e088513ef236556ec9f781dfec7aa0df1ceae7b93683320391039f0a985a9b",
-        "reference": "f95853a2b3b5560913d33c3963d9bc124a80f4f4d2e38848601f89f4ece40287"
+        "reference": "477606f22061bdb1078f1d5032f1d5876cf29341b5a35b6dbad2011b9b5ccfaa"
       }
     },
     {

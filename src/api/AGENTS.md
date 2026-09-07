@@ -65,7 +65,7 @@ runtime semantics remain in their existing packages.
   policies belong to `docs/requests.md`. Collect batches cross the API/runtime seam only as frozen
   scalar arrays and become ordinary Tea arrays inside the parent Heap
   transaction. This collect path is Node-only. The statically enabled Pine
-  Extension derives contextual builtins from Node index, `DataStream.indices`,
-  and current input time; dynamic requests fail earlier at the noder boundary.
+  Extension derives contextual builtins from Node index and current input
+  time; dynamic requests fail earlier at the noder boundary.
 
 - Parameters, input requirements, state descriptions, and one output schema live directly on the module. Both set and append results use one cell array; Node adds coordinates without rebuilding a payload language. Live streams stay in Node.

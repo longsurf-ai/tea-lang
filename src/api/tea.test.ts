@@ -207,26 +207,6 @@ describe('tea', () => {
     expect(sink.values).toEqual([]);
   });
 
-  test('validates a finite DataStream index count', async () => {
-    const shortNode = tea`emit "output0" close`;
-    shortNode.bind(new DataStream(numericSchema, of({close: 1}), i, 2));
-    const shortSink = new StepSink();
-    shortNode.to(shortSink);
-    await expect(shortSink.completion).rejects.toThrow(
-      'DataStream emitted 1 values for 2 declared indices',
-    );
-
-    const longNode = tea`emit "output0" close`;
-    longNode.bind(
-      new DataStream(numericSchema, of({close: 1}, {close: 2}), i, 1),
-    );
-    const longSink = new StepSink();
-    longNode.to(longSink);
-    await expect(longSink.completion).rejects.toThrow(
-      'DataStream emitted more than its declared 1 indices',
-    );
-  });
-
   test('fails shared execution when an observer throws during delivery', async () => {
     let produced = 0;
     let teardowns = 0;
@@ -411,22 +391,14 @@ describe('tea', () => {
   });
 
   test('supplies root contextual builtins from Node construction', async () => {
-    const node = tea`
-      emit "output0" bar_index
-      emit "output1" last_bar_index
-      emit "output2" barstate.islast ? 1 : 0
-    `;
+    const node = tea`emit "output0" bar_index`;
     node.bind(numericSource(10, 20, 30));
     const sink = new StepSink();
 
     node.to(sink);
     await sink.completion;
 
-    expect(outputValues(sink)).toEqual([
-      [0, 2, 0],
-      [1, 2, 0],
-      [2, 2, 1],
-    ]);
+    expect(outputValues(sink)).toEqual([[0], [1], [2]]);
   });
 
   test('gives every request child its own contextual builtin index', async () => {
@@ -511,7 +483,6 @@ describe('tea', () => {
           new Schema([new Field('open', new Float64(), false)]),
           of(1),
           w,
-          1,
         ),
       }),
     ).toThrow('bound DataStream clocks disagree');
@@ -799,7 +770,7 @@ describe('tea', () => {
     `;
     node.bind(timedNumericSource({time: 0n, close: 1}, {time: 1n, close: 2}));
     node.bind({
-      requested: new DataStream(timedNumericSchema, of(), i, 0),
+      requested: new DataStream(timedNumericSchema, of(), i),
     });
     const sink = new StepSink();
 
@@ -1010,7 +981,6 @@ function numericSource(...values: readonly number[]): DataStream<{
     numericSchema,
     of(...values.map(close => ({close}))),
     i,
-    values.length,
   );
 }
 
@@ -1022,7 +992,6 @@ function clockedNumericSource(
     numericSchema,
     of(...values.map(close => ({close}))),
     clock,
-    values.length,
   );
 }
 
@@ -1039,7 +1008,7 @@ const timedNumericSchema = new Schema([
 function timedNumericSource(
   ...values: readonly TimedNumericDatum[]
 ): DataStream<TimedNumericDatum> {
-  return new DataStream(timedNumericSchema, of(...values), i, values.length);
+  return new DataStream(timedNumericSchema, of(...values), i);
 }
 
 function timedNumericSubject(

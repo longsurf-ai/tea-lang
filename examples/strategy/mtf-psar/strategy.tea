@@ -114,7 +114,7 @@ if strat.position_quantity() < 0.0 and not strat.has_pending()
 		strat.close("MTF Exit")
 
 strat.mark(close)
-strat.finish(barstate.islast)
+strat.finish(false)
 metrics = strat.snapshot()
 
 plot("close", close, "close")

@@ -11,7 +11,6 @@ import {
   Subject,
   Subscription,
   takeUntil,
-  tap,
 } from 'rxjs';
 import {DataType, TimeUnit} from 'apache-arrow';
 import {fatal} from '../base/print';
@@ -54,7 +53,6 @@ type BuiltinSupplier = (
   path: readonly number[],
   module: Module,
   index: number,
-  indices: number | null,
   datum: InputDatum,
 ) => readonly Stored[];
 
@@ -144,7 +142,6 @@ class TeaNode implements Node {
   private readonly requests: TeaNode[];
   private publication: Module['outputs'] | null = null;
   private clock: Clock = i;
-  private indices: number | null = null;
   private timed = false;
   private readonly results = new Subject<Datum>();
   private readonly deliveryFailure = new Subject<never>();
@@ -401,12 +398,6 @@ class TeaNode implements Node {
     ].filter(clock => clock !== i);
     if (clocks.some(clock => clock !== clocks[0]))
       throw new BindError('bound DataStream clocks disagree');
-    const extents = [
-      this.indices,
-      ...root.map(([, stream]) => stream.indices),
-    ].filter((indices): indices is number => indices !== null);
-    if (extents.some(indices => indices !== extents[0]))
-      throw new BindError('bound DataStream indices disagree');
 
     for (const [names, stream] of root) {
       this.data = this.combineData(this.data, this.sourceData(stream, names));
@@ -414,7 +405,6 @@ class TeaNode implements Node {
       this.timed ||= this.hasTime(stream);
     }
     this.clock = clocks[0] ?? i;
-    this.indices = extents[0] ?? null;
     for (const [child, stream] of children) child.bindStreams(stream);
   }
 
@@ -428,12 +418,6 @@ class TeaNode implements Node {
   ): Error | undefined {
     if (this.clock !== i && stream.clock !== i && this.clock !== stream.clock)
       return new BindError('bound DataStream clocks disagree');
-    if (
-      this.indices !== null &&
-      stream.indices !== null &&
-      this.indices !== stream.indices
-    )
-      return new BindError('bound DataStream indices disagree');
     const fields = stream.schema.fields;
     for (const name of names) {
       if (this.connected.has(name))
@@ -466,7 +450,6 @@ class TeaNode implements Node {
       this.connected.clear();
       this.data = null;
       this.clock = i;
-      this.indices = null;
       this.timed = false;
     }
     this.requests.forEach(request => request.refresh());
@@ -507,16 +490,9 @@ class TeaNode implements Node {
     names: readonly string[],
   ): Observable<InputDatum> {
     const timed = this.hasTime(source);
-    let observed = 0;
     let previousTime: bigint | null = null;
     return source.asObservable().pipe(
       map(value => {
-        observed += 1;
-        if (source.indices !== null && observed > source.indices) {
-          throw new Error(
-            `DataStream emitted more than its declared ${source.indices} indices`,
-          );
-        }
         const parsed = value;
         if (this.isRecord(parsed)) {
           const entries = names.map(name => {
@@ -539,15 +515,6 @@ class TeaNode implements Node {
         }
         if (names.length === 1) return Object.freeze({[names[0]!]: parsed});
         throw new Error(`source value does not provide series '${names[0]}'`);
-      }),
-      tap({
-        complete() {
-          if (source.indices !== null && observed !== source.indices) {
-            throw new Error(
-              `DataStream emitted ${observed} values for ${source.indices} declared indices`,
-            );
-          }
-        },
       }),
     );
   }
@@ -696,7 +663,6 @@ class TeaNode implements Node {
               this.path,
               this.module,
               index,
-              this.indices,
               datum,
             ),
             requests,
@@ -704,18 +670,6 @@ class TeaNode implements Node {
           });
           if (!result.provisional) this.committedIndices += 1;
           return [datum, result, index] as const;
-        }),
-        tap({
-          complete: () => {
-            if (
-              this.indices !== null &&
-              this.committedIndices !== this.indices
-            ) {
-              throw new Error(
-                `Node completed ${this.committedIndices} indices from a declared ${this.indices}`,
-              );
-            }
-          },
         }),
         finalize(() => runtime.dispose()),
       );

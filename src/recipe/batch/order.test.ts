@@ -28,7 +28,6 @@ describe('batch Recipe composition', () => {
         new Schema([new Field('close', new Float64(), false)]),
         of(...execution.close.map(close => ({close}))),
         i,
-        execution.close.length,
       );
       const result = await batchRecipe(
         node,
@@ -51,7 +50,6 @@ describe('batch Recipe composition', () => {
       new Schema([new Field('close', new Float64(), false)]),
       of({close: 1}, {close: 2}),
       i,
-      2,
     );
     const recipe = batchRecipe(node, [stream], {
       next() {
@@ -73,7 +71,6 @@ describe('batch Recipe composition', () => {
       new Schema([new Field('close', new Float64(), false)]),
       of({close: 1}, {close: 2}),
       i,
-      2,
     );
     const recipe = batchRecipe(node, [stream], {
       completion,

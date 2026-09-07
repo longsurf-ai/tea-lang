@@ -149,7 +149,7 @@ places to its depth pass for annotation.
   builtin in each Program. `input.source` is restricted to this closed
   vocabulary. Neither noder nor runtime classifies a builtin by parsing its
   spelling.
-- **typed builtins** (also a projection): `time`, `timenow`, `bar_index`, `last_bar_index`, `barstate.*`, `syminfo.*`, and
+- **typed builtins** (also a projection): `time`, `timenow`, `bar_index`, `barstate.*`, `syminfo.*`, and
   `timeframe.*` are typed values supplied by the runtime context rather than
   numeric series columns. They project to `BuiltinInput`, which carries
   source, type, qualifier, and depth. Its source is a closed `{domain, field}`

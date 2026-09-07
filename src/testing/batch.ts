@@ -65,7 +65,7 @@ export async function executeTestModule(
  * Adapt a numeric conformance CSV to a finite Arrow stream. Time columns use
  * exact epoch-millisecond numbers; common OHLC derived prices are filled in.
  *
- * @example `csvStream('time,close\n1000,12').indices` is 1 and its time field
+ * @example `csvStream('time,close\n1000,12')` emits one record; its time field
  * is TimestampMillisecond, with a Float64 close field.
  */
 export function csvStream(
@@ -115,44 +115,42 @@ export function csvStream(
         ),
     ),
   );
-  return new DataStream(schema, from(rows), i, rows.length);
+  return new DataStream(schema, from(rows), i);
 }
 
 /**
- * Give immutable test values an explicit Arrow schema and exact extent.
+ * Give immutable test values an explicit Arrow schema.
  * @example `finiteStream(new Schema([new Field('close', new Float64())]), [{close: 12}])`
- * emits one record and reports `indices === 1`.
+ * emits one record.
  */
 export function finiteStream<T extends Readonly<Record<string, unknown>>>(
   schema: Schema,
   values: readonly T[],
 ): DataStream<T> {
-  return new DataStream(schema, from(values), i, values.length);
+  return new DataStream(schema, from(values), i);
 }
 
 /**
  * Zip equal-length numeric columns into a finite stream. Optional times declare
  * TimestampMillisecond fields; missing times leave the stream untimed.
- * @example `arrayStream({close: [10, 12]}, [1000, 2000]).indices` is 2.
+ * @example `arrayStream({close: [10, 12]}, [1000, 2000])` emits two timed records.
  */
 export function arrayStream(
   series: Readonly<Record<string, readonly number[]>>,
   time?: readonly number[],
 ): DataStream<unknown> {
-  const indices = Object.values(series)[0]?.length ?? time?.length ?? 0;
+  const length = Object.values(series)[0]?.length ?? time?.length ?? 0;
   for (const [name, values] of Object.entries(series)) {
-    if (values.length !== indices) {
+    if (values.length !== length) {
       throw new Error(
-        `array series '${name}' has ${values.length} values for ${indices} indices`,
+        `array series '${name}' has ${values.length} values for ${length} rows`,
       );
     }
   }
-  if (time !== undefined && time.length !== indices) {
-    throw new Error(
-      `array time has ${time.length} values for ${indices} indices`,
-    );
+  if (time !== undefined && time.length !== length) {
+    throw new Error(`array time has ${time.length} values for ${length} rows`);
   }
-  const rows = Array.from({length: indices}, (_, index) => {
+  const rows = Array.from({length}, (_, index) => {
     const row: Record<string, number> = Object.fromEntries(
       Object.entries(series).map(([name, values]) => [name, values[index]!]),
     );
@@ -167,7 +165,7 @@ export function arrayStream(
   if (time !== undefined) {
     fields.push(new Field('time', new TimestampMillisecond(), false));
   }
-  return new DataStream(new Schema(fields), from(rows), i, indices);
+  return new DataStream(new Schema(fields), from(rows), i);
 }
 
 function epoch(raw: string): number {

@@ -35,7 +35,7 @@ if bar_index == 1
 if bar_index == 2
 	strat.entry("Long", trade.Direction.long)
 
-expired = strat.end_bar(close, barstate.islast)
+expired = strat.end_bar(close, false)
 metrics = strat.snapshot()
 
 plot("cash", metrics.cash, "cash")

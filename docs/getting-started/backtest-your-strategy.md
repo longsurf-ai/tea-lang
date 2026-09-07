@@ -50,8 +50,7 @@ time,open,high,low,close,volume
 1704153600000,102,104,100,103,980
 ```
 
-`time` is exact epoch milliseconds. The CLI gives the resulting DataStream an
-exact finite `indices` count.
+`time` is exact epoch milliseconds.
 
 Embedding applications can construct the same input directly:
 
@@ -85,7 +84,6 @@ const bars = new DataStream(
   ]),
   from(values),
   d,
-  values.length,
 );
 ```
 

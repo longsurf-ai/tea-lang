@@ -113,7 +113,7 @@ async function csvBatchStream(
     ({name}) =>
       new Field(name, name === 'time' ? new Int64() : new Float64(), false),
   );
-  const source = new CSVSource(path, new Schema(fields), i, discovered.indices);
+  const source = new CSVSource(path, new Schema(fields), i);
   const input = await firstValueFrom(
     source.stream().asObservable().pipe(toArray()),
   );
@@ -139,7 +139,7 @@ async function csvBatchStream(
       fields.push(new Field(name, new Float64(), false));
     }
   }
-  return new DataStream(new Schema(fields), from(rows), i, rows.length);
+  return new DataStream(new Schema(fields), from(rows), i);
 }
 
 function derivePrice(

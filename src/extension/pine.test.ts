@@ -12,15 +12,13 @@ import {loadModule} from '../runtime/load';
 import {pineBuiltinSupplier} from './pine';
 
 describe('Pine Extension', () => {
-  test('derives finite indices, times, and bar state from public input', async () => {
+  test('derives bar index, times, and bar state from public input', async () => {
     const node = pineNode(
       [
         'emit "output0" time',
         'emit "output2" timenow',
         'emit "output3" bar_index',
-        'emit "output4" last_bar_index',
-        'emit "output5" barstate.isfirst ? 1 : 0',
-        'emit "output6" barstate.islast ? 1 : 0',
+        'emit "output4" barstate.isfirst ? 1 : 0',
       ].join('\n'),
       1_777_777_777_777,
     );
@@ -28,8 +26,6 @@ describe('Pine Extension', () => {
       new DataStream(
         new Schema([new Field('time', new TimestampMillisecond(), false)]),
         of({time: 100n}, {time: 110n}, {time: 120n}),
-        i,
-        3,
       ),
     );
     const sink = new DatumSink();
@@ -38,9 +34,9 @@ describe('Pine Extension', () => {
     await sink.completion;
 
     expect(values(sink)).toEqual([
-      [100, 1_777_777_777_777, 0, 2, 1, 0],
-      [110, 1_777_777_777_777, 1, 2, 0, 0],
-      [120, 1_777_777_777_777, 2, 2, 0, 1],
+      [100, 1_777_777_777_777, 0, 1],
+      [110, 1_777_777_777_777, 1, 0],
+      [120, 1_777_777_777_777, 2, 0],
     ]);
   });
 
@@ -52,7 +48,7 @@ describe('Pine Extension', () => {
       ].join('\n'),
       0,
     );
-    node.bind(new DataStream(new Schema([]), of({}), i, 1));
+    node.bind(new DataStream(new Schema([]), of({})));
     const sink = new DatumSink();
 
     node.to(sink);
@@ -75,7 +71,7 @@ describe('Pine Extension', () => {
       rebound,
       pineBuiltinSupplier(() => 0),
     );
-    node.bind(new DataStream(new Schema([]), of({}, {}), i, 2));
+    node.bind(new DataStream(new Schema([]), of({}, {})));
     const sink = new DatumSink();
     node.to(sink);
     await sink.completion;
@@ -83,21 +79,9 @@ describe('Pine Extension', () => {
     expect(module.parameters[0]!.value).toBe(2);
   });
 
-  test('requires finite indices only for extent-dependent builtins', async () => {
-    const node = pineNode('emit "output9" last_bar_index', 0);
-    node.bind(new DataStream(new Schema([]), of({})));
-    const sink = new DatumSink();
-
-    node.to(sink);
-
-    await expect(sink.completion).rejects.toThrow(
-      "Pine builtin 'last_bar_index' requires a finite DataStream indices count",
-    );
-  });
-
   test('requires exact bigint event time when time is demanded', async () => {
     const node = pineNode('emit "output10" time', 0);
-    node.bind(new DataStream(new Schema([]), of({}), i, 1));
+    node.bind(new DataStream(new Schema([]), of({})));
     const sink = new DatumSink();
 
     node.to(sink);

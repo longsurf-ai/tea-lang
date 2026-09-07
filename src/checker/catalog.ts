@@ -311,7 +311,6 @@ const SERIES_FLOAT_VARS = [
 
 const BARSTATE_FIELDS = [
   'isfirst',
-  'islast',
   'ishistory',
   'isrealtime',
   'isconfirmed',
@@ -404,10 +403,6 @@ function buildVars(): NativeVar[] {
     builtinVariable('bar_index', IntType, Qualifier.Series, {
       domain: 'bar',
       field: 'bar_index',
-    }),
-    builtinVariable('last_bar_index', IntType, Qualifier.Series, {
-      domain: 'bar',
-      field: 'last_bar_index',
     }),
     builtinVariable('time', IntType, Qualifier.Series, {
       domain: 'time',

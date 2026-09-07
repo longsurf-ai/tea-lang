@@ -146,7 +146,7 @@ if long_exit_condition and not na(long_stop) and (strat.position_quantity() > 0.
 	strat.exit("AI Long Stop", fromEntry = "AI Long", stop = long_stop, activateOnEntryBar = true)
 	display_active_stop := long_stop
 
-strat.end_bar(close, barstate.islast)
+strat.end_bar(close, false)
 metrics = strat.snapshot()
 
 plot("close", close, "close")

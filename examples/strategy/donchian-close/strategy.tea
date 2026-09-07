@@ -79,7 +79,7 @@ if long_signal and not in_position and not strat.has_pending()
 if close_signal and not strat.has_pending()
 	strat.close("Donchian Long")
 
-strat.end_bar(close, barstate.islast)
+strat.end_bar(close, false)
 metrics = strat.snapshot()
 
 plot("close", close, "close")

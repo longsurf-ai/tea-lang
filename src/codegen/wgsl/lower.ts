@@ -2157,18 +2157,6 @@ class WgslEmitter {
       out.push(`let ${result}: TeaInt = TeaInt(1u, i32(${ctx.row}));`);
       return result;
     }
-    if (
-      builtin.source.domain === 'barstate' &&
-      builtin.source.field === 'islast'
-    ) {
-      if (builtin.type.kind !== TypeKind.Bool) {
-        return fatal('barstate.islast builtin is not bool');
-      }
-      out.push(
-        `let ${result}: u32 = select(0u, 1u, ${ctx.row} + 1u == ${ctx.job}.row_count);`,
-      );
-      return result;
-    }
     return this.unsupported(
       'builtin-mapping-unimplemented',
       `builtin ${builtin.source.domain}.${builtin.source.field} is not derived by this GPU backend`,

@@ -125,7 +125,7 @@ function runMixed(count: number, retainAll: boolean) {
   const started = performance.now();
   const node = createNode(compile(mixed));
   const source = new Subject<{close: number}>();
-  node.bind(new DataStream(prices, source, i, count));
+  node.bind(new DataStream(prices, source, i));
   const next = random();
   const history: number[] = [];
   const retained: {datum: Datum; expected: object}[] = [];
@@ -233,7 +233,7 @@ test('interleaved declarations retain all events in per-column order', () => {
       `for index = 0 to ${count / 2 - 1}\n    emit.append "effect0" index\n    emit.append "effect1" -index`,
     ),
   );
-  node.bind(new DataStream(new Schema([]), of({}), i, 1));
+  node.bind(new DataStream(new Schema([]), of({}), i));
   let result: Datum | undefined;
   let failure: unknown;
   node.to({
@@ -271,7 +271,7 @@ test('independent bindings preserve source schemas and parameter-derived history
     const node = createNode(copy).bind({lag});
     assert.equal(node.module, copy);
     const source = new Subject<{close: number}>();
-    node.bind(new DataStream(prices, source, i, rows.length));
+    node.bind(new DataStream(prices, source, i));
     let seen = 0;
     let failure: unknown;
     node.to({
@@ -311,7 +311,7 @@ test('Tea map publication normalizes zero keys and retains NaN values', () => {
       ].join('\n'),
     ),
   );
-  node.bind(new DataStream(prices, of({close: -0}), i, 1));
+  node.bind(new DataStream(prices, of({close: -0}), i));
   let result: Datum | undefined;
   let failure: unknown;
   node.to({
@@ -346,7 +346,7 @@ test('a failed step publishes neither its early output nor its early effect', ()
       ].join('\n'),
     ),
   );
-  node.bind(new DataStream(prices, of({close: 1}), i, 1));
+  node.bind(new DataStream(prices, of({close: 1}), i));
   const publications: Datum[] = [];
   let failure: unknown;
   node.to({
@@ -448,7 +448,7 @@ test('scalar Node execution keeps one result per input', () => {
   const count = process.env.TEA_STRESS_SCALAR === '1' ? 1_000_000 : 256;
   const node = createNode(compile('emit "output0" close + 1'));
   const source = new Subject<{close: number}>();
-  node.bind(new DataStream(prices, source, i, count));
+  node.bind(new DataStream(prices, source, i));
   let seen = 0;
   let failure: unknown;
   node.to({

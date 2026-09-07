@@ -67,7 +67,7 @@ var strat = trade.nextOpen(
 
 strat.begin_bar(open, bar_index)
 // Submit entries, closes, or rebalances.
-strat.end_bar(close, barstate.islast)
+strat.end_bar(close, false)
 ```
 
 The shared scheduled scalar broker supports one pending command; explicit,

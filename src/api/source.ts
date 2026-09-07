@@ -40,7 +40,6 @@ export class CSVSource<T = Record<string, unknown>> implements Source<T> {
     readonly path: string,
     schema: Schema,
     readonly clock: Clock = i,
-    readonly indices: number | null = null,
   ) {
     this.shape = cloneSchema(schema);
   }
@@ -54,22 +53,16 @@ export class CSVSource<T = Record<string, unknown>> implements Source<T> {
   }
 
   /**
-   * Inspect the header and row count, then return a cold source. Without an
-   * explicit schema every discovered field is non-nullable Arrow Utf8.
-   * @example `(await CSVSource.open('prices.csv')).indices` is 2 for a two-row file.
+   * Inspect the header, then return a cold source. Without an explicit schema
+   * every discovered field is non-nullable Arrow Utf8.
+   * @example `(await CSVSource.open('prices.csv')).schema.fields[0].name` is the first header.
    */
   static async open<T = Record<string, unknown>>(
     path: string,
     schema?: Schema,
     clock: Clock = i,
   ): Promise<CSVSource<T>> {
-    const inspected = await inspectCSV(path);
-    return new CSVSource<T>(
-      path,
-      schema ?? inspected.schema,
-      clock,
-      inspected.indices,
-    );
+    return new CSVSource<T>(path, schema ?? (await inspectCSV(path)), clock);
   }
 
   /**
@@ -82,7 +75,6 @@ export class CSVSource<T = Record<string, unknown>> implements Source<T> {
       this.shape,
       defer(() => from(csvRows<T>(this.path, this.shape))),
       this.clock,
-      this.indices,
     );
   }
 }
@@ -93,16 +85,13 @@ export class CSVSource<T = Record<string, unknown>> implements Source<T> {
  * @example `(await discoverCSVSchema('prices.csv')).fields[0].type` is a Utf8 instance.
  */
 export async function discoverCSVSchema(path: string): Promise<Schema> {
-  return (await inspectCSV(path)).schema;
+  return inspectCSV(path);
 }
 
-async function inspectCSV(
-  path: string,
-): Promise<{readonly schema: Schema; readonly indices: number}> {
+async function inspectCSV(path: string): Promise<Schema> {
   const parser = openCSV(path, {bom: true, skip_empty_lines: true});
   try {
     let schema: Schema | null = null;
-    let indices = 0;
     for await (const record of parser) {
       if (schema === null) {
         if (
@@ -116,12 +105,11 @@ async function inspectCSV(
         schema = new Schema(
           record.map(header => new Field(header, new Utf8(), false)),
         );
-      } else {
-        indices += 1;
+        break;
       }
     }
     if (schema === null) throw new Error(`CSV source '${path}' has no header`);
-    return {schema, indices};
+    return schema;
   } finally {
     parser.destroy();
   }

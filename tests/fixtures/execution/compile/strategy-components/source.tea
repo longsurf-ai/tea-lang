@@ -19,7 +19,7 @@ if bar_index == 1
 if bar_index == 2
 	strat.entry("Long", trade.Direction.long)
 
-expired = strat.end_bar(close, barstate.islast)
+strat.end_bar(close, false)
 metrics = strat.snapshot()
 
 emit "output0" strat.cash()
@@ -30,4 +30,3 @@ emit "output4" metrics.totalFees
 emit "output5" metrics.fillCount
 emit "output6" metrics.roundTripCount
 emit "output7" metrics.maxDrawdown
-emit "output8" na(expired) or na(expired.pending) ? 0 : expired.pending.id

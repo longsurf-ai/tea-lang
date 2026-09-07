@@ -6,11 +6,11 @@ import type {Builtin} from '../runtime/module-abi';
 import type {Stored} from '../runtime/value';
 
 /**
- * Supply per-step Pine values from the Node's position, extent, and source time.
+ * Supply per-step Pine values from the Node's position and source time.
  * The first call captures timenow for the graph; absent symbol/timeframe metadata
  * uses the builtin's typed empty value. Runtime overlays any bound fixed values.
  * @example For a module containing only `plot(timenow)`,
- * `pineBuiltinSupplier(() => 1000)([], module, 0, 1, {})` returns `[1000]`.
+ * `pineBuiltinSupplier(() => 1000)([], module, 0, {})` returns `[1000]`.
  */
 export function pineBuiltinSupplier(now: () => number = Date.now) {
   let timeNow: number | null = null;
@@ -18,7 +18,6 @@ export function pineBuiltinSupplier(now: () => number = Date.now) {
     _path: readonly number[],
     module: Module,
     index: number,
-    indices: number | null,
     datum: Readonly<Record<string, unknown>>,
   ): readonly Stored[] => {
     if (timeNow === null) {
@@ -28,7 +27,7 @@ export function pineBuiltinSupplier(now: () => number = Date.now) {
       }
     }
     return module.inputs.builtins.map(spec =>
-      builtinValue(spec, index, indices, datum, timeNow!),
+      builtinValue(spec, index, datum, timeNow!),
     );
   };
 }
@@ -36,7 +35,6 @@ export function pineBuiltinSupplier(now: () => number = Date.now) {
 function builtinValue(
   spec: Builtin,
   index: number,
-  indices: number | null,
   datum: Readonly<Record<string, unknown>>,
   timeNow: number,
 ): Stored {
@@ -54,18 +52,12 @@ function builtinValue(
       }
       break;
     case 'bar':
-      value =
-        source.field === 'bar_index'
-          ? index
-          : finiteIndices(indices, 'last_bar_index') - 1;
+      value = index;
       break;
     case 'barstate':
       switch (source.field) {
         case 'isfirst':
           value = index === 0;
-          break;
-        case 'islast':
-          value = index === finiteIndices(indices, 'barstate.islast') - 1;
           break;
         case 'isrealtime':
           value = false;
@@ -102,13 +94,4 @@ function eventTime(value: unknown, field: 'time'): number {
     throw new BindError(`Pine ${field} must be an exact epoch-ms integer`);
   }
   return time;
-}
-
-function finiteIndices(indices: number | null, builtin: string): number {
-  if (indices === null) {
-    throw new BindError(
-      `Pine builtin '${builtin}' requires a finite DataStream indices count`,
-    );
-  }
-  return indices;
 }

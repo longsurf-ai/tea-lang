@@ -18,8 +18,6 @@ import {i, type Clock} from './clock';
  * created until `subscribe()` or the returned Observable is subscribed.
  *
  * A one-field schema also accepts scalar emissions of that field's type.
- * Finite sources may declare their exact emission count through `indices`;
- * Node checks the count and uses it for extent-dependent contextual values.
  *
  * @example
  * ```ts
@@ -29,8 +27,6 @@ import {i, type Clock} from './clock';
  * const prices = new DataStream(
  *   new Schema([new Field('close', new Float64(), false)]),
  *   of({close: 10}, {close: 11}),
- *   i,
- *   2,
  * );
  * prices.subscribe({next: row => console.log(row.close)}); // 10, then 11
  * ```
@@ -45,13 +41,7 @@ export class DataStream<
     schema: Schema,
     source: Observable<T>,
     public readonly clock: Clock = i,
-    public readonly indices: number | null = null,
   ) {
-    if (indices !== null && (!Number.isSafeInteger(indices) || indices < 0)) {
-      throw new RangeError(
-        'DataStream indices must be a non-negative safe integer',
-      );
-    }
     this.shape = cloneSchema(schema);
     this.observable = source.pipe(
       map(value => {

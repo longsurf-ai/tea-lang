@@ -119,14 +119,16 @@ if enterLong
 if exitLong
     strat.close("Long")
 
-expired = strat.end_bar(close, barstate.islast)
+expired = strat.end_bar(close, false)
 ```
 
 `begin_bar` matches a command that was already pending at the current open and
 applies any fill before signal logic runs. New commands cannot fill at that
 same open. `end_bar` optionally processes a close fill when the broker was
-configured with `processOrdersOnClose=true`, marks the portfolio, and expires
-remaining orders on the last bar without forcing liquidation.
+configured with `processOrdersOnClose=true`, marks the portfolio, and, when its
+second argument marks the final bar, expires remaining orders without forcing
+liquidation. Tea has no builtin that identifies the final bar; pass `false`
+unless the host supplies that knowledge.
 
 `process_close`, `mark`, and `finish` expose the same end phase separately when
 a policy needs an observation between them. `entry` accepts explicit quantity
@@ -143,7 +145,7 @@ if enterLong
 if manageLong
     strat.exit("Long exit", fromEntry="Long", stop=stopPrice, target=targetPrice)
 
-expired = strat.end_bar(close, barstate.islast)
+expired = strat.end_bar(close, false)
 ```
 
 `begin_bar` first matches the pending primary command, applies it, resolves any
@@ -168,7 +170,7 @@ if not na(matches.pending)
     strat.exit("Long exit", fromEntry="Long", stop=derivedStop)
 
 exitFill = strat.continue_bar(open, high, low, close)
-expired = strat.end_bar(close, barstate.islast)
+expired = strat.end_bar(close, false)
 ```
 
 The broker replays `open -> nearer extreme -> farther extreme -> close`; equal

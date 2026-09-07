@@ -66,12 +66,7 @@ A DataStream carries:
 
 - an Arrow `Schema` describing its named fields;
 - a cold or hot Observable;
-- an optional regular Clock;
-- optional finite `indices`.
-
-`indices` is semantic metadata, not a resource limit. When present, Node checks
-that the stream emits exactly that many values. The Pine Extension uses it for
-`last_bar_index` and `barstate.islast`. A live stream leaves it null.
+- an optional regular Clock.
 
 Declare event-time fields with Arrow's `TimestampMillisecond` type:
 
@@ -106,7 +101,6 @@ domain checks or conversions belong in ordinary RxJS operators upstream.
 Pine is statically enabled while it is Tea's only Extension. It derives:
 
 - `bar_index` from the Node's committed index;
-- `last_bar_index` and `barstate.islast` from `DataStream.indices`;
 - `time` from the current input datum;
 - one fixed historical `timenow` value from the Node's host clock;
 - historical bar-state flags from finite execution semantics.
