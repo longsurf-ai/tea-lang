@@ -10,6 +10,7 @@ the network.
 | Directory                  | Contents                                                                                                                                                                        |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`api/`](api/)             | Runnable TypeScript embedding examples using the public `tea` package export and local or live sources/sinks.                                                                   |
+| [`tea/`](tea/)             | Small Tea programs for inspecting compiler-generated TypeScript.                                                                                                                |
 | [`strategy/`](strategy/)   | Runnable strategies, one directory per strategy. Each directory owns Tea source, behavioral notes, and provenance. The catalog README records the clean-room TradingView audit. |
 | [`indicator/`](indicator/) | Indicator and data-request demonstrations that do not place orders.                                                                                                             |
 | [`language/`](language/)   | Focused demonstrations of Tea language semantics.                                                                                                                               |
@@ -32,12 +33,12 @@ print every result:
 node examples/api/simple-sync.ts
 ```
 
-The handwritten TypeScript example uses `tea/runtime` directly, then runs through
-the same public Node/stream API. It shows parameter-bound history and two
-independent accumulator call frames without invoking the Tea frontend:
+To inspect the TypeScript actually emitted by the compiler, build
+[`tea/accumulate.tea`](tea/accumulate.tea). The source contains two independent
+accumulator calls and parameter-bound history:
 
 ```sh
-node examples/api/typed-runtime.ts
+tea build examples/tea/accumulate.tea -o /tmp/accumulate.ts
 ```
 
 The Batch Recipe example performs the same public `bind()` and `to()` wiring,

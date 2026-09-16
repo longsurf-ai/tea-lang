@@ -48,6 +48,7 @@ const ignoredRepositoryDirectories = new Set([
   'build',
   'dist',
   'node_modules',
+  'plans', // Git-ignored local design notes are not repository tooling.
 ]);
 
 function repositoryTextFiles(root: string): string[] {

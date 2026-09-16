@@ -1,10 +1,9 @@
-// Handwritten runtime code and compiled Tea meet the same independent row oracle.
+// Compiled Tea preserves captured values, independent calls, and provisional state.
 
 import {expect, test} from 'vitest';
 import {Field, Float64, Schema} from 'apache-arrow';
 import {from} from 'rxjs';
-import {program} from '../examples/api/typed-runtime';
-import {createNode, type Node} from '../src/api/node';
+import type {Node} from '../src/api/node';
 import {DataStream} from '../src/api/stream';
 import {tea} from '../src/api/tea';
 import {Context} from '../src/runtime';
@@ -38,7 +37,7 @@ function rows(node: Node, lag: number): readonly unknown[][] {
   return rows;
 }
 
-test('handwritten TypeScript preserves parameter history and independent call frames', () => {
+test('compiled TypeScript preserves parameter history and independent call frames', () => {
   for (const lag of [0, 1, 2]) {
     const source = tea`
       lag = input.int(1, minval=0, maxval=10)
@@ -58,7 +57,6 @@ test('handwritten TypeScript preserves parameter history and independent call fr
       [60, 6, lag === 0 ? 30 : lag === 1 ? 20 : 10],
     ];
     expect(rows(source, lag)).toEqual(expected);
-    expect(rows(createNode(program.clone()), lag)).toEqual(expected);
   }
 });
 

@@ -321,15 +321,16 @@ semantic emitter. Tagged `tea` templates use synchronous transpilation without
 running the TypeScript checker on each template construction. Build and CI checks
 cover emitted positive and negative typing cases.
 
-The `examples/api/typed-runtime.ts` example shows a complete handwritten Module with parameter-bound history and two independent
-accumulators. Run it from a checkout with:
+Build the Tea source in `examples/tea/accumulate.tea` to inspect the actual
+compiler-generated TypeScript, including parameter-bound history and two
+independent accumulator calls:
 
 ```sh
-npm run build:package
-node examples/api/typed-runtime.ts
+tea build examples/tea/accumulate.tea -o /tmp/accumulate.ts
 ```
 
-Its rows are derived from `close = 10, 20, 30` and `open = 1, 2, 3`:
+For illustration, supplying `close = 10, 20, 30` and `open = 1, 2, 3` with
+`lag = 1` would produce these values:
 
 | Index | Close sum | Open sum | Previous close (`lag = 1`) |
 | ----- | --------: | -------: | -------------------------: |
@@ -337,8 +338,8 @@ Its rows are derived from `close = 10, 20, 30` and `open = 1, 2, 3`:
 | 1     |        30 |        3 |                         10 |
 | 2     |        60 |        6 |                         20 |
 
-The example uses `createNode(program.bind(...))`, `DataStream` and `.to(observer)`;
-it adds no host loop. Handwritten code declares its retention and schemas explicitly.
+The build command writes the module; it does not execute input rows.
+Handwritten code declares its retention and schemas explicitly.
 TypeScript does not infer history requirements from a function body. Request-bearing
 programs still use Node's child synchronization described in [Requests](requests.md).
 Handwritten TypeScript is a CPU entry path; WGSL continues to consume the Tea Program.
