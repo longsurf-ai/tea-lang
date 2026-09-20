@@ -27,6 +27,13 @@ test('requires a runtime module default export', () => {
   ).toThrow("cannot import 'node:fs'");
 });
 
+test('rejects malformed TypeScript even when transpilation can recover', () => {
+  const source = generate(mustBuild('emit "price" close'));
+  expect(() => loadModule(`const broken: = 0;\n${source}`)).toThrow(
+    'Type expected',
+  );
+});
+
 test('rejects the prior runtime ABI before using its schemas', () => {
   const source = generate(mustBuild('emit "price" close'));
   const stale = source.replace(
