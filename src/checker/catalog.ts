@@ -5,6 +5,7 @@ import {
   BoolType,
   ColorType,
   FloatType,
+  formatType,
   IntType,
   NaType,
   NA_VALUE,
@@ -1226,4 +1227,90 @@ export function isNativeRoot(name: string): boolean {
     }
   }
   return false;
+}
+
+// ---- display ----------------------------------------------------------------
+
+/** Whether a native type reference is one of the generic forms. */
+export function isGenericTypeRef(ref: NativeTypeRef): ref is GenericTypeRef {
+  return (
+    typeof ref === 'object' &&
+    (ref.kind === 'type-param' ||
+      ref.kind === 'array' ||
+      ref.kind === 'matrix' ||
+      ref.kind === 'map')
+  );
+}
+
+/**
+ * How a catalog type reference reads in documentation. A concrete `Type`
+ * prints as `formatType` does; the markers that accept several types print
+ * as the set they accept.
+ *
+ * @example
+ * ```ts
+ * formatNativeTypeRef(TypeRef.Num); // 'int | float'
+ * formatNativeTypeRef({kind: 'array', element: {kind: 'type-param', name: 'T'}});
+ * // 'array<T>'
+ * ```
+ */
+export function formatNativeTypeRef(ref: NativeTypeRef): string {
+  if (isGenericTypeRef(ref)) {
+    if (ref.kind === 'type-param') {
+      return ref.name;
+    }
+    if (ref.kind === 'array' || ref.kind === 'matrix') {
+      return `${ref.kind}<${formatNativeTypeRef(ref.element)}>`;
+    }
+    return `map<${formatNativeTypeRef(ref.key)}, ${formatNativeTypeRef(ref.value)}>`;
+  }
+  switch (ref) {
+    case TypeRef.Num:
+      return 'int | float';
+    case TypeRef.Any:
+      return 'any value';
+    case TypeRef.Enum:
+      return 'enum';
+    case TypeRef.Nullable:
+      return 'nullable value';
+    case TypeRef.StringConvertible:
+      return 'scalar | enum | resource';
+    default:
+      return formatType(ref);
+  }
+}
+
+/**
+ * One overload as a single display line: the one spelling of a native
+ * signature, shared by the generated reference and editor hovers. Staged
+ * parameters are left out, `?` marks an optional parameter and `...` a
+ * variadic one.
+ *
+ * @example
+ * ```ts
+ * nativeFuncs('math.max')!.map(formatNativeSignature);
+ * // ['math.max(number: int, ...number1: int) → int',
+ * //  'math.max(number: int | float, ...number1: int | float) → float']
+ * ```
+ */
+export function formatNativeSignature(func: NativeFunc): string {
+  const typeParams =
+    func.typeParams.length === 0
+      ? ''
+      : `<${func.typeParams
+          .map(parameter => `${parameter.name}: ${parameter.constraint}`)
+          .join(', ')}>`;
+  const params = func.params
+    .filter(parameter => parameter.availability === 'supported')
+    .map(parameter => {
+      const variadic = parameter.variadic ? '...' : '';
+      const optional = parameter.required ? '' : '?';
+      return `${variadic}${parameter.name}${optional}: ${formatNativeTypeRef(parameter.type)}`;
+    })
+    .join(', ');
+  const result =
+    func.result === FirstArgumentResult
+      ? 'type of first argument'
+      : formatNativeTypeRef(func.result);
+  return `${func.name}${typeParams}(${params}) → ${result}`;
 }

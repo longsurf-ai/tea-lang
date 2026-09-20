@@ -2,8 +2,8 @@
 
 import type * as syntax from '../syntax/nodes';
 import type {EnumType, StructType} from '../ir/type';
-import type {Info} from './info';
-import type {Object, VariableObject} from './object';
+import type {FunctionInstance, Info} from './info';
+import type {FunctionObject, Object, VariableObject} from './object';
 import type {Scope} from './scope';
 
 export interface Package {
@@ -36,4 +36,23 @@ export interface CheckedPackage {
   // specializations recursively include the canonical ids of their concrete
   // type arguments.
   readonly nominalTypeIds: ReadonlyMap<StructType | EnumType, string>;
+  /**
+   * Every function instance the checker stenciled, grouped by template and in
+   * instantiation order, across the root package and its libraries. Function
+   * bodies are checked only here, so each instance's `Info` holds the facts
+   * for one signature of that body.
+   *
+   * This is the checker's own memo table, read-only. It is the only path to a
+   * method's declaration-validation instance: no `CallExpr` owns that one, so
+   * walking `Info.calls` never reaches it. A free function that is never
+   * called has no entry. Instances whose body reported errors stay listed.
+   *
+   * @example
+   * ```ts
+   * // After `g(close)` and `g(1)`, the parameter of `g` has two types.
+   * const g = checked.pkg.scope.lookup('g') as FunctionObject;
+   * checked.instances.get(g)?.map(instance => instance.signature[0]?.type);
+   * ```
+   */
+  readonly instances: ReadonlyMap<FunctionObject, readonly FunctionInstance[]>;
 }

@@ -1,0 +1,38 @@
+{
+  "name": "tea-language-client",
+  "displayName": "Tea Language Client",
+  "description": "Development LSP client that runs the Tea CLI's lsp verb over stdio.",
+  "version": "0.0.1",
+  "private": true,
+  "publisher": "longsurf",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:tea"
+  ],
+  "extensionDependencies": [
+    "longsurf.tea-language-support"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "Tea",
+      "properties": {
+        "tea.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the JSON-RPC messages between the editor and tea lsp in the Output panel."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  }
+}

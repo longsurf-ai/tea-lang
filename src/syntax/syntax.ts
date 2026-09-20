@@ -7,14 +7,17 @@ import {Parser} from './parser';
 import {Scanner} from './scanner';
 import type {Token} from './tokens';
 
+export {endPos} from './positions';
+
 // Parse one source file. Errors flow through errh; the returned File may be
 // partial.
 export function parse(base: PosBase, src: string, errh: ErrorHandler): File {
   return new Parser(base, src, errh).parseFile();
 }
 
-// Debug/test surface only (`tea parse --tokens`): drives a scanner to EOF and
-// materializes Token snapshots. The compile pipeline never calls this — the
+// Token snapshots for `tea parse --tokens`, tests, and the language server
+// (`src/lsp`: diagnostic ranges, completion, signature help): drives a scanner
+// to EOF and materializes them. The compile pipeline never calls this — the
 // parser consumes the scanner incrementally.
 export function tokenize(
   base: PosBase,

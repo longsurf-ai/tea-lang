@@ -33,6 +33,23 @@ export class Scope {
     return this.objects.has(name);
   }
 
+  /**
+   * The objects declared directly in this scope, in declaration order.
+   * Parents are not included: a reader that wants every visible name walks
+   * `parent` itself and keeps the first object it sees for each name, which
+   * is the shadowing rule `lookup` applies.
+   *
+   * @example
+   * ```ts
+   * for (let s: Scope | null = scope; s !== null; s = s.parent) {
+   *   for (const object of s.declared()) offer(object);
+   * }
+   * ```
+   */
+  declared(): IterableIterator<Object> {
+    return this.objects.values();
+  }
+
   // True when `name` resolves within the chain from this scope up to and
   // including `boundary` — how the checker decides a write target is local
   // to the current function instantiation.

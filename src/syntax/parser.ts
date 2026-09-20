@@ -733,8 +733,9 @@ export class Parser {
         args.push(this.arg());
       } while (this.got(Tok.Comma));
     }
+    const rparen = this.pos();
     this.want(Tok.Rparen);
-    return {kind: NodeKind.CallExpr, pos: fun.pos, fun, typeArgs, args};
+    return {kind: NodeKind.CallExpr, pos: fun.pos, fun, typeArgs, args, rparen};
   }
 
   private arg(): Arg {
@@ -798,7 +799,14 @@ export class Parser {
   // needs no trailing newline of its own.
   private block(): Block {
     this.want(Tok.Newline);
-    this.want(Tok.Indent);
+    if (!this.want(Tok.Indent)) {
+      // A header whose body is not typed yet. The following lines belong to
+      // the enclosing block, so the body is empty rather than everything up
+      // to the next dedent. The newline is consumed, hence blockEnded.
+      const at = this.pos();
+      this.blockEnded = true;
+      return {kind: NodeKind.Block, pos: at, stmtList: [], dedent: at};
+    }
     const pos = this.pos();
     const stmtList: Stmt[] = [];
     while (this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
@@ -813,9 +821,10 @@ export class Parser {
       this.stmtLine(stmtList);
       this.stmtEnd();
     }
+    const dedent = this.pos();
     this.want(Tok.Dedent);
     this.blockEnded = true;
-    return {kind: NodeKind.Block, pos, stmtList};
+    return {kind: NodeKind.Block, pos, stmtList, dedent};
   }
 
   // Control structures are expressions; at statement position they ride in
@@ -900,12 +909,16 @@ export class Parser {
     this.next(); // 'switch'
     const subject = this.tok() === Tok.Newline ? null : this.expr();
     this.want(Tok.Newline);
-    this.want(Tok.Indent);
+    // Without an indent there are no arms yet; see block().
+    const indented = this.want(Tok.Indent);
     const arms: SwitchArm[] = [];
-    while (this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
+    while (indented && this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
       if (this.got(Tok.Newline)) {
         continue;
       }
+      // A nested block leaves blockEnded set. Left set, an arm that consumes
+      // nothing would pass stmtEnd() untouched and this loop would never end.
+      this.blockEnded = false;
       const armPos = this.pos();
       const pattern = this.tok() === Tok.Arrow ? null : this.expr();
       this.want(Tok.Arrow);
@@ -918,7 +931,9 @@ export class Parser {
       }
       arms.push({kind: NodeKind.SwitchArm, pos: armPos, pattern, body});
     }
-    this.want(Tok.Dedent);
+    if (indented) {
+      this.want(Tok.Dedent);
+    }
     this.blockEnded = true;
     return {kind: NodeKind.SwitchExpr, pos, subject, arms};
   }
@@ -1095,9 +1110,9 @@ export class Parser {
   private interfaceDecl(pos: Pos, exported: boolean): InterfaceDecl {
     const name = this.name();
     this.want(Tok.Newline);
-    this.want(Tok.Indent);
+    const indented = this.want(Tok.Indent);
     const methods: InterfaceMethodDecl[] = [];
-    while (this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
+    while (indented && this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
       if (this.got(Tok.Newline)) {
         continue;
       }
@@ -1113,7 +1128,9 @@ export class Parser {
       }
       this.stmtEnd();
     }
-    this.want(Tok.Dedent);
+    if (indented) {
+      this.want(Tok.Dedent);
+    }
     this.blockEnded = true;
     return {kind: NodeKind.InterfaceDecl, pos, exported, name, methods};
   }
@@ -1186,9 +1203,9 @@ export class Parser {
     }
     const typeParams = parsedTypeParams ?? [];
     this.want(Tok.Newline);
-    this.want(Tok.Indent);
+    const indented = this.want(Tok.Indent);
     const members: StructMember[] = [];
-    while (this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
+    while (indented && this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
       if (this.got(Tok.Newline)) {
         continue;
       }
@@ -1196,7 +1213,9 @@ export class Parser {
       members.push(this.structMember());
       this.stmtEnd();
     }
-    this.want(Tok.Dedent);
+    if (indented) {
+      this.want(Tok.Dedent);
+    }
     this.blockEnded = true;
     return {
       kind: NodeKind.StructDecl,
@@ -1342,12 +1361,13 @@ export class Parser {
   private enumDecl(pos: Pos, exported: boolean): Stmt {
     const name = this.name();
     this.want(Tok.Newline);
-    this.want(Tok.Indent);
+    const indented = this.want(Tok.Indent);
     const members: EnumMember[] = [];
-    while (this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
+    while (indented && this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
       if (this.got(Tok.Newline)) {
         continue;
       }
+      this.blockEnded = false; // as in switchExpr: a title may hold a block
       const memberPos = this.pos();
       const memberName = this.name();
       const title = this.got(Tok.Assign) ? this.expr() : null;
@@ -1359,7 +1379,9 @@ export class Parser {
       });
       this.stmtEnd();
     }
-    this.want(Tok.Dedent);
+    if (indented) {
+      this.want(Tok.Dedent);
+    }
     this.blockEnded = true;
     return {kind: NodeKind.EnumDecl, pos, exported, name, members};
   }

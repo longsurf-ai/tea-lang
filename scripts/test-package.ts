@@ -26,6 +26,7 @@ import {loadModule} from 'tea/runtime/load';
 import {pineBuiltinSupplier} from 'tea/extension/pine';
 import type {GpuExecution} from 'tea/runtime/gpu';
 import type {CompiledWgslProgram} from 'tea/codegen/wgsl';
+import {analyze, startLanguageServer} from 'tea/lsp';
 import {of} from 'rxjs';
 const errors = new Errors();
 const ir = compileToProgram([{filename: 'consumer.tea', source: 'emit "value" close'}], errors);
@@ -37,6 +38,7 @@ const stream = new DataStream(new Schema([new Field('close', new Float64(), fals
 node.bind(stream).to({next: (row: Datum) => console.log(row.index)});
 tea\`emit "value" 1\`.ready();
 export type Gpu = readonly [GpuExecution, CompiledWgslProgram];
+export const languageServer = [startLanguageServer, analyze({filename: 'consumer.tea', source: 'x = 1'}).diagnostics];
 `,
   );
   const checkedConsumer = ts.createProgram([consumer], {
@@ -91,10 +93,13 @@ import assert from 'node:assert/strict';
 import {Context, Module} from 'tea/runtime';
 import {createNode, DataStream, tea} from 'tea';
 import {loadModule} from 'tea/runtime/load';
+import {analyze} from 'tea/lsp';
 import {Schema, Field, Float64} from 'apache-arrow';
 import {of} from 'rxjs';
 import unbound from './program.mjs';
 assert.ok(unbound instanceof Module);
+// The packaged language server finds the compiler-shipped libraries.
+assert.deepEqual(analyze({filename: 'run.tea', source: 'x = ta.ema(close, 3)'}).diagnostics, []);
 assert.ok(tea\`emit "value" 1\`.module instanceof Module);
 const loaded = loadModule(${JSON.stringify(compiled.source)}).bind({length: 3});
 assert.ok(loaded instanceof Module);

@@ -24,7 +24,9 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
 - `TypeKind.Na` is checker-only. Noding contextualizes every `NA_VALUE` with
   the concrete nullable type known from its declaration, branch join, field,
   or call parameter; an uncontextualized na reaching Program construction is
-  a phase-barrier violation and `fatal()`s.
+  a phase-barrier violation and `fatal()`s. An na result nobody consumes — a
+  control structure in statement position, or one inside a `Void` structure —
+  has no value: the structure nodes as `Void` and a folded na is dropped.
 - Struct constructors consume their one `ConstructorCall` resolution. Its
   field-ordered arguments include supplied expressions and field-owned
   defaults; each `CheckedExpression` supplies the exact semantic `Info` to use

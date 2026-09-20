@@ -411,6 +411,9 @@ export interface CallExpr extends Node {
   readonly fun: Expr;
   readonly typeArgs: readonly TypeName[] | null;
   readonly args: readonly Arg[];
+  // Position of the closing ')': a call ends at a token no child owns. When
+  // the ')' is missing, this is where the parser expected it.
+  readonly rparen: Pos;
 }
 
 export interface SelectorExpr extends Node {
@@ -448,6 +451,10 @@ export interface TuplePattern extends Node {
 export interface Block extends Node {
   readonly kind: typeof NodeKind.Block;
   readonly stmtList: readonly Stmt[];
+  // Position of the Dedent that closed the block (Go's BlockStmt.Rbrace). The
+  // scanner places a Dedent at column 1 of the dedenting line, so the block
+  // also covers the blank and comment lines after its last statement.
+  readonly dedent: Pos;
 }
 
 // Control structures are expressions: `ma = if long ... else ...` is legal,
@@ -500,3 +507,25 @@ export interface SwitchArm extends Node {
 export interface BadExpr extends Node {
   readonly kind: typeof NodeKind.BadExpr;
 }
+
+// ---- every node -------------------------------------------------------------
+
+// The closed union of every concrete node, for functions that are total over
+// the tree (`endPos`). TypedParam is a Param.
+export type AnyNode =
+  | File
+  | Stmt
+  | Expr
+  | Param
+  | TypeParam
+  | FieldDecl
+  | MethodDecl
+  | InterfaceMethodDecl
+  | EnumMember
+  | TypeAnnotation
+  | GenericType
+  | ArrayType
+  | Arg
+  | TuplePattern
+  | Block
+  | SwitchArm;

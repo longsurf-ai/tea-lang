@@ -56,6 +56,10 @@
     "./runtime/gpu": {
       "types": "./dist/types/runtime/gpu/index.d.ts",
       "default": "./dist/runtime/gpu/index.js"
+    },
+    "./lsp": {
+      "types": "./dist/types/lsp/index.d.ts",
+      "default": "./dist/lsp/index.js"
     }
   },
   "scripts": {
@@ -89,6 +93,8 @@
     "rxjs": "^7.8.2",
     "tsx": "4.23.10",
     "typescript": "5.8.3",
+    "vscode-languageserver": "10.1.1",
+    "vscode-languageserver-textdocument": "1.0.14",
     "zod": "4.3.6",
     "@webgpu/types": "0.1.71"
   },

@@ -1,6 +1,7 @@
 // Purpose: Commander parsing, command dispatch, logging, and exit-code policy.
 
 import {Command, CommanderError, InvalidArgumentError} from 'commander';
+import {createConnection} from 'vscode-languageserver/node';
 import {configureLog, parseLogLevel} from '../base/log';
 import {formatPos} from '../base/pos';
 import {UnimplementedError} from '../base/unimplemented';
@@ -8,9 +9,11 @@ import {runCommand} from './execution';
 import {buildCommand, parseCommand} from './compiler-tools';
 import {cliFailure, type CliResult} from './result';
 import {startDocsServer} from '../docs/server';
+import {startLanguageServer} from '../lsp/server';
 
 type CliCommand =
   | {readonly kind: 'docs'; readonly port: number; readonly open: boolean}
+  | {readonly kind: 'lsp'}
   | {
       readonly kind: 'run';
       readonly file: string;
@@ -59,6 +62,14 @@ function parseArgs(argv: readonly string[]): CliCommand | null {
     .option('--no-open', 'do not open the documentation in a browser')
     .action((options: {port: number; open: boolean}) => {
       selected = {kind: 'docs', port: options.port, open: options.open};
+    });
+
+  tea
+    .command('lsp')
+    .description('Serve the Language Server Protocol over stdin and stdout')
+    .option('--stdio', 'accepted and ignored: stdio is the only transport')
+    .action(() => {
+      selected = {kind: 'lsp'};
     });
 
   tea
@@ -139,6 +150,14 @@ async function dispatch(command: CliCommand): Promise<CliResult> {
         print: line => console.log(line),
         warn: line => console.error(line),
       });
+      return {ok: true};
+
+    case 'lsp':
+      // Stdout carries protocol bytes only, so nothing on this path prints.
+      // The streams are passed explicitly: left to itself the library wants
+      // a transport flag in argv. The open stdin keeps the process alive, and
+      // the library exits it on the `exit` notification or when stdin ends.
+      startLanguageServer(createConnection(process.stdin, process.stdout));
       return {ok: true};
 
     case 'run':
