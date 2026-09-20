@@ -1,7 +1,7 @@
 import type {Module} from './module-binding';
 // Load the same ordinary TypeScript module written by the compiler.
 
-import {transformSync} from 'esbuild';
+import ts from 'typescript';
 import * as runtime from './index';
 
 /**
@@ -13,14 +13,28 @@ import * as runtime from './index';
  * configures the module without subscribing to inputs or running the program.
  */
 export function loadModule(source: string): Module {
-  const {code} = transformSync(source, {
-    loader: 'ts',
-    format: 'cjs',
-    target: 'es2022',
-    sourcefile: 'generated.ts',
+  const compiled = ts.transpileModule(source, {
+    fileName: 'generated.ts',
+    reportDiagnostics: true,
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
   });
+  const errors = compiled.diagnostics?.filter(
+    diagnostic => diagnostic.category === ts.DiagnosticCategory.Error,
+  );
+  if (errors?.length) {
+    throw new SyntaxError(
+      errors
+        .map(diagnostic =>
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'),
+        )
+        .join('\n'),
+    );
+  }
   const module = {exports: {} as {default?: Module}};
-  new Function('require', 'module', 'exports', code)(
+  new Function('require', 'module', 'exports', compiled.outputText)(
     (specifier: string) => {
       if (specifier !== 'tea/runtime') {
         throw new Error(`generated module cannot import '${specifier}'`);

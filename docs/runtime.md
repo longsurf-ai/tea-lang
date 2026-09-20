@@ -130,7 +130,8 @@ module
   clone                an independent configuration using the same code
 ```
 
-`loadModule()` transpiles the generated TypeScript and constructs its `Module`.
+`loadModule()` uses TypeScript's in-process transpiler to construct the generated
+`Module`, without a native compiler executable.
 The module constructor copies the ordinary Arrow schemas and keeps the binding
 calculation function private. `module.bind()` validates a named patch,
 preserves existing values, fills usable defaults only for still-unset parameters,
