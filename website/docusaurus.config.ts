@@ -27,7 +27,7 @@ const config: Config = {
           path: '../docs',
           routeBasePath: '/',
           sidebarPath: './sidebars.ts',
-          exclude: ['**/AGENTS.md'],
+          exclude: ['**/AGENTS.md', '**/CLAUDE.md'],
         },
         blog: false,
         pages: false,
