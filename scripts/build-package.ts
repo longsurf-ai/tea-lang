@@ -26,6 +26,7 @@ await build({
     'extension/pine': 'src/extension/pine.ts',
     'codegen/wgsl/index': 'src/codegen/wgsl/index.ts',
     'runtime/gpu/index': 'src/runtime/gpu/index.ts',
+    'lsp/index': 'src/lsp/index.ts',
   },
   outdir: 'dist',
   splitting: true,

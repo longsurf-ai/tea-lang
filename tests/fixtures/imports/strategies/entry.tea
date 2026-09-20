@@ -1,0 +1,7 @@
+//@version=1
+import ./lib/bands
+import ../shared/risk as limits
+
+upper = bands.upper(10.0, 2.0)
+emit "upper" upper
+emit "capped" limits.cap(upper, 11.0)

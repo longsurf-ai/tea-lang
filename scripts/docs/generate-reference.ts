@@ -7,14 +7,11 @@ import {format} from 'prettier';
 
 import {
   CATALOG,
-  FirstArgumentResult,
-  TypeRef,
-  type GenericTypeRef,
+  formatNativeSignature,
+  formatNativeTypeRef,
   type NativeFunc,
-  type NativeResult,
   type NativeTypeRef,
 } from '../../src/checker/catalog';
-import {formatType} from '../../src/ir/type';
 import {
   PILOT_REFERENCE_ENTRIES,
   REFERENCE_CATEGORIES,
@@ -47,59 +44,6 @@ function fencedTea(source: string): string {
 
 function title(category: ReferenceCategory): string {
   return category[0]!.toUpperCase() + category.slice(1);
-}
-
-function isGeneric(ref: NativeTypeRef): ref is GenericTypeRef {
-  return (
-    typeof ref === 'object' &&
-    (ref.kind === 'type-param' ||
-      ref.kind === 'array' ||
-      ref.kind === 'matrix' ||
-      ref.kind === 'map')
-  );
-}
-
-export function formatNativeTypeRef(ref: NativeTypeRef): string {
-  if (isGeneric(ref)) {
-    if (ref.kind === 'type-param') return ref.name;
-    if (ref.kind === 'array' || ref.kind === 'matrix') {
-      return `${ref.kind}<${formatNativeTypeRef(ref.element)}>`;
-    }
-    return `map<${formatNativeTypeRef(ref.key)}, ${formatNativeTypeRef(ref.value)}>`;
-  }
-  if (ref === TypeRef.Num) return 'int | float';
-  if (ref === TypeRef.Any) return 'any value';
-  if (ref === TypeRef.Enum) return 'enum';
-  if (ref === TypeRef.Nullable) return 'nullable value';
-  if (ref === TypeRef.StringConvertible) return 'scalar | enum | resource';
-  return formatType(ref);
-}
-
-function formatResult(result: NativeResult): string {
-  return result === FirstArgumentResult
-    ? 'type of first argument'
-    : formatNativeTypeRef(result);
-}
-
-function typeParams(func: NativeFunc): string {
-  if (func.typeParams.length === 0) return '';
-  return `<${func.typeParams
-    .map(parameter => `${parameter.name}: ${parameter.constraint}`)
-    .join(', ')}>`;
-}
-
-function signature(func: NativeFunc): string {
-  const supported = func.params.filter(
-    parameter => parameter.availability === 'supported',
-  );
-  const params = supported
-    .map(parameter => {
-      const variadic = parameter.variadic ? '...' : '';
-      const optional = parameter.required ? '' : '?';
-      return `${variadic}${parameter.name}${optional}: ${formatNativeTypeRef(parameter.type)}`;
-    })
-    .join(', ');
-  return `${func.name}${typeParams(func)}(${params}) → ${formatResult(func.result)}`;
 }
 
 function frontmatter(pageTitle: string, description: string): string {
@@ -176,7 +120,7 @@ function functionPage(entry: FunctionEntry): string {
   if (overloads === undefined || overloads.length === 0) {
     throw new Error(`unknown native function '${entry.compilerName}'`);
   }
-  const signatures = overloads.map(value => signature(value)).join('\n');
+  const signatures = overloads.map(formatNativeSignature).join('\n');
   const errorSection =
     entry.runtimeErrors.length === 0
       ? ''

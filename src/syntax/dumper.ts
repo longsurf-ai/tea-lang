@@ -29,7 +29,9 @@ export function dumpTokens(tokens: readonly Token[]): string {
 // One node per line: `Kind @line:col scalar=value ...`, children indented two
 // spaces under a `field:` (or `field[i]:`) label. Null fields are omitted —
 // their absence is grammar-implied. Field order is construction order, which
-// the parser keeps stable.
+// the parser keeps stable. Stored end positions are omitted: the dump is a
+// start-position view, and range queries read them through endPos().
+const END_POSITION_FIELDS: ReadonlySet<string> = new Set(['dedent', 'rparen']);
 
 function isPos(value: unknown): value is Pos {
   return (
@@ -60,7 +62,12 @@ function dumpNode(
   let head = `${indent}${label}${node.kind} @${node.pos.line}:${node.pos.col}`;
   const children: Array<[string, unknown]> = [];
   for (const [key, value] of Object.entries(node)) {
-    if (key === 'kind' || key === 'pos' || value === null) {
+    if (
+      key === 'kind' ||
+      key === 'pos' ||
+      value === null ||
+      END_POSITION_FIELDS.has(key)
+    ) {
       continue;
     }
     if (

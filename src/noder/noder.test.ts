@@ -22,6 +22,7 @@ import {
   namesOf,
   seriesInputsOf,
   slotCountOf,
+  walkIrStmt,
 } from '../ir/visit';
 import {
   resolveImports,
@@ -204,6 +205,144 @@ for i = 0 to 1
         expect(call.args[0].type.kind).toBe(TypeKind.Float);
       }
     }
+  });
+});
+
+// A control structure in statement position has its value discarded, so an na
+// its blocks end in has no consumer to take a type from. These are valid Tea
+// and common mid-typing states; each must node without an InternalError.
+describe('na results nobody consumes', () => {
+  const ARRAY = 'a = array.new<float>(3, 0.0)\n';
+  const COUNTER = 'var int n = 0\n';
+  const shapes: Readonly<Record<string, string>> = {
+    'if ending in a typed na declaration': 'if close > 1\n    float y = na\n',
+    'if ending in a bare na': 'if close > 1\n    na\n',
+    'if ending in an na assignment':
+      'var float v = 0.0\nif close > 1\n    v := na\n',
+    'if/else with na in both arms': 'if close > 1\n    na\nelse\n    na\n',
+    'if/else with typed na declarations in both arms':
+      'if close > 1\n    float y = na\nelse\n    float z = na\n',
+    'if/else with na in one arm': 'if close > 1\n    na\nelse\n    1.0\n',
+    'if/else whose arms do not unify': 'if close > 1\n    na\nelse\n    true\n',
+    'else-if chain of na':
+      'if close > 1\n    na\nelse if close > 2\n    na\nelse\n    na\n',
+    'else-if chain of na without a final else':
+      'if close > 1\n    na\nelse if close > 2\n    float y = na\n',
+    'for ending in a bare na': 'for i = 0 to 3\n    na\n',
+    'for ending in a typed na declaration':
+      'for i = 0 to 3\n    float y = na\n',
+    'for-in ending in a bare na': `${ARRAY}for x in a\n    na\n`,
+    'for-in ending in a typed na declaration': `${ARRAY}for x in a\n    float y = na\n`,
+    'while ending in a bare na': `${COUNTER}while n < 3\n    n := n + 1\n    na\n`,
+    'while ending in a typed na declaration': `${COUNTER}while n < 3\n    n := n + 1\n    float y = na\n`,
+    'switch with na expression arms':
+      'switch\n    close > 1 => na\n    => na\n',
+    'switch on a subject with na expression arms':
+      'int k = 1\nswitch k\n    1 => na\n    => na\n',
+    'switch with na block arms':
+      'switch\n    close > 1 =>\n        float y = na\n    =>\n        na\n',
+    'ternary of na': 'close > 1 ? na : na\n',
+    'nested if ending in na': 'if close > 1\n    if close > 2\n        na\n',
+    'nested for ending in a typed na declaration':
+      'if close > 1\n    for i = 0 to 2\n        float y = na\n',
+    'nested switch ending in na':
+      'for i = 0 to 2\n    switch\n        close > 1 => na\n',
+    'nested ternary of na': 'if close > 1\n    close > 2 ? na : na\n',
+    'nested na structure before another statement':
+      'if close > 1\n    if close > 2\n        na\n    x = 1\n',
+    'if inside a function body':
+      'f() =>\n    if close > 1\n        na\n    1\ny = f()\n',
+    'typed na declaration inside a function body':
+      'f() =>\n    if close > 1\n        float q = na\n    1\ny = f()\n',
+    'loop and switch inside a function body':
+      'f() =>\n    for i = 0 to 2\n        na\n    switch\n        close > 1 => na\n    1\ny = f()\n',
+    'nested structures inside a function body':
+      'f() =>\n    if close > 1\n        while close > 2\n            float q = na\n    1\ny = f()\n',
+  };
+
+  test.each(Object.entries(shapes))('%s', (_shape, source) => {
+    const program = mustBuild(source);
+    const bodies = [
+      ...program.body,
+      ...funcsOf(program).map(func => func.body),
+    ];
+    for (const stmt of bodies) {
+      walkIrStmt(stmt, {
+        expr: expr => {
+          // TypeKind.Na stays checker-only, and a discarded na leaves no
+          // typeless constant behind.
+          expect(expr.type.kind).not.toBe(TypeKind.Na);
+          if (expr.kind === IrKind.Const && isNaValue(expr.value)) {
+            expect(expr.type.kind).not.toBe(TypeKind.Void);
+          }
+        },
+      });
+    }
+  });
+
+  test('the discarded structure has no value and drops its dead na', () => {
+    const program = mustBuild('if close > 1\n    na\n');
+    expect(program.body).toMatchObject([
+      {
+        kind: IrKind.IfExpr,
+        type: {kind: TypeKind.Void},
+        then: {kind: IrKind.BlockExpr, stmts: [], value: null},
+        else: null,
+      },
+    ]);
+  });
+
+  test('a typed na declaration keeps its write and its declared type', () => {
+    const program = mustBuild('if close > 1\n    float y = na\n');
+    expect(program.body).toMatchObject([
+      {
+        kind: IrKind.IfExpr,
+        type: {kind: TypeKind.Void},
+        then: {
+          stmts: [{kind: IrKind.Assign, value: {type: {kind: TypeKind.Float}}}],
+          value: {kind: IrKind.Const, type: {kind: TypeKind.Float}},
+        },
+      },
+    ]);
+  });
+
+  test('a consumed na result still takes its type from the consumer', () => {
+    const program = mustBuild('float x = if close > 1\n    na\n');
+    const write = program.body[0] as NameAssign;
+    expect(write.value).toMatchObject({
+      kind: IrKind.IfExpr,
+      type: {kind: TypeKind.Float},
+      then: {value: {kind: IrKind.Const, type: {kind: TypeKind.Float}}},
+    });
+  });
+
+  // The checker types a closing `Q q = na` as an untyped na, assignable to the
+  // consumer's type, so the consumer's type — not Q — is what the block yields.
+  test('a consumed na declaration takes the consumer type, not its own', () => {
+    const structs = 'struct Q\n    int a\nstruct P\n    int x\n';
+    const method = mustBuild(
+      `${structs}    P make() =>\n        Q q = na\np = P.new(1)\nr = p.make()\n`,
+    );
+    expect(funcsOf(method)[0].body).toMatchObject({
+      type: {kind: TypeKind.Struct, name: 'P'},
+      value: {kind: IrKind.Const, type: {kind: TypeKind.Struct, name: 'P'}},
+    });
+
+    const join = mustBuild(
+      `${structs}P r = if close > 1\n    Q q = na\nelse\n    P.new(1)\n`,
+    );
+    expect((join.body[0] as NameAssign).value).toMatchObject({
+      kind: IrKind.IfExpr,
+      then: {type: {kind: TypeKind.Struct, name: 'P'}},
+    });
+  });
+
+  test('an unconsumable na result stays an ordinary positioned user error', () => {
+    const {program, errors} = buildText('x = if close > 1\n    na\n');
+    expect(program).toBeNull();
+    expect(errors.map(error => `${error.pos.line}: ${error.msg}`)).toEqual([
+      '1: na initializer requires a type annotation (e.g. float x = na)',
+    ]);
   });
 });
 

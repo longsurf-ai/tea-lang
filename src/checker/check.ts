@@ -45,6 +45,7 @@ import {LitKind, Op, RESERVED_KEYWORDS} from '../syntax/tokens';
 import {
   Effect,
   FirstArgumentResult,
+  isGenericTypeRef,
   isNativeRoot,
   JoinResult,
   nativeFuncs,
@@ -436,6 +437,7 @@ class Checker {
         ]),
       ),
       nominalTypeIds: this.nominalTypeIds(),
+      instances: this.instances,
     };
   }
 
@@ -2131,7 +2133,10 @@ class Checker {
       this.error(stmt.pos, 'import must be at the top level of the script');
       return;
     }
-    const outcome = this.importer.import(stmt.path.value);
+    const outcome = this.importer.import(
+      stmt.path.value,
+      stmt.pos.base.filename,
+    );
     if (isImportError(outcome)) {
       this.error(stmt.path.pos, outcome.error);
       return;
@@ -3199,14 +3204,13 @@ class Checker {
           qualifier: Qualifier.Const,
           value: unquoteString(lit.value),
         };
-      case LitKind.Color:
-        return {
-          type: ColorType,
-          qualifier: Qualifier.Const,
-          value:
-            canonicalColor(lit.value) ??
-            fatal('invalid color literal reached checker'),
-        };
+      case LitKind.Color: {
+        // A malformed color such as `#ff` was already reported by the scanner.
+        const value = canonicalColor(lit.value);
+        return value === null
+          ? INVALID_TV
+          : {type: ColorType, qualifier: Qualifier.Const, value};
+      }
       case LitKind.Path:
         return INVALID_TV; // import paths never reach expression position
     }
@@ -5997,16 +6001,6 @@ function isRequestTransportType(type: Type): boolean {
     default:
       return false;
   }
-}
-
-function isGenericTypeRef(ref: NativeTypeRef): ref is GenericTypeRef {
-  return (
-    typeof ref === 'object' &&
-    (ref.kind === 'type-param' ||
-      ref.kind === 'array' ||
-      ref.kind === 'matrix' ||
-      ref.kind === 'map')
-  );
 }
 
 function inferNativeType(

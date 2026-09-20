@@ -372,6 +372,97 @@ describe('recovery', () => {
   });
 });
 
+describe('recovery while a construct is half typed', () => {
+  // Each of these once made the arm or member loop spin forever: a nested
+  // block left blockEnded set, so an item that consumed nothing never reached
+  // stmtEnd()'s recovery. The assertion is that parseText returns at all.
+  test.each([
+    ['switch typed above an if block', 'switch\nif a\n    b\nc = 1\n'],
+    [
+      'block arm, then a stray closer',
+      'x = switch close\n    1 =>\n        close\n    )\n',
+    ],
+    ['arm without its arrow yet', 'x = switch d\n    a\ny = 1\n'],
+    [
+      'nested switch arm, then a dedent',
+      'sw = switch\n\tcond => switch\nacc = 0.0\n',
+    ],
+    [
+      'switch inside a function body',
+      'f(a) =>\n    r = switch\n    a\nvar n = 0\n',
+    ],
+    [
+      'enum title holding a block',
+      'enum E\n    a = if close > open\n        "x"\n    )\n',
+    ],
+    ['enum title holding a switch', 'enum E\n    a = switch\ny + 1\n'],
+  ])('%s terminates with ordinary errors', (_name, src) => {
+    const {file, errors} = parseText(src);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(file.stmtList.length).toBeGreaterThan(0);
+  });
+
+  // A header whose body is not typed yet owns no statements. Before, its
+  // block ran to the next dedent and swallowed the rest of the file.
+  test.each([
+    ['if', 'if x > 0'],
+    ['for', 'for i = 0 to 3'],
+    ['while', 'while x > 0'],
+    ['function', 'g(a) =>'],
+    ['struct', 'struct Foo'],
+    ['enum', 'enum E'],
+    ['interface', 'interface I'],
+    ['switch', 'switch x'],
+  ])(
+    'a bodiless %s header leaves the following lines at the top level',
+    (_name, header) => {
+      const {file, errors} = parseText(`x = 1\n${header}\ny = 2\nz = y\n`);
+      expect(errors.map(e => `${e.pos.line}:${e.pos.col} ${e.msg}`)).toEqual([
+        "3:1 expected 'indent', found 'name'",
+      ]);
+      expect(file.stmtList.length).toBe(4);
+      const last = file.stmtList[3];
+      expect(last.kind === 'DeclStmt' && last.pos.line).toBe(4);
+    },
+  );
+
+  test('a bodiless header inside a body does not eat the enclosing dedent', () => {
+    const {file, errors} = parseText(
+      'f(a) =>\n    if a > 0\n    b = 2\n    b\nz = f(1)\nq = z\n',
+    );
+    expect(errors.map(e => `${e.pos.line}:${e.pos.col}`)).toEqual(['3:5']);
+    expect(file.stmtList.map(s => s.pos.line)).toEqual([1, 5, 6]);
+  });
+});
+
+describe('relative import paths', () => {
+  test.each([
+    ['import ./lib/bands\n', './lib/bands', null],
+    ['import ../shared/risk as limits\n', '../shared/risk', 'limits'],
+    ['import ../../shared/risk\n', '../../shared/risk', null],
+  ])('%j is one atomic path literal', (src, path, alias) => {
+    const {file, errors} = parseText(src);
+    expect(errors).toEqual([]);
+    const stmt = file.stmtList[0];
+    expect(stmt.kind).toBe('ImportStmt');
+    if (stmt.kind === 'ImportStmt') {
+      expect(stmt.path.value).toBe(path);
+      expect(stmt.path.pos).toMatchObject({line: 1, col: 8});
+      expect(stmt.alias?.value ?? null).toBe(alias);
+    }
+  });
+
+  test('a bare path parses as before, and `import` stays an ordinary name elsewhere', () => {
+    expect(parseText('import someone/lib/1 as lib\n').errors).toEqual([]);
+    // Only `./` and `../` open a relative path: `import.x` selects from a
+    // variable named import, and a number is no path.
+    const selector = parseText('import.x\n');
+    expect(selector.errors).toEqual([]);
+    expect(selector.file.stmtList[0].kind).toBe('ExprStmt');
+    expect(parseText('import .5\n').file.stmtList[0].kind).toBe('ExprStmt');
+  });
+});
+
 describe('file metadata', () => {
   test('version pragma lands on File', () => {
     const out = dump('//@version=1\nx = 1\n');

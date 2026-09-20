@@ -977,4 +977,61 @@ describe('diagnostics', () => {
     const r = checkText('x = missing + 1\ny = x * 2');
     expect(r.errors.length).toBe(1);
   });
+
+  test('a color literal the scanner rejected is poison, not a defect', () => {
+    const r = checkText('c = #ff\nd = c\ny = missing');
+    expect(r.errors.map(error => `${error.pos.line}: ${error.msg}`)).toEqual([
+      '1: color literal must have 6 or 8 hexadecimal digits',
+      "3: undeclared name 'missing'",
+    ]);
+    expect(initTvOf(r, 'c').type.kind).toBe(TypeKind.Invalid);
+  });
+});
+
+describe('enumeration for tooling', () => {
+  const r = checkText(
+    [
+      'struct Counter',
+      '    int n = 0',
+      '    int bump(int by) =>',
+      '        this.n := this.n + by',
+      '        this.n',
+      'g(x) => x',
+      'unused(x) => x',
+      'a = g(close)',
+      'b = g(1)',
+    ].join('\n'),
+  );
+
+  test('a scope lists the objects declared in it, in order', () => {
+    expect(r.errors).toEqual([]);
+    const names = [...r.checked.pkg.scope.declared()].map(o => o.name);
+    expect(names).toEqual(['Counter', 'g', 'unused', 'a', 'b']);
+  });
+
+  test('a never-called method is reachable through its validation instance', () => {
+    const counter = r.checked.pkg.scope.lookup('Counter');
+    const bump = counter?.kind === ObjectKind.Struct && counter.methods[0];
+    expect(bump && bump.name).toBe('bump');
+    const instances = (bump && r.checked.instances.get(bump)) || [];
+    expect(instances.length).toBe(1);
+    // No CallExpr owns it, yet its Info holds the facts of the method body.
+    expect(r.info.calls.size).toBe(2);
+    expect(instances[0].params.map(p => p.name)).toEqual(['by']);
+    expect(instances[0].info.types.size).toBeGreaterThan(0);
+  });
+
+  test('a free function has one instance per called signature', () => {
+    const g = r.checked.pkg.scope.lookup('g');
+    const instances =
+      (g?.kind === ObjectKind.Function && r.checked.instances.get(g)) || [];
+    expect(instances.map(i => i.signature[0]?.type.kind)).toEqual([
+      TypeKind.Float,
+      TypeKind.Int,
+    ]);
+    const unused = r.checked.pkg.scope.lookup('unused');
+    expect(
+      unused?.kind === ObjectKind.Function && r.checked.instances.has(unused),
+    ).toBe(false);
+  });
 });

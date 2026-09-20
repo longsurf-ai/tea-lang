@@ -787,7 +787,12 @@ class Noder {
       // A standalone na is a dead constant, so it never enters Program IR.
       return [];
     }
-    const x = this.nodeExpr(stmt.x);
+    // A statement discards its value, so a structure whose result is na has
+    // no consumer to take a type from: it has no value at all.
+    const x = this.nodeExpr(
+      stmt.x,
+      tv.type.kind === TypeKind.Na ? VoidType : null,
+    );
     // A fully-folded statement expression is pure and dead.
     if (x.kind === IrKind.Const) {
       return [];
@@ -934,11 +939,14 @@ class Noder {
 
   private nodeExpr(e: syntax.Expr, expectedType: Type | null = null): IrExpr {
     const checked = this.tvOf(e);
+    // An na result takes its consumer's type. Inside a structure that has no
+    // value (Void) nothing consumes it, so it has no value either.
     const contextualType =
       checked.type.kind === TypeKind.Na &&
       expectedType !== null &&
       expectedType.kind !== TypeKind.Na &&
-      assignable(checked.type, expectedType)
+      (expectedType.kind === TypeKind.Void ||
+        assignable(checked.type, expectedType))
         ? expectedType
         : checked.type;
     if (contextualType.kind === TypeKind.Na) {
@@ -1416,15 +1424,30 @@ class Noder {
     if (e.kind === NodeKind.Block) {
       return this.nodeBlock(e, expectedType);
     }
-    const value = this.nodeExpr(e, expectedType);
+    const value = this.resultValue(e, expectedType);
     return {
       kind: IrKind.BlockExpr,
       pos: e.pos,
-      type: value.type,
-      qualifier: value.qualifier,
+      type: value !== null ? value.type : VoidType,
+      qualifier: value !== null ? value.qualifier : Qualifier.Const,
       stmts: [],
       value,
     };
+  }
+
+  // The value an expression in result position yields. A folded na inside a
+  // structure that has no value (Void) is a dead constant: nothing consumes
+  // it, so it never enters Program IR.
+  private resultValue(
+    e: syntax.Expr,
+    expectedType: Type | null,
+  ): IrExpr | null {
+    const tv = this.tvOf(e);
+    return expectedType?.kind === TypeKind.Void &&
+      tv.type.kind === TypeKind.Na &&
+      tv.value !== null
+      ? null
+      : this.nodeExpr(e, expectedType);
   }
 
   private nodeBlock(
@@ -1444,7 +1467,7 @@ class Noder {
         stmt.kind === NodeKind.ExprStmt &&
         this.tvOf(stmt.x).type.kind !== TypeKind.Void
       ) {
-        value = this.nodeExpr(stmt.x, expectedType);
+        value = this.resultValue(stmt.x, expectedType);
         continue;
       }
       stmts.push(...this.nodeStmt(stmt));
@@ -1461,7 +1484,10 @@ class Noder {
     };
   }
 
-  // The value a declaration or assignment yields when it closes a block.
+  // The value a declaration or assignment yields when it closes a block. The
+  // checker types an na initializer as an untyped na, so it takes its
+  // consumer's type; where nothing consumes it (no context, or a Void
+  // structure) it keeps the type its declaration is required to annotate.
   private lastStmtValue(
     stmt: syntax.Stmt,
     expectedType: Type | null,
@@ -1473,9 +1499,11 @@ class Noder {
           kind: IrKind.Const,
           pos: stmt.init.pos,
           type:
-            tv.type.kind === TypeKind.Na && expectedType !== null
-              ? expectedType
-              : tv.type,
+            tv.type.kind !== TypeKind.Na
+              ? tv.type
+              : expectedType !== null && expectedType.kind !== TypeKind.Void
+                ? expectedType
+                : this.variableDef(stmt.target).type,
           qualifier: tv.qualifier,
           value: tv.value,
         };

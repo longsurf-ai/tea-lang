@@ -16,6 +16,7 @@
     "src/runtime/load.ts",
     "src/extension/pine.ts",
     "src/codegen/wgsl/index.ts",
-    "src/runtime/gpu/index.ts"
+    "src/runtime/gpu/index.ts",
+    "src/lsp/index.ts"
   ]
 }

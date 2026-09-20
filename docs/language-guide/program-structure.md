@@ -45,3 +45,16 @@ emit "direction" direction(close - open)
 Implicit final-expression returns remain supported. The entry body does not need
 a return. `library("name")` identifies a reusable source module; it does not
 classify an entry program's execution mode.
+
+A script can import its own library files by a path relative to itself. The
+path has no extension, and the namespace is the name the file declares:
+
+```tea
+import ./lib/bands
+import ../shared/risk as limits
+
+emit "capped" limits.cap(bands.upper(close, 2.0), 100.0)
+```
+
+Here `lib/bands.tea` begins with `library("bands")` and exports `upper`.
+[Imports](../imports.md) has the full rule.

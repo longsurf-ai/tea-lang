@@ -119,6 +119,8 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   never write outer-scope variables.
 - The checker is provenance-blind about libraries: its injected `Importer`
   (`importer.ts`) supplies only a `SourcePackage` path and parsed files. The
+  checker passes the importing file's name with each path, because a relative
+  path names a file beside it; it never resolves or reads one itself. The
   checker positions loader errors and recursively elaborates each source once
   into a semantic `Package`; it alone interprets `library()`, validates the
   package root and declaration conflicts, and checks types, enums, defaults,
@@ -174,8 +176,15 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   request call's own `CallResolution` owns the child semantic facts and result
   types; that capture is not physical Program identity.
 - `checkPackage` is the pipeline's check stage, wired between loadPackage
-  and buildProgram behind a phase barrier in `src/compiler.ts` — the only
-  module that owns stage ordering.
+  and buildProgram in `src/compiler.ts` — the only module that owns stage
+  ordering. A phase barrier always follows it. The tooling entry runs it on
+  files that had parse errors, so it must complete on any recovered parse:
+  a literal the scanner rejected is Invalid poison, never `fatal()`.
+- `CheckedPackage.instances` exposes the checker's function-instance memo
+  table read-only, and `Scope.declared()` iterates one scope's objects. They
+  exist for tooling: the table is the only path to a method's
+  declaration-validation instance. Noding must keep reaching instances
+  through `Info.calls`.
 - Semantic vocabularies are named constants, never bare string literals at
   use sites: `ObjectKind.*`, `CallKind.*`, and `SelectionKind.*` (semantic
   facts), `Effect.*` (native effect classes), and `TypeRef.*` / `JoinResult`

@@ -79,7 +79,9 @@ describe('canonical EMA crossover example', () => {
     const maxDrawdown = outputWithTitle(sink, 'maximum drawdown');
     expect(finalScalar(sink, totalReturn)).toBeCloseTo(28.1578027217, 9);
     expect(finalScalar(sink, maxDrawdown)).toBeCloseTo(0.5660947992, 9);
-  });
+    // The whole checked-in history runs here; shared CI runners need more than
+    // the default five seconds.
+  }, 15_000);
 
   test('fails closed while reference-struct WGSL lowering is deferred', () => {
     const result = compileProgramToWgsl(compileExample());

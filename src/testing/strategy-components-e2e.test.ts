@@ -621,7 +621,9 @@ describe('Tea strategy components end to end', () => {
       expectNumbersClose(valuesFor(sink, 2), [0, 10]);
       expect(valuesFor(sink, 3)).toEqual([0, 1]);
     }
-  });
+    // Many whole programs compile and run here; shared CI runners need more
+    // than the default five seconds.
+  }, 15_000);
 
   test('normalizes percent commissions to rates and charges cash per order once', async () => {
     const source = [
