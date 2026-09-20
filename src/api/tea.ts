@@ -50,7 +50,7 @@ function dedent(source: string): string {
  * `;
  * node.module.parameters[0].value; // 14
  * node.ready(); // false until a close DataStream is connected
- * node.bind({length: 20}); // updates the same module and Node
+ * const configured = node.bind({length: 20}); // leaves node unchanged
  * ```
  */
 export function tea(

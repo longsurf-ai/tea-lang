@@ -18,7 +18,7 @@ const schema = new Schema([new Field('close', new Float64(), false)]);
 const main = await fromCSV(mainPath, schema);
 const requested = await fromCSV(requestPath, schema);
 
-const node = tea`
+let node = tea`
   requested = request.security("child", "", close)
   var float spreadBalance = 0.0
   if close > requested
@@ -30,7 +30,7 @@ const node = tea`
   plot("Combined value", close + requested, "Combined value")
 `;
 
-node.bind({close: main, requested});
+node = node.bind({close: main, requested});
 
 const csv = new CSVSink(outputPath, 'w');
 node.to(csv);

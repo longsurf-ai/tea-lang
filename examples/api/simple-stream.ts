@@ -6,13 +6,13 @@ const input = new Subject<unknown>();
 const schema = new Schema([new Field('close', new Float64(), false)]);
 const source = new DataStream(schema, input);
 
-const node = tea`
+let node = tea`
   var float total = 0.0
   total := total + close
   plot("output0", total)
 `;
 
-node.bind(source);
+node = node.bind(source);
 
 const stdout = new StdoutSink();
 const csv = new CSVSink('tea-stream-output.csv');

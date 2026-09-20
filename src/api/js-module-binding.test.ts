@@ -1,5 +1,5 @@
 import type {Module} from '../runtime/module-binding';
-// Purpose: Mutable module configuration stays separate from Node stream ownership.
+// Purpose: Immutable module configuration stays separate from Node stream ownership.
 
 import {DataType, Schema} from 'apache-arrow';
 import {describe, expect, test} from 'vitest';
@@ -25,8 +25,10 @@ describe('Module.bind', () => {
     expect(initial.ready()).toBe(true);
     expect(initial.remaining()).toEqual([]);
     expect(moduleSeriesNames(initial)).toEqual(['close', 'open']);
-    expect(rebound).toBe(initial);
-    expect(initial).toBe(raw);
+    expect(rebound).not.toBe(initial);
+    expect(initial.parameters[0]!.value).toBe(14);
+    expect(initial).not.toBe(raw);
+    expect(raw.parameters[0]!.value).toBeUndefined();
     expect(initial.inputs.series.every(series => !('supplied' in series))).toBe(
       true,
     );
@@ -51,7 +53,8 @@ describe('Module.bind', () => {
     expect(bound.remaining()).toEqual([]);
     expect(bound.ready()).toBe(true);
     expect(bound.inputs.series[0]!.depth).toEqual({kind: 'const', bars: 4});
-    expect(bound).toBe(pending);
+    expect(bound).not.toBe(pending);
+    expect(pending.ready()).toBe(false);
   });
 
   test('rejects invalid values and unknown parameter names with BindError', () => {
@@ -95,7 +98,7 @@ describe('Module.bind', () => {
       'owner',
       'original',
     );
-    const rebound = original.clone().bind({length: 6});
+    const rebound = original.bind({length: 6}, undefined, ['r']);
     original.requests[0]!.module.inputs.schema.fields[0]!.metadata.set(
       'owner',
       'changed',
@@ -124,7 +127,8 @@ describe('Module.bind', () => {
     ).bind();
     expect(initial.parameters[0]!.value).toBe('close');
     const selected = initial.bind({source: 'open'});
-    expect(selected).toBe(initial);
+    expect(selected).not.toBe(initial);
+    expect(initial.parameters[0]!.value).toBe('close');
     expect(selected.parameters[0]!.value).toBe('open');
     expect(moduleSeriesNames(selected)).toContain('open');
     expect(selected.remaining()).toEqual([]);
@@ -149,16 +153,22 @@ describe('Module.bind', () => {
     expect(module.outputs.schema.fields.at(-1)?.name).toBe('output0');
   });
 
-  test('Node owns the given module and delegates parameter patches to it', () => {
+  test('Node derives a module without changing its existing configuration', () => {
     const module = compileModule(
       'length = input.int(2)\nemit "output0" close[length]',
     );
     const node = createNode(module);
     expect(node.module).toBe(module);
-    expect(node.bind({length: 5})).toBe(node);
+    const bound = node.bind({length: 5});
+    expect(bound).not.toBe(node);
     expect(node.module).toBe(module);
-    expect(module.parameters[0]!.value).toBe(5);
-    expect(module.inputs.series[0]!.depth).toEqual({kind: 'const', bars: 5});
+    expect(bound.module.parameters[0]!.value).toBe(5);
+    expect(bound.module.inputs.series[0]!.depth).toEqual({
+      kind: 'const',
+      bars: 5,
+    });
+    expect(module.parameters[0]!.value).toBeUndefined();
+    bound.dispose();
     node.dispose();
   });
 

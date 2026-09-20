@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "src",
+    "outDir": "dist/types"
+  },
+  "include": [
+    "src/index.ts",
+    "src/runtime/index.ts",
+    "src/compiler.ts",
+    "src/base/print.ts",
+    "src/codegen/codegen.ts",
+    "src/runtime/load.ts",
+    "src/extension/pine.ts",
+    "src/codegen/wgsl/index.ts",
+    "src/runtime/gpu/index.ts"
+  ]
+}

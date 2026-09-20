@@ -1,5 +1,5 @@
 import type {Module} from '../src/runtime/module-binding';
-// Purpose: Mutable binding and explicit independent runs; TEA_STRESS=1 expands sizes.
+// Purpose: Immutable binding and independent runs; TEA_STRESS=1 expands sizes.
 
 import assert from 'node:assert/strict';
 import {performance} from 'node:perf_hooks';
@@ -127,7 +127,7 @@ function deepProgram(depth: number, contextual = false): Program {
   };
 }
 
-test('module fields own requirements and bind fills usable defaults in place', () => {
+test('module fields own requirements and bind derives usable defaults', () => {
   const module = loadModule(generate(mustBuild(source)));
   assert.equal(Object.hasOwn(module, 'manifest'), false);
   assert.ok(module.inputs.schema instanceof Schema);
@@ -143,7 +143,7 @@ test('module fields own requirements and bind fills usable defaults in place', (
     kind: 'const',
     bars: 4,
   });
-  assert.equal(bound, module);
+  assert.notEqual(bound, module);
   assert.equal(Object.hasOwn(bound.inputs.series[0], 'supplied'), false);
   assert.equal(Object.hasOwn(bound.parameters[0], 'bindable'), false);
   assert.deepStrictEqual(bound.remaining(), []);
@@ -160,7 +160,7 @@ test('independent copies bind history and activity without schema leaks', () => 
     const enabled = index % 2 === 0;
     const weight = (index % 4) + 1;
     calls.fill(0);
-    const prepared = original.clone().bind({length, enabled, weight});
+    const prepared = original.bind({length, enabled, weight});
     assert.deepStrictEqual(calls, [1]);
     assert.equal(prepared.ready(), true);
     assert.deepStrictEqual(prepared.inputs.series[0].depth, {
@@ -215,24 +215,20 @@ test('wide requests calculate each module once and independent binding orders ag
     ),
     calls,
   );
-  const prepared = module.clone().bind({length: 7, symbol: 'NASDAQ:XYZ'});
+  const prepared = module.bind({length: 7, symbol: 'NASDAQ:XYZ'});
   assert.deepStrictEqual(calls, Array(width + 1).fill(1));
-  const forward = tree(
-    module.clone().bind({length: 7}).bind({symbol: 'NASDAQ:XYZ'}),
-  );
-  const backward = tree(
-    module.clone().bind({symbol: 'NASDAQ:XYZ'}).bind({length: 7}),
-  );
+  const forward = tree(module.bind({length: 7}).bind({symbol: 'NASDAQ:XYZ'}));
+  const backward = tree(module.bind({symbol: 'NASDAQ:XYZ'}).bind({length: 7}));
   for (const [index, current] of tree(prepared).entries()) {
     same(current, forward[index]);
     same(current, backward[index]);
     assert.deepStrictEqual(
       current.parameters.map(parameter => parameter.value),
-      [7, 'NASDAQ:XYZ'],
+      index === 0 ? [7, 'NASDAQ:XYZ'] : [2, 'X'],
     );
     assert.deepStrictEqual(current.inputs.series[0].depth, {
       kind: 'const',
-      bars: 7,
+      bars: index === 0 ? 7 : 2,
     });
     assert.deepStrictEqual(current.remaining(), []);
     if (index > 0) assert.equal(current.inputs.schema.fields[0].name, 'close');
@@ -259,34 +255,38 @@ test('wide requests calculate each module once and independent binding orders ag
   report('wide-preparation', started, width + 1);
 });
 
-test('deep artifacts retain global parameters, child requirements and schema ownership', () => {
+test('deep artifacts keep each parameter scope and support nested binding paths', () => {
   const started = performance.now();
   const depth = stress ? 32 : 4;
   const program = deepProgram(depth);
   const calls: number[] = [];
   const module = instrument(program, calls);
   assert.equal(generate(program), generate(program));
-  const prepared = module.clone().bind({length: 5, symbol: 'DEEP'});
+  const prepared = module.bind({length: 5, symbol: 'DEEP'});
   assert.deepStrictEqual(calls, Array(depth + 1).fill(1));
-  const reversed = tree(
-    module.clone().bind({symbol: 'DEEP'}).bind({length: 5}),
-  );
+  const reversed = tree(module.bind({symbol: 'DEEP'}).bind({length: 5}));
   const modules = tree(prepared);
   assert.equal(modules.length, depth + 1);
   for (const [index, current] of modules.entries()) {
     same(current, reversed[index]);
     assert.deepStrictEqual(
       current.parameters.map(parameter => parameter.value),
-      [5, 'DEEP'],
+      index === 0 ? [5, 'DEEP'] : [2, 'X'],
     );
     assert.equal(Object.hasOwn(current.state, 'layout'), false);
     assert.equal(
-      current.requests.every(request => request.context?.symbol === 'DEEP'),
+      current.requests.every(
+        request => request.context?.symbol === (index === 0 ? 'DEEP' : 'X'),
+      ),
       true,
     );
   }
   const leaf = modules.at(-1)!;
-  assert.deepStrictEqual(leaf.inputs.series[0].depth, {kind: 'const', bars: 5});
+  assert.deepStrictEqual(leaf.inputs.series[0].depth, {kind: 'const', bars: 2});
+  const nested = prepared.bind({length: 9}, undefined, Array(depth).fill('r'));
+  assert.equal(tree(nested).at(-1)!.parameters[0].value, 9);
+  assert.equal(leaf.parameters[0].value, 2);
+  assert.equal(nested.parameters[0].value, 5);
   assert.equal(leaf.inputs.schema.fields[0].name, 'close');
   leaf
     .clone()
@@ -320,23 +320,24 @@ test('child context stays private, survives parent rebinding, and never leaves s
     () => prepared.bind({}, new Map([[bid, 'stock']])),
     /not a fixed binding input/,
   );
-  assert.equal(leaf.bind({}, new Map([[bid, 'stock']])), leaf);
-  assert.deepStrictEqual(leaf.inputs.series[0].depth, {
-    kind: 'const',
-    bars: 7,
-  });
+  const configured = prepared.bind(
+    {length: 9},
+    new Map([[bid, 'stock']]),
+    Array(modules.length - 1).fill('r'),
+  );
+  assert.equal(leaf.ready(), false);
   assert.equal(
-    tree(prepared).every(current => current.ready()),
+    tree(configured).every(current => current.ready()),
     true,
   );
-  const updated = tree(prepared.bind({length: 11})).at(-1)!;
-  assert.equal(updated, leaf);
+  const updated = tree(configured.bind({length: 11})).at(-1)!;
+  assert.notEqual(updated, leaf);
   for (const [index, current] of tree(prepared).entries()) {
     assert.equal(current, modules[index]);
   }
   assert.deepStrictEqual(updated.inputs.series[0].depth, {
     kind: 'const',
-    bars: 11,
+    bars: 9,
   });
   assert.equal(updated.inputs.builtins[bid].value, 'stock');
 });

@@ -74,9 +74,9 @@ TypeScript declarations come from the same Program. Readable Arrow constructors
 appear directly in the artifact. Storage descriptors serve internal history and
 Heap operations, rather than defining another I/O schema.
 
-`module.bind()` validates parameters and updates configuration atomically. It
-returns the same Module. `module.clone()` creates an independent configuration
-for another run. Execution starts only when configuration is complete.
+`module.bind()` validates parameters and returns an independent Module tree.
+The receiver and its child parameters remain unchanged. `module.clone()` also
+creates an independent configuration without applying a parameter patch. Execution starts only when configuration is complete.
 
 Node connects streams and synchronizes request children. Context then runs one
 module step, commits state and buffered outputs together after success, and

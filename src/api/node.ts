@@ -36,7 +36,7 @@ export type {Datum} from '../runtime/output';
 type InputDatum = Readonly<Record<string, unknown>>;
 
 /** One child input paired with the Tea value computed from it. */
-type RequestOutput = readonly [InputDatum, Stored];
+type RequestOutput = readonly [InputDatum, Stored, index: number];
 
 /**
  * Decides whether one main input has enough child results to move forward,
@@ -73,33 +73,36 @@ export type BindingInput =
 /**
  * A compiled Tea program that can be bound to streams and observed as output.
  *
- * The Node and its module keep stable identities. Parameter patches update the
- * module in place; stream connections live only in the Node. It owns the input
+ * Binding derives a new Node and module tree; stream connections live only in
+ * the Node. Each derived Node owns the input
  * Observable graph, one child Node per request, and the runtime created when
  * execution starts. Module readiness describes configuration; Node readiness
  * also requires the source streams to be connected.
  */
 export interface Node {
   /**
-   * The same compiled module owned by this Node, including Arrow schemas and
-   * request children. It contains no stream connection state. Binding updates
-   * this object in place until execution starts.
+   * The compiled module owned by this Node, including Arrow schemas and request
+   * children. It contains no stream connection state. Binding leaves it unchanged.
    *
-   * @example After `node.bind({length: 20})`, `node.module.parameters[0].value`
+   * @example After `const bound = node.bind({length: 20})`, `bound.module.parameters[0].value`
    * is 20. `node.module.ready()` may be true before `node.ready()`, which also
    * requires connected streams.
    */
   readonly module: Module;
 
   /**
-   * Supplies a parameter patch or connects input streams without subscribing.
+   * Returns a Node with a parameter patch or input streams, without subscribing.
    * Parameter binding preserves previous values and fills only unset defaults;
-   * stream binding validates every requested field before changing connections.
+   * stream binding validates every requested field before deriving connections.
+   * A path selects nested request declaration names; no parent values are inherited.
+   * Streams may declare non-nullable Bool `provisional` and `realtime` metadata.
+   * Both default to false. Repeated timed attempts require a pending provisional
+   * step; finalizing it commits one index before the source may advance time.
    *
-   * @example `node.bind({length: 20})` supplies a parameter;
-   * `node.bind(closeStream)` supplies the remaining main input series.
+   * @example `node.bind({length: 20}).bind(closeStream)` derives a root run;
+   * `node.bind({length: 50}, ['daily'])` configures an independent child.
    */
-  bind(input: BindingInput): Node;
+  bind(input: BindingInput, path?: readonly string[]): Node;
 
   /**
    * Reports whether the main program and every request child have all inputs.
@@ -134,7 +137,7 @@ export interface Node {
  *
  * `module` is this level's compiled program, `data` is its combined input
  * Observable, and `requests` mirrors the compiled request-child array. Binding
- * updates configuration and data without replacing Node or module objects.
+ * derives configuration and connections without sharing execution state.
  */
 class TeaNode implements Node {
   private data: Observable<InputDatum> | null;
@@ -174,31 +177,63 @@ class TeaNode implements Node {
   }
 
   /**
-   * Classifies the input as parameters or streams and applies it synchronously.
+   * Classifies the input as parameters or streams and derives a Node synchronously.
    *
-   * Binding changes the Node's configuration and input graph but never
-   * subscribes to a DataStream. Binding is rejected after execution starts.
+   * Existing connection descriptions are copied, never runtime state or observers.
+   * Binding does not subscribe, even when deriving from an executing Node.
    *
    * @example `node.bind(stream).bind({length: 20})` supplies a stream and then
-   * a parameter while returning the same Node from both calls.
+   * a parameter while leaving each earlier Node unchanged.
    */
-  bind(input: BindingInput): Node {
+  bind(input: BindingInput, path: readonly string[] = []): Node {
     if (this.disposed) throw new Error('Node is disposed');
-    if (this.started) {
-      throw new Error('Node cannot bind after execution has started');
+    const streams =
+      input instanceof DataStream ||
+      (Object.keys(input).length !== 0 &&
+        Object.values(input).every(value => value instanceof DataStream));
+    const node = this.copy(
+      streams
+        ? this.module.clone()
+        : this.module.bind(
+            input as Readonly<Record<string, unknown>>,
+            undefined,
+            path,
+          ),
+    );
+    let selected = node;
+    for (const name of path) {
+      const ids = selected.module.requests.flatMap((request, id) =>
+        request.name === name ? [id] : [],
+      );
+      if (ids.length !== 1)
+        throw new BindError(
+          `request binding path '${path.join('.')}' is missing or ambiguous`,
+        );
+      selected = selected.requests[ids[0]!]!;
     }
-    if (input instanceof DataStream) {
-      this.bindStreams(input);
-    } else if (
-      Object.keys(input).length !== 0 &&
-      Object.values(input).every(value => value instanceof DataStream)
-    ) {
-      this.bindStreams(input as Readonly<Record<string, DataStream<unknown>>>);
-    } else {
-      this.module.bind(input);
-      this.refresh();
-    }
-    return this;
+    if (streams)
+      selected.bindStreams(
+        input as
+          | DataStream<unknown>
+          | Readonly<Record<string, DataStream<unknown>>>,
+      );
+    else node.refresh();
+    return node;
+  }
+
+  private copy(module: Module): TeaNode {
+    const node = new TeaNode(module, this.builtinSupplier, this.path);
+    const copyConnections = (source: TeaNode, target: TeaNode): void => {
+      target.data = source.data;
+      source.connected.forEach(name => target.connected.add(name));
+      target.clock = source.clock;
+      target.timed = source.timed;
+      source.requests.forEach((child, id) => {
+        copyConnections(child, target.requests[id]!);
+      });
+    };
+    copyConnections(this, node);
+    return node;
   }
 
   /**
@@ -208,7 +243,6 @@ class TeaNode implements Node {
    * is missing, `ready()` still returns `false`.
    */
   ready(): boolean {
-    this.refresh();
     return (
       this.module.ready() &&
       this.bindingSeriesNames().every(name => this.connected.has(name)) &&
@@ -421,6 +455,13 @@ class TeaNode implements Node {
     if (this.clock !== i && stream.clock !== i && this.clock !== stream.clock)
       return new BindError('bound DataStream clocks disagree');
     const fields = stream.schema.fields;
+    for (const name of ['provisional', 'realtime']) {
+      const metadata = fields.find(field => field.name === name);
+      if (metadata && (!DataType.isBool(metadata.type) || metadata.nullable))
+        return new BindError(
+          `DataStream ${name} metadata requires a non-nullable Bool field`,
+        );
+    }
     for (const name of names) {
       if (this.connected.has(name))
         return new BindError(`series '${name}' is already bound`);
@@ -438,8 +479,8 @@ class TeaNode implements Node {
   }
 
   /**
-   * Drop obsolete stream connections after a source parameter changes, including
-   * patches made directly through node.module.bind(). Other parameters keep the
+   * Drop obsolete connections on a newly derived Node after a source parameter
+   * changes. Other parameters keep the
    * existing graph. A request child owns and refreshes its own connections.
    * @example Changing source from close to open requires binding an open stream.
    */
@@ -480,8 +521,9 @@ class TeaNode implements Node {
    *
    * Object emissions contribute only the requested fields. A scalar emission
    * is allowed when exactly one field name is requested. Arrow millisecond
-   * timestamps or Int64 time fields retain exact event time and cannot move
-   * backward; nullable absent and explicit-null time remain distinct.
+   * timestamps or Int64 time fields retain exact event time. A source may repeat
+   * its current provisional step, must finalize it before advancing, and may
+   * never revise a finalized timestamp. Absent and null time remain distinct.
    *
    * @example With names `["close"]`, `10` and `{close: 10, volume: 5}` both
    * become `{close: 10}`. With names `["close", "open"]`, the source must emit
@@ -492,33 +534,77 @@ class TeaNode implements Node {
     names: readonly string[],
   ): Observable<InputDatum> {
     const timed = this.hasTime(source);
-    let previousTime: bigint | null = null;
-    return source.asObservable().pipe(
-      map(value => {
-        const parsed = value;
-        if (this.isRecord(parsed)) {
-          const entries = names.map(name => {
-            if (!Object.hasOwn(parsed, name)) {
-              throw new Error(`source value does not provide series '${name}'`);
-            }
-            return [name, parsed[name]] as const;
-          });
-          if (timed && parsed.time != null) {
-            const time = this.inputTime(parsed.time, 'time');
-            if (previousTime !== null && time < previousTime) {
-              throw new Error('DataStream time must be a nondecreasing bigint');
-            }
-            previousTime = time;
-            entries.push(['time', time]);
-          } else if (timed && Object.hasOwn(parsed, 'time')) {
-            entries.push(['time', null]);
-          }
-          return Object.freeze(Object.fromEntries(entries));
-        }
-        if (names.length === 1) return Object.freeze({[names[0]!]: parsed});
-        throw new Error(`source value does not provide series '${names[0]}'`);
-      }),
+    const hasProvisional = source.schema.fields.some(
+      field => field.name === 'provisional',
     );
+    const hasRealtime = source.schema.fields.some(
+      field => field.name === 'realtime',
+    );
+    return defer(() => {
+      let previousTime: bigint | null = null;
+      let activeTime: bigint | null | undefined;
+      let previousProvisional = false;
+      return source.asObservable().pipe(
+        map(value => {
+          const parsed = value;
+          if (this.isRecord(parsed)) {
+            const provisional = hasProvisional ? parsed.provisional : false;
+            if (typeof provisional !== 'boolean')
+              throw new Error(
+                'DataStream provisional metadata must be boolean',
+              );
+            const realtime = hasRealtime ? parsed.realtime : false;
+            if (typeof realtime !== 'boolean')
+              throw new Error('DataStream realtime metadata must be boolean');
+            const entries = names.map(name => {
+              if (!Object.hasOwn(parsed, name)) {
+                throw new Error(
+                  `source value does not provide series '${name}'`,
+                );
+              }
+              return [name, parsed[name]] as const;
+            });
+            const time =
+              timed && parsed.time != null
+                ? this.inputTime(parsed.time, 'time')
+                : timed && Object.hasOwn(parsed, 'time')
+                  ? null
+                  : undefined;
+            if (previousProvisional && time !== activeTime)
+              throw new Error(
+                'DataStream must finalize its provisional step before advancing time',
+              );
+            if (typeof time === 'bigint') {
+              if (previousTime !== null && time < previousTime) {
+                throw new Error(
+                  'DataStream time must be a nondecreasing bigint',
+                );
+              }
+              if (time === previousTime && !previousProvisional)
+                throw new Error(
+                  'DataStream cannot revise a committed timestamp',
+                );
+              previousTime = time;
+              entries.push(['time', time]);
+            } else if (time === null) {
+              entries.push(['time', null]);
+            }
+            activeTime = time;
+            previousProvisional = provisional;
+            entries.push(['provisional', provisional]);
+            entries.push(['realtime', realtime]);
+            return Object.freeze(Object.fromEntries(entries));
+          }
+          if (names.length === 1)
+            return Object.freeze({
+              [names[0]!]: parsed,
+              provisional: false,
+              realtime: false,
+            });
+          throw new Error(`source value does not provide series '${names[0]}'`);
+        }),
+      );
+    });
   }
 
   /** Validates one exact epoch-millisecond input time before execution. */
@@ -541,7 +627,8 @@ class TeaNode implements Node {
    *
    * `null` means that no input has been bound yet. Otherwise values pair in
    * order: the first value from each side becomes one merged input, followed by
-   * the second pair. If both sides carry `time`, their values must match.
+   * the second pair. Time, provisional status and realtime status must agree
+   * across the two halves of each attempt.
    *
    * @example
    * ```text
@@ -568,6 +655,12 @@ class TeaNode implements Node {
         ) {
           throw new Error('synchronized DataStream times disagree');
         }
+        if (left.provisional !== right.provisional)
+          throw new Error(
+            'synchronized DataStream provisional states disagree',
+          );
+        if (left.realtime !== right.realtime)
+          throw new Error('synchronized DataStream realtime states disagree');
         return [Object.freeze({...left, ...right}), 1];
       }),
     );
@@ -629,9 +722,9 @@ class TeaNode implements Node {
    * @example `{close: 10, daily: 9}` becomes one runtime step with series
    * `[10]` and request values `[9]`, then emits `[datum, stepResult]`.
    */
-  private steps(): Observable<
-    readonly [InputDatum, StepResult, index: number]
-  > {
+  private steps(
+    beforeStep?: (datum: InputDatum, index: number) => void,
+  ): Observable<readonly [InputDatum, StepResult, index: number]> {
     requireConcreteModule(this.module);
     const names = this.seriesNames();
     const specs = this.module.requests;
@@ -645,6 +738,7 @@ class TeaNode implements Node {
     });
     return defer(() => {
       const runtime = new Context(this.module);
+      let firstAttempt = true;
       this.runtime = runtime;
       this.publication = {
         ...this.module.outputs,
@@ -653,6 +747,7 @@ class TeaNode implements Node {
       return pending.pipe(
         map(datum => {
           const index = this.committedIndices;
+          beforeStep?.(datum, index);
           const requests = specs.map(spec => {
             if (!Object.hasOwn(datum, spec.name)) {
               return fatal(`request '${spec.name}' was not synchronized`);
@@ -665,11 +760,12 @@ class TeaNode implements Node {
               this.path,
               this.module,
               index,
-              datum,
+              Object.freeze({...datum, firstAttempt}),
             ),
             requests,
-            provisional: false,
+            provisional: datum.provisional === true,
           });
+          firstAttempt = !result.provisional;
           if (!result.provisional) this.committedIndices += 1;
           return [datum, result, index] as const;
         }),
@@ -688,25 +784,32 @@ class TeaNode implements Node {
    * @example If the child receives `{close: 9}` and its requested expression is
    * `close * 2`, this Observable emits `[{close: 9}, 18]`.
    */
-  private requestOutput(spec: Request): Observable<RequestOutput> {
-    return this.steps().pipe(
-      map(([datum]) => {
+  private requestOutput(
+    spec: Request,
+    beforeStep?: (datum: InputDatum, index: number) => void,
+  ): Observable<RequestOutput> {
+    return this.steps(beforeStep).pipe(
+      map(([datum, result, index]) => {
         const runtime = this.runtime;
         if (runtime === null) return fatal('request child has no runtime');
         return [
-          this.requestTiming(datum),
+          this.requestTiming(datum, result.provisional),
           this.copyRequestResult(
             spec.resultEmpty,
             runtime.readResult(spec.resultSlot, spec.resultEmpty),
           ),
+          index,
         ] as const;
       }),
     );
   }
 
-  /** Retains only the event time while a child result is buffered. */
-  private requestTiming(datum: InputDatum): InputDatum {
-    return Object.freeze(datum.time === undefined ? {} : {time: datum.time});
+  /** Retains event time and attempt status while a child result is buffered. */
+  private requestTiming(datum: InputDatum, provisional: boolean): InputDatum {
+    return Object.freeze({
+      provisional,
+      ...(datum.time === undefined ? {} : {time: datum.time}),
+    });
   }
 
   /** Copies one scalar or tuple across a child runtime boundary. */
@@ -816,9 +919,50 @@ class TeaNode implements Node {
           ? this.oneToOne(spec.name, true)
           : this.countWindow(spec.name, count);
     }
+    let finalizedBoundary: bigint | null = null;
+    let currentChildIndex = -1;
     return child
-      .requestOutput(spec)
-      .pipe(sync(target, project, continueAfterSourceComplete));
+      .requestOutput(spec, (datum, index) => {
+        if (
+          this.timed &&
+          child.timed &&
+          index !== currentChildIndex &&
+          finalizedBoundary !== null &&
+          this.eventTime(datum, 'child') <= finalizedBoundary
+        )
+          throw new Error(
+            `request '${spec.name}' received a new child step after its parent interval finalized`,
+          );
+        currentChildIndex = index;
+      })
+      .pipe(
+        sync(
+          target,
+          (datum, buffered, wait) => {
+            const result = project(datum, buffered, wait);
+            if (
+              Array.isArray(result) &&
+              datum.provisional !== true &&
+              this.timed &&
+              child.timed
+            )
+              finalizedBoundary = this.eventTime(datum, 'parent');
+            return result;
+          },
+          continueAfterSourceComplete,
+        ),
+      );
+  }
+
+  /** Keep only the latest attempt of each buffered logical child step. */
+  private latestRequests(
+    buffered: readonly RequestOutput[],
+  ): readonly (readonly [RequestOutput, consumed: number])[] {
+    const latest = new Map<number, readonly [RequestOutput, number]>();
+    buffered.forEach((output, index) =>
+      latest.set(output[2], [output, index + 1]),
+    );
+    return [...latest.values()];
   }
 
   /**
@@ -836,42 +980,27 @@ class TeaNode implements Node {
     }
     const empty = spec.empty.value as Stored;
     let selected: RequestOutput | null = null;
-    let previousBoundary: bigint | null = null;
+    let committedSelection: number | null = null;
     return (datum, buffered) => {
       const boundary = this.eventTime(datum, 'parent');
-      if (previousBoundary !== null && boundary < previousBoundary) {
-        return fatal('parent request interval boundary moved backward');
-      }
-      let selectedIndex = -1;
-      let latePrefix = 0;
-      for (let index = 0; index < buffered.length; index += 1) {
-        const candidate = buffered[index]!;
+      let consume = 0;
+      for (const [candidate, end] of this.latestRequests(buffered)) {
         const available = this.eventTime(candidate[0], 'child');
-        if (
-          candidate !== selected &&
-          previousBoundary !== null &&
-          available <= previousBoundary
-        ) {
-          latePrefix = index + 1;
-          continue;
-        }
         if (available > boundary) break;
-        selectedIndex = index;
+        selected = candidate;
+        consume = end - 1;
       }
-      const next = selectedIndex < 0 ? selected : buffered[selectedIndex]!;
-      const advanced = next !== null && next !== selected;
-      if (next !== null) selected = next;
+      const advanced = selected !== null && selected[2] !== committedSelection;
       const value =
         selected === null || (context.fill === 'sparse' && !advanced)
           ? empty
           : selected[1];
-      previousBoundary = boundary;
-      const consume = advanced
-        ? selectedIndex
-        : latePrefix > 0
-          ? latePrefix
-          : Math.max(0, selectedIndex);
-      return [Object.freeze({...datum, [spec.name]: value}), consume];
+      if (datum.provisional !== true)
+        committedSelection = selected?.[2] ?? committedSelection;
+      return [
+        Object.freeze({...datum, [spec.name]: value}),
+        datum.provisional === true ? 0 : consume,
+      ];
     };
   }
 
@@ -948,19 +1077,25 @@ class TeaNode implements Node {
    */
   private oneToOne(name: string, array: boolean): RequestProjector {
     return (datum, buffered, wait) => {
-      const first = buffered[0];
-      if (first === undefined) return wait();
-      const value = array ? Object.freeze([first[1]]) : first[1];
-      return [Object.freeze({...datum, [name]: value}), 1];
+      const first = this.latestRequests(buffered)[0];
+      if (
+        first === undefined ||
+        (datum.provisional !== true && first[0][0].provisional === true)
+      )
+        return wait();
+      const value = array ? Object.freeze([first[0][1]]) : first[0][1];
+      return [
+        Object.freeze({...datum, [name]: value}),
+        datum.provisional === true ? 0 : first[1],
+      ];
     };
   }
 
   /**
    * Groups a fixed number of child results for each main input.
    *
-   * One main datum represents one complete group of `count` consecutive child
-   * results. The main stream waits until the whole group exists; partial groups
-   * never advance the parent program.
+   * A final main datum waits for `count` finalized child steps. Provisional
+   * attempts may inspect the current partial group without consuming it.
    *
    * @param name - The request declaration name written into the main datum.
    * @param count - The number of child values required for each main datum.
@@ -976,11 +1111,18 @@ class TeaNode implements Node {
    */
   private countWindow(name: string, count: number): RequestProjector {
     return (datum, buffered, wait) => {
-      if (buffered.length < count) return wait();
-      const values = Object.freeze(
-        buffered.slice(0, count).map(([, value]) => value),
-      );
-      return [Object.freeze({...datum, [name]: values}), count];
+      const selected = this.latestRequests(buffered).slice(0, count);
+      if (
+        datum.provisional !== true &&
+        (selected.length < count ||
+          selected.some(([output]) => output[0].provisional === true))
+      )
+        return wait();
+      const values = Object.freeze(selected.map(([[, value]]) => value));
+      return [
+        Object.freeze({...datum, [name]: values}),
+        datum.provisional === true ? 0 : selected.at(-1)![1],
+      ];
     };
   }
 
@@ -989,8 +1131,9 @@ class TeaNode implements Node {
    *
    * The first window selects `child.time <= main.time`. Later windows select
    * `previousMain < child.time <= main.time`. Values at or before the previous
-   * boundary arrived too late: the projector consumes and drops them. Values
-   * after the current boundary remain buffered for a later main datum.
+   * boundary can only be refinements of the last uncommitted child step; new
+   * late steps fail before execution. Provisional parents keep the same window
+   * and only the latest attempt of each child. Future children remain buffered.
    *
    * @param name - The request declaration name written into the main datum.
    * @returns A function that always writes a frozen array, including an empty
@@ -1016,24 +1159,24 @@ class TeaNode implements Node {
       }
       const values: Stored[] = [];
       let consume = 0;
-      for (const [childDatum, value] of buffered) {
+      for (const [[childDatum, value], end] of this.latestRequests(buffered)) {
         const childTime = childDatum.time;
         if (typeof childTime !== 'bigint') {
           return fatal('timed child datum has no bigint time');
         }
         if (childTime > mainTime) break;
-        consume += 1;
+        consume = end;
         if (previousMain !== null && childTime <= previousMain) {
-          // Its window already emitted: consume this late value without
-          // publishing it into the current window.
+          // A later attempt of the already consumed current child step stays
+          // in its original window. New late steps fail before child execution.
           continue;
         }
         values.push(value);
       }
-      previousMain = mainTime;
+      if (datum.provisional !== true) previousMain = mainTime;
       return [
         Object.freeze({...datum, [name]: Object.freeze(values)}),
-        consume,
+        datum.provisional === true ? 0 : consume,
       ];
     };
   }

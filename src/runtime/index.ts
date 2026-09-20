@@ -23,7 +23,13 @@ export * from './native';
 export {decodeSchema, encodeSchema, cloneSchema} from './io';
 export {outputSchema} from './output';
 export type {Ref} from './js/heap';
-export type {ArrayValue, MatrixValue, MapValue, ResourceHandle} from './value';
+export type {
+  ArrayValue,
+  MatrixValue,
+  MapValue,
+  ResourceHandle,
+  Scalar,
+} from './value';
 
 export {RUNTIME_ABI_VERSION, type Frame} from './module-abi';
 

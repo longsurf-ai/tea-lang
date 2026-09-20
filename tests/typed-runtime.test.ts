@@ -11,8 +11,8 @@ import {Context} from '../src/runtime';
 function rows(node: Node, lag: number): readonly unknown[][] {
   const rows: unknown[][] = [];
   let failure: unknown;
-  node.bind({lag});
-  node.bind(
+  node = node.bind({lag});
+  node = node.bind(
     new DataStream(
       new Schema([
         new Field('close', new Float64(), false),
@@ -61,7 +61,7 @@ test('compiled TypeScript preserves parameter history and independent call frame
 });
 
 test('a null var initializer survives same-index attempts before the final commit', () => {
-  const node = tea`
+  let node = tea`
     var string value = close > 0 ? na : "reinitialized"
     emit "probe" value
     value := "later"

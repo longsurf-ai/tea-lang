@@ -6,14 +6,16 @@ import {mustBuild} from '../noder/testing';
 import {Module, RUNTIME_ABI_VERSION} from './index';
 import {loadModule} from './load';
 
-test('loads a TypeScript module synchronously and keeps binding mutable', () => {
+test('loads a TypeScript module synchronously and derives independent bindings', () => {
   const module = loadModule(
     generate(mustBuild('length = input.int(2)\nemit "output0" close * length')),
   );
   expect(module).toBeInstanceOf(Module);
-  expect(module.bind({length: 3})).toBe(module);
-  expect(module.parameters[0]!.value).toBe(3);
-  expect(module.ready()).toBe(true);
+  const bound = module.bind({length: 3});
+  expect(bound).not.toBe(module);
+  expect(bound.parameters[0]!.value).toBe(3);
+  expect(bound.ready()).toBe(true);
+  expect(module.parameters[0]!.value).toBeUndefined();
 });
 
 test('requires a runtime module default export', () => {

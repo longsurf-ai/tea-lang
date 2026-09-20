@@ -7,27 +7,26 @@ import type {Stored} from '../runtime/value';
 
 /**
  * Supply per-step Pine values from the Node's position and source time.
- * The first call captures timenow for the graph; absent symbol/timeframe metadata
- * uses the builtin's typed empty value. Runtime overlays any bound fixed values.
+ * Each attempt samples the supplied clock; callers wanting a fixed evaluation
+ * instant supply a constant function. Derived Nodes share no clock memoization.
+ * Absent symbol/timeframe metadata uses the builtin's typed empty value.
+ * Runtime overlays any bound fixed values.
  * @example For a module containing only `plot(timenow)`,
  * `pineBuiltinSupplier(() => 1000)([], module, 0, {})` returns `[1000]`.
  */
 export function pineBuiltinSupplier(now: () => number = Date.now) {
-  let timeNow: number | null = null;
   return (
     _path: readonly number[],
     module: Module,
     index: number,
     datum: Readonly<Record<string, unknown>>,
   ): readonly Stored[] => {
-    if (timeNow === null) {
-      timeNow = now();
-      if (!Number.isSafeInteger(timeNow)) {
-        throw new BindError('Pine timenow must be an exact epoch-ms integer');
-      }
+    const timeNow = now();
+    if (!Number.isSafeInteger(timeNow)) {
+      throw new BindError('Pine timenow must be an exact epoch-ms integer');
     }
     return module.inputs.builtins.map(spec =>
-      builtinValue(spec, index, datum, timeNow!),
+      builtinValue(spec, index, datum, timeNow),
     );
   };
 }
@@ -60,12 +59,16 @@ function builtinValue(
           value = index === 0;
           break;
         case 'isrealtime':
-          value = false;
+          value = datum.realtime === true;
           break;
         case 'ishistory':
+          value = datum.realtime !== true;
+          break;
         case 'isconfirmed':
+          value = datum.provisional !== true;
+          break;
         case 'isnew':
-          value = true;
+          value = datum.firstAttempt !== false;
           break;
       }
       break;

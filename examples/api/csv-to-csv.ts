@@ -10,7 +10,7 @@ if (inputPath === undefined || outputPath === undefined) {
 const schema = new Schema([new Field('close', new Float64(), false)]);
 const source = await fromCSV(inputPath, schema);
 
-const node = tea`
+let node = tea`
   threshold = input.float(1.5, "Threshold")
   var float balance = 0.0
   if close >= threshold
@@ -22,8 +22,8 @@ const node = tea`
   plot("Above threshold", close >= threshold ? 1 : 0, "Above threshold")
 `;
 
-node.bind(source);
-node.bind({threshold: 1.5});
+node = node.bind(source);
+node = node.bind({threshold: 1.5});
 
 const csv = new CSVSink(outputPath, 'w');
 node.to(csv);

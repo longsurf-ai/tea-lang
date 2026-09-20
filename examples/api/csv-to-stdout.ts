@@ -9,7 +9,7 @@ if (inputPath === undefined) {
 const schema = new Schema([new Field('close', new Float64(), false)]);
 const source = await fromCSV(inputPath, schema);
 
-const node = tea`
+let node = tea`
   threshold = input.float(1.5, "Threshold")
   adjusted = 0.0
   if close > threshold
@@ -20,8 +20,8 @@ const node = tea`
   plot("Adjusted close", adjusted, "Adjusted close")
 `;
 
-node.bind(source);
-node.bind({threshold: 1.5});
+node = node.bind(source);
+node = node.bind({threshold: 1.5});
 
 const stdout = new StdoutSink();
 node.to(stdout);

@@ -17,7 +17,7 @@ import type {Scalar} from './value';
  * ```ts
  * module.parameters[0].defaultValue; // 14
  * module.parameters[0].value;        // undefined before binding
- * module.bind({length: 20});
+ * const configured = module.bind({length: 20});
  * module.parameters[0].value;        // 20
  * ```
  */

@@ -9,8 +9,8 @@ device resources, dispatch, readback, decoding, and publication.
 
 - `createGpuExecution()` is the only public GPU execution entry. It accepts an
   injected `GPUDevice`, one compiled artifact, and ordered `GpuBinding[]`.
-- GPU preparation loads the artifact's ordinary ABI-13 TypeScript module and copies it for each
-  binding before calling its synchronous mutable `bind()` method. The module is flat: inputs,
+- GPU preparation loads the artifact's ordinary ABI-13 TypeScript module and derives each
+  configuration through its synchronous immutable `bind()` method. The module is flat: inputs,
   parameters, state, outputs, and request records containing child modules.
   State capacities are derived here from prepared frame depths and finite
   extents. No shared binding-layout wrapper or parallel binder exists.

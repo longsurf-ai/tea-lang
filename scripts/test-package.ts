@@ -6,12 +6,66 @@ import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {transformSync} from 'esbuild';
-import {compile} from '../src/compiler';
+import ts from 'typescript';
+import {compile} from 'tea/compiler';
 
 const directory = mkdtempSync(
   fileURLToPath(new URL('../tests/.package-', import.meta.url)),
 );
 try {
+  const consumer = join(directory, 'consumer.ts');
+  writeFileSync(
+    consumer,
+    `
+import {createNode, DataStream, tea, type Datum, type Node} from 'tea';
+import {Module, Schema, Field, Float64, type Scalar} from 'tea/runtime';
+import {compileToProgram} from 'tea/compiler';
+import {Errors} from 'tea/base/print';
+import {generate} from 'tea/codegen/codegen';
+import {loadModule} from 'tea/runtime/load';
+import {pineBuiltinSupplier} from 'tea/extension/pine';
+import type {GpuExecution} from 'tea/runtime/gpu';
+import type {CompiledWgslProgram} from 'tea/codegen/wgsl';
+import {of} from 'rxjs';
+const errors = new Errors();
+const ir = compileToProgram([{filename: 'consumer.tea', source: 'emit "value" close'}], errors);
+if (!ir) throw new Error('Compilation failed');
+const module: Module = loadModule(generate(ir)).bind();
+const node: Node = createNode(module, pineBuiltinSupplier());
+const scalar: Scalar = 1;
+const stream = new DataStream(new Schema([new Field('close', new Float64(), false)]), of({close: scalar}));
+node.bind(stream).to({next: (row: Datum) => console.log(row.index)});
+tea\`emit "value" 1\`.ready();
+export type Gpu = readonly [GpuExecution, CompiledWgslProgram];
+`,
+  );
+  const checkedConsumer = ts.createProgram([consumer], {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    strict: true,
+    noUncheckedIndexedAccess: true,
+    noEmit: true,
+    skipLibCheck: true,
+    types: ['node'],
+  });
+  const diagnostics = ts.getPreEmitDiagnostics(checkedConsumer);
+  assert.deepEqual(
+    diagnostics.map(diagnostic =>
+      ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'),
+    ),
+    [],
+  );
+  const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url));
+  assert.deepEqual(
+    checkedConsumer
+      .getSourceFiles()
+      .filter(
+        file => !file.isDeclarationFile && file.fileName.startsWith(sourceRoot),
+      )
+      .map(file => file.fileName),
+    [],
+  );
   const source = join(directory, 'program.tea');
   writeFileSync(
     source,
@@ -35,9 +89,20 @@ try {
     `
 import assert from 'node:assert/strict';
 import {Context, Module} from 'tea/runtime';
-import program from './program.mjs';
-assert.ok(program instanceof Module);
-assert.equal(program.bind({length: 3}), program);
+import {createNode, DataStream, tea} from 'tea';
+import {loadModule} from 'tea/runtime/load';
+import {Schema, Field, Float64} from 'apache-arrow';
+import {of} from 'rxjs';
+import unbound from './program.mjs';
+assert.ok(unbound instanceof Module);
+assert.ok(tea\`emit "value" 1\`.module instanceof Module);
+const loaded = loadModule(${JSON.stringify(compiled.source)}).bind({length: 3});
+assert.ok(loaded instanceof Module);
+const observed = [];
+createNode(loaded).bind(new DataStream(new Schema([new Field('close', new Float64(), false)]), of({close: 2}))).to({next: row => observed.push(row.output0)});
+assert.deepEqual(observed, [6]);
+const program = unbound.bind({length: 3});
+assert.notEqual(program, unbound);
 assert.equal(program.parameters[0].value, 3);
 assert.equal(program.ready(), true);
 assert.equal(program.outputs.schema.fields.at(-1).name, 'output0');

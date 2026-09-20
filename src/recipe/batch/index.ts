@@ -39,11 +39,14 @@ class BatchRecipe implements Recipe<BatchResult> {
   async execute(): Promise<BatchResult> {
     let indices = 0;
     let subscribed = false;
+    let node: Node | undefined;
     try {
-      for (const binding of this.bindings) this.node.bind(binding);
+      node = this.node.bind({});
+      for (const binding of this.bindings) node = node.bind(binding);
+      const execution = node;
       const nodeCompletion = new Promise<void>((resolve, reject) => {
         try {
-          this.node.to({
+          execution.to({
             next: datum => {
               indices = Math.max(indices, datum.index + 1);
               this.observer.next?.(datum);
@@ -87,7 +90,7 @@ class BatchRecipe implements Recipe<BatchResult> {
       }
       throw error;
     } finally {
-      this.node.dispose();
+      node?.dispose();
     }
   }
 }

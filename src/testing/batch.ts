@@ -46,7 +46,7 @@ export async function executeTestModule(
   readonly inputs: Module['parameters'];
 }> {
   const node = createNode(
-    module.clone().bind(options.params ?? {}),
+    module.bind(options.params ?? {}),
     pineBuiltinSupplier(() => options.timeNow ?? 0),
   );
   const bindings: BindingInput[] = [];

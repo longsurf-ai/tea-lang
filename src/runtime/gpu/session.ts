@@ -1,7 +1,6 @@
+/// <reference types="@webgpu/types" preserve="true" />
 import type {Module} from '../module-binding';
 // Purpose: Prepare generic runtime bindings and bounded resources for a resumable WGSL execution session.
-
-/// <reference types="@webgpu/types" />
 
 import {DataType, Precision, type Field, type Schema} from 'apache-arrow';
 import {cloneSchema} from '../io';
@@ -1214,7 +1213,7 @@ async function prepareGpuExecutionInputsWithLimits(
   try {
     bindingModule = loadModule(artifact.bindingModule.source);
     validateBindingModule(artifact, bindingModule);
-    bindingModule.bind();
+    bindingModule = bindingModule.bind();
   } catch (error) {
     throw new GpuBindingError(
       `compiled WGSL has an invalid binding module: ${error instanceof Error ? error.message : String(error)}`,
@@ -1233,7 +1232,7 @@ async function prepareGpuExecutionInputsWithLimits(
       );
     }
     try {
-      const configured = bindingModule.clone().bind(binding.params);
+      const configured = bindingModule.bind(binding.params);
       const inputs = requireConcreteModule(configured).parameters;
       if (
         inputs.length !== artifact.params.length ||
