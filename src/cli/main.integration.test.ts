@@ -80,6 +80,21 @@ describe('CLI Batch Recipe', () => {
     expect(output).toContain('{"value":1.5}');
   });
 
+  test('build follows the relative imports of a script', () => {
+    const built = cli('build', 'tests/fixtures/imports/strategies/entry.tea');
+    // Both libraries are part of the one generated module.
+    expect(built).toContain('upper');
+    expect(built).toContain('cap');
+    const missing = invokeCli(
+      'build',
+      'tests/fixtures/imports/missing/entry.tea',
+    );
+    expect(missing.status).not.toBe(0);
+    expect(missing.stderr).toContain(
+      "tests/fixtures/imports/missing/entry.tea:1:8: cannot find './nope' (no file tests/fixtures/imports/missing/nope.tea)",
+    );
+  });
+
   test('expected failures are concise and do not expose stacks', () => {
     const result = invokeCli('run', SOURCE, '-i', DATA, '--missing', '1');
     expect(result.status).toBe(1);

@@ -119,6 +119,8 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   never write outer-scope variables.
 - The checker is provenance-blind about libraries: its injected `Importer`
   (`importer.ts`) supplies only a `SourcePackage` path and parsed files. The
+  checker passes the importing file's name with each path, because a relative
+  path names a file beside it; it never resolves or reads one itself. The
   checker positions loader errors and recursively elaborates each source once
   into a semantic `Package`; it alone interprets `library()`, validates the
   package root and declaration conflicts, and checks types, enums, defaults,

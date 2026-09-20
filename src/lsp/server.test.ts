@@ -1,7 +1,10 @@
 // Purpose: Protocol test of startLanguageServer — a JSON-RPC client drives one session over an in-memory stream pair: capabilities, debounced versioned diagnostics, every position query, tea/libraryText, watched files, close, a forced compiler defect, and a connection disposed under a pending debounce.
 
+import {readFileSync} from 'node:fs';
+import {join} from 'node:path';
 import {PassThrough} from 'node:stream';
 import {setTimeout as sleep} from 'node:timers/promises';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {afterAll, expect, test, vi} from 'vitest';
 import {
   createConnection,
@@ -289,6 +292,38 @@ test('a document of another scheme is analyzed under its URI', async () => {
     {textDocument: {uri}, position: {line: 0, character: 0}},
   );
   expect(result.map(location => location.uri)).toEqual([uri]);
+});
+
+test('definition in an imported file of the user is a file: location', async () => {
+  const imports = join(
+    fileURLToPath(new URL('.', import.meta.url)),
+    '../../tests/fixtures/imports',
+  );
+  const entry = join(imports, 'strategies/entry.tea');
+  const uri = pathToFileURL(entry).href;
+  const next = nextPublished();
+  await client.sendNotification('textDocument/didOpen', {
+    textDocument: {
+      uri,
+      languageId: 'tea',
+      version: 1,
+      text: readFileSync(entry, 'utf8'),
+    },
+  });
+  expect(await next).toEqual({uri, version: 1, diagnostics: []});
+  // Line 5 of the entry: `upper = bands.upper(10.0, 2.0)`.
+  const result: Location[] = await client.sendRequest(
+    'textDocument/definition',
+    {textDocument: {uri}, position: {line: 4, character: 15}},
+  );
+  expect(result.map(location => location.uri)).toEqual([
+    pathToFileURL(join(imports, 'strategies/lib/bands.tea')).href,
+  ]);
+  // Closing clears the diagnostics; take that publication so the next test
+  // does not see it.
+  const cleared = nextPublished();
+  await client.sendNotification('textDocument/didClose', {textDocument: {uri}});
+  expect(await cleared).toEqual({uri, diagnostics: []});
 });
 
 test('didClose clears the diagnostics and forgets the document', async () => {

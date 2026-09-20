@@ -1,0 +1,8 @@
+//@version=1
+library("bands")
+import ../../shared/risk
+
+// The source plus k, never above 100. It reaches risk through its own
+// spelling of the same file the entry script imports.
+export upper(source, k) =>
+    risk.cap(source + k, 100.0)

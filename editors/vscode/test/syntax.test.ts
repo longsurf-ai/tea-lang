@@ -148,6 +148,8 @@ describe('Tea TextMate grammar', () => {
       grammar.repository.imports.patterns[0].match,
     );
     expect(importPattern.test('import owner/library/1 as lib')).toBe(true);
+    expect(importPattern.test('import ./lib/bands')).toBe(true);
+    expect(importPattern.test('import ../../shared/risk as limits')).toBe(true);
     expect(importPattern.test('import = enum')).toBe(false);
   });
 

@@ -2133,7 +2133,10 @@ class Checker {
       this.error(stmt.pos, 'import must be at the top level of the script');
       return;
     }
-    const outcome = this.importer.import(stmt.path.value);
+    const outcome = this.importer.import(
+      stmt.path.value,
+      stmt.pos.base.filename,
+    );
     if (isImportError(outcome)) {
       this.error(stmt.path.pos, outcome.error);
       return;

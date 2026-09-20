@@ -21,11 +21,14 @@ export function isImportError(outcome: ImportOutcome): outcome is ImportError {
 
 // The checker calls import() at each import declaration and seeds ambient
 // packages from implicit(); it never learns where package sources come from.
+// `from` is the importing file's name, as in Go's ImporterFrom: a relative
+// path means a file beside it, so the same spelling names different packages
+// in different files.
 export interface Importer {
   // Namespace imports visible without source import statements (ta.*).
   implicit(): readonly SourcePackage[];
   // Compiler prelude packages whose exports enter the script universe
   // unqualified (plot(...)).
   prelude(): readonly SourcePackage[];
-  import(path: string): ImportOutcome;
+  import(path: string, from: string): ImportOutcome;
 }

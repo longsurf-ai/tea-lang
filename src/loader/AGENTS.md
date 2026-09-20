@@ -7,14 +7,19 @@ parsed package sources and owns their semantics.
 
 ## Invariants
 
-- The registry is the source of truth for what an import path means:
-  loadable source, `external` (staged distribution mechanism), or unknown.
-  Adding a package source kind changes the registry, never the checker.
+- `docs/imports.md` owns how an import names a package. A path that starts
+  with `./` or `../` is a file beside the importing one: `importedFile`
+  resolves it to a canonical path, which is the package identity and the cache
+  key, and the loader reads it with `readFileSync`. The registry is never
+  asked about a file, so a file cannot shadow a library.
+- For every other path the registry is the source of truth: loadable source,
+  `external` (staged distribution mechanism), or unknown. Adding a package
+  source kind changes the registry, never the checker.
 - Resolution is recursive with cycle detection (the error names the chain)
   and memoized per path. The loader scans each parsed file's raw top-level
   `ImportStmt`s only to prewarm that dependency DAG. A `SourcePackage` carries
-  exactly its registry path and parsed files; import aliases never cross this
-  seam.
+  exactly its registry path or canonical file path and its parsed files;
+  import aliases never cross this seam.
 - The loader performs no package-header or top-level semantic validation. It
   does not interpret `library()`, collect declarations or exports, apply
   aliases, or decide which statements are legal in an imported package. The
@@ -27,6 +32,6 @@ parsed package sources and owns their semantics.
   `checker/importer.ts` and the driver (`compile.ts`) injects the instance.
   Test helpers are the sanctioned exception.
 - The loader owns canonical enumeration of the source files that can affect a
-  Program. Until external imports exist, that conservative closure is the
-  ordered entry files plus every compiler-shipped Tea library; `compile.ts`
+  Program. That closure is the ordered entry files, every compiler-shipped
+  Tea library, and the files reached through relative imports; `compile.ts`
   owns the unambiguous exact-byte hash over that enumeration.

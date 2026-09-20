@@ -17,7 +17,10 @@ import {
 } from '../../../src/syntax/tokens';
 
 const IDENTIFIER = '[A-Za-z_][A-Za-z0-9_]*';
-const IMPORT_PATH = IDENTIFIER + '(?:/[A-Za-z0-9_]+)*';
+// A registry path, `owner/name/1`, or a file beside the importing one,
+// `./lib/name` and `../lib/name`.
+const IMPORT_PATH =
+  '(?:' + IDENTIFIER + '|\\.\\.?(?:/\\.\\.)*)(?:/[A-Za-z0-9_]+)*';
 const TYPE_SYNTAX =
   IDENTIFIER +
   '(?:\\.' +

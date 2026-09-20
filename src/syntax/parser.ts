@@ -345,7 +345,13 @@ export class Parser {
         if (
           this.lookAhead(() => {
             this.next();
-            return this.tok() === Tok.Name;
+            if (this.tok() !== Tok.Dot) {
+              return this.tok() === Tok.Name;
+            }
+            // `import ./x` and `import ../x`; `import.x` selects from a
+            // variable that happens to be named import.
+            this.next();
+            return this.tok() === Tok.Dot || this.op() === Op.Slash;
           })
         ) {
           return this.importStmt(pos);
@@ -1057,11 +1063,12 @@ export class Parser {
 
   // ---- top-level declarations ----------------------------------------------
 
-  // `import owner/name/version [as alias]` — the path is one atomic literal
-  // produced by a scanner rescan; segmentation is the import resolver's job.
+  // `import owner/name/version [as alias]`, or a relative `import ./lib/name`
+  // — the path is one atomic literal produced by a scanner rescan;
+  // segmentation is the import resolver's job.
   private importStmt(pos: Pos): Stmt {
     this.next(); // 'import'
-    if (this.tok() !== Tok.Name) {
+    if (this.tok() !== Tok.Name && this.tok() !== Tok.Dot) {
       this.error(`expected import path, found '${this.tok()}'`);
       this.advance(Tok.Newline, Tok.Dedent);
       return this.badStmt(pos);

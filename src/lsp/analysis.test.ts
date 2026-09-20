@@ -144,6 +144,27 @@ describe('errors positioned in a library body', () => {
   });
 });
 
+describe('imported files of the user', () => {
+  const at = (path: string) => {
+    const filename = join(FIXTURES, 'imports', path);
+    return analyze({filename, source: readFileSync(filename, 'utf8')});
+  };
+
+  test('a missing file is marked on the import path', () => {
+    const nope = join(FIXTURES, 'imports/missing/nope.tea');
+    expect(rendered(at('missing/entry.tea'))).toEqual([
+      `0:7-13 cannot find './nope' (no file ${nope})`,
+    ]);
+  });
+
+  test('an error at the top of an imported file is marked on its import', () => {
+    const plain = join(FIXTURES, 'imports/notlib/plain.tea');
+    expect(rendered(at('notlib/entry.tea'))).toEqual([
+      `0:7-14 ${plain}:1:1: library '${plain}' has no library() declaration`,
+    ]);
+  });
+});
+
 describe('agreement with compileToProgram', () => {
   // The files under fixtures/execution must compile. Every other fixture is
   // classified by what compileToProgram says about it; no acceptance is

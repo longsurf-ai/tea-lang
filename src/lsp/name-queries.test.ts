@@ -1,6 +1,7 @@
 // Purpose: hover, definition and references tests — one fixture covering a local, a parameter of a function called with two signatures, a struct field, a method, a ta.* library function, a native, and the places with no answer.
 
 import {readFileSync} from 'node:fs';
+import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {describe, expect, test} from 'vitest';
 import type {Position, Range} from 'vscode-languageserver';
@@ -250,5 +251,37 @@ describe('references', () => {
 
   test.each(SILENT)('%s has none', (_, position) => {
     expect(references(analysis, position, true)).toEqual([]);
+  });
+});
+
+describe('across the files a script imports', () => {
+  const IMPORTS = join(
+    fileURLToPath(new URL('.', import.meta.url)),
+    '../../tests/fixtures/imports',
+  );
+  const entry = join(IMPORTS, 'strategies/entry.tea');
+  const imported = analyze({
+    filename: entry,
+    source: readFileSync(entry, 'utf8'),
+  });
+  // Line 5 of the entry: `upper = bands.upper(10.0, 2.0)`.
+  const onUpper = {line: 4, character: 15};
+
+  test('definition leads into the imported file', () => {
+    expect(definition(imported, onUpper)).toEqual([
+      {
+        filename: join(IMPORTS, 'strategies/lib/bands.tea'),
+        range: {
+          start: {line: 6, character: 7},
+          end: {line: 6, character: 12},
+        },
+      },
+    ]);
+  });
+
+  test('hover shows the imported function as it was called', () => {
+    const value = hover(imported, onUpper)?.contents;
+    expect(JSON.stringify(value)).toContain('upper(');
+    expect(JSON.stringify(value)).toContain('float');
   });
 });

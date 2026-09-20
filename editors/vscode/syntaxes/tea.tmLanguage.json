@@ -167,7 +167,7 @@
     "imports": {
       "patterns": [
         {
-          "match": "^(\\s*)(import)(\\s+)([A-Za-z_][A-Za-z0-9_]*(?:/[A-Za-z0-9_]+)*)(?:(\\s+)(as)(\\s+)([A-Za-z_][A-Za-z0-9_]*))?",
+          "match": "^(\\s*)(import)(\\s+)((?:[A-Za-z_][A-Za-z0-9_]*|\\.\\.?(?:/\\.\\.)*)(?:/[A-Za-z0-9_]+)*)(?:(\\s+)(as)(\\s+)([A-Za-z_][A-Za-z0-9_]*))?",
           "captures": {
             "2": {
               "name": "keyword.control.import.tea"

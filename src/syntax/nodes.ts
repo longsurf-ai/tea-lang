@@ -291,7 +291,8 @@ export interface EnumMember extends Node {
   readonly title: Expr | null;
 }
 
-// `import owner/name/version [as alias]`. The path is one atomic literal
+// `import owner/name/version [as alias]`, or `import ./lib/name` for a file
+// beside the importing one. The path is one atomic literal
 // (litKind 'path') produced by a parser-directed rescan; splitting and
 // validating its owner/name/version segments is the import resolver's
 // concern, never the parser's.

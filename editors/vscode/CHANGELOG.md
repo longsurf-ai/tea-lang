@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Highlight a relative import path, `import ./lib/name`, as an import path.
+
 ## 0.3.0
 
 - Keep the extension activation-free and focused on generated TextMate syntax

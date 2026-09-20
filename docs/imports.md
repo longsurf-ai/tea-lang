@@ -3,22 +3,27 @@ title: 'Imports: naming and loading Tea files'
 sidebarTitle: Imports
 ---
 
-Status: proposed. Today a Tea script can import only the five compiler-shipped
-libraries. `compileToProgram` always resolves through `defaultRegistry`, so
-`import mylib` fails with `unknown library 'mylib'`, and any path containing `/`
-fails with `external libraries are not supported yet`.
+A script imports a compiler-shipped library by name and one of its own files by
+a relative path. The naming rule follows TypeScript's relative specifiers: the
+language owns how an import names a file, and the loader reads that file.
 
-This page adds imports of the user's own `.tea` files. The naming rule follows
-TypeScript's relative specifiers.
+```tea
+import ta
+import ./lib/bands
+import ../shared/risk as limits
+
+upper = bands.upper(close, 2.0)
+emit "capped" limits.cap(upper, 100.0)
+```
 
 ## Decisions
 
 | Question                             | Decision                                                                                               |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
 | How does a script name another file? | A relative specifier, `import ./lib/bands`, resolved against the importing file.                       |
-| What do other specifiers mean?       | Unchanged. One bare segment is a shipped library. Several bare segments stay `external`.               |
+| What do other specifiers mean?       | One bare segment is a shipped library. Several bare segments are `external`, which is not supported.   |
 | Who resolves a specifier?            | The loader. The rule is part of the language and identical in every host.                              |
-| Who reads the file?                  | The loader, with `readFileSync`, as it already reads entry files and shipped libraries.                |
+| Who reads the file?                  | The loader, with `readFileSync`, as it reads entry files and shipped libraries.                        |
 | Does any tool scan directories?      | No. Imports are followed lazily from the entry file, as the loader already does for shipped libraries. |
 | Extensions and probing               | The specifier has no extension and the loader appends `.tea`. One import names exactly one file.       |
 | May an import leave a project root?  | Yes. Tea has no project root. Like `tsc` and `node`, the loader reads the path the specifier names.    |
@@ -33,17 +38,25 @@ file that contains it, and anything else is a package found by the environment.
 
 | Written                         | Kind              | Resolves to                                               |
 | ------------------------------- | ----------------- | --------------------------------------------------------- |
-| `import ta`                     | bare, one segment | Compiler-shipped library. Unchanged.                      |
-| `import someone/lib/1`          | bare, several     | Published library. Still `external`.                      |
-| `import ./lib/bands`            | relative, new     | `lib/bands.tea` beside the importing file.                |
-| `import ../shared/risk as risk` | relative, new     | `shared/risk.tea` one directory above the importing file. |
+| `import ta`                     | bare, one segment | Compiler-shipped library.                                 |
+| `import someone/lib/1`          | bare, several     | Published library. Reported as `external`, not supported. |
+| `import ./lib/bands`            | relative          | `lib/bands.tea` beside the importing file.                |
+| `import ../shared/risk as risk` | relative          | `shared/risk.tea` one directory above the importing file. |
 
-The kind is decided by syntax alone, so a user file can never shadow `ta`.
+The kind is decided by spelling alone, so a user file can never shadow `ta`, and
+the registry of shipped libraries is never asked about a file.
 
-The local name keeps today's rule. Without `as`, the namespace is the name the
-imported file declares in `library("...")`, as Go names a package by its package
-clause and not by its path. The imported file must be a library; the checker
-already reports `has no library() declaration` otherwise.
+A relative path is its upward steps first and then names: `./name`,
+`../../lib/name`. Each name is a Tea identifier, so a file such as `my-lib.tea`
+cannot be imported. `./a/../b` and a trailing `/` are malformed.
+
+The local name keeps the rule of every import. Without `as`, the namespace is
+the name the imported file declares in `library("...")`, as Go names a package
+by its package clause and not by its path. The imported file must be a library;
+the checker reports `has no library() declaration` otherwise.
+
+`import` stays a contextual keyword. Only `./` and `../` open a relative path:
+`import.x` still selects from a variable named `import`.
 
 ## Resolution
 
@@ -73,7 +86,7 @@ sequenceDiagram
   Note over L: import ./lib/bands
   L->>L: canonical path = strategies/lib/bands.tea
   L->>D: readFileSync("strategies/lib/bands.tea")
-  D-->>L: text, or ENOENT
+  D-->>L: text, or no such file
   L->>L: parse it, scan its imports, recurse
   Note over L: memoized by canonical path, cycles reported with the chain
   L-->>K: Importer
@@ -81,11 +94,12 @@ sequenceDiagram
   L-->>K: cached package, or an error the checker positions at the import
 ```
 
-Resolution needs the importing file, which `Importer.import(path)` does not
-receive today. Mature designs all pass both: TypeScript's
+Resolution needs the importing file, so `Importer.import(path, from)` takes it.
+Mature designs all pass both: TypeScript's
 `resolveModuleName(name, containingFile, ...)`, Go's
 `ImporterFrom.ImportFrom(path, srcDir, mode)` and Rollup's
 `resolveId(source, importer)`. Tea's checker follows Go's, so it takes Go's shape.
+The checker passes the name every `Pos` of the statement already carries.
 
 ## Hosts
 
@@ -95,6 +109,7 @@ truthfully.
 | Host                        | Entry filename         | Relative imports resolve against |
 | --------------------------- | ---------------------- | -------------------------------- |
 | `tea run`, `build`, `parse` | The path as typed      | That file's directory.           |
+| `tea lsp`                   | The `file:` URI's path | That file's directory.           |
 | Embedding application       | The script's real path | That file's directory.           |
 | `tea` template tag          | `<tea-template>`       | The process working directory.   |
 
@@ -102,34 +117,40 @@ An embedding application that passes `{filename, source}` sends the real path as
 `filename`, even when `source` is newer than the file, as an editor's unsaved
 text is.
 
-Reading directly has one known ceiling. An imported file always comes from disk,
-so an editor's unsaved edits to it reach its importers only when it is saved.
-If that becomes a problem, the loader gains an injected reader then.
+## Errors
 
-## Changes in Tea
-
-1. **Parser.** `importStmt` requires a name after `import` today. It also accepts
-   a path that starts with `./` or `../`, still as one atomic path literal.
-2. **Importer.** `Importer.import(path, from)` gains the importing file's name.
-   The checker passes `stmt.pos.base.filename`; every `Pos` already carries it.
-3. **Loader.** A relative specifier is resolved to its canonical path and read
-   with `readFileSync`. A bare one goes to `Registry` as today. The cache key
-   and `SourcePackage.path` are the canonical path.
-
-`compileToProgram`, the CLI and the `tea` template tag keep their signatures.
-
-One new user-facing error, positioned at the import statement like the existing
-ones:
+Resolution errors sit on the import statement, like those of shipped libraries.
 
 ```text
-cannot find './lib/bands' (no file strategies/lib/bands.tea)
+a.tea:1:8: cannot find './lib/bands' (no file strategies/lib/bands.tea)
+a.tea:1:8: malformed import path './lib/'
+a.tea:1:8: in library 'x/a.tea': in library 'x/b.tea': import cycle: x/a.tea -> x/b.tea -> x/a.tea
 ```
 
-## Verification when implementing
+An error inside an imported file keeps its own position, for example
+`lib/plain.tea:1:1: library 'lib/plain.tea' has no library() declaration`. The
+language server shows it on the import that names that file, and shows an error
+in an imported function's body on the call that reached it.
 
-- One library reached through two spellings yields one package.
-- A cycle across user files reports the chain with canonical paths.
-- A specifier inside a library resolves against the library's directory.
-- A missing file reports at the import statement.
-- Bare imports and the existing custom-`Registry` tests are unchanged.
-- `tea run` compiles a script with a relative import end to end.
+## Known ceilings
+
+- An imported file always comes from disk, so an editor's unsaved edits to it
+  reach its importers only when it is saved. If that becomes a problem, the
+  loader gains an injected reader then.
+- A struct or enum exported from an imported file carries its canonical path in
+  its `tea:typeId`. Hosts that name the entry differently, by a relative or an
+  absolute path, therefore produce different ids for the same type.
+
+## Verified by
+
+- `src/loader/loader.test.ts`: two spellings yield one package, a cycle names
+  its chain by canonical path, a missing file and a malformed path, and the
+  registry is never asked about a file.
+- `src/compiler.test.ts`: a script runs with its own library files and its
+  generated TypeScript typechecks; resolution errors sit on the import.
+- `src/syntax/parser.test.ts`: a relative path is one atomic literal, and
+  `import` stays an ordinary name elsewhere.
+- `src/cli/main.integration.test.ts`: `tea build` follows relative imports.
+- `src/lsp`: definition leads into the imported file as a `file:` location, a
+  missing file is marked on the whole import path, and an error at the top of
+  an imported file is marked on its import.

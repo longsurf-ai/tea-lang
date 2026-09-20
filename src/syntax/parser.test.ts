@@ -435,6 +435,34 @@ describe('recovery while a construct is half typed', () => {
   });
 });
 
+describe('relative import paths', () => {
+  test.each([
+    ['import ./lib/bands\n', './lib/bands', null],
+    ['import ../shared/risk as limits\n', '../shared/risk', 'limits'],
+    ['import ../../shared/risk\n', '../../shared/risk', null],
+  ])('%j is one atomic path literal', (src, path, alias) => {
+    const {file, errors} = parseText(src);
+    expect(errors).toEqual([]);
+    const stmt = file.stmtList[0];
+    expect(stmt.kind).toBe('ImportStmt');
+    if (stmt.kind === 'ImportStmt') {
+      expect(stmt.path.value).toBe(path);
+      expect(stmt.path.pos).toMatchObject({line: 1, col: 8});
+      expect(stmt.alias?.value ?? null).toBe(alias);
+    }
+  });
+
+  test('a bare path parses as before, and `import` stays an ordinary name elsewhere', () => {
+    expect(parseText('import someone/lib/1 as lib\n').errors).toEqual([]);
+    // Only `./` and `../` open a relative path: `import.x` selects from a
+    // variable named import, and a number is no path.
+    const selector = parseText('import.x\n');
+    expect(selector.errors).toEqual([]);
+    expect(selector.file.stmtList[0].kind).toBe('ExprStmt');
+    expect(parseText('import .5\n').file.stmtList[0].kind).toBe('ExprStmt');
+  });
+});
+
 describe('file metadata', () => {
   test('version pragma lands on File', () => {
     const out = dump('//@version=1\nx = 1\n');

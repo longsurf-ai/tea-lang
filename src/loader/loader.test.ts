@@ -1,5 +1,7 @@
 // Purpose: Loader tests — source-package parsing, recursive import prewarming, cache identity, cycle detection, and staged resolution errors.
 
+import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {describe, expect, test} from 'vitest';
 import {
   isImportError,
@@ -66,9 +68,15 @@ describe('import resolution', () => {
     ]);
     expect(explicit.implicit().map(pkg => pkg.path)).toEqual(['ta']);
     expect(explicit.prelude().map(pkg => pkg.path)).toEqual(['visual']);
-    expect(sourcePackage(explicit.import('broker')).path).toBe('broker');
-    expect(sourcePackage(explicit.import('portfolio')).path).toBe('portfolio');
-    expect(sourcePackage(explicit.import('trade')).path).toBe('trade');
+    expect(sourcePackage(explicit.import('broker', 'entry.tea')).path).toBe(
+      'broker',
+    );
+    expect(sourcePackage(explicit.import('portfolio', 'entry.tea')).path).toBe(
+      'portfolio',
+    );
+    expect(sourcePackage(explicit.import('trade', 'entry.tea')).path).toBe(
+      'trade',
+    );
   });
 
   test('prewarms raw transitive imports and memoizes source packages', () => {
@@ -81,10 +89,10 @@ describe('import resolution', () => {
     );
 
     expect(loaded).toEqual(['a', 'b']);
-    const a = sourcePackage(importer.import('a'));
-    const b = sourcePackage(importer.import('b'));
-    expect(importer.import('a')).toBe(a);
-    expect(importer.import('b')).toBe(b);
+    const a = sourcePackage(importer.import('a', 'entry.tea'));
+    const b = sourcePackage(importer.import('b', 'entry.tea'));
+    expect(importer.import('a', 'entry.tea')).toBe(a);
+    expect(importer.import('b', 'entry.tea')).toBe(b);
     expect(loaded).toEqual(['a', 'b']);
     expect(a.path).toBe('a');
     expect(a.files[0].pos.base.filename).toBe('fake/a.tea');
@@ -104,8 +112,8 @@ result = base.fb(anything)
       [],
     );
 
-    expect(sourcePackage(importer.import('a')).path).toBe('a');
-    expect(sourcePackage(importer.import('b')).path).toBe('b');
+    expect(sourcePackage(importer.import('a', 'entry.tea')).path).toBe('a');
+    expect(sourcePackage(importer.import('b', 'entry.tea')).path).toBe('b');
     expect(loaded).toEqual(['a', 'b']);
   });
 
@@ -117,7 +125,7 @@ result = base.fb(anything)
       [],
     );
 
-    expect(importError(importer.import('a'))).toContain(
+    expect(importError(importer.import('a', 'entry.tea'))).toContain(
       'import cycle: a -> b -> a',
     );
   });
@@ -128,14 +136,16 @@ result = base.fb(anything)
       fakeRegistry({}),
       [],
     );
-    expect(importError(unknown.import('zzz'))).toBe("unknown library 'zzz'");
+    expect(importError(unknown.import('zzz', 'entry.tea'))).toBe(
+      "unknown library 'zzz'",
+    );
 
     const external = resolveImports(
       [parseText('import someone/lib/1').file],
       fakeRegistry({}),
       [],
     );
-    expect(importError(external.import('someone/lib/1'))).toBe(
+    expect(importError(external.import('someone/lib/1', 'entry.tea'))).toBe(
       "external libraries are not supported yet ('someone/lib/1')",
     );
   });
@@ -152,7 +162,7 @@ duplicate(x) => x + 1
       [],
     );
 
-    const raw = sourcePackage(importer.import('raw'));
+    const raw = sourcePackage(importer.import('raw', 'entry.tea'));
     expect(raw.path).toBe('raw');
     expect(raw.files[0].stmtList).toHaveLength(3);
   });
@@ -165,8 +175,74 @@ duplicate(x) => x + 1
       [],
     );
 
-    expect(importError(importer.import('broken'))).toContain(
+    expect(importError(importer.import('broken', 'entry.tea'))).toContain(
       "library 'broken' failed to parse",
     );
+  });
+});
+
+describe('relative imports', () => {
+  const IMPORTS = join(
+    fileURLToPath(new URL('.', import.meta.url)),
+    '../../tests/fixtures/imports',
+  );
+  const entry = join(IMPORTS, 'strategies/entry.tea');
+  const bands = join(IMPORTS, 'strategies/lib/bands.tea');
+  const risk = join(IMPORTS, 'shared/risk.tea');
+  const importer = () => resolveImports([parseText('value = 1').file]);
+
+  test('resolve against the importing file, and the canonical path is the identity', () => {
+    const resolver = importer();
+    expect(sourcePackage(resolver.import('./lib/bands', entry)).path).toBe(
+      bands,
+    );
+    // The entry script and bands.tea spell the same file differently.
+    const fromEntry = sourcePackage(resolver.import('../shared/risk', entry));
+    const fromBands = sourcePackage(
+      resolver.import('../../shared/risk', bands),
+    );
+    expect(fromEntry.path).toBe(risk);
+    expect(fromBands).toBe(fromEntry);
+    expect(fromEntry.files[0].pos.base.filename).toBe(risk);
+  });
+
+  test('a cycle across files names the chain by canonical path', () => {
+    const a = join(IMPORTS, 'cycle/a.tea');
+    const b = join(IMPORTS, 'cycle/b.tea');
+    expect(
+      importError(importer().import('./a', join(IMPORTS, 'cycle/entry.tea'))),
+    ).toBe(
+      `in library '${a}': in library '${b}': import cycle: ${a} -> ${b} -> ${a}`,
+    );
+  });
+
+  test('a missing file and a malformed path are ordinary import errors', () => {
+    const from = join(IMPORTS, 'missing/entry.tea');
+    expect(importError(importer().import('./nope', from))).toBe(
+      `cannot find './nope' (no file ${join(IMPORTS, 'missing/nope.tea')})`,
+    );
+    for (const path of [
+      './',
+      './lib/',
+      './a//b',
+      './a.b',
+      '../..',
+      './a/../b',
+    ]) {
+      expect(importError(importer().import(path, from))).toBe(
+        `malformed import path '${path}'`,
+      );
+    }
+  });
+
+  test('never consult the registry, so a user file cannot shadow a library', () => {
+    const asked: string[] = [];
+    const resolver = resolveImports(
+      [parseText('value = 1').file],
+      fakeRegistry({}, asked),
+      [],
+    );
+    sourcePackage(resolver.import('./lib/bands', entry));
+    expect(asked.filter(path => path.includes('bands'))).toEqual([]);
   });
 });

@@ -11,7 +11,7 @@ import {CallKind, SelectionKind, type FunctionInstance} from '../checker/info';
 import {ObjectKind, type Object} from '../checker/object';
 import {compileForTooling} from '../compiler';
 import {TypeKind} from '../ir/type';
-import type {PackageSource} from '../loader/loader';
+import {importedFile, type PackageSource} from '../loader/loader';
 import {
   NodeKind,
   type CallExpr,
@@ -110,15 +110,36 @@ export function analyze(input: PackageSource): Analysis {
     source: 'tea',
     message,
   });
+  // An import path is one literal to the parser but several tokens to
+  // tokenize(), so its range comes from the statement.
+  const importPaths = file.stmtList.flatMap(stmt =>
+    stmt.kind === NodeKind.ImportStmt ? [stmt.path] : [],
+  );
   const diagnostics = errors.flushErrors().flatMap(error => {
     if (error.pos.base.filename === input.filename) {
-      return [diagnostic(diagnosticRange(error.pos, tokens, lines), error.msg)];
+      const path = importPaths.find(
+        ({pos}) => pos.line === error.pos.line && pos.col === error.pos.col,
+      );
+      const range =
+        path === undefined
+          ? diagnosticRange(error.pos, tokens, lines)
+          : nodeRange(path);
+      return [diagnostic(range, error.msg)];
     }
     const calls = callsReaching(error, checked, input.filename);
     const where = formatPos(error.pos);
     if (calls.length === 0) {
-      // No call of this document reaches it. It is still never dropped.
-      const range = diagnosticRange(file.pos, tokens, lines);
+      // No call of this document reaches it, as with an error at the top of
+      // an imported file. It goes on the import that names that file, or on
+      // the document's first token, and is never dropped.
+      const path = importPaths.find(
+        ({value}) =>
+          importedFile(value, input.filename) === error.pos.base.filename,
+      );
+      const range =
+        path === undefined
+          ? diagnosticRange(file.pos, tokens, lines)
+          : nodeRange(path);
       return [diagnostic(range, `${where}: ${error.msg}`)];
     }
     return calls.map(call => {

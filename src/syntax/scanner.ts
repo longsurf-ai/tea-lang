@@ -151,11 +151,28 @@ export class Scanner {
     this.groupDepth = state.groupDepth;
   }
 
-  // Parser-directed rescan for `import owner/name/version`: extends the
-  // current Name token in place into one atomic path literal (litKind
-  // 'path'). Segments must be adjacent — the cursor sits immediately after
-  // the name, so any whitespace before '/' simply ends the path.
+  // Parser-directed rescan for `import owner/name/version` and for the
+  // relative `import ./lib/name`: extends the current Name or Dot token in
+  // place into one atomic path literal (litKind 'path'). Segments must be
+  // adjacent — the cursor sits immediately after the token, so any
+  // whitespace simply ends the path. A relative path takes every following
+  // dot, slash and name character; whether it is well formed is the import
+  // resolver's concern.
   rescanImportPath(): void {
+    if (this.tok === Tok.Dot) {
+      this.source.startSegment();
+      while (
+        this.source.ch === '.' ||
+        this.source.ch === '/' ||
+        isNamePart(this.source.ch)
+      ) {
+        this.source.nextch();
+      }
+      this.tok = Tok.Literal;
+      this.kind = LitKind.Path;
+      this.lit = `.${this.source.segment()}`;
+      return;
+    }
     let path = this.lit;
     while (this.source.ch === '/') {
       this.source.nextch();
