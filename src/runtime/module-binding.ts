@@ -159,6 +159,8 @@ export class Module<C extends Context = Context> {
             : [],
         ),
       );
+      // TODO: Bind child parameters independently instead of forwarding the
+      // parent's complete parameter set to every request module.
       for (const request of data.requests)
         visit(request.module, parameters, new Map());
       const constants = new Map(
