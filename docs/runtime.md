@@ -26,7 +26,7 @@ numeric arrays.
 
 ## Public Node execution
 
-`tea` creates one mutable Node owning one recursive `Module` tree.
+`tea` creates one Node owning one recursive `Module` configuration tree.
 Node owns:
 
 - the RxJS input graph;
@@ -37,9 +37,10 @@ Node owns:
 - Pine contextual builtin delivery;
 - lossless Datum publication and cancellation.
 
-`Node.bind()` accepts only parameter objects and DataStreams. Parameter binding
-updates the existing module; stream binding updates Node connections. Neither
-subscribes. Binding is rejected after execution starts or disposal.
+`Node.bind(input, path?)` accepts parameter objects and DataStreams and returns
+a new Node with independent configuration and execution state. The optional path
+selects child declaration names. Binding never subscribes or changes the receiver;
+it remains available during execution, but rejects a disposed receiver.
 
 The first `Node.to(observer)` starts execution. Later observers share that same
 run and receive only future Datums. Unsubscribing removes one observer;
@@ -51,9 +52,8 @@ length = input.int(20)
 emit "average" ta.sma(close, length)
 `;
 
-node.bind({length: 10});
-node.bind(prices);
-node.to(observer);
+const run = node.bind({length: 10}).bind(prices);
+run.to(observer);
 ```
 
 Each synchronized input produces one synchronous `Context.step()`. A thrown
@@ -102,15 +102,16 @@ Pine is statically enabled while it is Tea's only Extension. It derives:
 
 - `bar_index` from the Node's committed index;
 - `time` from the current input datum;
-- one fixed historical `timenow` value from the Node's host clock;
-- historical bar-state flags from finite execution semantics.
+- `timenow` sampled from the injected host clock per attempt; hosts may supply a
+  constant clock for one finite evaluation;
+- bar-state flags from the current attempt and explicit `realtime` metadata.
 
 Missing application symbol/timeframe metadata becomes the builtin's declared
 empty Value. Contextual builtins never become another `Node.bind()` form.
 
 ## Compiled modules and binding
 
-Runtime ABI 13 exposes one `Module<Context>` with mutable configuration. There is
+Runtime ABI 13 exposes one `Module<Context>` with independently derived configuration. There is
 no public manifest or separate preparation operation:
 
 ```text
@@ -133,9 +134,9 @@ module
 The module constructor copies the ordinary Arrow schemas and keeps the binding
 calculation function private. `module.bind()` validates a named patch,
 preserves existing values, fills usable defaults only for still-unset parameters,
-and recomputes dependent depths, parameter activity and request contexts. It updates
-the existing module and returns that same object. Request-child module identities
-also stay stable. A failed binding leaves the entire tree unchanged.
+and recomputes dependent depths, parameter activity and request contexts. It returns
+a new module tree, with copied child configuration and Arrow schemas. Both successful
+and failed binding leave the original tree unchanged.
 
 ```ts
 const module = tea`
@@ -144,12 +145,12 @@ enabled = input.bool(true)
 emit "price" enabled ? close[length] : close
 `.module;
 
-const same = module.bind({length: 20, enabled: false});
-same === module; // true
+const configured = module.bind({length: 20, enabled: false});
+configured === module; // false
 
-module.bind({length: 40});
-module.parameters[0].value; // 40; enabled remains false
-module.inputs.series[0].depth; // {kind: 'const', bars: 40} for close[length]
+const longer = configured.bind({length: 40});
+longer.parameters[0].value; // 40; enabled remains false
+longer.inputs.series[0].depth; // {kind: 'const', bars: 40} for close[length]
 ```
 
 No tagged assignment list or supplied-series markers are stored in the module.
@@ -158,33 +159,32 @@ No tagged assignment list or supplied-series markers are stored in the module.
 the module; `Node.bind(streams)` owns connections. `Node.ready()` additionally
 checks every required root and child stream. The first `Node.to()` starts execution.
 
-Input-source changes invalidate the Node's old connections, because they no longer
-satisfy its requirements. Binding never subscribes, creates a frame, or allocates
-Heap state. GPU preparation makes an independent module copy for each job, calls
-its same `bind()` method, then checks physical arrays and plans device buffers.
+Input-source changes invalidate obsolete connections only on the derived Node;
+the original Node remains usable. Binding never subscribes, creates a frame, or allocates
+Heap state. GPU preparation derives an independent module with the same `bind()`
+method for each job, then checks physical arrays and plans device buffers.
 
 Fixed contextual builtins can be supplied through the same bind operation:
 
 ```ts
 // For a module whose builtin 0 is timeframe.multiplier:
-module.bind({}, new Map([[0, 7]]));
-module.bind({length: 6}); // the same context value 7 is retained
+const contextual = module.bind({}, new Map([[0, 7]]));
+const configured = contextual.bind({length: 6}); // context value 7 is retained
 ```
 
-Only builtins marked constant accept these values. Each child owns its own context;
-parent parameter changes propagate without replacing child context values. The
+Only builtins marked constant accept these values. Each child owns its own parameters
+and context; parent patches never overwrite them. Use
+`module.bind(values, context, ["daily"])` to derive a child configuration. The
 stored fixed value is also used during execution, including committed history.
 Generated calculations clear late facts before evaluation. Missing parameters or
 context leave configuration incomplete, never apparently ready with stale depths.
 Errors in supplied values or calculated request policies fail binding immediately.
 
 `node.module` returns the Node's existing module, without rebuilding or copying its
-request tree. Configuration closes when execution starts: further `bind()` calls
-fail. The runtime captures the configuration and Arrow metadata needed by that
-execution once, so changing a caller-held metadata Map cannot change a running
-program. Use `module.clone()` to configure an independent run while reusing the
-compiled functions. The clone starts with the same parameter values; its next
-`bind()` patch changes only that clone.
+request tree. Readiness checks do not change it. The runtime captures the
+configuration and Arrow metadata needed by that execution once, so changing a
+caller-held metadata Map cannot change a running program. `module.clone()` remains
+available for an independent copy; `bind()` already derives one while sharing code.
 
 ## Typed programs and captured values
 
@@ -201,7 +201,7 @@ These library types have separate responsibilities:
 | `Value<T, K>`                             | Captured value and Tea arithmetic; `K` preserves numeric kind or nominal identity |
 | `Input<T, K>`                             | Read-only history through `.hist(offset)`                                         |
 | `Series<T, K>`                            | One state binding, adding staged `.set()` and lazy initialization                 |
-| `Frame`                                  | Static binding requirements and written call-site definitions                             |
+| `Frame`                                   | Static binding requirements and written call-site definitions                     |
 | `Context<Params, Inputs, State, Outputs>` | One execution's values, storage and transaction lifecycle                         |
 | `Module<Context>`                         | Schemas, storage requirements, binding calculations and `main()`                  |
 
@@ -380,9 +380,11 @@ working-tree copy, not the required history updates.
 
 Provisional success replaces same-index values and commits its Heap transaction;
 it does not advance committed binding/input history. Final success advances
-history too. A failed step changes neither. Public Node remains final-only;
-direct `Context.step()` preserves the runtime provisional, `var` and `varip`
-semantics described in [Memory model](memory-model.md).
+history too. A failed step changes neither. Public Node passes DataStream
+`provisional` metadata through this same operation, retaining one logical index
+until finalization. `var` and `varip` retain the semantics described in
+[Memory model](memory-model.md); [Requests](requests.md) defines source ordering
+and child-window ownership.
 
 Heap allocation safeguards remain internal implementation checks. They are not
 execution inputs or user configuration.
@@ -557,12 +559,12 @@ remains application-owned.
 
 Generated code contains no host I/O, randomness, or wall-clock access. A finite
 run is determined by its module, parameter values, bound DataStreams, and the
-Pine execution clock captured for that Node. GPU execution is determined by its
+Pine clock values supplied for its attempts. GPU execution is determined by its
 artifact and concrete bindings.
 
 ## Staged beyond this slice
 
-- live provisional-input protocol and watermarks;
+- live watermarks;
 - dynamic or nested requests;
 - Sweep and live Recipes;
 - optional application source registries;

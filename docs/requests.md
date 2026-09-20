@@ -26,8 +26,10 @@ a DataStream.
 ## Child execution
 
 Each RequestEdge owns one recursive `Module` and one private child Node. The
-child uses the same parameter values and runtime rules as the root, but has no
-public outputs. After each successful child step, Node copies the requested
+child uses the same runtime rules as the root, but owns independent parameter
+values and has no public outputs. `node.bind({length: 50}, ["daily"])` configures
+the child named daily; `node.bind(stream, ["daily"])` connects its input. Both
+return a new root Node and leave its previous tree unchanged. After each successful child step, Node copies the requested
 scalar result into the synchronization buffer.
 
 Only scalar and recursively scalar-tuple results can cross the child boundary.
@@ -81,7 +83,12 @@ const schema = new Schema([
 ```
 
 These fields do not enter Tea numeric series. Timestamp values may be numbers
-or bigints; Node requires exact safe epoch-ms integers in nondecreasing order.
+or bigints; Node requires exact safe epoch-ms integers in increasing order between
+finalized steps. A non-nullable Bool `provisional` field enables repeated attempts
+at the same timestamp; it defaults to false when absent. The current step must
+finalize before time advances, and finalized timestamps cannot be revised.
+A non-nullable Bool `realtime` field identifies live delivery, including final
+live attempts; it defaults to false for historical sources.
 Arrow `Int64` also supports existing bigint sources. Use non-nullable times for
 timed request synchronization; nullable time fields can represent absent or
 explicitly null event metadata.
@@ -112,9 +119,17 @@ Observed event boundaries outrank clock ratios because duration alone does not
 prove phase alignment or the absence of missing observations.
 
 An empty timed scalar child produces the result layout's typed empty value. An
-empty timed collect window produces `[]`. Child values that arrive after their
-parent boundary are consumed as late and never reassigned to a later interval.
-Future values remain buffered.
+empty timed collect window produces `[]`. Provisional parent attempts retain the
+same child window; final parent attempts advance it. Multiple attempts of one
+child step contribute only its latest value, never duplicate collect entries.
+Positional final attempts wait for their child steps to finalize.
+
+A new child step that arrives after its parent interval finalized is rejected
+before that child step executes. Refinements of the current uncommitted child
+step remain valid, even if its higher-timeframe open precedes the parent's last
+time. They affect subsequent parent attempts only; child delivery alone does not
+rerun a committed parent. Applications deliver known child changes before the
+parent attempt that should use them. Future values remain buffered.
 
 ## Ordering, completion, errors, and cancellation
 
@@ -145,6 +160,6 @@ correctness depends only on the stream it actually receives.
 
 - dynamic requests;
 - requests nested inside another request capture;
-- live watermark and provisional-child policies;
+- live watermark policies;
 - an application-specific source registry, if an application chooses to build
   one.

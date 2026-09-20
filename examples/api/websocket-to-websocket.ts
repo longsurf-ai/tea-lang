@@ -12,7 +12,7 @@ if (inputURL === undefined || outputURL === undefined) {
 const inputSchema = new Schema([new Field('close', new Float64(), false)]);
 const source = fromWS(inputURL, inputSchema);
 
-const node = tea`
+let node = tea`
   var float peak = na
   if na(peak) or close > peak
       peak := close
@@ -21,7 +21,7 @@ const node = tea`
   plot("Drawdown", close - peak, "Drawdown")
 `;
 
-node.bind(source);
+node = node.bind(source);
 
 const websocket = new WebSocketSink(outputURL, node.module.outputs.schema);
 node.to(websocket);

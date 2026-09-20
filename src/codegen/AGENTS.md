@@ -54,7 +54,7 @@ supported GPU subset. `docs/runtime.md` owns execution contracts.
   collection mutator captures its receiver before arguments and stores only the
   replacement header afterward. Copying a reference never clones its body.
 - Module owns inputs, parameters, state requirements, outputs, request children,
-  and one mutable `bind()` method. Its private calculation callback receives
+  and one immutable `bind()` method. Its private calculation callback receives
   only a draft of binding facts and fixed context values. It resets late facts
   before checking missing parameters and evaluates the supported non-allocating
   const/input/simple subset. There is no binding-time frame or Heap.

@@ -123,9 +123,9 @@ function report(
 
 function runMixed(count: number, retainAll: boolean) {
   const started = performance.now();
-  const node = createNode(compile(mixed));
+  let node = createNode(compile(mixed));
   const source = new Subject<{close: number}>();
-  node.bind(new DataStream(prices, source, i));
+  node = node.bind(new DataStream(prices, source, i));
   const next = random();
   const history: number[] = [];
   const retained: {datum: Datum; expected: object}[] = [];
@@ -228,12 +228,12 @@ test('retained mixed results remain exact after subsequent steps and disposal', 
 test('interleaved declarations retain all events in per-column order', () => {
   const started = performance.now();
   const count = stress ? 10_000 : 64;
-  const node = createNode(
+  let node = createNode(
     compile(
       `for index = 0 to ${count / 2 - 1}\n    emit.append "effect0" index\n    emit.append "effect1" -index`,
     ),
   );
-  node.bind(new DataStream(new Schema([]), of({}), i));
+  node = node.bind(new DataStream(new Schema([]), of({}), i));
   let result: Datum | undefined;
   let failure: unknown;
   node.to({
@@ -268,10 +268,10 @@ test('independent bindings preserve source schemas and parameter-derived history
   for (let index = 0; index < count; index += 1) {
     const lag = index % 8;
     const copy = module.clone();
-    const node = createNode(copy).bind({lag});
-    assert.equal(node.module, copy);
+    let node = createNode(copy).bind({lag});
+    assert.notEqual(node.module, copy);
     const source = new Subject<{close: number}>();
-    node.bind(new DataStream(prices, source, i));
+    node = node.bind(new DataStream(prices, source, i));
     let seen = 0;
     let failure: unknown;
     node.to({
@@ -289,7 +289,8 @@ test('independent bindings preserve source schemas and parameter-derived history
     node.dispose();
     if (failure !== undefined) throw failure;
     assert.equal(seen, rows.length);
-    assert.equal(copy.parameters[0].value, lag);
+    assert.equal(node.module.parameters[0].value, lag);
+    assert.equal(copy.parameters[0].value, undefined);
     assert.equal(module.parameters[0].value, undefined);
     assert.equal(
       outputFields(module.outputs.schema)[0].metadata.get('tea:type'),
@@ -300,7 +301,7 @@ test('independent bindings preserve source schemas and parameter-derived history
 }, 120_000);
 
 test('Tea map publication normalizes zero keys and retains NaN values', () => {
-  const node = createNode(
+  let node = createNode(
     compile(
       [
         'values = map.new<float, float>()',
@@ -311,7 +312,7 @@ test('Tea map publication normalizes zero keys and retains NaN values', () => {
       ].join('\n'),
     ),
   );
-  node.bind(new DataStream(prices, of({close: -0}), i));
+  node = node.bind(new DataStream(prices, of({close: -0}), i));
   let result: Datum | undefined;
   let failure: unknown;
   node.to({
@@ -336,7 +337,7 @@ test('Tea map publication normalizes zero keys and retains NaN values', () => {
 });
 
 test('a failed step publishes neither its early output nor its early effect', () => {
-  const node = createNode(
+  let node = createNode(
     compile(
       [
         'values = array.from(close)',
@@ -346,7 +347,7 @@ test('a failed step publishes neither its early output nor its early effect', ()
       ].join('\n'),
     ),
   );
-  node.bind(new DataStream(prices, of({close: 1}), i));
+  node = node.bind(new DataStream(prices, of({close: 1}), i));
   const publications: Datum[] = [];
   let failure: unknown;
   node.to({
@@ -446,9 +447,9 @@ test('seeded nested values round-trip through Arrow to depth 32', () => {
 test('scalar Node execution keeps one result per input', () => {
   const started = performance.now();
   const count = process.env.TEA_STRESS_SCALAR === '1' ? 1_000_000 : 256;
-  const node = createNode(compile('emit "output0" close + 1'));
+  let node = createNode(compile('emit "output0" close + 1'));
   const source = new Subject<{close: number}>();
-  node.bind(new DataStream(prices, source, i));
+  node = node.bind(new DataStream(prices, source, i));
   let seen = 0;
   let failure: unknown;
   node.to({

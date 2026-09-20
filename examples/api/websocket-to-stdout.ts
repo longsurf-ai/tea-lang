@@ -9,7 +9,7 @@ if (url === undefined) {
 const schema = new Schema([new Field('close', new Float64(), false)]);
 const source = fromWS(url, schema);
 
-const node = tea`
+let node = tea`
   threshold = input.float(100.0, "Threshold")
   var float balance = 0.0
   if close >= threshold
@@ -21,8 +21,8 @@ const node = tea`
   plot("Above threshold", close >= threshold ? 1 : 0, "Above threshold")
 `;
 
-node.bind(source);
-node.bind({threshold: 100});
+node = node.bind(source);
+node = node.bind({threshold: 100});
 
 const stdout = new StdoutSink();
 node.to(stdout);

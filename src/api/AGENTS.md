@@ -9,18 +9,17 @@ runtime semantics remain in their existing packages.
 
 ## Invariants
 
-- `Module.bind(values, context?)` is the sole synchronous parameter-binding operation. It mutates and returns the same module; Node keeps that stable module tree and owns stream connections in its own state. Module readiness covers configuration; Node readiness adds root and child streams.
-- Modules contain real Arrow schemas, parameter/context values and execution descriptions, never Observables or supplied flags. Each request entry carries its child module. Node exposes its existing module directly. Failed binding leaves the tree unchanged; execution start closes binding.
+- `Module.bind(values, context?, path?)` is the sole synchronous parameter-binding operation. It returns an independent module tree; Node derives its corresponding tree and owns stream connections in its own state. Module readiness covers configuration; Node readiness adds root and child streams.
+- Modules contain real Arrow schemas, parameter/context values and execution descriptions, never Observables or supplied flags. Each request entry carries its child module. Node exposes its existing module directly. Every binding leaves the receiver tree unchanged; disposal closes Node binding.
 - Default preparation uses loadModule(...).bind(); late calculations remain private. Missing fixed context leaves explicit unresolved facts. Rebinding cannot preserve stale facts or silently alter another context.
 - Public `Node` is an interface; file-private `TeaNode` owns one module context,
   its RxJS data, and recursive request-child Nodes directly. There is no
   parallel `TeaNodeState` or continuously reattached parent module tree.
-  `bind()` dispatches only to parameters or streams. A request stream is keyed
+  `bind(input, path?)` dispatches only to parameters or streams and addresses child declaration paths. Each child owns its parameters; parent patches never propagate. A request stream is keyed
   by the direct top-level request declaration's variable name, not its symbol;
   it binds exactly that child, and a key shared with a root series is
-  ambiguous. All keys validate before mutation. Root and child module identities
-  remain stable through binding and inspection. Public methods remain
-  synchronous and mutable. The compiler `Program` is consumed during lowering
+  ambiguous. All keys validate before mutation. Root and child configuration is copied on binding; inspection and readiness
+  are pure. Public binding methods remain synchronous and return new Nodes. The compiler `Program` is consumed during lowering
   and is retained by neither the Node nor Module.
 - The `tea` tagged template is the deliberate synchronous exception: it only
   performs in-memory compile/load construction and throws `TeaCompileError`.
@@ -32,7 +31,7 @@ runtime semantics remain in their existing packages.
   That Subscription controls only its sink; later `.to()` calls add sinks for
   future values without reconnecting execution. RxJS owns ongoing
   values/errors/completion. Node-owned connection teardown stops the complete child graph between synchronous steps. `dispose()` is synchronous and
-  idempotent. Current steps are final (`provisional: false`).
+  idempotent. Optional Bool `provisional` input metadata drives existing Context attempts; only final attempts advance index. Optional Bool `realtime` metadata drives Pine live/history flags. Final timestamps cannot be revised.
 - `Context` keeps `StepResult` internal to Node. Node adds its successful-step
   index and exact source time, then publishes one lossless Arrow-schema row:
   source-named set fields contain nullable raw values, append fields contain
@@ -52,7 +51,7 @@ runtime semantics remain in their existing packages.
   interface. Each synchronized input value produces exactly one runtime step
   through ordinary RxJS `map`. Do not add queue or capacity policy unless a
   runtime step gains a real asynchronous boundary.
-- WebSocket source/sink adapters accept final JSON text datums only and require
+- WebSocket source/sink adapters accept JSON text datums and require
   caller-supplied Arrow schemas. They do not reconnect or invent provisional state.
   Source subscription owns socket connection/teardown; sink completion waits
   for its bounded send queue and `bufferedAmount` to drain.

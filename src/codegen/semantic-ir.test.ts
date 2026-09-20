@@ -125,7 +125,7 @@ emit "value" value
 emit "count" counter.value
 `);
     expect(sink.publications[0]).toMatchObject({value: 3, count: 0});
-    const module = loadModule(
+    let module = loadModule(
       generate(
         mustBuild(`
 fast = input.bool(true)
@@ -138,7 +138,7 @@ emit "value" close[choose(small, large, fast)]
       ),
     ).bind();
     expect(module.inputs.series[0].depth).toEqual({kind: 'const', bars: 1});
-    module.bind({fast: false});
+    module = module.bind({fast: false});
     expect(module.inputs.series[0].depth).toEqual({kind: 'const', bars: 3});
   });
 

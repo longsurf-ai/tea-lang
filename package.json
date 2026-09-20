@@ -22,18 +22,41 @@
   },
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "development": "./src/index.ts",
+      "types": "./dist/types/index.d.ts",
       "default": "./dist/loader/index.js"
     },
     "./runtime": {
-      "types": "./src/runtime/index.ts",
-      "development": "./src/runtime/index.ts",
+      "types": "./dist/types/runtime/index.d.ts",
       "default": "./dist/runtime/index.js"
     },
-    "./codegen/wgsl": "./src/codegen/wgsl/index.ts",
-    "./runtime/gpu": "./src/runtime/gpu/index.ts",
-    "./*": "./src/*.ts"
+    "./compiler": {
+      "types": "./dist/types/compiler.d.ts",
+      "default": "./dist/compiler.js"
+    },
+    "./base/print": {
+      "types": "./dist/types/base/print.d.ts",
+      "default": "./dist/base/print.js"
+    },
+    "./codegen/codegen": {
+      "types": "./dist/types/codegen/codegen.d.ts",
+      "default": "./dist/codegen/codegen.js"
+    },
+    "./runtime/load": {
+      "types": "./dist/types/runtime/load.d.ts",
+      "default": "./dist/runtime/load.js"
+    },
+    "./extension/pine": {
+      "types": "./dist/types/extension/pine.d.ts",
+      "default": "./dist/extension/pine.js"
+    },
+    "./codegen/wgsl": {
+      "types": "./dist/types/codegen/wgsl/index.d.ts",
+      "default": "./dist/codegen/wgsl/index.js"
+    },
+    "./runtime/gpu": {
+      "types": "./dist/types/runtime/gpu/index.d.ts",
+      "default": "./dist/runtime/gpu/index.js"
+    }
   },
   "scripts": {
     "build:package": "node --import tsx scripts/build-package.ts",
@@ -66,7 +89,8 @@
     "rxjs": "^7.8.2",
     "tsx": "4.23.10",
     "typescript": "5.8.3",
-    "zod": "4.3.6"
+    "zod": "4.3.6",
+    "@webgpu/types": "0.1.71"
   },
   "optionalDependencies": {
     "webgpu": "0.4.0"
@@ -82,7 +106,6 @@
     "@types/node": "25.0.10",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
-    "@webgpu/types": "0.1.71",
     "acorn": "8.18.0",
     "prettier": "3.8.1",
     "prism-react-renderer": "2.4.1",

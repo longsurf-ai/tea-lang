@@ -180,7 +180,8 @@ test('binding computes history retained by the parent request result', () => {
   const first = initial.bind({length: 3});
   expect(first.requests[0].depth).toEqual({kind: 'const', bars: 3});
   const second = first.bind({length: 7});
-  expect(second).toBe(first);
+  expect(second).not.toBe(first);
+  expect(first.requests[0].depth).toEqual({kind: 'const', bars: 3});
   expect(second.requests[0].depth).toEqual({kind: 'const', bars: 7});
-  expect(second.requests[0].module.parameters[0].value).toBe(7);
+  expect(second.requests[0].module.parameters[0].value).toBe(2);
 });

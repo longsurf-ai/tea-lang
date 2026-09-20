@@ -12,8 +12,26 @@ import {loadModule} from '../runtime/load';
 import {pineBuiltinSupplier} from './pine';
 
 describe('Pine Extension', () => {
+  test("derived executions do not reuse another run's captured timenow", async () => {
+    let now = 100;
+    const base = createNode(
+      loadModule(generate(mustBuild('emit "output0" timenow'))).bind(),
+      pineBuiltinSupplier(() => now),
+    );
+    const source = new DataStream(new Schema([]), of({}));
+    const first = new DatumSink();
+    base.bind(source).to(first);
+    await first.completion;
+    now = 200;
+    const second = new DatumSink();
+    base.bind(source).to(second);
+    await second.completion;
+    expect(values(first)).toEqual([[100]]);
+    expect(values(second)).toEqual([[200]]);
+  });
+
   test('derives bar index, times, and bar state from public input', async () => {
-    const node = pineNode(
+    let node = pineNode(
       [
         'emit "output0" time',
         'emit "output2" timenow',
@@ -22,7 +40,7 @@ describe('Pine Extension', () => {
       ].join('\n'),
       1_777_777_777_777,
     );
-    node.bind(
+    node = node.bind(
       new DataStream(
         new Schema([new Field('time', new TimestampMillisecond(), false)]),
         of({time: 100n}, {time: 110n}, {time: 120n}),
@@ -41,14 +59,14 @@ describe('Pine Extension', () => {
   });
 
   test('uses typed empty values when application metadata is absent', async () => {
-    const node = pineNode(
+    let node = pineNode(
       [
         'emit "output7" timeframe.multiplier',
         'emit "output8" timeframe.isdaily ? 1 : 0',
       ].join('\n'),
       0,
     );
-    node.bind(new DataStream(new Schema([]), of({})));
+    node = node.bind(new DataStream(new Schema([]), of({})));
     const sink = new DatumSink();
 
     node.to(sink);
@@ -67,11 +85,11 @@ describe('Pine Extension', () => {
     ).bind({gain: 2}, new Map([[0, 7]]));
     const rebound = module.clone().bind({gain: 1});
     expect(rebound.inputs.builtins[0]!.value).toBe(7);
-    const node = createNode(
+    let node = createNode(
       rebound,
       pineBuiltinSupplier(() => 0),
     );
-    node.bind(new DataStream(new Schema([]), of({}, {})));
+    node = node.bind(new DataStream(new Schema([]), of({}, {})));
     const sink = new DatumSink();
     node.to(sink);
     await sink.completion;
@@ -80,8 +98,8 @@ describe('Pine Extension', () => {
   });
 
   test('requires exact bigint event time when time is demanded', async () => {
-    const node = pineNode('emit "output10" time', 0);
-    node.bind(new DataStream(new Schema([]), of({})));
+    let node = pineNode('emit "output10" time', 0);
+    node = node.bind(new DataStream(new Schema([]), of({})));
     const sink = new DatumSink();
 
     node.to(sink);

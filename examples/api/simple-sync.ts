@@ -2,7 +2,7 @@ import {from} from 'rxjs';
 import {DataStream, StdoutSink, tea} from 'tea';
 import {Field, Float64, Schema} from 'apache-arrow';
 
-const node = tea`
+let node = tea`
 gain = input.float(1.5, "Gain")
 threshold = input.float(10.0, "Threshold")
 
@@ -36,10 +36,10 @@ const schema = new Schema([new Field('close', new Float64(), false)]);
 const source = new DataStream(schema, data);
 
 // bind the data stream to the node
-node.bind(source);
+node = node.bind(source);
 
 // bind parameters to the node
-node.bind({gain: 1.5, threshold: 10});
+node = node.bind({gain: 1.5, threshold: 10});
 
 // create a sink
 const sink = new StdoutSink();

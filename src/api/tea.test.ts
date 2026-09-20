@@ -25,7 +25,7 @@ const numericSchema = new Schema([new Field('close', new Float64(), false)]);
 describe('tea', () => {
   test('compiles an indented template into a generated Module', () => {
     const fastWindow = 14;
-    const node = tea`
+    let node = tea`
       //@version=1
 
       fast_window = input.int(${fastWindow}, "Fast window")
@@ -74,36 +74,28 @@ describe('tea', () => {
     );
   });
 
-  test('keeps the same Node and module while binding', () => {
+  test('binding derives Nodes without changing retained configurations or readiness', () => {
     const node = tea`
       length = input.int(14)
       emit "output0" close + length
     `;
     const source = new DataStream(numericSchema, of({close: 1}));
-
-    const initial = node.module;
-    expect(initial.ready()).toBe(true);
+    const withSource = node.bind(source);
+    const ready = withSource.bind({length: 20});
+    expect(withSource).not.toBe(node);
+    expect(ready).not.toBe(withSource);
+    expect(node.module.parameters[0]!.value).toBe(14);
+    expect(withSource.module.parameters[0]!.value).toBe(14);
+    expect(ready.module.parameters[0]!.value).toBe(20);
     expect(node.ready()).toBe(false);
-    expect(node.bind(source)).toBe(node);
-    const withSource = node.module;
-    expect(node.bind({length: 20})).toBe(node);
-    const ready = node.module;
-
-    expect(initial.remaining()).toEqual([]);
-    expect(withSource.remaining()).toEqual([]);
-    expect(initial.parameters[0]!.value).toBe(20);
-    expect(withSource.parameters[0]!.value).toBe(20);
-    expect(withSource.inputs).toEqual(initial.inputs);
+    expect(withSource.ready()).toBe(true);
     expect(ready.ready()).toBe(true);
-    expect(node.ready()).toBe(true);
-    expect(withSource).toBe(initial);
-    expect(ready).toBe(withSource);
-    expect(ready.remaining()).toEqual([]);
+    expect(node.ready()).toBe(false);
   });
 
   test('rejects duplicate named streams without changing module configuration', () => {
-    const node = tea`emit "output0" close`;
-    node.bind({close: numericSource(1)});
+    let node = tea`emit "output0" close`;
+    node = node.bind({close: numericSource(1)});
     const before = node.module;
     expect(() => node.bind({close: numericSource(2)})).toThrow(
       "series 'close' is already bound",
@@ -112,36 +104,30 @@ describe('tea', () => {
     expect(node.ready()).toBe(true);
   });
 
-  test.each(['node', 'module'] as const)(
-    'binding a selected source through %s invalidates connected data',
-    async owner => {
-      const node = tea`
+  test('a selected source invalidates only the derived Node connections', async () => {
+    const node = tea`
       source = input.source(close)
       emit "output0" source
-    `;
-      node.bind(numericSource(10));
-      expect(node.ready()).toBe(true);
-      (owner === 'node' ? node : node.module).bind({source: 'open'});
-      expect(node.module.ready()).toBe(true);
-      expect(node.ready()).toBe(false);
-      node.bind(
-        new DataStream(
-          new Schema([
-            new Field('close', new Float64(), false),
-            new Field('open', new Float64(), false),
-          ]),
-          of({close: 100, open: 20}),
-        ),
-      );
-      const sink = new StepSink();
-      node.to(sink);
-      await sink.completion;
-      expect(values(sink)).toEqual([20]);
-    },
-  );
+    `.bind(numericSource(10));
+    const selected = node.bind({source: 'open'});
+    expect(node.ready()).toBe(true);
+    expect(selected.ready()).toBe(false);
+    const ready = selected.bind(
+      new DataStream(
+        new Schema([new Field('open', new Float64(), false)]),
+        of({open: 20}),
+      ),
+    );
+    const sink = new StepSink();
+    ready.to(sink);
+    await sink.completion;
+    expect(values(sink)).toEqual([20]);
+    expect(node.module.parameters[0]!.value).toBe('close');
+    expect(node.ready()).toBe(true);
+  });
 
   test('is ready at creation when the Program has no binding requirements', () => {
-    const node = tea`emit "output0" 1`;
+    let node = tea`emit "output0" 1`;
 
     expect(node.module.ready()).toBe(true);
     expect(node.module.remaining()).toEqual([]);
@@ -150,12 +136,12 @@ describe('tea', () => {
 
   test('drives one state-owning runtime from the bound source Observable', async () => {
     const source = new DataStream(numericSchema, of({close: 1}, {close: 2}));
-    const node = tea`
+    let node = tea`
       length = input.int(14)
       emit "output0" close + length
     `;
-    node.bind(source);
-    node.bind({length: 20});
+    node = node.bind(source);
+    node = node.bind({length: 20});
     const sink = new StepSink();
 
     node.to(sink);
@@ -165,8 +151,8 @@ describe('tea', () => {
   });
 
   test('publishes lossless outputs with Node index and source time', async () => {
-    const node = tea`emit "output0" close[1]`;
-    node.bind(
+    let node = tea`emit "output0" close[1]`;
+    node = node.bind(
       timedNumericSource({time: 100n, close: 10}, {time: 200n, close: 20}),
     );
     const sink = new StepSink();
@@ -195,8 +181,10 @@ describe('tea', () => {
   });
 
   test('rejects inexact event time before executing a step', async () => {
-    const node = tea`emit "output0" close`;
-    node.bind(timedNumericSource({time: 9_007_199_254_740_993n, close: 10}));
+    let node = tea`emit "output0" close`;
+    node = node.bind(
+      timedNumericSource({time: 9_007_199_254_740_993n, close: 10}),
+    );
     const sink = new StepSink();
 
     node.to(sink);
@@ -224,8 +212,8 @@ describe('tea', () => {
         };
       }),
     );
-    const node = tea`emit "output0" close`;
-    node.bind(source);
+    let node = tea`emit "output0" close`;
+    node = node.bind(source);
     const failure = new Error('delivery failed');
     const errors: unknown[] = [];
 
@@ -250,8 +238,8 @@ describe('tea', () => {
       numericSchema.fields,
       new Map([['test:source', 'once']]),
     );
-    const node = tea`emit "output0" close`;
-    node.bind(new DataStream(schema, of({close: 1}, {close: 2})));
+    let node = tea`emit "output0" close`;
+    node = node.bind(new DataStream(schema, of({close: 1}, {close: 2})));
     const sink = new StepSink();
     try {
       node.to(sink);
@@ -282,7 +270,7 @@ describe('tea', () => {
       ]),
     ];
     for (const schema of cases) {
-      const node = tea`emit "output0" close`;
+      let node = tea`emit "output0" close`;
       const before = node.module.remaining();
       const stream = new DataStream(
         schema,
@@ -298,12 +286,12 @@ describe('tea', () => {
   });
 
   test('accepts compatible Arrow numeric fields and millisecond timestamps', async () => {
-    const node = tea`emit "output0" close`;
+    let node = tea`emit "output0" close`;
     const schema = new Schema([
       new Field('time', new TimestampMillisecond(), false),
       new Field('close', new Int32(), false),
     ]);
-    node.bind(
+    node = node.bind(
       new DataStream(
         schema,
         of(
@@ -325,12 +313,14 @@ describe('tea', () => {
   });
 
   test('preserves absent and present-null source time in Arrow rows', async () => {
-    const node = tea`emit "output0" close`;
+    let node = tea`emit "output0" close`;
     const schema = new Schema([
       new Field('time', new TimestampMillisecond(), true),
       ...numericSchema.fields,
     ]);
-    node.bind(new DataStream(schema, of({close: 1}, {time: null, close: 2})));
+    node = node.bind(
+      new DataStream(schema, of({close: 1}, {time: null, close: 2})),
+    );
     const sink = new StepSink();
     node.to(sink);
     await sink.completion;
@@ -340,15 +330,15 @@ describe('tea', () => {
     expect(sink.values[1]!.timed).toBe(true);
   });
 
-  test('captures execution schemas once while exposing the same mutable module', async () => {
+  test('captures execution schemas independently from earlier binding branches', async () => {
     const supplied = tea`emit "output0" close`.module;
     supplied.inputs.schema.fields[0]!.metadata.set('test:owner', 'original');
     supplied.outputs.schema.fields
       .find(field => field.name === 'output0')!
       .metadata.set('test:owner', 'original');
-    const node = createNode(supplied);
+    let node = createNode(supplied);
     const rows = new Subject<{close: number}>();
-    node.bind(new DataStream(numericSchema, rows));
+    node = node.bind(new DataStream(numericSchema, rows));
     supplied.inputs.schema.fields[0]!.metadata.set('test:owner', 'caller');
     supplied.outputs.schema.fields
       .find(field => field.name === 'output0')!
@@ -366,8 +356,10 @@ describe('tea', () => {
     exposed.outputs.schema.fields
       .find(field => field.name === 'output0')!
       .metadata.delete('tea:write');
-    expect(exposed).toBe(supplied);
-    expect(() => exposed.bind()).toThrow('binding is closed');
+    expect(exposed).not.toBe(supplied);
+    expect(supplied.inputs.schema.fields[0]!.metadata.get('test:owner')).toBe(
+      'caller',
+    );
     rows.next({close: 20});
     rows.complete();
     await sink.completion;
@@ -383,7 +375,7 @@ describe('tea', () => {
   });
 
   test('does not treat Pine contextual builtins as a third binding kind', () => {
-    const node = tea`emit "output0" bar_index`;
+    let node = tea`emit "output0" bar_index`;
 
     expect(() => node.bind({bar_index: numericSource(0)})).toThrow(
       "no bind-known root series or static request child matches 'bar_index'",
@@ -391,8 +383,8 @@ describe('tea', () => {
   });
 
   test('supplies root contextual builtins from Node construction', async () => {
-    const node = tea`emit "output0" bar_index`;
-    node.bind(numericSource(10, 20, 30));
+    let node = tea`emit "output0" bar_index`;
+    node = node.bind(numericSource(10, 20, 30));
     const sink = new StepSink();
 
     node.to(sink);
@@ -402,12 +394,12 @@ describe('tea', () => {
   });
 
   test('gives every request child its own contextual builtin index', async () => {
-    const node = tea`
+    let node = tea`
       requested = request.security("X", "D", bar_index)
       emit "output0" requested
     `;
-    node.bind(numericSource(10, 20, 30));
-    node.bind({requested: numericSource(1, 2, 3)});
+    node = node.bind(numericSource(10, 20, 30));
+    node = node.bind({requested: numericSource(1, 2, 3)});
     const sink = new StepSink();
 
     node.to(sink);
@@ -417,7 +409,7 @@ describe('tea', () => {
   });
 
   test('binds request streams by declaration name, not requested symbol', async () => {
-    const node = tea`
+    let node = tea`
       daily = request.security("X", "D", close)
       weekly = request.security("X", "W", close)
       emit "output0" daily + weekly
@@ -431,10 +423,10 @@ describe('tea', () => {
       "no bind-known root series or static request child matches 'X'",
     );
     expect(
-      node.bind({
+      (node = node.bind({
         daily: clockedNumericSource(d, 1),
         weekly: clockedNumericSource(w, 10),
-      }),
+      })),
     ).toBe(node);
     expect(node.ready()).toBe(true);
 
@@ -447,12 +439,12 @@ describe('tea', () => {
 
   test('allows correcting a request clock after startup fails before subscribing', () => {
     let subscriptions = 0;
-    const node = tea`
+    let node = tea`
       period = input.timeframe("D")
       requested = request.security("X", period, close)
       emit "output0" requested
     `;
-    node.bind({
+    node = node.bind({
       requested: new DataStream(
         numericSchema,
         new Observable(subscriber => {
@@ -465,7 +457,7 @@ describe('tea', () => {
 
     expect(() => node.to(new StepSink())).toThrow('expects clock');
     expect(subscriptions).toBe(0);
-    expect(node.bind({period: '1'})).toBe(node);
+    node = node.bind({period: '1'});
     const sink = new StepSink();
     node.to(sink);
     expect(subscriptions).toBe(1);
@@ -473,18 +465,19 @@ describe('tea', () => {
   });
 
   test('rejects conflicting root clocks before changing binding state', () => {
-    const node = tea`emit "output0" close + open`;
+    let node = tea`emit "output0" close + open`;
     const initial = node.module;
 
-    expect(() =>
-      node.bind({
-        close: clockedNumericSource(d, 1),
-        open: new DataStream(
-          new Schema([new Field('open', new Float64(), false)]),
-          of(1),
-          w,
-        ),
-      }),
+    expect(
+      () =>
+        (node = node.bind({
+          close: clockedNumericSource(d, 1),
+          open: new DataStream(
+            new Schema([new Field('open', new Float64(), false)]),
+            of(1),
+            w,
+          ),
+        })),
     ).toThrow('bound DataStream clocks disagree');
     expect(node.module.inputs).toEqual(initial.inputs);
     expect(node.module.parameters).toEqual(initial.parameters);
@@ -494,11 +487,11 @@ describe('tea', () => {
   });
 
   test('rejects a count-window ratio outside JavaScript safe integers', () => {
-    const node = tea`
+    let node = tea`
       lower = request.security_lower_tf("X", "", close)
       emit "output0" close + lower.size()
     `;
-    node.bind({
+    node = node.bind({
       close: clockedNumericSource(y, 10),
       lower: clockedNumericSource(ns, 1),
     });
@@ -507,40 +500,43 @@ describe('tea', () => {
   });
 
   test('keeps a request stream bound when its symbol parameter changes', () => {
-    const node = tea`
+    let node = tea`
       symbol = input.symbol("X")
       requested = request.security(symbol, "D", close)
       emit "output0" requested
     `;
-    node.bind({symbol: 'X'});
+    node = node.bind({symbol: 'X'});
 
-    node.bind({requested: numericSource(1)});
+    node = node.bind({requested: numericSource(1)});
     const oldModule = node.module;
     expect(node.ready()).toBe(true);
 
-    node.bind({symbol: 'Y'});
-    expect(node.module).toBe(oldModule);
-    expect(oldModule.requests[0]?.context?.symbol).toBe('Y');
+    node = node.bind({symbol: 'Y'});
+    expect(node.module).not.toBe(oldModule);
+    expect(oldModule.requests[0]?.context?.symbol).toBe('X');
     expect(node.module.requests[0]?.context?.symbol).toBe('Y');
     expect(node.ready()).toBe(true);
   });
 
-  test('propagates compilation-global parameters into request child binding', () => {
-    const node = tea`
+  test('binds request parameters and streams independently by declaration path', () => {
+    let node = tea`
       length = input.int(3)
       requested = request.security("X", "D", close[length])
       emit "output0" requested
     `;
-    node.bind({length: 6});
-    node.bind({requested: numericSource(1)});
+    node = node.bind({length: 6});
+    expect(node.module.requests[0]?.module.parameters[0]!.value).toBe(3);
+    node = node.bind({length: 8}, ['requested']);
+    node = node.bind(numericSource(1), ['requested']);
+    expect(node.module.parameters[0]!.value).toBe(6);
 
     expect(node.ready()).toBe(true);
     expect(
       node.module.requests[0]?.module.parameters.map(param => param.value),
-    ).toEqual([6]);
+    ).toEqual([8]);
     expect(node.module.requests[0]?.module.inputs.series[0]?.depth).toEqual({
       kind: 'const',
-      bars: 6,
+      bars: 8,
     });
   });
 
@@ -570,11 +566,11 @@ describe('tea', () => {
   });
 
   test('executes scalar requests one-to-one', async () => {
-    const node = tea`
+    let node = tea`
       requested = request.security("X", "D", close)
       emit "output0" close + requested
     `;
-    node.bind({
+    node = node.bind({
       close: numericSource(10, 20),
       requested: numericSource(1, 2),
     });
@@ -592,11 +588,11 @@ describe('tea', () => {
   ] as const)(
     'synchronizes timed scalar requests with $fill fill',
     async ({fill, expected}) => {
-      const node = tea`
+      let node = tea`
         requested = request.security("X", "2", close, fill = "${fill}")
         emit "output0" requested
       `;
-      node.bind(
+      node = node.bind(
         timedNumericSource(
           {time: 0n, close: 0},
           {time: 1n, close: 0},
@@ -606,7 +602,7 @@ describe('tea', () => {
           {time: 5n, close: 0},
         ),
       );
-      node.bind({
+      node = node.bind({
         requested: timedNumericSource(
           {time: 0n, close: 100},
           {time: 2n, close: 200},
@@ -627,12 +623,12 @@ describe('tea', () => {
       main: DataStream<unknown>,
       child: DataStream<unknown>,
     ) => {
-      const node = tea`
+      let node = tea`
         requested = request.security("X", "2", close)
         emit "output0" requested
       `;
-      node.bind(main);
-      node.bind({requested: child});
+      node = node.bind(main);
+      node = node.bind({requested: child});
       const sink = new StepSink();
       node.to(sink);
       await sink.completion;
@@ -647,39 +643,36 @@ describe('tea', () => {
     expect(await execute(untimed(), untimed())).toEqual([1, 2]);
   });
 
-  test('drops scalar children that open before an already served main time', async () => {
+  test('rejects scalar children that open before an already served main time', async () => {
     const mainRows = new Subject<TimedNumericDatum>();
     const childRows = new Subject<TimedNumericDatum>();
-    const node = tea`
+    let node = tea`
       requested = request.security("X", "2", close)
       emit "output0" requested
     `;
-    node.bind(timedNumericSubject(mainRows));
-    node.bind({requested: timedNumericSubject(childRows)});
+    node = node.bind(timedNumericSubject(mainRows));
+    node = node.bind({requested: timedNumericSubject(childRows)});
     const sink = new StepSink();
     node.to(sink);
 
     mainRows.next({time: 10n, close: 0});
     await sink.waitFor(1);
     childRows.next({time: 5n, close: 100});
-    mainRows.next({time: 20n, close: 0});
-    await sink.waitFor(2);
-    childRows.complete();
-    mainRows.complete();
-    await sink.completion;
-
-    expect(values(sink)).toEqual([NaN, NaN]);
+    await expect(sink.completion).rejects.toThrow(
+      'after its parent interval finalized',
+    );
+    expect(values(sink)).toEqual([NaN]);
   });
 
-  test('drops repeated late children after retaining a current value', async () => {
+  test('rejects a new late child after retaining a current value', async () => {
     const mainRows = new Subject<TimedNumericDatum>();
     const childRows = new Subject<TimedNumericDatum>();
-    const node = tea`
+    let node = tea`
       requested = request.security("X", "2", close)
       emit "output0" requested
     `;
-    node.bind(timedNumericSubject(mainRows));
-    node.bind({requested: timedNumericSubject(childRows)});
+    node = node.bind(timedNumericSubject(mainRows));
+    node = node.bind({requested: timedNumericSubject(childRows)});
     const sink = new StepSink();
     node.to(sink);
 
@@ -687,15 +680,10 @@ describe('tea', () => {
     mainRows.next({time: 10n, close: 0});
     await sink.waitFor(1);
     childRows.next({time: 6n, close: 200});
-    childRows.next({time: 8n, close: 300});
-    mainRows.next({time: 20n, close: 0});
-    mainRows.next({time: 30n, close: 0});
-    await sink.waitFor(3);
-    childRows.complete();
-    mainRows.complete();
-    await sink.completion;
-
-    expect(values(sink)).toEqual([100, 100, 100]);
+    await expect(sink.completion).rejects.toThrow(
+      'after its parent interval finalized',
+    );
+    expect(values(sink)).toEqual([100]);
   });
 
   test('rejects an invalid input-bound request policy before execution', () => {
@@ -711,14 +699,14 @@ describe('tea', () => {
 
   test('collects lower-timeframe values by regular clock count', async () => {
     const twoMinutes = (2n * m) as Clock;
-    const node = tea`
+    let node = tea`
       lower = request.security_lower_tf("X", "1", close)
       emit "output0" close
       emit "output1" lower.size()
       emit "output2" lower.first()
       emit "output3" lower.last()
     `;
-    node.bind({
+    node = node.bind({
       close: clockedNumericSource(twoMinutes, 10, 20),
       lower: clockedNumericSource(m, 1, 2, 3, 4),
     });
@@ -734,12 +722,12 @@ describe('tea', () => {
   });
 
   test('collects event-time windows including empty windows', async () => {
-    const node = tea`
+    let node = tea`
       lower = request.security_lower_tf("X", "", close)
       emit "output0" close
       emit "output1" lower.size()
     `;
-    node.bind({
+    node = node.bind({
       close: timedNumericSource(
         {time: 10n, close: 10},
         {time: 20n, close: 20},
@@ -764,12 +752,14 @@ describe('tea', () => {
   });
 
   test('uses typed empty for an explicitly empty timed request stream', async () => {
-    const node = tea`
+    let node = tea`
       requested = request.security("X", "D", 42)
       emit "output0" requested
     `;
-    node.bind(timedNumericSource({time: 0n, close: 1}, {time: 1n, close: 2}));
-    node.bind({
+    node = node.bind(
+      timedNumericSource({time: 0n, close: 1}, {time: 1n, close: 2}),
+    );
+    node = node.bind({
       requested: new DataStream(timedNumericSchema, of(), i),
     });
     const sink = new StepSink();
@@ -780,16 +770,16 @@ describe('tea', () => {
     expect(values(sink)).toEqual([NaN, NaN]);
   });
 
-  test('drops lower-timeframe values that arrive after their window', async () => {
+  test('rejects lower-timeframe values that arrive after their window', async () => {
     const mainRows = new Subject<TimedNumericDatum>();
     const childRows = new Subject<TimedNumericDatum>();
-    const node = tea`
+    let node = tea`
       lower = request.security_lower_tf("X", "", close)
       emit "output0" close
       emit "output1" lower.size()
       emit "output2" lower.first()
     `;
-    node.bind({
+    node = node.bind({
       close: timedNumericSubject(mainRows),
       lower: timedNumericSubject(childRows),
     });
@@ -801,28 +791,20 @@ describe('tea', () => {
     await sink.waitFor(1);
 
     childRows.next({time: 8n, close: 99});
-    childRows.next({time: 15n, close: 2});
-    mainRows.next({time: 20n, close: 20});
-    await sink.waitFor(2);
-
-    childRows.complete();
-    mainRows.complete();
-    await sink.completion;
-
-    expect(outputValues(sink)).toEqual([
-      [10, 1, 1],
-      [20, 1, 2],
-    ]);
+    await expect(sink.completion).rejects.toThrow(
+      'after its parent interval finalized',
+    );
+    expect(outputValues(sink)).toEqual([[10, 1, 1]]);
   });
 
   test('falls back to one-to-one arrays without clocks or event time', async () => {
-    const node = tea`
+    let node = tea`
       lower = request.security_lower_tf("X", "D", close)
       emit "output0" close
       emit "output1" lower.size()
       emit "output2" lower.first()
     `;
-    node.bind({
+    node = node.bind({
       close: numericSource(10, 20),
       lower: numericSource(1, 2),
     });
@@ -838,7 +820,7 @@ describe('tea', () => {
   });
 
   test('keeps request-child binding atomic when a later key fails', () => {
-    const node = tea`
+    let node = tea`
       x = request.security("X", "D", close)
       y = request.security("Y", "D", close)
       emit "output0" x + y
@@ -855,12 +837,14 @@ describe('tea', () => {
       initial.requests.map(request => request.module.inputs),
     );
     expect(node.ready()).toBe(false);
-    expect(node.bind({x: source, y: source})).toBe(node);
-    expect(node.ready()).toBe(true);
+    const bound = node.bind({x: source, y: source});
+    expect(bound).not.toBe(node);
+    expect(bound.ready()).toBe(true);
+    expect(node.ready()).toBe(false);
   });
 
   test('keeps request bindings atomic when a later child schema is invalid', () => {
-    const node = tea`
+    let node = tea`
       x = request.security("X", "D", close)
       y = request.security("Y", "D", close)
       emit "output0" x + y
@@ -887,8 +871,8 @@ describe('tea', () => {
         return rows.subscribe(subscriber);
       }),
     );
-    const node = tea`emit "output0" close`;
-    node.bind(source);
+    let node = tea`emit "output0" close`;
+    node = node.bind(source);
     const first = new StepSink();
     const second = new StepSink();
 
@@ -917,19 +901,28 @@ describe('tea', () => {
     expect(lateSubscription.closed).toBe(true);
   });
 
-  test('rejects binding after execution starts', async () => {
-    const rows = new Subject<{close: number}>();
-    const source = new DataStream(numericSchema, rows);
-    const node = tea`emit "output0" close`;
-    node.bind(source);
-    const sink = new StepSink();
-
-    node.to(sink);
-    expect(() => node.bind({})).toThrow(
-      'Node cannot bind after execution has started',
-    );
-    rows.complete();
-    await sink.completion;
+  test('derived executions have independent state and timestamp ordering', async () => {
+    const template = tea`
+      scale = input.int(1)
+      var float total = 0.0
+      total := total + close * scale
+      emit "output0" total
+    `.bind(timedNumericSource({time: 1n, close: 2}, {time: 2n, close: 3}));
+    const first = template.bind({scale: 2});
+    const one = new StepSink();
+    first.to(one);
+    await one.completion;
+    // The first source already reached time 2; this independent subscription starts at time 1.
+    const second = first.bind({scale: 3});
+    const two = new StepSink();
+    second.to(two);
+    await two.completion;
+    expect(values(one)).toEqual([4, 10]);
+    expect(values(two)).toEqual([6, 15]);
+    expect(template.module.parameters[0]!.value).toBe(1);
+    expect(first.module.parameters[0]!.value).toBe(2);
+    first.dispose();
+    second.dispose();
   });
 
   test('owns source cancellation and disposes idempotently', async () => {
@@ -945,8 +938,8 @@ describe('tea', () => {
         };
       }),
     );
-    const node = tea`emit "output0" close`;
-    node.bind(source);
+    let node = tea`emit "output0" close`;
+    node = node.bind(source);
     const sink = new StepSink();
     const sinkSubscription = node.to(sink);
 
@@ -958,6 +951,29 @@ describe('tea', () => {
     expect(sinkSubscription.closed).toBe(true);
     expect(() => node.bind({})).toThrow('Node is disposed');
     expect(() => node.to(new StepSink())).toThrow('Node is disposed');
+  });
+
+  test('disposing one derived execution leaves its sibling connected', async () => {
+    const rows = new Subject<{close: number}>();
+    const template = tea`
+      scale = input.int(1)
+      emit "output0" close * scale
+    `.bind(new DataStream(numericSchema, rows));
+    const first = template.bind({scale: 2});
+    const second = template.bind({scale: 3});
+    const one = new StepSink();
+    const two = new StepSink();
+    first.to(one);
+    second.to(two);
+    rows.next({close: 1});
+    first.dispose();
+    rows.next({close: 2});
+    rows.complete();
+    await Promise.all([one.completion, two.completion]);
+    expect(values(one)).toEqual([2]);
+    expect(values(two)).toEqual([3, 6]);
+    expect(template.module.parameters[0]!.value).toBe(1);
+    second.dispose();
   });
 });
 

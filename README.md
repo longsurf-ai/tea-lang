@@ -31,6 +31,17 @@ list of values per step. Column names and types are fixed at compilation.
 Functions support explicit `return` and implicit tail-expression returns;
 ternaries evaluate only their selected branch.
 
+## Embedding
+
+Run `npm run build:package` to emit JavaScript and declarations. `tea` exports
+Node/DataStream APIs; `tea/runtime` exports the typed execution library.
+Compiler hosts can use `tea/compiler`, `tea/base/print`, `tea/codegen/codegen`,
+`tea/runtime/load` and `tea/extension/pine`. GPU entries remain
+`tea/codegen/wgsl` and `tea/runtime/gpu`.
+
+All entries share one split build, preserving runtime class identity. Consumers
+typecheck against declarations using their own compiler settings.
+
 ## Editor support
 
 The VS Code/Cursor extension under [editors/vscode](editors/vscode) provides

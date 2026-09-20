@@ -1,5 +1,5 @@
 import type {Module} from './module-binding';
-// Purpose: The sole module.bind method updates configuration atomically in place.
+// Purpose: The sole module.bind method derives independent configuration atomically.
 
 import {describe, expect, test} from 'vitest';
 import {
@@ -31,10 +31,10 @@ describe('module binding', () => {
     expect(
       parametersOf(program.params, program.nominalIds).map(p => p.active),
     ).toEqual([true, null]);
-    const module = loadModule(generate(program));
+    let module = loadModule(generate(program));
     expect(module.parameters[1].value).toBeUndefined();
     expect(module.parameters[1].active).toBeNull();
-    module.bind();
+    module = module.bind();
     expect(module.parameters[1]).toMatchObject({
       defaultValue: 3,
       value: 3,
@@ -44,7 +44,7 @@ describe('module binding', () => {
     expect(() => module.bind({enabled: false, length: 0})).toThrow(BindError);
     expect(module.parameters).toBe(parameters);
     expect(module.parameters[1].active).toBe(true);
-    module.bind({enabled: false});
+    module = module.bind({enabled: false});
     expect(module.parameters[1]).toMatchObject({value: 3, active: false});
   });
 
@@ -90,7 +90,7 @@ describe('module binding', () => {
       ),
     );
     const configured = module.bind({length: 4, level: 25});
-    expect(configured).toBe(module);
+    expect(configured).not.toBe(module);
     expect(configured.inputs.series[0]!.depth).toEqual({
       kind: 'const',
       bars: 4,
@@ -116,11 +116,11 @@ describe('module binding', () => {
     expect(pending.ready()).toBe(false);
     expect(pending.inputs.series[0]!.depth).toEqual({kind: 'bound'});
     const prepared = pending.bind({}, new Map([[0, 7]]));
-    expect(prepared).toBe(pending);
+    expect(prepared).not.toBe(pending);
     expect(prepared.ready()).toBe(true);
     expect(prepared.inputs.series[0]!.depth).toEqual({kind: 'const', bars: 7});
     expect(prepared.clone().bind().inputs.builtins[0]!.value).toBe(7);
-    expect(pending.inputs.builtins[0]!.value).toBe(7);
+    expect(pending.inputs.builtins[0]!.value).toBeUndefined();
   });
 
   test('rejects fixed bindings for per-step builtins or incompatible values', () => {
@@ -160,10 +160,10 @@ describe('module binding', () => {
         module.bind({}, new Map([[0, value]])).inputs.builtins[0]!.value,
       ).toBe(value);
     }
-    expect(module.inputs.builtins[0]!.value).toBeNaN();
+    expect(module.inputs.builtins[0]!.value).toBeUndefined();
   });
 
-  test('request children inherit parameters while keeping their own fixed context', () => {
+  test('request children keep independent parameters and fixed context', () => {
     const module = loadModule(
       generate(
         mustBuild(
@@ -171,26 +171,24 @@ describe('module binding', () => {
         ),
       ),
     ).bind({length: 4});
-    const request = module.requests[0]!;
-    expect(request.module.ready()).toBe(false);
-    expect(request.module.parameters[0]!.value).toBe(4);
-    const child = request.module.bind({}, new Map([[0, 7]]));
-    const rebound = module.bind({length: 6});
-    expect(rebound).toBe(module);
-    expect(rebound.requests[0]!.module).toBe(child);
+    const originalChild = module.requests[0]!.module;
+    expect(originalChild.ready()).toBe(false);
+    expect(originalChild.parameters[0]!.value).toBe(3);
+    const configured = module.bind({length: 5}, new Map([[0, 7]]), ['value']);
+    const rebound = configured.bind({length: 6});
+    expect(rebound.parameters[0]!.value).toBe(6);
     expect(rebound.requests[0]!.module.ready()).toBe(true);
-    expect(rebound.requests[0]!.module.parameters[0]!.value).toBe(6);
+    expect(rebound.requests[0]!.module.parameters[0]!.value).toBe(5);
     expect(
       rebound.requests[0]!.module.inputs.series.map(series => series.depth),
     ).toEqual([
-      {kind: 'const', bars: 6},
+      {kind: 'const', bars: 5},
       {kind: 'const', bars: 7},
     ]);
-    expect(child.parameters[0]!.value).toBe(6);
-    expect(child.inputs.series.map(series => series.depth)).toEqual([
-      {kind: 'const', bars: 6},
-      {kind: 'const', bars: 7},
-    ]);
+    expect(module.parameters[0]!.value).toBe(4);
+    expect(originalChild.parameters[0]!.value).toBe(3);
+    expect(originalChild.ready()).toBe(false);
+    expect(() => module.bind({}, undefined, ['missing'])).toThrow(BindError);
   });
 
   test('clears old late facts when a required parameter becomes unset', () => {
@@ -234,15 +232,14 @@ describe('module binding', () => {
     expect(module.requests[0]!.context?.fill).toBe('carry');
   });
 
-  test('execution closes binding while an explicit copy can configure another run', () => {
+  test('binding an executing module derives another configuration', () => {
     const module = loadModule(
       generate(
         mustBuild('length = input.int(2)\nemit "output0" close[length]'),
       ),
     ).bind();
     new Context(module);
-    expect(() => module.bind({length: 5})).toThrow('execution starts');
-    expect(module.clone().bind({length: 5}).parameters[0]!.value).toBe(5);
+    expect(module.bind({length: 5}).parameters[0]!.value).toBe(5);
     expect(module.parameters[0]!.value).toBe(2);
   });
 

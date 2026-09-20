@@ -335,6 +335,7 @@ describe('execution conformance corpus', () => {
     );
   });
 
+  // This compiles and executes the entire corpus, not one unit-sized case.
   test('every hash-pinned case compiles, binds, executes, and matches its reference', async () => {
     const manifest = parseManifest(
       await readJson(join(EXECUTION_ROOT, 'manifest.json')),
@@ -389,5 +390,5 @@ describe('execution conformance corpus', () => {
         `deviation '${deviation.id}' must be used exactly once`,
       ).toBe(1);
     }
-  });
+  }, 15_000);
 });

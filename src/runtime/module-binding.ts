@@ -22,13 +22,12 @@ declare const contextType: unique symbol;
 
 /**
  * A compiled program's configuration and ordinary TypeScript entry function.
- * Binding changes this object atomically; execution state belongs to Context.
- * @example `const configured = program.bind({length: 20}); configured === program`.
- * Use `program.clone()` for a separate run with different parameters.
+ * Binding returns an independent configuration; execution state belongs to Context.
+ * @example `const configured = program.bind({length: 20}); configured !== program`.
  */
 export class Module<C extends Context = Context> {
   /** Type-only link lets Context infer this program's fields without inventing new ones. */
-  declare private readonly [contextType]: C;
+  declare protected readonly [contextType]: C;
   declare readonly abi: typeof RUNTIME_ABI_VERSION;
   declare readonly inputs: {
     readonly schema: Schema;
@@ -68,19 +67,33 @@ export class Module<C extends Context = Context> {
     Object.assign(this, copyData(data));
   }
 
-  /** Validate a patch and update this module tree only after all calculations pass. */
+  /**
+   * Return an independently configured tree. A path selects request declaration
+   * names; each child retains its own parameter values and defaults.
+   * @example `program.bind({length: 20}, undefined, ['daily'])` configures only daily.
+   */
   bind(
     values: Readonly<Record<string, unknown>> = {},
     context: ReadonlyMap<number, Scalar> = new Map(),
-  ): this {
-    const pending: [Module, ReturnType<typeof copyData>][] = [];
+    path: readonly string[] = [],
+  ): Module<C> {
+    const derived = this.clone();
+    let selected: Module = derived;
+    for (const name of path) {
+      const matches = selected.requests.filter(
+        request => request.name === name,
+      );
+      if (matches.length !== 1)
+        throw new BindError(
+          `request binding path '${path.join('.')}' is missing or ambiguous`,
+        );
+      selected = matches[0]!.module;
+    }
     const visit = (
       target: Module,
       values: Readonly<Record<string, unknown>>,
       context: ReadonlyMap<number, Scalar>,
     ): void => {
-      if (Object.isFrozen(target))
-        throw new BindError('module binding is closed after execution starts');
       if (
         values === null ||
         typeof values !== 'object' ||
@@ -152,15 +165,7 @@ export class Module<C extends Context = Context> {
           Object.assign(builtin, {value});
         }
       }
-      const parameters = Object.fromEntries(
-        data.parameters.flatMap(parameter =>
-          Object.hasOwn(parameter, 'value')
-            ? [[parameter.name, parameter.value]]
-            : [],
-        ),
-      );
-      for (const request of data.requests)
-        visit(request.module, parameters, new Map());
+      for (const request of data.requests) visit(request.module, {}, new Map());
       const constants = new Map(
         data.inputs.builtins.flatMap((builtin, id) =>
           Object.hasOwn(builtin, 'value')
@@ -224,11 +229,10 @@ export class Module<C extends Context = Context> {
         ),
         data.inputs.schema.metadata,
       );
-      pending.push([target, data]);
+      Object.assign(target, data);
     };
-    visit(this, values, context);
-    for (const [module, data] of pending) Object.assign(module, data);
-    return this;
+    visit(selected, values, context);
+    return derived;
   }
 
   /** Configuration readiness; Node separately verifies connected source streams. */
