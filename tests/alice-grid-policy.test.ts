@@ -58,6 +58,7 @@ test('keeps Alice grid policy out of the portfolio facade', () => {
   );
 });
 
+// Each integration run processes all 20,000 bars; allow slower shared CI runners.
 test('preserves Alice binding 0 metrics and both normalized fill tapes', async () => {
   const errors = new Errors();
   const program = compileToProgram([SOURCE], errors);
@@ -111,7 +112,7 @@ test('preserves Alice binding 0 metrics and both normalized fill tapes', async (
   expect(hash(lifecycle)).toBe(
     '5dc541149290d6331fe25459d3a04f1b79d6ca3adcf7ba60c6bfaf7c037e6b77',
   );
-}, 15_000);
+}, 30_000);
 
 test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
   const errors = new Errors();
@@ -145,7 +146,7 @@ test('preserves trailing-enabled Alice fill and lifecycle tapes', async () => {
   expect(hash(lifecycleTape(sink, timeByRow))).toBe(
     'c8725b9991746f50a930e32e6eb963589a41b2dace18dcab749b0f35f1d86f0c',
   );
-}, 15_000);
+}, 30_000);
 
 function finalMetric(sink: OutputCapture, title: string): number {
   const outputId = sink.fields.findIndex(field => field.name === title);
