@@ -1081,3 +1081,31 @@ class StepSink {
     });
   }
 }
+
+// Alert metadata belongs to each occurrence, even when several share a column.
+test('typed alert payloads preserve subject identity and nested source data', () => {
+  const node = tea`
+    struct Payload
+        string symbol
+        float residual
+    alertcondition("legacy", close > 0, "Legacy", "Unchanged")
+    alert("signals", close > 0, "First", "Move", Payload.new("AAA", close))
+    alert("signals", close > 0, "Second", "Move", Payload.new("BBB", -close))
+  `.bind(new DataStream(numericSchema, of({close: 2})));
+  const output: Datum[] = [];
+  node.to({next: value => output.push(value)});
+  expect(output[0].legacy).toEqual([{title: 'Legacy', message: 'Unchanged'}]);
+  expect(output[0].signals).toEqual([
+    {title: 'First', message: 'Move', data: {symbol: 'AAA', residual: 2}},
+    {title: 'Second', message: 'Move', data: {symbol: 'BBB', residual: -2}},
+  ]);
+  const field = node.module.outputs.schema.fields.find(
+    field => field.name === 'signals',
+  )!;
+  expect(DataType.isList(field.type)).toBe(true);
+  if (DataType.isList(field.type))
+    expect(field.type.valueField.metadata.get('tea:typeId')).toBe(
+      'visual.AlertEvent<@entry.Payload>',
+    );
+  node.dispose();
+});

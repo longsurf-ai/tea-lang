@@ -142,3 +142,15 @@ struct Alert
 export alertcondition(const string id, series bool condition, const string title = "", const string message = "") =>
     if condition
         emit.append id Alert.new(title, message)
+
+// Per-occurrence data stays typed through emission; hosts decide how to record it.
+interface AlertPayload
+
+type AlertEvent<T: AlertPayload>
+    string title
+    string message
+    T data
+
+export alert(const string id, series bool condition, series string title, series string message, data) =>
+    if condition
+        emit.append id AlertEvent.new(title, message, data)
