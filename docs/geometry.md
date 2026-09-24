@@ -72,6 +72,10 @@ is deliberately not used as a finite intersection oracle.
 Quadratic coefficient construction and root locations still use Float64; they
 are not exact algebraic-number arithmetic. Parameter acceptance/rounding uses
 32 machine epsilons (`7.105427357601002e-15`), never a pixel/price hit radius.
+An out-of-range curve or observation parameter within that bound is clamped
+only if the resulting curve point passes the exact finite-segment predicate.
+Curve endpoints are evaluated from the original coordinates, so clamping cannot
+extend a disjoint primitive or observation into a contact.
 Point observations additionally check the evaluated coordinates against the
 same relative rounding bound. Ill-conditioned curves can retain root-location
 uncertainty; the tests pin tangency, degree reduction, nonmonotone X and bounded

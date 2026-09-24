@@ -196,6 +196,10 @@ roots(float a, float b, float c) =>
 	result
 
 bezier(float a, float b, float c, float u) =>
+	if u == 0.0
+		return a
+	if u == 1.0
+		return c
 	ab = a + (b - a) * u
 	bc = b + (c - b) * u
 	ab + (bc - ab) * u
@@ -222,6 +226,9 @@ export quadraticContacts(float ax, float ay, float bx, float by, float cx, float
 					u = clampUnit(u0)
 					x = bezier(ax, bx, cx, u)
 					y = bezier(ay, by, cy, u)
+					// Clamping is valid only if the actual endpoint meets the observation.
+					if u != u0 and not segmentContact(x, y, x, y, px, py, qx, qy)
+						continue
 					scale = math.max(math.abs(ax) + math.abs(bx) + math.abs(cx), math.abs(ay) + math.abs(by) + math.abs(cy))
 					if math.abs(x - px) <= 7.105427357601002e-15 * scale and math.abs(y - py) <= 7.105427357601002e-15 * scale
 						contacts.push(Contact.new(u, 0.0, false, false))
@@ -256,8 +263,13 @@ export quadraticContacts(float ax, float ay, float bx, float by, float cx, float
 						u = clampUnit(u0)
 						x = bezier(ax, bx, cx, u)
 						y = bezier(ay, by, cy, u)
+						if u != u0 and not segmentContact(x, y, x, y, px, py, qx, qy)
+							continue
 						v = parameter(x, y, px, py, qx, qy)
 						if unitParameter(v)
+							// The observation has finite endpoints too; tolerance cannot extend it.
+							if v != clampUnit(v) and not segmentContact(x, y, x, y, px, py, qx, qy)
+								continue
 							derivative = 2.0 * a * u + b
 							transverse = math.abs(derivative) > 7.105427357601002e-15 * (math.abs(2.0 * a * u) + math.abs(b))
 							contacts.push(Contact.new(u, clampUnit(v), transverse, false))

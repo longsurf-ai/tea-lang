@@ -350,6 +350,43 @@ test('quadratic roots preserve near-tangent crossings and reject near-tangent mi
   expect(actual[1][0].transverse).toBe(false);
 });
 
+test('quadratic endpoint tolerance cannot turn bounded misses into contacts', () => {
+  const curve = [0, 1e-15, 0.5, 0.5000000000000015, 1, 2.000000000000002];
+  const cases = [
+    [...curve, 0, 0, 1, 0], // supporting root just before the curve
+    [...curve.slice(4), ...curve.slice(2, 4), ...curve.slice(0, 2), 0, 0, 1, 0], // just after the reversed curve
+    [...curve, 1, 0, 0, 0], // reversed observation
+    [...curve, 0, 0, 0, 0], // point just beyond the curve
+    [-1e-15, -1, -1e-15, 0, -1e-15, 1, 0, 0, 1, 0], // contact just before the observation
+    [1 + 1e-15, -1, 1 + 1e-15, 0, 1 + 1e-15, 1, 0, 0, 1, 0], // just after it
+    [0, 0, 0.5, 0.5, 1, 2, 0, 0, 1, 0], // actual curve endpoint
+    [1, 2, 0.5, 0.5, 0, 0, 0, 0, 1, 0], // actual reversed endpoint
+    [0, 0, 0.5, 0.5, 1, 2, 0, 0, 0, 0], // actual endpoint as a point
+    [0, -1e-15, 0.5, 0.5, 1, 2, 0, 0, 1, 0], // genuine root just inside
+  ];
+  const transpose = (row: number[]) => row.map((_, i) => row[i ^ 1]);
+  const result = evaluateCases(
+    [...cases, ...cases.map(transpose)],
+    `geometry.quadraticContacts(${args(10)})`,
+  ) as unknown[][];
+  const expected = [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+  ];
+  expect(result.map(contacts => contacts.length > 0)).toEqual([
+    ...expected,
+    ...expected,
+  ]);
+});
+
 test('geometry arrays stay detached through provisional rollback and independent calls', () => {
   const node = tea`
     import geometry
