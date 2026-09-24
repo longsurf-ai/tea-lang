@@ -72,6 +72,18 @@
         "data": "b893313e6346dcfa94990c4e875c80b61923481fe625d5932b304455f1c3c2df",
         "reference": "ec5d1c01bd2abb1205b96e17493bea3a9c740dc88cfce450030fb73e778cc674"
       }
+    },
+    {
+      "id": "geometry",
+      "kind": "differential",
+      "source": "differential/geometry/source.tea",
+      "data": "differential/geometry/data.csv",
+      "reference": "differential/geometry/reference.json",
+      "sha256": {
+        "source": "e88476bd31276d3ca9bbea7b127544006533a97af72406a02293d7a9d107ff7d",
+        "data": "a63801dbcfe26e9bab0e3b42f898f13c18c516e6ad4d372c0ce2334a30844785",
+        "reference": "b9f8d36e84dd6f3a9a98891a9816497ede92b8205602d08744c262372b720b2c"
+      }
     }
   ],
   "deviations": {

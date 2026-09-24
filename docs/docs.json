@@ -40,7 +40,12 @@
           },
           {
             "group": "Advanced",
-            "pages": ["advanced/tea-compiler", "ir", "advanced/gpu-lowering"]
+            "pages": [
+              "advanced/tea-compiler",
+              "ir",
+              "advanced/gpu-lowering",
+              "geometry"
+            ]
           }
         ]
       },

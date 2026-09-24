@@ -82,7 +82,7 @@ describe('request context evaluation order', () => {
     const js = generate(program);
     const binding = js.slice(js.lastIndexOf('(module, contextConstants) =>'));
     const assignment = binding.match(
-      /module\.requests\[0\]\.context = \{\s*symbol: \((t\d+)\)\.value!, timeframe: \((t\d+)\)\.value!, fill: \((t\d+)\)\.value as "carry" \| "sparse", ignoreInvalidSymbol: \((t\d+)\)\.value, calcBarsCount: \((t\d+)\)\.value\s*\};/,
+      /module\.requests\[0\]\.context = \{\s*symbol: \((text\("SYMBOL_SENTINEL"\))\)\.value!, timeframe: \((text\("TIMEFRAME_SENTINEL"\))\)\.value!, fill: \((t\d+)\)\.value as "carry" \| "sparse", ignoreInvalidSymbol: \((t\d+)\)\.value, calcBarsCount: \((t\d+)\)\.value\s*\};/,
     );
     expect(assignment).not.toBeNull();
     if (assignment === null) {
@@ -99,7 +99,8 @@ describe('request context evaluation order', () => {
     const optionCapture = Math.max(...captures);
     const assignmentIndex = binding.indexOf('module.requests[0].context = {');
     expect(symbolCapture).toBeGreaterThan(optionCapture);
-    expect(assignmentIndex).toBeGreaterThan(symbolCapture);
+    expect(assignmentIndex).toBeGreaterThan(optionCapture);
+    expect(symbolCapture).toBeGreaterThan(assignmentIndex);
 
     const module = loadModule(js);
     expect(module.requests[0].mode).toBe('sample');

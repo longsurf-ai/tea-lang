@@ -1,0 +1,260 @@
+//@version=1
+// CPU Float64 geometry. Exact orientation and finite segment rejection ported
+// from robust-orientation 1.2.1 and robust-segment-intersect 1.0.1.
+// Expansion arithmetic: two-product 1.0.2 and robust-sum/subtract 1.0.0.
+// Quadratic construction follows kld-intersections 0.7.0; stable quadratic
+// roots, degenerate points and coincident intervals are handled explicitly.
+// Attribution and supported arithmetic domain: docs/geometry.md and LICENSES.
+library("geometry")
+
+// A non-overlap contact gives both parameters in [0,1]. Overlap contacts
+// describe the ends of the common interval, with boundaryParameter = na.
+// transverse describes an interior crossing of the primitive's supporting
+// curve, not path-level shared-vertex classification.
+export type Contact
+	float boundaryParameter
+	float observationParameter
+	bool transverse
+	bool overlap
+
+// The bound excludes product overflow/underflow in the Float64 expansion
+// kernel. Callers reject unsupported coordinates before observing geometry.
+export coordinateSupported(float value) =>
+	not na(value) and math.abs(value) <= 1e70 and (value == 0.0 or math.abs(value) >= 1e-70)
+
+twoProduct(float a, float b) =>
+	x = a * b
+	c = 134217729.0 * a
+	abig = c - a
+	ahi = c - abig
+	alo = a - ahi
+	d = 134217729.0 * b
+	bbig = d - b
+	bhi = d - bbig
+	blo = b - bhi
+	err1 = x - ahi * bhi
+	err2 = err1 - alo * bhi
+	err3 = err2 - ahi * blo
+	y = alo * blo - err3
+	array.from(y, x)
+
+// The same increasing-magnitude merge serves sum and difference. This is
+// linear-expansion-sum with zero elimination, preserving operation order.
+expansionSum(array<float> e, array<float> f, float sign = 1.0) =>
+	g = array.new<float>()
+	ne = e.size()
+	nf = f.size()
+	ep = 0
+	fp = 0
+	ei = e.get(0)
+	fi = f.get(0) * sign
+	float b = 0.0
+	if math.abs(ei) < math.abs(fi)
+		b := ei
+		ep := ep + 1
+	else
+		b := fi
+		fp := fp + 1
+	if ep < ne
+		ei := e.get(ep)
+	if fp < nf
+		fi := f.get(fp) * sign
+	float a = 0.0
+	if fp >= nf or (ep < ne and math.abs(ei) < math.abs(fi))
+		a := ei
+		ep := ep + 1
+	else
+		a := fi
+		fp := fp + 1
+	x = a + b
+	bv = x - a
+	q0 = b - bv
+	q1 = x
+	while ep < ne or fp < nf
+		if ep < ne
+			ei := e.get(ep)
+		if fp < nf
+			fi := f.get(fp) * sign
+		if fp >= nf or (ep < ne and math.abs(ei) < math.abs(fi))
+			a := ei
+			ep := ep + 1
+		else
+			a := fi
+			fp := fp + 1
+		b := q0
+		x := a + b
+		bv := x - a
+		y = b - bv
+		if y != 0.0
+			g.push(y)
+		total = q1 + x
+		bv2 = total - q1
+		av = total - bv2
+		br = x - bv2
+		ar = q1 - av
+		q0 := ar + br
+		q1 := total
+	if q0 != 0.0
+		g.push(q0)
+	if q1 != 0.0 or g.size() == 0
+		g.push(q1)
+	g
+
+orientationExact(float ax, float ay, float bx, float by, float cx, float cy) =>
+	p = expansionSum(expansionSum(twoProduct(by, cx), twoProduct(-cy, bx)), expansionSum(twoProduct(ay, bx), twoProduct(-by, ax)))
+	n = expansionSum(twoProduct(ay, cx), twoProduct(-cy, ax))
+	d = expansionSum(p, n, -1.0)
+	d.get(d.size() - 1)
+
+// Signed determinant, clockwise positive like robust-orientation. Only its
+// sign is meaningful; the exact branch returns the leading expansion term.
+// Unsupported input returns na, never an invented orientation.
+export orient2d(float ax, float ay, float bx, float by, float cx, float cy) =>
+	float result = na
+	if coordinateSupported(ax) and coordinateSupported(ay) and coordinateSupported(bx) and coordinateSupported(by) and coordinateSupported(cx) and coordinateSupported(cy)
+		l = (ay - cy) * (bx - cx)
+		r = (ax - cx) * (by - cy)
+		det = l - r
+		s = math.abs(l + r)
+		tol = 3.3306690738754716e-16 * s
+		result := det
+		if ((l > 0.0 and r > 0.0) or (l < 0.0 and r < 0.0)) and det < tol and det > -tol
+			result := orientationExact(ax, ay, bx, by, cx, cy)
+	result
+
+sameSide(float a, float b) =>
+	(a > 0.0 and b > 0.0) or (a < 0.0 and b < 0.0)
+
+export segmentContact(float ax, float ay, float bx, float by, float px, float py, float qx, float qy) =>
+	x0 = orient2d(ax, ay, px, py, qx, qy)
+	y0 = orient2d(bx, by, px, py, qx, qy)
+	x1 = orient2d(px, py, ax, ay, bx, by)
+	y1 = orient2d(qx, qy, ax, ay, bx, by)
+	valid = not na(x0) and not na(y0) and not na(x1) and not na(y1)
+	hit = valid and not sameSide(x0, y0) and not sameSide(x1, y1)
+	if hit and x0 == 0.0 and y0 == 0.0 and x1 == 0.0 and y1 == 0.0
+		hit := math.max(ax, bx) >= math.min(px, qx) and math.max(px, qx) >= math.min(ax, bx) and math.max(ay, by) >= math.min(py, qy) and math.max(py, qy) >= math.min(ay, by)
+	hit
+
+parameter(float x, float y, float ax, float ay, float bx, float by) =>
+	math.abs(bx - ax) >= math.abs(by - ay) ? (bx == ax ? 0.0 : (x - ax) / (bx - ax)) : (y - ay) / (by - ay)
+
+clampUnit(float value) => math.max(0.0, math.min(1.0, value))
+
+export segmentContacts(float ax, float ay, float bx, float by, float px, float py, float qx, float qy) =>
+	contacts = array.new<Contact>()
+	if segmentContact(ax, ay, bx, by, px, py, qx, qy)
+		s0 = orient2d(ax, ay, px, py, qx, qy)
+		s1 = orient2d(bx, by, px, py, qx, qy)
+		p0 = orient2d(px, py, ax, ay, bx, by)
+		p1 = orient2d(qx, qy, ax, ay, bx, by)
+		if px == qx and py == qy
+			contacts.push(Contact.new(clampUnit(parameter(px, py, ax, ay, bx, by)), 0.0, false, false))
+		else if s0 == 0.0 and s1 == 0.0
+			t0 = parameter(ax, ay, px, py, qx, qy)
+			t1 = parameter(bx, by, px, py, qx, qy)
+			lo = clampUnit(math.min(t0, t1))
+			hi = clampUnit(math.max(t0, t1))
+			contacts.push(Contact.new(hi > lo ? na : clampUnit(parameter(px + (qx - px) * lo, py + (qy - py) * lo, ax, ay, bx, by)), lo, false, hi > lo))
+			if hi > lo
+				contacts.push(Contact.new(na, hi, false, true))
+		else
+			// Robust signs decide contact; division only locates a known hit.
+			u = s0 == 0.0 ? 0.0 : s1 == 0.0 ? 1.0 : clampUnit(s0 / (s0 - s1))
+			v = p0 == 0.0 ? 0.0 : p1 == 0.0 ? 1.0 : clampUnit(p0 / (p0 - p1))
+			contacts.push(Contact.new(u, v, true, false))
+	contacts
+
+// Relative parameter tolerance is 32 Float64 epsilons; it is not a price or
+// pixel hit tolerance. The discriminant is normalized before square root.
+unitParameter(float value) => value >= -7.105427357601002e-15 and value <= 1.0000000000000071
+
+roots(float a, float b, float c) =>
+	result = array.new<float>()
+	magnitude = math.max(math.abs(a), math.max(math.abs(b), math.abs(c)))
+	if magnitude > 0.0
+		aa = a / magnitude
+		bb = b / magnitude
+		cc = c / magnitude
+		if aa == 0.0
+			if bb != 0.0
+				result.push(-cc / bb)
+		else
+			dd = expansionSum(twoProduct(bb, bb), twoProduct(4.0 * aa, cc), -1.0)
+			disc = dd.get(dd.size() - 1)
+			if disc >= 0.0
+				if disc == 0.0
+					result.push(-bb / (2.0 * aa))
+				else
+					q = -0.5 * (bb + (bb < 0.0 ? -1.0 : 1.0) * math.sqrt(disc))
+					result.push(q / aa)
+					result.push(cc / q)
+	result
+
+bezier(float a, float b, float c, float u) =>
+	ab = a + (b - a) * u
+	bc = b + (c - b) * u
+	ab + (bc - ab) * u
+
+export quadraticContacts(float ax, float ay, float bx, float by, float cx, float cy, float px, float py, float qx, float qy) =>
+	contacts = array.new<Contact>()
+	valid = coordinateSupported(ax) and coordinateSupported(ay) and coordinateSupported(bx) and coordinateSupported(by) and coordinateSupported(cx) and coordinateSupported(cy) and coordinateSupported(px) and coordinateSupported(py) and coordinateSupported(qx) and coordinateSupported(qy)
+	if valid
+		dx = qx - px
+		dy = qy - py
+		c2x = ax - 2.0 * bx + cx
+		c2y = ay - 2.0 * by + cy
+		c1x = 2.0 * (bx - ax)
+		c1y = 2.0 * (by - ay)
+		if dx == 0.0 and dy == 0.0
+			// A point observation: solve the varying coordinate and check the
+			// other with a relative rounding bound, not a visual tolerance.
+			useX = math.abs(c2x) + math.abs(c1x) >= math.abs(c2y) + math.abs(c1y)
+			rr = roots(useX ? c2x : c2y, useX ? c1x : c1y, useX ? ax - px : ay - py)
+			if c2x == 0.0 and c1x == 0.0 and c2y == 0.0 and c1y == 0.0 and ax == px and ay == py
+				contacts.push(Contact.new(0.0, 0.0, false, false))
+			for u0 in rr
+				if unitParameter(u0)
+					u = clampUnit(u0)
+					x = bezier(ax, bx, cx, u)
+					y = bezier(ay, by, cy, u)
+					scale = math.max(math.abs(ax) + math.abs(bx) + math.abs(cx), math.abs(ay) + math.abs(by) + math.abs(cy))
+					if math.abs(x - px) <= 7.105427357601002e-15 * scale and math.abs(y - py) <= 7.105427357601002e-15 * scale
+						contacts.push(Contact.new(u, 0.0, false, false))
+		else
+			a = dx * c2y - dy * c2x
+			b = dx * c1y - dy * c1x
+			c = dx * (ay - py) - dy * (ax - px)
+			if orient2d(ax, ay, px, py, qx, qy) == 0.0 and orient2d(bx, by, px, py, qx, qy) == 0.0 and orient2d(cx, cy, px, py, qx, qy) == 0.0
+				// A coincident quadratic may backtrack beyond both endpoints.
+				v0 = parameter(ax, ay, px, py, qx, qy)
+				v1 = parameter(bx, by, px, py, qx, qy)
+				v2 = parameter(cx, cy, px, py, qx, qy)
+				lo = math.min(v0, v2)
+				hi = math.max(v0, v2)
+				denom = v0 - 2.0 * v1 + v2
+				if denom != 0.0
+					u = (v0 - v1) / denom
+					if u > 0.0 and u < 1.0
+						v = bezier(v0, v1, v2, u)
+						lo := math.min(lo, v)
+						hi := math.max(hi, v)
+				if hi >= 0.0 and lo <= 1.0
+					lo := clampUnit(lo)
+					hi := clampUnit(hi)
+					contacts.push(Contact.new(na, lo, false, hi > lo))
+					if hi > lo
+						contacts.push(Contact.new(na, hi, false, true))
+			else
+				rr = roots(a, b, c)
+				for u0 in rr
+					if unitParameter(u0)
+						u = clampUnit(u0)
+						x = bezier(ax, bx, cx, u)
+						y = bezier(ay, by, cy, u)
+						v = parameter(x, y, px, py, qx, qy)
+						if unitParameter(v)
+							derivative = 2.0 * a * u + b
+							transverse = math.abs(derivative) > 7.105427357601002e-15 * (math.abs(2.0 * a * u) + math.abs(b))
+							contacts.push(Contact.new(u, clampUnit(v), transverse, false))
+	contacts

@@ -190,6 +190,9 @@ function captureDestination(
 // later arguments.
 function capture(e: IrExpr, out: string[], ctx: LowerCtx): string {
   const expr = lowerExpr(e, out, ctx);
+  // Literal values cannot be changed by later operands. Keeping them inline
+  // also avoids a JS stack slot for every element of a large constant buffer.
+  if (e.kind === IrKind.Const) return expr;
   const temp = ctx.fresh();
   out.push(`const ${temp} = (${expr});`);
   return temp;
@@ -808,7 +811,7 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
         const body: string[] = [];
         const value = lowerExpr(stmt.value, body, ctx);
         out.push(`if (${direct} === undefined) {`);
-        out.push(...indent(body));
+        for (const line of indent(body)) out.push(line);
         out.push(`  ${direct} = (${value});`);
         out.push('}');
         return;
@@ -816,9 +819,10 @@ function lowerStmt(stmt: IrStmt, out: string[], ctx: LowerCtx): void {
       const local = localRef(ctx, stmt.name);
       const body: string[] = [];
       const value = lowerExpr(stmt.value, body, ctx);
+      out.push(`if (${local}.needsInit()) {`);
+      // Large literal buffers must not become JavaScript call arguments.
+      for (const line of indent(body)) out.push(line);
       out.push(
-        `if (${local}.needsInit()) {`,
-        ...indent(body),
         `  ${local}.initialize(${coerce(value, stmt.value.type, stmt.name.type)});`,
         '}',
       );

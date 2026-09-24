@@ -8,6 +8,47 @@ import {DataStream} from '../src/api/stream';
 import {tea} from '../src/api/tea';
 import {Context} from '../src/runtime';
 
+test('large literal initialization executes without generated JavaScript stack overflow', () => {
+  // Enough literals to exceed JS argument-spread and local-variable limits if
+  // lowering materializes every immutable operand, but only seven Heap arrays.
+  const count = 20_000;
+  const literals = Array.from({length: count}, (_, index) => index).join(',');
+  const declarations = Array.from(
+    {length: 7},
+    (_, index) => `var values${index} = array.from(${literals})`,
+  ).join('\n');
+  const sum = Array.from(
+    {length: 7},
+    (_, index) => `values${index}.get(values${index}.size() - 1)`,
+  ).join(' + ');
+  const source = `${declarations}\nemit "size" values0.size()\nemit "last" ${sum} + close`;
+  const node = tea`${source}`;
+  const bound = node.bind(
+    new DataStream(
+      new Schema([new Field('close', new Float64(), false)]),
+      from([{close: 1}, {close: 2}]),
+    ),
+  );
+  const result: unknown[] = [];
+  let failure: unknown;
+  try {
+    bound.to({
+      next: datum => result.push([datum.size, datum.last]),
+      error: error => {
+        failure = error;
+      },
+    });
+    if (failure) throw failure;
+    expect(result).toEqual([
+      [count, 7 * (count - 1) + 1],
+      [count, 7 * (count - 1) + 2],
+    ]);
+  } finally {
+    bound.dispose();
+    node.dispose();
+  }
+}, 30_000);
+
 function rows(node: Node, lag: number): readonly unknown[][] {
   const rows: unknown[][] = [];
   let failure: unknown;

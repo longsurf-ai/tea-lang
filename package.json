@@ -15,7 +15,8 @@
     "src",
     "website",
     "website/build",
-    "README.md"
+    "README.md",
+    "LICENSES"
   ],
   "bin": {
     "tea": "./src/main.ts"
@@ -119,6 +120,9 @@
     "react-dom": "19.2.7",
     "vitest": "4.1.11",
     "vscode-oniguruma": "2.0.1",
-    "vscode-textmate": "9.3.2"
+    "vscode-textmate": "9.3.2",
+    "robust-orientation": "1.2.1",
+    "robust-segment-intersect": "1.0.1",
+    "kld-intersections": "0.7.0"
   }
 }
