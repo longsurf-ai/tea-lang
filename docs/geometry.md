@@ -38,6 +38,16 @@ emit "hit" hit
   path behavior. A path consumer must consider adjacent primitives together,
   and choose its endpoint/arrival/overlap policy. The library does not close
   paths, simplify strokes, snap prices or implement alert conditions.
+- `rectangleContacts(ax,ay,bx,by,cx,cy,quadratic,left,bottom,right,top)` tests
+  a closed rectangle including its interior. With `quadratic = false`, A/C
+  form a line; otherwise A/B/C form a quadratic. It reuses the finite contact
+  kernels on all four sides and checks endpoint containment. Returned
+  `Point {x,y}` values contain at most one geometric witness per primitive:
+  a rectangle-edge contact, or a contained endpoint when the primitive lies
+  wholly inside. This bounded result proves intersection without enumerating
+  every clipping point; it has no first-contact ordering. Degenerate rectangles are valid; inverted
+  bounds or unsupported coordinates return an empty array. No pixel width,
+  time interval or trading meaning belongs to this primitive.
 
 ## Algorithms and numerical limits
 

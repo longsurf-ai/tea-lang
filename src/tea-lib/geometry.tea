@@ -17,6 +17,10 @@ export type Contact
 	bool transverse
 	bool overlap
 
+export type Point
+	float x
+	float y
+
 // The bound excludes product overflow/underflow in the Float64 expansion
 // kernel. Callers reject unsupported coordinates before observing geometry.
 export coordinateSupported(float value) =>
@@ -258,3 +262,35 @@ export quadraticContacts(float ax, float ay, float bx, float by, float cx, float
 							transverse = math.abs(derivative) > 7.105427357601002e-15 * (math.abs(2.0 * a * u) + math.abs(b))
 							contacts.push(Contact.new(u, clampUnit(v), transverse, false))
 	contacts
+
+// Closed axis-aligned rectangle, including its interior. Reuse the finite
+// segment/quadratic kernel on its four sides; containment covers a primitive
+// wholly inside. One geometric witness proves contact for this primitive;
+// rectangle intersections can contain infinitely many points, not price fills.
+export rectangleContacts(float ax, float ay, float bx, float by, float cx, float cy, bool quadratic, float left, float bottom, float right, float top) =>
+	points = array.new<Point>()
+	valid = coordinateSupported(ax) and coordinateSupported(ay) and coordinateSupported(bx) and coordinateSupported(by) and coordinateSupported(cx) and coordinateSupported(cy) and coordinateSupported(left) and coordinateSupported(bottom) and coordinateSupported(right) and coordinateSupported(top)
+	if valid and left <= right and bottom <= top
+		minX = quadratic ? math.min(ax, math.min(bx, cx)) : math.min(ax, cx)
+		maxX = quadratic ? math.max(ax, math.max(bx, cx)) : math.max(ax, cx)
+		minY = quadratic ? math.min(ay, math.min(by, cy)) : math.min(ay, cy)
+		maxY = quadratic ? math.max(ay, math.max(by, cy)) : math.max(ay, cy)
+		for side = 0 to 3
+			px = side == 0 or side == 3 ? left : right
+			py = side < 2 ? bottom : top
+			qx = side < 2 ? right : left
+			qy = side == 0 or side == 3 ? bottom : top
+			if maxX < math.min(px, qx) or minX > math.max(px, qx) or maxY < math.min(py, qy) or minY > math.max(py, qy)
+				continue
+			contacts = quadratic ? quadraticContacts(ax, ay, bx, by, cx, cy, px, py, qx, qy) : segmentContacts(ax, ay, cx, cy, px, py, qx, qy)
+			for contact in contacts
+				x = px + (qx - px) * contact.observationParameter
+				y = py + (qy - py) * contact.observationParameter
+				points.push(Point.new(x, y))
+				return points
+		if points.size() == 0
+			if ax >= left and ax <= right and ay >= bottom and ay <= top
+				points.push(Point.new(ax, ay))
+			else if cx >= left and cx <= right and cy >= bottom and cy <= top
+				points.push(Point.new(cx, cy))
+	points

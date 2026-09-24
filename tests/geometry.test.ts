@@ -52,6 +52,63 @@ emit "quadratic" geometry.quadraticContacts(0.0, 0.0, 1.0, 2.0, 2.0, 0.0, 0.0, 0
   expect(rows[0].quadratic).toHaveLength(2);
 });
 
+test('rectangle contacts include containment, corners, overlap and curved tangency', () => {
+  const cases = [
+    [-1, 1, -1, 1, 3, 1, 0], // line through the box
+    [0.5, 0.5, 0.5, 0.5, 1.5, 1.5, 0], // wholly inside
+    [-1, 3, -1, 3, 3, 3, 0], // outside
+    [1, 1, 1, 1, 1, 1, 0], // contained point
+    [-1, -1, -1, -1, 0, 0, 0], // corner counted once
+    [-1, 0, -1, 0, 3, 0, 0], // edge overlap
+    [-1, 3, 1, -3, 3, 3, 1], // endpoints outside, curve enters
+    [-1, 3, 1, 1, 3, 3, 1], // tangent to the top
+    [0.5, 0.5, 1, 1.5, 1.5, 0.5, 1], // contained curve
+    [-1, 3, 1, 2, 3, 3, 1], // curve outside
+    [-1, 1, 3, 1, -1, 1, 1], // collinear backtracking
+  ];
+  const result = evaluateCases(
+    cases,
+    `geometry.rectangleContacts(${args(6)}, x6.get(bar_index) == 1.0, 0.0, 0.0, 2.0, 2.0)`,
+  ) as {x: number; y: number}[][];
+  expect(result.map(points => points.length > 0)).toEqual([
+    true,
+    true,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+  ]);
+  expect(result[0]).toEqual([{x: 2, y: 1}]);
+  expect(result[4]).toEqual([{x: 0, y: 0}]);
+  expect(result[5]).toHaveLength(1);
+  expect(result[7]).toEqual([{x: 1, y: 2}]);
+  for (const points of result) {
+    expect(points.length).toBeLessThanOrEqual(1);
+    expect(new Set(points.map(point => `${point.x},${point.y}`)).size).toBe(
+      points.length,
+    );
+    for (const point of points) {
+      expect(point.x).toBeGreaterThanOrEqual(0);
+      expect(point.x).toBeLessThanOrEqual(2);
+      expect(point.y).toBeGreaterThanOrEqual(0);
+      expect(point.y).toBeLessThanOrEqual(2);
+    }
+  }
+  const degenerate = execute(
+    `import geometry
+emit "flat" geometry.rectangleContacts(1.0, -1.0, 1.0, -1.0, 1.0, 1.0, false, 0.0, 0.0, 2.0, 0.0)
+emit "invalid" geometry.rectangleContacts(0.0, 0.0, 0.0, 0.0, 1.0, 1.0, false, 2.0, 0.0, 0.0, 2.0)`,
+    [{close: 1}],
+  );
+  expect(degenerate[0].flat).toEqual([{x: 1, y: 0}]);
+  expect(degenerate[0].invalid).toEqual([]);
+});
+
 // Pinned development dependencies are independent upstream oracles; runtime
 // geometry imports none of them.
 const require = createRequire(import.meta.url);
@@ -124,10 +181,18 @@ test('adaptive orientation agrees with the upstream exact branch and an independ
     }
   }
   const forwardCount = cases.length;
-  cases.push(...cases.map(row => [...row.slice(2, 4), ...row.slice(0, 2), ...row.slice(4)]));
+  cases.push(
+    ...cases.map(row => [
+      ...row.slice(2, 4),
+      ...row.slice(0, 2),
+      ...row.slice(4),
+    ]),
+  );
   const actual = evaluateCases(cases, `geometry.orient2d(${args(6)})`);
   for (let i = 0; i < forwardCount; i++) {
-    expect(Math.sign(actual[i + forwardCount] as number) || 0).toBe(-Math.sign(actual[i] as number) || 0);
+    expect(Math.sign(actual[i + forwardCount] as number) || 0).toBe(
+      -Math.sign(actual[i] as number) || 0,
+    );
   }
   cases.forEach((row, i) =>
     expect(Math.sign(actual[i] as number), JSON.stringify(row)).toBe(
@@ -331,15 +396,34 @@ test('geometry arrays stay detached through provisional rollback and independent
 test('quadratic intersections agree with KLD on deterministic noncoincident curves', () => {
   const random = randomSource();
   const cases = Array.from({length: 128}, () => [
-    -2, random() * 4 - 2, random() * 4 - 2, random() * 4 - 2,
-    2, random() * 4 - 2, -3, 0, 3, 0,
+    -2,
+    random() * 4 - 2,
+    random() * 4 - 2,
+    random() * 4 - 2,
+    2,
+    random() * 4 - 2,
+    -3,
+    0,
+    3,
+    0,
   ]);
-  const actual = evaluateCases(cases, `geometry.quadraticContacts(${args(10)})`) as {observationParameter: number}[][];
+  const actual = evaluateCases(
+    cases,
+    `geometry.quadraticContacts(${args(10)})`,
+  ) as {observationParameter: number}[][];
   cases.forEach((row, i) => {
-    const ref = Intersection.intersect(Shapes.quadraticBezier(...row.slice(0, 6)), Shapes.line(...row.slice(6)));
+    const ref = Intersection.intersect(
+      Shapes.quadraticBezier(...row.slice(0, 6)),
+      Shapes.line(...row.slice(6)),
+    );
     expect(actual[i], JSON.stringify(row)).toHaveLength(ref.points.length);
     for (const hit of actual[i]) {
-      expect(ref.points.some((point: {x: number}) => Math.abs(point.x - (-3 + 6 * hit.observationParameter)) < 1e-12)).toBe(true);
+      expect(
+        ref.points.some(
+          (point: {x: number}) =>
+            Math.abs(point.x - (-3 + 6 * hit.observationParameter)) < 1e-12,
+        ),
+      ).toBe(true);
     }
   });
 });
