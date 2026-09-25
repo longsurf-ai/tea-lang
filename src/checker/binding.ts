@@ -197,6 +197,11 @@ class NameBinder {
         return;
       case NodeKind.DeclStmt:
         this.bindExpr(stmt.init);
+        if (stmt.exported) {
+          // An exported input alias names a Builtin object the checker
+          // declares; it never binds a variable.
+          return;
+        }
         if (stmt.target.kind === NodeKind.Name) {
           this.declare(
             stmt.target,

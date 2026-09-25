@@ -88,6 +88,55 @@ describe('relative imports', () => {
     expect(message).toContain('import cycle: ');
   });
 
+  test('an injected reader supplies every relative import without the disk', async () => {
+    const root = '/snapshot';
+    const files = new Map([
+      [
+        `${root}/lib/bands.tea`,
+        'library("bands")\nimport ../shared/risk\nexport upper(source, k) =>\n    risk.cap(source + k, 100.0)\n',
+      ],
+      [
+        `${root}/shared/risk.tea`,
+        'library("risk")\nexport cap(value, limit) =>\n    math.min(value, limit)\n',
+      ],
+    ]);
+    const requested: string[] = [];
+    const read = (filename: string) => {
+      requested.push(filename);
+      return files.get(filename);
+    };
+    const source =
+      'import ./lib/bands\nimport ./shared/risk as limits\nemit "capped" limits.cap(bands.upper(10.0, 2.0), 11.0)\n';
+    const errors = new Errors();
+    const program = compileToProgram(
+      [{filename: `${root}/entry.tea`, source}],
+      errors,
+      {read},
+    );
+    expect(located(errors)).toEqual([]);
+    // Canonical paths, each file read once however many spellings reach it.
+    expect(requested.sort()).toEqual([...files.keys()].sort());
+    const sink = new OutputCapture();
+    await executeTestProgram(program!, {
+      stream: finiteStream(new Schema([]), [{}]),
+      sink,
+      timeNow: 0,
+    });
+    expect(sink.publications[0]).toMatchObject({capped: 11});
+
+    const missing = new Errors();
+    expect(
+      compileToProgram(
+        [{filename: `${root}/entry.tea`, source: 'import ./nope\n'}],
+        missing,
+        {read},
+      ),
+    ).toBeNull();
+    expect(located(missing)).toEqual([
+      `${root}/entry.tea:1:8: cannot find './nope' (no file ${root}/nope.tea)`,
+    ]);
+  });
+
   test('an imported file must be a library', () => {
     const errors = new Errors();
     expect(

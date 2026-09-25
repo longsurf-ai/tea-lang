@@ -84,6 +84,18 @@
         "data": "a63801dbcfe26e9bab0e3b42f898f13c18c516e6ad4d372c0ce2334a30844785",
         "reference": "b9f8d36e84dd6f3a9a98891a9816497ede92b8205602d08744c262372b720b2c"
       }
+    },
+    {
+      "id": "named-series-input",
+      "kind": "compile-through",
+      "source": "compile/named-series-input/source.tea",
+      "data": "compile/named-series-input/data.csv",
+      "reference": "compile/named-series-input/reference.json",
+      "sha256": {
+        "source": "8bad4f2bed3aea89ee8d82192e6853f68a2d8cdfe4caf5733b870d03e0b7fa49",
+        "data": "077db4923c2108a3fcf714f5b4e8a5da498e0f2e5288fa0e671ad24a3c6e66ce",
+        "reference": "d9b5c3fec3bb27dfcb68093ece6eef61c8518b1c91bd2911dfdb98576e4ea27c"
+      }
     }
   ],
   "deviations": {

@@ -6,7 +6,12 @@ import {generate} from './codegen/codegen';
 import {checkGenerated} from './codegen/check';
 import type {Program} from './ir/program';
 import {checkPackage, type CheckedPackage} from './checker/check';
-import {loadPackage, resolveImports, type SourceInput} from './loader/loader';
+import {
+  loadPackage,
+  resolveImports,
+  type ReadSource,
+  type SourceInput,
+} from './loader/loader';
 import {buildProgram} from './noder/noder';
 import type {File} from './syntax/nodes';
 
@@ -33,6 +38,16 @@ export interface Compilation {
   readonly program: Program | null;
 }
 
+/**
+ * How one compilation reaches source it does not receive directly. Entry
+ * files arrive as inputs; `read` supplies the files their relative imports
+ * name, by canonical path. Compiler-shipped libraries never go through it.
+ */
+export interface CompileOptions {
+  /** Defaults to reading the disk; `undefined` reports `cannot find`. */
+  readonly read?: ReadSource;
+}
+
 // The sole parse -> check -> node implementation, as two halves so that the
 // parse barrier is the only thing the two entries below decide for
 // themselves. Target lowerers consume its Program directly; no execution mode
@@ -44,12 +59,16 @@ function parseStage(inputs: readonly SourceInput[], errors: Errors): File[] {
   return files;
 }
 
-function checkAndNode(files: readonly File[], errors: Errors): Compilation {
+function checkAndNode(
+  files: readonly File[],
+  errors: Errors,
+  {read}: CompileOptions,
+): Compilation {
   // Import resolution is a driver stage: the loader loads and orders
   // libraries; the checker consumes them through the Importer and positions
   // any resolution errors at the import statements.
   const checkDone = perf.startTimer('check');
-  const importer = resolveImports(files);
+  const importer = resolveImports(files, undefined, undefined, undefined, read);
   const checked = checkPackage(files, errors, importer);
   checkDone();
   if (errors.count > 0) {
@@ -66,9 +85,10 @@ function checkAndNode(files: readonly File[], errors: Errors): Compilation {
 export function compileToProgram(
   inputs: readonly SourceInput[],
   errors: Errors,
+  options: CompileOptions = {},
 ): Program | null {
   const files = parseStage(inputs, errors);
-  return errors.count > 0 ? null : checkAndNode(files, errors).program;
+  return errors.count > 0 ? null : checkAndNode(files, errors, options).program;
 }
 
 /**
@@ -79,7 +99,8 @@ export function compileToProgram(
  * barrier and runs only when parse and check reported nothing.
  *
  * It is for editors and analysis only. Nothing that executes Tea may call it:
- * every backend consumes the `Program` of `compileToProgram`.
+ * every backend consumes the `Program` of `compileToProgram`. `options.read`
+ * has the same contract as there.
  *
  * User errors queue in `errors`; an `InternalError` thrown from here is a
  * compiler defect.
@@ -97,8 +118,9 @@ export function compileToProgram(
 export function compileForTooling(
   inputs: readonly SourceInput[],
   errors: Errors,
+  options: CompileOptions = {},
 ): Compilation {
-  return checkAndNode(parseStage(inputs, errors), errors);
+  return checkAndNode(parseStage(inputs, errors), errors, options);
 }
 
 export function compile(filenames: readonly string[]): CompileResult {

@@ -1,0 +1,22 @@
+Program version=1
+series indicator.macd: series float depth=const(1)
+series indicator.signal: series float depth=none
+series close: series float depth=const(2)
+output[0] "spread" set: float @ named-series.tea:6:1
+output[1] "rising" set: bool @ named-series.tea:7:1
+output[2] "close" set: float @ named-series.tea:8:1
+body:
+  Emit output[0]
+    value: Binary Sub: series float
+      Read series:indicator.macd: series float
+      Read series:indicator.signal: series float
+  Emit output[1]
+    value: Binary Gt: series bool
+      Read series:indicator.macd: series float
+      HistRead series:indicator.macd: series float
+        offset: Const 1: const int
+  Emit output[2]
+    value: Binary Add: series float
+      HistRead series:close: series float
+        offset: Const 2: const int
+      Read series:close: series float

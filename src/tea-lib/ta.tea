@@ -7,10 +7,10 @@
 // Coverage tracks Pine v6's ta.* functions. Not yet expressible:
 //   - median, mode, percentile_*, valuewhen: need collections (array slice).
 //   - ta.obv, ta.vwap, ta.accdist, ta.pvt, ta.iii, ta.nvi, ta.pvi, ta.wad,
-//     ta.wvad, ta.tr (variable form): need exported library variables.
-// Functions reading ambient context (volume, high, low, close) directly are
-// rejected inside request expressions by design; pass sources as parameters
-// where Pine's signature allows it.
+//     ta.wvad, ta.tr (variable form): need computed library exports with
+//     per-bar state; input aliases (the pine prelude) are the only exports
+//     that are variables today.
+// Ambient reads (volume, high, low, close) are pine prelude input aliases.
 library("ta")
 
 // ---- moving averages and smoothing ------------------------------------------

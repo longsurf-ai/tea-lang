@@ -82,6 +82,9 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   downstream manifest or UI projections must not reinterpret them.
 - Every `input.*` syntax call is one program-global parameter even when it
   appears in a local block, non-exported UDF, or scalar request capture.
+  `input.series` is the exception: `Effect.SeriesInput` declares the series
+  input its const name selects, not a parameter, and is legal only at a
+  script's top level or as a library's exported input alias initializer.
   Source inputs in request captures and all inputs in exported functions are
   rejected. An input's `active` expression may read direct input bindings and
   program-root bind values, but never function/capture execution-frame state.
@@ -124,7 +127,9 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   checker positions loader errors and recursively elaborates each source once
   into a semantic `Package`; it alone interprets `library()`, validates the
   package root and declaration conflicts, and checks types, enums, defaults,
-  methods, and imports. A library root additionally permits private,
+  methods, and imports. A library root additionally permits exported input
+  aliases (`export close = input.series("close")`, declared as series-bound
+  `BuiltinObject`s in Package.exports) and private,
   single-name, explicitly typed `var` package globals. Their canonical
   `VariableObject`s live in Package.Scope and never Package.exports; checker
   execution metadata records initializer facts/order without creating a
@@ -145,10 +150,13 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   `TypeKind.Invalid` (assignable both ways, unify-absorbed) so one error
   never cascades; the checker never throws on user input and silently
   tolerates Bad syntax nodes the parser already reported.
-- Context builtin names resolve to semantic `BuiltinObject`s. The catalog owns their
-  explicit discriminated binding: numeric sources are `series`, typed context
-  values are `builtin`, and constants have no binding. They carry type,
-  qualifier, and any fold value, but no backend depth or buffer state. The
+- Context builtin names resolve to semantic `BuiltinObject`s. The catalog owns
+  typed context values (`builtin` bindings) and constants (no binding); it
+  declares no numeric source. Series bindings come only from library input
+  aliases, such as the flattened `pine` prelude's `close`. Script scopes chain
+  root -> universe (implicit namespaces) -> prelude; library scopes have no
+  parent and fall back to the prelude's input aliases only. Builtin objects
+  carry type, qualifier, and any fold value, but no backend depth or buffer state. The
   noder interns the matching `SeriesInput` or `BuiltinInput` independently
   in each Program projection; no pass parses a builtin spelling to classify it.
 - History applies only to a direct readable semantic binding, including bound

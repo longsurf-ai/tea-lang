@@ -142,13 +142,18 @@ places to its depth pass for annotation.
   The checker rejects `active` dependencies on a function/capture execution
   frame because the global parameter is bound without that frame. No input
   default or metadata value may be `na`.
-- **numeric series inputs** (a projection, not a field): `open`, `high`,
-  `low`, `close`, `volume`, and the derived price sources are numeric columns
-  supplied by application DataStreams. The checker catalog binds them
-  explicitly as series; the noder interns one `SeriesInput` for each used
-  builtin in each Program. `input.source` is restricted to this closed
-  vocabulary. Neither noder nor runtime classifies a builtin by parsing its
-  spelling.
+- **numeric series inputs** (a projection, not a field): numeric columns an
+  application DataStream supplies by name. `input.series(const string name)`
+  reads one; the core names no market column. Pine's `open`, `high`, `low`,
+  `close`, `volume`, and the derived price sources are exported input aliases
+  in the flattened `pine` prelude (`export close = input.series("close")`), so
+  `close` and `input.series("close")` are one input. The noder interns one
+  `SeriesInput` per name in each Program; its id is the input schema field
+  name. `time`, `provisional`, `realtime`, and `firstAttempt` are Node's row
+  fields and cannot name a series input. An `input.source` default must name a
+  series input alias, such as `close` or a library's exported alias; a direct
+  `input.series(...)` call is not one. Neither noder nor runtime classifies a
+  builtin by parsing its spelling.
 - **typed builtins** (also a projection): `time`, `timenow`, `bar_index`, `barstate.*`, `syminfo.*`, and
   `timeframe.*` are typed values supplied by the runtime context rather than
   numeric series columns. They project to `BuiltinInput`, which carries
@@ -322,8 +327,9 @@ permits mutation through child references and is not a purity annotation.
 ## Primitives vs prelude
 
 A builtin is native only when its operation is inexpressible in Tea: data sources,
-context capture, collection operations and scalar intrinsics. `ta`, visual
-functions, and trade policy are ordinary Tea libraries. `plot("price", close)`
+context capture, collection operations and scalar intrinsics. The one data-source
+primitive is `input.series`; Pine's market series, `ta`, visual functions, and
+trade policy are ordinary Tea libraries. `plot("price", close)`
 constructs a library Plot value, executes plain `emit id p`, and returns `p`.
 Its constant ID participates in ordinary function specialization; there is no
 output-wrapper expansion, special output return type, or compiler interpretation
@@ -388,9 +394,9 @@ unreachable never enter `requests` — dead-request elimination by construction.
   types2.Importer split): the loader's registry decides what a path means
   and loads libraries recursively (cycle detection included); the checker
   consumes the injected `Importer` and is provenance-blind. Compiler-shipped
-  libraries and the implicit prelude are separate sets: `ta` is implicit,
-  while trade components such as `broker`, `portfolio`, and `trade` are
-  explicit imports. External `owner/name/version` paths error until a distribution
+  libraries and the implicit prelude are separate sets: `ta` is an implicit
+  namespace, `visual` and `pine` are flattened preludes, and trade components
+  such as `broker`, `portfolio`, and `trade` are explicit imports. External `owner/name/version` paths error until a distribution
   story exists. The Program is always a closed script; a
   distributable compiled-library artifact, if ever needed, is a separate
   contract — never a bent Program.

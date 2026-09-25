@@ -1,0 +1,32 @@
+//@version=1
+
+// A series input is the input column its const name selects.
+macd = input.series("macd")
+signal = input.series("indicator.signal")
+plot("spread", macd[1] - signal + input.series("macd"))
+
+const column = "sig" + "nal"
+named = input.series(column)
+
+empty = input.series("") // ERROR 'input.series' name cannot be empty
+t = input.series("time") // ERROR 'input.series' name 'time' is reserved
+p = input.series("provisional") // ERROR 'input.series' name 'provisional' is reserved
+r = input.series("realtime") // ERROR 'input.series' name 'realtime' is reserved
+fa = input.series("firstAttempt") // ERROR 'input.series' name 'firstAttempt' is reserved
+
+dynamic = input.series(close > 0 ? "a" : "b") // ERROR argument 'name' to 'input.series' accepts at most const, got series
+
+read() => input.series("a") // ERROR 'input.series' can only be called at the top level of the script
+fromFunction = read()
+
+if close > 0
+    inBlock = input.series("b") // ERROR 'input.series' can only be called at the top level of the script
+
+daily = request.security("A", "D", input.series("c")) // ERROR 'input.series' can only be called at the top level of the script
+
+// A default runs wherever its struct is constructed, never at the top level.
+type Holder
+    float v = input.series("d") // ERROR 'input.series' can only be called at the top level of the script
+held = Holder.new()
+
+close := 1 // ERROR cannot assign to built-in 'close'

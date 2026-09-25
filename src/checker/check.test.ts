@@ -476,20 +476,14 @@ describe('context builtins', () => {
   });
 
   test('catalog runtime bindings are an exact closed vocabulary', () => {
-    const series = [...CATALOG.vars.values()].flatMap(builtin =>
-      builtin.binding?.kind === 'series' ? [builtin.binding.id] : [],
-    );
-    expect(series).toEqual([
-      'open',
-      'high',
-      'low',
-      'close',
-      'volume',
-      'hl2',
-      'hlc3',
-      'ohlc4',
-      'hlcc4',
-    ]);
+    // The core declares no market names: series inputs come only from
+    // input.series and library aliases such as the pine prelude's close.
+    expect(
+      [...CATALOG.vars.values()].filter(
+        builtin =>
+          builtin.binding !== null && builtin.binding.kind !== 'builtin',
+      ),
+    ).toEqual([]);
 
     const builtins = [...CATALOG.vars.values()].flatMap(builtin =>
       builtin.binding?.kind === 'builtin'
@@ -789,7 +783,7 @@ describe('calls', () => {
       ['x = input.int(1, minval=2, maxval=0)', 'cannot exceed'],
       ['x = input.int(1, step=0)', 'greater than zero'],
       ['x = input.int(1, display=display.pane)', 'display must be'],
-      ['x = input.source(volume)', 'source default must be'],
+      ['x = input.source(input.series("x"))', 'source default must be'],
       ['x = input.source(time)', 'source default must be'],
       ['x = input.source(time)', 'source default must be'],
       ['x = input.source(bar_index)', 'source default must be'],
@@ -802,6 +796,14 @@ describe('calls', () => {
         expect.stringContaining(diagnostic),
       );
     }
+  });
+
+  test('any series input is a source default, market or not', () => {
+    expect(checkText('x = input.source(volume)').errors).toEqual([]);
+    const alias = checkText(
+      'x = input.source(hl2)\ny = input.source(close, "Source")',
+    );
+    expect(alias.errors).toEqual([]);
   });
 
   test('request bind options accept simple expressions and reject invalid contracts', () => {

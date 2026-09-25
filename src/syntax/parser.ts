@@ -391,7 +391,15 @@ export class Parser {
               return true;
             }
           }
-          return this.atName() && this.arrowFollowsParens();
+          if (!this.atName()) {
+            return false;
+          }
+          if (this.arrowFollowsParens()) {
+            return true;
+          }
+          // `export close = input.series("close")`: a library input alias.
+          this.next();
+          return this.tok() === Tok.Assign;
         });
         if (!isDecl) {
           break;
@@ -417,7 +425,21 @@ export class Parser {
           }
           return this.enumDecl(pos, true);
         }
-        return this.funcDeclRest(pos, true);
+        if (this.arrowFollowsParens()) {
+          return this.funcDeclRest(pos, true);
+        }
+        const target = this.name();
+        this.want(Tok.Assign);
+        const init = this.expr();
+        return {
+          kind: NodeKind.DeclStmt,
+          pos,
+          mode: Mode.None,
+          exported: true,
+          declType: null,
+          target,
+          init,
+        };
       }
       default:
         break;
@@ -434,6 +456,7 @@ export class Parser {
           kind: NodeKind.DeclStmt,
           pos,
           mode: Mode.None,
+          exported: false,
           declType: typed.declType,
           target: typed.target,
           init,
@@ -457,6 +480,7 @@ export class Parser {
         kind: NodeKind.DeclStmt,
         pos,
         mode: Mode.None,
+        exported: false,
         declType: null,
         target: x,
         init,
@@ -496,6 +520,7 @@ export class Parser {
         kind: NodeKind.DeclStmt,
         pos,
         mode,
+        exported: false,
         declType: typed.declType,
         target: typed.target,
         init,
@@ -504,7 +529,15 @@ export class Parser {
     const target = this.name();
     this.want(Tok.Assign);
     const init = this.expr();
-    return {kind: NodeKind.DeclStmt, pos, mode, declType: null, target, init};
+    return {
+      kind: NodeKind.DeclStmt,
+      pos,
+      mode,
+      exported: false,
+      declType: null,
+      target,
+      init,
+    };
   }
 
   // Speculative: type name '=' — consumes through the '='.
@@ -537,7 +570,15 @@ export class Parser {
     const target = this.tuplePattern();
     this.want(Tok.Assign);
     const init = this.expr();
-    return {kind: NodeKind.DeclStmt, pos, mode, declType: null, target, init};
+    return {
+      kind: NodeKind.DeclStmt,
+      pos,
+      mode,
+      exported: false,
+      declType: null,
+      target,
+      init,
+    };
   }
 
   private tuplePattern(): TuplePattern {

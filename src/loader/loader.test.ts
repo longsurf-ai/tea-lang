@@ -54,7 +54,7 @@ describe('import resolution', () => {
   test('separates compiler-shipped libraries from the implicit prelude', () => {
     const plain = resolveImports([parseText('value = 1').file]);
     expect(plain.implicit().map(pkg => pkg.path)).toEqual(['ta']);
-    expect(plain.prelude().map(pkg => pkg.path)).toEqual(['visual']);
+    expect(plain.prelude().map(pkg => pkg.path)).toEqual(['visual', 'pine']);
 
     const explicit = resolveImports([
       parseText(
@@ -67,7 +67,7 @@ describe('import resolution', () => {
       ).file,
     ]);
     expect(explicit.implicit().map(pkg => pkg.path)).toEqual(['ta']);
-    expect(explicit.prelude().map(pkg => pkg.path)).toEqual(['visual']);
+    expect(explicit.prelude().map(pkg => pkg.path)).toEqual(['visual', 'pine']);
     expect(sourcePackage(explicit.import('broker', 'entry.tea')).path).toBe(
       'broker',
     );

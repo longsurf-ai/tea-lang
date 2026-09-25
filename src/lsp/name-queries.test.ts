@@ -182,9 +182,19 @@ describe('definition', () => {
     expect(library[range.start.line]).toMatch(/^export ema\(/);
   });
 
-  test('natives and context builtins have no source definition', () => {
+  test('natives have no source definition', () => {
     expect(definition(analysis, on(15, 'max'))).toEqual([]);
-    expect(definition(analysis, on(10, 'close'))).toEqual([]);
+  });
+
+  test('a market series is defined by its pine prelude alias', () => {
+    const [{filename, range}, ...rest] = definition(analysis, on(10, 'close'));
+    expect(rest).toEqual([]);
+    expect(filename).toBe('tea-lib/pine.tea');
+    const library = readFileSync(
+      fileURLToPath(new URL('../tea-lib/pine.tea', import.meta.url)),
+      'utf8',
+    ).split('\n');
+    expect(library[range.start.line]).toMatch(/^export close = /);
   });
 
   test.each(SILENT)('%s has none', (_, position) => {
@@ -283,5 +293,74 @@ describe('across the files a script imports', () => {
     const value = hover(imported, onUpper)?.contents;
     expect(JSON.stringify(value)).toContain('upper(');
     expect(JSON.stringify(value)).toContain('float');
+  });
+});
+
+describe('input aliases', () => {
+  const ALIASES = join(
+    fileURLToPath(new URL('.', import.meta.url)),
+    '../../tests/fixtures/imports/aliases',
+  );
+  const document = (name: string) => {
+    const filename = join(ALIASES, name);
+    const source = readFileSync(filename, 'utf8');
+    return {
+      filename,
+      lines: source.split('\n'),
+      result: analyze({filename, source}),
+    };
+  };
+  const at = (lines: readonly string[], line: number, word: string) => ({
+    line: line - 1,
+    character: lines[line - 1].search(new RegExp(`\\b${word}\\b`)),
+  });
+
+  test('a library opened as the document checks its aliases cleanly', () => {
+    const {filename, lines, result} = document('ind.tea');
+    expect(result.diagnostics).toEqual([]);
+    // Function bodies are checked per call, so ask at the declaration.
+    const [found, ...rest] = definition(result, at(lines, 5, 'macd'));
+    expect(rest).toEqual([]);
+    expect(found.filename).toBe(filename);
+    expect(found.range.start.line).toBe(4);
+    const shown = hover(result, at(lines, 5, 'macd'));
+    expect(JSON.stringify(shown)).toContain('series float macd');
+  });
+
+  test('a library document may use names only an entry program reserves', () => {
+    const result = analyze({
+      filename: join(ALIASES, 'memory.tea'),
+      source: 'library("memory")\nexport ta = input.series("ta")\n',
+    });
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  test('a qualified alias use has one fact and leads to its library', () => {
+    const {lines, result} = document('entry.tea');
+    expect(result.diagnostics).toEqual([]);
+    const uses = result.names.filter(({name}) => name.value === 'macd');
+    expect(uses).toHaveLength(2);
+    for (const use of uses) {
+      expect(use.facts).toHaveLength(1);
+    }
+    const [found] = definition(result, at(lines, 4, 'macd'));
+    expect(found.filename).toBe(join(ALIASES, 'ind.tea'));
+  });
+});
+
+describe('shipped libraries opened as documents', () => {
+  const TEA_LIB = fileURLToPath(new URL('../tea-lib', import.meta.url));
+  test.each([
+    'broker',
+    'geometry',
+    'pine',
+    'portfolio',
+    'ta',
+    'trade',
+    'visual',
+  ])('%s.tea checks as it would when imported', name => {
+    const filename = join(TEA_LIB, `${name}.tea`);
+    const result = analyze({filename, source: readFileSync(filename, 'utf8')});
+    expect(result.diagnostics).toEqual([]);
   });
 });

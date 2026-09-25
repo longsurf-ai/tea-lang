@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "oracle": {
+    "kind": "tea-contract",
+    "description": "Compile-through contract for a named series input: values follow directly from data.csv. Row 0 has no history, row 2's blank cell is na, and row 3's previous value is that na.",
+    "references": [
+      "../../../../../docs/conformance.md"
+    ]
+  },
+  "tolerance": {
+    "absolute": 0,
+    "relative": 0
+  },
+  "outputs": [
+    {
+      "name": "output0",
+      "type": "float"
+    },
+    {
+      "name": "output1",
+      "type": "float"
+    },
+    {
+      "name": "output2",
+      "type": "float"
+    }
+  ],
+  "rows": [
+    {
+      "row": 0,
+      "emissions": [
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 2
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": null
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 11
+        }
+      ]
+    },
+    {
+      "row": 1,
+      "emissions": [
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 6
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": 2
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 14
+        }
+      ]
+    },
+    {
+      "row": 2,
+      "emissions": [
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": null
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": null
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": null
+        }
+      ]
+    },
+    {
+      "row": 3,
+      "emissions": [
+        {
+          "name": "output0",
+          "provisional": false,
+          "value": 12
+        },
+        {
+          "name": "output1",
+          "provisional": false,
+          "value": null
+        },
+        {
+          "name": "output2",
+          "provisional": false,
+          "value": 19
+        }
+      ]
+    }
+  ],
+  "deviations": []
+}

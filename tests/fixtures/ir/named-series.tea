@@ -1,0 +1,8 @@
+//@version=1
+// input.series names an input column. A builtin with the same name and every
+// call with that name share one SeriesInput, whose depth is the deepest read.
+macd = input.series("indicator.macd")
+signal = input.series("indicator.signal")
+emit "spread" macd - signal
+emit "rising" macd > macd[1]
+emit "close" close[2] + input.series("close")

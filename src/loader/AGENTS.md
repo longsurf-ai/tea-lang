@@ -10,8 +10,12 @@ parsed package sources and owns their semantics.
 - `docs/imports.md` owns how an import names a package. A path that starts
   with `./` or `../` is a file beside the importing one: `importedFile`
   resolves it to a canonical path, which is the package identity and the cache
-  key, and the loader reads it with `readFileSync`. The registry is never
-  asked about a file, so a file cannot shadow a library.
+  key, and the loader reads it through the compilation's injected `read`
+  (default `readFileSync`); entry inputs and shipped libraries never use it.
+  The registry is never asked about a file, so a file cannot shadow a library.
+- Flattened preludes (`visual`, `pine`) and namespaced implicit packages
+  (`ta`) are separate lists of shipped libraries. The checker checks the
+  preludes first, because `ta` reads pine's `close`.
 - For every other path the registry is the source of truth: loadable source,
   `external` (staged distribution mechanism), or unknown. Adding a package
   source kind changes the registry, never the checker.
@@ -29,9 +33,9 @@ parsed package sources and owns their semantics.
   positions them at the import statements. Implicit (builtin) libraries
   failing to load is `fatal` — a compiler defect.
 - `src/checker` production code must not import this package; the seam is
-  `checker/importer.ts` and the driver (`compile.ts`) injects the instance.
+  `checker/importer.ts` and the driver (`compiler.ts`) injects the instance.
   Test helpers are the sanctioned exception.
-- The loader owns canonical enumeration of the source files that can affect a
-  Program. That closure is the ordered entry files, every compiler-shipped
-  Tea library, and the files reached through relative imports; `compile.ts`
-  owns the unambiguous exact-byte hash over that enumeration.
+- The source files that can affect a Program are the entry files, the
+  compiler-shipped libraries, and the files relative imports reach. A host
+  records the last set by wrapping `read`: the loader reads each file it finds
+  once per canonical path, and may ask again for a missing one.

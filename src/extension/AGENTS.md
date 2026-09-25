@@ -11,6 +11,8 @@ loader, selection framework, or dynamic loading.
   Observable, Node, Context, subscription, or external data source.
 - Parameters and series remain the only binding forms. An Extension supplies the
   module's typed builtin inputs directly to execution.
-- Pine remains statically enabled while it is the only Extension. Move more of
-  the compile-time Pine vocabulary here only with a concrete, tested ownership
-  change; do not invent a general extension catalog first.
+- Pine remains statically enabled while it is the only Extension. Pine's
+  series vocabulary (`open` … `hlcc4`) is Tea source: input aliases in the
+  `src/tea-lib/pine.tea` prelude. This file keeps the runtime context values.
+  Move more compile-time Pine vocabulary only with a concrete, tested
+  ownership change; do not invent a general extension catalog first.
