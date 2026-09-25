@@ -590,3 +590,20 @@ function objectKinds(root: unknown): string[] {
   visit(root);
   return kinds;
 }
+
+test('bodyless marker interfaces accept ordinary payload structs', () => {
+  const result = checkText(
+    [
+      'interface Payload',
+      'type Envelope<T: Payload>',
+      '    T data',
+      'type Subject',
+      '    string symbol',
+      'event = Envelope.new(Subject.new("AAA"))',
+    ].join('\n'),
+  );
+  expect(result.errors).toEqual([]);
+  expect(formatType(declaredName(result, 'event').type)).toBe(
+    'Envelope<Subject>',
+  );
+});

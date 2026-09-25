@@ -1,0 +1,7 @@
+import geometry
+// Independent exact determinant: n*(2n+3) - (n+1)*(2n+1) = -1.
+n = 1099511627776.0
+emit "orientation" geometry.orient2d(n, n + 1.0, 2.0 * n, 2.0 * n + 2.0, 3.0 * n + 1.0, 3.0 * n + 4.0)
+emit "contact" geometry.segmentContact(0.0, 0.0, 2.0, 2.0, 0.0, close, 2.0, close) ? 1 : 0
+hits = geometry.quadraticContacts(0.0, 0.0, 1.0, 2.0, 2.0, 0.0, 0.0, close, 2.0, close)
+emit "quadratic" hits.size()

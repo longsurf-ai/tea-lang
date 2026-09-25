@@ -649,7 +649,7 @@ describe('aggregate expression and reference-store lowering', () => {
     );
 
     expect(js).toContain('frame.locals.source.set(p0_source);');
-    expect(js).toContain('frame.locals.source.hist((t0).value)');
+    expect(js).toContain('frame.locals.source.hist((int(1)).value)');
   });
 
   test('shares a nested mutable method receiver through the outer receiver', () => {

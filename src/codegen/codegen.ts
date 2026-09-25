@@ -404,7 +404,7 @@ ${type.members.some(member => member.name === '__proto__') ? `Object.definePrope
     const generator = new Generator(child, ref, this, parent);
     const body = generator.moduleBody();
     const resultSlot = generator.programFrameSlot(resultName);
-    this.childDecls.push(...body);
+    for (const line of body) this.childDecls.push(line);
     return {ref, resultSlot};
   }
 }
@@ -564,12 +564,11 @@ class Generator {
 
     const context = this.contextName();
     const out = this.declarations();
-    for (const lines of funcBodies.values()) out.push(...lines);
-    out.push(
-      `function ${this.moduleRef}_main(ctx: ${context}): void {`,
-      ...indent(mainLines),
-      '}',
-    );
+    for (const lines of funcBodies.values())
+      for (const line of lines) out.push(line);
+    out.push(`function ${this.moduleRef}_main(ctx: ${context}): void {`);
+    for (const line of indent(mainLines)) out.push(line);
+    out.push('}');
     out.push(
       `const ${this.moduleRef}: Module<${context}> = new Module<${context}>({`,
     );
@@ -585,11 +584,9 @@ class Generator {
     out.push(
       `  requests: [${data.requests.map((request, id) => `${request.slice(0, -1)}, "module": ${children[id].ref}}`).join(', ')}],`,
     );
-    out.push(
-      `}, ${this.moduleRef}_main, (module, contextConstants) => {`,
-      ...indent(bindLines),
-      '});',
-    );
+    out.push(`}, ${this.moduleRef}_main, (module, contextConstants) => {`);
+    for (const line of indent(bindLines)) out.push(line);
+    out.push('});');
     return out;
   }
 
@@ -684,7 +681,8 @@ class Generator {
       lines.push(`let ${local}!: ${this.emitter.typeOf(name.type)};`);
     }
     for (const func of funcs) {
-      lines.push(...this.lowerBindFunc(func, rootNames, funcRefs));
+      for (const line of this.lowerBindFunc(func, rootNames, funcRefs))
+        lines.push(line);
     }
 
     const ctx = {
@@ -979,7 +977,7 @@ class Generator {
       });
       const bodyLines: string[] = [];
       const value = lowerExpr(func.body, bodyLines, ctx);
-      lines.push(...indent(bodyLines));
+      for (const line of indent(bodyLines)) lines.push(line);
       if (func.body.type.kind !== TypeKind.Void)
         lines.push(
           `  return (${coerce(value, func.body.type, func.resultType)});`,

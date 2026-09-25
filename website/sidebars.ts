@@ -44,6 +44,7 @@ const sidebars: SidebarsConfig = {
           label: 'Tea IR',
         },
         'advanced/gpu-lowering',
+        'geometry',
       ],
     },
   ],

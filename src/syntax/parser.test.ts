@@ -411,7 +411,6 @@ describe('recovery while a construct is half typed', () => {
     ['function', 'g(a) =>'],
     ['struct', 'struct Foo'],
     ['enum', 'enum E'],
-    ['interface', 'interface I'],
     ['switch', 'switch x'],
   ])(
     'a bodiless %s header leaves the following lines at the top level',
@@ -468,4 +467,13 @@ describe('file metadata', () => {
     const out = dump('//@version=1\nx = 1\n');
     expect(out.split('\n')[0]).toContain('version="1"');
   });
+});
+
+test('a bodyless interface is a marker and preserves following declarations', () => {
+  const {file, errors} = parseText('interface Payload\nx = 1\n');
+  expect(errors).toEqual([]);
+  expect(file.stmtList.map(statement => statement.kind)).toEqual([
+    'InterfaceDecl',
+    'DeclStmt',
+  ]);
 });

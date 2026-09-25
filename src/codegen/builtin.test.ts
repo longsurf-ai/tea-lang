@@ -114,7 +114,7 @@ describe('typed builtin lowering', () => {
     ]);
     expect(source).not.toContain('module.inputs.builtins[0].depth =');
     expect(source).toMatch(
-      /ctx\.inputs\.builtins\["time\.time"\]\.hist\(\(t\d+\)\.value\)/,
+      /ctx\.inputs\.builtins\["time\.time"\]\.hist\(\(int\(2\)\)\.value\)/,
     );
     expect(source).toContain('ctx.inputs.builtins["barstate.isfirst"].hist(0)');
     expect(source).toContain('ctx.inputs.builtins["syminfo.tickerid"].hist(0)');

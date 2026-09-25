@@ -1117,7 +1117,7 @@ export class Parser {
   private interfaceDecl(pos: Pos, exported: boolean): InterfaceDecl {
     const name = this.name();
     this.want(Tok.Newline);
-    const indented = this.want(Tok.Indent);
+    const indented = this.got(Tok.Indent);
     const methods: InterfaceMethodDecl[] = [];
     while (indented && this.tok() !== Tok.Dedent && this.tok() !== Tok.Eof) {
       if (this.got(Tok.Newline)) {

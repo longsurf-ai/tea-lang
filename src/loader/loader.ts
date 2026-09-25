@@ -75,6 +75,7 @@ export function importedFile(path: string, from: string): string | null {
 // trade components stay visible as explicit source imports.
 const BUILTIN_FILES: ReadonlyMap<string, string> = new Map([
   ['ta', 'ta.tea'],
+  ['geometry', 'geometry.tea'],
   ['visual', 'visual.tea'],
   ['broker', 'broker.tea'],
   ['portfolio', 'portfolio.tea'],

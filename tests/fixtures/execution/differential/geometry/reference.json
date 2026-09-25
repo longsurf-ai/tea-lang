@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "oracle": {
+    "kind": "specification-derived",
+    "description": "Integer determinant independently expands to +1 in clockwise orientation; the line y=x meets horizontal y=0,1,2 at its endpoint/interior/endpoint; quadratic y=4u(1-u) has two endpoint contacts at 0, one tangent at 1, and none at 2.",
+    "references": [
+      "https://github.com/mikolalysenko/robust-orientation/tree/v1.2.1",
+      "https://github.com/thelonious/kld-intersections"
+    ]
+  },
+  "tolerance": {
+    "absolute": 0,
+    "relative": 0
+  },
+  "outputs": [
+    {
+      "name": "orientation",
+      "type": "float"
+    },
+    {
+      "name": "contact",
+      "type": "int"
+    },
+    {
+      "name": "quadratic",
+      "type": "int"
+    }
+  ],
+  "rows": [
+    {
+      "row": 0,
+      "emissions": [
+        {
+          "name": "orientation",
+          "provisional": false,
+          "value": 1
+        },
+        {
+          "name": "contact",
+          "provisional": false,
+          "value": 1
+        },
+        {
+          "name": "quadratic",
+          "provisional": false,
+          "value": 2
+        }
+      ]
+    },
+    {
+      "row": 1,
+      "emissions": [
+        {
+          "name": "orientation",
+          "provisional": false,
+          "value": 1
+        },
+        {
+          "name": "contact",
+          "provisional": false,
+          "value": 1
+        },
+        {
+          "name": "quadratic",
+          "provisional": false,
+          "value": 1
+        }
+      ]
+    },
+    {
+      "row": 2,
+      "emissions": [
+        {
+          "name": "orientation",
+          "provisional": false,
+          "value": 1
+        },
+        {
+          "name": "contact",
+          "provisional": false,
+          "value": 1
+        },
+        {
+          "name": "quadratic",
+          "provisional": false,
+          "value": 0
+        }
+      ]
+    }
+  ],
+  "deviations": []
+}
