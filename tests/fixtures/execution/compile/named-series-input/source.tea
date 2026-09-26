@@ -1,0 +1,10 @@
+//@version=1
+
+
+// The host binds a column named indicator.macd beside the market close. The
+// declared input keeps its own history, and a blank cell is na.
+macd = input.series("indicator.macd")
+
+emit "output0" macd * 2
+emit "output1" macd - macd[1]
+emit "output2" close + input.series("indicator.macd")

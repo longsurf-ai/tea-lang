@@ -50,6 +50,7 @@ import {
   JoinResult,
   nativeFuncs,
   nativeVar,
+  RESERVED_SERIES_INPUT_NAMES,
   TypeRef,
   type NativeFunc,
   type NativeEffect,
@@ -136,17 +137,6 @@ const VOID_TV: TypeAndValue = {
   value: null,
 };
 
-const INPUT_SOURCE_DEFAULTS = new Set([
-  'open',
-  'high',
-  'low',
-  'close',
-  'hl2',
-  'hlc3',
-  'ohlc4',
-  'hlcc4',
-]);
-
 // The entry package is a compilation identity, not a filesystem package.
 // Source spelling (`strategy.tea`, `./strategy.tea`, an absolute path) remains
 // exclusively in PosBase diagnostics and cannot change nominal host schemas.
@@ -185,9 +175,16 @@ interface PackageState {
 }
 
 class Checker {
-  // The universe scope holds implicit bindings every script sees: one
-  // Library entry per builtin library. The global scope chains to it.
-  private readonly universe = new Scope(null);
+  // Script scope chain: root -> universe (implicit namespaces such as `ta`)
+  // -> prelude (flattened `visual` and `pine` exports). Library scopes have
+  // no parent; they read only the prelude's input aliases, where they once
+  // read catalog series such as close (see resolveName). Field initializers
+  // run in order, so the prelude exists before the universe.
+  private readonly prelude = new Scope(null);
+  private readonly universe = new Scope(this.prelude, false);
+  // The library() name when the checked document is a library, so it checks
+  // as it would when imported; null for an entry program.
+  private readonly rootLibrary: string | null;
   private readonly rootState: PackageState;
   private currentPackage: PackageState;
   private info: Info;
@@ -267,28 +264,19 @@ class Checker {
     this.currentPackage = this.rootState;
     this.info = this.rootState.info;
     this.scope = scope;
+    const header = files[0]?.stmtList[0];
+    this.rootLibrary =
+      header !== undefined && isLibraryDeclaration(header)
+        ? libraryDeclarationName(header)
+        : null;
 
-    for (const source of importer.implicit()) {
-      const before = errors.count;
-      const pkg = this.libraryPackage(source);
-      if (errors.count !== before) {
-        return fatal(
-          `builtin library '${source.path}' failed semantic checking`,
-        );
-      }
-      if (
-        !this.universe.declare({
-          kind: ObjectKind.PackageName,
-          name: pkg.name,
-          pkg,
-        })
-      ) {
-        return fatal(`duplicate implicit package name '${pkg.name}'`);
-      }
-      this.addPackageImport(this.rootState, pkg);
-      this.implicitNames.add(pkg.name);
-    }
+    // Preludes come first: implicit libraries such as `ta` read their names.
     for (const source of importer.prelude()) {
+      // A shipped prelude opened as the checked document, as an editor does,
+      // is that document; loading it too would make each name collide.
+      if (source.path === this.rootLibrary) {
+        continue;
+      }
       const before = errors.count;
       const pkg = this.libraryPackage(source);
       if (errors.count !== before) {
@@ -300,12 +288,33 @@ class Checker {
         if (
           nativeFuncs(name) !== null ||
           nativeVar(name) !== null ||
-          !this.universe.declare(object)
+          !this.prelude.declare(object)
         ) {
           return fatal(`duplicate prelude export '${name}'`);
         }
         this.implicitNames.add(name);
       }
+    }
+    for (const source of importer.implicit()) {
+      const before = errors.count;
+      const pkg = this.libraryPackage(source);
+      if (errors.count !== before) {
+        return fatal(
+          `builtin library '${source.path}' failed semantic checking`,
+        );
+      }
+      if (
+        this.prelude.has(pkg.name) ||
+        !this.universe.declare({
+          kind: ObjectKind.PackageName,
+          name: pkg.name,
+          pkg,
+        })
+      ) {
+        return fatal(`duplicate implicit package name '${pkg.name}'`);
+      }
+      this.addPackageImport(this.rootState, pkg);
+      this.implicitNames.add(pkg.name);
     }
   }
 
@@ -415,8 +424,17 @@ class Checker {
       this.resolveStructMembers(file);
       bindFileNames(file, this.scope, this.info);
       this.info.scopes.set(file, this.scope);
+      // A library opened as the checked document, as an editor does, checks
+      // its top-level input aliases as when imported; nested exports still
+      // reach checkStmt.
       for (const stmt of file.stmtList) {
-        if (stmt.kind !== NodeKind.ImportStmt) {
+        if (
+          this.rootLibrary !== null &&
+          stmt.kind === NodeKind.DeclStmt &&
+          stmt.exported
+        ) {
+          this.checkInputAlias(stmt);
+        } else if (stmt.kind !== NodeKind.ImportStmt) {
           this.checkStmt(stmt);
         }
       }
@@ -565,6 +583,10 @@ class Checker {
         this.checkDecl(stmt);
         continue;
       }
+      if (stmt.kind === NodeKind.DeclStmt && stmt.exported) {
+        this.checkInputAlias(stmt);
+        continue;
+      }
       if (isLegalPackageGlobal(stmt)) {
         const dependencies = new Set<SemanticDependency>();
         this.dependencyCollectors.push(dependencies);
@@ -587,13 +609,54 @@ class Checker {
           stmt.pos,
           stmt.kind === NodeKind.DeclStmt
             ? 'library package runtime globals must be private single-name explicitly typed var declarations'
-            : 'library packages allow only imports, declarations, private explicitly typed vars, and single-name const values at the top level',
+            : 'library packages allow only imports, declarations, exported input aliases, private explicitly typed vars, and single-name const values at the top level',
         );
       }
     }
     this.orderPackageGlobals();
     this.validateMethodDeclarations(owners);
     this.validateUnusedGenericTemplates();
+  }
+
+  // `export close = input.series("close")` publishes the series input as a
+  // Builtin object, the same shape a catalog series variable has, so every
+  // reader, history and source default treats it as a direct input binding.
+  // An alias runs no per-bar code and owns no state.
+  private checkInputAlias(stmt: syntax.DeclStmt): void {
+    const target = stmt.target;
+    if (target.kind !== NodeKind.Name) {
+      return fatal('an exported alias target must be a name');
+    }
+    const tv = this.checkExpr(stmt.init);
+    const init = unwrapParens(stmt.init);
+    const call =
+      init.kind === NodeKind.CallExpr ? this.info.calls.get(init) : undefined;
+    const id =
+      call?.kind === CallKind.Native &&
+      call.native.effect === Effect.SeriesInput &&
+      call.args[0] != null
+        ? this.tvOf(call.args[0]).value
+        : null;
+    if (typeof id !== 'string') {
+      if (tv.type.kind !== TypeKind.Invalid) {
+        this.error(
+          stmt.init.pos,
+          'library variables may only alias input.series',
+        );
+      }
+      return;
+    }
+    const object: BuiltinObject = {
+      kind: ObjectKind.Builtin,
+      name: target.value,
+      type: FloatType,
+      qualifier: Qualifier.Series,
+      value: null,
+      binding: {kind: 'series', id},
+    };
+    if (this.declare(target, object)) {
+      this.currentPackage.exports.set(object.name, object);
+    }
   }
 
   private checkImports(file: syntax.File): void {
@@ -1622,6 +1685,14 @@ class Checker {
       case NodeKind.ExprStmt:
         return this.checkExpr(stmt.x);
       case NodeKind.DeclStmt:
+        if (stmt.exported) {
+          this.error(
+            stmt.pos,
+            'only a library can export a variable, at its top level',
+          );
+          this.checkExpr(stmt.init);
+          return null;
+        }
         return this.checkDecl(stmt);
       case NodeKind.AssignStmt:
         return this.checkAssign(stmt);
@@ -1869,19 +1940,27 @@ class Checker {
     return object;
   }
 
+  // Pine's close and the other prelude input aliases are built-in in every
+  // package, as their catalog entries were: no package may redeclare one.
+  private isPreludeAlias(name: string): boolean {
+    return this.prelude.lookup(name)?.kind === ObjectKind.Builtin;
+  }
+
   private declare(nameNode: syntax.Name, object: Object): boolean {
     // A library function may share a spelling with a native namespace root
     // (visual.plot alongside plot.style_*). Exact native values/functions
     // still cannot be replaced, and entry-source declarations remain barred
     // from shadowing any native root.
     const mergesNativeNamespace =
-      this.currentPackage !== this.rootState &&
+      (this.currentPackage !== this.rootState || this.rootLibrary !== null) &&
       (object.kind === ObjectKind.Function || this.funcBoundary !== null) &&
       nativeFuncs(nameNode.value) === null &&
       nativeVar(nameNode.value) === null;
     if (
       (isNativeRoot(nameNode.value) && !mergesNativeNamespace) ||
+      this.isPreludeAlias(nameNode.value) ||
       (this.currentPackage === this.rootState &&
+        this.rootLibrary === null &&
         this.implicitNames.has(nameNode.value))
     ) {
       this.discardBinding(nameNode, object);
@@ -1938,7 +2017,7 @@ class Checker {
     if (entry === null) {
       this.error(
         target.pos,
-        isNativeRoot(target.value)
+        isNativeRoot(target.value) || this.isPreludeAlias(target.value)
           ? `cannot assign to built-in '${target.value}'`
           : `undeclared name '${target.value}'`,
       );
@@ -1946,7 +2025,12 @@ class Checker {
       return null;
     }
     if (entry.kind !== ObjectKind.Variable) {
-      this.error(target.pos, `cannot assign to '${target.value}'`);
+      this.error(
+        target.pos,
+        entry.kind === ObjectKind.Builtin
+          ? `cannot assign to built-in '${target.value}'`
+          : `cannot assign to '${target.value}'`,
+      );
       this.checkExpr(a.value);
       return null;
     }
@@ -2171,7 +2255,10 @@ class Checker {
     }
     if (
       isNativeRoot(name) ||
-      (this.currentPackage === this.rootState && this.implicitNames.has(name))
+      this.isPreludeAlias(name) ||
+      (this.currentPackage === this.rootState &&
+        this.rootLibrary === null &&
+        this.implicitNames.has(name))
     ) {
       this.error(stmt.path.pos, `cannot redeclare built-in '${name}'`);
       return;
@@ -2934,12 +3021,20 @@ class Checker {
         case ObjectKind.PackageName:
           this.error(n.pos, `'${n.value}' is a package, not a value`);
           return INVALID_TV;
+        case ObjectKind.Builtin:
+          // A library input alias, such as the pine prelude's close.
+          return this.builtinTv(entry, n);
         case ObjectKind.Field:
         case ObjectKind.InterfaceMethod:
         case ObjectKind.EnumMember:
-        case ObjectKind.Builtin:
           return fatal(`invalid lexical object '${entry.name}'`);
       }
+    }
+    // A library's scope does not reach the prelude, so its reads of pine's
+    // close and the other input aliases resolve here, never its functions.
+    const alias = this.prelude.lookup(n.value);
+    if (alias?.kind === ObjectKind.Builtin) {
+      return this.builtinTv(alias, n);
     }
     const nv = nativeVar(n.value);
     if (nv !== null) {
@@ -2979,6 +3074,12 @@ class Checker {
             };
       this.builtins.set(nv.name, builtin);
     }
+    return this.builtinTv(builtin, node);
+  }
+
+  // One use of a builtin object, whether a catalog variable or a library
+  // input alias: record the occurrence and its dependency, never a copy.
+  private builtinTv(builtin: BuiltinObject, node: syntax.Expr): TypeAndValue {
     if (node.kind === NodeKind.Name) {
       this.info.uses.set(node, builtin);
     } else if (node.kind === NodeKind.SelectorExpr) {
@@ -2987,10 +3088,14 @@ class Checker {
         builtin,
       });
     }
-    if (nv.qualifier !== Qualifier.Const) {
+    if (builtin.qualifier !== Qualifier.Const) {
       this.recordFunctionDependency(builtin);
     }
-    return {type: nv.type, qualifier: nv.qualifier, value: nv.value};
+    return {
+      type: builtin.type,
+      qualifier: builtin.qualifier,
+      value: builtin.value,
+    };
   }
 
   private recordExpressionDependency(dependency: SemanticDependency): void {
@@ -3017,7 +3122,11 @@ class Checker {
     const info = this.info;
     const dependencies = new Set<SemanticDependency>();
     this.dependencyCollectors.push(dependencies);
+    // A default runs wherever its owner is constructed or called, never at
+    // the top level, so top-level-only effects such as input.series fail here.
+    this.blockDepth += 1;
     const tv = this.checkExpr(expr);
+    this.blockDepth -= 1;
     this.dependencyCollectors.pop();
     if (this.info !== info) {
       return fatal('default expression changed the active semantic context');
@@ -3097,6 +3206,15 @@ class Checker {
     }
     if (s.x.kind === NodeKind.Name) {
       const entry = this.scope.lookup(s.x.value);
+      if (entry?.kind === ObjectKind.PackageName) {
+        const member = entry.pkg.exports.get(s.sel.value);
+        if (member?.kind === ObjectKind.Builtin) {
+          // A qualified library input alias, such as ind.macd. The selection
+          // is the member's one fact; only the package name records a use.
+          this.info.uses.set(s.x, entry);
+          return this.builtinTv(member, s);
+        }
+      }
       if (entry?.kind === ObjectKind.Enum) {
         this.info.uses.set(s.x, entry);
         return this.enumMemberTv(entry, s.sel, entry.name);
@@ -4529,6 +4647,9 @@ class Checker {
             outcome.resultType,
           );
         }
+        if (candidate.effect === Effect.SeriesInput) {
+          this.checkSeriesInputName(c, outcome.args[0] ?? null);
+        }
         if (candidate.effect === Effect.Request) {
           return this.checkRequest(
             c,
@@ -4979,6 +5100,20 @@ class Checker {
     return rejected.size > 0;
   }
 
+  // The const name is the input column a host binds. Node owns the reserved
+  // row fields, so a series input may never take one of their names.
+  private checkSeriesInputName(c: syntax.CallExpr, arg: syntax.Expr | null) {
+    const name = arg === null ? null : this.tvOf(arg).value;
+    if (typeof name !== 'string') {
+      return;
+    }
+    if (name === '') {
+      this.error(c.pos, `'input.series' name cannot be empty`);
+    } else if (RESERVED_SERIES_INPUT_NAMES.has(name)) {
+      this.error(c.pos, `'input.series' name '${name}' is reserved`);
+    }
+  }
+
   private checkPlacement(native: NativeFunc, pos: Pos): void {
     if (native.effect === Effect.Emit) {
       if (this.captureDepth > 0) {
@@ -5005,7 +5140,8 @@ class Checker {
       return;
     }
     if (
-      native.effect === Effect.Declaration &&
+      (native.effect === Effect.Declaration ||
+        native.effect === Effect.SeriesInput) &&
       (this.blockDepth > 0 ||
         this.funcBoundary !== null ||
         this.captureDepth > 0)
@@ -5295,12 +5431,11 @@ class Checker {
       }
       if (
         object?.kind !== ObjectKind.Builtin ||
-        object.binding?.kind !== 'series' ||
-        !INPUT_SOURCE_DEFAULTS.has(object.binding.id)
+        object.binding?.kind !== 'series'
       ) {
         this.error(
           defvalExpr.pos,
-          `'${native.name}' source default must be a built-in source: open, high, low, close, hl2, hlc3, ohlc4, or hlcc4`,
+          `'${native.name}' source default must be a series input alias, such as close`,
         );
       }
     }

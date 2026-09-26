@@ -766,6 +766,66 @@ describe('history', () => {
   });
 });
 
+describe('named series inputs', () => {
+  test('a builtin and input.series with one name are one input', () => {
+    const program = mustBuild(
+      'emit "output0" close[1] + input.series("close")',
+    );
+    expect(
+      seriesInputsOf(program).map(series => [series.id, series.depth]),
+    ).toEqual([['close', {kind: DepthKind.Const, bars: 1}]]);
+  });
+
+  test('a declared series input is an alias whose history is the input', () => {
+    const program = mustBuild(
+      ['m = input.series("indicator.macd")', 'emit "output0" m[2]'].join('\n'),
+    );
+    expect(
+      seriesInputsOf(program).map(series => [series.id, series.depth]),
+    ).toEqual([['indicator.macd', {kind: DepthKind.Const, bars: 2}]]);
+    expect(namesOf(program).some(name => name.name === 'm')).toBe(false);
+  });
+
+  test('a qualified library alias and input.series share one input', () => {
+    const program = mustBuildWithLibraries(
+      'import ind\nemit "output0" ind.macd[1] + input.series("indicator.macd")',
+      {ind: 'library("ind")\nexport macd = input.series("indicator.macd")\n'},
+    );
+    expect(
+      seriesInputsOf(program).map(series => [series.id, series.depth]),
+    ).toEqual([['indicator.macd', {kind: DepthKind.Const, bars: 1}]]);
+  });
+
+  test('a request may not share its name with a series input', () => {
+    const {errors} = buildText(
+      [
+        'daily = request.security("A", "D", close)',
+        'emit "output0" daily + input.series("daily")',
+      ].join('\n'),
+    );
+    expect(errors.map(error => error.msg)).toEqual([
+      "request 'daily' has the same name as a series input",
+    ]);
+  });
+
+  test('a qualified alias inside a request reads the child input', () => {
+    const program = mustBuildWithLibraries(
+      'import ind\nd = request.security("A", "D", ind.macd)\nemit "output0" d',
+      {ind: 'library("ind")\nexport macd = input.series("indicator.macd")\n'},
+    );
+    expect(seriesInputsOf(program)).toEqual([]);
+    const [edge] = program.requests;
+    expect(seriesInputsOf(edge.child).map(series => series.id)).toEqual([
+      'indicator.macd',
+    ]);
+  });
+
+  test('a script has only the inputs it reads', () => {
+    const program = mustBuild('emit "output0" close');
+    expect(seriesInputsOf(program).map(series => series.id)).toEqual(['close']);
+  });
+});
+
 describe('depth resolution', () => {
   test('const, bound, dynamic, and mixed demands resolve per place', () => {
     const program = mustBuild(

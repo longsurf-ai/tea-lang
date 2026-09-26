@@ -12,9 +12,10 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
   from the active semantic context's `Info`. A Bad node or missing fact here
   is a phase-barrier violation and `fatal()`s — never a queued user error.
 - The noder is the sole semantic-to-backend projection. Each
-  `ProgramLoweringContext` interns `VariableObject → IrName` and projects each
-  `BuiltinObject` through its catalog-owned binding to either `SeriesInput` or
-  `BuiltinInput`; the noder also creates `ParamInput`,
+  `ProgramLoweringContext` interns `VariableObject → IrName`, one
+  `SeriesInput` per input name (a series-bound builtin's id or an
+  `input.series` const name, so `close` and `input.series("close")` share
+  one), and one `BuiltinInput` per typed builtin; the noder also creates `ParamInput`,
   `RequestEdge`, `IrFunc`, synthetic/result names, call-site slots, and the
   static frame layout. Checker objects never acquire backend depth, init,
   slot, or frame state.

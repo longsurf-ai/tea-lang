@@ -44,6 +44,29 @@ export type SourceInput = string | PackageSource;
 
 export type Registry = (path: string) => PackageSource | 'external' | null;
 
+/**
+ * Reads the file a relative import names, returning undefined when there is
+ * no such file. The loader asks only for canonical paths. An embedding host
+ * supplies one to compile source it stores itself, such as a snapshot of a
+ * script and its imports; the default reads the disk.
+ *
+ * @example
+ * ```ts
+ * const files = new Map([['/s/lib/bands.tea', 'library("bands")\n…']]);
+ * const read: ReadSource = filename => files.get(filename);
+ * ```
+ */
+export type ReadSource = (filename: string) => string | undefined;
+
+/** The default {@link ReadSource}: the file's UTF-8 text on disk. */
+export function readSourceFile(filename: string): string | undefined {
+  try {
+    return readFileSync(filename, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
 // `./name`, `../name`, `../../lib/name`: upward steps first, then names. The
 // kind is decided by this spelling alone, so a file can never shadow a
 // registry library, and the registry is never asked about a file.
@@ -80,11 +103,13 @@ const BUILTIN_FILES: ReadonlyMap<string, string> = new Map([
   ['broker', 'broker.tea'],
   ['portfolio', 'portfolio.tea'],
   ['trade', 'trade.tea'],
+  ['pine', 'pine.tea'],
 ]);
 
 // Namespaced implicit packages and flattened prelude packages are distinct.
+// The checker checks preludes first, because implicit `ta` reads pine's close.
 const DEFAULT_IMPLICIT: readonly string[] = ['ta'];
-const DEFAULT_PRELUDE: readonly string[] = ['visual'];
+const DEFAULT_PRELUDE: readonly string[] = ['visual', 'pine'];
 const LOADER_DIR = dirname(fileURLToPath(import.meta.url));
 
 function builtinFilename(filename: string): string {
@@ -116,6 +141,7 @@ export function resolveImports(
   registry: Registry = defaultRegistry,
   implicitPaths: readonly string[] = DEFAULT_IMPLICIT,
   preludePaths: readonly string[] = DEFAULT_PRELUDE,
+  read: ReadSource = readSourceFile,
 ): Importer {
   const preludeSet = new Set(preludePaths);
   const registryWithPrelude: Registry = path =>
@@ -126,6 +152,7 @@ export function resolveImports(
     registryWithPrelude,
     implicitPaths,
     preludePaths,
+    read,
   );
   resolver.implicit();
   resolver.prelude();
@@ -149,6 +176,7 @@ class Resolver implements Importer {
     private readonly registry: Registry,
     private readonly implicitPaths: readonly string[],
     private readonly preludePaths: readonly string[],
+    private readonly read: ReadSource,
   ) {}
 
   implicit(): readonly SourcePackage[] {
@@ -194,7 +222,8 @@ class Resolver implements Importer {
         error: `import cycle: ${chain.join(' -> ')}`,
       });
     }
-    const entry = file === null ? this.registry(path) : readLibrary(path, file);
+    const entry =
+      file === null ? this.registry(path) : readLibrary(path, file, this.read);
     if (entry === null) {
       return this.remember(id, {error: `unknown library '${path}'`});
     }
@@ -248,13 +277,13 @@ class Resolver implements Importer {
 function readLibrary(
   path: string,
   filename: string,
+  read: ReadSource,
 ): PackageSource | {readonly error: string} {
   if (!RELATIVE_PATH.test(path)) {
     return {error: `malformed import path '${path}'`};
   }
-  try {
-    return {filename, source: readFileSync(filename, 'utf8')};
-  } catch {
-    return {error: `cannot find '${path}' (no file ${filename})`};
-  }
+  const source = read(filename);
+  return source === undefined
+    ? {error: `cannot find '${path}' (no file ${filename})`}
+    : {filename, source};
 }

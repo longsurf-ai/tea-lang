@@ -6,6 +6,7 @@ import {describe, expect, test} from 'vitest';
 
 import {generate} from '../../src/codegen/codegen';
 import {CATALOG} from '../../src/checker/catalog';
+import {checkText, initTvOf} from '../../src/checker/testing';
 import {PUBLIC_TYPE_CATALOG} from '../../src/checker/type-catalog';
 import {Qualifier, formatType} from '../../src/ir/type';
 import {buildText} from '../../src/noder/testing';
@@ -76,11 +77,15 @@ describe('reference pilot information architecture', () => {
       PUBLIC_TYPE_CATALOG.some(item => item.name === type.compilerName),
     ).toBe(true);
 
+    // Market series are pine prelude aliases, so join through a checked read.
     const variable = entry('variable') as VariableEntry;
-    const variableFact = CATALOG.vars.get(variable.compilerName);
-    expect(variableFact?.qualifier).toBe(Qualifier.Series);
+    const variableFact = initTvOf(
+      checkText(`x = ${variable.compilerName}`),
+      'x',
+    );
+    expect(variableFact.qualifier).toBe(Qualifier.Series);
     expect(variable.qualifiedType).toBe(
-      `${variableFact?.qualifier} ${formatType(variableFact!.type)}`,
+      `${variableFact.qualifier} ${formatType(variableFact.type)}`,
     );
 
     const constant = entry('constant') as ConstantEntry;

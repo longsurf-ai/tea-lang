@@ -15,7 +15,7 @@ describe('simple statements', () => {
     expect(dump('x = 1\n')).toBe(
       [
         'File @1:1 eof=@2:1',
-        '  stmtList[0]: DeclStmt @1:1 mode="none"',
+        '  stmtList[0]: DeclStmt @1:1 mode="none" exported=false',
         '    target: Name @1:1 value="x"',
         '    init: BasicLit @1:5 litKind="int" value="1" bad=false',
       ].join('\n'),
@@ -26,12 +26,25 @@ describe('simple statements', () => {
     expect(dump('var float b = 1.4\n')).toBe(
       [
         'File @1:1 eof=@2:1',
-        '  stmtList[0]: DeclStmt @1:1 mode="var"',
+        '  stmtList[0]: DeclStmt @1:1 mode="var" exported=false',
         '    declType: TypeAnnotation @1:5',
         '      name: Name @1:5 value="float"',
         '    target: Name @1:11 value="b"',
         '    init: BasicLit @1:15 litKind="float" value="1.4" bad=false',
       ].join('\n'),
+    );
+  });
+
+  test('export before a name and = is a library input alias', () => {
+    expect(dump('export close = input.series("close")\n')).toContain(
+      'stmtList[0]: DeclStmt @1:1 mode="none" exported=true',
+    );
+    // `export` stays an ordinary name where no declaration follows it.
+    expect(dump('export = 1\n')).toContain(
+      'stmtList[0]: DeclStmt @1:1 mode="none" exported=false',
+    );
+    expect(dump('export f(x) => x\n')).toContain(
+      'stmtList[0]: FuncDecl @1:1 exported=true',
     );
   });
 
@@ -254,7 +267,7 @@ describe('expressions', () => {
     expect(dump('r = a + b * c\n')).toBe(
       [
         'File @1:1 eof=@2:1',
-        '  stmtList[0]: DeclStmt @1:1 mode="none"',
+        '  stmtList[0]: DeclStmt @1:1 mode="none" exported=false',
         '    target: Name @1:1 value="r"',
         '    init: BinaryExpr @1:5 op="+"',
         '      x: Name @1:5 value="a"',

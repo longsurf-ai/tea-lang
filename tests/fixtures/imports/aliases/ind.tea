@@ -1,0 +1,8 @@
+//@version=1
+library("ind")
+
+// An exported input alias: reads the host column named indicator.macd.
+export macd = input.series("indicator.macd")
+
+export twice() =>
+    macd * 2

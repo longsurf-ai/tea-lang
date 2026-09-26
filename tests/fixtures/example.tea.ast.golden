@@ -1,5 +1,5 @@
 File @1:1 eof=@7:1
-  stmtList[0]: DeclStmt @1:1 mode="var"
+  stmtList[0]: DeclStmt @1:1 mode="var" exported=false
     target: Name @1:5 value="my_var"
     init: BinaryExpr @1:14 op="+"
       x: Name @1:14 value="close"
@@ -12,13 +12,13 @@ File @1:1 eof=@7:1
           x: Name @2:13 value="my_var"
           offset: BasicLit @2:20 litKind="int" value="1" bad=false
       then: Block @3:5
-        stmtList[0]: DeclStmt @3:5 mode="none"
+        stmtList[0]: DeclStmt @3:5 mode="none" exported=false
           target: Name @3:5 value="color"
           init: SelectorExpr @3:13
             x: Name @3:13 value="colors"
             sel: Name @3:20 value="green"
       else: Block @5:5
-        stmtList[0]: DeclStmt @5:5 mode="none"
+        stmtList[0]: DeclStmt @5:5 mode="none" exported=false
           target: Name @5:5 value="color"
           init: SelectorExpr @5:13
             x: Name @5:13 value="colors"

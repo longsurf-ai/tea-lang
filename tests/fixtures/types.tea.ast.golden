@@ -112,7 +112,7 @@ File @2:1 version="1" eof=@21:1
             value: Name @18:12 value="source"
           args[1]: Arg @18:20
             value: Name @18:20 value="length"
-  stmtList[7]: DeclStmt @19:1 mode="none"
+  stmtList[7]: DeclStmt @19:1 mode="none" exported=false
     target: Name @19:1 value="b"
     init: CallExpr @19:5
       fun: SelectorExpr @19:5
@@ -130,7 +130,7 @@ File @2:1 version="1" eof=@21:1
           typeArgs[0]: Name @19:33 value="float"
           args[0]: Arg @19:40
             value: BasicLit @19:40 litKind="int" value="0" bad=false
-  stmtList[8]: DeclStmt @20:1 mode="none"
+  stmtList[8]: DeclStmt @20:1 mode="none" exported=false
     target: Name @20:1 value="d"
     init: CallExpr @20:5
       fun: SelectorExpr @20:5

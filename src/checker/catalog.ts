@@ -96,10 +96,13 @@ export interface NativeParam {
 // none = ordinary intrinsic; param = extracts a Program ParamInput (input.*);
 // declaration = library identity; handle = host drawing-object ops (line.*);
 // host = host service with next-bar feedback (strategy.*); async = awaited
-// host call (llm); request = compiles a child Program (request.*).
+// host call (llm); request = compiles a child Program (request.*);
+// series-input = reads the Program SeriesInput its const argument names
+// (input.series), never a CallNative.
 export const Effect = {
   None: 'none',
   Param: 'param',
+  SeriesInput: 'series-input',
   Declaration: 'declaration',
   Handle: 'handle',
   Host: 'host',
@@ -150,12 +153,14 @@ export interface NativeConstVar extends NativeVarBase {
 export interface NativeBoundVar extends NativeVarBase {
   readonly qualifier: Exclude<Qualifier, typeof Qualifier.Const>;
   readonly value: null;
-  readonly binding: BuiltinBinding;
+  // Series inputs are never catalog entries: `input.series` and library
+  // aliases (the pine prelude's close) own them.
+  readonly binding: Extract<BuiltinBinding, {readonly kind: 'builtin'}>;
 }
 
-// A host-provided context builtin (close, syminfo.tickerid) or const namespace
-// member (color.red, plot.style_line, math.pi). Constants have no runtime
-// binding; all other entries carry one explicit series/builtin binding.
+// A host-provided context builtin (syminfo.tickerid, bar_index) or const
+// namespace member (color.red, plot.style_line, math.pi). Constants have no
+// runtime binding; all other entries carry one explicit builtin binding.
 export type NativeVar = NativeConstVar | NativeBoundVar;
 
 export interface Catalog {
@@ -271,16 +276,6 @@ function constantVariable(
   return {name, type, qualifier: Qualifier.Const, value, binding: null};
 }
 
-function seriesVariable(name: string, type: Type): NativeVar {
-  return {
-    name,
-    type,
-    qualifier: Qualifier.Series,
-    value: null,
-    binding: {kind: 'series', id: name},
-  };
-}
-
 function builtinVariable(
   name: string,
   type: Type,
@@ -297,18 +292,6 @@ function builtinVariable(
 }
 
 // ---- context builtins -------------------------------------------------------
-
-const SERIES_FLOAT_VARS = [
-  'open',
-  'high',
-  'low',
-  'close',
-  'volume',
-  'hl2',
-  'hlc3',
-  'ohlc4',
-  'hlcc4',
-];
 
 const BARSTATE_FIELDS = [
   'isfirst',
@@ -488,9 +471,6 @@ function buildVars(): NativeVar[] {
       field: 'isdwm',
     }),
   ];
-  for (const name of SERIES_FLOAT_VARS) {
-    vars.push(seriesVariable(name, FloatType));
-  }
   for (const field of BARSTATE_FIELDS) {
     vars.push(
       builtinVariable(`barstate.${field}`, BoolType, Qualifier.Series, {
@@ -511,6 +491,18 @@ function buildVars(): NativeVar[] {
 }
 
 // ---- functions --------------------------------------------------------------
+
+/**
+ * Input-row fields Node owns (src/api/node.ts): event time, attempt flags and
+ * the first-attempt marker. A series input with one of these names would
+ * collide with them, so `input.series` rejects them.
+ */
+export const RESERVED_SERIES_INPUT_NAMES: ReadonlySet<string> = new Set([
+  'time',
+  'provisional',
+  'realtime',
+  'firstAttempt',
+]);
 
 const CONCRETE_CONST_VALUE = {literal: true, acceptsNa: false} as const;
 const CONCRETE_CONST_NUMBER = {literal: true, acceptsNa: false} as const;
@@ -760,6 +752,17 @@ function buildFuncs(): NativeFunc[] {
     genericScalarInput(StringType, 'all'),
     genericScalarInput(ColorType, 'none'),
     sourceInput('input'),
+  );
+  // input.series declares a series input, not a parameter: its const name is
+  // the input column a host binds, and every call with one name is one input.
+  funcs.push(
+    func(
+      'input.series',
+      [req('name', StringType, Qualifier.Const, CONCRETE_CONST_VALUE)],
+      FloatType,
+      Qualifier.Series,
+      Effect.SeriesInput,
+    ),
   );
 
   // math.* — intrinsics only; aggregations over time (ta.*) are prelude.

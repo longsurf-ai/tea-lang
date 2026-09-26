@@ -2,8 +2,8 @@
 
 Compiler-shipped Tea-authored libraries — real Tea libraries
 (`library("...")` + `export`) compiled by the ordinary loader/checker/noder
-pipeline. `ta` is the implicit prelude; trade components are explicit
-imports.
+pipeline. `ta` is the implicit namespace, `visual` and `pine` are flattened
+preludes, and trade components are explicit imports.
 
 ## Invariants
 
@@ -11,8 +11,12 @@ imports.
   state falls out of function semantics (var locals, param history). Adding
   a library = adding a file here and listing it in the loader's
   `BUILTIN_FILES`; the namespace comes from the file's own `library()`
-  declaration. Inclusion in `DEFAULT_IMPLICIT` is a separate, deliberate
-  prelude decision.
+  declaration. Inclusion in `DEFAULT_IMPLICIT` or `DEFAULT_PRELUDE` is a
+  separate, deliberate decision; the checker checks preludes first.
+- `pine.tea` holds only exported input aliases, `export close =
+  input.series("close")`, the one exported-variable form: an alias runs no
+  per-bar code and owns no state or history. Scripts see every prelude name;
+  a library resolves only the input aliases, where lexical lookup fails.
 - Exported functions, interfaces, types, and enums form the public surface;
   unexported declarations resolve only inside the owning library. Interfaces
   are checker-only structural constraints: receiver mode, positional arity and
@@ -34,11 +38,8 @@ imports.
 - Tea has no member-level visibility yet. Do not describe concrete helper
   members as technically private; keep the supported strategy boundary at the
   trade coordinator and enforce it with catalog ownership tests.
-- Functions that read ambient context (volume, high, low, close) directly
-  are rejected inside request expressions by design — prefer passing
-  sources as parameters wherever Pine's signature allows.
 - `tests/fixtures/checker/ta-suite.tea` must call every export of ta; extend it in
   the same change that adds a function.
 - Known gaps tracked in ta.tea's header: median/mode/percentile\__/valuewhen
   need collections; the ta._ namespace VARIABLES (obv, vwap, accdist, …)
-  need exported library variables.
+  need computed library exports with per-bar state, beyond input aliases.

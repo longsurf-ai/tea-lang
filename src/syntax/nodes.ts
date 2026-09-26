@@ -130,9 +130,11 @@ export const Mode = {
 export type DeclMode = (typeof Mode)[keyof typeof Mode];
 
 // `=` declares: `var float b = 1.4`, `[macd, signal] = ta.macd(...)`.
+// `exported` marks a library's `export close = input.series("close")`.
 export interface DeclStmt extends Node {
   readonly kind: typeof NodeKind.DeclStmt;
   readonly mode: DeclMode;
+  readonly exported: boolean;
   readonly declType: TypeAnnotation | null;
   readonly target: Name | TuplePattern;
   readonly init: Expr;

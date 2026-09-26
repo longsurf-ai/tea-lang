@@ -1,0 +1,17 @@
+//@version=1
+// pine: Pine's market series as ordinary input aliases. Silently imported
+// into every script and library as a flattened prelude, so `close` reads the
+// input column named "close" with no import line. Each alias is exactly an
+// input.series call: it runs no per-bar code and owns no state or history.
+// hl2, hlc3, ohlc4 and hlcc4 are columns the host supplies.
+library("pine")
+
+export open = input.series("open")
+export high = input.series("high")
+export low = input.series("low")
+export close = input.series("close")
+export volume = input.series("volume")
+export hl2 = input.series("hl2")
+export hlc3 = input.series("hlc3")
+export ohlc4 = input.series("ohlc4")
+export hlcc4 = input.series("hlcc4")

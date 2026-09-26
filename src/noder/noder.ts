@@ -127,7 +127,8 @@ interface FrameLoweringContext {
 
 class ProgramLoweringContext {
   readonly names = new Map<VariableObject, IrName>();
-  readonly series = new Map<BuiltinObject, SeriesInput>();
+  // Keyed by input column name: an alias and input.series(name) share one input.
+  readonly series = new Map<string, SeriesInput>();
   readonly builtin = new Map<BuiltinObject, BuiltinInput>();
   readonly funcs = new Map<FunctionInstance, IrFunc>();
   readonly aliasRefs = new Map<VariableObject, Place>();
@@ -507,7 +508,16 @@ class Noder {
         check(param.active);
         checkDepth(param.depth);
       });
+      // Node writes each request result onto the input row under the
+      // request's name, so a series input with that name could never bind.
+      const series = new Set(seriesInputsOf(current).map(input => input.id));
       requestsOf(current).forEach(request => {
+        if (series.has(request.name)) {
+          this.errors.errorAt(
+            request.pos,
+            `request '${request.name}' has the same name as a series input`,
+          );
+        }
         checkDepth(request.depth);
         if (request.dynamic) return;
         check(request.symbol);
@@ -636,15 +646,21 @@ class Noder {
     if (builtin.binding?.kind !== 'series') {
       return fatal(`builtin '${builtin.name}' is not a numeric series input`);
     }
-    let series = this.program.series.get(builtin);
+    return this.seriesNamed(builtin.binding.id);
+  }
+
+  // One SeriesInput per input column name in each Program; every series
+  // input is a series float.
+  private seriesNamed(id: string): SeriesInput {
+    let series = this.program.series.get(id);
     if (series === undefined) {
       series = {
-        id: builtin.binding.id,
-        type: builtin.type,
-        qualifier: builtin.qualifier,
+        id,
+        type: FloatType,
+        qualifier: Qualifier.Series,
         depth: {kind: DepthKind.None},
       };
-      this.program.series.set(builtin, series);
+      this.program.series.set(id, series);
     }
     return series;
   }
@@ -716,7 +732,8 @@ class Noder {
       case NodeKind.ExprStmt:
         return this.nodeExprStmt(stmt);
       case NodeKind.DeclStmt:
-        return this.nodeDecl(stmt);
+        // An exported input alias runs no per-bar code; its reads intern it.
+        return stmt.exported ? [] : this.nodeDecl(stmt);
       case NodeKind.AssignStmt:
         return this.nodeAssign(stmt);
       case NodeKind.EmitStmt: {
@@ -1287,6 +1304,22 @@ class Noder {
           type: tv.type,
           qualifier: tv.qualifier,
           place: {kind: PlaceKind.Param, param},
+        };
+      }
+      case Effect.SeriesInput: {
+        const id = this.tvOf(
+          resolved.args[0] ??
+            fatal('input.series without a name reached the noder'),
+        ).value;
+        if (typeof id !== 'string') {
+          return fatal('input.series without a const name reached the noder');
+        }
+        return {
+          kind: IrKind.Read,
+          pos: c.pos,
+          type: tv.type,
+          qualifier: tv.qualifier,
+          place: {kind: PlaceKind.Series, series: this.seriesNamed(id)},
         };
       }
       case Effect.Request:
@@ -1914,7 +1947,7 @@ class Noder {
           ? {kind: ParamConstraintKind.Range, minval, maxval, step}
           : null;
 
-    // input.source's default must be a built-in source: a const number
+    // input.source's default must be a series input alias: a const number
     // would silently degrade the param to a scalar with control='source'.
     if (
       resolved.native.name === 'input.source' &&
@@ -1923,7 +1956,7 @@ class Noder {
     ) {
       this.errors.errorAt(
         c.pos,
-        "'input.source' default must be a built-in source (close, hl2, …)",
+        "'input.source' default must be a series input alias",
       );
     }
     const title = argValue('title');

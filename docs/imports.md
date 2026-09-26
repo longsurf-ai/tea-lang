@@ -23,7 +23,7 @@ emit "capped" limits.cap(upper, 100.0)
 | How does a script name another file? | A relative specifier, `import ./lib/bands`, resolved against the importing file.                       |
 | What do other specifiers mean?       | One bare segment is a shipped library. Several bare segments are `external`, which is not supported.   |
 | Who resolves a specifier?            | The loader. The rule is part of the language and identical in every host.                              |
-| Who reads the file?                  | The loader, with `readFileSync`, as it reads entry files and shipped libraries.                        |
+| Who reads the file?                  | The loader, through the compilation's `read` option, which defaults to `readFileSync`.                 |
 | Does any tool scan directories?      | No. Imports are followed lazily from the entry file, as the loader already does for shipped libraries. |
 | Extensions and probing               | The specifier has no extension and the loader appends `.tea`. One import names exactly one file.       |
 | May an import leave a project root?  | Yes. Tea has no project root. Like `tsc` and `node`, the loader reads the path the specifier names.    |
@@ -78,14 +78,14 @@ sequenceDiagram
   autonumber
   participant H as Host (CLI or embedding application)
   participant L as Loader
-  participant D as Disk
+  participant D as read (default: disk)
   participant K as Checker
 
   H->>L: compileToProgram([strategies/a.tea], errors)
   L->>L: parse the entry, scan its import statements
   Note over L: import ./lib/bands
   L->>L: canonical path = strategies/lib/bands.tea
-  L->>D: readFileSync("strategies/lib/bands.tea")
+  L->>D: read("strategies/lib/bands.tea")
   D-->>L: text, or no such file
   L->>L: parse it, scan its imports, recurse
   Note over L: memoized by canonical path, cycles reported with the chain
@@ -103,8 +103,14 @@ The checker passes the name every `Pos` of the statement already carries.
 
 ## Hosts
 
-No host supplies a reader or a registry. A host only has to name its entry file
-truthfully.
+A host names its entry file truthfully and may supply a reader; no host
+supplies a registry. `compileToProgram(inputs, errors, {read})` asks
+`read(canonicalPath)` for each file a relative import names, once for each
+path it finds, and `undefined` reports `cannot find`. Entry files arrive as inputs and
+shipped libraries never go through it. A host that stores source itself, such
+as a snapshot of a script and its imports, passes each entry as
+`{filename, source}` and a map-backed `read`; wrapping the default `read`
+during a disk compile records exactly the files the imports reached.
 
 | Host                        | Entry filename         | Relative imports resolve against |
 | --------------------------- | ---------------------- | -------------------------------- |
@@ -134,9 +140,8 @@ in an imported function's body on the call that reached it.
 
 ## Known ceilings
 
-- An imported file always comes from disk, so an editor's unsaved edits to it
-  reach its importers only when it is saved. If that becomes a problem, the
-  loader gains an injected reader then.
+- `tea lsp` passes no reader, so an editor's unsaved edits to an imported file
+  reach its importers only when it is saved.
 - A struct or enum exported from an imported file carries its canonical path in
   its `tea:typeId`. Hosts that name the entry differently, by a relative or an
   absolute path, therefore produce different ids for the same type.
@@ -147,7 +152,9 @@ in an imported function's body on the call that reached it.
   its chain by canonical path, a missing file and a malformed path, and the
   registry is never asked about a file.
 - `src/compiler.test.ts`: a script runs with its own library files and its
-  generated TypeScript typechecks; resolution errors sit on the import.
+  generated TypeScript typechecks; resolution errors sit on the import; an
+  injected `read` supplies every import by canonical path, once each, with no
+  file on disk.
 - `src/syntax/parser.test.ts`: a relative path is one atomic literal, and
   `import` stays an ordinary name elsewhere.
 - `src/cli/main.integration.test.ts`: `tea build` follows relative imports.

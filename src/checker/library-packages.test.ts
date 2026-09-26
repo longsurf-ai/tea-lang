@@ -378,3 +378,89 @@ describe('source library type API', () => {
     }
   });
 });
+
+describe('exported input aliases', () => {
+  const ind =
+    'library("ind")\nexport macd = input.series("indicator.macd")\nexport twice() => macd * 2\n';
+
+  test('an alias is the Builtin series input its initializer names', () => {
+    const result = checkWith(
+      {ind},
+      'import ind\nnow = ind.macd\nprev = ind.macd[1]\nsum = ind.twice()',
+    );
+    expect(result.errors).toEqual([]);
+    const alias = packageBinding(result, 'ind')?.exports.get('macd');
+    expect(alias).toMatchObject({
+      kind: ObjectKind.Builtin,
+      qualifier: Qualifier.Series,
+      binding: {kind: 'series', id: 'indicator.macd'},
+    });
+  });
+
+  test('only input.series may initialize an exported variable', () => {
+    const computed = checkWith(
+      {lib: 'library("lib")\nexport x = close + 1\n'},
+      'import lib\nvalue = 1',
+    );
+    expect(
+      hasMessage(computed, 'library variables may only alias input.series'),
+    ).toBe(true);
+  });
+
+  test('no package may redeclare or assign a prelude input alias', () => {
+    for (const lib of [
+      'library("lib")\nconst close = 2.0\nexport f(float x) => close + x\n',
+      'library("lib")\nexport close = input.series("mid")\nexport f(float x) => x\n',
+      'library("lib")\nexport f(float high) => high\n',
+    ]) {
+      // Parameters are declared when an instance is checked, so call f.
+      const result = checkWith({lib}, 'import lib\nvalue = lib.f(1.0)');
+      expect(hasMessage(result, 'cannot redeclare built-in')).toBe(true);
+    }
+    const assigned = checkWith(
+      {lib: 'library("lib")\nexport f() =>\n    close := 1\n    0\n'},
+      'import lib\nvalue = lib.f()',
+    );
+    expect(hasMessage(assigned, "cannot assign to built-in 'close'")).toBe(
+      true,
+    );
+  });
+
+  test('alias names follow the series input and declaration rules', () => {
+    const reserved = checkWith(
+      {lib: 'library("lib")\nexport t = input.series("time")\n'},
+      'import lib\nvalue = 1',
+    );
+    expect(hasMessage(reserved, "'input.series' name 'time' is reserved")).toBe(
+      true,
+    );
+    const duplicate = checkWith(
+      {
+        lib: 'library("lib")\nexport m = input.series("a")\nexport m = input.series("b")\n',
+      },
+      'import lib\nvalue = 1',
+    );
+    expect(hasMessage(duplicate, "'m' is already declared")).toBe(true);
+  });
+
+  test('entry scripts and function bodies cannot export a variable', () => {
+    const entry = checkWith({}, 'export x = input.series("x")');
+    expect(
+      hasMessage(
+        entry,
+        'only a library can export a variable, at its top level',
+      ),
+    ).toBe(true);
+
+    const nested = checkWith(
+      {lib: 'library("lib")\nexport f() =>\n    export y = 1\n    y\n'},
+      'import lib\nvalue = lib.f()',
+    );
+    expect(
+      hasMessage(
+        nested,
+        'only a library can export a variable, at its top level',
+      ),
+    ).toBe(true);
+  });
+});
