@@ -56,4 +56,4 @@ publish("price", close)
 
 ## See also
 
-[return](/reference/keywords/return/), [Reference overview](/reference/overview/)
+[return](./return.md), [Reference overview](../overview.md)

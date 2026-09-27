@@ -34,6 +34,11 @@
             "pages": [
               "language-guide/program-structure",
               "language-guide/execution-model",
+              "language-guide/values-and-control-flow",
+              "language-guide/time-series",
+              "language-guide/outputs-and-events",
+              "imports",
+              "requests",
               "strategy",
               "memory-model"
             ]
@@ -74,7 +79,17 @@
               {
                 "group": "Functions",
                 "root": "reference/functions",
-                "pages": ["reference/functions/array/push"]
+                "pages": [
+                  "reference/native-functions",
+                  "reference/functions/array/push",
+                  "reference/libraries/ta",
+                  "reference/libraries/visual",
+                  "reference/libraries/pine",
+                  "reference/libraries/geometry",
+                  "reference/libraries/broker",
+                  "reference/libraries/portfolio",
+                  "reference/libraries/trade"
+                ]
               },
               {
                 "group": "Keywords",

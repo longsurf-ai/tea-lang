@@ -36,4 +36,4 @@ emit "output0" close
 
 ## See also
 
-[Constants](/reference/constants/), [Functions](/reference/functions/)
+[Constants](../../constants.md), [Functions](../../functions.md)

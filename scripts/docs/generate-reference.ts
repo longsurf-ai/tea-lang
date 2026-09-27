@@ -4,6 +4,12 @@ import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {format} from 'prettier';
+import {
+  libraryReferences,
+  nativeReference,
+  typesReference,
+  valuesReference,
+} from './reference-catalog';
 
 import {
   CATALOG,
@@ -201,7 +207,23 @@ export function categoryPage(category: ReferenceCategory): string {
   const list = entries
     .map(entry => `- [${code(entry.title)}](${entry.route}) — ${entry.summary}`)
     .join('\n');
-  return `${frontmatter(title(category), REFERENCE_CATEGORY_SUMMARIES[category])}\n\n${GENERATED_WARNING}\n\n${list}\n`;
+  const inventory =
+    category === 'functions'
+      ? '## Complete function inventories\n\n- [Native functions](./native-functions.md) — all current compiler-owned signatures and call restrictions.\n' +
+        [...libraryReferences().keys()]
+          .map(
+            name =>
+              `- [${name} library](./libraries/${name}.md) — actual exported declarations.`,
+          )
+          .join('\n')
+      : category === 'types'
+        ? typesReference()
+        : category === 'variables'
+          ? valuesReference(false)
+          : category === 'constants'
+            ? valuesReference(true)
+            : '';
+  return `${frontmatter(title(category), REFERENCE_CATEGORY_SUMMARIES[category])}\n\n${GENERATED_WARNING}\n\n${list}\n\n${inventory}\n`;
 }
 
 export function overviewPage(): string {
@@ -220,6 +242,14 @@ function outputPath(root: string, entry: ReferenceEntry): string {
 export function referenceOutputs(root: string): ReadonlyMap<string, string> {
   return new Map([
     [path.join(root, 'docs/reference/overview.md'), overviewPage()],
+    [path.join(root, 'docs/reference/native-functions.md'), nativeReference()],
+    ...[...libraryReferences()].map(
+      ([name, content]) =>
+        [
+          path.join(root, `docs/reference/libraries/${name}.md`),
+          content,
+        ] as const,
+    ),
     ...REFERENCE_CATEGORIES.map(
       category =>
         [
@@ -247,7 +277,24 @@ export async function generateReference(
   const report = options.report ?? (message => console.error(message));
   let stale = false;
   for (const [file, content] of referenceOutputs(root)) {
-    const formatted = await format(content, {parser: 'mdx'});
+    // The same Markdown is read on the web and directly from an extracted
+    // package. Resolve site routes to real sibling files for both readers.
+    const portable = content.replace(
+      /\]\((\/reference\/[^)]+)\)/g,
+      (_, route: string) => {
+        const target = path.join(
+          root,
+          'docs',
+          `${route.replace(/^\//, '').replace(/\/$/, '')}.md`,
+        );
+        const relative = path
+          .relative(path.dirname(file), target)
+          .split(path.sep)
+          .join('/');
+        return `](${relative.startsWith('.') ? relative : `./${relative}`})`;
+      },
+    );
+    const formatted = await format(portable, {parser: 'mdx'});
     let current: string | undefined;
     try {
       current = await readFile(file, 'utf8');

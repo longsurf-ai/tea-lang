@@ -21,6 +21,11 @@ const sidebars: SidebarsConfig = {
       items: [
         'language-guide/program-structure',
         'language-guide/execution-model',
+        'language-guide/values-and-control-flow',
+        'language-guide/time-series',
+        'language-guide/outputs-and-events',
+        'imports',
+        'requests',
         {
           type: 'doc',
           id: 'strategy',
@@ -56,7 +61,15 @@ const sidebars: SidebarsConfig = {
       'reference/constants/color/red',
     ]),
     referenceCategory('Functions', 'functions', [
+      'reference/native-functions',
       'reference/functions/array/push',
+      'reference/libraries/ta',
+      'reference/libraries/visual',
+      'reference/libraries/pine',
+      'reference/libraries/geometry',
+      'reference/libraries/broker',
+      'reference/libraries/portfolio',
+      'reference/libraries/trade',
     ]),
     referenceCategory('Keywords', 'keywords', [
       'reference/keywords/for-in',

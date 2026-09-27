@@ -35,4 +35,4 @@ emit "output0" change
 
 ## See also
 
-[History operator []](/reference/operators/history/), [Variables](/reference/variables/)
+[History operator []](../operators/history.md), [Variables](../variables.md)

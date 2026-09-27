@@ -136,4 +136,4 @@ emit "output1" values.size() // 4
 
 ## See also
 
-[array](/reference/types/array/), [array.push()](/reference/functions/array/push/)
+[array](../types/array.md), [array.push()](../functions/array/push.md)

@@ -26,11 +26,11 @@ An array can contain struct references. When two arrays contain the same struct,
 
 ## Construction
 
-[array.new()](/reference/functions/), [array.from()](/reference/functions/)
+[array.new()](../functions.md), [array.from()](../functions.md)
 
 ## Operations
 
-[array.push()](/reference/functions/array/push/), [for...in](/reference/keywords/for-in/), [History operator []](/reference/operators/history/)
+[array.push()](../functions/array/push.md), [for...in](../keywords/for-in.md), [History operator []](../operators/history.md)
 
 ## Examples
 
@@ -72,4 +72,4 @@ emit "output1" right.get(0).x // 2
 
 ## See also
 
-[array.push()](/reference/functions/array/push/), [for...in](/reference/keywords/for-in/), [History operator []](/reference/operators/history/)
+[array.push()](../functions/array/push.md), [for...in](../keywords/for-in.md), [History operator []](../operators/history.md)

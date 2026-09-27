@@ -44,4 +44,4 @@ emit "chosen" choose(close > open)
 
 ## See also
 
-[emit](/reference/keywords/emit/), [Reference overview](/reference/overview/)
+[emit](./emit.md), [Reference overview](../overview.md)
