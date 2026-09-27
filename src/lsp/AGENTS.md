@@ -22,7 +22,8 @@ owns `startLanguageServer()`, one session on a host-supplied `Connection`.
   request.
 - The server holds the only state: open documents, one `Analysis` per document
   version, one 150 ms debounce each. Requests analyze the current text first.
-  No options, no transport.
+  Hosts may consume derived file dependencies and invalidate analysis; watcher
+  policy and transport remain outside Tea.
 - The host may dispose the connection at any time, so nothing throws outside
   a library-guarded handler: the debounce timer guards its publish, and every
   send promise is caught.
