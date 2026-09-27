@@ -133,60 +133,6 @@ simple bool timeframe.ismonthly
 simple bool timeframe.isdwm
 ```
 
-### open
-
-```text
-series float open
-```
-
-### high
-
-```text
-series float high
-```
-
-### low
-
-```text
-series float low
-```
-
-### close
-
-```text
-series float close
-```
-
-### volume
-
-```text
-series float volume
-```
-
-### hl2
-
-```text
-series float hl2
-```
-
-### hlc3
-
-```text
-series float hlc3
-```
-
-### ohlc4
-
-```text
-series float ohlc4
-```
-
-### hlcc4
-
-```text
-series float hlcc4
-```
-
 ### barstate.isfirst
 
 ```text

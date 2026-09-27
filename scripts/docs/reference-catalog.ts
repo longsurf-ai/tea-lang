@@ -95,7 +95,9 @@ export function libraryReferences(): ReadonlyMap<string, string> {
             ? 'Automatically available as `ta.name(...)`. Each written stateful call has its own history and persistent locals. Compute time-series helpers on every step before using their result in a conditional. Parameters without annotations are inferred at call sites; the compiler checks the called body.\n\nFor moving averages and signals, see [time-series calculations](../../language-guide/time-series.md).'
             : name === 'visual'
               ? 'Automatically available without a namespace: call `plot(...)`, `alertcondition(...)` and `alert(...)`. The first argument is always the stable output ID. Plot and alert titles are separate arguments. See [outputs and events](../../language-guide/outputs-and-events.md).'
-              : `Use \`import ${name}\` before calling \`${name}.name(...)\`. This is an ordinary Tea library; its presence does not configure a host or connect external services.`;
+              : name === 'pine'
+                ? 'Automatically available without a namespace: `open`, `high`, `low`, `close`, `volume`, and the derived price aliases read named series columns supplied by the host. These are ordinary `input.series(...)` declarations.'
+                : `Use \`import ${name}\` before calling \`${name}.name(...)\`. This is an ordinary Tea library; its presence does not configure a host or connect external services.`;
         const declarations = ast.stmtList.flatMap(stmt => {
           if (!('exported' in stmt) || !stmt.exported) return [];
           const start = offset(source, stmt.pos);
@@ -129,7 +131,16 @@ export function libraryReferences(): ReadonlyMap<string, string> {
               .slice(start, offset(source, endPos(stmt)))
               .trim();
           }
-          return [`## ${name}.${stmt.name.value}\n\n${fence(declaration)}\n`];
+          const names =
+            stmt.kind === NodeKind.DeclStmt
+              ? stmt.target.kind === NodeKind.Name
+                ? [stmt.target]
+                : stmt.target.elems
+              : [stmt.name];
+          return names.map(
+            exported =>
+              `## ${name}.${exported.value}\n\n${fence(declaration)}\n`,
+          );
         });
         return [
           name,

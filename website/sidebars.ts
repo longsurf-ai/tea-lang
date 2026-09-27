@@ -65,6 +65,7 @@ const sidebars: SidebarsConfig = {
       'reference/functions/array/push',
       'reference/libraries/ta',
       'reference/libraries/visual',
+      'reference/libraries/pine',
       'reference/libraries/geometry',
       'reference/libraries/broker',
       'reference/libraries/portfolio',

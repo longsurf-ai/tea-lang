@@ -42,6 +42,7 @@ test('generated references cover all native functions and shipped library declar
   expect([...libraries.keys()]).toEqual([
     'broker',
     'geometry',
+    'pine',
     'portfolio',
     'ta',
     'trade',
@@ -51,4 +52,8 @@ test('generated references cover all native functions and shipped library declar
   expect(libraries.get('visual')).toContain('const string id');
   expect(libraries.get('visual')).toContain('series string message');
   expect(libraries.get('ta')).not.toContain('sum / length');
+  expect(libraries.get('pine')).toContain('## pine.close\n');
+  expect(libraries.get('pine')).toContain(
+    'export close = input.series("close")',
+  );
 });

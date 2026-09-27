@@ -320,6 +320,14 @@ input(defval: float, title?: string, inline?: string, group?: string, tooltip?: 
 - `display`: const; compile-time literal value required; cannot be na.
 - `active`: input; cannot be na.
 
+## input.series
+
+```text
+input.series(name: string) → float
+```
+
+- `name`: const; compile-time literal value required; cannot be na.
+
 ## math.abs
 
 ```text

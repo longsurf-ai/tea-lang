@@ -12,6 +12,7 @@ description: "Built-in operations provided by Tea, grouped by purpose and namesp
 - [Native functions](./native-functions.md) — all current compiler-owned signatures and call restrictions.
 - [broker library](./libraries/broker.md) — actual exported declarations.
 - [geometry library](./libraries/geometry.md) — actual exported declarations.
+- [pine library](./libraries/pine.md) — actual exported declarations.
 - [portfolio library](./libraries/portfolio.md) — actual exported declarations.
 - [ta library](./libraries/ta.md) — actual exported declarations.
 - [trade library](./libraries/trade.md) — actual exported declarations.
