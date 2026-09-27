@@ -132,6 +132,20 @@ describe('hover', () => {
     expect(hoverLines(on(15, 'math'))).toBeNull();
   });
 
+  test.each(['security', 'security_lower_tf'])(
+    'request.%s hover does not advertise the catalog placeholder return type',
+    name => {
+      const source = `requested = request.${name}("AAPL", "1D", close > open)`;
+      const request = analyze({filename: FILE, source});
+      expect(request.diagnostics).toEqual([]);
+      expect(
+        hover(request, {line: 0, character: source.indexOf(name)})?.contents,
+      ).toMatchObject({
+        value: expect.stringContaining(' → request-dependent result\n'),
+      });
+    },
+  );
+
   test('a position just past a name still finds it', () => {
     const {end} = rangeOf(12, 'bar');
     expect(hover(analysis, end)?.range).toEqual(rangeOf(12, 'bar'));

@@ -1287,7 +1287,8 @@ export function formatNativeTypeRef(ref: NativeTypeRef): string {
  * One overload as a single display line: the one spelling of a native
  * signature, shared by the generated reference and editor hovers. Staged
  * parameters are left out, `?` marks an optional parameter and `...` a
- * variadic one.
+ * variadic one. Captured request results depend on the checked expression,
+ * so their catalog placeholder is never presented as the return type.
  *
  * @example
  * ```ts
@@ -1311,8 +1312,9 @@ export function formatNativeSignature(func: NativeFunc): string {
       return `${variadic}${parameter.name}${optional}: ${formatNativeTypeRef(parameter.type)}`;
     })
     .join(', ');
-  const result =
-    func.result === FirstArgumentResult
+  const result = func.params.some(parameter => parameter.capture)
+    ? 'request-dependent result'
+    : func.result === FirstArgumentResult
       ? 'type of first argument'
       : formatNativeTypeRef(func.result);
   return `${func.name}${typeParams}(${params}) → ${result}`;

@@ -1,10 +1,12 @@
-// Purpose: Build the JavaScript package entry and its compiler-owned Tea libraries.
+// Purpose: Build the JavaScript package, compiler-owned Tea libraries and matching reference.
 
 import {copyFileSync, mkdirSync, readdirSync, rmSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {build} from 'esbuild';
+import {generateReference} from './docs/generate-reference';
 
+await generateReference();
 rmSync('dist', {force: true, recursive: true});
 execFileSync(
   process.execPath,

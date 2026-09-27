@@ -59,4 +59,4 @@ emit "output0" values.last() // 3
 
 ## See also
 
-[array](/reference/types/array/), [for...in](/reference/keywords/for-in/)
+[array](../../types/array.md), [for...in](../../keywords/for-in.md)

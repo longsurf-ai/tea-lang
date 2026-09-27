@@ -59,4 +59,4 @@ emit "output0" na(previous) ? 0 : previous.size()
 
 ## See also
 
-[close](/reference/variables/close/), [array](/reference/types/array/)
+[close](../variables/close.md), [array](../types/array.md)

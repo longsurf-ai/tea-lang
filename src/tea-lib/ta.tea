@@ -191,10 +191,16 @@ export dev(source, length) =>
 	sum / length
 
 export variance(source, length, biased = true) =>
-	mean = sma(source, length)
+	// Center the window before averaging so a constant decimal stays exactly
+	// zero and small spreads do not lose precision against a large price level.
+	anchor = source
+	shiftedSum = 0.0
+	for i = 0 to length - 1
+		shiftedSum += source[i] - anchor
+	mean = shiftedSum / length
 	sum = 0.0
 	for i = 0 to length - 1
-		diff = source[i] - mean
+		diff = (source[i] - anchor) - mean
 		sum += diff * diff
 	sum / (biased ? length : length - 1)
 

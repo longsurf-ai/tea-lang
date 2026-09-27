@@ -7,16 +7,33 @@ Tea does not fetch requested data. An application supplies the root DataStream
 and binds each request child by its declaration name. Node owns child execution,
 synchronization, history, and cancellation.
 
-```text
-Tea source   daily = request.security("AAPL", "D", close)
-                         │
-                         ▼
-Program      RequestEdge{name: "daily", child Program, policy}
-                         │
-application              │ node.bind({daily: dailyStream})
-                         ▼
-Node         child Node ──sync──▶ parent Node
+## Write the calculation in its own input context
+
+A request is a direct top-level declaration. Its captured expression runs on
+the child's bars, with the child's own history. Use an ordinary function when
+that calculation needs several statements:
+
+```tea
+previousAverage() =>
+    average = ta.sma(close, 20)
+    average[1]
+
+daily = request.security("AAPL", "D", previousAverage(), fill="carry")
+plot("previous_daily_average", daily)
 ```
+
+Here `average[1]` means the previous **child** bar's average. `daily[1]` in the
+parent would instead mean the value seen on the previous **parent** bar.
+History indexing requires a named binding: bind a function result first,
+then index it; `ta.sma(close, 20)[1]` is not valid Tea.
+
+The request call itself cannot be inside a function, local block, method, or
+another request capture. The function above contains only the calculation;
+the top-level `daily` declaration owns the request. Symbol and timeframe must
+be static. Each capture returns one scalar. To obtain several values, declare
+one named request per scalar; each declaration needs its own host binding,
+even when their symbol and timeframe match. Tuple and struct captures are not
+supported by the language checker.
 
 The symbol and timeframe remain useful application-facing metadata in the
 Program. They do not imply a registry, network client, or runtime
@@ -32,25 +49,20 @@ the child named daily; `node.bind(stream, ["daily"])` connects its input. Both
 return a new root Node and leave its previous tree unchanged. After each successful child step, Node copies the requested
 scalar result into the synchronization buffer.
 
-Only scalar and recursively scalar-tuple results can cross the child boundary.
-Heap references, resources, arrays, matrices, and maps never cross it. Each
+Only scalar results can cross the child boundary. Tuples, heap references,
+resources, arrays, matrices, and maps are rejected by the language checker. Each
 child owns and disposes its own runtime and Heap.
 
 `request.security_lower_tf` still captures one scalar child result per child
 index. Node groups those copied scalars and materializes the resulting Tea array
 inside the parent Heap transaction.
 
-## Direct declaration and binding identity
-
-Supported requests must be direct top-level declarations:
+## Bind streams by declaration name
 
 ```tea
 daily = request.security("AAPL", "D", close)
 lower = request.security_lower_tf("AAPL", "15", close)
 ```
-
-Requests inside local blocks, functions, methods, or another request capture
-remain unsupported. Dynamic symbol and timeframe values fail during noding.
 
 The public binding key is the declaration name (`daily`, `lower`), never the
 symbol. A root series and request with the same name are ambiguous and binding
@@ -101,11 +113,17 @@ until every edge has supplied a value for the current parent input.
 A child value is eligible for a parent input once the child's event time is at
 or before the parent's event time. `request.security` uses one generic field:
 
-- `fill="carry" | "sparse"` chooses whether the last eligible value continues
-  across later parent inputs.
+- `fill="carry"` reuses the last eligible child value across later parent inputs,
+  including when the child has no new observation. `fill="sparse"` leaves those
+  gaps empty. For comparisons requiring matching observations, use sparse and
+  preserve missing values; carry means "latest available", not "same time".
 
 Tea intentionally does not expose Pine's `barmerge.gaps_*` or
 `barmerge.lookahead_*` vocabulary, and it has no end-of-interval availability.
+For a completed-interval calculation, select by the child's timestamp and the
+host's interval boundaries. A child's `[1]` means its previous observation,
+not necessarily its most recently completed interval: if no forming child row
+is supplied, the latest child may already be complete. Test both input shapes.
 
 | Request policy      | Required metadata                               | Parent value                                         |
 | ------------------- | ----------------------------------------------- | ---------------------------------------------------- |
