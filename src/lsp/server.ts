@@ -27,6 +27,9 @@ const LIBRARY_SCHEME = 'tea-lib:/';
  * every handler, then starts listening. The host owns the transport and the
  * connection's lifetime; this owns everything said over it. One call is one
  * session with its own open documents, and disposing the connection ends it.
+ * An embedding host may observe the union of current compiler dependencies and
+ * call `invalidateFiles` after disk changes. The language server owns no watcher;
+ * standalone clients continue to use standard watched-file notifications.
  *
  * - Documents use full-text sync. Each open document has one cached
  *   `Analysis`, dropped when it closes.
@@ -55,7 +58,10 @@ const LIBRARY_SCHEME = 'tea-lib:/';
  * startLanguageServer(createConnection(process.stdin, process.stdout));
  * ```
  */
-export function startLanguageServer(connection: Connection): void {
+export function startLanguageServer(
+  connection: Connection,
+  onDependencies?: (filenames: readonly string[]) => void,
+): {invalidateFiles(): void} {
   const documents = new TextDocuments(TextDocument);
   const analyses = new Map<
     string,
@@ -63,6 +69,19 @@ export function startLanguageServer(connection: Connection): void {
   >();
   const debounces = new Map<string, ReturnType<typeof setTimeout>>();
   let registersFileWatcher = false;
+  let invalidatingFiles = false;
+  function publishDependencies(): void {
+    if (!invalidatingFiles)
+      onDependencies?.(
+        [
+          ...new Set(
+            [...analyses.values()].flatMap(
+              ({analysis}) => analysis.dependencies,
+            ),
+          ),
+        ].sort(),
+      );
+  }
 
   // Answers `question` from the analysis of the document's current text.
   function ask<T>(
@@ -82,6 +101,7 @@ export function startLanguageServer(connection: Connection): void {
           analysis: analyze({filename: filenameOf(uri), source}),
         };
         analyses.set(uri, cached);
+        publishDependencies();
       }
       return question(cached.analysis, document);
     } catch (error) {
@@ -158,15 +178,23 @@ export function startLanguageServer(connection: Connection): void {
     clearTimeout(debounces.get(uri));
     debounces.delete(uri);
     analyses.delete(uri);
+    publishDependencies();
     send({uri, diagnostics: []});
   });
 
   // A file on disk changed, and any open document may import it. Analysis
   // is cheap enough that no import graph is kept to find out which.
-  connection.onDidChangeWatchedFiles(() => {
-    analyses.clear();
-    documents.all().forEach(document => publish(document.uri));
-  });
+  function invalidateFiles(): void {
+    invalidatingFiles = true;
+    try {
+      analyses.clear();
+      documents.all().forEach(document => publish(document.uri));
+    } finally {
+      invalidatingFiles = false;
+      publishDependencies();
+    }
+  }
+  connection.onDidChangeWatchedFiles(invalidateFiles);
 
   connection.onHover(({textDocument, position}) =>
     ask(textDocument.uri, analysis => hover(analysis, position)),
@@ -203,6 +231,7 @@ export function startLanguageServer(connection: Connection): void {
 
   documents.listen(connection);
   connection.listen();
+  return {invalidateFiles};
 }
 
 // The filename a document is analyzed under.

@@ -142,7 +142,7 @@ export function resolveImports(
   implicitPaths: readonly string[] = DEFAULT_IMPLICIT,
   preludePaths: readonly string[] = DEFAULT_PRELUDE,
   read: ReadSource = readSourceFile,
-): Importer {
+): Importer & {readonly files: ReadonlySet<string>} {
   const preludeSet = new Set(preludePaths);
   const registryWithPrelude: Registry = path =>
     preludeSet.has(path)
@@ -167,6 +167,7 @@ export function resolveImports(
 }
 
 class Resolver implements Importer {
+  readonly files = new Set<string>();
   private readonly cache = new Map<string, ImportOutcome>();
   private readonly loading: string[] = [];
   private implicitPackages: readonly SourcePackage[] | null = null;
@@ -211,6 +212,7 @@ class Resolver implements Importer {
   // as written, or a file's canonical path.
   import(path: string, from: string): ImportOutcome {
     const file = importedFile(path, from);
+    if (file !== null) this.files.add(file);
     const id = file ?? path;
     const cached = this.cache.get(id);
     if (cached !== undefined) {

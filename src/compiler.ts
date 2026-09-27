@@ -32,6 +32,8 @@ const perf = log.child('compile');
 export interface Compilation {
   /** The parsed entry files; partial where the parser recovered. */
   readonly files: readonly File[];
+  /** Files reached by import resolution, including missing or invalid libraries. */
+  readonly dependencies: readonly string[];
   /** Semantic facts, present even when parsing or checking reported errors. */
   readonly checked: CheckedPackage;
   /** Null unless parse, check and noding all finished without an error. */
@@ -70,14 +72,25 @@ function checkAndNode(
   const checkDone = perf.startTimer('check');
   const importer = resolveImports(files, undefined, undefined, undefined, read);
   const checked = checkPackage(files, errors, importer);
+  const dependencies = [
+    ...new Set([
+      ...files.map(file => file.pos.base.filename),
+      ...importer.files,
+    ]),
+  ];
   checkDone();
   if (errors.count > 0) {
-    return {files, checked, program: null};
+    return {files, checked, dependencies, program: null};
   }
   const nodeDone = perf.startTimer('buildProgram');
   const program = buildProgram(checked, errors);
   nodeDone();
-  return {files, checked, program: errors.count > 0 ? null : program};
+  return {
+    files,
+    checked,
+    dependencies,
+    program: errors.count > 0 ? null : program,
+  };
 }
 
 // The compiling entry: a phase barrier after every stage, so a failed parse

@@ -56,6 +56,33 @@ describe('relative imports', () => {
   const located = (errors: Errors): string[] =>
     errors.flushErrors().map(error => `${formatPos(error.pos)}: ${error.msg}`);
 
+  test('tooling dependencies come from resolution, including failed and cyclic imports', () => {
+    expect(
+      [...compileForTooling([entry], new Errors()).dependencies].sort(),
+    ).toEqual(
+      [
+        entry,
+        join(IMPORTS, 'strategies/lib/bands.tea'),
+        join(IMPORTS, 'shared/risk.tea'),
+      ].sort(),
+    );
+    const missing = join(IMPORTS, 'missing/entry.tea');
+    expect(compileForTooling([missing], new Errors()).dependencies).toEqual([
+      missing,
+      join(IMPORTS, 'missing/nope.tea'),
+    ]);
+    const cycle = join(IMPORTS, 'cycle/entry.tea');
+    expect(
+      [...compileForTooling([cycle], new Errors()).dependencies].sort(),
+    ).toEqual(
+      [
+        cycle,
+        join(IMPORTS, 'cycle/a.tea'),
+        join(IMPORTS, 'cycle/b.tea'),
+      ].sort(),
+    );
+  });
+
   test('a script runs with its own library files, reached by two spellings', async () => {
     const errors = new Errors();
     const program = compileToProgram([entry], errors);

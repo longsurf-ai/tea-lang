@@ -49,6 +49,8 @@ export interface IndexedName {
 export interface Analysis {
   /** The parsed document, partial where the parser recovered. */
   readonly file: File;
+  /** The compiler's file dependencies, including failed import attempts. */
+  readonly dependencies: readonly string[];
   /** Semantic facts of the document and of every library it imports. */
   readonly checked: CheckedPackage;
   /**
@@ -99,7 +101,7 @@ export interface Analysis {
  */
 export function analyze(input: PackageSource): Analysis {
   const errors = new Errors();
-  const {files, checked} = compileForTooling([input], errors);
+  const {files, checked, dependencies} = compileForTooling([input], errors);
   const file = files[0];
 
   const tokens = tokenize(newFileBase(input.filename), input.source, () => {});
@@ -157,7 +159,13 @@ export function analyze(input: PackageSource): Analysis {
       a.range.start.character - b.range.start.character,
   );
 
-  return {file, checked, diagnostics, names: indexNames(file, checked)};
+  return {
+    file,
+    checked,
+    dependencies,
+    diagnostics,
+    names: indexNames(file, checked),
+  };
 }
 
 // ---- diagnostics --------------------------------------------------------------
