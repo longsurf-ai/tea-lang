@@ -444,10 +444,7 @@ function validateContext(request: Request, id: number): void {
     context == null ||
     typeof context.symbol !== 'string' ||
     typeof context.timeframe !== 'string' ||
-    !['carry', 'sparse'].includes(context.fill) ||
-    typeof context.ignoreInvalidSymbol !== 'boolean' ||
-    !Number.isSafeInteger(context.calcBarsCount) ||
-    context.calcBarsCount < 0
+    !['carry', 'sparse'].includes(context.fill)
   ) {
     throw new BindError(`request ${id} has invalid concrete context`);
   }

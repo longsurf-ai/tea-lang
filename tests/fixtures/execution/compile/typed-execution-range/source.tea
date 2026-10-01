@@ -24,9 +24,5 @@ else
     -1
 emit "output6" previousBarstateCode
 
-tailPosition = request.security(
-    "",
-    "",
-    bar_index * 10,
-    calc_bars_count = 2)
+tailPosition = request.security("", "", bar_index * 10)
 emit "output7" tailPosition

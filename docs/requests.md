@@ -167,9 +167,7 @@ policy.
 Each module request entry retains the request declaration's symbol, timeframe,
 mode, result layout, and synchronization policy. This is static language data,
 not an instruction for Tea to acquire external data.
-
-`calc_bars_count` remains visible to applications as a trailing-history hint.
-An application may use it when constructing the child DataStream, but Node
+The application chooses how much history the child DataStream holds; Node
 correctness depends only on the stream it actually receives.
 
 ## Staged beyond this slice

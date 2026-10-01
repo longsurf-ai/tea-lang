@@ -893,13 +893,9 @@ function buildFuncs(): NativeFunc[] {
         req('timeframe', StringType, Qualifier.Series, {acceptsNa: false}),
         req('expression', TypeRef.Any, Qualifier.Series, {capture: true}),
         opt('fill', StringType, Qualifier.Simple, {acceptsNa: false}),
-        opt('ignore_invalid_symbol', BoolType, Qualifier.Simple, {
-          acceptsNa: false,
-        }),
         opt('currency', StringType, Qualifier.Const, {
           availability: 'staged',
         }),
-        opt('calc_bars_count', IntType, Qualifier.Simple, {acceptsNa: false}),
       ],
       FloatType,
       Qualifier.Series,

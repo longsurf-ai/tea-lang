@@ -1215,27 +1215,14 @@ describe('requests', () => {
     expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
   });
 
-  test('request options remain bind expressions with one explicit schedule', () => {
+  test('the fill option remains a bind expression', () => {
     const program = mustBuild(
       [
         'fill_policy = input.string("sparse")',
-        'bars = input.int(25)',
-        'd = request.security(',
-        '    "AAPL", "D", close,',
-        '    calc_bars_count=bars, fill=fill_policy)',
+        'd = request.security("AAPL", "D", close, fill=fill_policy)',
       ].join('\n'),
     );
-    const edge = program.requests[0];
-    expect(edge.optionArgumentEvaluationOrder).toEqual([2, 0, 1]);
-    expect(edge.merge.fill).toMatchObject({
-      kind: IrKind.Read,
-      place: {kind: PlaceKind.Param},
-    });
-    expect(edge.merge.ignoreInvalidSymbol).toMatchObject({
-      kind: IrKind.Const,
-      value: false,
-    });
-    expect(edge.merge.calcBarsCount).toMatchObject({
+    expect(program.requests[0].merge.fill).toMatchObject({
       kind: IrKind.Read,
       place: {kind: PlaceKind.Param},
     });

@@ -115,11 +115,6 @@ export interface MergePolicy {
   readonly mode: MergeMode;
   // Whether an eligible child value carries forward between child updates.
   readonly fill: IrExpr;
-  // Invalid symbols yield na instead of a runtime error.
-  readonly ignoreInvalidSymbol: IrExpr;
-  // Bind-resolvable bar-count limit for the child. Omitted calls carry an
-  // explicit zero expression, which selects the full available range.
-  readonly calcBarsCount: IrExpr;
 }
 
 // A request.* call site: its captured expression compiles as a child Program
@@ -140,10 +135,6 @@ export interface RequestEdge {
   // source evaluation order. The captured expression is child-context code
   // and is deliberately absent from this parent schedule.
   readonly contextArgumentEvaluationOrder: readonly number[];
-  // Canonical option indices (fill=0, ignore=1, bars=2) in
-  // source evaluation order. Omitted defaults follow supplied options in
-  // canonical order so module.bind evaluates each option exactly once.
-  readonly optionArgumentEvaluationOrder: readonly number[];
   readonly merge: MergePolicy;
   // The designated result is a Name OF THE CHILD written each child bar.
   readonly resultName: Name;

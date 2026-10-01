@@ -50,7 +50,7 @@ test('binding clears all late facts before a missing-context read or incomplete 
         'enabled = input.bool(true)',
         'weight = input.int(2, active=enabled)',
         'stock = syminfo.type == "stock"',
-        'remote = request.security("X", "D", close, fill=stock ? "sparse" : "carry", calc_bars_count=length)',
+        'remote = request.security("X", "D", close, fill=stock ? "sparse" : "carry")',
         'value = close + 0.0',
         'emit "output0" value[length]',
         'emit "output1" remote[length]',

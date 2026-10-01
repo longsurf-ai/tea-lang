@@ -84,8 +84,6 @@ export interface Request {
     readonly symbol: string;
     readonly timeframe: string;
     readonly fill: 'carry' | 'sparse';
-    readonly ignoreInvalidSymbol: boolean;
-    readonly calcBarsCount: number;
   } | null;
 }
 

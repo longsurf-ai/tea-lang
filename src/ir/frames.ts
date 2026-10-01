@@ -43,7 +43,7 @@ export interface FrameTopology {
   readonly frames: readonly FrameTemplate[];
   readonly root: FrameTemplate;
   // @codex: why do we need the frames if we already have frameByFunc? possible duplication?
-  readonly frameByFunc: ReadonlyMap<IrFunc, FrameTemplate>; 
+  readonly frameByFunc: ReadonlyMap<IrFunc, FrameTemplate>;
   readonly nameLocations: ReadonlyMap<Name, FrameNameLocation>;
 }
 
@@ -176,8 +176,6 @@ function walkRootFrame(
       walkExpr(request.timeframe);
     }
     walkExpr(request.merge.fill);
-    walkExpr(request.merge.ignoreInvalidSymbol);
-    walkExpr(request.merge.calcBarsCount);
     walkDepth(request.depth);
   });
 }

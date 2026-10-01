@@ -480,15 +480,13 @@ math.min(number: int | float, ...number1: int | float) → float
 ## request.security
 
 ```text
-request.security(symbol: string, timeframe: string, expression: any value, fill?: string, ignore_invalid_symbol?: bool, calc_bars_count?: int) → request-dependent result
+request.security(symbol: string, timeframe: string, expression: any value, fill?: string) → request-dependent result
 ```
 
 - `symbol`: series; cannot be na.
 - `timeframe`: series; cannot be na.
 - `expression`: series; expression evaluated in the requested stream.
 - `fill`: simple; cannot be na.
-- `ignore_invalid_symbol`: simple; cannot be na.
-- `calc_bars_count`: simple; cannot be na.
 
 The captured expression determines the result type; see [Requests](../requests.md) for scalar and collected results, supported declaration shapes and synchronization.
 

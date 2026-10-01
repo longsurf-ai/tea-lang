@@ -4983,39 +4983,32 @@ class Checker {
         'request call must directly initialize one plain top-level variable',
       );
     }
-    for (const optionName of [
-      'fill',
-      'ignore_invalid_symbol',
-      'calc_bars_count',
-    ]) {
-      const index = native.params.findIndex(param => param.name === optionName);
-      const option = index === -1 ? null : (args[index] ?? null);
-      if (option !== null) {
-        const value = this.info.types.get(option)?.value;
-        const allowed =
-          optionName === 'fill'
-            ? value === 'carry' || value === 'sparse'
-            : true;
-        if (value !== null && value !== undefined && !allowed) {
-          this.error(
-            option.pos,
-            `request option '${optionName}' has invalid value ${JSON.stringify(value)}`,
-          );
-        }
-      }
+    // `fill` is the one request option.
+    const fillIndex = native.params.findIndex(param => param.name === 'fill');
+    const fill = fillIndex === -1 ? null : (args[fillIndex] ?? null);
+    if (fill !== null) {
+      const value = this.info.types.get(fill)?.value;
       if (
-        option !== null &&
-        this.expressionCallsEffect(option, this.info, Effect.Emit)
+        value !== null &&
+        value !== undefined &&
+        value !== 'carry' &&
+        value !== 'sparse'
       ) {
         this.error(
-          option.pos,
-          `'emit' cannot execute from request option '${optionName}'`,
+          fill.pos,
+          `request option 'fill' has invalid value ${JSON.stringify(value)}`,
         );
       }
-      if (option !== null && this.bindExpressionNeedsUnavailableFrame(option)) {
+      if (this.expressionCallsEffect(fill, this.info, Effect.Emit)) {
         this.error(
-          option.pos,
-          `request option '${optionName}' cannot depend on local execution state because it is evaluated at bind time`,
+          fill.pos,
+          "'emit' cannot execute from request option 'fill'",
+        );
+      }
+      if (this.bindExpressionNeedsUnavailableFrame(fill)) {
+        this.error(
+          fill.pos,
+          "request option 'fill' cannot depend on local execution state because it is evaluated at bind time",
         );
       }
     }
@@ -6613,7 +6606,6 @@ const CONST_ARG_RANGES: Record<
   string,
   Record<string, readonly [number, number]>
 > = {
-  'request.security': {calc_bars_count: [0, Number.MAX_SAFE_INTEGER]},
   'color.new': {transp: [0, 100]},
   'color.rgb': {
     red: [0, 255],

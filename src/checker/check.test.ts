@@ -804,25 +804,23 @@ describe('calls', () => {
     expect(alias.errors).toEqual([]);
   });
 
-  test('request bind options accept simple expressions and reject invalid contracts', () => {
+  test('the fill option accepts simple expressions; invalid and removed options are rejected', () => {
     const valid = checkText(
       [
         'fill_policy = syminfo.type == "stock" ? "sparse" : "carry"',
-        'ignore = input.bool(false)',
-        'bars = input.int(25)',
-        'x = request.security("X", "D", close, fill=fill_policy, ignore_invalid_symbol=ignore, calc_bars_count=bars)',
+        'x = request.security("X", "D", close, fill=fill_policy)',
       ].join('\n'),
     );
     expect(valid.errors).toEqual([]);
 
     const cases = [
       [
-        'x = request.security("X", "D", close, calc_bars_count=-1)',
-        'must be between 0',
+        'x = request.security("X", "D", close, calc_bars_count=2)',
+        "unknown argument 'calc_bars_count' in call to 'request.security'",
       ],
       [
-        'x = request.security("X", "D", close, calc_bars_count=int(na))',
-        'cannot be na',
+        'x = request.security("X", "D", close, ignore_invalid_symbol=true)',
+        "unknown argument 'ignore_invalid_symbol' in call to 'request.security'",
       ],
       [
         'x = request.security("X", "D", close, fill="forward")',

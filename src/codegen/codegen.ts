@@ -52,6 +52,7 @@ import {isHistoryOffset, RUNTIME_ABI_VERSION} from '../runtime/module-abi';
 import type {Depth, Request} from '../runtime/module-abi';
 import type {Scalar} from '../runtime/value';
 import {
+  capture,
   captureArguments,
   coerce,
   property,
@@ -751,17 +752,7 @@ class Generator {
     }
     this.requests.forEach((edge, rid) => {
       if (staticRequestContext(edge) !== null) {
-        captureArguments(
-          [
-            edge.merge.fill,
-            edge.merge.ignoreInvalidSymbol,
-            edge.merge.calcBarsCount,
-          ],
-          edge.optionArgumentEvaluationOrder,
-          [],
-          validationCtx,
-          'request options',
-        );
+        capture(edge.merge.fill, [], validationCtx);
         captureArguments(
           [edge.symbol, edge.timeframe],
           edge.contextArgumentEvaluationOrder,
@@ -772,17 +763,7 @@ class Generator {
         return;
       }
       resets.push(`module.requests[${rid}].context = null;`);
-      const [fill, ignoreInvalidSymbol, calcBarsCount] = captureArguments(
-        [
-          edge.merge.fill,
-          edge.merge.ignoreInvalidSymbol,
-          edge.merge.calcBarsCount,
-        ],
-        edge.optionArgumentEvaluationOrder,
-        lines,
-        ctx,
-        'request options',
-      );
+      const fill = capture(edge.merge.fill, lines, ctx);
       const [symbol, timeframe] = captureArguments(
         [edge.symbol, edge.timeframe],
         edge.contextArgumentEvaluationOrder,
@@ -791,7 +772,7 @@ class Generator {
         'request context',
       );
       lines.push(
-        `module.requests[${rid}].context = {symbol: (${symbol}).value!, timeframe: (${timeframe}).value!, fill: (${fill}).value as "carry" | "sparse", ignoreInvalidSymbol: (${ignoreInvalidSymbol}).value, calcBarsCount: (${calcBarsCount}).value};`,
+        `module.requests[${rid}].context = {symbol: (${symbol}).value!, timeframe: (${timeframe}).value!, fill: (${fill}).value as "carry" | "sparse"};`,
       );
     });
     const missing = this.globalParams.map(
@@ -825,13 +806,7 @@ class Generator {
     this.requests.forEach(edge => {
       noteDepth(edge.depth);
       if (staticRequestContext(edge) === null) {
-        expressions.push(
-          edge.merge.fill,
-          edge.merge.ignoreInvalidSymbol,
-          edge.merge.calcBarsCount,
-          edge.symbol,
-          edge.timeframe,
-        );
+        expressions.push(edge.merge.fill, edge.symbol, edge.timeframe);
       }
     });
     return expressions;
@@ -1131,13 +1106,7 @@ function staticBool(expr: IrExpr): boolean | null {
 function staticRequestContext(
   edge: RequestEdge,
 ): NonNullable<Request['context']> | null {
-  const expressions = [
-    edge.merge.fill,
-    edge.merge.ignoreInvalidSymbol,
-    edge.merge.calcBarsCount,
-    edge.symbol,
-    edge.timeframe,
-  ];
+  const expressions = [edge.merge.fill, edge.symbol, edge.timeframe];
   if (!expressions.every(expr => expr.kind === IrKind.Const)) return null;
   const values = expressions.map(expr => {
     if (expr.kind !== IrKind.Const) {
@@ -1145,25 +1114,15 @@ function staticRequestContext(
     }
     return constValue(expr.value);
   });
-  const [fill, ignoreInvalidSymbol, calcBarsCount, symbol, timeframe] = values;
+  const [fill, symbol, timeframe] = values;
   if (
     (fill !== 'carry' && fill !== 'sparse') ||
-    typeof ignoreInvalidSymbol !== 'boolean' ||
-    typeof calcBarsCount !== 'number' ||
-    !Number.isSafeInteger(calcBarsCount) ||
-    calcBarsCount < 0 ||
     typeof symbol !== 'string' ||
     typeof timeframe !== 'string'
   ) {
     return fatal('constant request context has invalid values');
   }
-  return {
-    symbol,
-    timeframe,
-    fill,
-    ignoreInvalidSymbol,
-    calcBarsCount,
-  };
+  return {symbol, timeframe, fill};
 }
 
 // The depth pass materializes caps as const int expressions.
