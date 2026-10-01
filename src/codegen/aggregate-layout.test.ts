@@ -161,6 +161,7 @@ for item in branches
     };
     const ir: Program = {
       version: 1,
+      declaration: null,
       nominalIds: new Map(),
       params: [],
       requests: [],

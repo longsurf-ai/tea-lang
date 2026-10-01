@@ -2,9 +2,9 @@
 title: Program Structure
 ---
 
-Every entry is an ordinary Tea program. There is no indicator or strategy header.
-Imports select reusable libraries; declarations and statements describe one step
-of computation over the bound input streams.
+Every entry is an ordinary Tea program. Imports select reusable libraries;
+declarations and statements describe one step of computation over the bound
+input streams.
 
 ```tea
 length = input.int(20, "Length", minval=1)
@@ -45,6 +45,17 @@ emit "direction" direction(close - open)
 Implicit final-expression returns remain supported. The entry body does not need
 a return. `library("name")` identifies a reusable source module; it does not
 classify an entry program's execution mode.
+
+An entry may begin with an `indicator()` header that tells a host how to show
+it: a title and whether to draw over the price chart. It must be the first
+statement, appear once, and use literal arguments with a non-empty title. It never changes how the
+program runs, and there is no `strategy()` header.
+
+```tea
+indicator("RSI", overlay = false)
+length = input.int(14, "Length", minval=1)
+plot("rsi", ta.rsi(close, length), "RSI")
+```
 
 A script can import its own library files by a path relative to itself. The
 path has no extension, and the namespace is the name the file declares:

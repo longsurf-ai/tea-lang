@@ -14,6 +14,15 @@ library(title: string) → void
 
 - `title`: const; compile-time literal value required.
 
+## indicator
+
+```text
+indicator(title: string, overlay?: bool) → void
+```
+
+- `title`: const; compile-time literal value required; cannot be na.
+- `overlay`: const; compile-time literal value required; cannot be na.
+
 ## input.int
 
 ```text

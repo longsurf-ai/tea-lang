@@ -438,6 +438,33 @@ class Checker {
           this.checkStmt(stmt);
         }
       }
+      // indicator() heads an entry script once, like library() heads a library.
+      const indicators = file.stmtList.filter(isIndicatorDeclaration);
+      if (this.rootLibrary !== null) {
+        for (const stmt of indicators) {
+          this.error(stmt.pos, 'library packages cannot declare indicator()');
+        }
+      } else {
+        if (indicators.length > 0 && indicators[0] !== file.stmtList[0]) {
+          this.error(
+            indicators[0].pos,
+            'indicator() declaration must be the first statement in a script',
+          );
+        }
+        for (const duplicate of indicators.slice(1)) {
+          this.error(duplicate.pos, 'duplicate indicator() declaration');
+        }
+      }
+      // Hosts show the title, so it can't be blank.
+      for (const stmt of indicators) {
+        const call = this.info.calls.get(
+          unwrapParens(stmt.x) as syntax.CallExpr,
+        );
+        const title = call?.kind === CallKind.Native ? call.args[0] : null;
+        if (title != null && this.tvOf(title).value === '') {
+          this.error(title.pos, 'indicator() title must not be empty');
+        }
+      }
       this.validateMethodDeclarations([
         ...this.currentPackage.structDecls.values(),
       ]);
@@ -6073,6 +6100,17 @@ class Checker {
 // ---- pure helpers -----------------------------------------------------------
 
 function isLibraryDeclaration(stmt: syntax.Stmt): stmt is syntax.ExprStmt {
+  return isHeaderCall(stmt, 'library');
+}
+
+function isIndicatorDeclaration(stmt: syntax.Stmt): stmt is syntax.ExprStmt {
+  return isHeaderCall(stmt, 'indicator');
+}
+
+function isHeaderCall(
+  stmt: syntax.Stmt,
+  name: 'library' | 'indicator',
+): stmt is syntax.ExprStmt {
   if (stmt.kind !== NodeKind.ExprStmt) {
     return false;
   }
@@ -6080,7 +6118,7 @@ function isLibraryDeclaration(stmt: syntax.Stmt): stmt is syntax.ExprStmt {
   return (
     expr.kind === NodeKind.CallExpr &&
     expr.fun.kind === NodeKind.Name &&
-    expr.fun.value === 'library'
+    expr.fun.value === name
   );
 }
 

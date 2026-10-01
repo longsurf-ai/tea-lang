@@ -159,6 +159,7 @@ const childResult: Name = {
 
 const child: Program = {
   version: 1,
+  declaration: null,
   nominalIds: new Map(),
   params: [],
   requests: [],
@@ -203,6 +204,7 @@ const edge: RequestEdge = {
 
 const program: Program = {
   version: 1,
+  declaration: null,
   nominalIds: new Map(),
   params: [],
   requests: [edge],
@@ -256,6 +258,7 @@ const program: Program = {
 
 const bindOnlyProgram: Program = {
   version: 1,
+  declaration: null,
   nominalIds: new Map(),
   params: [],
   requests: [],
@@ -321,6 +324,7 @@ const mutate: MutableMethodIrFunc = {
 
 const mutationProgram: Program = {
   version: 1,
+  declaration: null,
   nominalIds: new Map(),
   params: [],
   requests: [],

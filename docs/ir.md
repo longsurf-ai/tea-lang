@@ -339,8 +339,10 @@ The catalog owns primitive signatures, qualifier requirements, expression captur
 and effect classification. Noding preserves the concrete intrinsic contract in
 IR-owned facts; it never imports checker objects into the Program. `input.*`
 remains parameter declaration syntax through native calls, `request.*` captures
-child Programs, and `library()` identifies library modules. Entry programs have
-no indicator/strategy headers or program-kind distinction.
+child Programs, and `library()` identifies library modules. An entry's optional
+first-statement `indicator()` projects to `Program.declaration`, host-facing
+metadata that lowers to no IR; there is no strategy header or program-kind
+distinction.
 
 ## Program fields vs projections
 

@@ -1442,6 +1442,27 @@ describe('program surface', () => {
     expect(mustBuild('//@version=1\nemit "output0" close').version).toBe(1);
     expect(mustBuild('emit "output0" close').version).toBe(1);
   });
+
+  test('declaration comes from the indicator() header and lowers to no IR', () => {
+    const program = mustBuild(
+      'indicator("RSI", overlay = true)\nvalue = request.security("A", "D", close)\nemit "x" value',
+    );
+    expect(program.declaration).toEqual({
+      kind: 'indicator',
+      title: 'RSI',
+      overlay: true,
+    });
+    expect(program.requests[0].child.declaration).toBeNull();
+    expect(mustBuild('indicator("A")\nemit "x" close').declaration).toEqual({
+      kind: 'indicator',
+      title: 'A',
+      overlay: false,
+    });
+    expect(mustBuild('emit "x" close').declaration).toBeNull();
+    expect(mustBuild('indicator("A")\nemit "x" close').body).toHaveLength(
+      mustBuild('emit "x" close').body.length,
+    );
+  });
 });
 
 describe('sparse effects', () => {

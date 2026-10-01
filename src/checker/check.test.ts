@@ -675,13 +675,11 @@ describe('calls', () => {
     );
   });
 
-  test('removed script headers are ordinary unknown functions', () => {
-    for (const name of ['indicator', 'strategy']) {
-      expect(CATALOG.funcs.has(name)).toBe(false);
-      expect(
-        checkText(`${name}("Title")`).errors.map(error => error.msg),
-      ).toContain(`unknown function '${name}'`);
-    }
+  test('strategy() is not a script header', () => {
+    expect(CATALOG.funcs.has('strategy')).toBe(false);
+    expect(
+      checkText('strategy("Title")').errors.map(error => error.msg),
+    ).toContain("unknown function 'strategy'");
   });
 
   test('input overloads preserve their exact positional and nominal types', () => {
@@ -925,6 +923,32 @@ describe('calls', () => {
 });
 
 describe('diagnostics', () => {
+  test('indicator() is a once-only header of an entry script', () => {
+    const errorsOf = (src: string) =>
+      checkText(src).errors.map(error => error.msg);
+    expect(
+      errorsOf('indicator("RSI", overlay = true)\nemit "x" close'),
+    ).toEqual([]);
+    expect(errorsOf('emit "x" close\nindicator("RSI")')).toContain(
+      'indicator() declaration must be the first statement in a script',
+    );
+    expect(errorsOf('indicator("A")\nindicator("B")')).toContain(
+      'duplicate indicator() declaration',
+    );
+    expect(errorsOf('library("lib")\nindicator("A")')).toContain(
+      'library packages cannot declare indicator()',
+    );
+    expect(errorsOf('if close > 0\n    indicator("A")')).toContain(
+      "'indicator' can only be called at the top level of the script",
+    );
+    expect(errorsOf('indicator("")')).toEqual([
+      'indicator() title must not be empty',
+    ]);
+    expect(errorsOf('indicator("RSI", "R")')).toEqual([
+      "argument 'shorttitle' to 'indicator' is not supported yet",
+    ]);
+  });
+
   test('switch has at most one default arm and it is final', () => {
     const nonFinal = checkText(
       ['x = switch 1', '    => 10', '    1 => 20'].join('\n'),

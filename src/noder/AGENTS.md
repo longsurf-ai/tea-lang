@@ -37,6 +37,9 @@ lexical traversal and single-write bind-known discovery. Source loading lives in
 - Syntax `ExprStmt` projects directly to its expression in IR statement lists.
   Block statements discard expression values; a block's separate result expression
   retains its value. There is no semantic IR expression-statement wrapper.
+- An entry's first-statement `indicator()` call projects its folded literal
+  arguments to `Program.declaration` and lowers to no IR. Request children
+  carry `null`.
 - Reference bindings- Parameter bindings are compile-time only: a never-reassigned input-call declaration binds its name to `ParamInput`. Tea const declarations vanish entirely. Visual values use ordinary names, structs, calls and history; there are no output handles.
 - Param identity- Param identity: the binding name when the input call initializes a program-
   scope declaration, else `input@line:col`. Inputs in local blocks and

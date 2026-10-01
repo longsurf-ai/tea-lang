@@ -44,6 +44,7 @@ const nominalIds = new Map<Type, string>([
 function moduleFor(types: readonly Type[]) {
   const program: Program = {
     version: 1,
+    declaration: null,
     nominalIds,
     params: [],
     requests: [],

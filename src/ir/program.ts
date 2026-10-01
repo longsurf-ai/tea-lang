@@ -206,6 +206,14 @@ export interface MutableMethodIrFunc extends IrFuncBase {
 
 export type IrFunc = FreeIrFunc | ConstMethodIrFunc | MutableMethodIrFunc;
 
+/** The entry script's `indicator()` header: a title and a chart placement hint. */
+export interface Declaration {
+  readonly kind: 'indicator';
+  readonly title: string;
+  // Draw over the price pane instead of in a pane of its own.
+  readonly overlay: boolean;
+}
+
 // @agent invariant: one Program instance runs against exactly one context
 // (one symbol × timeframe axis) and owns its names, bindings, and rollback;
 // recursion — not multi-context Programs — is how requests compose. The
@@ -223,6 +231,14 @@ export type IrFunc = FreeIrFunc | ConstMethodIrFunc | MutableMethodIrFunc;
 export interface Program {
   // Declared Tea language version.
   readonly version: number;
+  /**
+   * What the entry script says it is, for hosts to label and place it. It
+   * never changes execution, and request children have none.
+   *
+   * @example `indicator("RSI", overlay = false)` as the first statement gives
+   * `{kind: 'indicator', title: 'RSI', overlay: false}`; without it, `null`.
+   */
+  readonly declaration: Declaration | null;
   /**
    * Canonical declaration identities retained from checking. Arrow projection
    * uses these identities as metadata; structural fields still come from Type.

@@ -28,7 +28,7 @@ preludes, and trade components are explicit imports.
   trade coordinators own concrete broker and portfolio values; lifecycle
   methods are ordinary calls and no package global hides execution state. The
   entry source uses the same Program whether it computes indicators or trades.
-  There are no indicator/strategy declaration headers.
+  There is no strategy declaration header; `indicator()` is only entry metadata.
 - `trade.nextOpen`, `trade.ohlc`, `trade.path`, and `trade.lots` are direct
   families, not modes of a universal wrapper. Broker interfaces own matching
   and order lifecycle; portfolio interfaces own fill application and
