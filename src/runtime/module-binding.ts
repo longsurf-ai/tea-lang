@@ -21,6 +21,12 @@ const coordinates = cloneSchema(outputSchema([])).fields;
 declare const contextType: unique symbol;
 
 /**
+ * A Module's data requirements, including named series and contextual builtins.
+ * Inspect the bound Module: parameters can change source names and history depths.
+ */
+export type ModuleInputs = Module['inputs'];
+
+/**
  * A compiled program's configuration and ordinary TypeScript entry function.
  * Binding returns an independent configuration; execution state belongs to Context.
  * @example `const configured = program.bind({length: 20}); configured !== program`.

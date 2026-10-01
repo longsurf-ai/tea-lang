@@ -23,7 +23,7 @@ emit "capped" limits.cap(upper, 100.0)
 | How does a script name another file? | A relative specifier, `import ./lib/bands`, resolved against the importing file.                       |
 | What do other specifiers mean?       | One bare segment is a shipped library. Several bare segments are `external`, which is not supported.   |
 | Who resolves a specifier?            | The loader. The rule is part of the language and identical in every host.                              |
-| Who reads the file?                  | The loader, through the compilation's `read` option, which defaults to `readFileSync`.                 |
+| Who reads the file?                  | The compiler reads disk, or uses imported files supplied in `SourceInput.imports`.                     |
 | Does any tool scan directories?      | No. Imports are followed lazily from the entry file, as the loader already does for shipped libraries. |
 | Extensions and probing               | The specifier has no extension and the loader appends `.tea`. One import names exactly one file.       |
 | May an import leave a project root?  | Yes. Tea has no project root. Like `tsc` and `node`, the loader reads the path the specifier names.    |
@@ -103,14 +103,17 @@ The checker passes the name every `Pos` of the statement already carries.
 
 ## Hosts
 
-A host names its entry file truthfully and may supply a reader; no host
-supplies a registry. `compileToProgram(inputs, errors, {read})` asks
-`read(canonicalPath)` for each file a relative import names, once for each
-path it finds, and `undefined` reports `cannot find`. Entry files arrive as inputs and
-shipped libraries never go through it. A host that stores source itself, such
-as a snapshot of a script and its imports, passes each entry as
-`{filename, source}` and a map-backed `read`; wrapping the default `read`
-during a disk compile records exactly the files the imports reached.
+A host names its entry file truthfully; the compiler reads it and follows imports
+on disk. `compileToProgram(inputs, errors, {includeSources: true})` returns
+`{program, sources}`, capturing the exact entry and dependency texts used by that
+compilation. Compiler-shipped libraries are not included.
+
+For a stored snapshot, pass `{filename, source, imports}` as a `SourceInput`.
+`imports` maps canonical filenames to their text. An explicit map (including an
+empty one) supplies the complete set of imported files; missing files never fall
+back to disk. Omitting `imports` retains ordinary filesystem resolution, including
+for an editor's unsaved entry text. Shipped libraries are always compiler-owned.
+Sources are input data, not compiler options; the only option is source capture.
 
 | Host                        | Entry filename         | Relative imports resolve against |
 | --------------------------- | ---------------------- | -------------------------------- |

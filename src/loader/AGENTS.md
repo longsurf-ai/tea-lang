@@ -10,8 +10,9 @@ parsed package sources and owns their semantics.
 - `docs/imports.md` owns how an import names a package. A path that starts
   with `./` or `../` is a file beside the importing one: `importedFile`
   resolves it to a canonical path, which is the package identity and the cache
-  key, and the loader reads it through the compilation's injected `read`
-  (default `readFileSync`); entry inputs and shipped libraries never use it.
+  key, and the loader reads it from disk unless `SourceInput.imports` supplies the
+  compilation's complete imported-file texts. Missing snapshot files never
+  fall back to disk; shipped libraries use their own registry.
   The registry is never asked about a file, so a file cannot shadow a library.
 - Flattened preludes (`visual`, `pine`) and namespaced implicit packages
   (`ta`) are separate lists of shipped libraries. The checker checks the
@@ -36,6 +37,6 @@ parsed package sources and owns their semantics.
   `checker/importer.ts` and the driver (`compiler.ts`) injects the instance.
   Test helpers are the sanctioned exception.
 - The source files that can affect a Program are the entry files, the
-  compiler-shipped libraries, and the files relative imports reach. A host
-  records the last set by wrapping `read`: the loader reads each file it finds
-  once per canonical path, and may ask again for a missing one.
+  compiler-shipped libraries, and the files relative imports reach. The compiler
+  can return the exact entry and dependency texts alongside the Program; it
+  owns selection between filesystem reads and complete source snapshots.

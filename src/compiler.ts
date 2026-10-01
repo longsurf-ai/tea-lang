@@ -9,7 +9,7 @@ import {checkPackage, type CheckedPackage} from './checker/check';
 import {
   loadPackage,
   resolveImports,
-  type ReadSource,
+  readSourceFile,
   type SourceInput,
 } from './loader/loader';
 import {buildProgram} from './noder/noder';
@@ -40,23 +40,22 @@ export interface Compilation {
   readonly program: Program | null;
 }
 
-/**
- * How one compilation reaches source it does not receive directly. Entry
- * files arrive as inputs; `read` supplies the files their relative imports
- * name, by canonical path. Compiler-shipped libraries never go through it.
- */
+/** Source capture does not change compilation or import resolution. */
 export interface CompileOptions {
-  /** Defaults to reading the disk; `undefined` reports `cannot find`. */
-  readonly read?: ReadSource;
+  readonly includeSources?: boolean;
 }
 
 // The sole parse -> check -> node implementation, as two halves so that the
 // parse barrier is the only thing the two entries below decide for
 // themselves. Target lowerers consume its Program directly; no execution mode
 // owns a parallel frontend.
-function parseStage(inputs: readonly SourceInput[], errors: Errors): File[] {
+function parseStage(
+  inputs: readonly SourceInput[],
+  errors: Errors,
+  captured?: Map<string, string>,
+): File[] {
   const parseDone = perf.startTimer('parse');
-  const files = loadPackage(inputs, errors);
+  const files = loadPackage(inputs, errors, captured);
   parseDone({files: files.length});
   return files;
 }
@@ -64,13 +63,39 @@ function parseStage(inputs: readonly SourceInput[], errors: Errors): File[] {
 function checkAndNode(
   files: readonly File[],
   errors: Errors,
-  {read}: CompileOptions,
+  inputs: readonly SourceInput[],
+  captured?: Map<string, string>,
 ): Compilation {
   // Import resolution is a driver stage: the loader loads and orders
   // libraries; the checker consumes them through the Importer and positions
   // any resolution errors at the import statements.
   const checkDone = perf.startTimer('check');
-  const importer = resolveImports(files, undefined, undefined, undefined, read);
+  const supplied = new Map(
+    inputs.flatMap(input =>
+      typeof input === 'string'
+        ? []
+        : [
+            [input.filename, input.source] as const,
+            ...Object.entries(input.imports ?? {}),
+          ],
+    ),
+  );
+  const snapshot = inputs.some(
+    input => typeof input !== 'string' && input.imports !== undefined,
+  );
+  const importer = resolveImports(
+    files,
+    undefined,
+    undefined,
+    undefined,
+    filename => {
+      const source =
+        supplied.get(filename) ??
+        (snapshot ? undefined : readSourceFile(filename));
+      if (source !== undefined) captured?.set(filename, source);
+      return source;
+    },
+  );
   const checked = checkPackage(files, errors, importer);
   const dependencies = [
     ...new Set([
@@ -93,15 +118,50 @@ function checkAndNode(
   };
 }
 
-// The compiling entry: a phase barrier after every stage, so a failed parse
-// reports parse errors only.
+type ProgramWithSources = {
+  readonly program: Program;
+  readonly sources: Readonly<Record<string, string>>;
+};
+
+/**
+ * Compile inputs through the existing parse/check/node pipeline. Errors are
+ * recorded in `errors`; a failed stage returns null without running later stages.
+ * `includeSources` additionally returns the exact entry/import texts used by
+ * this compilation, excluding shipped libraries. Ordinary calls return Program.
+ * @example compileToProgram([{filename: 'main.tea', source, imports}], errors);
+ * @example compileToProgram(['main.tea'], errors, {includeSources: true});
+ */
+export function compileToProgram(
+  inputs: readonly SourceInput[],
+  errors: Errors,
+  options: CompileOptions & {readonly includeSources: true},
+): ProgramWithSources | null;
+export function compileToProgram(
+  inputs: readonly SourceInput[],
+  errors: Errors,
+  options?: CompileOptions & {readonly includeSources?: false},
+): Program | null;
+export function compileToProgram(
+  inputs: readonly SourceInput[],
+  errors: Errors,
+  options: CompileOptions,
+): Program | ProgramWithSources | null;
 export function compileToProgram(
   inputs: readonly SourceInput[],
   errors: Errors,
   options: CompileOptions = {},
-): Program | null {
-  const files = parseStage(inputs, errors);
-  return errors.count > 0 ? null : checkAndNode(files, errors, options).program;
+): Program | ProgramWithSources | null {
+  const captured = options.includeSources
+    ? new Map<string, string>()
+    : undefined;
+  const files = parseStage(inputs, errors, captured);
+  const program =
+    errors.count > 0
+      ? null
+      : checkAndNode(files, errors, inputs, captured).program;
+  return program && captured
+    ? {program, sources: Object.fromEntries(captured)}
+    : program;
 }
 
 /**
@@ -112,7 +172,7 @@ export function compileToProgram(
  * barrier and runs only when parse and check reported nothing.
  *
  * It is for editors and analysis only. Nothing that executes Tea may call it:
- * every backend consumes the `Program` of `compileToProgram`. `options.read`
+ * every backend consumes the `Program` of `compileToProgram`. `SourceInput.imports`
  * has the same contract as there.
  *
  * User errors queue in `errors`; an `InternalError` thrown from here is a
@@ -131,9 +191,8 @@ export function compileToProgram(
 export function compileForTooling(
   inputs: readonly SourceInput[],
   errors: Errors,
-  options: CompileOptions = {},
 ): Compilation {
-  return checkAndNode(parseStage(inputs, errors), errors, options);
+  return checkAndNode(parseStage(inputs, errors), errors, inputs);
 }
 
 export function compile(filenames: readonly string[]): CompileResult {

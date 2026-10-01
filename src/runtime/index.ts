@@ -1,5 +1,5 @@
 // Public typed execution library, independent of the Tea frontend and Node host.
-export {Module} from './module-binding';
+export {Module, type ModuleInputs} from './module-binding';
 export {Color} from './color';
 export {Context, type StepInput, type StepResult} from './js/context';
 export {Input, Series} from './js/series';
