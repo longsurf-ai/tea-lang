@@ -494,14 +494,13 @@ function buildVars(): NativeVar[] {
 // ---- functions --------------------------------------------------------------
 
 /**
- * Input-row fields Node owns (src/api/node.ts): event time, attempt flags and
- * the first-attempt marker. A series input with one of these names would
- * collide with them, so `input.series` rejects them.
+ * Input-row fields Node owns (src/api/node.ts): event time, the provisional
+ * flag and the first-attempt marker. A series input with one of these names
+ * would collide with them, so `input.series` rejects them.
  */
 export const RESERVED_SERIES_INPUT_NAMES: ReadonlySet<string> = new Set([
   'time',
   'provisional',
-  'realtime',
   'firstAttempt',
 ]);
 

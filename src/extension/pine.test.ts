@@ -1,8 +1,8 @@
 // Purpose: Pine Extension derives contextual values from public Node inputs.
 
-import {of} from 'rxjs';
+import {of, Subject} from 'rxjs';
 import {describe, expect, test} from 'vitest';
-import {Field, Schema, TimestampMillisecond} from 'apache-arrow';
+import {Bool, Field, Schema, TimestampMillisecond} from 'apache-arrow';
 import {createNode, type Datum} from '../api/node';
 import {i} from '../api/clock';
 import {DataStream} from '../api/stream';
@@ -95,6 +95,100 @@ describe('Pine Extension', () => {
     await sink.completion;
     expect(values(sink)).toEqual([[NaN], [7]]);
     expect(module.parameters[0]!.value).toBe(2);
+  });
+
+  test('bar states distinguish first attempt, final commit, history and realtime', () => {
+    let live = false;
+    const rows = new Subject<{time: number; provisional: boolean}>();
+    const node = createNode(
+      loadModule(
+        generate(
+          mustBuild(
+            [
+              'emit "confirmed" barstate.isconfirmed',
+              'emit "new" barstate.isnew',
+              'emit "realtime" barstate.isrealtime',
+              'emit "history" barstate.ishistory',
+            ].join('\n'),
+          ),
+        ),
+      ).bind(),
+      pineBuiltinSupplier(
+        () => 0,
+        () => live,
+      ),
+    ).bind(
+      new DataStream(
+        new Schema([
+          new Field('time', new TimestampMillisecond(), false),
+          new Field('provisional', new Bool(), false),
+        ]),
+        rows,
+      ),
+    );
+    const sink = new DatumSink();
+    node.to(sink);
+    rows.next({time: 1, provisional: false});
+    live = true;
+    rows.next({time: 2, provisional: true});
+    rows.next({time: 2, provisional: true});
+    rows.next({time: 2, provisional: false});
+    expect(
+      sink.values.map(value => [
+        value.confirmed,
+        value.new,
+        value.realtime,
+        value.history,
+      ]),
+    ).toEqual([
+      [true, true, false, true],
+      [false, true, true, false],
+      [false, false, true, false],
+      [true, false, true, false],
+    ]);
+    node.dispose();
+  });
+
+  test('realtime and history follow the host callback at each Node step', () => {
+    let live = false;
+    const root = new Subject<object>();
+    const child = new Subject<object>();
+    const node = createNode(
+      loadModule(
+        generate(
+          mustBuild(
+            [
+              'child = request.security("X", "", barstate.isrealtime ? 1 : 0)',
+              'emit "output0" barstate.isrealtime ? 1 : 0',
+              'emit "output1" barstate.ishistory ? 1 : 0',
+              'emit "output2" child',
+            ].join('\n'),
+          ),
+        ),
+      ).bind(),
+      pineBuiltinSupplier(
+        () => 0,
+        () => live,
+      ),
+    )
+      .bind(new DataStream(new Schema([]), root))
+      .bind({child: new DataStream(new Schema([]), child)});
+    const sink = new DatumSink();
+    node.to(sink);
+    child.next({});
+    root.next({});
+    // The child steps before the flip, so only the root reads realtime.
+    child.next({});
+    live = true;
+    root.next({});
+    child.next({});
+    root.next({});
+    expect(values(sink)).toEqual([
+      [0, 1, 0],
+      [1, 0, 0],
+      [1, 0, 1],
+    ]);
+    node.dispose();
   });
 
   test('requires exact bigint event time when time is demanded', async () => {

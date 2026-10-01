@@ -149,8 +149,8 @@ places to its depth pass for annotation.
   in the flattened `pine` prelude (`export close = input.series("close")`), so
   `close` and `input.series("close")` are one input. The noder interns one
   `SeriesInput` per name in each Program; its id is the input schema field
-  name. `time`, `provisional`, `realtime`, and `firstAttempt` are Node's row
-  fields and cannot name a series input. An `input.source` default must name a
+  name. `time`, `provisional`, and `firstAttempt` are Node's row fields and
+  cannot name a series input. An `input.source` default must name a
   series input alias, such as `close` or a library's exported alias; a direct
   `input.series(...)` call is not one. Neither noder nor runtime classifies a
   builtin by parsing its spelling.

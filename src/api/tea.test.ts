@@ -2,8 +2,9 @@
 // implicit Tea libraries, diagnostics, and the canonical Program projection.
 
 import {describe, expect, test, vi} from 'vitest';
-import {Observable, of, Subject} from 'rxjs';
+import {map, Observable, of, Subject} from 'rxjs';
 import {
+  Bool,
   DataType,
   Field,
   Float64,
@@ -899,6 +900,154 @@ describe('tea', () => {
     expect(firstSubscription.closed).toBe(true);
     expect(secondSubscription.closed).toBe(true);
     expect(lateSubscription.closed).toBe(true);
+  });
+
+  test('asStream publishes time, provisional and outputs on the Node clock', () => {
+    const template = tea`emit "double" close * 2`;
+    expect(() => template.asStream()).toThrow(
+      'Node is missing bindings: close',
+    );
+    expect(() => template.to({})).toThrow('Node is missing bindings: close');
+
+    const node = template.bind(
+      new DataStream(timedNumericSchema, new Subject<TimedNumericDatum>(), m),
+    );
+    const stream = node.asStream();
+    expect(stream.schema.fields.map(field => field.name)).toEqual([
+      'time',
+      'provisional',
+      'double',
+    ]);
+    expect(stream.schema.fields[2]!.metadata.get('tea:write')).toBe('set');
+    expect(stream.clock).toBe(m);
+    expect(
+      template
+        .bind(numericSource(1))
+        .asStream()
+        .schema.fields.map(field => field.name),
+    ).toEqual(['provisional', 'double']);
+
+    node.dispose();
+    expect(() => node.asStream()).toThrow('Node is disposed');
+  });
+
+  test('asStream readers share one run and see only future rows', () => {
+    const rows = new Subject<TimedNumericDatum>();
+    let sourceSubscriptions = 0;
+    const node = tea`emit "double" close * 2`.bind(
+      new DataStream(
+        timedNumericSchema,
+        new Observable<TimedNumericDatum>(subscriber => {
+          sourceSubscriptions += 1;
+          return rows.subscribe(subscriber);
+        }),
+      ),
+    );
+    const stream = node.asStream();
+    const first: unknown[] = [];
+    const second: unknown[] = [];
+    const late: unknown[] = [];
+    let completed = 0;
+    expect(sourceSubscriptions).toBe(0);
+
+    const firstSubscription = stream.subscribe({next: row => first.push(row)});
+    stream.subscribe({
+      next: row => second.push(row),
+      complete: () => (completed += 1),
+    });
+    expect(sourceSubscriptions).toBe(1);
+    rows.next({time: 1n, close: 1});
+    stream.subscribe({
+      next: row => late.push(row),
+      complete: () => (completed += 1),
+    });
+    firstSubscription.unsubscribe();
+    rows.next({time: 2n, close: 2});
+
+    const one = {time: 1, provisional: false, double: 2};
+    const two = {time: 2, provisional: false, double: 4};
+    expect(first).toEqual([one]);
+    expect(second).toEqual([one, two]);
+    expect(late).toEqual([two]);
+    expect(sourceSubscriptions).toBe(1);
+    node.dispose();
+    expect(completed).toBe(2);
+
+    const failing = new Subject<TimedNumericDatum>();
+    const failed = tea`emit "double" close * 2`
+      .bind(timedNumericSubject(failing))
+      .asStream();
+    const errors: unknown[] = [];
+    failed.subscribe({error: error => errors.push(error)});
+    failed.subscribe({error: error => errors.push(error)});
+    const failure = new Error('source failed');
+    failing.error(failure);
+    expect(errors).toEqual([failure, failure]);
+  });
+
+  test('a Node reads another Node in step with their shared input', () => {
+    const bars = new Subject<{
+      time: number;
+      close: number;
+      provisional: boolean;
+    }>();
+    const barStream = new DataStream(
+      new Schema([
+        new Field('time', new TimestampMillisecond(), false),
+        new Field('close', new Float64(), false),
+        new Field('provisional', new Bool(), false),
+      ]),
+      bars,
+      m,
+    );
+    const upstream = tea`emit "double" close * 2`.bind(barStream);
+    const upstreamRows = upstream.asStream();
+    // Set outputs are nullable, so the reader projects them to plain numbers.
+    const doubled = new DataStream(
+      new Schema([
+        new Field('time', new TimestampMillisecond(), false),
+        new Field('provisional', new Bool(), false),
+        new Field('double', new Float64(), false),
+      ]),
+      upstreamRows.asObservable().pipe(
+        map(row => ({
+          time: row.time,
+          provisional: row.provisional,
+          double: typeof row.double === 'number' ? row.double : NaN,
+        })),
+      ),
+      upstreamRows.clock,
+    );
+    const reader = tea`
+      double = input.series("double")
+      emit "sum" close + double
+    `;
+    expect(() => reader.bind({close: barStream, double: upstreamRows})).toThrow(
+      "series 'double' requires a numeric Arrow field",
+    );
+
+    const bound = reader.bind({close: barStream, double: doubled});
+    const sink = new StepSink();
+    bound.to(sink);
+    bars.next({time: 1, close: 1, provisional: false});
+    bars.next({time: 2, close: 2, provisional: true});
+    bars.next({time: 2, close: 3, provisional: true});
+    bars.next({time: 2, close: 4, provisional: false});
+    expect(
+      sink.values.map(value => [
+        value.index,
+        value.time,
+        value.provisional,
+        value.sum,
+      ]),
+    ).toEqual([
+      [0, 1, false, 3],
+      [1, 2, true, 6],
+      [1, 2, true, 9],
+      [1, 2, false, 12],
+    ]);
+    bound.dispose();
+    upstream.dispose();
   });
 
   test('derived executions have independent state and timestamp ordering', async () => {

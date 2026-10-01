@@ -7,14 +7,24 @@ import type {Stored} from '../runtime/value';
 
 /**
  * Supply per-step Pine values from the Node's position and source time.
- * Each attempt samples the supplied clock; callers wanting a fixed evaluation
- * instant supply a constant function. Derived Nodes share no clock memoization.
+ * Each attempt samples the supplied clock and live flag once; callers wanting
+ * a fixed evaluation instant supply a constant function. Derived Nodes share
+ * no clock memoization. Node gives one supplier to every request child, and
+ * each child samples both callbacks at its own steps.
+ * `barstate.isrealtime` reads the live flag and `barstate.ishistory` its
+ * opposite. The default flag is false, so finite runs and `tea` template
+ * Nodes report history; a live host calls `createNode` with its own flag.
  * Absent symbol/timeframe metadata uses the builtin's typed empty value.
  * Runtime overlays any bound fixed values.
  * @example For a module containing only `plot(timenow)`,
  * `pineBuiltinSupplier(() => 1000)([], module, 0, {})` returns `[1000]`.
+ * `pineBuiltinSupplier(Date.now, () => live)` reports realtime bars once the
+ * host sets `live`.
  */
-export function pineBuiltinSupplier(now: () => number = Date.now) {
+export function pineBuiltinSupplier(
+  now: () => number = Date.now,
+  isRealtime: () => boolean = () => false,
+) {
   return (
     _path: readonly number[],
     module: Module,
@@ -25,8 +35,9 @@ export function pineBuiltinSupplier(now: () => number = Date.now) {
     if (!Number.isSafeInteger(timeNow)) {
       throw new BindError('Pine timenow must be an exact epoch-ms integer');
     }
+    const realtime = isRealtime();
     return module.inputs.builtins.map(spec =>
-      builtinValue(spec, index, datum, timeNow),
+      builtinValue(spec, index, datum, timeNow, realtime),
     );
   };
 }
@@ -36,6 +47,7 @@ function builtinValue(
   index: number,
   datum: Readonly<Record<string, unknown>>,
   timeNow: number,
+  realtime: boolean,
 ): Stored {
   const source = spec.source;
   let value: Stored;
@@ -59,10 +71,10 @@ function builtinValue(
           value = index === 0;
           break;
         case 'isrealtime':
-          value = datum.realtime === true;
+          value = realtime;
           break;
         case 'ishistory':
-          value = datum.realtime !== true;
+          value = !realtime;
           break;
         case 'isconfirmed':
           value = datum.provisional !== true;

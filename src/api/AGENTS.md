@@ -29,16 +29,19 @@ runtime semantics remain in their existing packages.
   recursively constructs child execution streams, folds their results into the
   parent through `sync()` in request-id order, and returns the Subscription.
   That Subscription controls only its sink; later `.to()` calls add sinks for
-  future values without reconnecting execution. RxJS owns ongoing
+  future values without reconnecting execution. `asStream()` exposes the same
+  run as a DataStream (time when timed, provisional and output fields, on the
+  Node clock); each of its subscriptions is one `.to()` call, but a reader's
+  own failure ends only that reader. RxJS owns ongoing
   values/errors/completion. Node-owned connection teardown stops the complete child graph between synchronous steps. `dispose()` is synchronous and
-  idempotent. Optional Bool `provisional` input metadata drives existing Context attempts; only final attempts advance index. Optional Bool `realtime` metadata drives Pine live/history flags. Final timestamps cannot be revised.
+  idempotent. Optional Bool `provisional` input metadata drives existing Context attempts; only final attempts advance index. The host's `isRealtime` callback drives Pine live/history flags. Final timestamps cannot be revised.
 - `Context` keeps `StepResult` internal to Node. Node adds its successful-step
   index and exact source time, then publishes one lossless Arrow-schema row:
   source-named set fields contain nullable raw values, append fields contain
   raw lists in per-column execution order, numeric `NaN` remains `NaN`,
-  absence and an explicit null output share null, and provisional state is explicit. A thrown
-  observer `next()` callback terminates the shared execution and reaches every
-  observer through `error()`.
+  absence and an explicit null output share null, and provisional state is explicit. A `.to()`
+  observer's thrown `next()` callback terminates the shared execution and
+  reaches every observer through `error()`.
 - `DataStream` owns one Arrow schema validation per emission plus optional
   Clock metadata. Schemas are genuine Arrow `Schema` objects, copied at
   construction and exposed through defensive copies. Sources decode bytes and
@@ -64,7 +67,8 @@ runtime semantics remain in their existing packages.
   policies belong to `docs/requests.md`. Collect batches cross the API/runtime seam only as frozen
   scalar arrays and become ordinary Tea arrays inside the parent Heap
   transaction. This collect path is Node-only. The statically enabled Pine
-  Extension derives contextual builtins from Node index and current input
-  time; dynamic requests fail earlier at the noder boundary.
+  Extension derives contextual builtins from Node index, current input time
+  and the host's `now`/`isRealtime` callbacks; dynamic requests fail earlier
+  at the noder boundary.
 
 - Parameters, input requirements, state descriptions, and one output schema live directly on the module. Both set and append results use one cell array; Node adds coordinates without rebuilding a payload language. Live streams stay in Node.

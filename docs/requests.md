@@ -99,8 +99,6 @@ or bigints; Node requires exact safe epoch-ms integers in increasing order betwe
 finalized steps. A non-nullable Bool `provisional` field enables repeated attempts
 at the same timestamp; it defaults to false when absent. The current step must
 finalize before time advances, and finalized timestamps cannot be revised.
-A non-nullable Bool `realtime` field identifies live delivery, including final
-live attempts; it defaults to false for historical sources.
 Arrow `Int64` also supports existing bigint sources. Use non-nullable times for
 timed request synchronization; nullable time fields can represent absent or
 explicitly null event metadata.
