@@ -195,7 +195,7 @@ async function runCase(entry: CorpusCase): Promise<{
   const requests = Object.fromEntries(
     module.requests.map(request => [
       request.name,
-      csvStream(data, request.context?.calcBarsCount || undefined),
+      csvStream(data, reference.requestRows[request.name]),
     ]),
   );
   const completed = await executeTestModule(module, {

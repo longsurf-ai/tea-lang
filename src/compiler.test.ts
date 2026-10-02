@@ -1,5 +1,6 @@
 // Purpose: Pipeline driver tests — the compiling entry stops at a failed parse; the tooling entry checks past it and keeps every stage's result.
 
+import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Schema} from 'apache-arrow';
@@ -115,7 +116,7 @@ describe('relative imports', () => {
     expect(message).toContain('import cycle: ');
   });
 
-  test('an injected reader supplies every relative import without the disk', async () => {
+  test('complete sources supply relative imports without filesystem fallback', async () => {
     const root = '/snapshot';
     const files = new Map([
       [
@@ -127,22 +128,16 @@ describe('relative imports', () => {
         'library("risk")\nexport cap(value, limit) =>\n    math.min(value, limit)\n',
       ],
     ]);
-    const requested: string[] = [];
-    const read = (filename: string) => {
-      requested.push(filename);
-      return files.get(filename);
-    };
+    const sources = Object.fromEntries(files);
     const source =
       'import ./lib/bands\nimport ./shared/risk as limits\nemit "capped" limits.cap(bands.upper(10.0, 2.0), 11.0)\n';
     const errors = new Errors();
     const program = compileToProgram(
-      [{filename: `${root}/entry.tea`, source}],
+      [{filename: `${root}/entry.tea`, source, imports: sources}],
       errors,
-      {read},
     );
     expect(located(errors)).toEqual([]);
-    // Canonical paths, each file read once however many spellings reach it.
-    expect(requested.sort()).toEqual([...files.keys()].sort());
+
     const sink = new OutputCapture();
     await executeTestProgram(program!, {
       stream: finiteStream(new Schema([]), [{}]),
@@ -154,14 +149,61 @@ describe('relative imports', () => {
     const missing = new Errors();
     expect(
       compileToProgram(
-        [{filename: `${root}/entry.tea`, source: 'import ./nope\n'}],
+        [
+          {
+            filename: `${root}/entry.tea`,
+            source: 'import ./nope\n',
+            imports: sources,
+          },
+        ],
         missing,
-        {read},
       ),
     ).toBeNull();
     expect(located(missing)).toEqual([
       `${root}/entry.tea:1:8: cannot find './nope' (no file ${root}/nope.tea)`,
     ]);
+  });
+
+  test('optionally returns the exact source snapshot without changing ordinary results', () => {
+    const errors = new Errors();
+    const captured = compileToProgram([entry], errors, {includeSources: true});
+    expect(located(errors)).toEqual([]);
+    expect(Object.keys(captured!.sources).sort()).toEqual(
+      [
+        entry,
+        join(IMPORTS, 'strategies/lib/bands.tea'),
+        join(IMPORTS, 'shared/risk.tea'),
+      ].sort(),
+    );
+    const program = compileToProgram(
+      [
+        {
+          filename: entry,
+          source: captured!.sources[entry]!,
+          imports: captured!.sources,
+        },
+      ],
+      new Errors(),
+    );
+    expect(program).not.toBeNull();
+    expect(program).not.toHaveProperty('program');
+  });
+
+  test('an explicit import map never falls back to existing disk files', () => {
+    const errors = new Errors();
+    expect(
+      compileToProgram(
+        [
+          {
+            filename: entry,
+            source: readFileSync(entry, 'utf8'),
+            imports: {},
+          },
+        ],
+        errors,
+      ),
+    ).toBeNull();
+    expect(located(errors).join('\n')).toContain("cannot find './lib/bands'");
   });
 
   test('an imported file must be a library', () => {

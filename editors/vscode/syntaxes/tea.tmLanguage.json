@@ -619,7 +619,7 @@
     "script-declarations": {
       "patterns": [
         {
-          "match": "\\b(?:library)\\b(?=\\s*\\()",
+          "match": "\\b(?:indicator|library)\\b(?=\\s*\\()",
           "name": "support.function.declaration.tea"
         }
       ]

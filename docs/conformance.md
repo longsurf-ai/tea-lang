@@ -52,7 +52,7 @@ The `typed-execution-range` compile-through case locks the finite Node path
 contract for `time`, `bar_index`, `timenow`, and every `barstate.*` flag, including one-bar historical reads. The harness
 binds a deterministic `timenow` value of `1700000000000`. Its empty
 `request.security` declaration is bound explicitly to a child DataStream over
-the final two CSV indices, as hinted by `calc_bars_count = 2`. The child restarts
+the final two CSV indices, as its reference's `requestRows` says. The child restarts
 its bar indices at zero and leaves the parent prefix typed-empty.
 
 ## Reference ownership

@@ -96,13 +96,7 @@ export function exprChildren(
     expr.place.kind === PlaceKind.Request
   ) {
     const edge = expr.place.request;
-    children.push(
-      edge.symbol,
-      edge.timeframe,
-      edge.merge.fill,
-      edge.merge.ignoreInvalidSymbol,
-      edge.merge.calcBarsCount,
-    );
+    children.push(edge.symbol, edge.timeframe, edge.merge.fill);
   }
   return children;
 }

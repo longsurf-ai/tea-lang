@@ -10,7 +10,6 @@ import {m, type Clock} from './clock';
 const fields = [
   new Field('close', new Float64(), false),
   new Field('provisional', new Bool(), false),
-  new Field('realtime', new Bool(), false),
 ];
 const timedSchema = new Schema([
   new Field('time', new TimestampMillisecond(), false),
@@ -20,14 +19,12 @@ type Row = {
   time: number;
   close: number;
   provisional: boolean;
-  realtime: boolean;
 };
-const row = (
-  time: number,
-  close: number,
-  provisional = false,
-  realtime = true,
-): Row => ({time, close, provisional, realtime});
+const row = (time: number, close: number, provisional = false): Row => ({
+  time,
+  close,
+  provisional,
+});
 const stream = (source: Subject<Row>) => new DataStream(timedSchema, source);
 
 function observe(node: Node) {
@@ -76,35 +73,6 @@ test('provisional attempts preserve varip, roll back var, and commit history onc
     [1, false, 10, 5, 4, [6]],
   ]);
   node.dispose();
-});
-
-test('Pine bar states distinguish first attempt, final commit, history and realtime', () => {
-  const node = tea`
-    emit "confirmed" barstate.isconfirmed
-    emit "new" barstate.isnew
-    emit "realtime" barstate.isrealtime
-    emit "history" barstate.ishistory
-  `.bind(
-    new DataStream(
-      timedSchema,
-      of(row(1, 1, false, false), row(2, 2, true), row(2, 3, true), row(2, 4)),
-    ),
-  );
-  const result = observe(node);
-  expect(result.errors).toEqual([]);
-  expect(
-    result.values.map(value => [
-      value.confirmed,
-      value.new,
-      value.realtime,
-      value.history,
-    ]),
-  ).toEqual([
-    [true, true, false, true],
-    [false, true, true, false],
-    [false, false, true, false],
-    [true, false, true, false],
-  ]);
 });
 
 test.each([
@@ -252,13 +220,13 @@ test('positional requests wait for child finalization and preserve its logical s
     .bind(new DataStream(schema, main))
     .bind({requested: new DataStream(schema, child)});
   const result = observe(node);
-  child.next({close: 1, provisional: true, realtime: true});
-  main.next({close: 10, provisional: true, realtime: true});
-  main.next({close: 10, provisional: false, realtime: true});
+  child.next({close: 1, provisional: true});
+  main.next({close: 10, provisional: true});
+  main.next({close: 10, provisional: false});
   expect(result.values).toHaveLength(1);
-  child.next({close: 2, provisional: false, realtime: true});
-  child.next({close: 3, provisional: false, realtime: true});
-  main.next({close: 20, provisional: false, realtime: true});
+  child.next({close: 2, provisional: false});
+  child.next({close: 3, provisional: false});
+  main.next({close: 20, provisional: false});
   expect(result.errors).toEqual([]);
   expect(
     result.values.map(value => [value.index, value.provisional, value.value]),
@@ -282,13 +250,13 @@ test('count windows count child steps, not provisional notifications', () => {
     .bind(new DataStream(schema, main, (2n * m) as Clock))
     .bind({lower: new DataStream(schema, child, m)});
   const result = observe(node);
-  child.next({close: 1, provisional: false, realtime: true});
-  child.next({close: 2, provisional: true, realtime: true});
-  child.next({close: 3, provisional: true, realtime: true});
-  main.next({close: 10, provisional: true, realtime: true});
-  main.next({close: 10, provisional: false, realtime: true});
+  child.next({close: 1, provisional: false});
+  child.next({close: 2, provisional: true});
+  child.next({close: 3, provisional: true});
+  main.next({close: 10, provisional: true});
+  main.next({close: 10, provisional: false});
   expect(result.values).toHaveLength(1);
-  child.next({close: 4, provisional: false, realtime: true});
+  child.next({close: 4, provisional: false});
   expect(result.errors).toEqual([]);
   expect(
     result.values.map(value => [value.index, value.count, value.last]),

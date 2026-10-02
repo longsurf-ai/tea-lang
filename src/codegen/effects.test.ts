@@ -68,6 +68,7 @@ const payload = {
 
 const program: Program = {
   version: 1,
+  declaration: null,
   nominalIds,
   params: [],
   requests: [],

@@ -12,7 +12,7 @@ import {
   Subscription,
   takeUntil,
 } from 'rxjs';
-import {DataType, TimeUnit} from 'apache-arrow';
+import {DataType, Schema, TimeUnit} from 'apache-arrow';
 import {fatal} from '../base/print';
 import {Context, type StepResult} from '../runtime/js/context';
 import {
@@ -95,9 +95,9 @@ export interface Node {
    * Parameter binding preserves previous values and fills only unset defaults;
    * stream binding validates every requested field before deriving connections.
    * A path selects nested request declaration names; no parent values are inherited.
-   * Streams may declare non-nullable Bool `provisional` and `realtime` metadata.
-   * Both default to false. Repeated timed attempts require a pending provisional
-   * step; finalizing it commits one index before the source may advance time.
+   * Streams may declare non-nullable Bool `provisional` metadata; it defaults
+   * to false. Repeated timed attempts require a pending provisional step;
+   * finalizing it commits one index before the source may advance time.
    *
    * @example `node.bind({length: 20}).bind(closeStream)` derives a root run;
    * `node.bind({length: 50}, ['daily'])` configures an independent child.
@@ -123,6 +123,36 @@ export interface Node {
    * lossless output Datum.
    */
   to(observer: Partial<Observer<Datum>>): Subscription;
+
+  /**
+   * Exposes this Node's output as a DataStream that another Node can bind.
+   *
+   * Rows carry `time` when this Node is timed, `provisional`, and every output
+   * field with its Arrow type and metadata; `index` and `timed` stay with the
+   * Node. The stream keeps this Node's input clock. Creating it subscribes
+   * nothing: every subscription is one `to()` call, so the first starts this
+   * Node's run and later ones receive only future rows. Nothing is replayed,
+   * so readers must subscribe before the inputs deliver data. Unsubscribing
+   * removes one reader and leaves the run going; `dispose()` completes every
+   * reader, and a run error reaches every reader. A reader's own failure
+   * never stops the run: an error in its operators or Node ends only that
+   * reader, and RxJS reports a thrown subscriber `next()` as an unhandled
+   * error, whereas a throwing `to()` observer fails the run.
+   *
+   * Set outputs are nullable and plots are structs, so a reader usually maps
+   * rows to non-nullable numeric fields before binding them as series.
+   * Throws the same error as `to()` when this Node is disposed or still
+   * missing bindings.
+   *
+   * @example
+   * ```ts
+   * const doubled = tea`emit "double" close * 2`.bind(prices);
+   * doubled.asStream().subscribe({
+   *   next: row => console.log(row.provisional, row.double),
+   * });
+   * ```
+   */
+  asStream(): DataStream;
 
   /**
    * Stops the input subscription and releases every main and request runtime.
@@ -262,22 +292,8 @@ class TeaNode implements Node {
    * `node.to(csv)` then records the same future outputs without a second run.
    */
   to(observer: Partial<Observer<Datum>>): Subscription {
-    if (this.disposed) throw new Error('Node is disposed');
+    this.requireReady();
     if (this.started) return this.observe(observer);
-    if (!this.ready()) {
-      const missing = [
-        ...this.module.remaining(),
-        ...this.bindingSeriesNames().filter(name => !this.connected.has(name)),
-        ...this.module.requests
-          .filter((_, id) => !this.requests[id]!.ready())
-          .map(request => request.name),
-      ];
-      throw new Error(
-        missing.length === 0
-          ? 'Node configuration is incomplete'
-          : `Node is missing bindings: ${missing.join(', ')}`,
-      );
-    }
     const subscription = this.observe(observer);
     let execution: Observable<readonly [InputDatum, StepResult, index: number]>;
     try {
@@ -307,6 +323,60 @@ class TeaNode implements Node {
         complete: () => this.results.complete(),
       });
     return subscription;
+  }
+
+  /**
+   * Publishes this Node's run as a lazy DataStream whose every subscription is
+   * one `to()` call.
+   *
+   * The schema is the output schema without `index` and `timed`, and without
+   * `time` when no bound root stream is timed. Validation then drops those
+   * Datum fields, so rows need no conversion here. Coordinate names cannot
+   * collide with output names, because the checker reserves them.
+   *
+   * @example For `emit "double" close * 2` bound to a timed stream, the
+   * schema fields are `time`, `provisional` and `double`.
+   */
+  asStream(): DataStream {
+    this.requireReady();
+    const {fields, metadata} = this.module.outputs.schema;
+    return new DataStream(
+      new Schema(
+        fields.filter(
+          ({name}) =>
+            name !== 'index' &&
+            name !== 'timed' &&
+            (this.timed || name !== 'time'),
+        ),
+        metadata,
+      ),
+      new Observable<Datum>(subscriber => this.to(subscriber)),
+      this.clock,
+    );
+  }
+
+  /**
+   * Throws the error `to()` reports before observing: the Node is disposed,
+   * or a parameter, root series or request child is still unbound.
+   *
+   * @example A Node reading `close` with no bound stream throws
+   * `Node is missing bindings: close`.
+   */
+  private requireReady(): void {
+    if (this.disposed) throw new Error('Node is disposed');
+    if (this.ready()) return;
+    const missing = [
+      ...this.module.remaining(),
+      ...this.bindingSeriesNames().filter(name => !this.connected.has(name)),
+      ...this.module.requests
+        .filter((_, id) => !this.requests[id]!.ready())
+        .map(request => request.name),
+    ];
+    throw new Error(
+      missing.length === 0
+        ? 'Node configuration is incomplete'
+        : `Node is missing bindings: ${missing.join(', ')}`,
+    );
   }
 
   /**
@@ -455,13 +525,14 @@ class TeaNode implements Node {
     if (this.clock !== i && stream.clock !== i && this.clock !== stream.clock)
       return new BindError('bound DataStream clocks disagree');
     const fields = stream.schema.fields;
-    for (const name of ['provisional', 'realtime']) {
-      const metadata = fields.find(field => field.name === name);
-      if (metadata && (!DataType.isBool(metadata.type) || metadata.nullable))
-        return new BindError(
-          `DataStream ${name} metadata requires a non-nullable Bool field`,
-        );
-    }
+    const provisional = fields.find(field => field.name === 'provisional');
+    if (
+      provisional &&
+      (!DataType.isBool(provisional.type) || provisional.nullable)
+    )
+      return new BindError(
+        'DataStream provisional metadata requires a non-nullable Bool field',
+      );
     for (const name of names) {
       if (this.connected.has(name))
         return new BindError(`series '${name}' is already bound`);
@@ -537,9 +608,6 @@ class TeaNode implements Node {
     const hasProvisional = source.schema.fields.some(
       field => field.name === 'provisional',
     );
-    const hasRealtime = source.schema.fields.some(
-      field => field.name === 'realtime',
-    );
     return defer(() => {
       let previousTime: bigint | null = null;
       let activeTime: bigint | null | undefined;
@@ -553,9 +621,6 @@ class TeaNode implements Node {
               throw new Error(
                 'DataStream provisional metadata must be boolean',
               );
-            const realtime = hasRealtime ? parsed.realtime : false;
-            if (typeof realtime !== 'boolean')
-              throw new Error('DataStream realtime metadata must be boolean');
             const entries = names.map(name => {
               if (!Object.hasOwn(parsed, name)) {
                 throw new Error(
@@ -592,15 +657,10 @@ class TeaNode implements Node {
             activeTime = time;
             previousProvisional = provisional;
             entries.push(['provisional', provisional]);
-            entries.push(['realtime', realtime]);
             return Object.freeze(Object.fromEntries(entries));
           }
           if (names.length === 1)
-            return Object.freeze({
-              [names[0]!]: parsed,
-              provisional: false,
-              realtime: false,
-            });
+            return Object.freeze({[names[0]!]: parsed, provisional: false});
           throw new Error(`source value does not provide series '${names[0]}'`);
         }),
       );
@@ -627,8 +687,8 @@ class TeaNode implements Node {
    *
    * `null` means that no input has been bound yet. Otherwise values pair in
    * order: the first value from each side becomes one merged input, followed by
-   * the second pair. Time, provisional status and realtime status must agree
-   * across the two halves of each attempt.
+   * the second pair. Time and provisional status must agree across the two
+   * halves of each attempt.
    *
    * @example
    * ```text
@@ -659,8 +719,6 @@ class TeaNode implements Node {
           throw new Error(
             'synchronized DataStream provisional states disagree',
           );
-        if (left.realtime !== right.realtime)
-          throw new Error('synchronized DataStream realtime states disagree');
         return [Object.freeze({...left, ...right}), 1];
       }),
     );

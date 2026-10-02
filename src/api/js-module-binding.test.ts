@@ -180,8 +180,6 @@ describe('Module.bind', () => {
       symbol: 'X',
       timeframe: 'D',
       fill: 'carry',
-      ignoreInvalidSymbol: false,
-      calcBarsCount: 0,
     });
     expect(module.requests[0]!.module.inputs.schema.fields[0]!.name).toBe(
       'close',

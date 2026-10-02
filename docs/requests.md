@@ -99,8 +99,6 @@ or bigints; Node requires exact safe epoch-ms integers in increasing order betwe
 finalized steps. A non-nullable Bool `provisional` field enables repeated attempts
 at the same timestamp; it defaults to false when absent. The current step must
 finalize before time advances, and finalized timestamps cannot be revised.
-A non-nullable Bool `realtime` field identifies live delivery, including final
-live attempts; it defaults to false for historical sources.
 Arrow `Int64` also supports existing bigint sources. Use non-nullable times for
 timed request synchronization; nullable time fields can represent absent or
 explicitly null event metadata.
@@ -169,9 +167,7 @@ policy.
 Each module request entry retains the request declaration's symbol, timeframe,
 mode, result layout, and synchronization policy. This is static language data,
 not an instruction for Tea to acquire external data.
-
-`calc_bars_count` remains visible to applications as a trailing-history hint.
-An application may use it when constructing the child DataStream, but Node
+The application chooses how much history the child DataStream holds; Node
 correctness depends only on the stream it actually receives.
 
 ## Staged beyond this slice

@@ -49,7 +49,7 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   or such a direct struct field. Mutating a struct body never marks a syntactic
   root Name reassigned. The checker owns these semantic locations but no Heap
   slot, transaction, or persistence policy.
-- The catalog lists a builtin only if it is inexpressible in Tea. Visual functions are ordinary Tea source that build nominal values and emit them under explicit const-string IDs. The only header is `library()`; `indicator()`, `strategy()`, `output()`, and `effect.emit()` have no special function definitions.
+- The catalog lists a builtin only if it is inexpressible in Tea. Visual functions are ordinary Tea source that build nominal values and emit them under explicit const-string IDs. The only headers are `library()`, which names a library, and `indicator()`, which an entry may place once as its first statement with literal arguments and a non-empty title; `strategy()`, `output()`, and `effect.emit()` have no special function definitions.
 - `Info.emits` records each checked emission's column facts. A post-check reachable-call walk canonicalizes names and checks Tea type identity and fixed set/append mode before Arrow. Plain columns have exactly one static writer path and cannot repeat within a step; multiple append writers are permitted. Each call occurrence counts independently, including omitted defaults and loops. Validation-only method instances do not create columns and defer unknown const name values.
 - Explicit returns and retained tail-return sugar share one function result. Check every returned value and reachable fallthrough; returning branches do not contribute a value to their surrounding expression. Main has no required return; source return statements belong to functions.
 - Qualifier propagation- Qualifier propagation takes the later-known operand: expression results
@@ -125,7 +125,7 @@ and expressions; and `importer.ts` is the import seam (loading lives in
   checker passes the importing file's name with each path, because a relative
   path names a file beside it; it never resolves or reads one itself. The
   checker positions loader errors and recursively elaborates each source once
-  into a semantic `Package`; it alone interprets `library()`, validates the
+  into a semantic `Package`; it alone interprets `library()` and `indicator()` placement, validates the
   package root and declaration conflicts, and checks types, enums, defaults,
   methods, and imports. A library root additionally permits exported input
   aliases (`export close = input.series("close")`, declared as series-bound

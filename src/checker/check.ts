@@ -438,6 +438,33 @@ class Checker {
           this.checkStmt(stmt);
         }
       }
+      // indicator() heads an entry script once, like library() heads a library.
+      const indicators = file.stmtList.filter(isIndicatorDeclaration);
+      if (this.rootLibrary !== null) {
+        for (const stmt of indicators) {
+          this.error(stmt.pos, 'library packages cannot declare indicator()');
+        }
+      } else {
+        if (indicators.length > 0 && indicators[0] !== file.stmtList[0]) {
+          this.error(
+            indicators[0].pos,
+            'indicator() declaration must be the first statement in a script',
+          );
+        }
+        for (const duplicate of indicators.slice(1)) {
+          this.error(duplicate.pos, 'duplicate indicator() declaration');
+        }
+      }
+      // Hosts show the title, so it can't be blank.
+      for (const stmt of indicators) {
+        const call = this.info.calls.get(
+          unwrapParens(stmt.x) as syntax.CallExpr,
+        );
+        const title = call?.kind === CallKind.Native ? call.args[0] : null;
+        if (title != null && this.tvOf(title).value === '') {
+          this.error(title.pos, 'indicator() title must not be empty');
+        }
+      }
       this.validateMethodDeclarations([
         ...this.currentPackage.structDecls.values(),
       ]);
@@ -4956,39 +4983,32 @@ class Checker {
         'request call must directly initialize one plain top-level variable',
       );
     }
-    for (const optionName of [
-      'fill',
-      'ignore_invalid_symbol',
-      'calc_bars_count',
-    ]) {
-      const index = native.params.findIndex(param => param.name === optionName);
-      const option = index === -1 ? null : (args[index] ?? null);
-      if (option !== null) {
-        const value = this.info.types.get(option)?.value;
-        const allowed =
-          optionName === 'fill'
-            ? value === 'carry' || value === 'sparse'
-            : true;
-        if (value !== null && value !== undefined && !allowed) {
-          this.error(
-            option.pos,
-            `request option '${optionName}' has invalid value ${JSON.stringify(value)}`,
-          );
-        }
-      }
+    // `fill` is the one request option.
+    const fillIndex = native.params.findIndex(param => param.name === 'fill');
+    const fill = fillIndex === -1 ? null : (args[fillIndex] ?? null);
+    if (fill !== null) {
+      const value = this.info.types.get(fill)?.value;
       if (
-        option !== null &&
-        this.expressionCallsEffect(option, this.info, Effect.Emit)
+        value !== null &&
+        value !== undefined &&
+        value !== 'carry' &&
+        value !== 'sparse'
       ) {
         this.error(
-          option.pos,
-          `'emit' cannot execute from request option '${optionName}'`,
+          fill.pos,
+          `request option 'fill' has invalid value ${JSON.stringify(value)}`,
         );
       }
-      if (option !== null && this.bindExpressionNeedsUnavailableFrame(option)) {
+      if (this.expressionCallsEffect(fill, this.info, Effect.Emit)) {
         this.error(
-          option.pos,
-          `request option '${optionName}' cannot depend on local execution state because it is evaluated at bind time`,
+          fill.pos,
+          "'emit' cannot execute from request option 'fill'",
+        );
+      }
+      if (this.bindExpressionNeedsUnavailableFrame(fill)) {
+        this.error(
+          fill.pos,
+          "request option 'fill' cannot depend on local execution state because it is evaluated at bind time",
         );
       }
     }
@@ -6073,6 +6093,17 @@ class Checker {
 // ---- pure helpers -----------------------------------------------------------
 
 function isLibraryDeclaration(stmt: syntax.Stmt): stmt is syntax.ExprStmt {
+  return isHeaderCall(stmt, 'library');
+}
+
+function isIndicatorDeclaration(stmt: syntax.Stmt): stmt is syntax.ExprStmt {
+  return isHeaderCall(stmt, 'indicator');
+}
+
+function isHeaderCall(
+  stmt: syntax.Stmt,
+  name: 'library' | 'indicator',
+): stmt is syntax.ExprStmt {
   if (stmt.kind !== NodeKind.ExprStmt) {
     return false;
   }
@@ -6080,7 +6111,7 @@ function isLibraryDeclaration(stmt: syntax.Stmt): stmt is syntax.ExprStmt {
   return (
     expr.kind === NodeKind.CallExpr &&
     expr.fun.kind === NodeKind.Name &&
-    expr.fun.value === 'library'
+    expr.fun.value === name
   );
 }
 
@@ -6575,7 +6606,6 @@ const CONST_ARG_RANGES: Record<
   string,
   Record<string, readonly [number, number]>
 > = {
-  'request.security': {calc_bars_count: [0, Number.MAX_SAFE_INTEGER]},
   'color.new': {transp: [0, 100]},
   'color.rgb': {
     red: [0, 255],

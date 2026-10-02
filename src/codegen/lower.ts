@@ -188,7 +188,7 @@ function captureDestination(
 // the returned string. Aggregate constructors, tuples, and every call use
 // this to preserve source left-to-right value copies around statement-shaped
 // later arguments.
-function capture(e: IrExpr, out: string[], ctx: LowerCtx): string {
+export function capture(e: IrExpr, out: string[], ctx: LowerCtx): string {
   const expr = lowerExpr(e, out, ctx);
   // Literal values cannot be changed by later operands. Keeping them inline
   // also avoids a JS stack slot for every element of a large constant buffer.

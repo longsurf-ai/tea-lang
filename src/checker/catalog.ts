@@ -94,7 +94,8 @@ export interface NativeParam {
 
 // The effect class selects the compilation and runtime protocol of a call:
 // none = ordinary intrinsic; param = extracts a Program ParamInput (input.*);
-// declaration = library identity; handle = host drawing-object ops (line.*);
+// declaration = library identity or an entry's indicator() header;
+// handle = host drawing-object ops (line.*);
 // host = host service with next-bar feedback (strategy.*); async = awaited
 // host call (llm); request = compiles a child Program (request.*);
 // series-input = reads the Program SeriesInput its const argument names
@@ -493,14 +494,13 @@ function buildVars(): NativeVar[] {
 // ---- functions --------------------------------------------------------------
 
 /**
- * Input-row fields Node owns (src/api/node.ts): event time, attempt flags and
- * the first-attempt marker. A series input with one of these names would
- * collide with them, so `input.series` rejects them.
+ * Input-row fields Node owns (src/api/node.ts): event time, the provisional
+ * flag and the first-attempt marker. A series input with one of these names
+ * would collide with them, so `input.series` rejects them.
  */
 export const RESERVED_SERIES_INPUT_NAMES: ReadonlySet<string> = new Set([
   'time',
   'provisional',
-  'realtime',
   'firstAttempt',
 ]);
 
@@ -725,6 +725,29 @@ function buildFuncs(): NativeFunc[] {
       Qualifier.Const,
       Effect.Declaration,
     ),
+    // An entry script's header: host-facing metadata that never changes
+    // execution. Parameters keep Pine's positional order; shorttitle waits
+    // for a host that displays it.
+    func(
+      'indicator',
+      [
+        req('title', StringType, Qualifier.Const, {
+          literal: true,
+          acceptsNa: false,
+        }),
+        opt('shorttitle', StringType, Qualifier.Const, {
+          literal: true,
+          availability: 'staged',
+        }),
+        opt('overlay', BoolType, Qualifier.Const, {
+          literal: true,
+          acceptsNa: false,
+        }),
+      ],
+      VoidType,
+      Qualifier.Const,
+      Effect.Declaration,
+    ),
   );
 
   // input.* — the param family: the checker extracts the declaration, the
@@ -870,13 +893,9 @@ function buildFuncs(): NativeFunc[] {
         req('timeframe', StringType, Qualifier.Series, {acceptsNa: false}),
         req('expression', TypeRef.Any, Qualifier.Series, {capture: true}),
         opt('fill', StringType, Qualifier.Simple, {acceptsNa: false}),
-        opt('ignore_invalid_symbol', BoolType, Qualifier.Simple, {
-          acceptsNa: false,
-        }),
         opt('currency', StringType, Qualifier.Const, {
           availability: 'staged',
         }),
-        opt('calc_bars_count', IntType, Qualifier.Simple, {acceptsNa: false}),
       ],
       FloatType,
       Qualifier.Series,

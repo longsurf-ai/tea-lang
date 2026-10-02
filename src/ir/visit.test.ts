@@ -159,6 +159,7 @@ const childResult: Name = {
 
 const child: Program = {
   version: 1,
+  declaration: null,
   nominalIds: new Map(),
   params: [],
   requests: [],
@@ -186,12 +187,9 @@ const edge: RequestEdge = {
     value: 'D',
   },
   contextArgumentEvaluationOrder: [0, 1],
-  optionArgumentEvaluationOrder: [0, 1, 2, 3],
   merge: {
     mode: MergeMode.Sample,
     fill: text('carry'),
-    ignoreInvalidSymbol: bool(false),
-    calcBarsCount: int(0),
   },
   resultName: childResult,
   captureType: FloatType,
@@ -203,6 +201,7 @@ const edge: RequestEdge = {
 
 const program: Program = {
   version: 1,
+  declaration: null,
   nominalIds: new Map(),
   params: [],
   requests: [edge],
@@ -256,6 +255,7 @@ const program: Program = {
 
 const bindOnlyProgram: Program = {
   version: 1,
+  declaration: null,
   nominalIds: new Map(),
   params: [],
   requests: [],
@@ -321,6 +321,7 @@ const mutate: MutableMethodIrFunc = {
 
 const mutationProgram: Program = {
   version: 1,
+  declaration: null,
   nominalIds: new Map(),
   params: [],
   requests: [],

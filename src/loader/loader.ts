@@ -14,24 +14,30 @@ import {
 import {NodeKind, type File} from '../syntax/nodes';
 import {parse} from '../syntax/syntax';
 
-// Frontend orchestrator: one parse per file.
+// Frontend orchestrator: one parse per file; optionally retain its exact text.
 export function loadPackage(
   inputs: readonly SourceInput[],
   errors: Errors,
+  captured?: Map<string, string>,
 ): File[] {
   return inputs.map(input => {
     const {filename, source} =
       typeof input === 'string'
         ? {filename: input, source: readFileSync(input, 'utf8')}
         : input;
+    captured?.set(filename, source);
     return parse(newFileBase(filename), source, (pos, msg) =>
       errors.errorAt(pos, msg),
     );
   });
 }
 
-// What a registry says about an import path: a loadable source, a path that
-// belongs to an external distribution mechanism, or nothing.
+/**
+ * One source file whose text is already in memory; no disk file is required.
+ * `filename` identifies the source in diagnostics and gives relative imports
+ * their base path. The loader parses `source` directly; relative imports are
+ * loaded separately; SourceInput can supply their texts through `imports`.
+ */
 export interface PackageSource {
   readonly filename: string;
   readonly source: string;
@@ -40,8 +46,18 @@ export interface PackageSource {
 // Entry packages normally arrive as filenames. Embedding hosts may provide
 // source text with a virtual filename so positions remain stable without a
 // temporary file; both forms enter the same loader/checker/noder pipeline.
-export type SourceInput = string | PackageSource;
+export type SourceInput =
+  | string
+  | (PackageSource & {
+      /** Complete imported-file texts keyed by canonical filename. Omit to resolve
+       * imports on disk; supply an empty map for a self-contained in-memory entry.
+       * A missing key never falls back to disk. Shipped libraries remain available.
+       */
+      readonly imports?: Readonly<Record<string, string>>;
+    });
 
+// What a registry says about an import path: a loadable source, a path that
+// belongs to an external distribution mechanism, or nothing.
 export type Registry = (path: string) => PackageSource | 'external' | null;
 
 /**

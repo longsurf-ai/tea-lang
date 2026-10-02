@@ -40,8 +40,10 @@ plot("average", average, "Average")
 
 The host binds `close` and the parameter `length`. Each step computes the next
 average. `plot` emits a visual description with the fixed ID `average`.
-There is no `indicator()` or `strategy()` entry header. An ordinary Tea program
-can emit numbers, plots, events, or several of these together.
+An entry may start with `indicator("Title", overlay = false)` to give a host
+its display title and placement; the header never changes execution. There is
+no `strategy()` header. An ordinary Tea program can emit numbers, plots,
+events, or several of these together.
 
 Tea resembles Pine in some syntax. Use this version's declarations and semantics:
 for example visual helpers require an output ID before the value/condition,

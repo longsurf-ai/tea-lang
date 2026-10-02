@@ -35,7 +35,8 @@ Node owns:
 - synchronization and copied request buffers;
 - committed index progression;
 - Pine contextual builtin delivery;
-- lossless Datum publication and cancellation.
+- lossless Datum publication (also as a DataStream through `asStream()`) and
+  cancellation.
 
 `Node.bind(input, path?)` accepts parameter objects and DataStreams and returns
 a new Node with independent configuration and execution state. The optional path
@@ -59,6 +60,17 @@ run.to(observer);
 Each synchronized input produces one synchronous `Context.step()`. A thrown
 observer `next()` callback fails the shared graph and reaches every observer
 through `error()`.
+
+`node.asStream()` exposes the same run as a DataStream another Node can bind.
+Its rows carry `time` when the Node is timed, `provisional`, and every output
+field; `index` and `timed` stay with the Node, and the stream keeps the Node's
+input clock. Each subscription is one `to()` call, so nothing is replayed and
+readers must subscribe before the inputs deliver data. Unlike a `to()`
+observer's, a reader's own failure never stops the run: an error in its
+operators or Node ends only that reader, and RxJS reports a thrown subscriber
+`next()` as an unhandled error. Set outputs are nullable and plots are structs,
+so a reader maps rows to non-nullable numeric fields before binding them as
+series.
 
 ## DataStream extent and time
 
@@ -104,7 +116,8 @@ Pine is statically enabled while it is Tea's only Extension. It derives:
 - `time` from the current input datum;
 - `timenow` sampled from the injected host clock per attempt; hosts may supply a
   constant clock for one finite evaluation;
-- bar-state flags from the current attempt and explicit `realtime` metadata.
+- bar-state flags from the current attempt and the host's `isRealtime`
+  callback, sampled per attempt like `timenow` (false by default).
 
 Missing application symbol/timeframe metadata becomes the builtin's declared
 empty Value. Contextual builtins never become another `Node.bind()` form.

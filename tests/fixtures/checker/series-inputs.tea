@@ -11,7 +11,6 @@ named = input.series(column)
 empty = input.series("") // ERROR 'input.series' name cannot be empty
 t = input.series("time") // ERROR 'input.series' name 'time' is reserved
 p = input.series("provisional") // ERROR 'input.series' name 'provisional' is reserved
-r = input.series("realtime") // ERROR 'input.series' name 'realtime' is reserved
 fa = input.series("firstAttempt") // ERROR 'input.series' name 'firstAttempt' is reserved
 
 dynamic = input.series(close > 0 ? "a" : "b") // ERROR argument 'name' to 'input.series' accepts at most const, got series

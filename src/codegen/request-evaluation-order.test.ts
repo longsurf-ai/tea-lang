@@ -23,8 +23,6 @@ describe('request context evaluation order', () => {
       symbol: 'SYMBOL_SENTINEL',
       timeframe: 'TIMEFRAME_SENTINEL',
       fill: 'carry',
-      ignoreInvalidSymbol: false,
-      calcBarsCount: 0,
     });
     expect(js).not.toContain('module.requests[0].context =');
   });
@@ -59,51 +57,36 @@ describe('request context evaluation order', () => {
     expect(window.empty.element?.sameType(window.resultEmpty)).toBe(true);
   });
 
-  test('binds every option once in its independent source order', () => {
+  test('binds the fill option once, before the request context', () => {
     const program = mustBuild(
       [
-        'count = input.int(7)',
-        'ignore = input.bool(true)',
         'fillValue = input.string("sparse")',
         'd = request.security(',
-        '    calc_bars_count = count,',
         '    timeframe = "TIMEFRAME_SENTINEL",',
         '    expression = close,',
-        '    ignore_invalid_symbol = ignore,',
         '    symbol = "SYMBOL_SENTINEL",',
         '    fill = fillValue)',
         'emit "output0" d',
       ].join('\n'),
     );
-    const edge = program.requests[0];
-    expect(edge.optionArgumentEvaluationOrder).toEqual([2, 1, 0]);
-    expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
+    expect(program.requests[0].contextArgumentEvaluationOrder).toEqual([1, 0]);
 
     const js = generate(program);
     const binding = js.slice(js.lastIndexOf('(module, contextConstants) =>'));
     const assignment = binding.match(
-      /module\.requests\[0\]\.context = \{\s*symbol: \((text\("SYMBOL_SENTINEL"\))\)\.value!, timeframe: \((text\("TIMEFRAME_SENTINEL"\))\)\.value!, fill: \((t\d+)\)\.value as "carry" \| "sparse", ignoreInvalidSymbol: \((t\d+)\)\.value, calcBarsCount: \((t\d+)\)\.value\s*\};/,
+      /module\.requests\[0\]\.context = \{\s*symbol: \((text\("SYMBOL_SENTINEL"\))\)\.value!, timeframe: \((text\("TIMEFRAME_SENTINEL"\))\)\.value!, fill: \((t\d+)\)\.value as "carry" \| "sparse"\s*\};/,
     );
     expect(assignment).not.toBeNull();
     if (assignment === null) {
       return;
     }
-    const [, , , fill, ignoreInvalidSymbol, calcBarsCount] = assignment;
-    const captures = [calcBarsCount, ignoreInvalidSymbol, fill].map(temp =>
-      binding.indexOf(`const ${temp} =`),
+    const fillCapture = binding.indexOf(`const ${assignment[3]} =`);
+    expect(fillCapture).toBeGreaterThanOrEqual(0);
+    expect(binding.indexOf('module.requests[0].context = {')).toBeGreaterThan(
+      fillCapture,
     );
-    expect(captures.every(index => index >= 0)).toBe(true);
-    expect(captures).toEqual([...captures].sort((a, b) => a - b));
-
-    const symbolCapture = binding.indexOf('"SYMBOL_SENTINEL"');
-    const optionCapture = Math.max(...captures);
-    const assignmentIndex = binding.indexOf('module.requests[0].context = {');
-    expect(symbolCapture).toBeGreaterThan(optionCapture);
-    expect(assignmentIndex).toBeGreaterThan(optionCapture);
-    expect(symbolCapture).toBeGreaterThan(assignmentIndex);
-
-    const module = loadModule(js);
-    expect(module.requests[0].mode).toBe('sample');
+    expect(binding.indexOf('"SYMBOL_SENTINEL"')).toBeGreaterThan(fillCapture);
+    expect(loadModule(js).requests[0].mode).toBe('sample');
   });
 
   test('evaluates a root Simple alias before binding request options', () => {
@@ -145,23 +128,6 @@ describe('request context evaluation order', () => {
 
     expect(() => generate(valid)).toThrow(
       'request context has an invalid argument evaluation order',
-    );
-  });
-
-  test('rejects a malformed request option schedule at codegen', () => {
-    const valid = mustBuild(
-      [
-        'd = request.security(symbol = "X", timeframe = "D", expression = close)',
-        'emit "output0" d',
-      ].join('\n'),
-    );
-    const invalidEdge = valid.requests[0] as unknown as {
-      optionArgumentEvaluationOrder: number[];
-    };
-    invalidEdge.optionArgumentEvaluationOrder = [0, 0, 2];
-
-    expect(() => generate(valid)).toThrow(
-      'request options has an invalid argument evaluation order',
     );
   });
 });

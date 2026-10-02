@@ -115,11 +115,6 @@ export interface MergePolicy {
   readonly mode: MergeMode;
   // Whether an eligible child value carries forward between child updates.
   readonly fill: IrExpr;
-  // Invalid symbols yield na instead of a runtime error.
-  readonly ignoreInvalidSymbol: IrExpr;
-  // Bind-resolvable bar-count limit for the child. Omitted calls carry an
-  // explicit zero expression, which selects the full available range.
-  readonly calcBarsCount: IrExpr;
 }
 
 // A request.* call site: its captured expression compiles as a child Program
@@ -140,10 +135,6 @@ export interface RequestEdge {
   // source evaluation order. The captured expression is child-context code
   // and is deliberately absent from this parent schedule.
   readonly contextArgumentEvaluationOrder: readonly number[];
-  // Canonical option indices (fill=0, ignore=1, bars=2) in
-  // source evaluation order. Omitted defaults follow supplied options in
-  // canonical order so module.bind evaluates each option exactly once.
-  readonly optionArgumentEvaluationOrder: readonly number[];
   readonly merge: MergePolicy;
   // The designated result is a Name OF THE CHILD written each child bar.
   readonly resultName: Name;
@@ -206,6 +197,14 @@ export interface MutableMethodIrFunc extends IrFuncBase {
 
 export type IrFunc = FreeIrFunc | ConstMethodIrFunc | MutableMethodIrFunc;
 
+/** The entry script's `indicator()` header: a title and a chart placement hint. */
+export interface Declaration {
+  readonly kind: 'indicator';
+  readonly title: string;
+  // Draw over the price pane instead of in a pane of its own.
+  readonly overlay: boolean;
+}
+
 // @agent invariant: one Program instance runs against exactly one context
 // (one symbol × timeframe axis) and owns its names, bindings, and rollback;
 // recursion — not multi-context Programs — is how requests compose. The
@@ -223,6 +222,14 @@ export type IrFunc = FreeIrFunc | ConstMethodIrFunc | MutableMethodIrFunc;
 export interface Program {
   // Declared Tea language version.
   readonly version: number;
+  /**
+   * What the entry script says it is, for hosts to label and place it. It
+   * never changes execution, and request children have none.
+   *
+   * @example `indicator("RSI", overlay = false)` as the first statement gives
+   * `{kind: 'indicator', title: 'RSI', overlay: false}`; without it, `null`.
+   */
+  readonly declaration: Declaration | null;
   /**
    * Canonical declaration identities retained from checking. Arrow projection
    * uses these identities as metadata; structural fields still come from Type.

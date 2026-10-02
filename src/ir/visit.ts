@@ -215,13 +215,7 @@ function noteRequest(request: RequestEdge, reach: Reach): void {
   reach.requests.add(request);
   visitExpr(request.symbol, reach);
   visitExpr(request.timeframe, reach);
-  for (const option of [
-    request.merge.fill,
-    request.merge.ignoreInvalidSymbol,
-    request.merge.calcBarsCount,
-  ]) {
-    visitExpr(option, reach);
-  }
+  visitExpr(request.merge.fill, reach);
   visitDepth(request.depth, reach);
   // request.resultName and request.child belong to the child Program.
 }

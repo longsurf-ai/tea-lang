@@ -78,6 +78,7 @@ describe('typed builtin lowering', () => {
     );
     const program: Program = {
       version: 1,
+      declaration: null,
       nominalIds: new Map(),
       params: [],
       requests: [],

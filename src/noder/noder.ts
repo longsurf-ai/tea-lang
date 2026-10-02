@@ -30,6 +30,7 @@ import {
   ParamConstraintKind,
   ParamDefaultKind,
   type BuiltinInput,
+  type Declaration,
   type IrFunc,
   type MergePolicy,
   type OutputDecl,
@@ -190,6 +191,7 @@ class Noder {
     const packageGlobals: IrName[] = [];
     const program: Program = {
       version: this.version,
+      declaration: this.declarationOf(file),
       nominalIds: this.checked.nominalTypeIds,
       params: this.params,
       requests: this.program.requests,
@@ -523,8 +525,6 @@ class Noder {
         check(request.symbol);
         check(request.timeframe);
         check(request.merge.fill);
-        check(request.merge.ignoreInvalidSymbol);
-        check(request.merge.calcBarsCount);
       });
       current.requests.forEach(request => visitProgram(request.child));
     };
@@ -783,6 +783,30 @@ class Noder {
       case NodeKind.BadStmt:
         return fatal('Bad statement reached the noder past the check barrier');
     }
+  }
+
+  // The checker allows indicator() only as the first statement, with literal
+  // arguments, so its values are already folded constants here.
+  private declarationOf(file: syntax.File): Declaration | null {
+    const stmt = file.stmtList[0];
+    const call = stmt?.kind === NodeKind.ExprStmt ? unwrapCall(stmt.x) : null;
+    const resolved = call === null ? undefined : this.info.calls.get(call);
+    if (
+      resolved?.kind !== CallKind.Native ||
+      resolved.native.name !== 'indicator'
+    ) {
+      return null;
+    }
+    const value = (name: string): ConstValue | null => {
+      const index = resolved.native.params.findIndex(p => p.name === name);
+      const arg = resolved.args[index];
+      return arg == null ? null : this.tvOf(arg).value;
+    };
+    const title = value('title');
+    if (typeof title !== 'string') {
+      return fatal('indicator() title is not a folded string');
+    }
+    return {kind: 'indicator', title, overlay: value('overlay') === true};
   }
 
   private nodeExprStmt(stmt: syntax.ExprStmt): IrStmt[] {
@@ -1613,61 +1637,21 @@ class Noder {
       timeframeExpr,
       this.tvOf(timeframeExpr).type,
     );
-    const optionNames = [
-      'fill',
-      'ignore_invalid_symbol',
-      'calc_bars_count',
-    ] as const;
-    const optionParamIndices = optionNames.map(name =>
-      resolved.native.params.findIndex(param => param.name === name),
-    );
-    const suppliedOptionOrder = resolved.argumentEvaluationOrder
-      .filter(index => index >= 0 && optionParamIndices.includes(index))
-      .map(index => optionParamIndices.indexOf(index));
-    const omittedOptionOrder = optionNames
-      .map((name, index) => (argExpr(name) === null ? index : null))
-      .filter((index): index is number => index !== null);
-    const optionArgumentEvaluationOrder = [
-      ...suppliedOptionOrder,
-      ...omittedOptionOrder,
-    ];
-    if (
-      optionArgumentEvaluationOrder.length !== optionNames.length ||
-      new Set(optionArgumentEvaluationOrder).size !== optionNames.length
-    ) {
-      return fatal(
-        `request native '${resolved.native.name}' has an invalid option evaluation order`,
-      );
-    }
-    const optionExpr = (
-      name: (typeof optionNames)[number],
-      type: Type,
-      defaultValue: ConstValue,
-    ): IrExpr => {
-      const expr = argExpr(name);
-      return expr === null
-        ? this.constExpr(c.pos, type, defaultValue)
-        : this.nodeExpr(expr, this.tvOf(expr).type);
-    };
+    const fillExpr = argExpr('fill');
     const merge: MergePolicy = {
       mode:
         resolved.native.name === 'request.security_lower_tf'
           ? MergeMode.Collect
           : MergeMode.Sample,
-      fill: optionExpr('fill', StringType, 'carry'),
-      ignoreInvalidSymbol: optionExpr('ignore_invalid_symbol', BoolType, false),
-      calcBarsCount: optionExpr('calc_bars_count', IntType, 0),
+      fill:
+        fillExpr === null
+          ? this.constExpr(c.pos, StringType, 'carry')
+          : this.nodeExpr(fillExpr, this.tvOf(fillExpr).type),
     };
-    for (const [name, option] of [
-      ['fill', merge.fill],
-      ['ignore_invalid_symbol', merge.ignoreInvalidSymbol],
-      ['calc_bars_count', merge.calcBarsCount],
-    ] as const) {
-      if (!this.requestContextBindEvaluable(option)) {
-        return fatal(
-          `request option '${name}' reached noding without a bind-evaluable owner`,
-        );
-      }
+    if (!this.requestContextBindEvaluable(merge.fill)) {
+      return fatal(
+        "request option 'fill' reached noding without a bind-evaluable owner",
+      );
     }
 
     // The child context owns its semantic facts, context inputs, functions,
@@ -1710,6 +1694,7 @@ class Noder {
     ];
     const child: Program = {
       version: this.version,
+      declaration: null,
       nominalIds: this.checked.nominalTypeIds,
       // Bind-time params are compilation-global: a child references the
       // parent's ParamInput objects directly and declares none of its own.
@@ -1736,7 +1721,6 @@ class Noder {
       symbol,
       timeframe,
       contextArgumentEvaluationOrder,
-      optionArgumentEvaluationOrder,
       merge,
       resultName,
       captureType: resolved.captureType,

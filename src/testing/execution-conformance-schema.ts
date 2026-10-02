@@ -101,6 +101,9 @@ export interface ExpectedReference {
     readonly emissions: readonly ExpectedEmission[];
   }[];
   readonly bindings: readonly ExpectedBinding[];
+  // Request children that read only the last N data rows, by request name;
+  // every other child reads all of them.
+  readonly requestRows: Readonly<Record<string, number>>;
   readonly deviations: readonly string[];
 }
 
@@ -480,6 +483,7 @@ function parseBindings(
 export function parseReference(raw: unknown, label: string): ExpectedReference {
   const root = object(raw, label);
   const hasBindings = Object.hasOwn(root, 'bindings');
+  const hasRequestRows = Object.hasOwn(root, 'requestRows');
   keys(
     root,
     [
@@ -489,6 +493,7 @@ export function parseReference(raw: unknown, label: string): ExpectedReference {
       'outputs',
       'rows',
       ...(hasBindings ? ['bindings'] : []),
+      ...(hasRequestRows ? ['requestRows'] : []),
       'deviations',
     ],
     label,
@@ -569,6 +574,16 @@ export function parseReference(raw: unknown, label: string): ExpectedReference {
     bindings: hasBindings
       ? parseBindings(root['bindings'], `${label}.bindings`)
       : [],
+    requestRows: hasRequestRows
+      ? Object.fromEntries(
+          Object.entries(
+            object(root['requestRows'], `${label}.requestRows`),
+          ).map(([name, rows]) => [
+            name,
+            integer(rows, `${label}.requestRows.${name}`),
+          ]),
+        )
+      : {},
     deviations: array(root['deviations'], `${label}.deviations`).map(
       (value, i) => string(value, `${label}.deviations[${i}]`),
     ),

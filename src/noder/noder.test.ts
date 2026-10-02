@@ -1215,27 +1215,14 @@ describe('requests', () => {
     expect(edge.contextArgumentEvaluationOrder).toEqual([1, 0]);
   });
 
-  test('request options remain bind expressions with one explicit schedule', () => {
+  test('the fill option remains a bind expression', () => {
     const program = mustBuild(
       [
         'fill_policy = input.string("sparse")',
-        'bars = input.int(25)',
-        'd = request.security(',
-        '    "AAPL", "D", close,',
-        '    calc_bars_count=bars, fill=fill_policy)',
+        'd = request.security("AAPL", "D", close, fill=fill_policy)',
       ].join('\n'),
     );
-    const edge = program.requests[0];
-    expect(edge.optionArgumentEvaluationOrder).toEqual([2, 0, 1]);
-    expect(edge.merge.fill).toMatchObject({
-      kind: IrKind.Read,
-      place: {kind: PlaceKind.Param},
-    });
-    expect(edge.merge.ignoreInvalidSymbol).toMatchObject({
-      kind: IrKind.Const,
-      value: false,
-    });
-    expect(edge.merge.calcBarsCount).toMatchObject({
+    expect(program.requests[0].merge.fill).toMatchObject({
       kind: IrKind.Read,
       place: {kind: PlaceKind.Param},
     });
@@ -1441,6 +1428,27 @@ describe('program surface', () => {
   test('version comes from the declared //@version', () => {
     expect(mustBuild('//@version=1\nemit "output0" close').version).toBe(1);
     expect(mustBuild('emit "output0" close').version).toBe(1);
+  });
+
+  test('declaration comes from the indicator() header and lowers to no IR', () => {
+    const program = mustBuild(
+      'indicator("RSI", overlay = true)\nvalue = request.security("A", "D", close)\nemit "x" value',
+    );
+    expect(program.declaration).toEqual({
+      kind: 'indicator',
+      title: 'RSI',
+      overlay: true,
+    });
+    expect(program.requests[0].child.declaration).toBeNull();
+    expect(mustBuild('indicator("A")\nemit "x" close').declaration).toEqual({
+      kind: 'indicator',
+      title: 'A',
+      overlay: false,
+    });
+    expect(mustBuild('emit "x" close').declaration).toBeNull();
+    expect(mustBuild('indicator("A")\nemit "x" close').body).toHaveLength(
+      mustBuild('emit "x" close').body.length,
+    );
   });
 });
 

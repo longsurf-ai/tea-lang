@@ -675,13 +675,11 @@ describe('calls', () => {
     );
   });
 
-  test('removed script headers are ordinary unknown functions', () => {
-    for (const name of ['indicator', 'strategy']) {
-      expect(CATALOG.funcs.has(name)).toBe(false);
-      expect(
-        checkText(`${name}("Title")`).errors.map(error => error.msg),
-      ).toContain(`unknown function '${name}'`);
-    }
+  test('strategy() is not a script header', () => {
+    expect(CATALOG.funcs.has('strategy')).toBe(false);
+    expect(
+      checkText('strategy("Title")').errors.map(error => error.msg),
+    ).toContain("unknown function 'strategy'");
   });
 
   test('input overloads preserve their exact positional and nominal types', () => {
@@ -806,25 +804,23 @@ describe('calls', () => {
     expect(alias.errors).toEqual([]);
   });
 
-  test('request bind options accept simple expressions and reject invalid contracts', () => {
+  test('the fill option accepts simple expressions; invalid and removed options are rejected', () => {
     const valid = checkText(
       [
         'fill_policy = syminfo.type == "stock" ? "sparse" : "carry"',
-        'ignore = input.bool(false)',
-        'bars = input.int(25)',
-        'x = request.security("X", "D", close, fill=fill_policy, ignore_invalid_symbol=ignore, calc_bars_count=bars)',
+        'x = request.security("X", "D", close, fill=fill_policy)',
       ].join('\n'),
     );
     expect(valid.errors).toEqual([]);
 
     const cases = [
       [
-        'x = request.security("X", "D", close, calc_bars_count=-1)',
-        'must be between 0',
+        'x = request.security("X", "D", close, calc_bars_count=2)',
+        "unknown argument 'calc_bars_count' in call to 'request.security'",
       ],
       [
-        'x = request.security("X", "D", close, calc_bars_count=int(na))',
-        'cannot be na',
+        'x = request.security("X", "D", close, ignore_invalid_symbol=true)',
+        "unknown argument 'ignore_invalid_symbol' in call to 'request.security'",
       ],
       [
         'x = request.security("X", "D", close, fill="forward")',
@@ -925,6 +921,32 @@ describe('calls', () => {
 });
 
 describe('diagnostics', () => {
+  test('indicator() is a once-only header of an entry script', () => {
+    const errorsOf = (src: string) =>
+      checkText(src).errors.map(error => error.msg);
+    expect(
+      errorsOf('indicator("RSI", overlay = true)\nemit "x" close'),
+    ).toEqual([]);
+    expect(errorsOf('emit "x" close\nindicator("RSI")')).toContain(
+      'indicator() declaration must be the first statement in a script',
+    );
+    expect(errorsOf('indicator("A")\nindicator("B")')).toContain(
+      'duplicate indicator() declaration',
+    );
+    expect(errorsOf('library("lib")\nindicator("A")')).toContain(
+      'library packages cannot declare indicator()',
+    );
+    expect(errorsOf('if close > 0\n    indicator("A")')).toContain(
+      "'indicator' can only be called at the top level of the script",
+    );
+    expect(errorsOf('indicator("")')).toEqual([
+      'indicator() title must not be empty',
+    ]);
+    expect(errorsOf('indicator("RSI", "R")')).toEqual([
+      "argument 'shorttitle' to 'indicator' is not supported yet",
+    ]);
+  });
+
   test('switch has at most one default arm and it is final', () => {
     const nonFinal = checkText(
       ['x = switch 1', '    => 10', '    1 => 20'].join('\n'),

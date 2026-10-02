@@ -131,7 +131,6 @@ export function dumpProgram(program: Program): string {
       `name=${JSON.stringify(edge.name)}`,
       `mode=${m.mode}`,
       `context_order=${edge.contextArgumentEvaluationOrder.join(',')}`,
-      `option_order=${edge.optionArgumentEvaluationOrder.join(',')}`,
       `capture=${formatType(edge.captureType)}`,
       `result=${formatType(edge.resultType)}`,
     ]
@@ -141,14 +140,6 @@ export function dumpProgram(program: Program): string {
     dumpExpr(edge.symbol, 'symbol: ', '  ', out, labels);
     dumpExpr(edge.timeframe, 'timeframe: ', '  ', out, labels);
     dumpExpr(m.fill, 'fill: ', '  ', out, labels);
-    dumpExpr(
-      m.ignoreInvalidSymbol,
-      'ignore_invalid_symbol: ',
-      '  ',
-      out,
-      labels,
-    );
-    dumpExpr(m.calcBarsCount, 'calc_bars_count: ', '  ', out, labels);
     // The child is a full Program with its own label space.
     out.push('  child:');
     for (const line of dumpProgram(edge.child).split('\n')) {
